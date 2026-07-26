@@ -69,6 +69,11 @@ BLOCK = [
     (f"http POST https://{REST}/v1/pods name=big", "httpie positional verb"),
     (f"curl -X POST https://{REST.upper()}/v1/pods -d @b.json", "upper-case host"),
     (f"curl -X DELETE https://{REST}/v1/networkvolumes/vol-1", "volume delete"),
+    # -g is --globoff, not --get. Lowercasing the test disarmed the whole
+    # write check, and four paired audit rounds missed it; CodeRabbit found it.
+    (f"curl -g -X POST https://{REST}/v1/pods -d @b.json", "-g is --globoff"),
+    (f"curl --globoff -X POST https://{REST}/v1/pods -d @b.json", "the long form"),
+    (f"curl -g -X DELETE https://{REST}/v1/networkvolumes/v1", "volume delete behind -g"),
     (
         f'curl -X POST https://{API}/graphql -d \'{{"query":"mutation{{podResume}}"}}\'',
         "graphql resume",
@@ -164,6 +169,8 @@ ALLOW = [
         f"curl -G https://{API}/graphql --data-urlencode 'query={{myself{{id}}}}'",
         "-G makes it a GET",
     ),
+    (f"curl --get https://{API}/graphql --data-urlencode 'q=1'", "the long form of -G"),
+    (f"curl -x proxy.local:8080 https://{REST}/v1/pods", "lower -x is --proxy, a read"),
     (f"curl -X POST https://{REST}/v1/pods/abc/stop", "shutdown must be verifiable"),
     (f"curl -s https://{REST}/v1/networkvolumes", "listing volumes is a read"),
     ("python3 -c 'import runpod; print(runpod.get_pods())'", "reading state"),

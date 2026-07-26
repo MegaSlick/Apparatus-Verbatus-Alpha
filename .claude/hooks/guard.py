@@ -472,8 +472,13 @@ def check_http(argv):
     joined = " ".join(argv).lower()
     if not any(host in joined for host in RUNPOD_HOSTS):
         return
-    # curl -G turns --data-* into a query string: the request is a GET.
-    if "-g" in [a.lower() for a in argv] or "--get" in joined:
+    # curl -G turns --data-* into a query string: the request really is a GET.
+    #
+    # Case matters here, and getting it wrong was a live bypass: `-g` is
+    # --globoff, which says nothing about the method, so lowercasing this test
+    # let `curl -g -X POST .../pods -d @body.json` create a pod unchecked.
+    # Short options are case-sensitive; long ones are not.
+    if any(a == "-G" or a.lower() == "--get" for a in argv):
         return
     writes = False
     for i, token in enumerate(argv):
@@ -481,7 +486,8 @@ def check_http(argv):
         flag = low.split("=", 1)[0]
         if flag in WRITE_FLAGS or flag.startswith("--data"):
             writes = True
-        if flag in ("-x", "--request", "--method"):
+        # `-X` is --request. Lower-case `-x` is --proxy, and means nothing here.
+        if token == "-X" or flag in ("--request", "--method"):
             value = (
                 low.split("=", 1)[1]
                 if "=" in low
@@ -490,7 +496,7 @@ def check_http(argv):
             if value in WRITE_METHODS:
                 writes = True
         # curl accepts the value attached: -XPOST, -XDELETE.
-        if low.startswith("-x") and len(low) > 2 and low[2:] in WRITE_METHODS:
+        if token.startswith("-X") and len(token) > 2 and token[2:].lower() in WRITE_METHODS:
             writes = True
         if base(low) == "post" or low in WRITE_METHODS:
             writes = True  # httpie takes the method as a positional

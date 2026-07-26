@@ -35,7 +35,7 @@ repository accumulated 320 markdown files for want of this distinction.
 
 ## First, in every clone
 
-```
+```sh
 sh .githooks/install.sh
 ```
 
@@ -70,7 +70,7 @@ of it.
 **Nothing is pushed until an agent has read it.** Whoever wrote the work does not get to
 be the only one who has seen it leave the machine. Run an audit first, then record it:
 
-```
+```sh
 .githooks/record-audit.sh <auditor> '<what it found>'
 ```
 
@@ -79,6 +79,16 @@ again — an audit is of a state, not of a branch.
 
 Push at the end of a task or session, not continuously. Push earlier only when not
 pushing would block the next step.
+
+**The audit has a second half, after the push.** Once the pull request is open, wait for
+the automated reviewer to report — roughly twenty minutes — then read its comments and
+treat them as findings of the same audit. Verify each one before acting on it: some are
+style, some are wrong, and some are real. Fix what is real, say why you are skipping the
+rest, and record a fresh receipt for the commit that answers them.
+
+This is not ceremony. An automated reviewer reads differently from the agents that
+audited before the push, and it has already caught a live bypass that four rounds of
+paired audit walked past.
 
 **Subagents and other AI tools do not push at all.** They audit and they report. The
 push is Tyrel's, or the main session's after an audit.
@@ -90,9 +100,9 @@ an author from an auditor. `ALLOW_UNAUDITED_PUSH=1`, `--no-verify` and
 open to everything else. What the gate stops is the unconsidered push — the one nobody
 meant to skip. It does not stop anyone who means to.
 
-The same is true of the repository as a whole: on a free private plan there is no branch
-protection, so **every guard here is an alarm, not a lock.** Treat a red check as
-information, never as something that stopped you.
+The same is true of the repository as a whole. **Assume every guard here is an alarm, not
+a lock,** unless README.md says server-side branch protection is in force. Treat a red
+check as information, never as something that stopped you.
 
 ## Concurrency
 

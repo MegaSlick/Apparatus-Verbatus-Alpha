@@ -34,5 +34,9 @@ addopts = "-q"
 # `worktrees` is not optional. Agents work in .claude/worktrees/<topic>, each a
 # full checkout, so without it collection finds several files with the same
 # basename and dies on an import mismatch.
-norecursedirs = [".git", ".venv", ".ruff_cache", ".pytest_cache", "worktrees",
-                 "__pycache__", "workbench", "private", "scriptorium"]
+# Setting this key REPLACES pytest's built-in list rather than adding to it, so
+# the ordinary noise directories have to be named again here or collection will
+# start walking them.
+norecursedirs = [".git", ".venv", "venv", ".ruff_cache", ".pytest_cache",
+                 ".mypy_cache", ".tox", "node_modules", "build", "dist",
+                 "worktrees", "__pycache__", "workbench", "private", "scriptorium"]
