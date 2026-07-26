@@ -1,0 +1,25 @@
+#!/bin/sh
+# Refuse any direct push to main. Work happens on a branch; main moves only by merge.
+# Escape hatch (use knowingly):  ALLOW_MAIN_PUSH=1 git push ...
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      if [ "$ALLOW_MAIN_PUSH" = "1" ]; then
+        echo "pre-push: ALLOW_MAIN_PUSH=1 set — permitting direct push to main." >&2
+      else
+        echo "" >&2
+        echo "  BLOCKED: direct push to main." >&2
+        echo "" >&2
+        echo "  main moves only by merging a pull request." >&2
+        echo "  Put this work on a branch instead:" >&2
+        echo "" >&2
+        echo "      git switch -c work/<short-topic>" >&2
+        echo "      git push -u origin work/<short-topic>" >&2
+        echo "      gh pr create" >&2
+        echo "" >&2
+        exit 1
+      fi
+      ;;
+  esac
+done
+exit 0

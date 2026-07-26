@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Canonical documents exist
+        run: |
+          missing=0
+          for f in README.md GOALS.md GOVERNANCE.md ARCHITECTURE.md GLOSSARY.md CLAUDE.md; do
+            if [ ! -f "$f" ]; then echo "::error::missing $f"; missing=1; fi
+          done
+          exit $missing
+
+      - name: Rules documents carry no state
+        # README.md holds the single status line. Everywhere else, a date or a pod id
+        # is state leaking into a rules document — the exact rot this repo exists to avoid.
+        run: |
+          bad=0
+          for f in GOALS.md GOVERNANCE.md ARCHITECTURE.md GLOSSARY.md CLAUDE.md; do
+            if grep -nE '20[0-9]{2}-[0-9]{2}-[0-9]{2}' "$f"; then
+              echo "::error file=$f::date found in a rules document — state belongs in README.md"
+              bad=1
+            fi
+          done
+          exit $bad
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Lint
+        run: |
+          if ls **/*.py *.py >/dev/null 2>&1; then
+            pipx install ruff
+            ruff check .
+            ruff format --check .
+          else
+            echo "no python yet — nothing to lint"
+          fi
+
+      - name: Module boundaries
+        run: |
+          if [ -f tach.toml ] && grep -q '^\[\[modules\]\]' tach.toml; then
+            pipx install tach
+            tach check
+          else
+            echo "no modules declared yet — nothing to enforce"
+          fi
+
+      - name: Tests
+        run: |
+          if find . -name 'test_*.py' -not -path './.git/*' | grep -q .; then
+            pipx install pytest
+            pytest -q
+          else
+            echo "no tests yet — nothing to run"
+          fi
