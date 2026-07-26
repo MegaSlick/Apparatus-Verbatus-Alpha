@@ -6,10 +6,10 @@ second hand; a trained reader, the **Perlector**, reads the ink itself and estab
 the text.
 
 **Status — 2026-07-26:** alpha. Governance and architectural *direction* settled;
-workspace not yet built. Implementation is discovered during alpha. Private repository
-on a free plan, so there is no server-side branch protection: every check here is an
-alarm, not a lock, and no check can be made required. This line is the only place status
-lives.
+workspace not yet built. Implementation is discovered during alpha. `main` is protected
+server-side: a pull request is required, CI must pass to merge, force-pushes and
+deletion are refused, and the rules apply to the owner too — so the checks here are
+locks, not merely alarms. This line is the only place status lives.
 
 ## Where to look
 

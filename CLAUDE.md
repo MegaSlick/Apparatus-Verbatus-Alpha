@@ -67,8 +67,26 @@ Two checks, and they are different people.
 a general instruction to work through a list is not permission to merge what comes out
 of it.
 
-**Nothing is pushed until an agent has read it.** Whoever wrote the work does not get to
-be the only one who has seen it leave the machine. Run an audit first, then record it:
+**Nothing is pushed until three reviewers have read it.** Whoever wrote the work does not
+get to be the only one who has seen it leave the machine.
+
+- **Claude Opus 5**
+- **Claude Fable 5**
+- **GPT** — `codex exec --sandbox read-only "<prompt>"`
+
+Give all three an **identical prompt**, blind to each other. Report their agreements as
+settled and keep their disagreements rather than blending them into one answer; a
+difference between two models is information, and averaging it away throws that away.
+
+Two vendors, not one, and this is the point rather than belt-and-braces. An automated
+reviewer reading differently from the Claude agents has already caught a live bypass
+that eight Claude audits walked past. A reader who shares your blind spots confirms
+them.
+
+These audits are cheap relative to the cost of a defect reaching `main`. Run them by
+default. Tyrel will say when usage makes that too expensive.
+
+Then record it:
 
 ```sh
 .githooks/record-audit.sh <auditor> '<what it found>'
@@ -80,15 +98,15 @@ again — an audit is of a state, not of a branch.
 Push at the end of a task or session, not continuously. Push earlier only when not
 pushing would block the next step.
 
-**The audit has a second half, after the push.** Once the pull request is open, wait for
-the automated reviewer to report — roughly twenty minutes — then read its comments and
-treat them as findings of the same audit. Verify each one before acting on it: some are
-style, some are wrong, and some are real. Fix what is real, say why you are skipping the
-rest, and record a fresh receipt for the commit that answers them.
+**After the push, the automated reviewer is Tyrel's to relay.** Do not sit polling a pull
+request for it. He reads its comments and points at what he wants fixed; nothing can
+merge before he acts anyway.
 
-This is not ceremony. An automated reviewer reads differently from the agents that
-audited before the push, and it has already caught a live bypass that four rounds of
-paired audit walked past.
+When he does point at one, **verify it before acting on it.** Some are style, some are
+wrong, and some are real — the one that mattered most so far was a live bypass that
+three prior audits had missed. Reproduce the claim first, fix what is real, say plainly
+why you are skipping the rest, and record a fresh receipt for the commit that answers
+it.
 
 **Subagents and other AI tools do not push at all.** They audit and they report. The
 push is Tyrel's, or the main session's after an audit.
@@ -100,9 +118,11 @@ an author from an auditor. `ALLOW_UNAUDITED_PUSH=1`, `--no-verify` and
 open to everything else. What the gate stops is the unconsidered push — the one nobody
 meant to skip. It does not stop anyone who means to.
 
-The same is true of the repository as a whole. **Assume every guard here is an alarm, not
-a lock,** unless README.md says server-side branch protection is in force. Treat a red
-check as information, never as something that stopped you.
+**The server-side rules are the ones that do not negotiate.** Everything in `.githooks/`
+and `.claude/` is local, skippable, and only as present as whoever ran `install.sh`.
+What `main` will and will not accept is enforced by GitHub, out of reach of anything on
+this machine. README.md records which of those rules are in force; read it there rather
+than assuming either way.
 
 ## Concurrency
 
