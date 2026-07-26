@@ -119,6 +119,20 @@ BLOCK = [
     ("rm -rf .githooks", "the enforcement itself"),
     ("rm -rf .claude", "the guard itself"),
     (f"rm -r {PROJECT}", "-r without -f still deletes"),
+    # a wrapper's boolean flag must not swallow the real command
+    (f"sudo -E {RC} create pod", "-E takes no value in sudo"),
+    (f"env -i {RC} create pod", "-i takes no value in env"),
+    ("sudo -n rm -rf ~", "-n takes no value in sudo"),
+    ("sudo -E git push origin main", "same, with main"),
+    # a command carried as a string
+    (f"bash -c '{RC} create pod'", "bash -c payload"),
+    ("sh -c 'rm -rf ~'", "sh -c payload"),
+    ('eval "git push origin main"', "eval payload"),
+    (f"timeout 600 bash -c '{RC} create pod'", "wrapper plus bash -c"),
+    (f"setsid nohup bash -c '{RC} create pod' > /tmp/j.log 2>&1", "detached launch"),
+    # rtk is this machine's always-on proxy
+    ("rtk git push --force origin work/x", "behind the rtk proxy"),
+    (f"rtk proxy {RC} create pod", "behind rtk proxy"),
     ("aws s3 rm s3://bucket/prefix --recursive", "irreversible"),
     ("aws --profile prod s3 rm s3://b/p --recursive", "behind a profile"),
     ("/usr/local/bin/aws s3 rm s3://b/p --recursive", "by full path"),
@@ -177,6 +191,14 @@ ALLOW = [
     ("rm -rf build/*", "ordinary cleanup"),
     ('rm -rf "$SCRATCH/session"', "an unknown variable is not a threat"),
     ("aws s3 ls s3://bucket", "read-only"),
+    # reading the hooks setting is how you check install.sh worked
+    ("git config --get core.hooksPath", "the read form"),
+    ("git config --list", "reading all config"),
+    ("sh .githooks/install.sh", "the sanctioned way to set it"),
+    # a <<WORD in prose is not a heredoc, and must not hide what follows
+    ('echo "see <<EOF for the syntax"\ngit status', "no closing tag, nothing hidden"),
+    # a body field named deleteAfter is not a shutdown
+    (f"curl -X DELETE https://{REST}/v1/pods/abc", "removing your own pod is cleanup"),
 ]
 
 
@@ -234,3 +256,16 @@ MALFORMED = [
 def test_fails_closed(payload):
     """A check that cannot run is a failure, not a pass — GOVERNANCE.md 10."""
     assert decide(payload), "malformed input must deny, never fall through"
+
+
+BLOCK_EXTRA = [
+    (
+        f"curl -X POST https://{REST}/v1/pods/abc -d '{{\"deleteAfter\":1}}'",
+        "a body field named deleteAfter is not a shutdown",
+    ),
+]
+
+
+@pytest.mark.parametrize("command,why", BLOCK_EXTRA, ids=[c for c, _ in BLOCK_EXTRA])
+def test_blocks_extra(command, why):
+    assert run(command), f"should have been blocked ({why})"

@@ -16,12 +16,15 @@ What it blocks:
 
 WHAT THIS IS NOT
 ================
-It is not a security boundary and it cannot be made into one. Two rounds of
+It is not a security boundary and it cannot be made into one. Four rounds of
 adversarial audit found a new way past every version of it, which is the
 expected result: inspecting command text can always be defeated by writing the
-command differently. Known and unfixed: a script file (`python3 deploy.py`) is
-opaque, `bash -c` and `eval` hide their payload, and a command built from
-variables reads differently to this than it does to the shell.
+command differently.
+
+Known and unfixed: a script file (`python3 deploy.py`) is opaque, and a command
+assembled from variables reads differently here than it does to the shell.
+`bash -c` and `eval` payloads *are* inspected, one level of nesting at a time,
+up to three deep — but base64 through a pipe, or any other encoding, is not.
 
 It guards **Claude only**. Codex, GPT and a human at a terminal never run it.
 
@@ -86,6 +89,9 @@ WRAPPERS = {
     "pipenv",
     "hatch",
     "rye",
+    # rtk is this machine's always-on command proxy, so `rtk git push --force`
+    # is an ordinary thing to type and must not skip every check.
+    "rtk",
 }
 
 # Wrapper options that swallow the next token. Without these, `sudo -u tyrel
@@ -279,9 +285,14 @@ def strip_heredocs(command: str) -> str:
         i += 1
         if found:
             tag = found.group(2)
-            while i < len(lines) and lines[i].strip() != tag:
-                i += 1
-            i += 1  # and the closing tag itself
+            j = i
+            while j < len(lines) and lines[j].strip() != tag:
+                j += 1
+            # Only treat it as a heredoc if the terminator is actually there.
+            # `echo "see <<EOF for the syntax"` has no closing tag, and
+            # discarding the rest of the command would hide everything after it.
+            if j < len(lines):
+                i = j + 1
     return "\n".join(out)
 
 
@@ -335,14 +346,24 @@ def peel(argv):
             while rest:
                 token = rest[0]
                 if token.startswith("-"):
-                    takes_value = token in WRAPPER_VALUE_OPTS and "=" not in token
-                    rest = rest[2:] if takes_value and len(rest) > 1 else rest[1:]
+                    # One wrapper's value-taking flag is another's boolean:
+                    # `sudo -u tyrel cmd` takes a value, `sudo -E cmd` does not.
+                    # Never swallow something that is itself a command we check,
+                    # or `sudo -E rm -rf ~` walks straight through.
+                    takes_value = (
+                        token in WRAPPER_VALUE_OPTS
+                        and "=" not in token
+                        and len(rest) > 1
+                        and base(rest[1]) not in DISPATCH
+                        and not base(rest[1]).startswith("python")
+                    )
+                    rest = rest[2:] if takes_value else rest[1:]
                 elif (
                     re.fullmatch(r"[0-9.]+[smhd]?", token)
                     or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", token)
-                    or token in ("run", "exec", "--")
+                    or token in ("run", "exec", "proxy", "--")
                 ):
-                    # `uv run python -c ...`, `poetry run python -c ...`
+                    # `uv run python -c ...`, `rtk proxy git push ...`
                     rest = rest[1:]
                 else:
                     break
@@ -395,7 +416,11 @@ def check_git(argv):
     if any("core.hookspath" in o.lower() for o in opts):
         deny("disables the git hooks, which are the only enforcement here")
     if sub == "config" and any("core.hookspath" in a.lower() for a in args):
-        deny("permanently disables the git hooks for every tool in this clone")
+        # Reading the setting is how you check install.sh worked — and the
+        # script invites you to. Only writing it is the problem.
+        reading = any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l") for a in args)
+        if not reading:
+            deny("permanently disables the git hooks for every tool in this clone")
 
     flags = list(options(args, GIT_VALUE_OPTS))
 
@@ -475,11 +500,16 @@ def check_http(argv):
     # Shutting a pod down saves money, and Governance 8 requires shutdown to be
     # *verified* against provider state. A guard that blocks stopping a pod is
     # working against the rule it exists to serve.
-    if any(word in joined for word in ("/stop", "/terminate", "/pods/")) and not any(
-        word in joined for word in ("/start", "/resume")
-    ):
-        if "stop" in joined or "terminate" in joined or "-xdelete" in joined or "delete" in joined:
-            return
+    # Judge the URL, not the whole command line: a body field named
+    # "deleteAfter" is not a shutdown, and reading `delete` anywhere in the
+    # command was enough to wave a pod creation through.
+    urls = [a.lower() for a in argv if "//" in a or a.lower().startswith("http")]
+    shutting_down = any(seg in url for url in urls for seg in ("/stop", "/terminate")) or (
+        any("/pods/" in url for url in urls)
+        and any(a.lower() in ("delete", "-xdelete") or a.lower().endswith("delete") for a in argv)
+    )
+    if shutting_down and not any(seg in url for url in urls for seg in ("/start", "/resume")):
+        return
     deny(f"writes to the RunPod API, which creates or destroys billed resources — {GOV8}")
 
 
@@ -508,6 +538,11 @@ def _precious():
         os.path.join(project, ".git"),
         os.path.join(project, ".githooks"),
         os.path.join(project, ".claude"),
+        # Every other agent's uncommitted work lives here.
+        os.path.join(project, ".claude", "worktrees"),
+        # In a worktree session CLAUDE_PROJECT_DIR points at the main checkout,
+        # so `rm -rf .` inside the worktree would otherwise be nobody's business.
+        os.path.realpath(os.getcwd()),
         home,
     ]
 
@@ -614,7 +649,10 @@ def check_tool(tool: str) -> None:
         deny(f"'{tool}' creates, starts or deploys RunPod resources — {GOV8}")
 
 
-def inspect(command: str) -> None:
+SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
+
+
+def inspect(command: str, depth: int = 0) -> None:
     try:
         parsed = segments(command)
     except ValueError:
@@ -628,6 +666,22 @@ def inspect(command: str) -> None:
         if not argv:
             continue
         name = base(argv[0])
+
+        # `bash -c '<anything>'` and `eval '<anything>'` carry a whole command
+        # as a string. Look inside it. The old raw-text guard caught these for
+        # free; a tokenising one has to be told.
+        if depth < 3:
+            payload = None
+            if name in SHELLS:
+                for i, token in enumerate(argv):
+                    if token.startswith("-") and "c" in token[1:] and i + 1 < len(argv):
+                        payload = argv[i + 1]
+                        break
+            elif name == "eval":
+                payload = " ".join(argv[1:])
+            if payload:
+                inspect(payload, depth + 1)
+
         # python3.11, python3.13 — a version suffix is not a different program.
         handler = DISPATCH.get(name) or (check_python if name.startswith("python") else None)
         if handler:
