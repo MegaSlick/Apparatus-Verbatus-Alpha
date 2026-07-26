@@ -348,12 +348,15 @@ def peel(argv):
                 if token.startswith("-"):
                     # One wrapper's value-taking flag is another's boolean:
                     # `sudo -u tyrel cmd` takes a value, `sudo -E cmd` does not.
-                    # Never swallow something that is itself a command we check,
-                    # or `sudo -E rm -rf ~` walks straight through.
+                    # Never swallow a token that is itself a command we check,
+                    # or a token that is another flag — `sudo -E -u tyrel cmd`
+                    # ate the `-u`, left `tyrel` in the command position, and
+                    # every check below was skipped.
                     takes_value = (
                         token in WRAPPER_VALUE_OPTS
                         and "=" not in token
                         and len(rest) > 1
+                        and not rest[1].startswith("-")
                         and base(rest[1]) not in DISPATCH
                         and not base(rest[1]).startswith("python")
                     )

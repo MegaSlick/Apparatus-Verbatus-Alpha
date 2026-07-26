@@ -130,6 +130,18 @@ BLOCK = [
     ('eval "git push origin main"', "eval payload"),
     (f"timeout 600 bash -c '{RC} create pod'", "wrapper plus bash -c"),
     (f"setsid nohup bash -c '{RC} create pod' > /tmp/j.log 2>&1", "detached launch"),
+    # ...and must not swallow the flag after it either: `-E` ate the `-u`,
+    # which left `tyrel` in the command position and skipped every check
+    (f"sudo -E -u tyrel {RC} create pod", "a boolean flag eating the next flag"),
+    ("sudo -n -u tyrel rm -rf ~", "same, with rm"),
+    (f"env -i -u PATH {RC} create pod", "same, with env"),
+    (f"sudo -E -u tyrel bash -c '{RC} create pod'", "same, wrapping a payload"),
+    (f"rm -rf {PROJECT}/.claude/worktrees", "every other agent's uncommitted work"),
+    ("rm -rf ..", "the directory above the working one contains it"),
+    (
+        'echo "see <<EOF for the syntax"\nrm -rf ~',
+        "an unterminated heredoc marker must not hide what follows",
+    ),
     # rtk is this machine's always-on proxy
     ("rtk git push --force origin work/x", "behind the rtk proxy"),
     (f"rtk proxy {RC} create pod", "behind rtk proxy"),
