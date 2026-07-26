@@ -33,6 +33,24 @@ Training, research, search, and correction happen elsewhere. They are not this p
 **Tyrel decides.** He is the only human in these rules — no agent may stand in for him,
 and no session may amend these documents.
 
+## Who wrote this
+
+**Every line of code here is AI-generated.** Tyrel directs the work, reviews it, and
+decides what lands; he does not write the lines, and the repository does not pretend
+otherwise.
+
+The history records which machine did what, and separates writing from reading. Each
+commit is authored by Tyrel, who is accountable for it, and carries a `Co-Authored-By`
+line naming the model that wrote it. An agent that audited the work and found defects
+without writing lines is recorded as `Reviewed-by` instead — so a commit can say it was
+written by one model and adversarially read by two others, which is worth knowing.
+
+A `commit-msg` hook refuses a commit that names no author, so the record cannot quietly
+lapse.
+
+Models are named by release, not by vendor alone, because "an AI wrote it" ages badly and
+"Claude Opus 5 wrote it" does not.
+
 ## Two conventions
 
 **History is evidence, never instructions.** Dated documents record what happened. They
