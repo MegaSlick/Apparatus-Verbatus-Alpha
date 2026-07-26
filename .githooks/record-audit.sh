@@ -9,9 +9,10 @@
 # amend one and the receipt no longer applies and the push is refused again.
 # That is deliberate: an audit is of a state, not of a branch.
 #
-# It also records the range the auditor was supposed to have read, so a receipt
-# on the tip cannot quietly stand in for a glance at the last commit while five
-# unread ones travel with it.
+# It also writes down the range the auditor was meant to read. Nothing checks
+# that they did — pre-push only verifies the receipt names the right commit —
+# but a receipt saying "6 commits" next to a finding about one of them is at
+# least visible afterwards.
 #
 # Receipts live in the git common directory, shared by every worktree, and are
 # never committed. A receipt is evidence about a working session, not a
@@ -37,9 +38,13 @@ fi
 
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
 if [ -z "$common" ]; then
-  # Older git has no --path-format. Resolve the relative answer by hand rather
-  # than letting an empty value silently become the filesystem root.
-  common=$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd) || common=""
+  # Older git has no --path-format. Guard the inner command, not the cd:
+  # `cd ""` succeeds and stays put, so the fallback would quietly return $PWD
+  # and a receipt would be written into the working tree.
+  relative=$(git rev-parse --git-common-dir 2>/dev/null) || relative=""
+  if [ -n "$relative" ]; then
+    common=$(cd "$relative" 2>/dev/null && pwd) || common=""
+  fi
 fi
 if [ -z "$common" ]; then
   echo "  Cannot locate the git directory, so no receipt can be written." >&2
@@ -62,6 +67,11 @@ base=$(git merge-base origin/main HEAD 2>/dev/null || echo "")
 if [ -n "$base" ] && [ "$base" != "$sha" ]; then
   range="$base..$sha"
   count=$(git rev-list --count "$range" 2>/dev/null || echo "?")
+elif [ -z "$base" ]; then
+  # Reporting "1 commit" here would be a measurement nobody made — a fresh
+  # clone with no origin/main would understate a whole branch. Say so instead.
+  range="unknown (origin/main did not resolve — fetch first)"
+  count="?"
 else
   range="$sha"
   count=1

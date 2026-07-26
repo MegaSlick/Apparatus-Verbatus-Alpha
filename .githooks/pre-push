@@ -16,9 +16,14 @@ z40='0000000000000000000000000000000000000000'
 #
 # Resolved carefully. If this came back empty the path would become
 # /audit-receipts, every push would be refused, and nobody would guess why.
+# `cd ""` succeeds and stays put, so guard the inner command, not the cd —
+# otherwise a failed rev-parse silently yields $PWD and looks like an answer.
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
 if [ -z "$common" ]; then
-  common=$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd) || common=""
+  relative=$(git rev-parse --git-common-dir 2>/dev/null) || relative=""
+  if [ -n "$relative" ]; then
+    common=$(cd "$relative" 2>/dev/null && pwd) || common=""
+  fi
 fi
 if [ -z "$common" ]; then
   echo "" >&2

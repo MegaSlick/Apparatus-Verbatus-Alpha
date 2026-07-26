@@ -33,6 +33,21 @@ or dated evidence under `history/` — nothing else.
 **If it is dated or speculative it is not a document, it is a note.** The previous
 repository accumulated 320 markdown files for want of this distinction.
 
+## First, in every clone
+
+```
+sh .githooks/install.sh
+```
+
+**Do this before anything else, every time you clone.** Git does not run a
+repository's hooks unless it is told to, and the setting that tells it lives in
+`.git/config`, which never travels with a clone. Until you run that line, every
+rule below is switched off: commits on main, stray notes, force-pushes and
+unaudited pushes all go straight through, silently.
+
+A fresh clone, a new machine, a Codex sandbox and a pod each need it separately.
+Nothing in the repository can do it for you.
+
 ## Branches
 
 `main` is protected by local hooks — never commit or push to it directly. Work happens

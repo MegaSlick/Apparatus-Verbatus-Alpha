@@ -1,84 +1,91 @@
 #!/usr/bin/env python3
 """Tripwire for the things that cost money or destroy work.
 
-Runs before every Bash command and every MCP tool call. Blocks a short, specific
-list and stays out of the way otherwise — a guard that fires constantly gets
-disabled, which is worse than no guard.
+Runs before every Bash command and every MCP tool call. Blocks a short list and
+stays out of the way otherwise — a guard that fires on ordinary work gets
+disabled, and a disabled guard protects nothing.
 
-What it blocks, and why:
+What it blocks:
   * bringing up billed RunPod infrastructure   Governance 8: only Tyrel, in-session
+  * writing to the RunPod API                  same, by another route
   * deleting a network volume                  irreversible, and the corpus lives there
-  * removing pods in bulk                      destroys work; one named pod is fine
-  * disabling the git hooks                    they are the only enforcement there is
+  * turning the git hooks off                  they are the only enforcement there is
   * force-push, direct push to main            main moves only by merge
-  * skipping the hooks with --no-verify        one flag defeats every local rule
-  * rm -rf outside a scratch path              the obvious one
+  * --no-verify                                one flag defeats every local rule
+  * deleting the repository or your home       the obvious one
 
-It reads the command as a shell would — tokenised, quote-aware, split on `&&`,
-`|`, `;` and newlines. That matters: the older version matched raw text, so
-`git commit -m 'document the --no-verify hatch'` looked exactly like actually
-passing --no-verify, and `git push origin work/x && grep -f pat file` looked
-exactly like a force-push. Both were blocked. Neither should have been.
+WHAT THIS IS NOT
+================
+It is not a security boundary and it cannot be made into one. Two rounds of
+adversarial audit found a new way past every version of it, which is the
+expected result: inspecting command text can always be defeated by writing the
+command differently. Known and unfixed: a script file (`python3 deploy.py`) is
+opaque, `bash -c` and `eval` hide their payload, and a command built from
+variables reads differently to this than it does to the shell.
 
-Three honest limits, so nobody mistakes this for a wall:
+It guards **Claude only**. Codex, GPT and a human at a terminal never run it.
 
-  1. It only guards Claude. Codex, GPT and a human at a terminal never run it.
-     The git hooks in .githooks/ are the layer that binds every tool; this is a
-     fast tripwire on top, not the enforcement.
-  2. It cannot see inside a script. `python3 deploy.py` is three tokens, and
-     what deploy.py does is invisible here. Same for a command assembled from
-     variables. It catches the honest mistake and the careless agent, not a
-     determined one, and it is not meant to.
-  3. If a command will not parse — an apostrophe inside a heredoc is enough —
-     it falls back to matching raw text for the money rules only. Those still
-     fire; the subtler rules do not.
+The enforcement that binds every tool is the git hooks in `.githooks/`, and
+they must be installed — see `.githooks/install.sh`. This file is a tripwire on
+top: it catches the honest mistake and the careless agent, promptly and with a
+useful message. Treat it as a seatbelt, not a vault.
 """
 import json
+import os
 import re
 import shlex
 import sys
 
-# ---------------------------------------------------------------- vocabulary
+GOV8 = "Governance 8: a live pod needs Tyrel's explicit permission this session"
 
 RUNPOD_HOSTS = ("runpod.io", "runpod.ai")
 
-# Verbs that start the meter. `create` makes a pod, `start` wakes a stopped one,
-# and `project deploy` / `project dev` stand up billed infrastructure under
-# another name.
 RUNPODCTL_BLOCKED = {
-    ("create",): "creates pods",
-    ("start",): "wakes a stopped pod, which bills again",
-    ("project", "deploy"): "deploys billed infrastructure",
-    ("project", "dev"): "starts a billed development session",
+    ("create",): (f"creates pods — {GOV8}"),
+    ("start",): (f"wakes a stopped pod, which bills again — {GOV8}"),
+    ("project", "deploy"): (f"deploys billed infrastructure — {GOV8}"),
+    ("project", "dev"): (f"starts a billed session — {GOV8}"),
     ("remove", "pods"): "removes pods in bulk by name — they may not all be yours",
 }
 
-GOV8 = ("Governance 8: a live pod needs Tyrel's explicit permission "
-        "this session")
+# git's own options, before the subcommand, that carry a separate value.
+GIT_GLOBAL_VALUE_OPTS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace",
+                         "--exec-path"}
+# Subcommand options whose value must never be mistaken for an option: this is
+# what stops `git commit -m 'document the --no-verify hatch'` being blocked.
+GIT_VALUE_OPTS = {"-m", "--message", "-F", "--file", "-t", "--template",
+                  "--reuse-message", "-C", "-c"}
 
-# Options that carry a separate value, so the value is never mistaken for a flag.
-GIT_VALUE_OPTS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace",
-                  "--exec-path", "-m", "--message", "-F", "--file",
-                  "-t", "--template", "--reuse-message", "--squash"}
+# Wrappers that put the real command one or more tokens further in.
+WRAPPERS = {"env", "sudo", "doas", "nohup", "time", "timeout", "nice", "setsid",
+            "stdbuf", "command", "builtin", "exec", "xargs", "script"}
 
-SCRATCH_MARKERS = ("/tmp/", "/private/tmp/", "scratchpad")
-
-# Raw-text rules. Used on every command, and they are the whole of the fallback
-# when a command will not tokenise. URLs and API payloads are text by nature.
-RAW_RULES = [
-    (re.compile(r"networkvolume", re.I),
-     "touches a network volume — irreversible, and the corpus lives there"),
-    (re.compile(r"\bdeleteNetworkVolume\b", re.I),
-     "deletes a network volume — irreversible, and the corpus lives there"),
-    (re.compile(r"\b(podFindAndDeployOnDemand|podResume|podRentInterruptable)\b", re.I),
-     f"deploys or resumes a pod via the API — {GOV8}"),
-    (re.compile(r"\bimport\s+runpod\b|\brunpod\.(create_pod|resume_pod)\b", re.I),
-     f"brings up a pod through the RunPod SDK — {GOV8}"),
-]
+# Shell grammar that is never a command name.
+KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "for",
+            "until", "case", "esac", "in", "function", "select", "!", "{", "}"}
 
 WRITE_METHODS = ("post", "put", "patch", "delete")
 WRITE_FLAGS = ("-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
-               "--json", "--post-file", "--post-data", "--upload-file", "-T")
+               "--json", "--post-file", "--post-data", "--body-data",
+               "--upload-file", "-t", "-f", "--form")
+
+# The fallback when a command will not tokenise. Deliberately narrow: each of
+# these needs a *write* alongside the noun, so that reading about a network
+# volume, grepping for it, or naming it in a commit message stays allowed.
+FALLBACK = [
+    (re.compile(r"networkvolume", re.I),
+     re.compile(r"\b(delete|-X\s*DELETE|--request\s*=?\s*DELETE|remove|destroy)\b", re.I),
+     "deletes a network volume — irreversible, and the corpus lives there"),
+    (re.compile(r"\b(podFindAndDeployOnDemand|podResume|podRentInterruptable|deleteNetworkVolume)\b", re.I),
+     re.compile(r"\b(curl|wget|http|python3?|requests|fetch)\b", re.I),
+     f"deploys, resumes or destroys RunPod resources via the API — {GOV8}"),
+    (re.compile(r"\brunpodctl\b", re.I),
+     re.compile(r"\b(create|start)\b|\bproject\s+(deploy|dev)\b", re.I),
+     f"brings up billed RunPod infrastructure — {GOV8}"),
+    (re.compile(r"\brm\b"),
+     re.compile(r"-[a-zA-Z]*r", re.I),
+     "a recursive delete the guard could not parse — rewrite it simply"),
+]
 
 
 def deny(reason: str) -> None:
@@ -96,29 +103,80 @@ def base(token: str) -> str:
     return token.rsplit("/", 1)[-1]
 
 
-def segments(command: str):
-    """Split a shell command into argv lists the way a shell would.
+def strip_comment(line: str) -> str:
+    """Cut an unquoted `#` that begins a word, the way a shell does.
 
-    Quote-aware, so a flag named inside a commit message stays a string.
-    Raises ValueError if the command will not tokenise.
+    shlex would treat `#` anywhere as a comment, including inside
+    `--format=%h#%s`, which silently swallowed the rest of the command.
     """
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    out, current = [], []
-    for token in lexer:
-        if token and all(c in ";&|()\n" for c in token):
-            if current:
-                out.append(current)
-                current = []
-        else:
-            current.append(token)
-    if current:
-        out.append(current)
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+    return line
+
+
+def segments(command: str):
+    """Split a command into argv lists roughly the way a shell would.
+
+    Newlines are separators, not whitespace — Claude Code writes multi-line
+    commands constantly, and shlex alone folds them into a single argv.
+    """
+    out = []
+    for raw_line in command.splitlines():
+        line = strip_comment(raw_line).strip()
+        if not line:
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        current = []
+        for token in lexer:
+            if token and all(c in ";&|()" for c in token):
+                if current:
+                    out.append(current)
+                    current = []
+            else:
+                current.append(token)
+        if current:
+            out.append(current)
     return out
 
 
-def flags_of(argv, value_opts):
-    """Yield only the tokens that are genuinely options, skipping their values."""
+def peel(argv):
+    """Drop VAR=value prefixes, shell keywords and wrappers.
+
+    `ALLOW_FORCE_PUSH=1 git push --force` was invisible to a dispatcher that
+    only looked at argv[0] — and that spelling is the one the hooks' own help
+    text teaches, so it was the likeliest bypass in the file.
+    """
+    seen = 0
+    while argv and seen < 8:
+        head = argv[0]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", head) or head in KEYWORDS:
+            argv = argv[1:]
+        elif base(head) in WRAPPERS:
+            # Drop the wrapper and its own arguments — `timeout 300 cmd`,
+            # `nice -n 5 cmd` — until something that could be a command.
+            rest = argv[1:]
+            while rest and (rest[0].startswith("-")
+                            or re.fullmatch(r"[0-9.]+[smhd]?", rest[0])
+                            or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", rest[0])):
+                rest = rest[1:]
+            argv = rest
+        else:
+            return argv
+        seen += 1
+    return argv
+
+
+def options(argv, value_opts):
+    """Only the tokens that are genuinely options, with their values skipped."""
     skip = False
     for token in argv:
         if skip:
@@ -126,9 +184,9 @@ def flags_of(argv, value_opts):
             continue
         if token in value_opts:
             skip = True
-            yield token
             continue
-        yield token
+        if token.startswith("-"):
+            yield token
 
 
 # --------------------------------------------------------------------- rules
@@ -138,9 +196,7 @@ def check_git(argv):
     i = 1
     while i < len(argv):
         token = argv[i]
-        if token in GIT_VALUE_OPTS and token in ("-c", "-C", "--git-dir",
-                                                 "--work-tree", "--namespace",
-                                                 "--exec-path"):
+        if token in GIT_GLOBAL_VALUE_OPTS:
             opts.append(token)
             if i + 1 < len(argv):
                 opts.append(argv[i + 1])
@@ -154,157 +210,227 @@ def check_git(argv):
     if sub is None:
         return
 
-    # Turning the hooks off is the single most dangerous thing available here:
-    # it defeats the branch guard, the stray-note check and the audit gate at
-    # once, and it reads like an ordinary command.
-    for opt in opts:
-        if "core.hookspath" in opt.lower():
-            deny("disables the git hooks, which are the only enforcement this "
-                 "repository has")
+    # Turning the hooks off defeats the branch guard, the stray-note check and
+    # the audit gate at once. Both the one-shot `-c` form and the permanent
+    # `git config` form, which is worse because it binds every later tool.
+    if any("core.hookspath" in o.lower() for o in opts):
+        deny("disables the git hooks, which are the only enforcement here")
+    if sub == "config" and any("core.hookspath" in a.lower() for a in args):
+        deny("permanently disables the git hooks for every tool in this clone")
 
-    real = [a for a in flags_of(args, GIT_VALUE_OPTS)]
+    flags = list(options(args, GIT_VALUE_OPTS))
 
-    if sub in ("commit", "merge", "push", "rebase", "am"):
-        if "--no-verify" in real:
+    if sub in ("commit", "merge", "push", "rebase", "am", "cherry-pick"):
+        if "--no-verify" in flags:
             deny("--no-verify skips the hooks that protect main, the documents "
                  "and the audit gate")
         if sub == "commit" and any(
-                a.startswith("-") and not a.startswith("--") and "n" in a[1:]
-                for a in real):
+                f.startswith("-") and not f.startswith("--") and "n" in f[1:]
+                for f in flags):
             deny("git commit -n is --no-verify, which skips the hooks")
 
     if sub == "push":
-        if any(a == "--force" or a.startswith("--force-with-lease") or a == "-f"
-               for a in real):
+        if any(f == "--force" or f.startswith("--force-with-lease") or f == "-f"
+               for f in flags):
             deny("force-push destroys work another agent may be holding "
                  "(ALLOW_FORCE_PUSH=1 if you truly mean it)")
         for a in args:
+            if a.startswith("-"):
+                continue
             if a.startswith("+") and ":" in a:
                 deny("a leading + on a refspec is a force-push by another name")
-            target = a.split(":")[-1] if ":" in a else a
+            target = a.split(":")[-1]
             if target in ("main", "refs/heads/main"):
                 deny("main moves only by merging a pull request")
 
 
 def check_runpodctl(argv):
-    rest = [a for a in argv[1:] if not a.startswith("-")]
-    if any(a in ("--help", "-h", "help") for a in argv[1:]):
+    if any(f in ("--help", "-h") for f in options(argv[1:], set())):
         return  # reading the manual costs nothing
-    for verbs, why in RUNPODCTL_BLOCKED.items():
-        if tuple(rest[:len(verbs)]) == verbs:
-            if verbs[0] in ("create", "start", "project"):
-                deny(f"{why} — {GOV8}")
-            deny(f"{why} — irreversible")
+    verbs = tuple(a for a in argv[1:] if not a.startswith("-"))
+    if verbs[:1] == ("help",):
+        return
+    for pattern, why in RUNPODCTL_BLOCKED.items():
+        if verbs[:len(pattern)] == pattern:
+            deny(why)
 
 
 def check_http(argv):
-    """curl / wget / http against a RunPod endpoint with anything but a read."""
-    joined = " ".join(argv)
+    joined = " ".join(argv).lower()
     if not any(host in joined for host in RUNPOD_HOSTS):
         return
-    # `--post-file=body.json` is one token; compare on the flag, not the value.
-    lowered = [a.lower().split("=", 1)[0] for a in argv]
-    writes = any(a in WRITE_FLAGS or a.startswith("--data") for a in lowered)
-    for i, a in enumerate(lowered):
-        if a in ("-x", "--request") and i + 1 < len(lowered):
-            if lowered[i + 1] in WRITE_METHODS:
+    writes = False
+    for i, token in enumerate(argv):
+        low = token.lower()
+        flag = low.split("=", 1)[0]
+        if flag in WRITE_FLAGS or flag.startswith("--data"):
+            writes = True
+        if flag in ("-x", "--request", "--method"):
+            value = low.split("=", 1)[1] if "=" in low else (
+                argv[i + 1].lower() if i + 1 < len(argv) else "")
+            if value in WRITE_METHODS:
                 writes = True
-    if "graphql" in joined.lower():
+        # curl accepts the value attached: -XPOST, -XDELETE.
+        if low.startswith("-x") and len(low) > 2 and low[2:] in WRITE_METHODS:
+            writes = True
+        if base(low) == "post" or low in WRITE_METHODS:
+            writes = True  # httpie takes the method as a positional
+    if "graphql" in joined and "query=" not in joined:
         writes = True
-    if writes:
-        deny(f"writes to the RunPod API, which creates or destroys billed "
-             f"resources — {GOV8}")
+    if not writes:
+        return
+    if "networkvolume" in joined:
+        deny("writes to a network volume — irreversible, and the corpus lives there")
+    # Shutting a pod down saves money, and Governance 8 requires shutdown to be
+    # *verified* against provider state. A guard that blocks stopping a pod is
+    # working against the rule it exists to serve.
+    if any(word in joined for word in ("/stop", "/terminate", "/pods/")) and \
+            not any(word in joined for word in ("/start", "/resume")):
+        if "stop" in joined or "terminate" in joined or "-xdelete" in joined \
+                or "delete" in joined:
+            return
+    deny(f"writes to the RunPod API, which creates or destroys billed resources — {GOV8}")
+
+
+def check_python(argv):
+    inline = " ".join(argv)
+    if not re.search(r"\brunpod\b", inline):
+        return
+    if re.search(r"\b(create_pod|resume_pod|start_pod|delete_network_volume)\b", inline):
+        deny(f"brings up or destroys RunPod resources through the SDK — {GOV8}")
+
+
+def _repo_roots():
+    roots = []
+    project = os.environ.get("CLAUDE_PROJECT_DIR")
+    if project:
+        roots.append(os.path.realpath(project))
+    home = os.path.expanduser("~")
+    roots.append(os.path.realpath(home))
+    return roots
 
 
 def check_rm(argv):
-    recursive = force = False
+    recursive = False
     operands = []
     for token in argv[1:]:
-        if token.startswith("--"):
-            if token == "--recursive":
-                recursive = True
-            elif token == "--force":
-                force = True
+        if token == "--recursive":
+            recursive = True
+        elif token.startswith("--"):
+            continue
         elif token.startswith("-") and len(token) > 1:
             recursive = recursive or "r" in token.lower()
-            force = force or "f" in token
         else:
             operands.append(token)
-    if not (recursive and force):
+    if not recursive:
         return
+
+    # Deny what is precious, rather than allowing only what is scratch. The
+    # allowlist version blocked `rm -rf .venv`, `rm -rf __pycache__` and
+    # `rm -rf workbench/scratch/*` — the last of which CLAUDE.md says outright
+    # that anyone may delete without asking.
+    roots = _repo_roots()
     for operand in operands:
-        if not any(marker in operand for marker in SCRATCH_MARKERS):
-            deny(f"recursive force delete of '{operand}', which is not a "
-                 f"scratch path (use a literal path under /tmp/ or scratchpad)")
+        expanded = os.path.expanduser(operand)
+        # Both spellings: realpath follows symlinks, normpath collapses `..`
+        # lexically. `/tmp/../Users/...` resolves differently under each, and
+        # only one of them needs to land on something precious.
+        for path in {os.path.realpath(expanded), os.path.normpath(expanded)}:
+            if path == "/" or path in roots:
+                deny(f"recursive delete of '{operand}' — that is the repository "
+                     f"or your home directory")
+            for root in roots:
+                if root.startswith(path + os.sep):
+                    deny(f"recursive delete of '{operand}' — it contains the "
+                         f"repository or your home directory")
 
 
 def check_aws(argv):
-    if argv[:3] == ["aws", "s3", "rm"] and "--recursive" in argv:
-        deny("recursive S3 delete — irreversible")
+    # `aws --profile prod s3 rm ...` puts the profile's value in the way, so
+    # look for the verb pair wherever it falls rather than at a fixed offset.
+    rest = [a for a in argv[1:] if not a.startswith("-")]
+    for i, token in enumerate(rest[:-1]):
+        if token != "s3":
+            continue
+        if rest[i + 1] == "rm" and "--recursive" in argv:
+            deny("recursive S3 delete — irreversible")
+        if rest[i + 1] == "rb" and "--force" in argv:
+            deny("deletes an S3 bucket and everything in it — irreversible")
 
 
 DISPATCH = {
     "git": check_git,
     "runpodctl": check_runpodctl,
+    "runpod": check_runpodctl,
     "curl": check_http,
     "wget": check_http,
     "http": check_http,
-    "httpie": check_http,
+    "https": check_http,
+    "python": check_python,
+    "python3": check_python,
     "rm": check_rm,
     "aws": check_aws,
 }
 
-BLOCKED_TOOLS = {
-    "mcp__runpod__create-pod": f"creates a pod — {GOV8}",
-    "mcp__runpod__start-pod": f"starts a pod — {GOV8}",
-}
+BLOCKED_TOOL_WORDS = ("create", "start", "resume", "deploy", "delete", "remove",
+                      "terminate")
+
+
+def check_tool(tool: str) -> None:
+    """MCP tools. Named servers change; the verbs do not."""
+    lowered = tool.lower()
+    if "runpod" not in lowered:
+        return
+    action = lowered.rsplit("__", 1)[-1]
+    if any(word in action for word in BLOCKED_TOOL_WORDS):
+        deny(f"'{tool}' creates, starts or destroys RunPod resources — {GOV8}")
 
 
 def inspect(command: str) -> None:
-    for pattern, reason in RAW_RULES:
-        if pattern.search(command):
-            deny(reason)
-
     try:
         parsed = segments(command)
     except ValueError:
-        return  # limit 3: the money rules above still ran; the rest cannot
+        for noun, context, reason in FALLBACK:
+            if noun.search(command) and context.search(command):
+                deny(reason)
+        return
 
     for argv in parsed:
+        argv = peel(argv)
         if not argv:
             continue
         handler = DISPATCH.get(base(argv[0]))
         if handler:
             handler(argv)
-        # `env FOO=bar runpodctl create pod` and `sudo rm -rf /` both hide the
-        # real command one token in.
-        if base(argv[0]) in ("env", "sudo", "nohup", "time", "xargs"):
-            inner = [a for a in argv[1:] if "=" not in a.split(" ")[0]]
-            if inner:
-                nested = DISPATCH.get(base(inner[0]))
-                if nested:
-                    nested(inner)
 
 
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
-        tool = payload.get("tool_name") or ""
+        if not isinstance(payload, dict):
+            raise ValueError("payload is not an object")
+        # Check the type before coercing: `[] or ""` is `""`, which would let a
+        # malformed tool_name through as an innocent empty string.
+        tool = payload.get("tool_name")
+        if tool is None:
+            tool = ""
+        if not isinstance(tool, str):
+            raise ValueError("tool_name is not a string")
         tool_input = payload.get("tool_input") or {}
+
+        check_tool(tool)
+
+        if tool == "Bash":
+            command = tool_input.get("command") if isinstance(tool_input, dict) else None
+            if not isinstance(command, str):
+                raise ValueError("no command to read")
+            inspect(command)
+    except SystemExit:
+        raise
     except Exception:
-        # A guard that cannot read its input must not be mistaken for one that
-        # looked and approved — GOVERNANCE.md 10.
+        # A guard that cannot read its input must never be mistaken for one
+        # that looked and approved — GOVERNANCE.md 10.
         deny("the guard could not read this tool call, so it cannot vouch for it")
-        return
-
-    if tool in BLOCKED_TOOLS:
-        deny(BLOCKED_TOOLS[tool])
-
-    if tool == "Bash":
-        command = tool_input.get("command")
-        if not isinstance(command, str):
-            deny("the guard could not read this command, so it cannot vouch for it")
-        inspect(command)
 
     sys.exit(0)
 
