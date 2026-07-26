@@ -38,17 +38,27 @@ jobs:
         # rename, and never runs at all on a merge. This asks "is the
         # repository clean?", so none of those four routes help.
         #
-        # It reports; it cannot block. A private repo on a free plan has no
-        # branch protection, so this check can never be *required* and the
-        # merge button works whatever colour the run is. Red here means a stray
-        # is on the record, not that it was stopped.
+        # This step belongs to the `check` job, and whether a red `check` stops
+        # a merge is settled by GitHub rather than here. README.md records that;
+        # this file deliberately does not restate it.
         run: |
           if [ ! -f .githooks/doc-allowlist.sh ]; then
             echo "::error::.githooks/doc-allowlist.sh is missing — the stray-markdown rule cannot run"
             exit 1
           fi
+          # Listed on its own line, not piped: a pipeline reports only its last
+          # command's status, so a failed ls-files would arrive as an empty list
+          # and an empty list reads as a clean repository.
           set +e
-          stray=$(git -c core.quotePath=false ls-files | sh .githooks/doc-allowlist.sh)
+          tracked=$(git -c core.quotePath=false ls-files)
+          listed=$?
+          set -e
+          if [ "$listed" -ne 0 ]; then
+            echo "::error::could not list tracked files (exit $listed) — a check that cannot run is a failure, not a pass"
+            exit 1
+          fi
+          set +e
+          stray=$(printf '%s\n' "$tracked" | sh .githooks/doc-allowlist.sh)
           status=$?
           set -e
           if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then

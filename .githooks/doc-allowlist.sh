@@ -20,10 +20,9 @@
 #                              what the repository *contains*, not what you
 #                              did, so none of those evasions help.
 #
-# What CI cannot do is *stop* a merge. This repository is private on a free
-# plan, which has no branch protection and so no required checks. A red run is
-# loud, and it is on the record — but the merge button still works. That is an
-# alarm, not a lock, and it is worth knowing which one you have.
+# Which of the two actually stops a merge is settled by GitHub, not here, and
+# README.md is where that is recorded. Do not restate it in this file: a second
+# copy is a copy that goes stale, and this one already did once.
 
 stray=0
 

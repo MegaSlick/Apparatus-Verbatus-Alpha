@@ -71,7 +71,7 @@ fi
 if [ -n "$stray" ]; then
   echo "" >&2
   echo "  BLOCKED: stray markdown file(s):" >&2
-  printf '      %s\n' "$stray" >&2
+  printf '%s\n' "$stray" | while IFS= read -r f; do printf '      %s\n' "$f" >&2; done
   echo "" >&2
   echo "  A committed .md must be one of:" >&2
   echo "      a canonical document at the root" >&2
