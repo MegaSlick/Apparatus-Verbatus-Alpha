@@ -1,0 +1,15 @@
+#!/bin/sh
+# Catch it earlier: refuse to commit while sitting on main.
+# Escape hatch (use knowingly):  ALLOW_MAIN_COMMIT=1 git commit ...
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+if [ "$branch" = "main" ] && [ "$ALLOW_MAIN_COMMIT" != "1" ]; then
+  echo "" >&2
+  echo "  BLOCKED: commit on main." >&2
+  echo "" >&2
+  echo "  Move to a branch first (your staged changes come with you):" >&2
+  echo "" >&2
+  echo "      git switch -c work/<short-topic>" >&2
+  echo "" >&2
+  exit 1
+fi
+exit 0

@@ -47,6 +47,9 @@ anywhere else in this repository, it is wrong by construction.
 branches, rules and contracts. Import old code selectively, cleaning it as it enters.
 Alpha does not need to be a finished pipeline.
 
+**Nothing enters this repository uninspected.** Code arrives one piece at a time, read
+line by line and justified, or it does not arrive.
+
 **beta** — start again in a fresh, clean private environment using only what survived
 alpha. Build there until the system works.
 

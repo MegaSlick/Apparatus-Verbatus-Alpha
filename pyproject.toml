@@ -1,0 +1,29 @@
+[project]
+name = "verbatus"
+version = "0.0.0"
+description = "Apparatus Verbatus — recovers the ipsissima verba from historical registers"
+requires-python = ">=3.12"
+dependencies = []
+
+# Dependencies are pinned from the first line rather than retrofitted.
+# Nothing is added here without a reason recorded in the pull request that adds it.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Deliberately narrow. These catch real breakage — undefined names, unused imports,
+# obvious mistakes. Style beyond this is the formatter's job.
+# Type checking is NOT used here: on AI-generated code it produces thousands of
+# complaints about working code, and gates that cry wolf get ignored.
+select = ["E4", "E7", "E9", "F", "I", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+addopts = "-q"
