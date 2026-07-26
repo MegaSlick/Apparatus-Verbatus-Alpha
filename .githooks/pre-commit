@@ -44,8 +44,20 @@ fi
 # ACMR, not A: a rename is how you smuggle a note past a check that only ever
 # looks at what was added. quotePath=false so an accented filename arrives as
 # itself rather than as an escaped string no pattern can match.
-stray=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR |
-          sh "$allowlist")
+#
+# Run the diff on its own line. A pipeline reports only its *last* command's
+# status, so `git diff | sh allowlist` turns a failed diff into an empty list
+# and an empty list into a pass — the check would wave through exactly the
+# situation where it could not see anything.
+if ! staged=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR); then
+  echo "" >&2
+  echo "  BLOCKED: could not read the staged files, so the stray-markdown" >&2
+  echo "  rule cannot run. A check that cannot run is a failure, not a pass." >&2
+  echo "" >&2
+  exit 1
+fi
+
+stray=$(printf '%s\n' "$staged" | sh "$allowlist")
 status=$?
 
 if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
