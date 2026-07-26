@@ -32,6 +32,40 @@ jobs:
           done
           exit $bad
 
+      - name: No stray markdown anywhere in the repository
+        # A state check, not a diff check. The pre-commit hook asks "is this
+        # commit clean?" and can be skipped with --no-verify, dodged with a
+        # rename, and never runs at all on a merge. This asks "is the
+        # repository clean?", so none of those four routes help.
+        #
+        # It reports; it cannot block. A private repo on a free plan has no
+        # branch protection, so this check can never be *required* and the
+        # merge button works whatever colour the run is. Red here means a stray
+        # is on the record, not that it was stopped.
+        run: |
+          if [ ! -f .githooks/doc-allowlist.sh ]; then
+            echo "::error::.githooks/doc-allowlist.sh is missing — the stray-markdown rule cannot run"
+            exit 1
+          fi
+          set +e
+          stray=$(git -c core.quotePath=false ls-files | sh .githooks/doc-allowlist.sh)
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+            echo "::error::the stray-markdown check itself failed (exit $status) — a check that cannot run is a failure, not a pass"
+            exit 1
+          fi
+          if [ -n "$stray" ]; then
+            printf '%s\n' "$stray" | while IFS= read -r f; do
+              echo "::error file=$f::stray markdown — notes belong in workbench/, which is gitignored"
+            done
+            echo "A tracked .md must be a canonical document at the root, a README.md" >&2
+            echo "or HANDOFF.md in any directory, dated evidence under history/, or one" >&2
+            echo "of the harness's own documents one level under .github/ or" >&2
+            echo ".claude/agents/." >&2
+            exit 1
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
