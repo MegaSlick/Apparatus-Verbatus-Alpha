@@ -3,6 +3,11 @@
 .venv/
 __pycache__/
 
+# Agents work in their own worktree under here. They are checkouts, not
+# content: a `git add -A` in the main checkout would otherwise commit every
+# other agent's working copy into the tree.
+.claude/worktrees/
+
 # Local working areas. The README in each explains the rule and is versioned;
 # the contents never are.
 workbench/*

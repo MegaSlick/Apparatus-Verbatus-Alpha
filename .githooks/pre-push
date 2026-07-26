@@ -13,7 +13,22 @@ z40='0000000000000000000000000000000000000000'
 # Where audit receipts live: the *common* git directory, so every worktree
 # shares one record. Never committed — a receipt is evidence about a local
 # working session, not a document.
-receipts="$(git rev-parse --path-format=absolute --git-common-dir)/audit-receipts"
+#
+# Resolved carefully. If this came back empty the path would become
+# /audit-receipts, every push would be refused, and nobody would guess why.
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
+if [ -z "$common" ]; then
+  common=$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd) || common=""
+fi
+if [ -z "$common" ]; then
+  echo "" >&2
+  echo "  BLOCKED: cannot locate the git directory, so the audit gate" >&2
+  echo "  cannot check anything. A check that cannot run is a failure," >&2
+  echo "  not a pass. Set ALLOW_UNAUDITED_PUSH=1 only if you understand why." >&2
+  echo "" >&2
+  exit 1
+fi
+receipts="$common/audit-receipts"
 
 block() {
   echo "" >&2
@@ -65,8 +80,12 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   #    audits the work before it is pushed at all, so what reaches a pull
   #    request has already been read by someone other than whoever wrote it.
   #    Write the receipt with .githooks/record-audit.sh after the audit runs.
-  if [ "$ALLOW_UNAUDITED_PUSH" != "1" ] && [ ! -f "$receipts/$local_sha" ]; then
-    block "'$branch' has no audit receipt for $(echo "$local_sha" | cut -c1-8)." \
+  #    The receipt must name the commit it claims to cover, so an empty file
+  #    dropped in by `touch` does not read as a review. This raises the bar; it
+  #    is not a lock, and nothing here can tell an author from an auditor.
+  if [ "$ALLOW_UNAUDITED_PUSH" != "1" ] &&
+     ! grep -qx "commit:  $local_sha" "$receipts/$local_sha" 2>/dev/null; then
+    block "'$branch' has no valid audit receipt for $(echo "$local_sha" | cut -c1-8)." \
 "Nothing is pushed until an agent has read it. Run an audit, then:
 
       .githooks/record-audit.sh <auditor> '<what it found>'

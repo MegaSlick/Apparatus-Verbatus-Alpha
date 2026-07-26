@@ -68,8 +68,16 @@ pushing would block the next step.
 **Subagents and other AI tools do not push at all.** They audit and they report. The
 push is Tyrel's, or the main session's after an audit.
 
-`ALLOW_UNAUDITED_PUSH=1` exists for when the rule is genuinely in the way. Using it is a
-decision, and it should be a rare one.
+**These two are discipline, not machinery, and you should know which is which.** The
+receipt proves a file was written, not that anything was read, and nothing here can tell
+an author from an auditor. `ALLOW_UNAUDITED_PUSH=1`, `--no-verify` and
+`-c core.hooksPath=` each get past the gate; the last two are blocked for Claude and
+open to everything else. What the gate stops is the unconsidered push — the one nobody
+meant to skip. It does not stop anyone who means to.
+
+The same is true of the repository as a whole: on a free private plan there is no branch
+protection, so **every guard here is an alarm, not a lock.** Treat a red check as
+information, never as something that stopped you.
 
 ## Concurrency
 
