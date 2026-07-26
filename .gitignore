@@ -2,3 +2,12 @@
 *.log
 .venv/
 __pycache__/
+
+# Local working areas. The README in each explains the rule and is versioned;
+# the contents never are.
+workbench/*
+!workbench/README.md
+private/*
+!private/README.md
+scriptorium/*
+!scriptorium/README.md
