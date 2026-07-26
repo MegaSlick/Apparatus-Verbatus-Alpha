@@ -1,25 +1,57 @@
 #!/bin/sh
-# Refuse any direct push to main. Work happens on a branch; main moves only by merge.
-# Escape hatch (use knowingly):  ALLOW_MAIN_PUSH=1 git push ...
-while read -r _local_ref _local_sha remote_ref _remote_sha; do
-  case "$remote_ref" in
-    refs/heads/main)
-      if [ "$ALLOW_MAIN_PUSH" = "1" ]; then
-        echo "pre-push: ALLOW_MAIN_PUSH=1 set — permitting direct push to main." >&2
-      else
-        echo "" >&2
-        echo "  BLOCKED: direct push to main." >&2
-        echo "" >&2
-        echo "  main moves only by merging a pull request." >&2
-        echo "  Put this work on a branch instead:" >&2
-        echo "" >&2
-        echo "      git switch -c work/<short-topic>" >&2
-        echo "      git push -u origin work/<short-topic>" >&2
-        echo "      gh pr create" >&2
-        echo "" >&2
-        exit 1
-      fi
-      ;;
-  esac
+# Branch rules, enforced locally so they bind every tool — Claude, Codex, GPT, you.
+# GitHub cannot enforce these: free-plan private repos have no branch protection.
+#
+# Escape hatches, to be used knowingly and rarely:
+#   ALLOW_MAIN_PUSH=1     push directly to main
+#   ALLOW_FORCE_PUSH=1    rewrite a branch's history
+#   ALLOW_ANY_BRANCH=1    push a branch outside the naming convention
+
+z40='0000000000000000000000000000000000000000'
+
+block() {
+  echo "" >&2
+  echo "  BLOCKED: $1" >&2
+  echo "" >&2
+  [ -n "$2" ] && { echo "  $2" >&2; echo "" >&2; }
+  exit 1
+}
+
+while read -r _local_ref local_sha remote_ref remote_sha; do
+  branch=${remote_ref#refs/heads/}
+
+  # Deleting a branch is normal cleanup after a merge — allow it, except for main.
+  if [ "$local_sha" = "$z40" ]; then
+    [ "$branch" = "main" ] && block "deleting main."
+    continue
+  fi
+
+  # 1. main moves only by merging a pull request.
+  if [ "$branch" = "main" ] && [ "$ALLOW_MAIN_PUSH" != "1" ]; then
+    block "direct push to main." \
+"main moves only by merge. Put this on a branch:
+      git switch -c work/<short-topic> && git push -u origin work/<short-topic>"
+  fi
+
+  # 2. Branch names describe the work, and there are only three kinds.
+  if [ "$branch" != "main" ] && [ "$ALLOW_ANY_BRANCH" != "1" ]; then
+    case "$branch" in
+      work/*|audit/*|infra/*) : ;;
+      *) block "branch name '$branch' is not one of the three kinds." \
+"      work/<topic>   a normal change
+      audit/<topic>  a review that produces findings, not code
+      infra/<topic>  risky structural work" ;;
+    esac
+  fi
+
+  # 3. Never rewrite history someone else may be holding.
+  #    Detects --force and --force-with-lease alike: the remote tip must be an
+  #    ancestor of what you are pushing.
+  if [ "$remote_sha" != "$z40" ] && [ "$ALLOW_FORCE_PUSH" != "1" ]; then
+    if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+      block "force-push to '$branch' — this rewrites history." \
+"Another agent may be working from these commits. Pull and merge instead."
+    fi
+  fi
 done
 exit 0
