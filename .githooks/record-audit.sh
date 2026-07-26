@@ -79,14 +79,24 @@ fi
 
 # printf, not echo: /bin/sh is dash on Linux and bash-with-xpg_echo on macOS,
 # and both expand backslashes in echo. A finding must be recorded as written.
+# The header is written once; every reviewer is appended. Overwriting would
+# mean three reviewers produced one surviving finding and the other two
+# vanished without a word — which is the thing this repository refuses to do.
+if [ ! -f "$receipts/$sha" ]; then
+  {
+    printf 'commit:  %s\n' "$sha"
+    printf 'branch:  %s\n' "$branch"
+    printf 'audited: %s (%s commit(s))\n' "$range" "$count"
+  } > "$receipts/$sha"
+fi
+
 {
-  printf 'commit:  %s\n' "$sha"
-  printf 'branch:  %s\n' "$branch"
-  printf 'audited: %s (%s commit(s))\n' "$range" "$count"
-  printf 'auditor: %s\n' "$auditor"
+  printf '\nauditor: %s\n' "$auditor"
   printf 'when:    %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   printf 'finding: %s\n' "$finding"
-} > "$receipts/$sha"
+} >> "$receipts/$sha"
 
-printf 'Audit recorded for %s by %s.\n' "$(echo "$sha" | cut -c1-8)" "$auditor"
+recorded=$(grep -c '^auditor:' "$receipts/$sha")
+printf '%s recorded for %s. %s reviewer(s) on record.\n' \
+  "$auditor" "$(echo "$sha" | cut -c1-8)" "$recorded"
 printf 'It covers %s — %s commit(s) — and that state only.\n' "$range" "$count"

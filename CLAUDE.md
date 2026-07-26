@@ -42,16 +42,18 @@ sh .githooks/install.sh
 **Do this before anything else, every time you clone.** Git does not run a
 repository's hooks unless it is told to, and the setting that tells it lives in
 `.git/config`, which never travels with a clone. Until you run that line, every
-rule below is switched off: commits on main, stray notes, force-pushes and
-unaudited pushes all go straight through, silently.
+local rule below is switched off: commits on main, stray notes and unaudited
+pushes all go through silently. GitHub still refuses what GitHub refuses — see
+README.md — but nothing tells you here, and nothing tells you why.
 
 A fresh clone, a new machine, a Codex sandbox and a pod each need it separately.
 Nothing in the repository can do it for you.
 
 ## Branches
 
-`main` is protected by local hooks — never commit or push to it directly. Work happens
-on a branch and reaches `main` only by pull request.
+Never commit or push to `main` directly. Work happens on a branch and reaches `main`
+only by pull request. Local hooks refuse it here, with a message; GitHub refuses it at
+the other end, without one.
 
 - `work/<topic>` — normal changes
 - `audit/<topic>` — a review that produces findings, not code
@@ -70,21 +72,29 @@ of it.
 **Nothing is pushed until three reviewers have read it.** Whoever wrote the work does not
 get to be the only one who has seen it leave the machine.
 
-- **Claude Opus 5**
-- **Claude Fable 5**
+- **Claude Opus 5** — from a Claude session, a subagent with the model set to `opus`
+- **Claude Fable 5** — the same, with the model set to `fable`
 - **GPT** — `codex exec --sandbox read-only "<prompt>"`
 
-Give all three an **identical prompt**, blind to each other. Report their agreements as
-settled and keep their disagreements rather than blending them into one answer; a
-difference between two models is information, and averaging it away throws that away.
+A session that cannot summon one of these runs the reviewers it can and records exactly
+who read the work, so the receipt shows what the coverage actually was rather than what
+it was supposed to be.
 
-Two vendors, not one, and this is the point rather than belt-and-braces. An automated
-reviewer reading differently from the Claude agents has already caught a live bypass
-that eight Claude audits walked past. A reader who shares your blind spots confirms
-them.
+Give all three an **identical prompt**, blind to each other. Report what they agree on
+and keep their disagreements rather than blending them into one answer — a difference
+between two models is information, and averaging it away destroys it.
 
-These audits are cheap relative to the cost of a defect reaching `main`. Run them by
-default. Tyrel will say when usage makes that too expensive.
+Agreement between reviewers is evidence, not a verdict. It never settles a governance
+question, a permission, or an exclusion; those are Tyrel's, and unanimity among models
+does not stand in for him.
+
+**Two vendors, not one, and that is the point rather than belt-and-braces.** A reader
+that shares your blind spots only confirms them. A reader built differently finds what
+the others cannot see, which is not a theory — it is the observed reason this rule
+exists.
+
+These audits are cheap set against a defect reaching `main`. Run them by default; Tyrel
+will say when usage makes that too expensive.
 
 Then record it:
 
@@ -99,14 +109,11 @@ Push at the end of a task or session, not continuously. Push earlier only when n
 pushing would block the next step.
 
 **After the push, the automated reviewer is Tyrel's to relay.** Do not sit polling a pull
-request for it. He reads its comments and points at what he wants fixed; nothing can
-merge before he acts anyway.
+request waiting for it. He reads its comments and points at what he wants fixed.
 
-When he does point at one, **verify it before acting on it.** Some are style, some are
-wrong, and some are real — the one that mattered most so far was a live bypass that
-three prior audits had missed. Reproduce the claim first, fix what is real, say plainly
-why you are skipping the rest, and record a fresh receipt for the commit that answers
-it.
+When he does, **verify the claim before acting on it.** Some are style, some are simply
+wrong, and some are real. Reproduce it first, fix what is real, say plainly why you are
+skipping the rest, and record a fresh receipt for the commit that answers it.
 
 **Subagents and other AI tools do not push at all.** They audit and they report. The
 push is Tyrel's, or the main session's after an audit.

@@ -6,10 +6,14 @@ second hand; a trained reader, the **Perlector**, reads the ink itself and estab
 the text.
 
 **Status — 2026-07-26:** alpha. Governance and architectural *direction* settled;
-workspace not yet built. Implementation is discovered during alpha. `main` is protected
-server-side: a pull request is required, CI must pass to merge, force-pushes and
-deletion are refused, and the rules apply to the owner too — so the checks here are
-locks, not merely alarms. This line is the only place status lives.
+workspace not yet built. Implementation is discovered during alpha. **GitHub enforces
+four things on `main`**, and only these four: a change arrives by pull request, the
+automated checks must pass before it can be merged, `main` cannot be force-pushed or
+deleted, and these apply to the owner as well. Everything else in this repository is a
+local convention that a determined tool can step around. Note that no *approval* is
+required, so anything holding the owner's credentials — including an agent — can merge a
+passing pull request; "Tyrel merges" is a rule people follow, not one GitHub imposes.
+This line is the only place status lives.
 
 ## Where to look
 

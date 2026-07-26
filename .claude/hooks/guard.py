@@ -9,7 +9,7 @@ What it blocks:
   * bringing up billed RunPod infrastructure   Governance 8: only Tyrel, in-session
   * writing to the RunPod API                  same, by another route
   * deleting a network volume                  irreversible, and the corpus lives there
-  * turning the git hooks off                  they are the only enforcement there is
+  * turning the git hooks off                  they are the only local enforcement
   * force-push, direct push to main            main moves only by merge
   * --no-verify                                one flag defeats every local rule
   * deleting the repository or your home       the obvious one
@@ -417,7 +417,7 @@ def check_git(argv):
     # the audit gate at once. Both the one-shot `-c` form and the permanent
     # `git config` form, which is worse because it binds every later tool.
     if any("core.hookspath" in o.lower() for o in opts):
-        deny("disables the git hooks, which are the only enforcement here")
+        deny("disables the git hooks, which are all the local enforcement there is")
     if sub == "config" and any("core.hookspath" in a.lower() for a in args):
         # Reading the setting is how you check install.sh worked — and the
         # script invites you to. Only writing it is the problem.

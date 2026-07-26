@@ -1,6 +1,8 @@
 #!/bin/sh
 # Branch rules, enforced locally so they bind every tool — Claude, Codex, GPT, you.
-# GitHub cannot enforce these: free-plan private repos have no branch protection.
+# They catch a mistake here, at the moment it is made, with a message that says
+# what to do instead. What `main` itself will accept is settled server-side and
+# is not this file's business — see README.md.
 #
 # Escape hatches, to be used knowingly and rarely:
 #   ALLOW_MAIN_PUSH=1       push directly to main
@@ -80,26 +82,33 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
     fi
   fi
 
-  # 4. Nothing leaves this machine that no second pair of eyes has read.
-  #    Tyrel merges; that is the outer check. This is the inner one: an agent
-  #    audits the work before it is pushed at all, so what reaches a pull
-  #    request has already been read by someone other than whoever wrote it.
-  #    Write the receipt with .githooks/record-audit.sh after the audit runs.
-  #    The receipt must name the commit it claims to cover, so an empty file
-  #    dropped in by `touch` does not read as a review. This raises the bar; it
-  #    is not a lock, and nothing here can tell an author from an auditor.
-  if [ "$ALLOW_UNAUDITED_PUSH" != "1" ] &&
-     ! grep -qx "commit:  $local_sha" "$receipts/$local_sha" 2>/dev/null; then
-    block "'$branch' has no valid audit receipt for $(echo "$local_sha" | cut -c1-8)." \
-"Nothing is pushed until an agent has read it. Run an audit, then:
+  # 4. Nothing leaves this machine that three reviewers have not read.
+  #    Whoever wrote the work does not get to be the only one who has seen it
+  #    leave, and one reviewer that shares the author's blind spots is not
+  #    much better than none. Record each with .githooks/record-audit.sh; they
+  #    accumulate in one receipt rather than overwriting each other.
+  #    The receipt must name the commit it covers, so an empty file dropped in
+  #    by `touch` does not read as a review. This raises the bar; it is not a
+  #    lock, and nothing here can tell an author from an auditor.
+  reviewers=0
+  if grep -qx "commit:  $local_sha" "$receipts/$local_sha" 2>/dev/null; then
+    reviewers=$(grep -c '^auditor:' "$receipts/$local_sha")
+  fi
+  if [ "$ALLOW_UNAUDITED_PUSH" != "1" ] && [ "$reviewers" -lt 3 ]; then
+    block "'$branch' has $reviewers of 3 reviewers for $(echo "$local_sha" | cut -c1-8)." \
+"Three reviewers read the work before it is pushed — Claude Opus 5, Claude
+  Fable 5, and GPT — on an identical prompt, blind to each other. Record
+  each one as it reports:
 
-      .githooks/record-audit.sh <auditor> '<what it found>'
+      .githooks/record-audit.sh <reviewer> '<what it found>'
 
-  The receipt names one commit. Amend or add another and it must be
-  audited again — which is the point.
+  They accumulate; none overwrites another. The receipt names one commit,
+  so amending or adding one means auditing again — which is the point.
 
-  Subagents and other AI tools do not push at all. They audit and report;
-  the push is Tyrel's or the main session's to make afterwards."
+  Subagents and other AI tools do not push at all. They review and report;
+  the push is Tyrel's or the main session's to make afterwards.
+
+  ALLOW_UNAUDITED_PUSH=1 if you genuinely mean to skip this."
   fi
 done
 exit 0
