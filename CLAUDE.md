@@ -44,6 +44,33 @@ on a branch and reaches `main` only by pull request.
 
 One branch per task. Short-lived. Delete on merge. Two agents must never share a branch.
 
+## Pushing and merging
+
+Two checks, and they are different people.
+
+**Tyrel merges.** Every pull request, without exception. No agent merges anything, and
+a general instruction to work through a list is not permission to merge what comes out
+of it.
+
+**Nothing is pushed until an agent has read it.** Whoever wrote the work does not get to
+be the only one who has seen it leave the machine. Run an audit first, then record it:
+
+```
+.githooks/record-audit.sh <auditor> '<what it found>'
+```
+
+The receipt names one commit. Amend it or add another and the work must be audited
+again — an audit is of a state, not of a branch.
+
+Push at the end of a task or session, not continuously. Push earlier only when not
+pushing would block the next step.
+
+**Subagents and other AI tools do not push at all.** They audit and they report. The
+push is Tyrel's, or the main session's after an audit.
+
+`ALLOW_UNAUDITED_PUSH=1` exists for when the rule is genuinely in the way. Using it is a
+decision, and it should be a rare one.
+
 ## Concurrency
 
 More than one AI may be working here at once, and not all of them are Claude. Assume

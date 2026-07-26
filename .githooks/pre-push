@@ -3,11 +3,17 @@
 # GitHub cannot enforce these: free-plan private repos have no branch protection.
 #
 # Escape hatches, to be used knowingly and rarely:
-#   ALLOW_MAIN_PUSH=1     push directly to main
-#   ALLOW_FORCE_PUSH=1    rewrite a branch's history
-#   ALLOW_ANY_BRANCH=1    push a branch outside the naming convention
+#   ALLOW_MAIN_PUSH=1       push directly to main
+#   ALLOW_FORCE_PUSH=1      rewrite a branch's history
+#   ALLOW_ANY_BRANCH=1      push a branch outside the naming convention
+#   ALLOW_UNAUDITED_PUSH=1  push work no agent has reviewed
 
 z40='0000000000000000000000000000000000000000'
+
+# Where audit receipts live: the *common* git directory, so every worktree
+# shares one record. Never committed — a receipt is evidence about a local
+# working session, not a document.
+receipts="$(git rev-parse --path-format=absolute --git-common-dir)/audit-receipts"
 
 block() {
   echo "" >&2
@@ -52,6 +58,24 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
       block "force-push to '$branch' — this rewrites history." \
 "Another agent may be working from these commits. Pull and merge instead."
     fi
+  fi
+
+  # 4. Nothing leaves this machine that no second pair of eyes has read.
+  #    Tyrel merges; that is the outer check. This is the inner one: an agent
+  #    audits the work before it is pushed at all, so what reaches a pull
+  #    request has already been read by someone other than whoever wrote it.
+  #    Write the receipt with .githooks/record-audit.sh after the audit runs.
+  if [ "$ALLOW_UNAUDITED_PUSH" != "1" ] && [ ! -f "$receipts/$local_sha" ]; then
+    block "'$branch' has no audit receipt for $(echo "$local_sha" | cut -c1-8)." \
+"Nothing is pushed until an agent has read it. Run an audit, then:
+
+      .githooks/record-audit.sh <auditor> '<what it found>'
+
+  The receipt names one commit. Amend or add another and it must be
+  audited again — which is the point.
+
+  Subagents and other AI tools do not push at all. They audit and report;
+  the push is Tyrel's or the main session's to make afterwards."
   fi
 done
 exit 0
