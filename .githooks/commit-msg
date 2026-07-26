@@ -36,16 +36,32 @@
 [ "$ALLOW_UNATTRIBUTED" = "1" ] && exit 0
 
 message=$1
-[ -f "$message" ] || exit 0
+if [ -z "$message" ] || [ ! -f "$message" ]; then
+  echo "  BLOCKED: no commit message to read, so attribution cannot be" >&2
+  echo "  checked. A check that cannot run is a failure, not a pass." >&2
+  exit 1
+fi
 
 # A merge commit's message is written by git, not by anyone. Same for a commit
 # that is being reworded during a rebase of already-attributed work.
+# Only the forms git itself writes. "Merge " as a bare prefix would exempt
+# `git merge -m "Merge the two hook files"`, which is a real change someone
+# made, and would hand anyone a one-word bypass.
 first=$(sed -n '1p' "$message")
 case "$first" in
-  "Merge "*|"Revert "*|"fixup!"*|"squash!"*) exit 0 ;;
+  "Merge branch "*|"Merge pull request "*|"Merge remote-tracking "*|"Merge tag "*) exit 0 ;;
+  'Revert "'*) exit 0 ;;
+  "fixup!"*|"squash!"*|"amend!"*) exit 0 ;;
 esac
 
-if grep -qiE '^Co-Authored-By:[[:space:]]*[^[:space:]]' "$message"; then
+# Ask git, rather than grepping. Git counts only the last paragraph as
+# trailers, and so does GitHub — so a `Co-Authored-By:` in the subject, in
+# quoted prose, or in a code block reads as a trailer to grep and as nothing
+# at all to either of them. That is the silent lapse this hook exists to stop.
+# An address is required too: GitHub attributes by email, and a trailer
+# without one registers no co-author.
+if git interpret-trailers --parse <"$message" 2>/dev/null |
+     grep -qiE '^Co-Authored-By:[[:space:]]*.+<[^@[:space:]]+@[^>[:space:]]+>[[:space:]]*$'; then
   exit 0
 fi
 
