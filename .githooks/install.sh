@@ -36,6 +36,10 @@ fi
 # *its own* branch. With an absolute path they would all silently share the
 # main checkout's copy, and a change to a hook could never be tested on the
 # branch that makes it.
+#
+# The cost of that choice, and it is worth knowing: checking out a commit from
+# before a hook existed gives you that commit's hooks, not today's. Protections
+# travel with the branch. Going backwards in history goes backwards in guards.
 git config core.hooksPath .githooks
 
 chmod +x .githooks/pre-commit .githooks/pre-push .githooks/record-audit.sh \
