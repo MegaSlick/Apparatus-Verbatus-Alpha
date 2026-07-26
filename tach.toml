@@ -1,0 +1,9 @@
+# Module boundaries. CI runs `tach check` on every pull request.
+#
+# The rule from ARCHITECTURE.md: a stage may import `common`, and nothing else.
+# No stage may import another stage. The numbered directory names make that
+# physically true; this makes it checked.
+
+[[modules]]
+path = "common"
+depends_on = []

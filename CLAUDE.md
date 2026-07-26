@@ -17,6 +17,22 @@ branches, historical codenames and bloat do not come with it.
 
 If you cannot say what a line is for, it does not enter.
 
+## Where notes go
+
+**`workbench/` — gitignored, local only.** Session notes, handoffs, todo lists, grep
+dumps, design scribbles, half-finished thinking. All of it. None of it in the repository.
+
+- `workbench/active/` — work in play. Small enough to read in one sitting.
+- `workbench/archive/<date>_<topic>/` — filed when the work finishes. Then, not later.
+- `workbench/scratch/` — disposable. Anyone may delete anything here without asking.
+
+The `pre-commit` hook refuses stray markdown, so a note cannot leak into the repository
+by accident. A committed `.md` is a canonical document, a `README.md`, a `HANDOFF.md`,
+or dated evidence under `history/` — nothing else.
+
+**If it is dated or speculative it is not a document, it is a note.** The previous
+repository accumulated 320 markdown files for want of this distinction.
+
 ## Branches
 
 `main` is protected by local hooks — never commit or push to it directly. Work happens
