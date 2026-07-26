@@ -44,6 +44,16 @@ on a branch and reaches `main` only by pull request.
 
 One branch per task. Short-lived. Delete on merge. Two agents must never share a branch.
 
+## Concurrency
+
+More than one AI may be working here at once, and not all of them are Claude. Assume
+another agent is editing files you cannot see.
+
+- Work in your own git worktree, on your own branch.
+- Never `git add -A` across the whole repo — stage only the files you touched.
+- Never rebase, force-push, or amend a branch that is not yours.
+- If a file changed under you, stop and re-read it rather than overwriting.
+
 ## Attribution
 
 **Every commit says which machine wrote it.** All the code here is AI-generated; Tyrel
@@ -77,16 +87,6 @@ stops meaning anything as the models change.
 
 The commit author stays Tyrel. He is accountable for what lands; the trailers say which
 machine did the work. A `commit-msg` hook refuses a commit that names no author.
-
-## Concurrency
-
-More than one AI may be working here at once, and not all of them are Claude. Assume
-another agent is editing files you cannot see.
-
-- Work in your own git worktree, on your own branch.
-- Never `git add -A` across the whole repo — stage only the files you touched.
-- Never rebase, force-push, or amend a branch that is not yours.
-- If a file changed under you, stop and re-read it rather than overwriting.
 
 ## Hard rules
 
