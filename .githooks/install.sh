@@ -42,8 +42,8 @@ fi
 # travel with the branch. Going backwards in history goes backwards in guards.
 git config core.hooksPath .githooks
 
-chmod +x .githooks/pre-commit .githooks/pre-push .githooks/record-audit.sh \
-         .githooks/install.sh 2>/dev/null || true
+chmod +x .githooks/pre-commit .githooks/pre-push .githooks/commit-msg \
+         .githooks/record-audit.sh .githooks/install.sh 2>/dev/null || true
 
 echo "Hooks installed for this clone."
 echo ""

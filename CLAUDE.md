@@ -76,9 +76,10 @@ get to be the only one who has seen it leave the machine.
 - **Claude Fable 5** — the same, with the model set to `fable`
 - **GPT** — `codex exec --sandbox read-only "<prompt>"`
 
-A session that cannot summon one of these runs the reviewers it can and records exactly
-who read the work, so the receipt shows what the coverage actually was rather than what
-it was supposed to be.
+A session that cannot summon all three records the ones it can, and then needs
+`ALLOW_UNAUDITED_PUSH=1` to push — the gate counts three and does not grade on a curve.
+Record the reviewers you did run anyway, so the receipt shows what the coverage actually
+was rather than what it was meant to be.
 
 Give all three an **identical prompt**, blind to each other. Report what they agree on
 and keep their disagreements rather than blending them into one answer — a difference
