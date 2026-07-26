@@ -38,8 +38,12 @@ jobs:
           python-version: '3.12'
 
       - name: Lint
+        # `find`, not a glob. `**/*.py` without globstar means `*/*.py` — one
+        # directory deep — and `*` never matches a dotted directory, so both
+        # `pipeline/1_exemplar/seal.py` and `.claude/hooks/guard.py` came back
+        # as "no python yet" and the whole step passed without linting.
         run: |
-          if ls **/*.py *.py >/dev/null 2>&1; then
+          if find . -name '*.py' -not -path './.git/*' | grep -q .; then
             pipx install ruff
             ruff check .
             ruff format --check .
