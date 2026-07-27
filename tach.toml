@@ -1,8 +1,9 @@
-# Module boundaries. CI runs `tach check` on every pull request.
+# Shared-module boundaries.
 #
-# The rule from ARCHITECTURE.md: a stage may import `common`, and nothing else.
-# No stage may import another stage. The numbered directory names make that
-# physically true; this makes it checked.
+# Tach can inspect the importable `common` package. The numbered stage directories
+# are not Python packages and are not represented here; their first code must add
+# an executable boundary test instead of treating this declaration as proof that
+# no stage imports another.
 
 [[modules]]
 path = "common"

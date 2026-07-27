@@ -43,14 +43,24 @@ fi
 git config core.hooksPath .githooks
 
 chmod +x .githooks/pre-commit .githooks/pre-push .githooks/commit-msg \
+         .githooks/check-all.sh .githooks/check-documents.sh \
          .githooks/record-audit.sh .githooks/install.sh 2>/dev/null || true
+
+# Git does not preserve empty directories. Recreate the local working areas a
+# fresh clone needs; their tracked README files explain what belongs in each.
+mkdir -p workbench/active workbench/archive workbench/scratch
 
 echo "Hooks installed for this clone."
 echo ""
 echo "  Now enforced here:"
 echo "    no commits on main            no stray notes in the tree"
+echo "    no secrets or large payloads  no undeclared binary fixtures"
 echo "    no direct push to main        no force-push over someone's work"
 echo "    no push without an audit      (.githooks/record-audit.sh)"
+echo ""
+echo "  Run all repository checks locally with:"
+echo "    python3 -m pip install -r requirements-dev.txt"
+echo "    sh .githooks/check-all.sh"
 echo ""
 echo "  GitHub enforces its own rules on main, separately from these and"
 echo "  out of reach of anything local. What those are is recorded in"

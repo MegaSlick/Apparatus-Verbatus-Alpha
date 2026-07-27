@@ -1,7 +1,22 @@
 .DS_Store
 *.log
+*.py[cod]
 .venv/
 __pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Credentials belong outside the repository. Example files are safe to track.
+.env
+.env.*
+!.env.example
 
 # Agents work in their own worktree under here. They are checkouts, not
 # content: a `git add -A` in the main checkout would otherwise commit every

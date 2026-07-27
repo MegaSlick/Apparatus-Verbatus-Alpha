@@ -9,109 +9,26 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          # The ingress check examines every reachable commit so that deleting a
+          # leaked credential in a later commit cannot turn the check green.
+          fetch-depth: 0
 
-      - name: Canonical documents exist
-        run: |
-          missing=0
-          for f in README.md GOALS.md GOVERNANCE.md ARCHITECTURE.md GLOSSARY.md CLAUDE.md; do
-            if [ ! -f "$f" ]; then echo "::error::missing $f"; missing=1; fi
-          done
-          exit $missing
-
-      - name: Rules documents carry no state
-        # README.md holds the single status line. Everywhere else, a date or a pod id
-        # is state leaking into a rules document — the exact rot this repo exists to avoid.
-        run: |
-          bad=0
-          for f in GOALS.md GOVERNANCE.md ARCHITECTURE.md GLOSSARY.md CLAUDE.md; do
-            if grep -nE '20[0-9]{2}-[0-9]{2}-[0-9]{2}' "$f"; then
-              echo "::error file=$f::date found in a rules document — state belongs in README.md"
-              bad=1
-            fi
-          done
-          exit $bad
-
-      - name: No stray markdown anywhere in the repository
-        # A state check, not a diff check. The pre-commit hook asks "is this
-        # commit clean?" and can be skipped with --no-verify, dodged with a
-        # rename, and never runs at all on a merge. This asks "is the
-        # repository clean?", so none of those four routes help.
-        #
-        # This step belongs to the `check` job, and whether a red `check` stops
-        # a merge is settled by GitHub rather than here. README.md records that;
-        # this file deliberately does not restate it.
-        run: |
-          if [ ! -f .githooks/doc-allowlist.sh ]; then
-            echo "::error::.githooks/doc-allowlist.sh is missing — the stray-markdown rule cannot run"
-            exit 1
-          fi
-          # Listed on its own line, not piped: a pipeline reports only its last
-          # command's status, so a failed ls-files would arrive as an empty list
-          # and an empty list reads as a clean repository.
-          set +e
-          tracked=$(git -c core.quotePath=false ls-files)
-          listed=$?
-          set -e
-          if [ "$listed" -ne 0 ]; then
-            echo "::error::could not list tracked files (exit $listed) — a check that cannot run is a failure, not a pass"
-            exit 1
-          fi
-          set +e
-          stray=$(printf '%s\n' "$tracked" | sh .githooks/doc-allowlist.sh)
-          status=$?
-          set -e
-          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
-            echo "::error::the stray-markdown check itself failed (exit $status) — a check that cannot run is a failure, not a pass"
-            exit 1
-          fi
-          if [ -n "$stray" ]; then
-            printf '%s\n' "$stray" | while IFS= read -r f; do
-              echo "::error file=$f::stray markdown — notes belong in workbench/, which is gitignored"
-            done
-            echo "A tracked .md must be a canonical document at the root, a README.md" >&2
-            echo "or HANDOFF.md in any directory, dated evidence under history/, or one" >&2
-            echo "of the harness's own documents one level under .github/ or" >&2
-            echo ".claude/agents/." >&2
-            exit 1
-          fi
+      - name: Repository document policy
+        run: sh .githooks/check-documents.sh
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
-      - name: Lint
-        # `find`, not a glob. `**/*.py` without globstar means `*/*.py` — one
-        # directory deep — and `*` never matches a dotted directory, so both
-        # `pipeline/1_exemplar/seal.py` and `.claude/hooks/guard.py` came back
-        # as "no python yet" and the whole step passed without linting.
-        run: |
-          if find . -name '*.py' -not -path './.git/*' | grep -q .; then
-            # Pinned. An unpinned formatter turns a green branch red on someone
-            # else's release, which is the definition of a gate that cries wolf.
-            # Bump it deliberately, and reformat in the same commit.
-            pipx install 'ruff==0.15.4'
-            ruff check .
-            ruff format --check .
-          else
-            echo "no python yet — nothing to lint"
-          fi
+      - name: Repository ingress
+        run: python3 .githooks/check_ingress.py --history HEAD
 
-      - name: Module boundaries
+      - name: Install check tools
         run: |
-          if [ -f tach.toml ] && grep -q '^\[\[modules\]\]' tach.toml; then
-            pipx install tach
-            tach check
-          else
-            echo "no modules declared yet — nothing to enforce"
-          fi
+          python -m pip install -r requirements-dev.txt
 
-      - name: Tests
-        run: |
-          if find . -name 'test_*.py' -not -path './.git/*' | grep -q .; then
-            pipx install pytest
-            pytest -q
-          else
-            echo "no tests yet — nothing to run"
-          fi
+      - name: Repository checks
+        run: sh .githooks/check-all.sh

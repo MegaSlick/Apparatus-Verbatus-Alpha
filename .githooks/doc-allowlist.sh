@@ -1,11 +1,11 @@
 #!/bin/sh
-# The one list of markdown files this repository is allowed to track.
+# The one list of documentation files this repository is allowed to track.
 #
 # Reads paths on stdin, one per line — any paths, not only markdown ones. This
-# script decides what counts as markdown, so that "what is a document" is
+# script decides what counts as documentation, so that "what is a document" is
 # settled here and not separately by each caller.
 #
-# Prints back any path that is markdown and not allowed.
+# Prints back any path that is documentation and not allowed.
 #   exit 0   every path allowed
 #   exit 1   at least one stray, listed on stdout
 #   other    the check itself broke. Callers must treat this as a failure and
@@ -14,8 +14,8 @@
 # Two callers share this file so the rule cannot drift:
 #
 #   .githooks/pre-commit       what you are about to commit. Local and fast,
-#                              and skippable — `git commit --no-verify`, a
-#                              rename, or a merge all evade it.
+#                              and skippable — `git commit --no-verify` and
+#                              merge-created commits can evade it.
 #   .github/workflows/ci.yml   every tracked file in the repository. Checks
 #                              what the repository *contains*, not what you
 #                              did, so none of those evasions help.
@@ -29,11 +29,22 @@ stray=0
 while IFS= read -r f; do
   [ -n "$f" ] || continue
 
-  # Is it markdown? Case-insensitively, and by any of the usual spellings —
-  # GitHub renders NOTES.MD and session.markdown exactly like a .md file, so a
-  # check that only knows lowercase .md is a check with a door in it.
-  case "$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')" in
-    *.md|*.markdown|*.mdown|*.mdwn|*.mkd|*.mkdn) ;;
+  # Is it documentation? Match the usual markup formats and note-like text
+  # filenames. Ordinary text assets remain possible, but NOTES.txt cannot
+  # bypass the same rule that correctly catches NOTES.md.
+  lower=$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')
+  case "$lower" in
+    *.md|*.markdown|*.mdown|*.mdwn|*.mkd|*.mkdn|*.rst|*.rest|*.adoc|*.asciidoc) ;;
+    *.txt)
+      name=${lower##*/}
+      case "$name" in
+        notes.txt|notes-*.txt|notes_*.txt|todo.txt|todo-*.txt|todo_*.txt|\
+        plan.txt|plan-*.txt|plan_*.txt|progress.txt|progress-*.txt|progress_*.txt|\
+        status.txt|status-*.txt|status_*.txt|session.txt|session-*.txt|session_*.txt|\
+        handoff.txt|handoff-*.txt|handoff_*.txt|next-session*.txt|next_session*.txt|\
+        scratch.txt|scratch-*.txt|scratch_*.txt) ;;
+        *) continue ;;
+      esac ;;
     *) continue ;;
   esac
 
@@ -45,8 +56,16 @@ while IFS= read -r f; do
     # Every directory may explain itself; every stage declares what it writes.
     # Including at the root, which CLAUDE.md allows and a bare */ pattern misses.
     HANDOFF.md|*/README.md|*/HANDOFF.md) ;;
-    # Dated evidence.
-    history/*.md) ;;
+    # Dated evidence, one level deep. `history/undated-note.md` is still a
+    # note; putting it in the evidence drawer does not make it evidence.
+    history/*)
+      item=${f#history/}
+      case "$item" in
+        */*) printf '%s\n' "$f"; stray=1 ;;
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].md) ;;
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*.md) ;;
+        *) printf '%s\n' "$f"; stray=1 ;;
+      esac ;;
     # The harness's own documents. One level only: `*` matches `/` in a shell
     # case pattern, so `.github/*.md` would otherwise permit a notes folder
     # nested to any depth underneath it.

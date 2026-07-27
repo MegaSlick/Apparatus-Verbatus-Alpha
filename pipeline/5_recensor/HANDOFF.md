@@ -6,8 +6,8 @@
 
 ---
 
-The declared shape of these files is **not yet settled**. It is discovered during
-alpha, from real pages, and recorded here as it is learned.
+Before this stage's implementation is accepted, this document must declare the exact
+schema and invariants of every file it writes, grounded in proof-page evidence.
 
 This document is the only thing downstream stages may rely on. They read these
 files; they never import this stage's code.

@@ -9,16 +9,17 @@ guard as data, exactly as Claude Code hands it over: JSON on stdin.
 """
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
-GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guard.py")
-PROJECT = "/Users/tyrel/verbatus_alpha"
-HOME = "/Users/tyrel"
+HOOKS = Path(__file__).resolve().parent
+GUARD = str(HOOKS / "guard.py")
+PROJECT = str(HOOKS.parents[1])
+HOME = str(Path(PROJECT).parent)
 
 # Split so that this file does not itself read as a command anyone runs.
 RC = "runpod" + "ctl"
@@ -27,7 +28,7 @@ API = "api." + "runpod" + ".io"
 
 
 def decide(payload) -> bool:
-    """True if the guard denies. Runs guard.py exactly as the harness does."""
+    """True if the guard denies; fail the test if the hook contract is broken."""
     result = subprocess.run(
         [sys.executable, GUARD],
         input=json.dumps(payload) if isinstance(payload, dict) else payload,
@@ -37,8 +38,25 @@ def decide(payload) -> bool:
         # result must not depend on where the suite happens to be run from.
         cwd=tempfile.gettempdir(),
         env={"CLAUDE_PROJECT_DIR": PROJECT, "HOME": HOME, "PATH": "/usr/bin:/bin"},
+        timeout=5,
     )
-    return '"deny"' in result.stdout
+    assert result.returncode == 0, (
+        f"guard crashed with exit {result.returncode}: {result.stderr.strip()}"
+    )
+    assert not result.stderr, f"guard wrote unexpected stderr: {result.stderr.strip()}"
+
+    output = result.stdout.strip()
+    if not output:
+        return False
+    try:
+        response = json.loads(output)
+        decision = response["hookSpecificOutput"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        pytest.fail(f"guard emitted malformed hook JSON: {output!r} ({exc})")
+    assert decision.get("hookEventName") == "PreToolUse"
+    assert decision.get("permissionDecision") == "deny"
+    assert decision.get("permissionDecisionReason")
+    return True
 
 
 def run(command: str) -> bool:
@@ -65,8 +83,69 @@ BLOCK = [
     (f"curl -d @body.json https://{REST}/v1/pods", "-d is a POST"),
     (f"curl --json @b.json https://{REST}/v1/pods", "--json is a POST"),
     (f"curl -XPOST https://{REST}/v1/pods", "attached -XPOST"),
+    (f"curl -sXPOST https://{REST}/v1/pods", "attached -X behind another short option"),
+    (
+        f"curl -G -X POST https://{REST}/v1/pods -d name=test",
+        "-G moves data to the URL but an explicit -X still sends POST",
+    ),
+    (
+        f"curl --get --request POST https://{REST}/v1/pods --data name=test",
+        "same, with long options",
+    ),
+    (
+        f"curl -A --get -d name=test https://{REST}/v1/pods",
+        "--get used as a user-agent value is not a real option",
+    ),
+    (
+        f"curl -H --get -d name=test https://{REST}/v1/pods",
+        "--get used as a header value is not a real option",
+    ),
+    (
+        f"curl -A -G -d name=test https://{REST}/v1/pods",
+        "-G used as a user-agent value is not a real option",
+    ),
+    (
+        f"curl -H -G -d name=test https://{REST}/v1/pods",
+        "-G used as a header value is not a real option",
+    ),
+    (f"curl -G --form name=test https://{REST}/v1/pods", "-G does not make form POST safe"),
+    (
+        f"curl -G --upload-file body.json https://{REST}/v1/pods",
+        "-G does not make an upload safe",
+    ),
+    (f"curl -F name=test https://{REST}/v1/pods", "multipart form POST"),
+    (f"curl -sF name=test https://{REST}/v1/pods", "form behind another short option"),
+    (f"curl --form-string name=test https://{REST}/v1/pods", "literal form POST"),
+    (f"curl -T body.json https://{REST}/v1/pods", "HTTP upload uses PUT"),
+    (f"curl -sT body.json https://{REST}/v1/pods", "upload behind another short option"),
     (f"wget --method=POST --body-data='{{}}' https://{REST}/v1/pods", "wget's syntax"),
+    (f"wget --body-file=body.json https://{REST}/v1/pods", "wget body file"),
     (f"http POST https://{REST}/v1/pods name=big", "httpie positional verb"),
+    (f"http https://{REST}/v1/pods name=big", "httpie infers POST from request data"),
+    (f"http https://{REST}/v1/pods name:=3", "httpie infers POST from JSON data"),
+    (f"http --raw GET https://{REST}/v1/pods", "HTTPie raw body defaults to POST"),
+    (
+        f"http --auth GET https://{REST}/v1/pods name=value",
+        "an option value must not disguise HTTPie's inferred POST",
+    ),
+    (
+        f"http --session HEAD https://{REST}/v1/pods name=value",
+        "another option value must not disguise an inferred POST",
+    ),
+    (f"printf '{{}}' | http https://{REST}/v1/pods", "HTTPie infers POST from piped data"),
+    (
+        f"printf '{{}}' | timeout 5 http https://{REST}/v1/pods",
+        "HTTPie infers POST when wrapped by timeout",
+    ),
+    (
+        f"printf '{{}}' | env FOO=1 http https://{REST}/v1/pods",
+        "HTTPie infers POST when wrapped by env",
+    ),
+    (
+        f"printf '{{}}' | command http https://{REST}/v1/pods",
+        "HTTPie infers POST behind the command wrapper",
+    ),
+    (f"http https://{REST}/v1/pods < body.json", "HTTPie infers POST from redirected data"),
     (f"curl -X POST https://{REST.upper()}/v1/pods -d @b.json", "upper-case host"),
     (f"curl -X DELETE https://{REST}/v1/networkvolumes/vol-1", "volume delete"),
     # -g is --globoff, not --get. Lowercasing the test disarmed the whole
@@ -84,6 +163,14 @@ BLOCK = [
     ('uv run python -c "import runpod; runpod.create_pod()"', "a runner front-end"),
     ('poetry run python -c "import runpod; runpod.create_pod()"', "another runner"),
     ('python3 -c "import runpod; runpod.create_endpoint()"', "serverless endpoint"),
+    (
+        f"python3 -c \"import requests; requests.post('https://{REST}/v1/pods', json={{}})\"",
+        "visible inline requests POST",
+    ),
+    (
+        f"python3 -c \"import httpx; httpx.request('POST', 'https://{REST}/v1/pods')\"",
+        "visible inline generic HTTP request",
+    ),
     # Turning the hooks off
     ("git -c core.hooksPath=/dev/null push origin work/x", "one-shot"),
     ("git config core.hooksPath /dev/null", "permanent, for every tool"),
@@ -171,9 +258,40 @@ ALLOW = [
     ),
     (f"curl --get https://{API}/graphql --data-urlencode 'q=1'", "the long form of -G"),
     (f"curl -x proxy.local:8080 https://{REST}/v1/pods", "lower -x is --proxy, a read"),
+    (f"curl --raw https://{REST}/v1/pods", "curl --raw only controls response decoding"),
+    (
+        f"curl -HContent-Type:application/json https://{REST}/v1/pods",
+        "letters in an attached header value are not short options",
+    ),
+    (
+        f"curl -HAuthorization:placeholder https://{REST}/v1/pods",
+        "a d in an attached header value is not -d",
+    ),
+    (f"curl -o post https://{REST}/v1/pods", "curl output filename is not a method"),
+    (f"curl -A POST https://{REST}/v1/pods", "curl user-agent value is not a method"),
+    (f"wget -O delete https://{REST}/v1/pods", "wget output filename is not a method"),
+    (f"http GET https://{REST}/v1/pods", "httpie explicit GET"),
+    (f"http https://{REST}/v1/pods page==2", "httpie query parameter remains a GET"),
+    (f"http --timeout=10 https://{REST}/v1/pods", "httpie option value is not request data"),
+    (
+        f"http https://{REST}/v1/pods Authorization:placeholder",
+        "httpie header does not make a request a POST",
+    ),
+    (
+        f"http https://{REST}/v1/pods X-Trace:id=abc",
+        "an equals sign inside a header value is not request data",
+    ),
+    (f"http https://{REST}/v1/pods | jq .", "piping a GET response is still read-only"),
+    (f"http --auth POST https://{REST}/v1/pods", "HTTPie auth value is not a method"),
     (f"curl -X POST https://{REST}/v1/pods/abc/stop", "shutdown must be verifiable"),
+    (f"curl -X POST {REST}/v1/pods/abc/stop", "scheme-less shutdown route"),
+    (f"http POST {REST}/v1/pods/abc/stop", "scheme-less HTTPie shutdown route"),
     (f"curl -s https://{REST}/v1/networkvolumes", "listing volumes is a read"),
     ("python3 -c 'import runpod; print(runpod.get_pods())'", "reading state"),
+    (
+        f"python3 -c \"import requests; print(requests.get('https://{REST}/v1/pods'))\"",
+        "visible inline requests GET",
+    ),
     # reading and writing *about* the guarded things
     ("grep -rn networkvolume .", "reading"),
     ("rg networkvolume docs/", "reading"),
@@ -281,6 +399,14 @@ BLOCK_EXTRA = [
     (
         f"curl -X POST https://{REST}/v1/pods/abc -d '{{\"deleteAfter\":1}}'",
         "a body field named deleteAfter is not a shutdown",
+    ),
+    (
+        f"curl -X POST 'https://{REST}/v1/pods?callback=/stop' -d @body.json",
+        "/stop in a query value is not a shutdown route",
+    ),
+    (
+        f"curl -d @body.json https://{REST}/v1/pods https://example.com/stop",
+        "an unrelated second URL cannot disguise pod creation as shutdown",
     ),
 ]
 

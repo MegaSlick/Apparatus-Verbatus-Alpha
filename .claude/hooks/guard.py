@@ -39,6 +39,7 @@ import os
 import re
 import shlex
 import sys
+from urllib.parse import urlsplit
 
 GOV8 = "Governance 8: a live pod needs Tyrel's explicit permission this session"
 
@@ -150,19 +151,196 @@ WRITE_METHODS = ("post", "put", "patch", "delete")
 # `-f` and `-t` are deliberately absent: in curl they are --fail and
 # --telnet-option, both read-only, and blocking `curl -f` blocked exactly the
 # provider-state check Governance 8 asks for.
-WRITE_FLAGS = (
-    "-d",
-    "--data",
-    "--data-raw",
-    "--data-binary",
-    "--data-urlencode",
+CURL_WRITE_FLAGS = (
+    "--form",
+    "--form-string",
     "--json",
+    "--upload-file",
+)
+WGET_WRITE_FLAGS = (
     "--post-file",
     "--post-data",
     "--body-data",
-    "--upload-file",
-    "-F",
-    "--form",
+    "--body-file",
+)
+
+# curl permits joined short options. Options that take a value consume the
+# remainder of their token, so `-sFname=x` contains a real -F while
+# `-HContent-Type:x` does not contain a -T. This set comes from curl's short
+# option table and lets the guard stop parsing at the right place.
+CURL_SHORT_VALUE_OPTS = frozenset("AbcCdDeEFHhKmoPQrTtUuwxXyYz")
+
+# Long curl options that consume the following token when no `=` is used.
+# Keeping this explicit is what distinguishes `curl --get ...` from
+# `curl --header --get ...`, where `--get` is merely the header value.
+CURL_LONG_VALUE_OPTS = frozenset(
+    {
+        "--abstract-unix-socket",
+        "--alt-svc",
+        "--aws-sigv4",
+        "--cacert",
+        "--capath",
+        "--cert",
+        "--cert-type",
+        "--ciphers",
+        "--config",
+        "--connect-timeout",
+        "--connect-to",
+        "--continue-at",
+        "--cookie",
+        "--cookie-jar",
+        "--create-file-mode",
+        "--crlfile",
+        "--curves",
+        "--data",
+        "--data-ascii",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "--delegation",
+        "--dns-interface",
+        "--dns-ipv4-addr",
+        "--dns-ipv6-addr",
+        "--dns-servers",
+        "--doh-url",
+        "--dump-header",
+        "--egd-file",
+        "--engine",
+        "--etag-compare",
+        "--etag-save",
+        "--expect100-timeout",
+        "--form",
+        "--form-string",
+        "--ftp-account",
+        "--ftp-alternative-to-user",
+        "--ftp-method",
+        "--ftp-port",
+        "--ftp-ssl-ccc-mode",
+        "--haproxy-clientip",
+        "--header",
+        "--help",
+        "--hostpubmd5",
+        "--hostpubsha256",
+        "--hsts",
+        "--interface",
+        "--ipfs-gateway",
+        "--json",
+        "--keepalive-time",
+        "--key",
+        "--key-type",
+        "--krb",
+        "--libcurl",
+        "--limit-rate",
+        "--local-port",
+        "--login-options",
+        "--mail-auth",
+        "--mail-from",
+        "--mail-rcpt",
+        "--max-filesize",
+        "--max-redirs",
+        "--max-time",
+        "--netrc-file",
+        "--noproxy",
+        "--oauth2-bearer",
+        "--output",
+        "--output-dir",
+        "--parallel-max",
+        "--pass",
+        "--pinnedpubkey",
+        "--preproxy",
+        "--proto",
+        "--proto-default",
+        "--proto-redir",
+        "--proxy",
+        "--proxy-cacert",
+        "--proxy-capath",
+        "--proxy-cert",
+        "--proxy-cert-type",
+        "--proxy-ciphers",
+        "--proxy-crlfile",
+        "--proxy-header",
+        "--proxy-key",
+        "--proxy-key-type",
+        "--proxy-pass",
+        "--proxy-pinnedpubkey",
+        "--proxy-service-name",
+        "--proxy-tls13-ciphers",
+        "--proxy-tlsauthtype",
+        "--proxy-tlspassword",
+        "--proxy-tlsuser",
+        "--proxy-user",
+        "--proxy1.0",
+        "--pubkey",
+        "--quote",
+        "--random-file",
+        "--range",
+        "--rate",
+        "--referer",
+        "--request",
+        "--request-target",
+        "--resolve",
+        "--retry",
+        "--retry-delay",
+        "--retry-max-time",
+        "--sasl-authzid",
+        "--service-name",
+        "--socks4",
+        "--socks4a",
+        "--socks5",
+        "--socks5-gssapi-service",
+        "--socks5-hostname",
+        "--speed-limit",
+        "--speed-time",
+        "--stderr",
+        "--telnet-option",
+        "--tftp-blksize",
+        "--time-cond",
+        "--tls-max",
+        "--tls13-ciphers",
+        "--tlsauthtype",
+        "--tlspassword",
+        "--tlsuser",
+        "--trace",
+        "--trace-ascii",
+        "--trace-config",
+        "--unix-socket",
+        "--upload-file",
+        "--upload-flags",
+        "--url",
+        "--url-query",
+        "--user",
+        "--user-agent",
+        "--variable",
+        "--write-out",
+    }
+)
+
+# HTTPie request-item separators. The first separator decides the item's kind:
+# header (`:`), query (`==`), string/JSON body (`=` / `:=`), or file body (`@`).
+HTTPIE_ITEM = re.compile(r"^[^:=@]+(:=|==|=|@|:)")
+HTTPIE_VALUE_OPTS = frozenset(
+    {
+        "-a",
+        "-o",
+        "-p",
+        "--auth",
+        "--boundary",
+        "--cert",
+        "--cert-key",
+        "--ciphers",
+        "--format-options",
+        "--max-headers",
+        "--output",
+        "--print",
+        "--proxy",
+        "--raw",
+        "--session",
+        "--session-read-only",
+        "--ssl",
+        "--style",
+        "--timeout",
+        "--verify",
+    }
 )
 
 # The fallback when a command will not tokenise. Deliberately narrow: each of
@@ -267,6 +445,7 @@ def normalise(command: str) -> str:
 
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z_0-9]*)\1")
 REDIRECTIONS = {">", ">>", "<", "<<", "<<<", ">&", "<&", ">|"}
+INPUT_REDIRECTIONS = {"<", "<<", "<<<", "<&"}
 
 
 def strip_heredocs(command: str) -> str:
@@ -298,11 +477,18 @@ def strip_heredocs(command: str) -> str:
 
 def segments(command: str):
     """Split a command into argv lists roughly the way a shell would."""
+    return [argv for argv, _, _ in annotated_segments(command)]
+
+
+def annotated_segments(command: str):
+    """Split commands while retaining whether stdin is piped or redirected."""
     lexer = shlex.shlex(normalise(strip_heredocs(command)), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
     out, current = [], []
     skip_next = False
+    piped_input = False
+    redirected_input = False
     for token in lexer:
         if skip_next:
             skip_next = False
@@ -312,16 +498,20 @@ def segments(command: str):
             # and a leading redirection would otherwise become the command.
             if current and re.fullmatch(r"[0-9]", current[-1]):
                 current.pop()
+            if token in INPUT_REDIRECTIONS:
+                redirected_input = True
             skip_next = True
             continue
         if token and all(c in ";&|()" for c in token):
             if current:
-                out.append(current)
+                out.append((current, piped_input, redirected_input))
                 current = []
+            piped_input = token in ("|", "|&")
+            redirected_input = False
         else:
             current.append(token)
     if current:
-        out.append(current)
+        out.append((current, piped_input, redirected_input))
     return out
 
 
@@ -389,6 +579,76 @@ def options(argv, value_opts):
             continue
         if token.startswith("-"):
             yield token
+
+
+def curl_options(argv):
+    """Yield parsed curl options without re-reading option values as flags."""
+    i = 1
+    while i < len(argv):
+        token = argv[i]
+        if token == "--":
+            return
+        if token.startswith("--"):
+            name, separator, attached = token.partition("=")
+            name = name.lower()
+            value = attached if separator else ""
+            if name in CURL_LONG_VALUE_OPTS and not separator and i + 1 < len(argv):
+                value = argv[i + 1]
+                i += 1
+            yield name, value
+            i += 1
+            continue
+        if token.startswith("-") and token != "-":
+            short = token[1:]
+            j = 0
+            while j < len(short):
+                option = short[j]
+                if option in CURL_SHORT_VALUE_OPTS:
+                    value = short[j + 1 :] if j + 1 < len(short) else ""
+                    if not value and i + 1 < len(argv):
+                        value = argv[i + 1]
+                        i += 1
+                    yield option, value
+                    break
+                yield option, ""
+                j += 1
+        i += 1
+
+
+def httpie_body_item(token: str) -> bool:
+    """Whether one HTTPie request item supplies a body rather than a read."""
+    if token.startswith("-") or token.lower().startswith(("http://", "https://")):
+        return False
+    if token.startswith("@"):
+        return True
+    found = HTTPIE_ITEM.match(token)
+    return bool(found and found.group(1) in ("=", ":=", "@"))
+
+
+def httpie_method(argv):
+    """Return HTTPie's method from its positional slot, skipping option values."""
+    positional = []
+    skip = False
+    for token in argv[1:]:
+        if skip:
+            skip = False
+            continue
+        if token.startswith("-"):
+            name = token.split("=", 1)[0]
+            if name in HTTPIE_VALUE_OPTS and "=" not in token:
+                skip = True
+            continue
+        if any(host in token.lower() for host in RUNPOD_HOSTS):
+            break
+        positional.append(token)
+    if positional and positional[-1].lower() in (
+        "get",
+        "head",
+        "options",
+        *WRITE_METHODS,
+    ):
+        return positional[-1].lower()
+    return None
 
 
 # --------------------------------------------------------------------- rules
@@ -472,52 +732,86 @@ def check_http(argv):
     joined = " ".join(argv).lower()
     if not any(host in joined for host in RUNPOD_HOSTS):
         return
-    # curl -G turns --data-* into a query string: the request really is a GET.
-    #
-    # Case matters here, and getting it wrong was a live bypass: `-g` is
-    # --globoff, which says nothing about the method, so lowercasing this test
-    # let `curl -g -X POST .../pods -d @body.json` create a pod unchecked.
-    # Short options are case-sensitive; long ones are not.
-    if any(a == "-G" or a.lower() == "--get" for a in argv):
-        return
+    client = base(argv[0]).lower()
     writes = False
-    for i, token in enumerate(argv):
-        low = token.lower()
-        flag = low.split("=", 1)[0]
-        if flag in WRITE_FLAGS or flag.startswith("--data"):
-            writes = True
-        # `-X` is --request. Lower-case `-x` is --proxy, and means nothing here.
-        if token == "-X" or flag in ("--request", "--method"):
-            value = (
-                low.split("=", 1)[1]
-                if "=" in low
-                else (argv[i + 1].lower() if i + 1 < len(argv) else "")
-            )
-            if value in WRITE_METHODS:
+    request_method = None
+
+    if client == "curl":
+        parsed = list(curl_options(argv))
+
+        # curl -G turns --data-* into a query string. It is not an
+        # unconditional pass: -G with -X POST still sends POST, while -G with
+        # --form or --upload-file remains write-shaped and is refused.
+        force_get = any(option in ("G", "--get") for option, _ in parsed)
+
+        for option, value in parsed:
+            if option in ("F", "T") or option in CURL_WRITE_FLAGS:
                 writes = True
-        # curl accepts the value attached: -XPOST, -XDELETE.
-        if token.startswith("-X") and len(token) > 2 and token[2:].lower() in WRITE_METHODS:
+            if option == "d" and not force_get:
+                writes = True
+            if option.startswith("--data") and not force_get:
+                writes = True
+            if option in ("X", "--request"):
+                request_method = value.lower()
+                if request_method in WRITE_METHODS:
+                    writes = True
+
+    elif client == "wget":
+        for i, token in enumerate(argv[1:], start=1):
+            low = token.lower()
+            flag, separator, attached = low.partition("=")
+            if flag in WGET_WRITE_FLAGS:
+                writes = True
+            if flag == "--method":
+                request_method = (
+                    attached if separator else (argv[i + 1].lower() if i + 1 < len(argv) else "")
+                )
+                if request_method in WRITE_METHODS:
+                    writes = True
+
+    elif client in ("http", "https"):
+        request_method = httpie_method(argv)
+        if request_method in WRITE_METHODS:
             writes = True
-        if base(low) == "post" or low in WRITE_METHODS:
-            writes = True  # httpie takes the method as a positional
-    if "graphql" in joined and "query=" not in joined:
-        writes = True
+        for token in argv[1:]:
+            flag = token.lower().split("=", 1)[0]
+            # HTTPie defaults to POST when it receives a body. Treat even an
+            # explicit GET-with-body conservatively: guessing which token was
+            # the method previously opened bypasses through option values.
+            if httpie_body_item(token) or flag == "--raw":
+                writes = True
+
     if not writes:
         return
     if "networkvolume" in joined:
         deny("writes to a network volume — irreversible, and the corpus lives there")
+
     # Shutting a pod down saves money, and Governance 8 requires shutdown to be
     # *verified* against provider state. A guard that blocks stopping a pod is
     # working against the rule it exists to serve.
-    # Judge the URL, not the whole command line: a body field named
-    # "deleteAfter" is not a shutdown, and reading `delete` anywhere in the
-    # command was enough to wave a pod creation through.
-    urls = [a.lower() for a in argv if "//" in a or a.lower().startswith("http")]
-    shutting_down = any(seg in url for url in urls for seg in ("/stop", "/terminate")) or (
-        any("/pods/" in url for url in urls)
-        and any(a.lower() in ("delete", "-xdelete") or a.lower().endswith("delete") for a in argv)
+    #
+    # Judge parsed paths on RunPod URLs only. A query value such as
+    # `?callback=/stop`, or an unrelated second URL ending in /stop, must not
+    # turn a pod-creation request into apparent cleanup.
+    runpod_paths = []
+    for token in argv:
+        candidate = token.split("=", 1)[1] if token.lower().startswith("--url=") else token
+        if not any(host in candidate.lower() for host in RUNPOD_HOSTS):
+            continue
+        if not candidate.lower().startswith(("http://", "https://")):
+            candidate = f"https://{candidate}"
+        try:
+            runpod_paths.append(urlsplit(candidate).path.rstrip("/"))
+        except ValueError:
+            continue
+
+    delete_request = request_method == "delete"
+    shutting_down = bool(runpod_paths) and all(
+        path.endswith(("/stop", "/terminate"))
+        or (delete_request and re.search(r"/pods/[^/]+$", path))
+        for path in runpod_paths
     )
-    if shutting_down and not any(seg in url for url in urls for seg in ("/start", "/resume")):
+    if shutting_down:
         return
     deny(f"writes to the RunPod API, which creates or destroys billed resources — {GOV8}")
 
@@ -532,6 +826,38 @@ def check_python(argv):
         inline,
     ):
         deny(f"brings up or destroys RunPod resources through the SDK — {GOV8}")
+    if re.search(
+        r"\b(?:requests|httpx)\s*\.\s*(?:post|put|patch|delete)\s*\(",
+        inline,
+        re.I,
+    ) or re.search(
+        r"\b(?:requests|httpx)\s*\.\s*request\s*\(\s*['\"](?:POST|PUT|PATCH|DELETE)['\"]",
+        inline,
+        re.I,
+    ):
+        deny(f"writes to the RunPod API through an inline HTTP client — {GOV8}")
+
+
+def check_httpie_input(command: str) -> None:
+    """Catch HTTPie request bodies supplied by a pipe or input redirection."""
+    visible = normalise(strip_heredocs(command))
+    if not any(host in visible.lower() for host in RUNPOD_HOSTS):
+        return
+    try:
+        parsed = annotated_segments(command)
+    except ValueError:
+        # The general fallback still handles visible explicit HTTP methods. If
+        # shell quoting is malformed, do not guess that ordinary prose is a
+        # piped request.
+        return
+    for argv, piped_input, redirected_input in parsed:
+        argv = peel(argv)
+        if not argv or base(argv[0]).lower() not in ("http", "https"):
+            continue
+        if not any(host in " ".join(argv).lower() for host in RUNPOD_HOSTS):
+            continue
+        if piped_input or redirected_input:
+            deny(f"HTTPie infers POST from piped or redirected request data — {GOV8}")
 
 
 def _precious():
@@ -662,6 +988,7 @@ SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
 
 
 def inspect(command: str, depth: int = 0) -> None:
+    check_httpie_input(command)
     try:
         parsed = segments(command)
     except ValueError:

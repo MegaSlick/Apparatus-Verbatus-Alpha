@@ -17,6 +17,20 @@ branches, historical codenames and bloat do not come with it.
 
 If you cannot say what a line is for, it does not enter.
 
+## Start here, every session
+
+At the start of every session — after installing the hooks if this is a fresh clone —
+**read `workbench/active/` before proposing or changing anything.** It carries the
+handoff from the last session: what was done, what is open, what was decided and why.
+The documents in this repository say what is *always* true. The handoff says what is
+true *now*, and you cannot work sensibly from one without the other.
+
+If `workbench/active/` is empty, say so rather than guessing. A missing handoff is a fact
+worth reporting, not a gap to fill from context.
+
+**Leave one behind.** The last thing in a session: archive the handoff you were given,
+then write the one you are leaving.
+
 ## Where notes go
 
 **`workbench/` — gitignored, local only.** Session notes, handoffs, todo lists, grep
@@ -26,9 +40,19 @@ dumps, design scribbles, half-finished thinking. All of it. None of it in the re
 - `workbench/archive/<date>_<topic>/` — filed when the work finishes. Then, not later.
 - `workbench/scratch/` — disposable. Anyone may delete anything here without asking.
 
-The `pre-commit` hook refuses stray markdown, so a note cannot leak into the repository
-by accident. A committed `.md` is a canonical document, a `README.md`, a `HANDOFF.md`,
-or dated evidence under `history/` — nothing else.
+**Archive before you overwrite.** A handoff you are replacing goes to `archive/` first.
+It is the record of what the last session believed, and that is worth keeping even where
+it turned out to be wrong — overwriting it destroys the only account of how a decision
+was reached. The moment to preserve it is when you write the next handoff.
+
+**`active/` holds what is in play and nothing else.** A note describing finished work is
+not active, however recently it was written. If you cannot say what the next session is
+meant to *do* with a file, it belongs in `archive/`.
+
+The `pre-commit` hook refuses stray documentation, so a note cannot leak into the
+repository by accident. Committed documentation must be a canonical document, a
+`README.md`, a `HANDOFF.md`, dated evidence under `history/`, or one of the harness's
+declared documents — nothing else.
 
 **If it is dated or speculative it is not a document, it is a note.** The previous
 repository accumulated 320 markdown files for want of this distinction.
@@ -94,8 +118,13 @@ that shares your blind spots only confirms them. A reader built differently find
 the others cannot see, which is not a theory — it is the observed reason this rule
 exists.
 
-These audits are cheap set against a defect reaching `main`. Run them by default; Tyrel
-will say when usage makes that too expensive.
+**Ask before running them.** Reviewing work that is about to change again wastes the
+review and stales the finding. Tyrel decides when a piece of work is settled enough to
+be worth checking. Keep working while it is fresh; the review is the last step before
+the push, not punctuation between edits.
+
+These audits are cheap set against a defect reaching `main`, so the answer is usually
+yes. It is still Tyrel's call.
 
 Then record it:
 

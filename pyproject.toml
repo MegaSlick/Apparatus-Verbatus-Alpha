@@ -9,8 +9,12 @@ dependencies = []
 # Nothing is added here without a reason recorded in the pull request that adds it.
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["common", "common.*"]
+namespaces = false
 
 [tool.ruff]
 line-length = 100

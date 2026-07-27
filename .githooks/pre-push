@@ -46,26 +46,40 @@ block() {
 }
 
 while read -r _local_ref local_sha remote_ref remote_sha; do
-  branch=${remote_ref#refs/heads/}
+  case "$remote_ref" in
+    refs/heads/*)
+      kind=branch
+      name=${remote_ref#refs/heads/}
+      ;;
+    refs/tags/*)
+      kind=tag
+      name=${remote_ref#refs/tags/}
+      ;;
+    *)
+      block "push to unsupported ref '$remote_ref'." \
+"Only branches and tags have a declared policy here. Refuse an unknown
+  ref rather than letting it leave unchecked."
+      ;;
+  esac
 
-  # Deleting a branch is normal cleanup after a merge — allow it, except for main.
+  # Deleting a branch or tag is normal cleanup — allow it, except for main.
   if [ "$local_sha" = "$z40" ]; then
-    [ "$branch" = "main" ] && block "deleting main."
+    [ "$kind" = "branch" ] && [ "$name" = "main" ] && block "deleting main."
     continue
   fi
 
   # 1. main moves only by merging a pull request.
-  if [ "$branch" = "main" ] && [ "$ALLOW_MAIN_PUSH" != "1" ]; then
+  if [ "$kind" = "branch" ] && [ "$name" = "main" ] && [ "$ALLOW_MAIN_PUSH" != "1" ]; then
     block "direct push to main." \
 "main moves only by merge. Put this on a branch:
       git switch -c work/<short-topic> && git push -u origin work/<short-topic>"
   fi
 
   # 2. Branch names describe the work, and there are only three kinds.
-  if [ "$branch" != "main" ] && [ "$ALLOW_ANY_BRANCH" != "1" ]; then
-    case "$branch" in
+  if [ "$kind" = "branch" ] && [ "$name" != "main" ] && [ "$ALLOW_ANY_BRANCH" != "1" ]; then
+    case "$name" in
       work/*|audit/*|infra/*) : ;;
-      *) block "branch name '$branch' is not one of the three kinds." \
+      *) block "branch name '$name' is not one of the three kinds." \
 "      work/<topic>   a normal change
       audit/<topic>  a review that produces findings, not code
       infra/<topic>  risky structural work" ;;
@@ -74,12 +88,26 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
 
   # 3. Never rewrite history someone else may be holding.
   #    Detects --force and --force-with-lease alike: the remote tip must be an
-  #    ancestor of what you are pushing.
-  if [ "$remote_sha" != "$z40" ] && [ "$ALLOW_FORCE_PUSH" != "1" ]; then
+  #    ancestor of what you are pushing. Published tags are immutable too.
+  if [ "$kind" = "branch" ] && [ "$remote_sha" != "$z40" ] && \
+     [ "$ALLOW_FORCE_PUSH" != "1" ]; then
     if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
-      block "force-push to '$branch' — this rewrites history." \
+      block "force-push to '$name' — this rewrites history." \
 "Another agent may be working from these commits. Pull and merge instead."
     fi
+  fi
+  if [ "$kind" = "tag" ] && [ "$remote_sha" != "$z40" ] && \
+     [ "$ALLOW_FORCE_PUSH" != "1" ]; then
+    block "moving existing tag '$name' — tags are immutable once published." \
+"Create a new tag. ALLOW_FORCE_PUSH=1 exists for an intentional exceptional move."
+  fi
+
+  # An annotated tag's local SHA names the tag object, while audits name the
+  # commit that was read. Peel every ref to its commit so a tag at an audited
+  # HEAD is usable and a tag pointing at a non-commit fails closed.
+  audit_sha=$(git rev-parse "$local_sha^{commit}" 2>/dev/null) || audit_sha=""
+  if [ -z "$audit_sha" ]; then
+    block "'$name' does not resolve to a commit, so the audit gate cannot check it."
   fi
 
   # 4. Nothing leaves this machine that three reviewers have not read.
@@ -91,13 +119,13 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   #    by `touch` does not read as a review. This raises the bar; it is not a
   #    lock, and nothing here can tell an author from an auditor.
   reviewers=0
-  if grep -qx "commit:  $local_sha" "$receipts/$local_sha" 2>/dev/null; then
+  if grep -qx "commit:  $audit_sha" "$receipts/$audit_sha" 2>/dev/null; then
     # Distinct names, not lines: three entries from one reviewer is one
     # reviewer with a stutter, and the whole point is independent readers.
-    reviewers=$(grep '^auditor:' "$receipts/$local_sha" | sort -u | wc -l | tr -d ' ')
+    reviewers=$(grep '^auditor:' "$receipts/$audit_sha" | sort -u | wc -l | tr -d ' ')
   fi
   if [ "$ALLOW_UNAUDITED_PUSH" != "1" ] && [ "$reviewers" -lt 3 ]; then
-    block "'$branch' has $reviewers of 3 reviewers for $(echo "$local_sha" | cut -c1-8)." \
+    block "$kind '$name' has $reviewers of 3 reviewers for $(echo "$audit_sha" | cut -c1-8)." \
 "Three reviewers read the work before it is pushed — Claude Opus 5, Claude
   Fable 5, and GPT — on an identical prompt, blind to each other. Record
   each one as it reports:
