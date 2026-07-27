@@ -51,9 +51,12 @@ line naming the model that wrote it. An agent that audited the work and found de
 without writing lines is recorded as `Reviewed-by` instead — so a commit can say it was
 written by one model and adversarially read by two others, which is worth knowing.
 
-A `commit-msg` hook refuses a commit that names no author. It binds the commits written
-here; the merge commit GitHub creates when a pull request lands is made on their servers,
-where no local hook runs, so that one is outside its reach.
+A `commit-msg` hook refuses a commit that names no author, in any clone where the hooks
+have been installed — CLAUDE.md says how, and until it is done the check does not run at
+all. Even then it is an alarm rather than a lock: the messages git writes itself are
+exempt, and it can be skipped deliberately. The merge commit GitHub creates when a pull
+request lands is made on their servers, where no local hook runs, so that one is outside
+its reach entirely.
 
 Models are named by release, not by vendor alone, because "an AI wrote it" ages badly and
 "Claude Opus 5 wrote it" does not.

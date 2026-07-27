@@ -42,16 +42,31 @@ if [ -z "$message" ] || [ ! -f "$message" ]; then
   exit 1
 fi
 
-# A merge commit's message is written by git, not by anyone. Same for a commit
-# that is being reworded during a rebase of already-attributed work.
-# Only the forms git itself writes. "Merge " as a bare prefix would exempt
-# `git merge -m "Merge the two hook files"`, which is a real change someone
-# made, and would hand anyone a one-word bypass.
+# Some commit messages are written by git, and there is no machine to name.
+#
+# Ask git which operation is running rather than reading the subject line. A
+# subject is just text somebody typed: `git commit -m "Merge the two hook
+# files"` is a real change by a real person, and matching on "Merge branch "
+# would have handed away the exemption for the price of one word. These files
+# exist only while git is actually merging, reverting or cherry-picking.
+#
+# If the path cannot be resolved, no exemption is granted. A check that cannot
+# run is a failure, not a pass.
+for state in MERGE_HEAD REVERT_HEAD CHERRY_PICK_HEAD; do
+  state_path=$(git rev-parse --git-path "$state" 2>/dev/null) || continue
+  [ -e "$state_path" ] && exit 0
+done
+
+# `git commit --fixup` and its siblings are the exception to that, and it is
+# worth being plain about: git leaves no state saying one is in progress, so
+# this test reads the message and nothing else. Anyone who types the prefix
+# gets the exemption. It is narrowed to the exact form git writes — the
+# trailing space matters — and that is as far as it can be taken. The commit
+# being fixed up is already attributed, and it is squashed away before it
+# reaches main. ALLOW_UNATTRIBUTED=1 is the honest way to skip this hook.
 first=$(sed -n '1p' "$message")
 case "$first" in
-  "Merge branch "*|"Merge pull request "*|"Merge remote-tracking "*|"Merge tag "*) exit 0 ;;
-  'Revert "'*) exit 0 ;;
-  "fixup!"*|"squash!"*|"amend!"*) exit 0 ;;
+  "fixup! "*|"squash! "*|"amend! "*) exit 0 ;;
 esac
 
 # Ask git, rather than grepping. Git counts only the last paragraph as
