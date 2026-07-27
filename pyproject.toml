@@ -27,3 +27,16 @@ select = ["E4", "E7", "E9", "F", "I", "B"]
 testpaths = ["."]
 python_files = ["test_*.py"]
 addopts = "-q"
+# pytest skips every dotted directory by default, so the harness's own tests
+# under .claude/hooks/ were found by CI's `find` and then collected by nobody —
+# pytest exited 5, "no tests ran", and the step failed.
+#
+# `worktrees` is not optional. Agents work in .claude/worktrees/<topic>, each a
+# full checkout, so without it collection finds several files with the same
+# basename and dies on an import mismatch.
+# Setting this key REPLACES pytest's built-in list rather than adding to it, so
+# the ordinary noise directories have to be named again here or collection will
+# start walking them.
+norecursedirs = [".git", ".venv", "venv", ".ruff_cache", ".pytest_cache",
+                 ".mypy_cache", ".tox", "node_modules", "build", "dist",
+                 "worktrees", "__pycache__", "workbench", "private", "scriptorium"]

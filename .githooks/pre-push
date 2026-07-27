@@ -1,13 +1,41 @@
 #!/bin/sh
 # Branch rules, enforced locally so they bind every tool — Claude, Codex, GPT, you.
-# GitHub cannot enforce these: free-plan private repos have no branch protection.
+# They catch a mistake here, at the moment it is made, with a message that says
+# what to do instead. What `main` itself will accept is settled server-side and
+# is not this file's business — see README.md.
 #
 # Escape hatches, to be used knowingly and rarely:
-#   ALLOW_MAIN_PUSH=1     push directly to main
-#   ALLOW_FORCE_PUSH=1    rewrite a branch's history
-#   ALLOW_ANY_BRANCH=1    push a branch outside the naming convention
+#   ALLOW_MAIN_PUSH=1       push directly to main
+#   ALLOW_FORCE_PUSH=1      rewrite a branch's history
+#   ALLOW_ANY_BRANCH=1      push a branch outside the naming convention
+#   ALLOW_UNAUDITED_PUSH=1  push work no agent has reviewed
 
 z40='0000000000000000000000000000000000000000'
+
+# Where audit receipts live: the *common* git directory, so every worktree
+# shares one record. Never committed — a receipt is evidence about a local
+# working session, not a document.
+#
+# Resolved carefully. If this came back empty the path would become
+# /audit-receipts, every push would be refused, and nobody would guess why.
+# `cd ""` succeeds and stays put, so guard the inner command, not the cd —
+# otherwise a failed rev-parse silently yields $PWD and looks like an answer.
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
+if [ -z "$common" ]; then
+  relative=$(git rev-parse --git-common-dir 2>/dev/null) || relative=""
+  if [ -n "$relative" ]; then
+    common=$(cd "$relative" 2>/dev/null && pwd) || common=""
+  fi
+fi
+if [ -z "$common" ]; then
+  echo "" >&2
+  echo "  BLOCKED: cannot locate the git directory, so the audit gate" >&2
+  echo "  cannot check anything. A check that cannot run is a failure," >&2
+  echo "  not a pass. Set ALLOW_UNAUDITED_PUSH=1 only if you understand why." >&2
+  echo "" >&2
+  exit 1
+fi
+receipts="$common/audit-receipts"
 
 block() {
   echo "" >&2
@@ -52,6 +80,37 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
       block "force-push to '$branch' — this rewrites history." \
 "Another agent may be working from these commits. Pull and merge instead."
     fi
+  fi
+
+  # 4. Nothing leaves this machine that three reviewers have not read.
+  #    Whoever wrote the work does not get to be the only one who has seen it
+  #    leave, and one reviewer that shares the author's blind spots is not
+  #    much better than none. Record each with .githooks/record-audit.sh; they
+  #    accumulate in one receipt rather than overwriting each other.
+  #    The receipt must name the commit it covers, so an empty file dropped in
+  #    by `touch` does not read as a review. This raises the bar; it is not a
+  #    lock, and nothing here can tell an author from an auditor.
+  reviewers=0
+  if grep -qx "commit:  $local_sha" "$receipts/$local_sha" 2>/dev/null; then
+    # Distinct names, not lines: three entries from one reviewer is one
+    # reviewer with a stutter, and the whole point is independent readers.
+    reviewers=$(grep '^auditor:' "$receipts/$local_sha" | sort -u | wc -l | tr -d ' ')
+  fi
+  if [ "$ALLOW_UNAUDITED_PUSH" != "1" ] && [ "$reviewers" -lt 3 ]; then
+    block "'$branch' has $reviewers of 3 reviewers for $(echo "$local_sha" | cut -c1-8)." \
+"Three reviewers read the work before it is pushed — Claude Opus 5, Claude
+  Fable 5, and GPT — on an identical prompt, blind to each other. Record
+  each one as it reports:
+
+      .githooks/record-audit.sh <reviewer> '<what it found>'
+
+  They accumulate; none overwrites another. The receipt names one commit,
+  so amending or adding one means auditing again — which is the point.
+
+  Subagents and other AI tools do not push at all. They review and report;
+  the push is Tyrel's or the main session's to make afterwards.
+
+  ALLOW_UNAUDITED_PUSH=1 if you genuinely mean to skip this."
   fi
 done
 exit 0

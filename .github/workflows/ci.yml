@@ -82,9 +82,16 @@ jobs:
           python-version: '3.12'
 
       - name: Lint
+        # `find`, not a glob. `**/*.py` without globstar means `*/*.py` — one
+        # directory deep — and `*` never matches a dotted directory, so both
+        # `pipeline/1_exemplar/seal.py` and `.claude/hooks/guard.py` came back
+        # as "no python yet" and the whole step passed without linting.
         run: |
-          if ls **/*.py *.py >/dev/null 2>&1; then
-            pipx install ruff
+          if find . -name '*.py' -not -path './.git/*' | grep -q .; then
+            # Pinned. An unpinned formatter turns a green branch red on someone
+            # else's release, which is the definition of a gate that cries wolf.
+            # Bump it deliberately, and reformat in the same commit.
+            pipx install 'ruff==0.15.4'
             ruff check .
             ruff format --check .
           else

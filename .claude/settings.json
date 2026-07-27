@@ -3,7 +3,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|mcp__runpod__.*",
+        "matcher": "Bash|mcp__.*",
         "hooks": [
           {
             "type": "command",
