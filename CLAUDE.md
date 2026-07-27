@@ -142,6 +142,40 @@ another agent is editing files you cannot see.
 - Never rebase, force-push, or amend a branch that is not yours.
 - If a file changed under you, stop and re-read it rather than overwriting.
 
+## Attribution
+
+**Every commit says which machine wrote it.** All the code here is AI-generated; Tyrel
+directs and decides but does not write the lines, and the history is where that is
+recorded rather than something a reader has to be told.
+
+End the message with at least one of these, after a blank line:
+
+```
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Codex (OpenAI) <noreply@openai.com>
+```
+
+**Writing and reviewing are different contributions, and get different trailers.** An
+agent that read the work and found defects but wrote no lines is a reviewer:
+
+```
+Reviewed-by: Claude Fable 5 <noreply@anthropic.com>
+Reviewed-by: CodeRabbit <noreply@coderabbit.ai>
+```
+
+So a commit can honestly say it was written by Opus and reviewed by Fable and
+CodeRabbit — which is worth knowing, because it shows at a glance which work was
+adversarially read and by what. Collapsing both into one list throws that away.
+
+Only authorship is enforced; an audit covers a branch, not every commit on it. Record a
+review wherever one happened.
+
+Name the model by release — "Claude Opus 5", not "Claude" — because a vendor name alone
+stops meaning anything as the models change.
+
+The commit author stays Tyrel. He is accountable for what lands; the trailers say which
+machine did the work. A `commit-msg` hook refuses a commit that names no author.
+
 ## Hard rules
 
 These come from GOVERNANCE.md and are repeated because breaking them is expensive.

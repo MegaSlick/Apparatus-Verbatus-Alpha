@@ -1,0 +1,80 @@
+#!/bin/sh
+# Every commit says which machine wrote it.
+#
+# All the code here is AI-generated. Tyrel directs the work and decides what
+# lands; he does not write the lines. That is not a disclaimer, it is a fact
+# about the repository, and a reader six months from now — or anyone the
+# project is ever shown to — should be able to see it from the history alone
+# rather than being told.
+#
+# Git already has the right shape for this. The **author** is who the commit
+# belongs to and who is accountable: Tyrel. A **Co-Authored-By** trailer names
+# everyone else who contributed. GitHub reads those trailers and shows them on
+# the commit, so the record is visible without anyone having to explain it.
+#
+# So: no commit lands without at least one Co-Authored-By line.
+#
+#   Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+#   Co-Authored-By: Codex (OpenAI) <noreply@openai.com>
+#
+# Reading the work is a different contribution from writing it, and it has its
+# own trailer. An auditor that found a defect but wrote no lines is a reviewer:
+#
+#   Reviewed-by: Claude Fable 5 <noreply@anthropic.com>
+#   Reviewed-by: CodeRabbit <noreply@coderabbit.ai>
+#
+# Both are worth recording, and separately. "Written by Opus, reviewed by Fable
+# and CodeRabbit" is a true and useful sentence; collapsing it into one list
+# throws away which machine caught what.
+#
+# Only authorship is required — an audit covers a branch, not every commit on
+# it — but record a review wherever one happened.
+#
+# Escape hatch, for a commit no machine touched:
+#   ALLOW_UNATTRIBUTED=1
+
+[ "$ALLOW_UNATTRIBUTED" = "1" ] && exit 0
+
+message=$1
+if [ -z "$message" ] || [ ! -f "$message" ]; then
+  echo "  BLOCKED: no commit message to read, so attribution cannot be" >&2
+  echo "  checked. A check that cannot run is a failure, not a pass." >&2
+  exit 1
+fi
+
+# A merge commit's message is written by git, not by anyone. Same for a commit
+# that is being reworded during a rebase of already-attributed work.
+# Only the forms git itself writes. "Merge " as a bare prefix would exempt
+# `git merge -m "Merge the two hook files"`, which is a real change someone
+# made, and would hand anyone a one-word bypass.
+first=$(sed -n '1p' "$message")
+case "$first" in
+  "Merge branch "*|"Merge pull request "*|"Merge remote-tracking "*|"Merge tag "*) exit 0 ;;
+  'Revert "'*) exit 0 ;;
+  "fixup!"*|"squash!"*|"amend!"*) exit 0 ;;
+esac
+
+# Ask git, rather than grepping. Git counts only the last paragraph as
+# trailers, and so does GitHub — so a `Co-Authored-By:` in the subject, in
+# quoted prose, or in a code block reads as a trailer to grep and as nothing
+# at all to either of them. That is the silent lapse this hook exists to stop.
+# An address is required too: GitHub attributes by email, and a trailer
+# without one registers no co-author.
+if git interpret-trailers --parse <"$message" 2>/dev/null |
+     grep -qiE '^Co-Authored-By:[[:space:]]*.+<[^@[:space:]]+@[^>[:space:]]+>[[:space:]]*$'; then
+  exit 0
+fi
+
+echo "" >&2
+echo "  BLOCKED: this commit does not say which machine wrote it." >&2
+echo "" >&2
+echo "  Every commit here carries at least one of these, at the end of" >&2
+echo "  the message, after a blank line:" >&2
+echo "" >&2
+echo "      Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" >&2
+echo "      Co-Authored-By: Codex (OpenAI) <noreply@openai.com>" >&2
+echo "" >&2
+echo "  Use every one that applies. All the code here is AI-generated," >&2
+echo "  and the history is where that is recorded." >&2
+echo "" >&2
+exit 1
