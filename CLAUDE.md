@@ -150,7 +150,7 @@ recorded rather than something a reader has to be told.
 
 End the message with at least one of these, after a blank line:
 
-```
+```text
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Co-Authored-By: Codex (OpenAI) <noreply@openai.com>
 ```
@@ -158,7 +158,7 @@ Co-Authored-By: Codex (OpenAI) <noreply@openai.com>
 **Writing and reviewing are different contributions, and get different trailers.** An
 agent that read the work and found defects but wrote no lines is a reviewer:
 
-```
+```text
 Reviewed-by: Claude Fable 5 <noreply@anthropic.com>
 Reviewed-by: CodeRabbit <noreply@coderabbit.ai>
 ```
@@ -171,10 +171,16 @@ Only authorship is enforced; an audit covers a branch, not every commit on it. R
 review wherever one happened.
 
 Name the model by release — "Claude Opus 5", not "Claude" — because a vendor name alone
-stops meaning anything as the models change.
+stops meaning anything as the models change. `Codex (OpenAI)` is the one accepted
+exception, and is recorded at vendor level.
 
 The commit author stays Tyrel. He is accountable for what lands; the trailers say which
-machine did the work. A `commit-msg` hook refuses a commit that names no author.
+machine did the work.
+
+A `commit-msg` hook refuses a commit that names no author, once the hooks are installed.
+It does not refuse everything: git's own merge, revert and cherry-pick messages are
+exempt, `fixup!`, `squash!` and `amend!` subjects are exempt, and `ALLOW_UNATTRIBUTED=1`
+skips it outright. Like every hook here it is an alarm, not a lock.
 
 ## Hard rules
 
