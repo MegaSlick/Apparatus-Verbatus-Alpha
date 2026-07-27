@@ -92,7 +92,9 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   #    lock, and nothing here can tell an author from an auditor.
   reviewers=0
   if grep -qx "commit:  $local_sha" "$receipts/$local_sha" 2>/dev/null; then
-    reviewers=$(grep -c '^auditor:' "$receipts/$local_sha")
+    # Distinct names, not lines: three entries from one reviewer is one
+    # reviewer with a stutter, and the whole point is independent readers.
+    reviewers=$(grep '^auditor:' "$receipts/$local_sha" | sort -u | wc -l | tr -d ' ')
   fi
   if [ "$ALLOW_UNAUDITED_PUSH" != "1" ] && [ "$reviewers" -lt 3 ]; then
     block "'$branch' has $reviewers of 3 reviewers for $(echo "$local_sha" | cut -c1-8)." \
