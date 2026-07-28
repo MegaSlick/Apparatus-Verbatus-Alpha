@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['**']
 
 # The workflow reads the repository and nothing else.
 permissions:
@@ -14,22 +15,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      # v6.1.0; full commit pin prevents a mutable tag changing executed code.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           # The ingress check examines every reachable commit so that deleting a
           # leaked credential in a later commit cannot turn the check green.
           fetch-depth: 0
+          # Repository-controlled checks need no authenticated Git operation.
+          # Do not leave GITHUB_TOKEN in local Git config while they execute.
+          persist-credentials: false
 
       - name: Repository document policy
         run: sh .githooks/check-documents.sh
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        # v6.3.0; update deliberately after verifying the upstream release commit.
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
 
       - name: Repository ingress
-        run: python3 .githooks/check_ingress.py --history HEAD
+        shell: bash
+        run: |
+          printf '%s\0%s\0' "$GITHUB_REF" "$GITHUB_HEAD_REF" |
+            python3 .githooks/check_ingress.py --ref-fields
+          python3 .githooks/check_ingress.py --history HEAD
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            python3 .githooks/check_ingress.py --ref-object "$GITHUB_REF"
+          fi
 
       - name: Install check tools
         run: |
@@ -46,7 +59,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      # Keep this pin identical to the checkout used by the check job.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
       - name: The autoclave is empty
         # git's own failure must not read as an empty tray: capture ls-files
         # separately and fail on it, then filter. A check that cannot run is
@@ -63,16 +79,15 @@ jobs:
           if ! git ls-files -z autoclave/ > "$list"; then
             echo "git ls-files failed" >&2; exit 2
           fi
-          stray=""
+          stray_count=0
           while IFS= read -r -d '' entry; do
             [ -z "$entry" ] && continue
             [ "$entry" = "autoclave/README.md" ] && continue
-            stray="${stray}${entry}"$'\n'
+            stray_count=$((stray_count + 1))
           done < "$list"
-          stray="${stray%$'\n'}"
-          if [ -n "$stray" ]; then
-            echo "The autoclave still holds unsterilized drafts:" >&2
-            printf '%s\n' "$stray" | sed 's/^/  /' >&2
+          if [ "$stray_count" -ne 0 ]; then
+            echo "The autoclave still holds $stray_count unsterilized draft(s)." >&2
+            echo "Run 'git ls-files autoclave/' locally to inspect them." >&2
             echo "Sterilize and place them, or remove them, before merging." >&2
             exit 1
           fi

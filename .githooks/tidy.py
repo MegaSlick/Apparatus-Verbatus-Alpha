@@ -205,7 +205,18 @@ def main(argv=None):
         for path, match in duplicates:
             print(f"  {rel(path)}  ==  {rel(match)}")
         if args.file:
-            for path, _ in duplicates:
+            confirmed = []
+            for path, match in duplicates:
+                # Another session may edit active/ while this one is filing.
+                # Re-prove identity before the move phase; a stale hash must
+                # not send newly changed work into the disposable drawer.
+                # This narrows the race window; it is not a filesystem lock.
+                if not path.is_file() or not match.is_file() or digest(path) != digest(match):
+                    wants_attention = True
+                    print(f"  -> not moved: {rel(path)} changed after the duplicate scan")
+                    continue
+                confirmed.append(path)
+            for path in confirmed:
                 # Keep the path under active/, so a mistaken move can be undone
                 # by reversing it rather than guessing where a bare name came from.
                 target = SCRATCH / path.relative_to(ACTIVE)
@@ -215,7 +226,8 @@ def main(argv=None):
                     target = target.with_name(f"{path.stem}.{stamp}{path.suffix}")
                     stamp += 1
                 shutil.move(str(path), str(target))
-            print(f"  -> moved {len(duplicates)} to scratch/ (not deleted)")
+            if confirmed:
+                print(f"  -> moved {len(confirmed)} to scratch/ (not deleted)")
             # The budget below must describe active/ as it now stands, not as
             # it stood before the moves — a drawer this run just emptied must
             # not be reported over budget on its old contents.

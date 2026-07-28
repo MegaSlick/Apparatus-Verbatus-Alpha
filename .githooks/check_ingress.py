@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep credentials and repository-sized payloads out of Git.
+"""Reject recognized credential forms and repository-sized payloads from Git.
 
 The pre-commit hook scans the exact index state. CI scans every commit reachable
 from HEAD, so add-then-delete does not make a leaked key or corpus file disappear.
@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import math
 import os
 import re
 import subprocess
 import sys
 import tomllib
-from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -26,6 +24,7 @@ FIXTURE_MAX_BYTES = 25 * 1_048_576
 FIXTURE_TOTAL_MAX_BYTES = 100 * 1_048_576
 MANIFEST_PATH = "proof/fixtures.toml"
 FIXTURE_ROOT = "proof/fixtures/"
+PRIVATE_README = "private/README.md"
 
 MEDIA = {
     "image/jpeg": ((".jpg", ".jpeg"), (b"\xff\xd8\xff",)),
@@ -73,7 +72,10 @@ SECRET_PATTERNS = (
     # An ntfy topic is unauthenticated by design: the name IS the whole
     # credential, for reading and for forging. The old repository leaked its
     # topic into six committed paths, mostly as pasted working command lines.
-    ("ntfy-topic", re.compile(rb"\bNTFY_TOPIC[\t ]*=[\t ]*[\"']?[A-Za-z0-9_-]{6,}")),
+    (
+        "ntfy-topic",
+        re.compile(rb"\bNTFY_TOPIC[\t ]*=[\t ]*[\"']?[A-Za-z0-9_-]{6,}"),
+    ),
     # The URL form is how the old leak actually happened: a working command
     # line pasted whole. Anchored to this project's topic prefix so ntfy's own
     # documentation URLs (ntfy.sh/publish, ntfy.sh/docs) stay committable.
@@ -83,6 +85,21 @@ SECRET_PATTERNS = (
         re.compile(rb"https?://[^/\s:@]+:[^@\s/]{8,}@[^\s/]+", re.I),
     ),
 )
+
+# Path/rule/digest triples exempting one exact byte sequence at one exact path.
+# Not a placeholder exemption: the same bytes elsewhere, or any newly invented
+# topic at the same path, stay blocked. Full digests keep the 12-character
+# display fingerprints out of the trust boundary.
+#
+# It is empty, and that is the intended resting state. Two triples lived here
+# briefly to cover synthetic values in intermediate working commits that were
+# never pushed; the tree those commits produced does not contain them, so the
+# exemptions were dead the moment the work was assembled. A digest nobody can
+# resolve back to a string is unauditable by construction, and an exemption
+# nobody can audit inside a credential scanner is worse than no exemption at
+# all. An empty set is readable at a glance. Anything added here must arrive
+# with the reason, and must fail the scan when removed.
+DECLARED_SECRET_FIXTURES = frozenset()
 
 GENERIC_ASSIGNMENT = re.compile(
     rb"""(?ix)
@@ -94,17 +111,6 @@ GENERIC_ASSIGNMENT = re.compile(
     [\t ]*(?::|=)[\t ]*["']?
     (?P<value>[A-Za-z0-9_./+=-]{20,})
     """
-)
-
-PLACEHOLDERS = (
-    b"CHANGEME",
-    b"DUMMY",
-    b"EXAMPLE",
-    b"PLACEHOLDER",
-    b"REDACTED",
-    b"SAMPLE",
-    b"TEST",
-    b"YOUR",
 )
 
 
@@ -228,6 +234,30 @@ def working_tree() -> dict[str, Blob]:
     return entries
 
 
+def repository_paths() -> list[str]:
+    records = git("ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    return [os.fsdecode(raw) for raw in records.split(b"\0") if raw]
+
+
+def path_issues(paths, context: str) -> list[Issue]:
+    issues = []
+    for path in paths:
+        raw_path = os.fsencode(path)
+        fingerprint = hashlib.sha256(raw_path).hexdigest()[:12]
+        label = f"<repository-path:{fingerprint}>"
+        if any(ord(char) < 32 or ord(char) == 127 for char in path):
+            issues.append(
+                Issue(
+                    label,
+                    "control-path",
+                    "path contains an ASCII control character",
+                    context,
+                )
+            )
+        issues.extend(secret_issues(label, raw_path, context))
+    return issues
+
+
 def fixture_media(data: bytes) -> str | None:
     for media_type, (_, signatures) in MEDIA.items():
         if any(data.startswith(signature) for signature in signatures):
@@ -252,26 +282,16 @@ def sensitive_filename(path: str) -> bool:
     return name in SENSITIVE_NAMES or name.startswith(".env.") or name.endswith(SENSITIVE_SUFFIXES)
 
 
-def entropy(value: bytes) -> float:
-    counts = Counter(value)
-    length = len(value)
-    return -sum((count / length) * math.log2(count / length) for count in counts.values())
-
-
-def is_placeholder(value: bytes) -> bool:
-    upper = value.upper()
-    return any(word in upper for word in PLACEHOLDERS) or len(set(value)) < 6
-
-
 def secret_issues(path: str, data: bytes, context: str) -> list[Issue]:
     issues = []
     seen = set()
     for rule, pattern in SECRET_PATTERNS:
         for match in pattern.finditer(data):
             value = match.group(0)
-            if rule != "private-key" and is_placeholder(value):
+            digest = hashlib.sha256(value).hexdigest()
+            fingerprint = digest[:12]
+            if (path, rule, digest) in DECLARED_SECRET_FIXTURES:
                 continue
-            fingerprint = hashlib.sha256(value).hexdigest()[:12]
             key = (rule, fingerprint)
             if key in seen:
                 continue
@@ -288,8 +308,6 @@ def secret_issues(path: str, data: bytes, context: str) -> list[Issue]:
 
     for match in GENERIC_ASSIGNMENT.finditer(data):
         value = match.group("value")
-        if is_placeholder(value) or entropy(value) < 3.0:
-            continue
         fingerprint = hashlib.sha256(value).hexdigest()[:12]
         key = ("literal-credential", fingerprint)
         if key in seen:
@@ -300,7 +318,7 @@ def secret_issues(path: str, data: bytes, context: str) -> list[Issue]:
             Issue(
                 path,
                 "literal-credential",
-                f"high-entropy credential literal at line {line}; fingerprint {fingerprint}",
+                f"credential literal at line {line}; fingerprint {fingerprint}",
                 context,
             )
         )
@@ -403,6 +421,7 @@ def parse_manifest(
 
 def scan_tree(entries: dict[str, Blob], context: str) -> list[Issue]:
     fixtures, issues = parse_manifest(entries, context)
+    issues.extend(path_issues(entries, context))
     fixture_total = 0
 
     for path, fixture in fixtures.items():
@@ -450,8 +469,25 @@ def scan_tree(entries: dict[str, Blob], context: str) -> list[Issue]:
         )
 
     for path, entry in entries.items():
+        if path.startswith("private/") and path != PRIVATE_README:
+            # `.gitignore` prevents an ordinary add, but `git add -f` bypasses
+            # it. The directory's contract is stronger: local material never
+            # enters history, whether or not its content resembles a secret.
+            issues.append(
+                Issue(path, "private-path", "local private material may not enter Git", context)
+            )
         if sensitive_filename(path):
             issues.append(Issue(path, "sensitive-filename", "credential-prone filename", context))
+        if entry.mode == "120000":
+            issues.append(
+                Issue(
+                    path,
+                    "symlink",
+                    "symbolic links are not allowed; targets vary by machine and can escape the tree",
+                    context,
+                )
+            )
+            continue
         if entry.kind != "blob":
             issues.append(
                 Issue(
@@ -513,20 +549,147 @@ def scan_history(revision: str) -> list[Issue]:
     issues = []
     for commit in commits:
         issues.extend(scan_tree(commit_tree(commit), commit[:12]))
+        message = git("show", "-s", "--format=%B", commit)
+        issues.extend(secret_issues("<commit-message>", message, commit[:12]))
     return unique_issues(issues)
+
+
+def scan_ref_object(revision: str) -> list[Issue]:
+    """Scan every annotated-tag object in a ref's peel chain.
+
+    `git rev-list` peels tags to commits and therefore never exposes annotated
+    tag messages. Tags are immutable under the local policy, so letting one
+    leave with a credential in its message would preserve the secret in the
+    exact object the guard then refuses to delete.
+    """
+    raw_oid = git("rev-parse", "--verify", revision).strip()
+    try:
+        oid = raw_oid.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ScanFailure(f"Git returned a non-ASCII object id for {revision!r}") from exc
+
+    issues = []
+    seen = set()
+    while True:
+        if oid in seen:
+            raise ScanFailure(f"tag object chain for {revision!r} contains a cycle")
+        seen.add(oid)
+
+        raw_kind = git("cat-file", "-t", oid).strip()
+        try:
+            kind = raw_kind.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise ScanFailure(f"Git returned a non-ASCII object type for {oid[:12]}") from exc
+        if kind == "commit":
+            return unique_issues(issues)
+        if kind != "tag":
+            raise ScanFailure(
+                f"ref object {oid[:12]} has unsupported type {kind!r}; expected tag or commit"
+            )
+
+        data = git("cat-file", "tag", oid)
+        issues.extend(secret_issues("<annotated-tag>", data, oid[:12]))
+        first_line = data.split(b"\n", 1)[0]
+        match = re.fullmatch(rb"object ([0-9a-f]{40}|[0-9a-f]{64})", first_line)
+        if match is None:
+            raise ScanFailure(f"annotated tag {oid[:12]} has no valid object header")
+        oid = match.group(1).decode("ascii")
+
+
+def scan_audit_fields(data: bytes) -> list[Issue]:
+    """Scan the two NUL-delimited fields written into an audit receipt."""
+    fields = data.split(b"\0")
+    if len(fields) != 3 or fields[-1]:
+        raise ScanFailure("audit input must contain exactly two NUL-delimited fields")
+    return secret_issues("<audit-receipt>", b"\n".join(fields[:2]), "receipt")
+
+
+def scan_ref_fields(data: bytes) -> list[Issue]:
+    """Scan one or more NUL-delimited Git ref names without echoing them."""
+    fields = data.split(b"\0")
+    if len(fields) < 2 or fields[-1]:
+        raise ScanFailure("ref input must contain one or more NUL-delimited fields")
+    issues = []
+    nonempty = 0
+    for value in fields[:-1]:
+        if not value:
+            continue
+        nonempty += 1
+        fingerprint = hashlib.sha256(value).hexdigest()[:12]
+        issues.extend(secret_issues(f"<git-ref:{fingerprint}>", value, "ref"))
+    if not nonempty:
+        raise ScanFailure("ref input contains no ref name")
+    return issues
+
+
+def scan_audit_receipt(path: Path) -> list[Issue]:
+    """Validate a complete receipt and scan all of its text for credentials."""
+    data = path.read_bytes()
+    issues = secret_issues("<audit-receipt>", data, "receipt")
+
+    def malformed(detail: str) -> list[Issue]:
+        return issues + [Issue("<audit-receipt>", "receipt-shape", detail, "receipt")]
+
+    if b"\r" in data or not data.endswith(b"\n"):
+        return malformed("receipt must use LF lines and end with a newline")
+    lines = data.split(b"\n")[:-1]
+    if len(lines) < 3:
+        return malformed("receipt header is incomplete")
+    if re.fullmatch(rb"commit:  [0-9a-f]{40}|commit:  [0-9a-f]{64}", lines[0]) is None:
+        return malformed("receipt has no valid commit header")
+    if not lines[1].startswith(b"branch:  ") or not lines[1][9:]:
+        return malformed("receipt has no branch header")
+    if not lines[2].startswith(b"audited: ") or not lines[2][9:]:
+        return malformed("receipt has no audited-range header")
+
+    blocks = lines[3:]
+    if len(blocks) % 4:
+        return malformed("receipt ends inside a reviewer record")
+    for offset in range(0, len(blocks), 4):
+        separator, auditor, when, finding = blocks[offset : offset + 4]
+        if separator:
+            return malformed("reviewer records must be separated by one blank line")
+        if not auditor.startswith(b"auditor: ") or not auditor[9:]:
+            return malformed("reviewer record has no auditor")
+        if (
+            re.fullmatch(
+                rb"when:    [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+                when,
+            )
+            is None
+        ):
+            return malformed("reviewer record has no valid timestamp")
+        if not finding.startswith(b"finding: ") or not finding[9:]:
+            return malformed("reviewer record has no finding")
+    return issues
+
+
+def safe_output(text: str, label: str) -> str:
+    """Redact a whole output field if it contains credential-shaped text."""
+    data = os.fsencode(text)
+    if not secret_issues("<output>", data, "output"):
+        return text
+    fingerprint = hashlib.sha256(data).hexdigest()[:12]
+    return f"<redacted-{label}:{fingerprint}>"
 
 
 def report(issues: list[Issue]) -> int:
     if not issues:
-        print("Ingress check passed: no secrets, undeclared binaries, or oversized blobs.")
+        print("Ingress check passed for the requested scope.")
         return 0
     print("BLOCKED: repository ingress policy failed.", file=sys.stderr)
     for issue in issues[:100]:
-        where = f" ({issue.context})" if issue.context else ""
-        print(f"  {issue.path}{where}: [{issue.rule}] {issue.detail}", file=sys.stderr)
+        path = safe_output(issue.path, "metadata")
+        context = safe_output(issue.context, "context")
+        detail = safe_output(issue.detail, "detail")
+        where = f" ({context})" if context else ""
+        print(f"  {path}{where}: [{issue.rule}] {detail}", file=sys.stderr)
     if len(issues) > 100:
         print(f"  ...and {len(issues) - 100} more issue(s)", file=sys.stderr)
-    print("Secrets and corpus-sized payloads must not enter Git history.", file=sys.stderr)
+    print(
+        "Recognized credentials are forbidden; repository trees must also satisfy payload policy.",
+        file=sys.stderr,
+    )
     return 1
 
 
@@ -540,17 +703,74 @@ def main(argv: list[str] | None = None) -> int:
         help="scan tracked and unignored untracked working files",
     )
     mode.add_argument("--history", metavar="REV", help="scan every commit reachable from REV")
+    mode.add_argument(
+        "--ref-object",
+        metavar="REV",
+        help="scan annotated-tag messages in REV's object peel chain",
+    )
+    mode.add_argument("--message-file", metavar="PATH", help="scan one commit message file")
+    mode.add_argument(
+        "--file",
+        metavar="PATH",
+        action="append",
+        help="scan an arbitrary file for credentials; repeat for more than one file",
+    )
+    mode.add_argument(
+        "--stdin-file",
+        action="store_true",
+        help="credential-scan arbitrary file bytes from standard input before persisting them",
+    )
+    mode.add_argument(
+        "--audit-fields",
+        action="store_true",
+        help="scan exactly two NUL-delimited audit receipt fields from standard input",
+    )
+    mode.add_argument(
+        "--ref-fields",
+        action="store_true",
+        help="scan one or more NUL-delimited Git ref names from standard input",
+    )
+    mode.add_argument(
+        "--audit-receipt",
+        metavar="PATH",
+        help="validate and credential-scan a complete audit receipt",
+    )
+    mode.add_argument(
+        "--paths",
+        action="store_true",
+        help="check repository paths for characters unsafe to line-oriented policies",
+    )
     args = parser.parse_args(argv)
     try:
         if args.staged:
             issues = scan_tree(index_tree(), "index")
         elif args.worktree:
             issues = scan_tree(working_tree(), "worktree")
+        elif args.message_file:
+            data = Path(args.message_file).read_bytes()
+            issues = secret_issues("<commit-message>", data, "message")
+        elif args.file:
+            issues = []
+            for path in args.file:
+                issues.extend(secret_issues(path, Path(path).read_bytes(), "file"))
+        elif args.stdin_file:
+            issues = secret_issues("<standard-input>", sys.stdin.buffer.read(), "buffer")
+        elif args.ref_object:
+            issues = scan_ref_object(args.ref_object)
+        elif args.audit_fields:
+            issues = scan_audit_fields(sys.stdin.buffer.read())
+        elif args.ref_fields:
+            issues = scan_ref_fields(sys.stdin.buffer.read())
+        elif args.audit_receipt:
+            issues = scan_audit_receipt(Path(args.audit_receipt))
+        elif args.paths:
+            issues = path_issues(repository_paths(), "worktree")
         else:
             issues = scan_history(args.history)
         return report(unique_issues(issues))
     except (OSError, ScanFailure) as exc:
-        print(f"BLOCKED: ingress check could not run: {exc}", file=sys.stderr)
+        error = safe_output(str(exc), "error")
+        print(f"BLOCKED: ingress check could not run: {error}", file=sys.stderr)
         return 2
 
 

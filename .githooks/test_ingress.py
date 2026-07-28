@@ -120,6 +120,32 @@ def test_quoted_json_and_toml_credential_keys_are_blocked(repo, document):
     assert secret not in result.stderr
 
 
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "ghp_" + "a" * 10 + "TEST" + "b" * 16,
+        "rpa_" + "a" * 24,
+        "rpa_" + "a" * 8 + "_TEST_" + "b" * 8,
+    ],
+)
+def test_exact_provider_tokens_are_not_exempted_by_coincidence_or_low_entropy(repo, secret):
+    write(repo, "settings.txt", f"value = {secret}\n")
+    stage(repo, "settings.txt")
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 1
+    assert secret not in result.stderr
+
+
+@pytest.mark.parametrize("secret", ["a" * 24, "TEST_PLACEHOLDER_VALUE_1234"])
+def test_generic_credential_assignment_has_no_value_based_exemptions(repo, secret):
+    write(repo, "settings.txt", f'api_key = "{secret}"\n')
+    stage(repo, "settings.txt")
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 1
+    assert "[literal-credential]" in result.stderr
+    assert secret not in result.stderr
+
+
 def test_worktree_mode_scans_untracked_files(repo):
     secret = generic_secret()
     write(repo, "untracked.json", f'{{"api_key": "{secret}"}}\n')
@@ -127,6 +153,50 @@ def test_worktree_mode_scans_untracked_files(repo):
     result = run_scan(repo, "--worktree")
     assert result.returncode == 1
     assert "[literal-credential]" in result.stderr
+
+
+def test_explicit_file_mode_scans_ignored_reports_and_fails_on_missing_input(repo):
+    write(repo, ".gitignore", "workbench/raw/\n")
+    safe_report = write(repo, "workbench/raw/safe.log", "no findings\n")
+    secret = runpod_secret()
+    report = write(repo, "workbench/raw/reviewer.log", f"pasted {secret}\n")
+    assert git(repo, "check-ignore", str(report.relative_to(repo))).returncode == 0
+    assert run_scan(repo, "--file", str(safe_report)).returncode == 0
+
+    blocked = run_scan(repo, "--file", str(safe_report), "--file", str(report))
+    assert blocked.returncode == 1
+    assert secret not in blocked.stderr
+
+    missing = run_scan(repo, "--file", str(repo / "workbench/raw/missing.log"))
+    assert missing.returncode == 2
+    assert "could not run" in missing.stderr
+
+
+def test_standard_input_file_mode_scans_before_a_report_is_persisted(repo):
+    secret = runpod_secret()
+    blocked = subprocess.run(
+        [sys.executable, str(SCANNER), "--stdin-file"],
+        cwd=repo,
+        input=f"review pasted {secret}\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    clean = subprocess.run(
+        [sys.executable, str(SCANNER), "--stdin-file"],
+        cwd=repo,
+        input="review found no credentials\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert blocked.returncode == 1
+    assert "[runpod-api-key]" in blocked.stderr
+    assert secret not in blocked.stderr
+    assert clean.returncode == 0
 
 
 def test_forced_add_from_ignored_private_area_is_blocked(repo):
@@ -140,6 +210,17 @@ def test_forced_add_from_ignored_private_area_is_blocked(repo):
     assert result.returncode == 1
     assert "runpod-api-key" in result.stderr
     assert secret not in result.stderr
+
+
+def test_forced_add_of_safe_text_from_private_area_is_still_blocked(repo):
+    write(repo, ".gitignore", "private/*\n!private/README.md\n")
+    write(repo, "private/local-note.txt", "ordinary local material\n")
+    stage(repo, ".gitignore")
+    git(repo, "add", "-f", "private/local-note.txt")
+
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 1
+    assert "[private-path]" in result.stderr
 
 
 def test_text_size_boundary_is_exact(repo):
@@ -206,6 +287,172 @@ def test_add_then_delete_secret_remains_blocked_in_history(repo):
     assert secret not in result.stderr
 
 
+def test_secret_in_commit_message_is_blocked_locally_and_in_history(repo, tmp_path):
+    secret = runpod_secret()
+    message = tmp_path / "message.txt"
+    message.write_text(f"do not keep {secret}\n", encoding="utf-8")
+    local = run_scan(repo, "--message-file", str(message))
+    assert local.returncode == 1
+    assert secret not in local.stderr
+
+    write(repo, "safe.txt", "safe\n")
+    stage(repo, "safe.txt")
+    commit(repo, f"do not keep {secret}")
+    history = run_scan(repo, "--history", "HEAD")
+    assert history.returncode == 1
+    assert "<commit-message>" in history.stderr
+    assert secret not in history.stderr
+
+
+def test_annotated_tag_message_is_scanned_separately_from_commit_history(repo):
+    write(repo, "safe.txt", "safe\n")
+    stage(repo, "safe.txt")
+    commit(repo, "safe")
+    secret = runpod_secret()
+    git(repo, "tag", "-a", "unsafe", "-m", f"release {secret}")
+
+    # Commit history alone cannot see the annotated tag object.
+    assert run_scan(repo, "--history", "HEAD").returncode == 0
+    tagged = run_scan(repo, "--ref-object", "refs/tags/unsafe")
+    assert tagged.returncode == 1
+    assert "<annotated-tag>" in tagged.stderr
+    assert secret not in tagged.stderr
+
+
+def test_audit_field_protocol_fails_closed_and_scans_both_fields(repo):
+    secret = runpod_secret().encode()
+    malformed = subprocess.run(
+        [sys.executable, str(SCANNER), "--audit-fields"],
+        cwd=repo,
+        input=b"one field only",
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert malformed.returncode == 2
+
+    blocked = subprocess.run(
+        [sys.executable, str(SCANNER), "--audit-fields"],
+        cwd=repo,
+        input=b"Claude Opus 5\0found " + secret + b"\0",
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert blocked.returncode == 1
+    assert secret not in blocked.stderr
+
+
+def test_audit_receipt_validation_rejects_partial_records(repo):
+    receipt = write(
+        repo,
+        "receipt",
+        "commit:  " + "a" * 40 + "\n"
+        "branch:  work/example\n"
+        "audited: unknown (1 commit(s))\n"
+        "\nauditor: Claude Opus 5\n",
+    )
+    result = run_scan(repo, "--audit-receipt", str(receipt))
+    assert result.returncode == 1
+    assert "[receipt-shape]" in result.stderr
+
+
+def test_ref_field_protocol_scans_names_without_echoing_them(repo):
+    secret = runpod_secret().encode()
+    result = subprocess.run(
+        [sys.executable, str(SCANNER), "--ref-fields"],
+        cwd=repo,
+        input=b"refs/heads/work/" + secret + b"\0refs/heads/work/safe\0",
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert b"<git-ref:" in result.stderr
+    assert secret not in result.stderr
+
+
+def test_control_character_path_is_blocked_in_staged_and_history(repo):
+    path = "evil\nREADME.md"
+    write(repo, path, "safe text\n")
+    stage(repo, path)
+    staged = run_scan(repo, "--staged")
+    assert staged.returncode == 1
+    assert "[control-path]" in staged.stderr
+    assert "<repository-path:" in staged.stderr
+    assert path not in staged.stderr
+
+    commit(repo, "control path")
+    history = run_scan(repo, "--history", "HEAD")
+    assert history.returncode == 1
+    assert "[control-path]" in history.stderr
+
+
+def test_credential_shaped_repository_path_is_blocked_without_echoing_it(repo):
+    secret = runpod_secret()
+    path = f"proof/{secret}.txt"
+    write(repo, path, "safe text\n")
+    stage(repo, path)
+
+    staged = run_scan(repo, "--staged")
+    assert staged.returncode == 1
+    assert "<repository-path:" in staged.stderr
+    assert secret not in staged.stderr
+
+    commit(repo, "credential-shaped path")
+    history = run_scan(repo, "--history", "HEAD")
+    assert history.returncode == 1
+    assert secret not in history.stderr
+
+
+@pytest.mark.parametrize(
+    ("suffix", "rule"),
+    [
+        (".env", "sensitive-filename"),
+        ("payload.bin", "binary"),
+        ("large.txt", "oversize"),
+    ],
+)
+def test_other_path_findings_also_redact_credential_shaped_names(repo, suffix, rule):
+    secret = runpod_secret()
+    path = f"{secret}/{suffix}"
+    payloads = {
+        "sensitive-filename": "safe placeholder\n",
+        "binary": b"\0binary",
+        "oversize": b"x" * (ONE_MIB + 1),
+    }
+    payload = payloads[rule]
+    write(repo, path, payload)
+    stage(repo, path)
+
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 1
+    assert f"[{rule}]" in result.stderr
+    assert secret not in result.stderr
+
+
+def test_read_errors_redact_credential_shaped_file_arguments(repo):
+    secret = runpod_secret()
+    result = run_scan(repo, "--file", str(repo / secret / "missing.log"))
+    assert result.returncode == 2
+    assert "<redacted-error:" in result.stderr
+    assert secret not in result.stderr
+
+
+def test_symlink_is_blocked_in_staged_and_history(repo):
+    target = repo / "external-link"
+    target.symlink_to("/etc/passwd")
+    stage(repo, "external-link")
+    staged = run_scan(repo, "--staged")
+    assert staged.returncode == 1
+    assert "[symlink]" in staged.stderr
+
+    commit(repo, "symlink")
+    history = run_scan(repo, "--history", "HEAD")
+    assert history.returncode == 1
+    assert "[symlink]" in history.stderr
+
+
 def test_unusual_safe_paths_are_parsed_without_loss(repo):
     paths = ("space name.txt", "accent-é.txt", "-leading.txt")
     for path in paths:
@@ -264,12 +511,26 @@ def test_ntfy_topic_is_a_secret_in_both_leak_shapes(repo):
     assert run_scan(repo, "--staged").returncode == 1
 
 
-def test_ntfy_docs_and_placeholder_topics_stay_committable(repo):
-    # ntfy's own documentation URLs and placeholder values are not findings.
+def test_ntfy_docs_and_explicit_angle_bracket_placeholder_stay_committable(repo):
+    # The angle brackets keep the example visibly non-working and outside the
+    # exact assignment grammar. Exact topic-shaped values receive no exemption.
     body = (
         "# docs: https://docs.ntfy" + ".sh/publish/ and https://ntfy" + ".sh/docs\n"
-        "NTFY_" + 'TOPIC = "EXAMPLE-TOPIC"\n'
+        "NTFY_" + 'TOPIC = "<EXAMPLE-TOPIC>"\n'
     )
     write(repo, "notes.py", body)
     stage(repo, "notes.py")
     assert run_scan(repo, "--staged").returncode == 0
+
+
+def test_ntfy_exact_assignment_does_not_exempt_delimited_placeholder_words(repo):
+    topic = "verbatus_" + "TEST_" + "topicvalue"
+    assignment = "NTFY_" + f'TOPIC = "{topic}"\n'
+    # Even the path containing the two fingerprint-bound historical fixtures
+    # receives no blanket exemption for placeholder-looking topics.
+    path = "operations/notify/test_notify.py"
+    write(repo, path, assignment)
+    stage(repo, path)
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 1
+    assert topic not in result.stderr

@@ -1,5 +1,6 @@
 #!/bin/sh
-# Three rules, all local so they bind every tool — Claude, Codex, GPT, you.
+# Three local commit-path alarms. They apply to every tool that uses this
+# clone's installed hooks and does not deliberately bypass them.
 #
 #   1. No commits while sitting on main.
 #   2. No secrets, undeclared binaries, or oversized blobs in the Git index.
@@ -11,10 +12,25 @@
 # here instead.
 #
 # Escape hatches, to be used knowingly:
-#   ALLOW_MAIN_COMMIT=1   commit on main
-#   ALLOW_STRAY_DOC=1     commit a markdown file outside the allowed set
+#   ALLOW_MAIN_COMMIT=1     commit on main
+#   ALLOW_STRAY_DOC=1       commit a markdown file outside the allowed set
+#   ALLOW_DETACHED_COMMIT=1 commit while HEAD is detached
 
-branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+if ! branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) &&
+   [ "$ALLOW_DETACHED_COMMIT" != "1" ]; then
+  echo "" >&2
+  echo "  BLOCKED: commit while HEAD is detached or its branch cannot be resolved." >&2
+  echo "" >&2
+  echo "  A detached commit can become unreachable when checkout moves. Switch" >&2
+  echo "  to your work/<topic>, audit/<topic>, or infra/<topic> branch first." >&2
+  echo "" >&2
+  echo "  An interactive rebase detaches HEAD legitimately. If that is where you" >&2
+  echo "  are, and you mean it:" >&2
+  echo "" >&2
+  echo "      ALLOW_DETACHED_COMMIT=1 git commit ..." >&2
+  echo "" >&2
+  exit 1
+fi
 if [ "$branch" = "main" ] && [ "$ALLOW_MAIN_COMMIT" != "1" ]; then
   echo "" >&2
   echo "  BLOCKED: commit on main." >&2

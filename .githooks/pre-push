@@ -1,16 +1,22 @@
 #!/bin/sh
-# Branch rules, enforced locally so they bind every tool — Claude, Codex, GPT, you.
-# They catch a mistake here, at the moment it is made, with a message that says
-# what to do instead. What `main` itself will accept is settled server-side and
-# is not this file's business — see README.md.
+# Branch rules implemented as an installed local alarm. They apply to tools
+# that use this clone's Git hooks and do not deliberately bypass them. What
+# `main` itself will accept is settled server-side and is not this file's
+# business — see README.md.
 #
 # Escape hatches, to be used knowingly and rarely:
 #   ALLOW_MAIN_PUSH=1       push directly to main
 #   ALLOW_FORCE_PUSH=1      rewrite a branch's history
+#   ALLOW_BRANCH_DELETE=x   delete verified-merged branch x
 #   ALLOW_ANY_BRANCH=1      push a branch outside the naming convention
 #   ALLOW_UNAUDITED_PUSH=1  push work no agent has reviewed
 
 z40='0000000000000000000000000000000000000000'
+z64='0000000000000000000000000000000000000000000000000000000000000000'
+
+is_null_oid() {
+  [ "$1" = "$z40" ] || [ "$1" = "$z64" ]
+}
 
 # Where audit receipts live: the *common* git directory, so every worktree
 # shares one record. Never committed — a receipt is evidence about a local
@@ -45,7 +51,22 @@ block() {
   exit 1
 }
 
-while read -r _local_ref local_sha remote_ref remote_sha; do
+ingress="$(dirname "$0")/check_ingress.py"
+if [ ! -f "$ingress" ]; then
+  block "$ingress is missing." \
+"The outgoing history and annotated-tag messages cannot be checked, so the
+  push is refused rather than allowed unchecked."
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # Ref names are repository metadata and can carry a pasted token just as a
+  # filename can. Scan them through a framed protocol that never prints the
+  # name itself; findings use only a fingerprinted metadata label.
+  if ! printf '%s\0%s\0' "$local_ref" "$remote_ref" |
+       python3 "$ingress" --ref-fields >/dev/null; then
+    block "outgoing Git ref names failed their credential check."
+  fi
+
   case "$remote_ref" in
     refs/heads/*)
       kind=branch
@@ -62,9 +83,22 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
       ;;
   esac
 
-  # Deleting a branch or tag is normal cleanup — allow it, except for main.
-  if [ "$local_sha" = "$z40" ]; then
+  # Deleting a short-lived work branch is normal only after its work is known
+  # to have landed. Git gives this hook the remote tip but no trustworthy proof
+  # that another ref retains it, and a stale local main can make an ancestry
+  # test lie by omission. Require a deliberate assertion instead of silently
+  # treating every branch deletion as safe cleanup. Published tags are evidence
+  # and immutable in both directions: allowing deletion here while refusing
+  # only a move made "immutable" mean "immutable unless gone."
+  if is_null_oid "$local_sha"; then
     [ "$kind" = "branch" ] && [ "$name" = "main" ] && block "deleting main."
+    [ "$kind" = "tag" ] && block "deleting published tag '$name' — tags are immutable."
+    if [ "$ALLOW_BRANCH_DELETE" != "$name" ]; then
+      block "deleting branch '$name' without confirming its work is retained." \
+"Verify the branch is merged and no other session owns it, then set
+  ALLOW_BRANCH_DELETE to this exact branch name and repeat. The hook cannot
+  prove either fact from this push."
+    fi
     continue
   fi
 
@@ -89,14 +123,14 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   # 3. Never rewrite history someone else may be holding.
   #    Detects --force and --force-with-lease alike: the remote tip must be an
   #    ancestor of what you are pushing. Published tags are immutable too.
-  if [ "$kind" = "branch" ] && [ "$remote_sha" != "$z40" ] && \
+  if [ "$kind" = "branch" ] && ! is_null_oid "$remote_sha" && \
      [ "$ALLOW_FORCE_PUSH" != "1" ]; then
     if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
       block "force-push to '$name' — this rewrites history." \
 "Another agent may be working from these commits. Pull and merge instead."
     fi
   fi
-  if [ "$kind" = "tag" ] && [ "$remote_sha" != "$z40" ] && \
+  if [ "$kind" = "tag" ] && ! is_null_oid "$remote_sha" && \
      [ "$ALLOW_FORCE_PUSH" != "1" ]; then
     block "moving existing tag '$name' — tags are immutable once published." \
 "Create a new tag. ALLOW_FORCE_PUSH=1 exists for an intentional exceptional move."
@@ -110,27 +144,61 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
     block "'$name' does not resolve to a commit, so the audit gate cannot check it."
   fi
 
-  # 4. Nothing leaves this machine that three reviewers have not read.
-  #    Whoever wrote the work does not get to be the only one who has seen it
-  #    leave, and one reviewer that shares the author's blind spots is not
-  #    much better than none. Record each with .githooks/record-audit.sh; they
-  #    accumulate in one receipt rather than overwriting each other.
-  #    The receipt must name the commit it covers, so an empty file dropped in
-  #    by `touch` does not read as a review. This raises the bar; it is not a
-  #    lock, and nothing here can tell an author from an auditor.
+  # 4. Scan everything reachable from the outgoing commit. The pre-commit
+  #    alarm can be bypassed, and server CI only reports after Git has accepted
+  #    the ref. An add-then-delete secret in an ancestor must not leave merely
+  #    because the current tree is clean.
+  if ! python3 "$ingress" --history "$audit_sha" >/dev/null; then
+    block "$kind '$name' failed its outgoing-history ingress check."
+  fi
+
+  # `rev-list` peels an annotated tag to its commit and never returns the tag
+  # message. Scan the ref object separately before publishing an immutable tag.
+  if [ "$kind" = "tag" ] && \
+     ! python3 "$ingress" --ref-object "$local_sha" >/dev/null; then
+    block "tag '$name' failed its annotated-tag ingress check."
+  fi
+
+  # 5. Require three named review assertions for this exact commit.
+  #    A receipt records what the operator says occurred. It raises the bar
+  #    against an accidental unaudited push, but it cannot prove reviewer
+  #    identity, independence, prompt equality, or what anyone actually read.
   reviewers=0
-  if grep -qx "commit:  $audit_sha" "$receipts/$audit_sha" 2>/dev/null; then
-    # Distinct names, not lines: three entries from one reviewer is one
-    # reviewer with a stutter, and the whole point is independent readers.
-    reviewers=$(grep '^auditor:' "$receipts/$audit_sha" | sort -u | wc -l | tr -d ' ')
+  receipt="$receipts/$audit_sha"
+  if [ -f "$receipt" ] && \
+     ! python3 "$ingress" --audit-receipt "$receipt" >/dev/null; then
+    block "the audit receipt for $(echo "$audit_sha" | cut -c1-8) is incomplete or invalid." \
+"A partial reviewer record is not a review. Re-run the affected reviewer and
+  record its complete result with .githooks/record-audit.sh."
+  fi
+  # Three *distinct* reviewers, not three particular product names. Tyrel's
+  # ruling: the receipt records the model that actually answered, and the names
+  # are a push-time checklist rather than a string match. Pinning today's
+  # releases into a safety hook dates it at the next rename — a substituted or
+  # renamed seat would then force either ALLOW_UNAUDITED_PUSH=1 or a receipt
+  # that lies about who reviewed, and a gate that rewards a false label is worse
+  # than no gate. Counting distinct names still refuses the same reviewer
+  # recorded three times, which is the failure this actually guards against.
+  if grep -qx "commit:  $audit_sha" "$receipt" 2>/dev/null; then
+    reviewers=$(
+      sed -n 's/^auditor: //p' "$receipt" |
+        sed '/^[[:space:]]*$/d' |
+        sort -u |
+        wc -l |
+        tr -d '[:space:]'
+    )
   fi
   if [ "$ALLOW_UNAUDITED_PUSH" != "1" ] && [ "$reviewers" -lt 3 ]; then
     block "$kind '$name' has $reviewers of 3 reviewers for $(echo "$audit_sha" | cut -c1-8)." \
-"Three reviewers read the work before it is pushed — Claude Opus 5, Claude
-  Fable 5, and GPT — on an identical prompt, blind to each other. Record
-  each one as it reports:
+"The operator must complete three independent passes on the identical prompt,
+  then record each one under the name of the model that actually answered —
+  by release, across two vendors, one line per reviewer:
 
-      .githooks/record-audit.sh <reviewer> '<what it found>'
+      .githooks/record-audit.sh '<model that answered>' '<what it found>'
+
+  Three distinct names are required. The same reviewer recorded three times is
+  one review. An alias requested in a roster file is not proof of the release
+  that served the call; record what answered, not what was asked for.
 
   They accumulate; none overwrites another. The receipt names one commit,
   so amending or adding one means auditing again — which is the point.
@@ -138,7 +206,8 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   Subagents and other AI tools do not push at all. They review and report;
   the push is Tyrel's or the main session's to make afterwards.
 
-  ALLOW_UNAUDITED_PUSH=1 if you genuinely mean to skip this."
+  This receipt is an assertion, not cryptographic proof of who reviewed or
+  what they read. ALLOW_UNAUDITED_PUSH=1 if you genuinely mean to skip it."
   fi
 done
 exit 0

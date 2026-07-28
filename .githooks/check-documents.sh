@@ -1,5 +1,9 @@
 #!/bin/sh
-# Validate the repository's durable-document contract.
+# Check the mechanically decidable parts of the durable-document contract.
+#
+# The ISO-date alarm below does not prove that prose contains no narrative
+# dates, hashes, or status claims. Those concepts cannot be recognized safely
+# by a broad text pattern; they remain review obligations.
 
 set -u
 
@@ -20,7 +24,10 @@ done
 
 dated=0
 for file in GOALS.md GOVERNANCE.md ARCHITECTURE.md GLOSSARY.md CLAUDE.md; do
-  date_lines=$(grep -nE '20[0-9]{2}-[0-9]{2}-[0-9]{2}' "$file")
+  # Print only the line number and matched date. This check runs before the
+  # credential scanner in CI, so echoing the whole source line could expose a
+  # credential that the next step correctly refuses.
+  date_lines=$(grep -nEo '20[0-9]{2}-[0-9]{2}-[0-9]{2}' "$file")
   grep_status=$?
   if [ "$grep_status" -eq 0 ]; then
     printf '%s\n' "$date_lines"
@@ -39,11 +46,37 @@ if [ ! -f "$allowlist" ]; then
   exit 2
 fi
 
-if ! repository_files=$(git -c core.quotePath=false ls-files --cached --others \
+# The allowlist protocol is newline-delimited. Refuse control characters in
+# repository paths before using it, so one filename cannot split into two
+# innocent-looking records and pass. The ingress scanner enforces the same
+# precondition on staged, working and historical trees.
+if ! python3 .githooks/check_ingress.py --paths; then
+  echo "repository paths are unsafe to pass to the documentation allowlist." >&2
+  exit 1
+fi
+
+if ! listed_files=$(git -c core.quotePath=false ls-files --cached --others \
   --exclude-standard); then
   echo "could not list repository files; documentation cannot be checked." >&2
   exit 2
 fi
+
+# Reflect the current working tree without hiding a staged addition. `ls-files
+# --cached` includes a tracked file deleted only from the worktree; checking
+# that stale path makes a removal fail until it is staged. Conversely, an
+# absent staged addition is still what the index would commit and must remain
+# visible here. A path that exists in HEAD is an unstaged deletion; a path that
+# does not is an index addition and is retained for the allowlist.
+repository_files=$(
+  printf '%s\n' "$listed_files" |
+    while IFS= read -r file; do
+      [ -n "$file" ] || continue
+      if [ -e "$file" ] || [ -L "$file" ] || \
+         ! git cat-file -e "HEAD:$file" 2>/dev/null; then
+        printf '%s\n' "$file"
+      fi
+    done
+)
 
 stray=$(printf '%s\n' "$repository_files" | sh "$allowlist")
 status=$?

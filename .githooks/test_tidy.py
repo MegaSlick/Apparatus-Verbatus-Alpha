@@ -26,8 +26,9 @@ def load_tidy(tmp_path):
     mod.DESIGN = wb / "design"
     mod.ARCHIVE = wb / "archive"
     mod.SCRATCH = wb / "scratch"
+    mod.RAW = wb / "raw"
     mod.MEMORY = tmp_path / "memory"
-    for d in (mod.ACTIVE, mod.DESIGN, mod.ARCHIVE, mod.SCRATCH):
+    for d in (mod.ACTIVE, mod.DESIGN, mod.ARCHIVE, mod.SCRATCH, mod.RAW):
         d.mkdir(parents=True)
     return mod
 
@@ -46,6 +47,31 @@ def test_duplicate_reported_then_moved_only_with_file(tmp_path, capsys):
     tidy.main(["--file"])
     assert not (tidy.ACTIVE / "note.md").exists()
     assert (tidy.SCRATCH / "note.md").exists(), "moved to scratch, never deleted"
+
+
+def test_duplicate_changed_after_scan_is_not_moved(tmp_path, capsys, monkeypatch):
+    tidy = load_tidy(tmp_path)
+    (tidy.ARCHIVE / "old.md").write_text("same bytes")
+    active = tidy.ACTIVE / "note.md"
+    active.write_text("same bytes")
+
+    real_digest = tidy.digest
+    active_reads = 0
+
+    def changing_digest(path):
+        nonlocal active_reads
+        if path == active:
+            active_reads += 1
+            if active_reads == 2:
+                active.write_text("new work")
+        return real_digest(path)
+
+    monkeypatch.setattr(tidy, "digest", changing_digest)
+    assert tidy.main(["--file"]) == 1
+    out = capsys.readouterr().out
+    assert "changed after the duplicate scan" in out
+    assert active.read_text() == "new work"
+    assert not (tidy.SCRATCH / "note.md").exists()
 
 
 def test_handoff_is_never_filed_as_a_duplicate(tmp_path):

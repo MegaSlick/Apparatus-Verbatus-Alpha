@@ -32,7 +32,10 @@ while IFS= read -r f; do
   # Is it documentation? Match the usual markup formats and note-like text
   # filenames. Ordinary text assets remain possible, but NOTES.txt cannot
   # bypass the same rule that correctly catches NOTES.md.
-  lower=$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')
+  if ! lower=$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]'); then
+    echo "could not normalize documentation path; refusing unchecked input" >&2
+    exit 2
+  fi
   case "$lower" in
     *.md|*.markdown|*.mdown|*.mdwn|*.mkd|*.mkdn|*.rst|*.rest|*.adoc|*.asciidoc) ;;
     *.txt)
@@ -51,7 +54,8 @@ while IFS= read -r f; do
   # Is it allowed? Matched against the real path, case-sensitively: the
   # canonical documents have exact names, and `Readme.md` is not one of them.
   case "$f" in
-    # The canonical documents. The only instructions in the repository.
+    # The canonical documents. The binding project specification; the harness
+    # instruction files admitted below govern how sessions and agents work.
     README.md|GOALS.md|GOVERNANCE.md|ARCHITECTURE.md|GLOSSARY.md|CLAUDE.md|DATA_CONTRACT.md) ;;
     # Every directory may explain itself; every stage declares what it writes.
     # Including at the root, which CLAUDE.md allows and a bare */ pattern misses.

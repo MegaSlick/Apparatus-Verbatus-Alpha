@@ -33,14 +33,27 @@
 # Escape hatch, for a commit no machine touched:
 #   ALLOW_UNATTRIBUTED=1
 
-[ "$ALLOW_UNATTRIBUTED" = "1" ] && exit 0
-
 message=$1
 if [ -z "$message" ] || [ ! -f "$message" ]; then
   echo "  BLOCKED: no commit message to read, so attribution cannot be" >&2
   echo "  checked. A check that cannot run is a failure, not a pass." >&2
   exit 1
 fi
+
+# Attribution exemptions never exempt secrets. Scan the exact message file
+# before any merge/fixup/ALLOW_UNATTRIBUTED exit; CI repeats the same scan over
+# reachable commit messages so bypassing this local hook cannot clean history.
+ingress="$(dirname "$0")/check_ingress.py"
+if [ ! -f "$ingress" ]; then
+  echo "  BLOCKED: $ingress is missing, so the commit message cannot be checked." >&2
+  exit 1
+fi
+if ! python3 "$ingress" --message-file "$message"; then
+  echo "  BLOCKED: the commit message matched a recognized credential pattern." >&2
+  exit 1
+fi
+
+[ "$ALLOW_UNATTRIBUTED" = "1" ] && exit 0
 
 # Some commit messages are written by git, and there is no machine to name.
 #

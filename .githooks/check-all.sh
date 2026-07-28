@@ -1,5 +1,6 @@
 #!/bin/sh
-# Run the same deterministic checks used by CI.
+# Run the deterministic branch and working-tree checks used by CI. On a tag
+# event, CI additionally scans the annotated tag object named by GITHUB_REF.
 #
 # Bootstrap once in a virtual environment:
 #
@@ -46,7 +47,11 @@ sh -n .githooks/check-all.sh .githooks/check-documents.sh .githooks/commit-msg \
 # Tach currently has a real module to inspect only after shared implementation
 # enters common/. Numbered pipeline stages are file-isolated and require their
 # own boundary tests when their first code is imported.
-if find common -type f -name '*.py' ! -name '__init__.py' | grep -q .; then
+if ! shared_implementation=$(find common -type f -name '*.py' ! -name '__init__.py'); then
+  echo "could not inspect common/ for shared implementation" >&2
+  exit 1
+fi
+if [ -n "$shared_implementation" ]; then
   tach check
 else
   echo "no shared implementation yet — Tach boundary check deferred"
