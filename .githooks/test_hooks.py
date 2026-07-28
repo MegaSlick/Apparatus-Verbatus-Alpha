@@ -277,6 +277,24 @@ def run_isolated_pre_push(
     )
 
 
+def test_pre_commit_tests_do_not_inherit_policy_bypasses(tmp_path, monkeypatch):
+    # The suite must fail on a machine where the operator has exported an escape
+    # hatch, not quietly agree with it. This mirrors the existing commit-msg
+    # test; the pre-commit helper was missing the same protection and would have
+    # inherited the whole shell. Found by CodeRabbit, not by the eleven audits —
+    # their test-integrity lens read the assertions and not the plumbing.
+    monkeypatch.setenv("ALLOW_MAIN_COMMIT", "1")
+    monkeypatch.setenv("ALLOW_DETACHED_COMMIT", "1")
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, timeout=5)
+    copy_commit_hooks(repo)
+    (repo / "safe.txt").write_text("safe\n", encoding="utf-8")
+    subprocess.run(["git", "add", "safe.txt"], cwd=repo, check=True, timeout=5)
+    result = run_isolated_pre_commit(repo)
+    assert result.returncode == 1, "an exported bypass leaked into the test environment"
+    assert "commit on main" in result.stderr
+
+
 def test_pre_push_accepts_declared_work_branch(tmp_path):
     repo = tmp_path / "repo"
     sha = make_audit_repo(repo)
@@ -785,6 +803,15 @@ def copy_commit_hooks(repo):
 
 
 def run_isolated_pre_commit(repo, env=None):
+    # clean_hook_env() strips every ALLOW_* variable, and it is not optional.
+    # Passing env=None would inherit the developer's shell wholesale: anyone who
+    # had exported ALLOW_MAIN_COMMIT=1 for a legitimate one-off would then watch
+    # the test that asserts main-commits are blocked pass for entirely the wrong
+    # reason. The suite would be green and the guard dead, on that machine only.
+    # The pre-push helper has always stripped them; this one did not.
+    process_env = clean_hook_env()
+    if env:
+        process_env.update(env)
     return subprocess.run(
         ["sh", ".githooks/pre-commit"],
         cwd=repo,
@@ -792,7 +819,7 @@ def run_isolated_pre_commit(repo, env=None):
         text=True,
         check=False,
         timeout=5,
-        env=None if env is None else {**os.environ, **env},
+        env=process_env,
     )
 
 
