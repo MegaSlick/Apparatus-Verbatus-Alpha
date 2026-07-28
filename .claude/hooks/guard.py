@@ -710,9 +710,17 @@ def check_git(argv):
         for a in args:
             if a.startswith("-"):
                 continue
-            if a.startswith("+") and ":" in a:
+            # A leading + forces, colon or not: `git push origin +main` is
+            # `+main:main`. Requiring a colon here let the colonless form past
+            # BOTH checks at once — past this one, and past the branch check
+            # below, because the target then read as the literal "+main" and
+            # never matched "main". One character defeated the two rules this
+            # guard exists for.
+            if a.startswith("+"):
                 deny("a leading + on a refspec is a force-push by another name")
-            target = a.split(":")[-1]
+            # Strip it anyway before comparing, so the branch check stands on
+            # its own rather than depending on the deny above having fired.
+            target = a.lstrip("+").split(":")[-1]
             if target in ("main", "refs/heads/main"):
                 deny("main moves only by merging a pull request")
 

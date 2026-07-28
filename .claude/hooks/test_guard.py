@@ -180,6 +180,14 @@ BLOCK = [
     ("git push origin HEAD:main", "refspec form"),
     ("git push origin HEAD:refs/heads/main", "long refspec form"),
     ("git push origin +work/x:work/x", "+ is a force-push"),
+    # The colonless refspec. `git push origin +main` IS `+main:main`, and for a
+    # while it walked past both rules at once: the + check wanted a colon, and
+    # the branch check then compared the literal "+main" against "main" and
+    # found no match. A force-push to main, allowed by one character.
+    ("git push origin +main", "colonless + refspec is still a force"),
+    ("git push origin +refs/heads/main", "colonless + refspec, long form"),
+    ("git push origin +main:main", "+ with a colon, straight at main"),
+    ("git push origin +work/x", "colonless + on any branch is a force"),
     ("git push --force origin work/x", "force"),
     ("git push --force-with-lease origin work/x", "force"),
     ("git push -fu origin work/x", "combined short flags"),
