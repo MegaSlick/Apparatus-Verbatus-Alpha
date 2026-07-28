@@ -38,21 +38,32 @@ What it does not catch — each one verified against this file, not suspected:
     opaque; only the inline `-c` / `-e` forms are read at all.
   * a command assembled from variables, or arriving base64-encoded through a
     pipe. Any encoding is invisible here.
-  * a command substitution that sits inside double quotes outside a heredoc:
-    `echo "$(git push origin main)"` is allowed, while the same substitution
-    unquoted, or anywhere in an unquoted heredoc body, is refused.
   * HTTP clients other than those named above, and every language runtime other
     than Python and node/bun/deno — `perl -e` reaches the API untouched.
   * git plumbing spelled as its own binary — `git-push`, `git-send-pack` —
     rather than as `git <subcommand>`.
 
 `bash -c` and `eval` payloads are recursively inspected, up to three deep, and
-so are command substitutions in a heredoc body. Executable and ambiguous
-heredocs are refused because this guard cannot validate arbitrary code. A
-`cat`/`tee` data heredoc is allowed only while it is really data: a quoted
-delimiter (`<<'EOF'`) makes the body literal, while a bare `<<EOF` lets the
-shell run `$(...)` in it before `cat` ever starts, so those substitutions are
-inspected as the commands they are.
+so is every command substitution — `$( )` or backticks — wherever the shell
+would run one: bare, inside double quotes, or in an expanding heredoc body.
+What the guard reads is the substitution's *contents*, as a command; quoting is
+not itself suspicious and `"$(git rev-parse HEAD)"` stays ordinary. Single
+quotes really do make a substitution literal, so those stay inert. One it
+cannot parse — an unbalanced `$(`, or bash 5.3's `${ cmd; }` — is refused
+rather than assumed harmless.
+
+Executable and ambiguous heredocs are refused because this guard cannot
+validate arbitrary code. A `cat`/`tee` data heredoc is allowed only while it is
+really data: a quoted delimiter (`<<'EOF'`) makes the body literal, while a
+bare `<<EOF` lets the shell run `$(...)` in it before `cat` ever starts.
+
+One refusal is deliberate rather than a limitation, and is recorded here so it
+is not mistaken for a bug: an inline `python3 -c` / `node -e` write to the
+RunPod API is refused even when its URL ends in `/stop`. The guard can verify a
+shutdown route in curl's argv, where every URL is visible; it cannot verify one
+inside a script that may build the URL from pieces or make a second request.
+`runpodctl stop pod <id>`, curl, and the MCP stop/terminate/delete tools are
+open, and the refusal names them.
 
 It guards **Claude only**. Codex, GPT and a human at a terminal never run it.
 
@@ -647,26 +658,46 @@ def _substitution_end(text: str, start: int) -> int:
     raise ValueError("unbalanced command substitution")
 
 
-def command_substitutions(text: str):
+def command_substitutions(text: str, quotes: bool = False):
     """The shell code inside ``$( )`` and backticks, where expansion applies.
 
     Raises ValueError if a substitution is opened and never closed — the guard
     then cannot say what would run, which is a refusal and not a pass.
 
-    In an expanding heredoc body, quotes are *not* special (bash prints the
-    quotes verbatim) but a backslash still escapes ``$``, a backtick and
-    itself. So the walk here honours escapes only.
+    ``quotes`` selects the context. In an expanding heredoc body quotes are
+    *not* special (bash prints them verbatim), so the walk honours escapes
+    only. In ordinary command text they are: single quotes make a substitution
+    literal, double quotes do **not**. That last fact is the whole reason this
+    takes a flag — `echo "$(git push origin main)"` really does push.
 
     ``${ cmd; }`` and ``${| cmd; }`` — bash 5.3's funsub spellings — also run a
     command. They are refused rather than parsed, which keeps ordinary
     ``${VAR}`` expansion untouched while never calling a funsub inert.
     """
     out = []
+    quote = None
     i = 0
     while i < len(text):
         ch = text[i]
+        # Inside single quotes nothing expands, and a backslash is a plain
+        # character — so this test comes before the escape one.
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
         if ch == "\\" and i + 1 < len(text):
             i += 2
+            continue
+        if quotes and ch == "'" and quote is None:
+            quote = "'"
+            i += 1
+            continue
+        if quotes and ch == '"':
+            # Double quotes are tracked only so an apostrophe inside them
+            # ("don't") cannot open a bogus literal region.
+            quote = None if quote == '"' else '"'
+            i += 1
             continue
         if ch == "`":
             j = i + 1
@@ -927,6 +958,43 @@ CONFIG_READ_OPTS = frozenset(
     {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l"}
 )
 CONFIG_SECTION_OPS = frozenset({"--remove-section", "--rename-section"})
+# Options that say how to print a value, or which file to read it from. Not one
+# of them writes anything, so a bare-key read wearing any of them is still a
+# read: `git config --show-origin core.hooksPath` prints where the setting came
+# from. Anything not on this list — --unset, --add, --edit, --replace-all, or a
+# flag this guard has never heard of — leaves the command in the write bucket,
+# so an unknown option fails closed rather than open.
+CONFIG_READ_DECORATIONS = frozenset(
+    {
+        "--show-origin",
+        "--show-scope",
+        "--show-names",
+        "--name-only",
+        "--null",
+        "-z",
+        "--includes",
+        "--no-includes",
+        "--global",
+        "--local",
+        "--system",
+        "--worktree",
+        "--file",
+        "-f",
+        "--blob",
+        "--type",
+        "--no-type",
+        "--default",
+        "--bool",
+        "--int",
+        "--path",
+        "--expiry-date",
+        "--bool-or-int",
+        "--bool-or-str",
+    }
+)
+# Of those, the ones whose value is a separate token, so it is not miscounted
+# as the value being written.
+CONFIG_VALUE_OPTS = frozenset({"--file", "-f", "--blob", "--type", "--default"})
 
 
 def check_git_config(args):
@@ -960,11 +1028,15 @@ def check_git_config(args):
 
     # The flag spellings. A write always carries either a value as a second
     # positional argument or a mutating flag (--add, --unset, --replace-all,
-    # --edit), so "exactly one positional and no flags at all" is read-only by
-    # construction. --unset stays denied: removing the setting disables the
-    # hooks just as thoroughly as overwriting it.
+    # --edit), so "the key and nothing else, however it is decorated" is
+    # read-only by construction. --unset stays denied: removing the setting
+    # disables the hooks just as thoroughly as overwriting it.
     reading = any(a in CONFIG_READ_OPTS for a in lowered)
-    if len(positional) == 1 and len(args) == 1:
+    operands = positional_args(args, CONFIG_VALUE_OPTS)
+    decorated = all(
+        a.split("=", 1)[0].lower() in CONFIG_READ_DECORATIONS for a in args if a.startswith("-")
+    )
+    if len(operands) == 1 and decorated:
         reading = True
     if not reading:
         deny("permanently disables the git hooks for every tool in this clone")
@@ -1014,6 +1086,12 @@ def check_git(argv):
     # same reach into main, without the word "push" appearing anywhere.
     if sub in ("push", "send-pack"):
         flags = list(options(args, GIT_PUSH_VALUE_OPTS))
+        # `git push --help` opens the manual and pushes nothing. It was refused
+        # with "the push has no explicit non-main refspec", which taught the
+        # session that reading the documentation was the same act as writing to
+        # main — and an over-refusal is how a guard ends up bypassed.
+        if any(f in ("--help", "-h") for f in flags):
+            return
         dry_run = "--dry-run" in flags or has_short_flag(args, "n", frozenset({"o", "r"}))
         if dry_run:
             return
@@ -1157,6 +1235,20 @@ def check_http(argv):
     deny(f"writes to the RunPod API, which creates or destroys billed resources — {GOV8}")
 
 
+# An inline script's write is refused even when its URL ends in /stop, and the
+# refusal has to carry the way through. `curl` is judged on argv: the guard can
+# see every URL in the command and require all of them to be shutdown routes.
+# A script is a different object — it can build the URL from pieces, loop, or
+# make a second request the guard never sees — so "/stop appears in this
+# source text" is not evidence that the request stops a pod. Governance 8 wants
+# shutdown *easy*, and it stays easy: runpodctl and curl are both open, and a
+# session that is refused here is told which to use instead of being left to
+# guess. Fail closed on the unverifiable, and never on the whole operation.
+SHUTDOWN_ROUTE = (
+    "to stop a pod use `runpodctl stop pod <id>` or curl, whose destination the guard can verify"
+)
+
+
 def check_python(argv):
     inline = " ".join(argv)
     if not re.search(r"\brunpod\b", inline):
@@ -1176,7 +1268,7 @@ def check_python(argv):
         inline,
         re.I,
     ):
-        deny(f"writes to the RunPod API through an inline HTTP client — {GOV8}")
+        deny(f"writes to the RunPod API through an inline HTTP client — {GOV8}; {SHUTDOWN_ROUTE}")
 
     # The standard library needs no third-party package, so it was the shortest
     # route past the two names above. A read must stay allowed: Governance 8
@@ -1189,7 +1281,7 @@ def check_python(argv):
         # a body must be bytes, so an encode is the tell for the positional form
         or re.search(r"\.encode\(", inline)
     ):
-        deny(f"writes to the RunPod API through the standard library — {GOV8}")
+        deny(f"writes to the RunPod API through the standard library — {GOV8}; {SHUTDOWN_ROUTE}")
 
 
 # A write from an inline JavaScript one-liner: `fetch(url, {method:'POST'})`,
@@ -1210,7 +1302,7 @@ def check_node(argv):
     if not any(host in lowered for host in RUNPOD_HOSTS) and not re.search(r"\brunpod\b", lowered):
         return
     if NODE_WRITE.search(inline):
-        deny(f"writes to the RunPod API from an inline script — {GOV8}")
+        deny(f"writes to the RunPod API from an inline script — {GOV8}; {SHUTDOWN_ROUTE}")
 
 
 def check_httpie_input(command: str) -> None:
@@ -1448,6 +1540,22 @@ def inspect(command: str, depth: int = 0) -> None:
             if depth >= 3:
                 deny("a command substitution nested deeper than the guard inspects")
             inspect(payload, depth + 1)
+
+    # The same rule one layer out. The shell runs the inside of `"$( )"` before
+    # the surrounding command starts, so quoting hides a command from this
+    # guard's tokeniser without hiding it from the shell: `echo "$(git push
+    # origin main)"` really pushes. Read the substitution's *contents* as a
+    # command — quoting is not itself suspicious, and `"$(git rev-parse HEAD)"`
+    # must stay ordinary. Heredoc bodies are already handled above and are
+    # stripped here so a quoted delimiter stays inert.
+    try:
+        quoted = command_substitutions(strip_heredocs(command), quotes=True)
+    except ValueError:
+        deny("this command opens a command substitution the guard cannot read")
+    for payload in quoted:
+        if depth >= 3:
+            deny("a command substitution nested deeper than the guard inspects")
+        inspect(payload, depth + 1)
 
     check_httpie_input(command)
     try:

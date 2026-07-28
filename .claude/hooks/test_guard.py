@@ -63,6 +63,28 @@ def run(command: str) -> bool:
     return decide({"tool_name": "Bash", "tool_input": {"command": command}})
 
 
+def reason(command: str) -> str:
+    """The guard's stated reason for refusing, or "" if it allowed.
+
+    A refusal that gives the wrong reason is still a defect: it teaches the
+    session the wrong thing about its own rules, and no test asserted on any
+    reason until this one.
+    """
+    result = subprocess.run(
+        [sys.executable, GUARD],
+        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
+        capture_output=True,
+        text=True,
+        cwd=tempfile.gettempdir(),
+        env={"CLAUDE_PROJECT_DIR": PROJECT, "HOME": HOME, "PATH": "/usr/bin:/bin"},
+        timeout=5,
+    )
+    output = result.stdout.strip()
+    if not output:
+        return ""
+    return json.loads(output)["hookSpecificOutput"]["permissionDecisionReason"]
+
+
 # --------------------------------------------------------------- must block
 
 BLOCK = [
@@ -219,6 +241,11 @@ BLOCK = [
     ("git config remove-section core", "the same, in subcommand form"),
     ("git config --global --remove-section core", "the same, globally"),
     ("git config --rename-section core old-core", "renaming [core] away removes hooksPath"),
+    # A decoration does not make a write a read: the value is still there.
+    ("git config --show-origin core.hooksPath /dev/null", "a value after a decoration"),
+    ("git config --global --unset core.hooksPath", "a decoration in front of --unset"),
+    ("git config --type path core.hooksPath /dev/null", "a typed write is a write"),
+    ("git config --file .git/config core.hooksPath /dev/null", "a write to a named file"),
     # main, force, and skipping the hooks
     ("git push origin main", "main moves only by merge"),
     ("git push origin HEAD:main", "refspec form"),
@@ -411,6 +438,43 @@ BLOCK = [
         "cat <<EOF\n${| git push origin main; }\nEOF",
         "the value-returning funsub spelling as well",
     ),
+    # Double quotes do not make a substitution inert anywhere — the heredoc was
+    # only the first place this was noticed. The shell runs the inside of
+    # `"$( )"` exactly as it runs a bare one; the guard's tokeniser used to
+    # swallow the whole quoted string as one word and never look in.
+    (
+        'echo "$(git push origin main)"',
+        "double quotes do not stop a substitution running",
+    ),
+    (
+        'echo "release $(git push origin HEAD:main) done"',
+        "the same, with text around it",
+    ),
+    (
+        f'echo "$({RC} create pod)"',
+        "any command inside a quoted substitution still runs",
+    ),
+    ('echo "$(rm -rf ~)" > /tmp/out', "and the destructive ones too"),
+    (
+        'MSG="$(git push origin main)"',
+        "an assignment's value is substituted before anything is assigned",
+    ),
+    (
+        'echo "`git push origin main`"',
+        "backticks inside double quotes are the older spelling",
+    ),
+    (
+        'echo "outer $(echo "$(git push origin main)")"',
+        "a substitution nested inside a quoted substitution",
+    ),
+    (
+        'echo "$(git push origin main"',
+        "an unbalanced substitution cannot be read, so it cannot be vouched for",
+    ),
+    (
+        'git commit -m "chore: $(git push origin main)"',
+        "a commit message is not a quarantine — the shell runs this before git sees it",
+    ),
 ]
 
 # ----------------------------------------------------------- must NOT block
@@ -513,6 +577,11 @@ ALLOW = [
     ("git commit -m 'wip' && grep -n TODO guard.py", "grep -n after a commit"),
     ("git commit -mnote", "an attached message containing n is not --no-verify"),
     ("git push origin work/x  # never use -f here", "a comment is not a flag"),
+    # Help output is not a push. Refusing it taught the session that reading
+    # the manual was the same act as writing to main.
+    ("git push --help", "reading the manual pushes nothing"),
+    ("git send-pack --help", "the same for the plumbing command"),
+    ("git push -h", "the short spelling"),
     # cleanup CLAUDE.md explicitly permits
     ("rm -rf workbench/scratch/*", "anyone may delete anything here without asking"),
     ("rm -rf .venv __pycache__", "ordinary cleanup"),
@@ -538,6 +607,21 @@ ALLOW = [
     ("git config --get-all core.hooksPath", "the older all-values read"),
     ("git config --get-regexp core\\..*", "reading by pattern"),
     ("git config --remove-section alias", "another section is not the hooks"),
+    # The bare-key read, decorated. A decoration says how to print the value or
+    # which file to read it from; none of them writes. Refusing these is the
+    # NR6 failure in the flag spelling.
+    ("git config --show-origin core.hooksPath", "reading where the value came from"),
+    ("git config --show-scope core.hooksPath", "reading which scope holds it"),
+    ("git config --global core.hooksPath", "reading the global value"),
+    ("git config --local core.hooksPath", "reading the repository value"),
+    ("git config --type=path core.hooksPath", "reading it as a path"),
+    ("git config --type path core.hooksPath", "the same, with a separated value"),
+    ("git config -z core.hooksPath", "null-terminated output is still output"),
+    ("git config --file .git/config core.hooksPath", "reading a named config file"),
+    ("git config --show-origin --get core.hooksPath", "a decorated explicit read"),
+    ("git config --show-origin --list", "a decorated list"),
+    ("git config get --show-scope core.hooksPath", "decorated subcommand read"),
+    ("git config list --show-origin", "decorated subcommand list"),
     ("sh .githooks/install.sh", "the sanctioned way to set it"),
     # a <<WORD in prose is not a heredoc, and must not hide what follows
     ('echo "see <<EOF for the syntax"\ngit status', "no closing tag, nothing hidden"),
@@ -580,6 +664,26 @@ ALLOW = [
         "cat <<EOF\nhome is ${HOME} and ${MISSING:-none}\nEOF",
         "ordinary parameter expansion is not a command",
     ),
+    # Inspecting a quoted substitution must mean reading its *contents* as a
+    # command, not treating quotes as suspicious. These are what the inside of
+    # a quoted substitution normally holds, and they are ordinary work.
+    ('echo "$(git rev-parse HEAD)"', "reading the current commit"),
+    ('echo "built at $(date -u)"', "a timestamp"),
+    (
+        'git commit -m "release $(git rev-parse --short HEAD)"',
+        "a substitution in a commit message that runs a harmless command",
+    ),
+    (
+        "git tag -a v1 -m \"$(git log -1 --format='%s')\"",
+        "nested quoting around a read",
+    ),
+    ('echo "$(git status --porcelain | wc -l) files"', "a pipeline inside a substitution"),
+    (
+        "echo '$(git push origin main)'",
+        "single quotes really do not substitute — bash prints this verbatim",
+    ),
+    ('echo "$((2 + 3))"', "arithmetic expansion is not a command substitution"),
+    ('echo "${HOME}/notes and ${MISSING:-none}"', "parameter expansion is not a command"),
     # a body field named deleteAfter is not a shutdown
     (f"curl -X DELETE https://{REST}/v1/pods/abc", "removing your own pod is cleanup"),
 ]
@@ -675,7 +779,6 @@ DOCUMENTED_GAPS = [
     ("node deploy.js", "so is a node script file"),
     ("C='git push'; $C origin main", "a command assembled from variables"),
     ("echo Z2l0IHB1c2g= | base64 -d | sh", "an encoded payload"),
-    ('echo "$(git push origin main)"', "a substitution inside double quotes, outside a heredoc"),
     (f"perl -e \"post('https://{REST}/v1/pods')\"", "a runtime the guard does not dispatch"),
     ("git-push origin main", "plumbing spelled as its own binary"),
     ("git-send-pack origin HEAD:main", "the same, for send-pack"),
@@ -687,4 +790,26 @@ def test_documented_gaps_are_real(command, why):
     assert not run(command), (
         f"guard.py's docstring says this is not caught, and it now is ({why}) — "
         f"update the docstring in the same commit"
+    )
+
+
+# A refusal the guard keeps on purpose. A `/stop` route inside a code string is
+# not evidence that the request stops a pod: the script can build the URL from
+# pieces, and can make any number of other requests beside the one that reads
+# as shutdown. The guard cannot establish what it would need to, so it refuses
+# — and Governance 8 stays served because the supported shutdown routes are
+# open and the refusal now names them. The message is the whole remedy here,
+# so it is asserted rather than assumed.
+INLINE_STOP = [
+    f"python3 -c \"import requests; requests.post('https://{REST}/v1/pods/abc/stop')\"",
+    f"node -e \"fetch('https://{REST}/v1/pods/abc/stop', {{method:'POST'}})\"",
+]
+
+
+@pytest.mark.parametrize("command", INLINE_STOP, ids=INLINE_STOP)
+def test_inline_shutdown_is_refused_with_the_route_that_works(command):
+    said = reason(command)
+    assert said, "an inline script write to the API must still be refused"
+    assert RC + " stop" in said, (
+        f"the refusal must name the supported route, not just refuse: {said}"
     )
