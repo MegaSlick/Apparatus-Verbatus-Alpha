@@ -125,19 +125,26 @@ def check_memory():
         return [], [], f"no memory index at {index} — not checked"
     linked = set()
     for line in index.read_text().splitlines():
-        start = line.find("](")
-        if start == -1:
-            continue
-        end = line.find(")", start + 2)
-        if end == -1:
-            continue  # an unclosed link is malformed, not a dangling target
-        raw = line[start + 2 : end].strip()
-        target = raw.split()[0] if raw else ""
-        # Normalise the shapes markdown allows: <angle-bracketed> targets,
-        # ./ prefixes, and #anchors all point at the same file.
-        target = target.strip("<>").removeprefix("./").split("#")[0]
-        if target and not target.startswith(("http:", "https:")):
-            linked.add(target)
+        # Every link on the line, not just the first. The index is one memory
+        # per line by convention, but a line that mentions a second memory —
+        # "see also [other](other.md)" — used to have that second target read
+        # as unlinked, so tidy reported a live memory as an orphan.
+        pos = 0
+        while True:
+            start = line.find("](", pos)
+            if start == -1:
+                break
+            end = line.find(")", start + 2)
+            if end == -1:
+                break  # an unclosed link is malformed, not a dangling target
+            pos = end + 1
+            raw = line[start + 2 : end].strip()
+            target = raw.split()[0] if raw else ""
+            # Normalise the shapes markdown allows: <angle-bracketed> targets,
+            # ./ prefixes, and #anchors all point at the same file.
+            target = target.strip("<>").removeprefix("./").split("#")[0]
+            if target and not target.startswith(("http:", "https:")):
+                linked.add(target)
     # Compare on paths relative to the memory directory, so a link into a
     # subdirectory is matched rather than reported dangling on its bare name.
     present = {str(p.relative_to(MEMORY)) for p in MEMORY.rglob("*.md")} - {"MEMORY.md"}
@@ -260,7 +267,9 @@ def main(argv=None):
     raw_files = [p for p in RAW.rglob("*") if p.is_file()] if RAW.is_dir() else []
     if raw_files:
         raw_bytes = sum(p.stat().st_size for p in raw_files)
-        print(f"\nraw/      {len(raw_files)} engine logs, {raw_bytes // 1024} KB — evidence, not notes.")
+        print(
+            f"\nraw/      {len(raw_files)} engine logs, {raw_bytes // 1024} KB — evidence, not notes."
+        )
         if raw_bytes > RAW_BYTE_BUDGET:
             wants_attention = True
             print(

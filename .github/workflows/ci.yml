@@ -51,9 +51,25 @@ jobs:
         # git's own failure must not read as an empty tray: capture ls-files
         # separately and fail on it, then filter. A check that cannot run is
         # a failure, not a pass.
+        shell: bash
         run: |
-          all=$(git ls-files autoclave/) || { echo "git ls-files failed" >&2; exit 2; }
-          stray=$(printf '%s\n' "$all" | grep -v '^autoclave/README.md$' | grep -v '^$' || true)
+          # NUL-delimited throughout. A path containing a newline would
+          # otherwise split into two, and each half would fail to match the
+          # README exemption — or a crafted name could match it and hide the
+          # rest of the tray. Converting back to newlines for grep would
+          # reintroduce exactly that, so each entry is compared whole.
+          # A tray check a filename can fool is not a check.
+          list="$RUNNER_TEMP/autoclave-list"
+          if ! git ls-files -z autoclave/ > "$list"; then
+            echo "git ls-files failed" >&2; exit 2
+          fi
+          stray=""
+          while IFS= read -r -d '' entry; do
+            [ -z "$entry" ] && continue
+            [ "$entry" = "autoclave/README.md" ] && continue
+            stray="${stray}${entry}"$'\n'
+          done < "$list"
+          stray="${stray%$'\n'}"
           if [ -n "$stray" ]; then
             echo "The autoclave still holds unsterilized drafts:" >&2
             printf '%s\n' "$stray" | sed 's/^/  /' >&2
