@@ -177,6 +177,35 @@ def test_the_resolved_seat_is_announced_on_stderr():
     assert "timeout" in r.stderr
 
 
+def test_the_resolved_workdir_is_announced():
+    """A tray nobody can name is a draft nobody can carry in.
+
+    TMPTRAY resolves to a freshly created directory with a random name. The
+    seat announcement says only "root TMPTRAY", so without the resolved path on
+    stderr a writing seat's output is findable only by globbing $TMPDIR and
+    guessing which tray belonged to which call.
+    """
+    r = run("build", "x")
+    assert r.returncode == 0, r.stderr
+    announced = [
+        line.split("seat: workdir ", 1)[1]
+        for line in r.stderr.splitlines()
+        if line.startswith("seat: workdir ")
+    ]
+    assert announced, "the resolved workdir was not announced"
+    workdir = Path(announced[0])
+    assert workdir.is_dir(), f"the announced workdir {workdir} does not exist"
+
+    argv = r.stdout.splitlines()
+    given = argv[argv.index("-C") + 1]
+    assert str(workdir) == given, "the announced workdir is not the one codex is given"
+    assert "//" not in given, (
+        f"the tray path carries a doubled separator ({given!r}); $TMPDIR ends in "
+        "a slash on macOS and every path comparison downstream has to normalise "
+        "around it"
+    )
+
+
 def test_timeout_is_reported_in_the_announcement():
     env_r = subprocess.run(
         ["sh", str(SEAT), "judge", "x"],

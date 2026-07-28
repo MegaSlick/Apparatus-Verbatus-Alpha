@@ -103,7 +103,18 @@ case $sandbox in
 esac
 
 if [ "$workroot" = TMPTRAY ]; then
-  workdir=$(mktemp -d "${TMPDIR:-/tmp}/verbatus-tray-XXXXXX")
+  # $TMPDIR carries a trailing slash on macOS, which mktemp preserves verbatim
+  # and every later path comparison then has to normalise around. Strip it once
+  # here instead.
+  tmpbase=${TMPDIR:-/tmp}
+  while : ; do
+    case $tmpbase in
+      */) tmpbase=${tmpbase%/} ;;
+      *)  break ;;
+    esac
+  done
+  [ -n "$tmpbase" ] || tmpbase=/
+  workdir=$(mktemp -d "$tmpbase/verbatus-tray-XXXXXX")
 else
   workdir="$root/$workroot"
   [ -d "$workdir" ] || { echo "seat: workroot '$workroot' does not exist" >&2; exit 2; }
@@ -141,6 +152,13 @@ set -- codex exec \
 # Say what is about to run. A seat that cannot be read back from the transcript
 # is a seat nobody can check afterwards.
 echo "seat: $seat -> $model, effort $effort, sandbox $sandbox, root $workroot, timeout ${timeout_s}s" >&2
+
+# And say where it runs, resolved. TMPTRAY names a directory this script has
+# just created under a random name, so without this line a writing seat's
+# drafts exist somewhere nobody can name — findable only by globbing the
+# temporary directory and guessing which tray was whose. A draft that cannot be
+# located has been lost, whatever the exit status said.
+echo "seat: workdir $workdir" >&2
 
 if [ "${CODEX_SEAT_DRYRUN:-}" = 1 ]; then
   for a in "$@"; do printf '%s\n' "$a"; done
