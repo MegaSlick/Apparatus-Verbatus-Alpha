@@ -5,29 +5,54 @@ Runs before every Bash command and every MCP tool call. Blocks a short list and
 stays out of the way otherwise — a guard that fires on ordinary work gets
 disabled, and a disabled guard protects nothing.
 
-What it blocks:
-  * bringing up billed RunPod infrastructure   Governance 8: only Tyrel, in-session
-  * writing to the RunPod API                  same, by another route
-  * deleting a network volume                  irreversible, and the corpus lives there
-  * turning the git hooks off                  they are the cross-tool Git alarms
-  * force-push, direct push to main            main moves only by merge
-  * git clean                                  ignored evidence is not recoverable from Git
-  * --no-verify                                one flag defeats every local rule
-  * deleting the repository, workbench records via rm/git-clean, or your home
+What it recognises — phrasings, not operations. Each line names the spellings
+this file actually inspects. It does not block the operation; it blocks the way
+of writing it. GOVERNANCE.md 10 — "claims are made only about what was actually
+measured" — makes the second list below part of this claim rather than a
+disclaimer on it, and every entry in it was run against this guard.
+
+  * RunPod launches spelled as `runpodctl create|start|remove pods`,
+    `runpodctl project deploy|dev`, or an MCP tool whose name holds "runpod"
+    and a starting verb                        Governance 8: only Tyrel, in-session
+  * RunPod API writes spelled as curl, wget, HTTPie, the runpod Python SDK,
+    inline `requests`/`httpx`/`urllib`/`http.client`, or an inline
+    node/bun/deno script                       same, by another route
+  * network-volume deletes in those same clients and tools
+  * core.hooksPath writes spelled as `git -c`, `git config` in either the flag
+    or the 2.46 subcommand form, or dropping the [core] section
+  * pushes at main spelled as `git push` or `git send-pack`, force-push in any
+    spelling, and `--no-verify`                main moves only by merge
+  * `git clean` without --dry-run              ignored evidence is not recoverable
+  * `rm` of the repository, .git/.githooks/.claude, your home, or workbench
+    records outside scratch
 
 WHAT THIS IS NOT
 ================
 It is not a security boundary and it cannot be made into one. Four rounds of
 adversarial audit found a new way past every version of it, which is the
 expected result: inspecting command text can always be defeated by writing the
-command differently.
+command differently. So the honest form of the list above is the list below.
 
-Known and unfixed: a script file (`python3 deploy.py`) is opaque, and a command
-assembled from variables reads differently here than it does to the shell.
-`bash -c` and `eval` payloads are recursively inspected, up to three deep.
-Executable and ambiguous heredocs are refused because this guard cannot
-validate arbitrary code. Simple `cat`/`tee` data heredocs are allowed. Base64
-through a pipe, and any other encoding, is not inspected.
+What it does not catch — each one verified against this file, not suspected:
+  * a script file. `sh deploy.sh`, `python3 deploy.py` and `node deploy.js` are
+    opaque; only the inline `-c` / `-e` forms are read at all.
+  * a command assembled from variables, or arriving base64-encoded through a
+    pipe. Any encoding is invisible here.
+  * a command substitution that sits inside double quotes outside a heredoc:
+    `echo "$(git push origin main)"` is allowed, while the same substitution
+    unquoted, or anywhere in an unquoted heredoc body, is refused.
+  * HTTP clients other than those named above, and every language runtime other
+    than Python and node/bun/deno — `perl -e` reaches the API untouched.
+  * git plumbing spelled as its own binary — `git-push`, `git-send-pack` —
+    rather than as `git <subcommand>`.
+
+`bash -c` and `eval` payloads are recursively inspected, up to three deep, and
+so are command substitutions in a heredoc body. Executable and ambiguous
+heredocs are refused because this guard cannot validate arbitrary code. A
+`cat`/`tee` data heredoc is allowed only while it is really data: a quoted
+delimiter (`<<'EOF'`) makes the body literal, while a bare `<<EOF` lets the
+shell run `$(...)` in it before `cat` ever starts, so those substitutions are
+inspected as the commands they are.
 
 It guards **Claude only**. Codex, GPT and a human at a terminal never run it.
 
@@ -460,11 +485,17 @@ INPUT_REDIRECTIONS = {"<", "<<", "<<<", "<&"}
 
 
 def heredoc_declarations(line: str):
-    """Return real heredocs as ``(operator, delimiter-or-None)`` pairs.
+    """Return real heredocs as ``(operator, delimiter-or-None, expands)`` triples.
 
     Only a bare identifier or one wholly single/double-quoted identifier is
     supported. Mixed quoting, escapes and shell expansions are deliberately
     marked unsupported rather than emulated incompletely.
+
+    ``expands`` says whether the shell will expand the body before the reading
+    command ever sees it. Verified against bash: with a bare delimiter,
+    ``$(echo RAN)`` in the body prints ``RAN``; with ``'EOF'``, ``"EOF"`` or
+    ``\\EOF`` it prints ``$(echo RAN)`` literally. That difference decides
+    whether a body is data or code.
     """
     out = []
     quote = None
@@ -531,7 +562,10 @@ def heredoc_declarations(line: str):
         identifier = r"[A-Za-z_][A-Za-z_0-9]*"
         found = re.fullmatch(rf"(?:({identifier})|'({identifier})'|\"({identifier})\")", raw)
         delimiter = next((group for group in found.groups() if group), None) if found else None
-        out.append((operator, delimiter))
+        # Only group 1 — the bare, unquoted spelling — leaves the body exposed
+        # to expansion. Any quoting at all makes it literal.
+        expands = bool(found) and found.group(1) is not None
+        out.append((operator, delimiter, expands))
     return out
 
 
@@ -544,9 +578,9 @@ def split_heredocs(command: str):
         cleaned.append(line)
         declarations = heredoc_declarations(line)
         i += 1
-        for operator, tag in declarations:
+        for operator, tag, expands in declarations:
             if tag is None:
-                blocks.append((line, "", False))
+                blocks.append((line, "", False, False))
                 continue
             j = i
             while j < len(lines):
@@ -554,7 +588,7 @@ def split_heredocs(command: str):
                 if terminator == tag:
                     break
                 j += 1
-            blocks.append((line, "\n".join(lines[i:j]), True))
+            blocks.append((line, "\n".join(lines[i:j]), True, expands))
             # An unterminated heredoc consumes the rest of the shell input as
             # data. There can be no later command line to inspect.
             i = j + 1
@@ -570,8 +604,87 @@ def strip_heredocs(command: str) -> str:
 
 
 def heredoc_blocks(command: str):
-    """Return heredocs as ``(opening line, body, supported)`` triples."""
+    """Return heredocs as ``(opening line, body, supported, expands)`` tuples."""
     return split_heredocs(command)[1]
+
+
+def _substitution_end(text: str, start: int) -> int:
+    """Index just past the ``)`` closing the ``$(`` whose ``(`` sits at ``start``.
+
+    Inside a substitution the payload is ordinary shell text, so quoting counts
+    again: a ``)`` in `'a)b'` closes nothing. Nesting is handled by depth, which
+    also carries `$(( ))` arithmetic through harmlessly.
+    """
+    depth = 0
+    quote = None
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(text):
+            i += 2
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    raise ValueError("unbalanced command substitution")
+
+
+def command_substitutions(text: str):
+    """The shell code inside ``$( )`` and backticks, where expansion applies.
+
+    Raises ValueError if a substitution is opened and never closed — the guard
+    then cannot say what would run, which is a refusal and not a pass.
+
+    In an expanding heredoc body, quotes are *not* special (bash prints the
+    quotes verbatim) but a backslash still escapes ``$``, a backtick and
+    itself. So the walk here honours escapes only.
+    """
+    out = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            i += 2
+            continue
+        if ch == "`":
+            j = i + 1
+            while j < len(text):
+                if text[j] == "\\" and j + 1 < len(text):
+                    j += 2
+                    continue
+                if text[j] == "`":
+                    break
+                j += 1
+            if j >= len(text):
+                raise ValueError("unterminated backtick substitution")
+            out.append(text[i + 1 : j])
+            i = j + 1
+            continue
+        if text.startswith("$(", i):
+            end = _substitution_end(text, i + 1)
+            out.append(text[i + 2 : end - 1])
+            i = end
+            continue
+        i += 1
+    return out
 
 
 def segments(command: str):
@@ -790,6 +903,66 @@ def httpie_method(argv):
 
 # --------------------------------------------------------------------- rules
 
+# Git 2.46 gave `git config` subcommands beside its old flags. Both spellings
+# reach the same setting, so both are judged here; only the read forms pass.
+CONFIG_READ_SUBCOMMANDS = frozenset({"get", "list"})
+CONFIG_WRITE_SUBCOMMANDS = frozenset(
+    {
+        "set",
+        "unset",
+        "unset-all",
+        "replace-all",
+        "add",
+        "remove-section",
+        "rename-section",
+    }
+)
+CONFIG_READ_OPTS = frozenset(
+    {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l"}
+)
+CONFIG_SECTION_OPS = frozenset({"--remove-section", "--rename-section"})
+
+
+def check_git_config(args):
+    """Let every read of core.hooksPath through; refuse every write to it.
+
+    Reading is how you check `install.sh` worked, and the script invites you to.
+    Refusing the read told a session that inspecting its own hooks was
+    destructive, which is how a guard ends up switched off wholesale.
+    """
+    lowered = [a.lower() for a in args]
+    positional = [a for a in args if not a.startswith("-")]
+    verb = positional[0].lower() if positional else None
+
+    # Deleting or renaming [core] takes core.hooksPath with it, and the key's
+    # name never appears in the command.
+    if any(a in CONFIG_SECTION_OPS for a in lowered) or verb in (
+        "remove-section",
+        "rename-section",
+    ):
+        sections = [p.lower() for p in positional if p.lower() not in CONFIG_WRITE_SUBCOMMANDS]
+        if any(s == "core" or s.startswith("core.") for s in sections):
+            deny("dropping the [core] section takes core.hooksPath with it and disables the hooks")
+
+    if not any("core.hookspath" in a for a in lowered):
+        return
+
+    if verb in CONFIG_WRITE_SUBCOMMANDS:
+        deny("permanently disables the git hooks for every tool in this clone")
+    if verb in CONFIG_READ_SUBCOMMANDS:
+        return
+
+    # The flag spellings. A write always carries either a value as a second
+    # positional argument or a mutating flag (--add, --unset, --replace-all,
+    # --edit), so "exactly one positional and no flags at all" is read-only by
+    # construction. --unset stays denied: removing the setting disables the
+    # hooks just as thoroughly as overwriting it.
+    reading = any(a in CONFIG_READ_OPTS for a in lowered)
+    if len(positional) == 1 and len(args) == 1:
+        reading = True
+    if not reading:
+        deny("permanently disables the git hooks for every tool in this clone")
+
 
 def check_git(argv):
     opts, sub, args = [], None, []
@@ -815,24 +988,8 @@ def check_git(argv):
     # `git config` form, which is worse because it binds every later tool.
     if any("core.hookspath" in o.lower() for o in opts):
         deny("disables the cross-tool Git alarms for this clone")
-    if sub == "config" and any("core.hookspath" in a.lower() for a in args):
-        # Reading the setting is how you check install.sh worked — and the
-        # script invites you to. Only writing it is the problem.
-        #
-        # Two read forms. The explicit one, and the bare `git config <key>`,
-        # which is what people actually type and which was denied here until it
-        # blocked a session from verifying its own hooks. A write always carries
-        # either a value as a second positional argument or a mutating flag
-        # (--add, --unset, --replace-all, --edit), so "exactly one positional
-        # and no flags at all" is read-only by construction. --unset stays
-        # denied: removing the setting disables the hooks just as thoroughly as
-        # overwriting it.
-        reading = any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l") for a in args)
-        positional = [a for a in args if not a.startswith("-")]
-        if len(positional) == 1 and len(args) == 1:
-            reading = True
-        if not reading:
-            deny("permanently disables the git hooks for every tool in this clone")
+    if sub == "config":
+        check_git_config(args)
 
     flags = list(options(args, GIT_VALUE_OPTS))
 
@@ -847,7 +1004,9 @@ def check_git(argv):
         if sub == "commit" and has_short_flag(args, "n", frozenset({"m", "F", "t", "C", "c"})):
             deny("git commit -n is --no-verify, which skips the hooks")
 
-    if sub == "push":
+    # `send-pack` is the plumbing behind `push`: same remote, same refspecs,
+    # same reach into main, without the word "push" appearing anywhere.
+    if sub in ("push", "send-pack"):
         flags = list(options(args, GIT_PUSH_VALUE_OPTS))
         dry_run = "--dry-run" in flags or has_short_flag(args, "n", frozenset({"o", "r"}))
         if dry_run:
@@ -1012,6 +1171,40 @@ def check_python(argv):
         re.I,
     ):
         deny(f"writes to the RunPod API through an inline HTTP client — {GOV8}")
+
+    # The standard library needs no third-party package, so it was the shortest
+    # route past the two names above. A read must stay allowed: Governance 8
+    # requires shutdown and pod state to be *verified*, and that is a GET.
+    if re.search(r"\b(?:urllib|http\.client)\b", inline) and (
+        # a keyword body in a call — `urlopen(url, data=...)`, `Request(url, data=...)`
+        re.search(r"[(,]\s*data\s*=", inline)
+        or re.search(r"\bmethod\s*=\s*['\"](?:POST|PUT|PATCH|DELETE)['\"]", inline, re.I)
+        or re.search(r"\brequest\s*\(\s*['\"](?:POST|PUT|PATCH|DELETE)['\"]", inline, re.I)
+        # a body must be bytes, so an encode is the tell for the positional form
+        or re.search(r"\.encode\(", inline)
+    ):
+        deny(f"writes to the RunPod API through the standard library — {GOV8}")
+
+
+# A write from an inline JavaScript one-liner: `fetch(url, {method:'POST'})`,
+# `axios.post(url, body)`, `client.request({method: 'DELETE'})`.
+NODE_WRITE = re.compile(
+    r"method\s*:\s*['\"`](?:POST|PUT|PATCH|DELETE)['\"`]"
+    r"|\bmethod\s*=\s*['\"`](?:POST|PUT|PATCH|DELETE)['\"`]"
+    r"|\.\s*(?:post|put|patch|delete)\s*\(",
+    re.I,
+)
+
+
+def check_node(argv):
+    """Inline JavaScript reaching the RunPod API. `node` was not dispatched at
+    all, so `node -e` was the shortest write past this guard after Python."""
+    inline = " ".join(argv)
+    lowered = inline.lower()
+    if not any(host in lowered for host in RUNPOD_HOSTS) and not re.search(r"\brunpod\b", lowered):
+        return
+    if NODE_WRITE.search(inline):
+        deny(f"writes to the RunPod API from an inline script — {GOV8}")
 
 
 def check_httpie_input(command: str) -> None:
@@ -1183,6 +1376,10 @@ DISPATCH = {
     "https": check_http,
     "python": check_python,
     "python3": check_python,
+    "node": check_node,
+    "nodejs": check_node,
+    "bun": check_node,
+    "deno": check_node,
     "rm": check_rm,
     "aws": check_aws,
 }
@@ -1209,7 +1406,7 @@ SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
 
 
 def inspect(command: str, depth: int = 0) -> None:
-    for opening, _body, supported in heredoc_blocks(command):
+    for opening, body, supported, expands in heredoc_blocks(command):
         if not supported:
             deny("the heredoc delimiter uses shell syntax the command guard cannot verify")
         try:
@@ -1227,6 +1424,24 @@ def inspect(command: str, depth: int = 0) -> None:
                 deny(f"a heredoc attached to '{name}' is opaque to the command guard")
         if not resolved:
             deny("the heredoc opening has no resolvable command on the same line")
+
+        # A `cat`/`tee` body is data only while the shell leaves it alone. With
+        # an unquoted delimiter the shell expands it first, so `$(...)` and
+        # backticks in the body run before `cat` is even started — which is how
+        # a push to main once travelled inside something the guard called inert.
+        # Inspect exactly the part the shell executes, and nothing else: reading
+        # the whole body as commands would refuse every generated file whose
+        # prose happens to mention `rm -rf`.
+        if not expands or not body:
+            continue
+        try:
+            payloads = command_substitutions(body)
+        except ValueError:
+            deny("the heredoc body opens a command substitution the guard cannot read")
+        for payload in payloads:
+            if depth >= 3:
+                deny("a command substitution nested deeper than the guard inspects")
+            inspect(payload, depth + 1)
 
     check_httpie_input(command)
     try:

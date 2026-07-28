@@ -171,6 +171,32 @@ BLOCK = [
         f"python3 -c \"import httpx; httpx.request('POST', 'https://{REST}/v1/pods')\"",
         "visible inline generic HTTP request",
     ),
+    # The standard library reaches the API without importing anything the
+    # earlier patterns named, and node was not dispatched to at all.
+    (
+        'python3 -c "import urllib.request,json; urllib.request.urlopen('
+        f"urllib.request.Request('https://{REST}/v1/pods', "
+        "data=json.dumps({}).encode(), method='POST'))\"",
+        "the standard library posts just as well as requests",
+    ),
+    (
+        'python3 -c "import urllib.request,json; urllib.request.urlopen('
+        f"'https://{REST}/v1/pods', json.dumps({{}}).encode())\"",
+        "urlopen's second positional argument is the body",
+    ),
+    (
+        'python3 -c "import http.client; c=http.client.HTTPSConnection'
+        f"('{REST}'); c.request('POST', '/v1/pods', '{{}}')\"",
+        "http.client posts too",
+    ),
+    (
+        f"node -e \"fetch('https://{REST}/v1/pods', {{method:'POST', body:'{{}}'}})\"",
+        "an inline node script posts to the API",
+    ),
+    (
+        f"node -e \"require('axios').post('https://{REST}/v1/pods', {{}})\"",
+        "the same through a client library",
+    ),
     # Turning the hooks off
     ("git -c core.hooksPath=/dev/null push origin work/x", "one-shot"),
     ("git config core.hooksPath /dev/null", "permanent, for every tool"),
@@ -178,6 +204,21 @@ BLOCK = [
     ("git config --unset core.hooksPath", "removing it disables them just as well"),
     ("git config --replace-all core.hooksPath /tmp/e", "still a write"),
     ("git config --add core.hooksPath /tmp/e", "still a write"),
+    # Git 2.46's subcommand spellings. The read form is allowed below; every
+    # write form must land here, or the new spelling becomes the way around the
+    # old one.
+    ("git config set core.hooksPath /dev/null", "the subcommand write form"),
+    ("git config set --global core.hooksPath /tmp/e", "the global subcommand write form"),
+    ("git config unset core.hooksPath", "the subcommand unset"),
+    ("git config unset-all core.hooksPath", "the subcommand unset-all"),
+    ("git config replace-all core.hooksPath /tmp/e", "the subcommand replace-all"),
+    ("git config add core.hooksPath /tmp/e", "the subcommand add"),
+    # Deleting the [core] section takes core.hooksPath with it, and the string
+    # `core.hooksPath` never appears in the command.
+    ("git config --remove-section core", "removing [core] removes hooksPath"),
+    ("git config remove-section core", "the same, in subcommand form"),
+    ("git config --global --remove-section core", "the same, globally"),
+    ("git config --rename-section core old-core", "renaming [core] away removes hooksPath"),
     # main, force, and skipping the hooks
     ("git push origin main", "main moves only by merge"),
     ("git push origin HEAD:main", "refspec form"),
@@ -206,6 +247,12 @@ BLOCK = [
     ("git push -r git-receive-pack origin", "-r consumes a value; destination stays implicit"),
     ("git push --all origin", "--all includes main"),
     ("git push --mirror origin", "--mirror force-updates and deletes refs"),
+    # send-pack is the plumbing behind push. It reaches main without the word
+    # "push" appearing anywhere in the command.
+    ("git send-pack origin HEAD:main", "the plumbing command still reaches main"),
+    ("git send-pack origin main", "same, named directly"),
+    ("git send-pack --force origin work/x", "force through the plumbing command"),
+    ("git send-pack origin", "no refspec: the destination cannot be verified"),
     ("git commit --no-verify -m x", "skips the hooks"),
     ("git commit -n -m x", "the short form"),
     ("git merge --no-verify other", "merge skips hooks too"),
@@ -321,6 +368,41 @@ BLOCK = [
         "python3 script.py <<'EOF'\nrunpodctl create pod\nEOF",
         "stdin attached to an opaque script is refused",
     ),
+    # A data heredoc is inert only while the shell leaves it alone. With an
+    # unquoted delimiter the shell expands the body *before* cat is started, so
+    # a command substitution in it is a command that runs.
+    (
+        "cat <<EOF\n$(git push origin HEAD:main)\nEOF",
+        "an unquoted delimiter expands the body, so this push really runs",
+    ),
+    (
+        "cat <<EOF\nrelease `git push origin main`\nEOF",
+        "backticks are the older spelling of the same thing",
+    ),
+    (
+        f"tee out.txt <<EOF\n$({RC} create pod)\nEOF",
+        "tee's heredoc expands identically",
+    ),
+    (
+        "cat <<EOF\nouter $(echo $(rm -rf ~))\nEOF",
+        "a nested substitution is still executed",
+    ),
+    (
+        "cat <<-EOF\n\t$(git push origin main)\nEOF",
+        "the tab-stripping operator expands its body too",
+    ),
+    (
+        'cat <<EOF\nnote "$(git push origin main)"\nEOF',
+        "quotes inside a heredoc body do not disable expansion",
+    ),
+    (
+        "cat <<EOF\n$(git push origin main\nEOF",
+        "an unbalanced substitution cannot be read, so it cannot be vouched for",
+    ),
+    (
+        "cat <<EOF\n`git push origin main\nEOF",
+        "an unterminated backtick cannot be read either",
+    ),
 ]
 
 # ----------------------------------------------------------- must NOT block
@@ -373,6 +455,16 @@ ALLOW = [
         f"python3 -c \"import requests; print(requests.get('https://{REST}/v1/pods'))\"",
         "visible inline requests GET",
     ),
+    (
+        'python3 -c "import urllib.request; print(urllib.request.urlopen('
+        f"'https://{REST}/v1/pods').read().decode())\"",
+        "reading provider state with the standard library",
+    ),
+    (
+        f"node -e \"fetch('https://{REST}/v1/pods').then(r=>r.text()).then(console.log)\"",
+        "reading provider state from node",
+    ),
+    ("node -e \"console.log('hello')\"", "node with nothing to do with the API"),
     # reading and writing *about* the guarded things
     ("grep -rn networkvolume .", "reading"),
     ("rg networkvolume docs/", "reading"),
@@ -427,6 +519,17 @@ ALLOW = [
     ("git config --get core.hooksPath", "the read form"),
     ("git config core.hooksPath", "the bare read form, one key and no value"),
     ("git config --list", "reading all config"),
+    # Git 2.46 spells the read as a subcommand. Refusing it told a session that
+    # checking its own hooks was a destructive act, which is how a guard gets
+    # switched off entirely.
+    ("git config get core.hooksPath", "the subcommand read form"),
+    ("git config get --all core.hooksPath", "the subcommand read with an option"),
+    ("git config get --show-origin core.hooksPath", "reading where the value came from"),
+    ("git config list", "the subcommand list form"),
+    ("git config list --show-scope", "listing with an option"),
+    ("git config --get-all core.hooksPath", "the older all-values read"),
+    ("git config --get-regexp core\\..*", "reading by pattern"),
+    ("git config --remove-section alias", "another section is not the hooks"),
     ("sh .githooks/install.sh", "the sanctioned way to set it"),
     # a <<WORD in prose is not a heredoc, and must not hide what follows
     ('echo "see <<EOF for the syntax"\ngit status', "no closing tag, nothing hidden"),
@@ -441,6 +544,29 @@ ALLOW = [
     (
         f"cat <<EOF\nsafe\nEOF \n{RC} create pod is still data\nEOF",
         "a trailing-space fake terminator does not expose data as a command",
+    ),
+    # A quoted delimiter really does stop the shell expanding the body — bash
+    # prints `$(echo RAN)` verbatim for all three spellings — so the inert case
+    # must stay inert or every generated file becomes a refusal.
+    (
+        "cat <<'EOF'\n$(git push origin HEAD:main)\nEOF",
+        "a single-quoted delimiter disables expansion",
+    ),
+    (
+        'cat <<"EOF"\n$(git push origin HEAD:main)\nEOF',
+        "a double-quoted delimiter disables it too",
+    ),
+    (
+        "cat <<EOF\nliteral \\$(git push origin main)\nEOF",
+        "an escaped dollar is not a substitution",
+    ),
+    (
+        f"cat <<EOF\n{RC} create pod is prose, not a substitution\nEOF",
+        "an unquoted body without a substitution is still data",
+    ),
+    (
+        "cat > version.txt <<EOF\nbuilt from $(git rev-parse HEAD)\nEOF",
+        "an ordinary substitution runs an ordinary command",
     ),
     # a body field named deleteAfter is not a shutdown
     (f"curl -X DELETE https://{REST}/v1/pods/abc", "removing your own pod is cleanup"),
@@ -522,3 +648,31 @@ BLOCK_EXTRA = [
 @pytest.mark.parametrize("command,why", BLOCK_EXTRA, ids=[c for c, _ in BLOCK_EXTRA])
 def test_blocks_extra(command, why):
     assert run(command), f"should have been blocked ({why})"
+
+
+# The holes the guard's docstring declares. These are not aspirations: the file
+# says in "What it does not catch" that each of these reaches the shell, and
+# GOVERNANCE.md 10 allows that claim only because it was measured. This test is
+# what keeps it measured. If one of these ever starts being refused, that is
+# good news — delete the line here and the matching line in guard.py's docstring
+# in the same commit, so the file never advertises a hole it has closed or
+# hides one it still has.
+DOCUMENTED_GAPS = [
+    ("sh deploy.sh", "a script file is opaque"),
+    ("python3 deploy.py", "so is a Python script file"),
+    ("node deploy.js", "so is a node script file"),
+    ("C='git push'; $C origin main", "a command assembled from variables"),
+    ("echo Z2l0IHB1c2g= | base64 -d | sh", "an encoded payload"),
+    ('echo "$(git push origin main)"', "a substitution inside double quotes, outside a heredoc"),
+    (f"perl -e \"post('https://{REST}/v1/pods')\"", "a runtime the guard does not dispatch"),
+    ("git-push origin main", "plumbing spelled as its own binary"),
+    ("git-send-pack origin HEAD:main", "the same, for send-pack"),
+]
+
+
+@pytest.mark.parametrize("command,why", DOCUMENTED_GAPS, ids=[c for c, _ in DOCUMENTED_GAPS])
+def test_documented_gaps_are_real(command, why):
+    assert not run(command), (
+        f"guard.py's docstring says this is not caught, and it now is ({why}) — "
+        f"update the docstring in the same commit"
+    )
