@@ -713,6 +713,18 @@ MCP_ALLOW = [
     "mcp__runpod__terminate_pod",
     "mcp__runpod__delete_pod",
     "mcp__github__create-issue",
+    # A verb is matched as a word, not as a substring. These read; refusing
+    # them taught a session that the guard fires on documentation.
+    "mcp__runpod__get_started_guide",
+    "mcp__runpod__startup_script_logs",
+    "mcp__runpod__list_creators",
+    "mcp__runpod__deployment_status",
+]
+# ... but a verb welded to its object is still that verb.
+MCP_BLOCK += [
+    "mcp__runpod__startpod",
+    "mcp__runpod__createPod",
+    "mcp__runpod__podRentInterruptable",
 ]
 
 
@@ -813,3 +825,83 @@ def test_inline_shutdown_is_refused_with_the_route_that_works(command):
     assert RC + " stop" in said, (
         f"the refusal must name the supported route, not just refuse: {said}"
     )
+
+
+# An MCP server names its own tools, so a name is a claim by the thing being
+# judged. `mcp__runpod__request` says nothing at all, and until these cases
+# existed the payload was never opened: a pod-create body travelled under a
+# neutral name, which is the money path Governance 8 guards.
+MCP_INPUT_BLOCK = [
+    (
+        "mcp__runpod__request",
+        {"method": "POST", "path": "/v1/pods", "body": {"gpuTypeId": "A100"}},
+        "a neutral tool name carrying a pod-create body",
+    ),
+    (
+        "mcp__gateway__call",
+        {"url": f"https://{REST}/v1/pods", "method": "POST"},
+        "a neutral server *and* tool name, with the host only in the payload",
+    ),
+    (
+        "mcp__runpod__graphql",
+        {"query": "mutation { podFindAndDeployOnDemand(input: {}) { id } }"},
+        "the GraphQL deploy mutation by name",
+    ),
+    (
+        "mcp__anything__proxy",
+        {"body": {"query": "mutation { podRentInterruptable(input: {}) { id } }"}},
+        "a nested mutation under a name that mentions nothing",
+    ),
+    (
+        "mcp__runpod__request",
+        {"method": "DELETE", "path": "/v1/networkvolumes/abc"},
+        "a network-volume delete — the corpus lives there",
+    ),
+]
+
+MCP_INPUT_ALLOW = [
+    (
+        "mcp__runpod__request",
+        {"method": "GET", "path": "/v1/pods"},
+        "reading pod state is what Governance 8 asks for",
+    ),
+    (
+        "mcp__runpod__request",
+        {"method": "POST", "path": "/v1/pods/abc/stop"},
+        "shutdown must stay easy",
+    ),
+    (
+        "mcp__runpod__request",
+        {"method": "DELETE", "path": "/v1/pods/abc"},
+        "removing your own pod is cleanup",
+    ),
+    (
+        "mcp__github__create_issue",
+        {"title": "runpod costs", "body": "we should not create a pod this week"},
+        "prose that mentions RunPod is not a request to RunPod",
+    ),
+    (
+        "mcp__slack__post_message",
+        {"method": "POST", "text": "docs are at runpod.io if anyone needs them"},
+        "a host named inside a sentence is not a URL",
+    ),
+    (
+        "mcp__runpod__graphql",
+        {"query": "query { myself { pods { id } } }"},
+        "a GraphQL read",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "tool,payload,why", MCP_INPUT_BLOCK, ids=[t for t, _, _ in MCP_INPUT_BLOCK]
+)
+def test_blocks_mcp_payload(tool, payload, why):
+    assert decide({"tool_name": tool, "tool_input": payload}), f"should be blocked ({why})"
+
+
+@pytest.mark.parametrize(
+    "tool,payload,why", MCP_INPUT_ALLOW, ids=[t for t, _, _ in MCP_INPUT_ALLOW]
+)
+def test_allows_mcp_payload(tool, payload, why):
+    assert not decide({"tool_name": tool, "tool_input": payload}), f"should be allowed ({why})"

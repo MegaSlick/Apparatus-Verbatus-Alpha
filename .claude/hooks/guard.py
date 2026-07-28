@@ -14,6 +14,9 @@ disclaimer on it, and every entry in it was run against this guard.
   * RunPod launches spelled as `runpodctl create|start|remove pods`,
     `runpodctl project deploy|dev`, or an MCP tool whose name holds "runpod"
     and a starting verb                        Governance 8: only Tyrel, in-session
+  * an MCP tool *payload* that addresses a RunPod URL or path with a write
+    method, or names a create/deploy call, however neutral the tool is
+    called                                     a name is the server's claim, not evidence
   * RunPod API writes spelled as curl, wget, HTTPie, the runpod Python SDK,
     inline `requests`/`httpx`/`urllib`/`http.client`, or an inline
     node/bun/deno script                       same, by another route
@@ -42,6 +45,9 @@ What it does not catch — each one verified against this file, not suspected:
     than Python and node/bun/deno — `perl -e` reaches the API untouched.
   * git plumbing spelled as its own binary — `git-push`, `git-send-pack` —
     rather than as `git <subcommand>`.
+  * an MCP payload that hides its request from a reader: encoded, assembled
+    from fields the guard cannot join, or sent through a proxy tool that names
+    neither a RunPod host nor a call this file knows by name.
 
 `bash -c` and `eval` payloads are recursively inspected, up to three deep, and
 so is every command substitution — `$( )` or backticks — wherever the shell
@@ -1487,17 +1493,172 @@ DISPATCH = {
 # against provider state. Blocking them would work against the rule.
 BLOCKED_TOOL_WORDS = ("create", "start", "resume", "deploy", "launch", "rent")
 
+# What a starting verb starts. Used only to read a verb welded to its object —
+# `startpod` — as the verb it is.
+TOOL_RESOURCE_NOUNS = frozenset(
+    {
+        "pod",
+        "pods",
+        "endpoint",
+        "endpoints",
+        "template",
+        "templates",
+        "instance",
+        "instances",
+        "machine",
+        "machines",
+        "gpu",
+        "gpus",
+        "server",
+        "servers",
+        "worker",
+        "workers",
+        "job",
+        "jobs",
+        "volume",
+        "volumes",
+    }
+)
+
+
+def tool_words(name: str):
+    """An MCP action split into words — separators and camelCase both.
+
+    Substring matching refused `get_started_guide` because "start" is inside
+    "started", and an over-refusal on a documentation read is how a session
+    learns to distrust the guard. Matching words keeps `create-pod`,
+    `createPod` and `runpod_create_pod` caught while letting the reads past.
+    """
+    out = []
+    for part in re.split(r"[^A-Za-z0-9]+", name):
+        out.extend(w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+", part))
+    return out
+
+
+def _starts_the_meter(words) -> bool:
+    for word in words:
+        if word in BLOCKED_TOOL_WORDS:
+            return True
+        for verb in BLOCKED_TOOL_WORDS:
+            # `startpod` is `start pod` with the space removed.
+            if word.startswith(verb) and word[len(verb) :] in TOOL_RESOURCE_NOUNS:
+                return True
+    return False
+
 
 def check_tool(tool: str) -> None:
     """MCP tools. Server names are arbitrary; the verbs are not."""
-    lowered = tool.lower()
-    if "runpod" not in lowered:
+    if "runpod" not in tool.lower():
         return
-    action = lowered.rsplit("__", 1)[-1]
-    if "volume" in action and any(w in action for w in ("delete", "remove", "destroy")):
+    words = tool_words(tool.rsplit("__", 1)[-1])
+    if any(w in ("volume", "volumes") for w in words) and any(
+        w in ("delete", "remove", "destroy") for w in words
+    ):
         deny(f"'{tool}' destroys a network volume — the corpus lives there")
-    if any(word in action for word in BLOCKED_TOOL_WORDS):
+    if _starts_the_meter(words):
         deny(f"'{tool}' creates, starts or deploys RunPod resources — {GOV8}")
+
+
+# RunPod calls that create or destroy, by the names they carry in a payload
+# rather than in a tool name. The GraphQL mutations are the API's own
+# spellings; the snake/camel pairs are the SDK's.
+MCP_CREATE_NAMES = re.compile(
+    r"\b(?:podFindAndDeployOnDemand|podRentInterruptable|podResume|podDeploy|"
+    r"create[_-]?pod|start[_-]?pod|resume[_-]?pod|deploy[_-]?pod|launch[_-]?pod|"
+    r"rent[_-]?pod|create[_-]?endpoint|create[_-]?template|"
+    r"delete[_-]?network[_-]?volume)\b",
+    re.I,
+)
+# The mutations that END billing. Governance 8 wants these easy.
+MCP_SHUTDOWN_NAMES = re.compile(r"\bpod(?:Stop|Terminate|Delete)\b", re.I)
+MCP_METHOD_KEY = re.compile(r'"(?:method|httpMethod|http_method|verb)"\s*:\s*"([A-Za-z]+)"', re.I)
+
+
+def _payload_strings(value):
+    """Every string in a tool payload, keys included."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str):
+                yield key
+            yield from _payload_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _payload_strings(item)
+
+
+def _route(text: str):
+    """The API path a payload string addresses, or None if it addresses none.
+
+    A string with whitespace in it is prose, not a URL — `see runpod.io for
+    the docs` must not read as a request to RunPod. That distinction is the
+    whole difference between judging a request and judging a sentence.
+    """
+    candidate = text.strip()
+    if not candidate or re.search(r"\s", candidate):
+        return None
+    lowered = candidate.lower()
+    if any(host in lowered for host in RUNPOD_HOSTS):
+        if not lowered.startswith(("http://", "https://")):
+            candidate = f"https://{candidate}"
+        try:
+            return urlsplit(candidate).path.rstrip("/")
+        except ValueError:
+            return None
+    if candidate.startswith("/") and re.search(
+        r"/(pods|endpoints|templates|networkvolumes)\b", lowered
+    ):
+        return candidate.split("?", 1)[0].rstrip("/")
+    return None
+
+
+def check_tool_input(tool: str, tool_input) -> None:
+    """The MCP payload. A tool name is a claim made by the thing being judged.
+
+    `mcp__runpod__request` names no verb, and until this ran the payload was
+    never opened at all — so a pod-create body arrived under a neutral name and
+    the meter started. Governance 8 is the rule; this is the one place in the
+    file where the money is spent by something other than a shell command.
+    """
+    if not tool.startswith("mcp__"):
+        return
+    try:
+        text = json.dumps(tool_input, default=str)
+    except (TypeError, ValueError):
+        deny(f"'{tool}' carries a payload the guard cannot read, so it cannot vouch for it")
+
+    strings = list(_payload_strings(tool_input))
+    routes = [route for route in (_route(s) for s in strings) if route is not None]
+    addressed = any(
+        any(host in s.lower() for host in RUNPOD_HOSTS) and not re.search(r"\s", s) for s in strings
+    )
+    named = MCP_CREATE_NAMES.search(text)
+    if "runpod" not in tool.lower() and not addressed and not named:
+        return
+
+    if named:
+        deny(f"'{tool}' carries a RunPod create or deploy call in its payload — {GOV8}")
+
+    found = MCP_METHOD_KEY.search(text)
+    method = found.group(1).lower() if found else None
+    mutation = bool(re.search(r"\bmutation\b", text, re.I))
+    if method not in WRITE_METHODS and not mutation:
+        return  # reading pod state is exactly what Governance 8 asks for
+
+    if any("networkvolume" in s.lower().replace("_", "").replace("-", "") for s in strings):
+        deny(f"'{tool}' writes to a network volume — irreversible, and the corpus lives there")
+
+    if mutation and MCP_SHUTDOWN_NAMES.search(text):
+        return
+    shutting_down = bool(routes) and all(
+        route.endswith(("/stop", "/terminate"))
+        or (method == "delete" and re.search(r"/pods/[^/]+$", route))
+        for route in routes
+    )
+    if shutting_down:
+        return
+    deny(f"'{tool}' carries a write to the RunPod API in its payload — {GOV8}")
 
 
 SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
@@ -1624,6 +1785,7 @@ def main() -> None:
         tool_input = payload.get("tool_input") or {}
 
         check_tool(tool)
+        check_tool_input(tool, tool_input)
 
         if tool == "Bash":
             command = tool_input.get("command") if isinstance(tool_input, dict) else None
