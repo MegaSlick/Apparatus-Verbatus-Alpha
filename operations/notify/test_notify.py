@@ -158,6 +158,59 @@ def test_low_priority_delivery_failure_does_not_fail_the_session(tmp_path, event
     assert "notifications are off" in result.stderr
 
 
+# Every way a delivery can fail for an event that must not fail its caller. All
+# of them funnel through the one `fail()` helper, which is what makes this list
+# complete rather than merely long: a new refusal added anywhere in the script
+# reaches the same exit, so it inherits the same reporting.
+DELIVERY_FAILURES = {
+    "no topic in the environment or the config file": ({}, {"topic": None}),
+    "topic carries characters ntfy will not route": ({}, {"topic": "slash/topic"}),
+    "topic is longer than ntfy allows": ({}, {"topic": "x" * 65}),
+    "the server refused the notification": ({"curl_status": "503"}, {}),
+    "curl itself failed after printing a 2xx": (
+        {"curl_status": "204", "curl_exit": 7},
+        {},
+    ),
+}
+
+
+@pytest.mark.parametrize("event", ["start", "milestone"])
+@pytest.mark.parametrize("scenario", sorted(DELIVERY_FAILURES))
+def test_a_low_priority_failure_exits_zero_but_never_reads_as_delivered(
+    tmp_path, event, scenario
+):
+    """GOVERNANCE 10: exit 0 here means "carry on", never "the phone rang".
+
+    `start` and `milestone` deliberately do not fail their caller — a session
+    must not die because a ping did not land. The cost of that choice is that
+    the exit status can no longer tell a delivered ping from a dropped one, so
+    the stderr line has to, on *every* failure path and not just the one where
+    no topic is configured.
+    """
+    make_kwargs, run_kwargs = DELIVERY_FAILURES[scenario]
+    checkout, fake_bin, _evidence = make_checkout(tmp_path, **make_kwargs)
+    result = run_notify(checkout, fake_bin, event=event, **run_kwargs)
+
+    assert result.returncode == 0, result.stderr
+    assert "NOT DELIVERED" in result.stderr, (
+        f"{event} failed ({scenario}) and exited 0 without saying so; a reader of "
+        "the transcript cannot tell this from a delivered notification"
+    )
+    assert "NOT reached" in result.stderr
+
+
+@pytest.mark.parametrize("event", ["start", "milestone", "decision", "done"])
+def test_a_delivered_notification_never_prints_the_failure_line(tmp_path, event):
+    # The other half of the guard: a marker that is always printed distinguishes
+    # nothing. A delivered notification must be silent about failure.
+    checkout, fake_bin, evidence = make_checkout(tmp_path, curl_status="204")
+    result = run_notify(checkout, fake_bin, event=event)
+    assert result.returncode == 0, result.stderr
+    assert evidence["calls"].read_text(encoding="utf-8") == "call"
+    assert "NOT DELIVERED" not in result.stderr
+    assert "NOT reached" not in result.stderr
+
+
 @pytest.mark.parametrize("event", ["decision", "done"])
 def test_waiting_event_delivery_failure_fails_the_session(tmp_path, event):
     checkout, fake_bin, _evidence = make_checkout(tmp_path)
@@ -319,6 +372,21 @@ def test_delivered_start_is_suppressed_for_fifteen_minutes(tmp_path):
     assert second.returncode == 0, second.stderr
     assert "suppressed" in second.stderr
     assert evidence["calls"].read_text(encoding="utf-8") == "call"
+
+
+def test_the_suppression_notice_claims_delivery_and_not_a_mere_attempt(tmp_path):
+    # The stamp is written only inside the success branch, so what it records is
+    # a *delivered* start. Saying "attempted" understates the evidence in the one
+    # direction that matters here: a reader who believes a failed ping could have
+    # set the stamp reads a suppression notice as a possible silent loss.
+    checkout, fake_bin, _evidence = make_checkout(tmp_path, curl_status="204")
+    first = run_notify(checkout, fake_bin, event="start")
+    second = run_notify(checkout, fake_bin, event="start")
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert "already delivered" in second.stderr
+    assert "attempted" not in second.stderr
+    assert "NOT DELIVERED" not in second.stderr
 
 
 def test_failed_start_does_not_suppress_the_retry(tmp_path):

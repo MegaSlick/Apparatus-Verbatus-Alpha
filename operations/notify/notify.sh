@@ -15,6 +15,12 @@
 # Exit codes carry meaning: start and milestone never fail the caller, but a
 # decision or done that cannot be delivered exits 1 — a session blocked on
 # Tyrel must know he was not reached, or it waits on a message nobody got.
+#
+# The cost of that choice is paid on stderr. For start and milestone, exit 0
+# means only "the caller may carry on"; it does not mean the phone rang, and
+# the two must never be confused by a reader of a transcript. Every failure
+# therefore prints a NOT DELIVERED line, and only a real delivery prints
+# nothing. An instrument may not report a measurement it did not make.
 
 # A caller may itself be running with shell xtrace enabled. Disable it before
 # reading the environment: otherwise the bearer topic is copied into stderr by
@@ -48,11 +54,20 @@ if [ -z "$message" ] || [ "${message#*"$nl"}" != "$message" ]; then
 fi
 
 # A delivery failure is fatal only for the events where somebody is waiting.
+# It is never *silent*, whichever event it was: the reason goes out first, and
+# a start or milestone that exits 0 anyway says in plain words that it did not
+# arrive. Exit 0 there is a promise about the caller, not about the phone.
 fail() {
   echo "notify: $1" >&2
   case $event in
-    decision|done) exit 1 ;;
-    *)             exit 0 ;;
+    decision|done)
+      echo "notify: NOT DELIVERED ($event) — Tyrel was NOT reached" >&2
+      exit 1
+      ;;
+    *)
+      echo "notify: NOT DELIVERED ($event) — Tyrel was NOT reached; exit 0 keeps the caller running and does not mean the notification arrived" >&2
+      exit 0
+      ;;
   esac
 }
 
@@ -102,7 +117,10 @@ esac
 # could swallow a real result, and nothing is lost silently.
 stamp="$root/private/.notify-start-stamp"
 if [ "$event" = start ] && [ -n "$(find "$stamp" -mmin -15 2>/dev/null)" ]; then
-  echo "notify: a start ping was already attempted in the last 15 minutes — suppressed" >&2
+  # "delivered", not "attempted": the stamp below is written only inside the
+  # success branch, so a failed post never sets it. Saying "attempted" would
+  # leave a reader unable to tell this suppression from a swallowed failure.
+  echo "notify: a start ping was already delivered in the last 15 minutes — suppressed" >&2
   exit 0
 fi
 
@@ -158,4 +176,4 @@ then
   exit 0
 fi
 
-fail "post failed ($event) — Tyrel was NOT reached"
+fail "the server did not accept the post"
