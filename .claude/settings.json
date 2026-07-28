@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py\""
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py\" || { echo 'The repository guard could not run (python3 missing, guard.py missing, or it failed to start), so it cannot vouch for this tool call. GOVERNANCE.md 10: a check that cannot run is a failure, not a pass.' >&2; exit 2; }"
           }
         ]
       }

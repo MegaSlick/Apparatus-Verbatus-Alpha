@@ -80,6 +80,14 @@ tripwire on top: it catches the honest mistake and the careless agent, promptly
 and with a useful message. Treat it as a seatbelt, not a vault.
 """
 
+# The hook line says `python3`, and which python3 that is belongs to whoever's
+# PATH runs the session. On this machine /usr/bin/python3 is 3.9, where the
+# `str | None` annotation below is a TypeError at import — the guard exited 1,
+# the hook runner read "proceed", and nothing was guarded at all. Postponed
+# annotations make the file run on 3.9; the launcher in settings.json turns any
+# remaining failure to start into a refusal.
+from __future__ import annotations
+
 import json
 import os
 import re

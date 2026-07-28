@@ -9,6 +9,7 @@ guard as data, exactly as Claude Code hands it over: JSON on stdin.
 """
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -905,3 +906,118 @@ def test_blocks_mcp_payload(tool, payload, why):
 )
 def test_allows_mcp_payload(tool, payload, why):
     assert not decide({"tool_name": tool, "tool_input": payload}), f"should be allowed ({why})"
+
+
+# --------------------------------------------------------- the live wiring
+
+# Every test above runs guard.py directly, so all of them stay green if the
+# guard is never invoked at all — a misspelled path in settings.json, a matcher
+# narrowed to "Bash", or an interpreter that cannot start. Audit ledger L36 and
+# L9. These run what settings.json actually says, through a shell, the way the
+# hook runner does.
+
+SETTINGS = Path(PROJECT) / ".claude" / "settings.json"
+
+
+def wired_hook():
+    """The single PreToolUse hook as configured: (matcher, shell command)."""
+    entries = json.loads(SETTINGS.read_text())["hooks"]["PreToolUse"]
+    assert len(entries) == 1, "one PreToolUse entry, or these tests judge the wrong one"
+    hooks = entries[0]["hooks"]
+    assert len(hooks) == 1, "one command, or these tests judge the wrong one"
+    assert hooks[0]["type"] == "command"
+    return entries[0]["matcher"], hooks[0]["command"]
+
+
+def run_wired(payload, project=PROJECT, path="/usr/bin:/bin"):
+    """Invoke the configured command the way the hook runner does."""
+    _, command = wired_hook()
+    return subprocess.run(
+        # Absolute, so that the no-interpreter case below — which empties PATH
+        # to prove 127 fails closed — still has a shell to run the hook in.
+        ["/bin/sh", "-c", command],
+        input=json.dumps(payload) if isinstance(payload, dict) else payload,
+        capture_output=True,
+        text=True,
+        cwd=tempfile.gettempdir(),
+        env={"CLAUDE_PROJECT_DIR": project, "HOME": HOME, "PATH": path},
+        timeout=10,
+    )
+
+
+def test_the_matcher_reaches_bash_and_every_mcp_tool():
+    matcher, _ = wired_hook()
+    for name in ["Bash", *MCP_BLOCK, "mcp__runpod__request", "mcp__gateway__call"]:
+        assert re.fullmatch(matcher, name), (
+            f"settings.json matcher {matcher!r} never shows the guard {name}"
+        )
+
+
+def test_the_wired_command_actually_refuses():
+    """A misspelled path or a renamed guard would leave every test above green."""
+    result = run_wired({"tool_name": "Bash", "tool_input": {"command": "git push origin main"}})
+    assert result.returncode == 0, f"the wired guard did not run: {result.stderr.strip()}"
+    decision = json.loads(result.stdout)["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+
+
+def test_the_wired_command_allows_ordinary_work():
+    result = run_wired({"tool_name": "Bash", "tool_input": {"command": "git status"}})
+    assert result.returncode == 0
+    assert not result.stdout.strip()
+
+
+BROKEN_GUARDS = [
+    ("import no_such_module_for_the_guard_test", "an import error"),
+    ("this is not python", "a syntax error"),
+    ("import sys; sys.exit(3)", "an exit status the hook runner reads as 'proceed'"),
+]
+
+
+@pytest.mark.parametrize("source,why", BROKEN_GUARDS, ids=[w for _, w in BROKEN_GUARDS])
+def test_the_launcher_fails_closed_when_the_guard_cannot_start(tmp_path, source, why):
+    """GOVERNANCE.md 10: a check that cannot run is a failure, not a pass.
+
+    The hook runner proceeds on any exit status but 0 and 2, so a guard that
+    cannot start is a guard that approves everything — silently, and exactly
+    when something is wrong with it.
+    """
+    hooks = tmp_path / ".claude" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "guard.py").write_text(source)
+    result = run_wired(
+        {"tool_name": "Bash", "tool_input": {"command": "git status"}},
+        project=str(tmp_path),
+    )
+    assert result.returncode == 2, f"{why} must block (exit 2), not proceed: {result.returncode}"
+    assert result.stderr.strip(), "a refusal with no reason teaches the session nothing"
+
+
+def test_the_launcher_fails_closed_with_no_guard_file(tmp_path):
+    result = run_wired(
+        {"tool_name": "Bash", "tool_input": {"command": "git status"}},
+        project=str(tmp_path),
+    )
+    assert result.returncode == 2, "a missing guard must block, not proceed"
+
+
+def test_the_launcher_fails_closed_with_no_interpreter(tmp_path):
+    """127 — command not found — is 'proceed' to the hook runner."""
+    result = run_wired(
+        {"tool_name": "Bash", "tool_input": {"command": "git status"}},
+        path=str(tmp_path),
+    )
+    assert result.returncode == 2, f"a missing python3 must block: exit {result.returncode}"
+
+
+def test_the_launcher_fails_closed_with_no_project_directory():
+    result = subprocess.run(
+        ["/bin/sh", "-c", wired_hook()[1]],
+        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "git status"}}),
+        capture_output=True,
+        text=True,
+        cwd=tempfile.gettempdir(),
+        env={"HOME": HOME, "PATH": "/usr/bin:/bin"},
+        timeout=10,
+    )
+    assert result.returncode == 2, "an unset CLAUDE_PROJECT_DIR must block, not proceed"
