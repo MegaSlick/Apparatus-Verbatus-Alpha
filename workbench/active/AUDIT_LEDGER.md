@@ -1240,3 +1240,67 @@ In order, and none of it is large:
 5. **Then push**, with the rest of this ledger as the follow-up backlog. Nothing below the FIX
    NOW line blocks this branch, with the single exception of L2 (destructive git commands
    unclassified), which is worth promoting if there is any appetite for one more fix.
+
+---
+
+# ADDENDUM — what the fixing pass produced, 2026-07-28
+
+Written after N1–N10 and the CodeRabbit NEW-REAL items were worked. Three agents
+fixed in parallel; the session took the governing documents, which agents may not
+touch. The suite went from 452 tests to 560, all green.
+
+## New findings, none of them fixed
+
+Found while fixing, verified by the agent that found them, and deliberately left
+alone rather than widened into mid-flight scope. They are real.
+
+**A1. `echo "$(git push origin main)"` is allowed.** The same root cause as N4 —
+a command substitution the guard does not inspect — but outside a heredoc, inside
+double quotes. Unquoted `$(...)` is denied; this spelling is not. VERIFIED by the
+agent that closed N4, which chose to document it rather than widen its own change
+without a brief. **This is the highest-value item in this addendum.**
+
+**A2. `git config --show-origin core.hooksPath` is denied.** A read-only command
+refused as though it disabled the hooks — the NR6 failure in a flag spelling
+rather than a subcommand one. Not fixed quietly because ledger item R13 refuted a
+nearby claim, and re-opening that ground needs a finding of its own rather than an
+agent's judgement call.
+
+**A3. An inline-script POST to a `/stop` route is denied.** Pre-existing for
+`requests`; the new `urllib`/`node` coverage matches it. Shutting a pod down is
+the one RunPod write the governance actively *wants* to be easy, and one route to
+it is now closed. `curl` and `runpodctl stop` still work, so this is friction
+rather than a wall — but it is friction on the shutdown path, which bills by the
+hour while it exists.
+
+**A4. `git send-pack --help` is denied**, exactly as `git push --help` already
+was. Harmless, consistent, and wrong.
+
+## A record that no longer matches itself
+
+**Commit `4aceed2` says it changed the seat config and its test. It contains ten
+files**, including `CLAUDE.md`, `.claude/agents/*`, three READMEs and
+`RUN_PLAN.md`.
+
+An agent staged only its own two paths, then ran a bare `git commit`, which
+commits the whole index — including eight files the session had staged seconds
+earlier. Nothing was lost and the diff is readable; the message is simply wrong
+about its own contents.
+
+It was not rewritten. Two agents were committing to this branch at the time, and
+rewriting shared history to fix a message is a worse act than the message being
+wrong — CLAUDE.md hard rule 5. This entry is the correction: the record now says
+what happened, which is what "nothing is lost silently" asks for.
+
+The agent reported it itself, unprompted and accurately, and named the right
+remedy: `git commit -- <paths>` rather than a bare `git commit`. On a shared
+branch the index is not a private workspace. That belongs in the concurrency rule.
+
+## Still open from the original list
+
+T1–T7 are unchanged and are Tyrel's. L1–L62 are untouched. **T1 in particular —
+hard rule 10 has no mechanical enforcement — is now partly mitigated in words:
+every role holding `Write` or `Edit` carries the prohibition, and
+`.claude/agents/test_roster.py` fails if one stops carrying it. That is not
+enforcement. It makes the rule's absence loud, which is the most a sentence can
+do, and the mechanism question is still open.**
