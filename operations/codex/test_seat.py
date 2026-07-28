@@ -265,6 +265,24 @@ def test_repository_root_is_physical_when_wrapper_is_reached_through_a_symlink(t
 def test_each_seat_resolves_to_its_declared_line(name):
     model, effort, sandbox, workroot, timeout_s = parse_seats()[name]
     r = run(name, "prompt text")
+
+    # A WORKCOPY seat points at a working copy outside the repository, and that
+    # path is declared in a gitignored file so a machine-specific path is never
+    # committed. The consequence is that such a seat resolves only where the
+    # operator has set one up: on a CI runner, a fresh clone or a pod, it cannot.
+    #
+    # That is the design working, not a failure — so assert the refusal instead.
+    # It must be a clean, explanatory exit rather than a crash or a fallback to
+    # somewhere plausible, because a writing seat that guesses its own root is
+    # how the live tree gets edited. This test failed in CI exactly once, for
+    # exactly this reason, which is the argument for keeping the assertion.
+    if workroot == "WORKCOPY" and not (ROOT / "private" / "workcopy.conf").exists():
+        assert r.returncode == 2, r.stderr
+        assert "WORKCOPY" in r.stderr
+        assert "workcopy.conf" in r.stderr
+        assert "WORKCOPY_PATH=" in r.stderr, "the refusal must say how to fix it"
+        return
+
     assert r.returncode == 0, r.stderr
     argv = r.stdout.splitlines()
 
