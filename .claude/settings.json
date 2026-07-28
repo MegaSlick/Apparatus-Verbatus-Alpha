@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PROJECT_DIR/operations/notify/notify.sh\" start \"A session has opened in verbatus_alpha.\"",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/operations/notify/notify.sh\" start \"An Apparatus Verbatus session has opened.\"",
             "async": true,
             "timeout": 15
           }

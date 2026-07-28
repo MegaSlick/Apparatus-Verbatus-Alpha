@@ -175,6 +175,9 @@ BLOCK = [
     ("git -c core.hooksPath=/dev/null push origin work/x", "one-shot"),
     ("git config core.hooksPath /dev/null", "permanent, for every tool"),
     ("git config --global core.hooksPath /tmp/empty", "permanent and global"),
+    ("git config --unset core.hooksPath", "removing it disables them just as well"),
+    ("git config --replace-all core.hooksPath /tmp/e", "still a write"),
+    ("git config --add core.hooksPath /tmp/e", "still a write"),
     # main, force, and skipping the hooks
     ("git push origin main", "main moves only by merge"),
     ("git push origin HEAD:main", "refspec form"),
@@ -193,6 +196,16 @@ BLOCK = [
     ("git push -fu origin work/x", "combined short flags"),
     ("git push -uf origin work/x", "combined short flags, other order"),
     ("git push --no-verify origin work/x", "skips the hooks"),
+    ("git push", "implicit destination may be main"),
+    ("git push origin", "remote without a refspec still uses an implicit destination"),
+    ("git push origin HEAD", "HEAD may resolve to main"),
+    ("git push origin @", "@ may resolve to main"),
+    ("git push --repo origin main", "an option-supplied remote still targets main"),
+    ("git push -o marker origin main", "a push-option value is not the refspec"),
+    ("git push -omain origin main", "an attached push-option value is not a dry-run"),
+    ("git push -r git-receive-pack origin", "-r consumes a value; destination stays implicit"),
+    ("git push --all origin", "--all includes main"),
+    ("git push --mirror origin", "--mirror force-updates and deletes refs"),
     ("git commit --no-verify -m x", "skips the hooks"),
     ("git commit -n -m x", "the short form"),
     ("git merge --no-verify other", "merge skips hooks too"),
@@ -237,6 +250,22 @@ BLOCK = [
     (f"env -i -u PATH {RC} create pod", "same, with env"),
     (f"sudo -E -u tyrel bash -c '{RC} create pod'", "same, wrapping a payload"),
     (f"rm -rf {PROJECT}/.claude/worktrees", "every other agent's uncommitted work"),
+    ("rm -rf workbench/raw", "ignored evidence cannot be recovered from Git"),
+    ("rm -rf workbench/archive", "archived records are not disposable"),
+    ("rm -rf workbench/active", "the live handoff is not disposable"),
+    ("rm -rf workbench/design", "retained design decisions are not disposable"),
+    ("rm -rf workbench/tools", "ignored working tools are not disposable"),
+    ("rm workbench/raw/reviewer.log", "a single evidence file is still evidence"),
+    ("rm -f workbench/archive/record.md", "force does not make an archived record disposable"),
+    ("rm workbench/raw/*", "a non-recursive glob can empty the evidence drawer"),
+    ("cd workbench/raw && rm evidence.log", "relative rm resolves inside the evidence drawer"),
+    (
+        "cd workbench/design && rm -- -decision",
+        "-- ends options but does not make a protected drawer disposable",
+    ),
+    ("git clean -fdx", "deletes every ignored workbench record"),
+    ("git clean -fx -eimportant", "an exclude value containing n is not a dry-run"),
+    ("git clean -f workbench/raw", "targeted clean still destroys ignored evidence"),
     ("rm -rf ..", "the directory above the working one contains it"),
     (
         'echo "see <<EOF for the syntax"\nrm -rf ~',
@@ -248,6 +277,50 @@ BLOCK = [
     ("aws s3 rm s3://bucket/prefix --recursive", "irreversible"),
     ("aws --profile prod s3 rm s3://b/p --recursive", "behind a profile"),
     ("/usr/local/bin/aws s3 rm s3://b/p --recursive", "by full path"),
+    (
+        f"bash <<'EOF'\n{RC} create pod\nEOF",
+        "a shell executes its heredoc as commands",
+    ),
+    (
+        "python3 - <<'PY'\nimport runpod\nrunpod.create_pod()\nPY",
+        "Python executes a stdin script",
+    ),
+    (
+        f"bash <<A <<B\necho safe\nA\n{RC} create pod\nB",
+        "the effective last of multiple shell heredocs is executable",
+    ),
+    (
+        "python3 - <<A <<B\nprint('safe')\nA\nimport runpod\nrunpod.create_pod()\nB",
+        "the effective last of multiple Python heredocs is executable",
+    ),
+    (
+        f"bash <<EOF\necho safe\nEOF \n{RC} create pod\nEOF",
+        "a trailing space does not terminate a plain heredoc",
+    ),
+    (
+        f"echo '<<EOF' && printf '%s\\n' safe\n{RC} create pod",
+        "a quoted fake marker does not hide the following command",
+    ),
+    (
+        f"echo safe # <<EOF\n{RC} create pod",
+        "a commented fake marker does not hide the following command",
+    ),
+    (
+        f"cat <<\\EOF\nsafe\nEOF\n{RC} create pod",
+        "a backslash-quoted delimiter is refused rather than misparsed",
+    ),
+    (
+        f'cat <<E"OF"\nsafe\nEOF\n{RC} create pod',
+        "a mixed-quoted delimiter is refused rather than misparsed",
+    ),
+    (
+        f"python3 - \\\n<<EOF\n{RC} create pod\nEOF",
+        "a continued executable opener cannot be resolved from its physical line",
+    ),
+    (
+        "python3 script.py <<'EOF'\nrunpodctl create pod\nEOF",
+        "stdin attached to an opaque script is refused",
+    ),
 ]
 
 # ----------------------------------------------------------- must NOT block
@@ -324,24 +397,51 @@ ALLOW = [
     ("git push origin work/x && docker build -f Dockerfile .", "docker -f"),
     ("git push origin work/x && grep -f patterns.txt notes.txt", "grep -f"),
     ("git push --dry-run origin work/x", "a dry run changes nothing"),
+    ("git push --dry-run origin main", "even a main dry run changes nothing"),
+    ("git push --tags origin", "tags do not update a branch"),
+    ("git push --repo origin work/x", "an option-supplied remote with an explicit branch"),
+    ("git push -o main origin work/x", "a push-option value named main is not a branch"),
+    ("git push -omain origin work/x", "an attached push-option value is not force or dry-run"),
+    (
+        "git push -r git-receive-pack origin work/x",
+        "receive-pack value is not a refspec when a safe branch follows",
+    ),
+    ("git push main work/x", "a remote named main is not the destination branch"),
     ("git push -u origin work/x", "-u alone is not force"),
     ("git log --oneline main", "reading main"),
     ("git status\ngit diff --stat", "ordinary multi-line"),
     ("git commit -m 'wip' && grep -n TODO guard.py", "grep -n after a commit"),
+    ("git commit -mnote", "an attached message containing n is not --no-verify"),
     ("git push origin work/x  # never use -f here", "a comment is not a flag"),
     # cleanup CLAUDE.md explicitly permits
     ("rm -rf workbench/scratch/*", "anyone may delete anything here without asking"),
     ("rm -rf .venv __pycache__", "ordinary cleanup"),
     ("rm -rf node_modules && npm install", "ordinary cleanup"),
     ("rm -rf build/*", "ordinary cleanup"),
+    ("rm workbench/scratch/disposable.txt", "scratch is explicitly disposable"),
+    ("rm -- -name", "-- makes a dash-prefixed filename an operand"),
+    ("git clean -ndx", "dry-run only reports what clean would remove"),
     ('rm -rf "$SCRATCH/session"', "an unknown variable is not a threat"),
     ("aws s3 ls s3://bucket", "read-only"),
     # reading the hooks setting is how you check install.sh worked
     ("git config --get core.hooksPath", "the read form"),
+    ("git config core.hooksPath", "the bare read form, one key and no value"),
     ("git config --list", "reading all config"),
     ("sh .githooks/install.sh", "the sanctioned way to set it"),
     # a <<WORD in prose is not a heredoc, and must not hide what follows
     ('echo "see <<EOF for the syntax"\ngit status', "no closing tag, nothing hidden"),
+    (
+        "cat > notes.md <<'EOF'\nrunpodctl create pod would cost money.\nEOF",
+        "a data heredoc is not executable",
+    ),
+    (
+        f"cat <<A <<B\n{RC} create pod is prose\nA\nrm -rf ~ is prose\nB",
+        "all bodies of a multiple data heredoc remain data",
+    ),
+    (
+        f"cat <<EOF\nsafe\nEOF \n{RC} create pod is still data\nEOF",
+        "a trailing-space fake terminator does not expose data as a command",
+    ),
     # a body field named deleteAfter is not a shutdown
     (f"curl -X DELETE https://{REST}/v1/pods/abc", "removing your own pod is cleanup"),
 ]

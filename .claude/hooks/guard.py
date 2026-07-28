@@ -9,10 +9,11 @@ What it blocks:
   * bringing up billed RunPod infrastructure   Governance 8: only Tyrel, in-session
   * writing to the RunPod API                  same, by another route
   * deleting a network volume                  irreversible, and the corpus lives there
-  * turning the git hooks off                  they are the only local enforcement
+  * turning the git hooks off                  they are the cross-tool Git alarms
   * force-push, direct push to main            main moves only by merge
+  * git clean                                  ignored evidence is not recoverable from Git
   * --no-verify                                one flag defeats every local rule
-  * deleting the repository or your home       the obvious one
+  * deleting the repository, workbench records via rm/git-clean, or your home
 
 WHAT THIS IS NOT
 ================
@@ -23,15 +24,18 @@ command differently.
 
 Known and unfixed: a script file (`python3 deploy.py`) is opaque, and a command
 assembled from variables reads differently here than it does to the shell.
-`bash -c` and `eval` payloads *are* inspected, one level of nesting at a time,
-up to three deep — but base64 through a pipe, or any other encoding, is not.
+`bash -c` and `eval` payloads are recursively inspected, up to three deep.
+Executable and ambiguous heredocs are refused because this guard cannot
+validate arbitrary code. Simple `cat`/`tee` data heredocs are allowed. Base64
+through a pipe, and any other encoding, is not inspected.
 
 It guards **Claude only**. Codex, GPT and a human at a terminal never run it.
 
-The enforcement that binds every tool is the git hooks in `.githooks/`, and
-they must be installed — see `.githooks/install.sh`. This file is a tripwire on
-top: it catches the honest mistake and the careless agent, promptly and with a
-useful message. Treat it as a seatbelt, not a vault.
+Installed Git hooks apply to Git operations made in that clone by any tool that
+does not deliberately bypass them. They do not govern direct filesystem,
+process, or network actions. See `.githooks/install.sh`. This file is a Claude
+tripwire on top: it catches the honest mistake and the careless agent, promptly
+and with a useful message. Treat it as a seatbelt, not a vault.
 """
 
 import json
@@ -67,6 +71,14 @@ GIT_VALUE_OPTS = {
     "--reuse-message",
     "-C",
     "-c",
+}
+GIT_PUSH_VALUE_OPTS = GIT_VALUE_OPTS | {
+    "--exec",
+    "--push-option",
+    "--receive-pack",
+    "--repo",
+    "-o",
+    "-r",
 }
 
 # Wrappers that put the real command one or more tokens further in.
@@ -443,36 +455,123 @@ def normalise(command: str) -> str:
     return "".join(out)
 
 
-HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z_0-9]*)\1")
 REDIRECTIONS = {">", ">>", "<", "<<", "<<<", ">&", "<&", ">|"}
 INPUT_REDIRECTIONS = {"<", "<<", "<<<", "<&"}
 
 
-def strip_heredocs(command: str) -> str:
-    """Drop heredoc bodies. A shell does not execute them; nor should this.
+def heredoc_declarations(line: str):
+    """Return real heredocs as ``(operator, delimiter-or-None)`` pairs.
 
-    Without it, `cat > notes.md <<EOF` followed by prose about `rm -rf ~` was
-    read as an actual delete — and writing documents about these commands is
-    most of what this repository does.
+    Only a bare identifier or one wholly single/double-quoted identifier is
+    supported. Mixed quoting, escapes and shell expansions are deliberately
+    marked unsupported rather than emulated incompletely.
     """
+    out = []
+    quote = None
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(line):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(line):
+            i += 2
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch == "#" and (i == 0 or line[i - 1].isspace()):
+            break
+        if line.startswith("<<<", i):
+            i += 3
+            continue
+        if not line.startswith("<<", i):
+            i += 1
+            continue
+
+        operator = "<<"
+        i += 2
+        if i < len(line) and line[i] == "-":
+            operator = "<<-"
+            i += 1
+        while i < len(line) and line[i].isspace():
+            i += 1
+        if i >= len(line):
+            break
+
+        start = i
+        word_quote = None
+        while i < len(line):
+            current = line[i]
+            if word_quote:
+                if current == "\\" and word_quote == '"' and i + 1 < len(line):
+                    i += 2
+                    continue
+                if current == word_quote:
+                    word_quote = None
+                i += 1
+                continue
+            if current in "'\"":
+                word_quote = current
+                i += 1
+                continue
+            if current == "\\" and i + 1 < len(line):
+                i += 2
+                continue
+            if current.isspace() or current in ";&|()<>":
+                break
+            i += 1
+        raw = line[start:i]
+        identifier = r"[A-Za-z_][A-Za-z_0-9]*"
+        found = re.fullmatch(rf"(?:({identifier})|'({identifier})'|\"({identifier})\")", raw)
+        delimiter = next((group for group in found.groups() if group), None) if found else None
+        out.append((operator, delimiter))
+    return out
+
+
+def split_heredocs(command: str):
+    """Remove all bodies and return them with their opening command lines."""
     lines = command.split("\n")
-    out, i = [], 0
+    cleaned, blocks, i = [], [], 0
     while i < len(lines):
         line = lines[i]
-        out.append(line)
-        found = HEREDOC.search(line)
+        cleaned.append(line)
+        declarations = heredoc_declarations(line)
         i += 1
-        if found:
-            tag = found.group(2)
+        for operator, tag in declarations:
+            if tag is None:
+                blocks.append((line, "", False))
+                continue
             j = i
-            while j < len(lines) and lines[j].strip() != tag:
+            while j < len(lines):
+                terminator = lines[j].lstrip("\t") if operator == "<<-" else lines[j]
+                if terminator == tag:
+                    break
                 j += 1
-            # Only treat it as a heredoc if the terminator is actually there.
-            # `echo "see <<EOF for the syntax"` has no closing tag, and
-            # discarding the rest of the command would hide everything after it.
-            if j < len(lines):
-                i = j + 1
-    return "\n".join(out)
+            blocks.append((line, "\n".join(lines[i:j]), True))
+            # An unterminated heredoc consumes the rest of the shell input as
+            # data. There can be no later command line to inspect.
+            i = j + 1
+            if j == len(lines):
+                i = j
+                break
+    return "\n".join(cleaned), blocks
+
+
+def strip_heredocs(command: str) -> str:
+    """Drop data bodies: the shell does not execute them as commands."""
+    return split_heredocs(command)[0]
+
+
+def heredoc_blocks(command: str):
+    """Return heredocs as ``(opening line, body, supported)`` triples."""
+    return split_heredocs(command)[1]
 
 
 def segments(command: str):
@@ -581,6 +680,44 @@ def options(argv, value_opts):
             yield token
 
 
+def positional_args(argv, value_opts):
+    """Return operands without mistaking option values for operands."""
+    out = []
+    skip = False
+    options_ended = False
+    for token in argv:
+        if skip:
+            skip = False
+            continue
+        if not options_ended and token == "--":
+            options_ended = True
+            continue
+        if not options_ended and token in value_opts:
+            skip = True
+            continue
+        if not options_ended and token.startswith("-"):
+            continue
+        out.append(token)
+    return out
+
+
+def has_short_flag(argv, wanted: str, value_options=frozenset()):
+    """Whether a combined short-option token contains one Boolean flag.
+
+    Once a value-taking option appears, the rest of that token is its value:
+    `-omain` is push option `-o` with value `main`, not `-o -m -a -i -n`.
+    """
+    for token in argv:
+        if not token.startswith("-") or token.startswith("--") or token == "-":
+            continue
+        for option in token[1:]:
+            if option in value_options:
+                break
+            if option == wanted:
+                return True
+    return False
+
+
 def curl_options(argv):
     """Yield parsed curl options without re-reading option values as flags."""
     i = 1
@@ -677,39 +814,68 @@ def check_git(argv):
     # the audit gate at once. Both the one-shot `-c` form and the permanent
     # `git config` form, which is worse because it binds every later tool.
     if any("core.hookspath" in o.lower() for o in opts):
-        deny("disables the git hooks, which are all the local enforcement there is")
+        deny("disables the cross-tool Git alarms for this clone")
     if sub == "config" and any("core.hookspath" in a.lower() for a in args):
         # Reading the setting is how you check install.sh worked — and the
         # script invites you to. Only writing it is the problem.
+        #
+        # Two read forms. The explicit one, and the bare `git config <key>`,
+        # which is what people actually type and which was denied here until it
+        # blocked a session from verifying its own hooks. A write always carries
+        # either a value as a second positional argument or a mutating flag
+        # (--add, --unset, --replace-all, --edit), so "exactly one positional
+        # and no flags at all" is read-only by construction. --unset stays
+        # denied: removing the setting disables the hooks just as thoroughly as
+        # overwriting it.
         reading = any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l") for a in args)
+        positional = [a for a in args if not a.startswith("-")]
+        if len(positional) == 1 and len(args) == 1:
+            reading = True
         if not reading:
             deny("permanently disables the git hooks for every tool in this clone")
 
     flags = list(options(args, GIT_VALUE_OPTS))
 
+    if sub == "clean":
+        dry_run = "--dry-run" in flags or has_short_flag(args, "n", frozenset({"e"}))
+        if not dry_run:
+            deny("git clean deletes untracked or ignored work that Git cannot restore")
+
     if sub in ("commit", "merge", "push", "rebase", "am", "cherry-pick"):
         if "--no-verify" in flags:
             deny("--no-verify skips the hooks that protect main, the documents and the audit gate")
-        if sub == "commit" and any(
-            f.startswith("-") and not f.startswith("--") and "n" in f[1:] for f in flags
-        ):
+        if sub == "commit" and has_short_flag(args, "n", frozenset({"m", "F", "t", "C", "c"})):
             deny("git commit -n is --no-verify, which skips the hooks")
 
     if sub == "push":
+        flags = list(options(args, GIT_PUSH_VALUE_OPTS))
+        dry_run = "--dry-run" in flags or has_short_flag(args, "n", frozenset({"o", "r"}))
+        if dry_run:
+            return
+
+        if any(f in ("--all", "--branches") for f in flags):
+            deny("push --all can update main along with the intended branches")
+        if "--mirror" in flags:
+            deny("push --mirror force-updates and deletes remote refs")
+
         # `-fu` and `-uf` are the same as `-f`; whole-token comparison missed them.
         if any(
-            f == "--force"
-            or f.startswith("--force-with-lease")
-            or (f.startswith("-") and not f.startswith("--") and "f" in f[1:])
-            for f in flags
-        ):
+            f == "--force" or f.startswith("--force-with-lease") for f in flags
+        ) or has_short_flag(args, "f", frozenset({"o", "r"})):
             deny(
                 "force-push destroys work another agent may be holding "
                 "(ALLOW_FORCE_PUSH=1 if you truly mean it)"
             )
-        for a in args:
-            if a.startswith("-"):
-                continue
+        positional = positional_args(args, GIT_PUSH_VALUE_OPTS)
+        repo_by_option = any(a == "--repo" or a.startswith("--repo=") for a in args)
+        refspecs = positional if repo_by_option else positional[1:]
+        # With no explicit refspec, Git reads push.default and branch/remote
+        # configuration. The guard cannot prove that the implicit destination is
+        # not main, so an approving result here would be a false claim.
+        if not refspecs and "--tags" not in flags:
+            deny("the push has no explicit non-main refspec, so its destination cannot be verified")
+
+        for a in refspecs:
             # A leading + forces, colon or not: `git push origin +main` is
             # `+main:main`. Requiring a colon here let the colonless form past
             # BOTH checks at once — past this one, and past the branch check
@@ -723,6 +889,8 @@ def check_git(argv):
             target = a.lstrip("+").split(":")[-1]
             if target in ("main", "refs/heads/main"):
                 deny("main moves only by merging a pull request")
+            if target in ("HEAD", "@"):
+                deny("HEAD is an implicit push destination and may resolve to main")
 
 
 def check_runpodctl(argv):
@@ -890,18 +1058,67 @@ def _precious():
     ]
 
 
-def check_rm(argv):
+def _workbench_records():
+    """Ignored drawers whose contents are records rather than disposable cache."""
+    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    workbench = os.path.join(project, "workbench")
+    return [
+        os.path.join(workbench, "active"),
+        os.path.join(workbench, "archive"),
+        os.path.join(workbench, "design"),
+        os.path.join(workbench, "raw"),
+        os.path.join(workbench, "tools"),
+    ]
+
+
+def _operand_paths(operand: str, project: str, command_cwd: str | None = None):
+    """Resolve an rm operand as the hook cwd and as the project cwd."""
+    expanded = os.path.expandvars(os.path.expanduser(operand))
+    head = expanded
+    if any(c in expanded for c in "*?["):
+        head = os.path.dirname(expanded.split("*")[0].split("?")[0].split("[")[0]) or "."
+    paths = {os.path.realpath(head), os.path.normpath(os.path.abspath(head))}
+    if not os.path.isabs(head):
+        # Hooks normally inherit the project cwd, but that is a runner
+        # convention rather than part of the JSON contract. Judge a
+        # project-relative spelling against CLAUDE_PROJECT_DIR as well.
+        paths.add(os.path.realpath(os.path.join(project, head)))
+        if command_cwd:
+            paths.add(os.path.realpath(os.path.join(command_cwd, head)))
+    return paths
+
+
+def check_rm(argv, command_cwd: str | None = None):
     recursive = False
     operands = []
+    options_ended = False
     for token in argv[1:]:
-        if token == "--recursive":
+        if not options_ended and token == "--":
+            options_ended = True
+        elif not options_ended and token == "--recursive":
             recursive = True
-        elif token.startswith("--"):
+        elif not options_ended and token.startswith("--"):
             continue
-        elif token.startswith("-") and len(token) > 1:
+        elif not options_ended and token.startswith("-") and len(token) > 1:
             recursive = recursive or "r" in token.lower()
         else:
             operands.append(token)
+
+    records = _workbench_records()
+    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    for operand in operands:
+        for path in _operand_paths(operand, project, command_cwd):
+            for record in records:
+                if (
+                    path == record
+                    or path.startswith(record + os.sep)
+                    or record.startswith(path + os.sep)
+                ):
+                    deny(
+                        f"delete of '{operand}' — workbench records outside "
+                        f"scratch are not disposable"
+                    )
+
     if not recursive:
         return
 
@@ -927,13 +1144,9 @@ def check_rm(argv):
                 f"history, its hooks, or the guard itself"
             )
 
-        head = expanded
-        if any(c in expanded for c in "*?["):
-            head = os.path.dirname(expanded.split("*")[0].split("?")[0].split("[")[0]) or "."
-
         # realpath follows symlinks, normpath collapses `..` lexically, and
         # `/tmp/../Users/...` resolves differently under each.
-        for path in {os.path.realpath(head), os.path.normpath(os.path.abspath(head))}:
+        for path in _operand_paths(operand, project, command_cwd):
             if path == "/" or path in roots:
                 deny(
                     f"recursive delete of '{operand}' — that is the "
@@ -996,6 +1209,25 @@ SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
 
 
 def inspect(command: str, depth: int = 0) -> None:
+    for opening, _body, supported in heredoc_blocks(command):
+        if not supported:
+            deny("the heredoc delimiter uses shell syntax the command guard cannot verify")
+        try:
+            openers = segments(opening)
+        except ValueError:
+            deny("the heredoc opening command cannot be parsed safely")
+        resolved = False
+        for argv in openers:
+            argv = peel(argv)
+            if not argv:
+                continue
+            resolved = True
+            name = base(argv[0])
+            if name not in ("cat", "tee"):
+                deny(f"a heredoc attached to '{name}' is opaque to the command guard")
+        if not resolved:
+            deny("the heredoc opening has no resolvable command on the same line")
+
     check_httpie_input(command)
     try:
         parsed = segments(command)
@@ -1005,11 +1237,24 @@ def inspect(command: str, depth: int = 0) -> None:
                 deny(reason)
         return
 
+    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    command_cwd = project
     for argv in parsed:
         argv = peel(argv)
         if not argv:
             continue
         name = base(argv[0])
+
+        if name == "cd":
+            operands = [a for a in argv[1:] if not a.startswith("-")]
+            if operands:
+                destination = os.path.expandvars(os.path.expanduser(operands[0]))
+                command_cwd = os.path.realpath(
+                    destination
+                    if os.path.isabs(destination)
+                    else os.path.join(command_cwd, destination)
+                )
+            continue
 
         # `bash -c '<anything>'` and `eval '<anything>'` carry a whole command
         # as a string. Look inside it. The old raw-text guard caught these for
@@ -1029,7 +1274,10 @@ def inspect(command: str, depth: int = 0) -> None:
         # python3.11, python3.13 — a version suffix is not a different program.
         handler = DISPATCH.get(name) or (check_python if name.startswith("python") else None)
         if handler:
-            handler(argv)
+            if handler is check_rm:
+                handler(argv, command_cwd)
+            else:
+                handler(argv)
 
 
 def main() -> None:
