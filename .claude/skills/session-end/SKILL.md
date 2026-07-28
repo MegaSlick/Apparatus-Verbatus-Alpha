@@ -145,19 +145,38 @@ why. Then stop.
 
 **A session that both starts and ends in one sitting still writes one.**
 
-## 7. Brief the next session
+## 7. Brief the next session, and write the prompt that starts it
 
-One block, written for queueing: **the goal, the model and effort to open with, the size
-of the chunk, and an honest duration — including whether it can run overnight
-unattended.** Tyrel queues sessions from this line, often at night, and an under-scoped
-session wastes the whole run.
+Two things, both in the chat where he can reach them.
+
+**First, the queue line:** **the goal, the model and effort to open with, the size of the
+chunk, and an honest duration — including whether it can run overnight unattended.** Tyrel
+queues sessions from this line, often at night, and an under-scoped session wastes the run.
 
 > Next: the launch contract and budget guard. Open as Opus 5 medium. Large chunk, tests
 > first; 4–8 hours unattended once the pod-scripts decision is answered; overnight-capable.
 
 If the honest answer is thirty minutes of cleanup, say that instead — a short session
-queued as a night is a wasted night, and so is an eight-hour chunk queued as a coffee
-break.
+queued as a night is a wasted night, and so is an eight-hour chunk queued as a coffee break.
+
+**Then the prompt itself, ready to paste.** A block he can copy into a fresh session and
+send without editing. He is often launching at midnight and should not have to compose
+anything; asking a tired human to write the prompt is how a night gets queued wrong.
+
+The prompt opens with `/session-start` so the new session runs its own procedure, and it
+**points at the documents rather than restating them** — the handoff and any brief are on
+disk, and a prompt that repeats them burns the context the session was meant to save. What
+it must carry in its own words: whether the session is attended, the effort to open at, the
+tasks in priority order, the standing limits (what it may not do), and what to do when it
+runs out of budget, time, or power.
+
+> ```
+> /session-start Unmonitored overnight run. Read workbench/active/HANDOFF.md and
+> workbench/active/NEXT_SESSION_BRIEF.md first; the brief has the tasks and the limits.
+> Open at <model> <effort>. Do not push. Stop cleanly and write the handoff if you run low.
+> ```
+
+Keep it short enough to read at a glance and complete enough to run unattended.
 
 ## 8. Tell him it is over
 
