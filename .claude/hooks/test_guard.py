@@ -498,6 +498,18 @@ BLOCK = [
     ("rm .githooks/pre-push", "a deleted hook is a disabled hook"),
     ("mv .githooks/pre-push /tmp/parked", "a moved hook is a disabled hook"),
     ("rm -f .git/hooks/commit-msg", "the installed copy is the one git runs"),
+    # Scoping the refusal to this clone must not become a way out of it. A
+    # relative path, or no path at all, is this clone by default: guessing the
+    # other way disables the real guard, which is the expensive direction.
+    ("git config core.hooksPath /dev/null", "no path given at all is this clone"),
+    ("cd .githooks && git config core.hooksPath /dev/null", "a relative cd stays inside"),
+    ("git -C . config core.hooksPath /dev/null", "-C . is this clone"),
+    ("cd /tmp && cd /Users/tyrel/verbatus_alpha && git config core.hooksPath x", "cd back in"),
+    (
+        "cd /private/tmp/scratch && cd /Users/tyrel/verbatus_alpha && "
+        "git config --remove-section core",
+        "leaving and coming back is still coming back",
+    ),
 ]
 
 # ----------------------------------------------------------- must NOT block
@@ -759,6 +771,23 @@ ALLOW = [
     ("rm workbench/scratch/note.txt", "scratch is disposable by CLAUDE.md"),
     ("cat .githooks/pre-push", "reading a hook is how you check it is installed"),
     ("sh .githooks/install.sh", "installing the hooks is the thing we want done"),
+    # A throwaway repository somewhere else is not this clone, and setting
+    # hooksPath there *installs* hooks rather than disabling any. The refusal
+    # said "permanently disables the git hooks for every tool in this clone",
+    # which was simply false in that context — and an agent that finds the
+    # guard blocking legitimate setup is one step from a broader bypass.
+    (
+        "cd /private/tmp/scratch-repo && git config core.hooksPath .githooks",
+        "an absolute cd outside the project: another repository entirely",
+    ),
+    (
+        "git -C /private/tmp/scratch-repo config core.hooksPath .githooks",
+        "the same, spelled with -C",
+    ),
+    (
+        "git -C /private/tmp/scratch-repo config --unset core.hooksPath",
+        "and unsetting it there is equally not this clone",
+    ),
 ]
 
 

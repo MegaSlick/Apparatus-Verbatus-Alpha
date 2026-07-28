@@ -22,7 +22,10 @@ disclaimer on it, and every entry in it was run against this guard.
     node/bun/deno script                       same, by another route
   * network-volume deletes in those same clients and tools
   * core.hooksPath writes spelled as `git -c`, `git config` in either the flag
-    or the 2.46 subcommand form, or dropping the [core] section
+    or the 2.46 subcommand form, or dropping the [core] section — in *this*
+    clone. A `git -C <path>` or a `cd` to an absolute path outside the project
+    is another repository, where a throwaway repo's hooksPath is nobody's
+    business; anything unresolved counts as this clone.
   * pushes at main spelled as `git push` or `git send-pack`, force-push in any
     spelling, and `--no-verify`                main moves only by merge
   * `git clean` without --dry-run              ignored evidence is not recoverable
@@ -1112,13 +1115,38 @@ CONFIG_READ_DECORATIONS = frozenset(
 CONFIG_VALUE_OPTS = frozenset({"--file", "-f", "--blob", "--type", "--default"})
 
 
-def check_git_config(args):
+def outside_this_clone(path) -> bool:
+    """True only when a command demonstrably operates on another repository.
+
+    A throwaway repo under /private/tmp is not this clone, and setting
+    core.hooksPath in it *installs* hooks rather than disabling any — the
+    refusal's own words ("for every tool in this clone") were false there.
+
+    Fails closed in every unclear case: no path, a path that will not resolve,
+    or one that lands inside the project all count as this clone. Guessing the
+    other way switches off the real guard, which is the expensive direction.
+    """
+    if not path:
+        return False
+    try:
+        resolved = os.path.realpath(path)
+    except (OSError, ValueError):
+        return False
+    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    return resolved != project and not resolved.startswith(project + os.sep)
+
+
+def check_git_config(args, elsewhere: bool = False):
     """Let every read of core.hooksPath through; refuse every write to it.
 
     Reading is how you check `install.sh` worked, and the script invites you to.
     Refusing the read told a session that inspecting its own hooks was
     destructive, which is how a guard ends up switched off wholesale.
+
+    ``elsewhere`` says the command was proved to address another repository.
     """
+    if elsewhere:
+        return
     lowered = [a.lower() for a in args]
     positional = [a for a in args if not a.startswith("-")]
     verb = positional[0].lower() if positional else None
@@ -1157,7 +1185,7 @@ def check_git_config(args):
         deny("permanently disables the git hooks for every tool in this clone")
 
 
-def check_git(argv):
+def check_git(argv, command_cwd: str | None = None):
     opts, sub, args = [], None, []
     i = 1
     while i < len(argv):
@@ -1179,10 +1207,20 @@ def check_git(argv):
     # Turning the hooks off defeats the branch guard, the stray-note check and
     # the audit gate at once. Both the one-shot `-c` form and the permanent
     # `git config` form, which is worse because it binds every later tool.
-    if any("core.hookspath" in o.lower() for o in opts):
+    # `git -C <path>` moves the whole command to another repository, as does a
+    # `cd` earlier on the line. Only a path proved to be outside this project
+    # counts; everything else is this clone.
+    repo_cwd = command_cwd
+    for j, option in enumerate(opts):
+        if option == "-C" and j + 1 < len(opts):
+            target = opts[j + 1]
+            repo_cwd = target if os.path.isabs(target) else os.path.join(repo_cwd or ".", target)
+    elsewhere = outside_this_clone(repo_cwd)
+
+    if any("core.hookspath" in o.lower() for o in opts) and not elsewhere:
         deny("disables the cross-tool Git alarms for this clone")
     if sub == "config":
-        check_git_config(args)
+        check_git_config(args, elsewhere)
 
     flags = list(options(args, GIT_VALUE_OPTS))
 
@@ -1684,7 +1722,7 @@ DISPATCH = {
 }
 
 # Handlers that need to know where the command line had got to by `cd`.
-CWD_HANDLERS = (check_rm, check_hook_files)
+CWD_HANDLERS = (check_rm, check_hook_files, check_git)
 
 # Verbs that start the meter. `stop`, `terminate` and `delete` are absent on
 # purpose: they end billing, and Governance 8 requires shutdown to be verified
