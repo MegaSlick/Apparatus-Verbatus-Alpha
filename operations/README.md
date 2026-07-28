@@ -25,10 +25,16 @@ under `private/` is an acceptable home for it. The config is parsed as data and 
 and only a regular file is read — a named pipe there would block forever inside the
 `SessionStart` hook, which is a session that never starts rather than a ping that never
 arrives. Delivery is fixed to `https://ntfy.sh`; the client refuses an ambient
-`NTFY_SERVER` override so stale process state cannot redirect the bearer topic. Start and
-milestone delivery failures are reported but do not fail their caller; decision and done
-failures exit non-zero because somebody may be waiting. The client requires Python 3 for
-in-memory JSON encoding and `curl` for HTTPS delivery.
+`NTFY_SERVER` override so stale process state cannot redirect the bearer topic.
+
+**`start` and `milestone` exit 0 whether or not delivery succeeded, so their exit status says
+nothing about the phone.** That is deliberate — a session must not die because a ping did not
+land — but it means the status cannot be read as evidence. Read stderr instead: every failure
+prints one line beginning `notify: NOT DELIVERED`, and a real delivery prints nothing at all.
+`decision` and `done` exit non-zero on failure, because somebody is waiting on those and a
+session that thinks it was heard will wait forever.
+
+The client requires Python 3 for in-memory JSON encoding and `curl` for HTTPS delivery.
 
 `codex/seat.sh` pins a seat's requested model, effort, sandbox, work root, and elapsed-time
 ceiling. It uses Codex's ephemeral mode so the CLI does not persist a second session record.
