@@ -2,6 +2,36 @@
 
 Every delivery test uses a fake ``curl`` and a placeholder topic. Nothing in
 this suite opens a network connection or reads a real credential.
+
+WHAT A GREEN RUN HERE DOES AND DOES NOT ESTABLISH
+-------------------------------------------------
+Read this before treating a passing suite as a working notifier. An audit found
+that every assertion below about ``curl`` is an assertion about a shell script
+this file writes, and the component's real failure mode is silence — which is
+exactly what a fake cannot detect.
+
+It establishes, and this is worth having:
+
+* what ``notify.sh`` decides — which events fail their caller, which do not,
+  which inputs are refused, when a start ping is suppressed;
+* what it would hand to ``curl`` — the argument vector, the JSON body, and the
+  absence of the bearer topic from both argv and curl's environment;
+* that a non-2xx code, or a curl exit status, is never reported as delivery.
+
+It establishes none of this, and no amount of testing harder will change that:
+
+* that ``curl`` accepts the flags used. ``-sS`` mutated to ``--silentt`` passes
+  this whole suite; the fake reads ``$1`` and its own recorded argv, and never
+  parses an option. The one flag pinned against a real program is ``-q`` being
+  first, and only because the fake exits 90 otherwise;
+* that DNS resolves, that TLS negotiates, that a proxy does not intercept, or
+  that ntfy.sh accepts this payload shape at the server root;
+* that Tyrel's phone rings. Nothing here has ever sent a notification.
+
+The gap closes only with a live send against the real topic, which spends a
+real credential and is Tyrel's call to make in a session, not a test's to make
+on its own. Until then: green here means the script's *logic* is intact, and
+says nothing about whether the message arrives.
 """
 
 import json
@@ -30,7 +60,6 @@ def make_checkout(
     curl_status="204",
     curl_exit=0,
     config_topic=None,
-    touch_exit=0,
 ):
     checkout = tmp_path / "checkout"
     notify = checkout / "operations" / "notify"
@@ -65,11 +94,6 @@ def make_checkout(
         encoding="utf-8",
     )
     fake_curl.chmod(0o755)
-
-    if touch_exit:
-        fake_touch = fake_bin / "touch"
-        fake_touch.write_text(f"#!/bin/sh\nexit {touch_exit}\n", encoding="utf-8")
-        fake_touch.chmod(0o755)
 
     evidence = {
         "args": curl_args,
@@ -248,13 +272,43 @@ def test_a_named_pipe_at_the_config_path_does_not_hang_the_hook(tmp_path):
     assert not evidence["calls"].exists()
 
 
-def test_broken_config_symlink_is_reported_not_followed(tmp_path):
+def test_a_dangling_config_symlink_is_reported_as_no_configuration(tmp_path):
+    # Named for what it proves. `-f` is false for a link with nothing on the end
+    # of it, so this is the *dangling* case only — see the test below for the
+    # working link, which is followed on purpose.
     checkout, fake_bin, evidence = make_checkout(tmp_path)
     (checkout / "private" / "ntfy.conf").symlink_to("missing-topic-file")
     result = run_notify(checkout, fake_bin, topic=None)
     assert result.returncode == 1
     assert "notifications are off" in result.stderr
     assert not evidence["calls"].exists()
+
+
+def test_a_working_config_symlink_is_followed_deliberately(tmp_path):
+    """The decided answer to "does the config check follow symlinks?" — it does.
+
+    An audit found the code and its comment disagreeing: the comment explained
+    that `-f` was chosen so a named pipe could not block a session, and read as
+    though it also refused symlinks, which it never did. One of the two had to
+    change. The comment did.
+
+    The reasoning, so a later reader can overturn it deliberately rather than by
+    accident: anyone able to plant a symlink inside `private/` can plant a
+    regular file there instead, so the refusal defends against nobody, while an
+    operator who keeps the topic somewhere else and links to it has a real use
+    for the link. This test is here to make the behaviour a decision with a
+    stated reason instead of an accident of `-f`.
+    """
+    checkout, fake_bin, evidence = make_checkout(tmp_path)
+    elsewhere = tmp_path / "elsewhere.conf"
+    assignment = "NTFY_" + 'TOPIC="TEST_via_symlink"'
+    elsewhere.write_text(f"{assignment}\n", encoding="utf-8")
+    (checkout / "private" / "ntfy.conf").symlink_to(elsewhere)
+
+    result = run_notify(checkout, fake_bin, topic=None)
+    assert result.returncode == 0, result.stderr
+    assert evidence["calls"].exists(), "the linked config was not read"
+    assert "TEST_via_symlink" in evidence["payload"].read_text(encoding="utf-8")
 
 
 def test_a_config_file_without_a_topic_line_is_not_treated_as_configured(tmp_path):
@@ -336,8 +390,11 @@ def test_ambient_server_override_is_refused_without_echoing_or_contacting_it(tmp
     assert not evidence["calls"].exists()
 
 
-@pytest.mark.parametrize("message", ["", "first\nsecond"])
+@pytest.mark.parametrize("message", ["", "first\nsecond", "first\rsecond", "trailing\r"])
 def test_message_must_be_one_non_empty_line(tmp_path, message):
+    # A bare carriage return splits the message in the phone client exactly as a
+    # newline does, so a check that caught only LF let a two-line notification
+    # through the guard whose only job was to refuse one.
     checkout, fake_bin, evidence = make_checkout(tmp_path)
     result = run_notify(checkout, fake_bin, message=message)
     assert result.returncode == 2
@@ -397,7 +454,122 @@ def test_failed_start_does_not_suppress_the_retry(tmp_path):
 
 
 def test_start_reports_when_it_cannot_record_suppression_state(tmp_path):
-    checkout, fake_bin, _evidence = make_checkout(tmp_path, touch_exit=1)
+    # The stamp lives in private/, so the way it becomes unwritable in the field
+    # is a permission on that directory, not a broken `touch`.
+    checkout, fake_bin, evidence = make_checkout(tmp_path)
+    private = checkout / "private"
+    private.chmod(0o555)
+    try:
+        result = run_notify(checkout, fake_bin, event="start")
+    finally:
+        private.chmod(0o755)
+    assert result.returncode == 0, result.stderr
+    assert evidence["calls"].read_text(encoding="utf-8") == "call", "the ping itself was lost"
+    assert "could not record its suppression stamp" in result.stderr
+
+
+# --- the start stamp is evidence, and is checked like evidence ---------------
+#
+# Suppression is the one path in this script that deliberately does not send.
+# The old check asked `find "$stamp" -mmin -15` — "is there anything here that
+# changed recently" — and everything below answered yes without being a stamp
+# this script ever wrote. Each one silenced a real SessionStart ping and said
+# nothing, which is the failure mode a notifier is least able to survive.
+
+STAMP = "private/.notify-start-stamp"
+
+
+def _seed_stamp(checkout, *, seconds_ago):
+    """Write a stamp as this script writes one, aged by the given offset."""
+    import time
+
+    path = checkout / STAMP
+    written = int(time.time()) - seconds_ago
+    path.write_text(f"{written}\n", encoding="utf-8")
+    os.utime(path, (written, written))
+    return path
+
+
+def test_a_directory_at_the_stamp_path_does_not_suppress_a_start(tmp_path):
+    checkout, fake_bin, evidence = make_checkout(tmp_path)
+    (checkout / STAMP).mkdir()
     result = run_notify(checkout, fake_bin, event="start")
     assert result.returncode == 0, result.stderr
-    assert "could not record its suppression stamp" in result.stderr
+    assert evidence["calls"].exists(), "a directory at the stamp path swallowed the ping"
+    assert "not a regular file" in result.stderr
+
+
+def test_a_fifo_at_the_stamp_path_does_not_suppress_a_start(tmp_path):
+    checkout, fake_bin, evidence = make_checkout(tmp_path)
+    os.mkfifo(checkout / STAMP)
+    result = run_notify(checkout, fake_bin, event="start")
+    assert result.returncode == 0, result.stderr
+    assert evidence["calls"].exists(), "a FIFO at the stamp path swallowed the ping"
+    assert "not a regular file" in result.stderr
+
+
+def test_a_symlinked_stamp_is_not_trusted_and_is_not_written_through(tmp_path):
+    # The stamp is read AND written. A link aimed at a file the machine rewrites
+    # often would suppress every start ping forever; a link aimed anywhere at all
+    # would redirect this script's own write out of private/. There is no
+    # legitimate use for a symlinked suppression stamp, so both are refused —
+    # which is the opposite of the ruling on the config file, on purpose.
+    checkout, fake_bin, evidence = make_checkout(tmp_path)
+    target = tmp_path / "busy-file"
+    target.write_text("", encoding="utf-8")
+    (checkout / STAMP).symlink_to(target)
+
+    result = run_notify(checkout, fake_bin, event="start")
+    assert result.returncode == 0, result.stderr
+    assert evidence["calls"].exists(), "a symlinked stamp swallowed the ping"
+    assert "symlink" in result.stderr
+    assert target.read_text(encoding="utf-8") == "", "the stamp write followed the symlink out"
+
+
+def test_a_future_dated_stamp_does_not_suppress_a_start(tmp_path):
+    # A negative age is still "less than fifteen minutes". One clock skew, or one
+    # stray `touch -t`, and every start ping is suppressed until the date passes.
+    checkout, fake_bin, evidence = make_checkout(tmp_path)
+    _seed_stamp(checkout, seconds_ago=-3600)
+    result = run_notify(checkout, fake_bin, event="start")
+    assert result.returncode == 0, result.stderr
+    assert evidence["calls"].exists(), "a future-dated stamp swallowed the ping"
+    assert "future" in result.stderr
+
+
+def test_an_unreadable_stamp_does_not_suppress_a_start(tmp_path):
+    # Includes every stamp the older touch-based version left behind: empty.
+    checkout, fake_bin, evidence = make_checkout(tmp_path)
+    (checkout / STAMP).write_text("", encoding="utf-8")
+    result = run_notify(checkout, fake_bin, event="start")
+    assert result.returncode == 0, result.stderr
+    assert evidence["calls"].exists(), "an empty stamp swallowed the ping"
+    assert "no readable timestamp" in result.stderr
+
+
+def test_a_stamp_older_than_the_window_does_not_suppress(tmp_path):
+    checkout, fake_bin, evidence = make_checkout(tmp_path)
+    _seed_stamp(checkout, seconds_ago=901)
+    result = run_notify(checkout, fake_bin, event="start")
+    assert result.returncode == 0, result.stderr
+    assert evidence["calls"].exists(), "an expired stamp suppressed a start ping"
+
+
+def test_a_stamp_inside_the_window_still_suppresses(tmp_path):
+    # The other half: the fixes above must not have disabled suppression, which
+    # is the behaviour the stamp exists for.
+    checkout, fake_bin, evidence = make_checkout(tmp_path)
+    _seed_stamp(checkout, seconds_ago=60)
+    result = run_notify(checkout, fake_bin, event="start")
+    assert result.returncode == 0, result.stderr
+    assert "suppressed" in result.stderr
+    assert not evidence["calls"].exists()
+
+
+@pytest.mark.parametrize("event", ["milestone", "decision", "done"])
+def test_a_fresh_stamp_never_suppresses_a_deliberate_event(tmp_path, event):
+    checkout, fake_bin, evidence = make_checkout(tmp_path)
+    _seed_stamp(checkout, seconds_ago=1)
+    result = run_notify(checkout, fake_bin, event=event)
+    assert result.returncode == 0, result.stderr
+    assert evidence["calls"].exists(), f"{event} was suppressed by a start stamp"

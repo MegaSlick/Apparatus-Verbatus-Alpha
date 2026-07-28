@@ -47,8 +47,15 @@ case $event in
   *)         echo "notify: unknown event '$event'" >&2; exit 2 ;;
 esac
 
+# One line means one line by every reader's definition. A bare carriage return
+# breaks the message across lines in the phone client exactly as a newline does,
+# so checking only for LF let a two-line notification through the check whose
+# whole job was to refuse one.
 nl=$(printf '\n_'); nl=${nl%_}
-if [ -z "$message" ] || [ "${message#*"$nl"}" != "$message" ]; then
+cr=$(printf '\r_'); cr=${cr%_}
+if [ -z "$message" ] ||
+  [ "${message#*"$nl"}" != "$message" ] ||
+  [ "${message#*"$cr"}" != "$message" ]; then
   echo "notify: the message is one non-empty line — that is the contract" >&2
   exit 2
 fi
@@ -88,7 +95,18 @@ if [ -z "$topic" ] && [ -f "$conf" ] && [ -r "$conf" ]; then
   # `-f` and not merely `-r`: a named pipe at this path is readable, and reading
   # one blocks until something writes. This script runs from the SessionStart
   # hook, so that is not a failed notification — it is a session that never
-  # starts, with no error to explain why. A regular file, or nothing.
+  # starts, with no error to explain why.
+  #
+  # Say exactly what `-f` establishes, because it used to be described as more
+  # than it is. It excludes a directory, a FIFO, a device and a dangling link.
+  # It does NOT refuse a working symlink to a regular file: `-f` follows the
+  # link, and so does the `sed` below. That is deliberate here. Whoever can
+  # plant a symlink in `private/` can plant a regular file there just as
+  # easily, so refusing the link would buy nothing against the only attacker it
+  # could be aimed at — while an operator keeping the topic in a password
+  # manager's export directory and linking to it has a real use for one. The
+  # stamp below reaches the opposite conclusion on purpose; the reasons are
+  # written there.
   topic=$(sed -n 's/^NTFY_TOPIC=//p' "$conf" | tail -n 1 | tr -d '"' | tr -d "'")
 fi
 [ -n "$topic" ] || fail "no topic in the environment or $conf — notifications are off"
@@ -116,7 +134,85 @@ esac
 # (milestone, decision, done) are never suppressed: a rate limit on those
 # could swallow a real result, and nothing is lost silently.
 stamp="$root/private/.notify-start-stamp"
-if [ "$event" = start ] && [ -n "$(find "$stamp" -mmin -15 2>/dev/null)" ]; then
+suppress_window_s=900
+
+# The stamp is evidence that a ping was delivered, so it is checked like
+# evidence rather than trusted because something exists at the path.
+#
+# `find "$stamp" -mmin -15` asked one question — is there anything here that
+# was touched recently — and four different objects answered yes. A directory
+# left by a crashed run, a FIFO, a symlink aimed at some file the machine
+# rewrites every minute, or a stamp dated in the future (a negative age is
+# still "less than fifteen minutes", and a clock skew or a stray `touch -t`
+# suppresses every start for as long as the date says) each silenced a real
+# notification and printed nothing. This script runs from the SessionStart
+# hook, where nobody is watching for a message that did not arrive.
+#
+# So: a regular file, not a symlink, holding the epoch second it was written.
+# Unlike the config above, there is no legitimate reason to symlink a
+# suppression stamp anywhere, and here the file is also WRITTEN — a link would
+# redirect that write outside `private/`. Both reasons point the same way, so
+# this path refuses links where the config accepts them.
+#
+# Every refusal below returns "not fresh", which sends the ping. That is the
+# safe direction: the cost of being wrong is one duplicate notification, and
+# the cost of the other direction is a session start nobody hears about.
+start_was_delivered_recently() {
+  [ -e "$stamp" ] || [ -L "$stamp" ] || return 1
+
+  if [ -L "$stamp" ]; then
+    echo "notify: the start stamp is a symlink; not trusting it to suppress a ping" >&2
+    return 1
+  fi
+  if [ ! -f "$stamp" ]; then
+    echo "notify: the start stamp is not a regular file; not trusting it to suppress a ping" >&2
+    return 1
+  fi
+
+  stamp_now=$(date +%s 2>/dev/null) || stamp_now=""
+  stamped=$(head -n 1 "$stamp" 2>/dev/null) || stamped=""
+  case ${stamp_now} in
+    ""|*[!0-9]*)
+      echo "notify: cannot read the clock; not suppressing the start ping" >&2
+      return 1 ;;
+  esac
+  case ${stamped} in
+    ""|*[!0-9]*)
+      # Includes every stamp written by the older `touch`-based version, which
+      # left the file empty. One extra ping per machine, once.
+      echo "notify: the start stamp carries no readable timestamp; not suppressing" >&2
+      return 1 ;;
+  esac
+
+  stamp_age=$(( stamp_now - stamped ))
+  if [ "${stamp_age}" -lt 0 ]; then
+    echo "notify: the start stamp is dated in the future; not suppressing" >&2
+    return 1
+  fi
+  [ "${stamp_age}" -lt "${suppress_window_s}" ]
+}
+
+# Write the stamp only where reading it would have been trusted. Refusing to
+# write through a symlink or onto a non-regular file is the same rule as above,
+# in the direction that matters more: a redirected write leaves the topic's
+# neighbourhood entirely.
+record_start_delivery() {
+  if [ -L "$stamp" ] || { [ -e "$stamp" ] && [ ! -f "$stamp" ]; }; then
+    echo "notify: the start stamp path is not a regular file; could not record its suppression stamp; duplicates may follow" >&2
+    return 0
+  fi
+  stamp_now=$(date +%s 2>/dev/null) || stamp_now=""
+  case ${stamp_now} in
+    ""|*[!0-9]*)
+      echo "notify: could not record its suppression stamp; duplicates may follow" >&2
+      return 0 ;;
+  esac
+  if ! { printf '%s\n' "${stamp_now}" > "$stamp"; } 2>/dev/null; then
+    echo "notify: could not record its suppression stamp; duplicates may follow" >&2
+  fi
+}
+
+if [ "$event" = start ] && start_was_delivered_recently; then
   # "delivered", not "attempted": the stamp below is written only inside the
   # success branch, so a failed post never sets it. Saying "attempted" would
   # leave a reader unable to tell this suppression from a swallowed failure.
@@ -170,8 +266,8 @@ then
   # Stamp only a *delivered* start, so a failed post never suppresses the retry.
   # Two sessions racing the check can each send one ping; the failure mode of
   # that race is a duplicate, never a loss.
-  if [ "$event" = start ] && ! touch "$stamp" 2>/dev/null; then
-    echo "notify: delivered start but could not record its suppression stamp; duplicates may follow" >&2
+  if [ "$event" = start ]; then
+    record_start_delivery
   fi
   exit 0
 fi
