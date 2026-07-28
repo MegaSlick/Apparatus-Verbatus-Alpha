@@ -1196,6 +1196,157 @@ def test_pre_push_allows_a_fast_forward_and_refuses_a_divergent_push(tmp_path):
     assert "force-push" in rewrite.stderr
 
 
+def test_record_audit_fails_before_installing_the_receipt_not_after(tmp_path):
+    # Ledger L19. The reviewer count ran *after* the receipt was moved into
+    # place, so a failure there exited non-zero with the receipt permanently
+    # installed. The operator reads a failure, runs the command again, and the
+    # same reviewer is appended twice — the checklist then shows coverage that
+    # one read produced. Anything that can fail belongs before the install.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    shutil.copy2(HOOKS / "record-audit.sh", repo / ".githooks" / "record-audit.sh")
+    env = stub_command(tmp_path, "grep", "#!/bin/sh\nexit 2\n")
+    result = subprocess.run(
+        ["sh", ".githooks/record-audit.sh", "Claude Opus 5", "no findings"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert not (repo / ".git" / "audit-receipts" / sha).exists(), (
+        "a failing step reported failure while leaving the receipt installed"
+    )
+    assert "No receipt was written" in result.stderr
+    leftovers = list((repo / ".git" / "audit-receipts").glob("*.tmp.*"))
+    assert not leftovers, f"temporary receipt left behind: {leftovers}"
+
+
+def run_commit_message_in(repo, message, env=None):
+    process_env = clean_hook_env()
+    if env:
+        process_env.update(env)
+    path = repo / "COMMIT_EDITMSG_TEST"
+    path.write_text(message, encoding="utf-8")
+    return subprocess.run(
+        ["sh", ".githooks/commit-msg", str(path)],
+        cwd=repo,
+        env=process_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+
+def make_commit_msg_repo(path):
+    subprocess.run(["git", "init", "-q", "-b", "work/example", str(path)], check=True, timeout=5)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True, timeout=5)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=path,
+        check=True,
+        timeout=5,
+    )
+    (path / "safe.txt").write_text("safe\n", encoding="utf-8")
+    subprocess.run(["git", "add", "safe.txt"], cwd=path, check=True, timeout=5)
+    subprocess.run(
+        ["git", "commit", "-qm", "base\n\nCo-Authored-By: Test <t@example.invalid>"],
+        cwd=path,
+        check=True,
+        timeout=5,
+    )
+    hooks = path / ".githooks"
+    hooks.mkdir()
+    shutil.copy2(HOOKS / "commit-msg", hooks / "commit-msg")
+    shutil.copy2(HOOKS / "check_ingress.py", hooks / "check_ingress.py")
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "leftover",
+    ["directory", "empty", "garbage"],
+)
+def test_commit_message_merge_exemption_requires_a_real_state_file(tmp_path, leftover):
+    # Ledger L27. The exemption tested `[ -e ]` only, so a directory, an empty
+    # file or any leftover at .git/MERGE_HEAD handed away the attribution rule
+    # for every commit made afterwards — and silently, because a check that
+    # declines to fire prints nothing.
+    repo = tmp_path / "repo"
+    make_commit_msg_repo(repo)
+    state = repo / ".git" / "MERGE_HEAD"
+    if leftover == "directory":
+        state.mkdir()
+    elif leftover == "empty":
+        state.write_text("", encoding="utf-8")
+    else:
+        state.write_text("not a commit id\n", encoding="utf-8")
+
+    result = run_commit_message_in(repo, "unattributed commit\n")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "does not say which machine wrote it" in result.stderr
+
+
+def test_commit_message_exempts_a_merge_git_is_actually_running(tmp_path):
+    # Ledger L47: the exemption's own happy path had no test, so tightening it
+    # could have refused every real merge and nothing would have said so.
+    repo = tmp_path / "repo"
+    head = make_commit_msg_repo(repo)
+    (repo / ".git" / "MERGE_HEAD").write_text(f"{head}\n", encoding="utf-8")
+    result = run_commit_message_in(repo, "Merge branch 'work/other'\n")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_commit_message_accepts_a_human_named_trailer(tmp_path):
+    # Ledger L18, recorded rather than fixed. CLAUDE.md says this hook "enforces
+    # authorship only", and it checks trailer *syntax*: any name plus an
+    # email-shaped address passes, including a person's. That is the documented
+    # behaviour, and this pins it so the gap is visible in the suite instead of
+    # being rediscovered by the next audit.
+    repo = tmp_path / "repo"
+    make_commit_msg_repo(repo)
+    result = run_commit_message_in(
+        repo,
+        "Describe change\n\nCo-Authored-By: Tyrel <tyrel@example.invalid>\n",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("value", ["0", "true", "yes", ""])
+def test_pre_commit_hatches_open_only_for_the_exact_value_one(tmp_path, value):
+    # Ledger L42/L47. Both hatches compare against the literal "1". Nothing
+    # proved that, so a later `[ -n "$ALLOW_MAIN_COMMIT" ]` — the obvious
+    # "simplification" — would have turned every near-miss value into a bypass
+    # and kept the suite green.
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, timeout=5)
+    copy_commit_hooks(repo)
+    (repo / "safe.txt").write_text("safe\n", encoding="utf-8")
+    subprocess.run(["git", "add", "safe.txt"], cwd=repo, check=True, timeout=5)
+    result = run_isolated_pre_commit(repo, env={"ALLOW_MAIN_COMMIT": value})
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "commit on main" in result.stderr
+
+
+def test_pre_commit_main_hatch_opens_for_one(tmp_path):
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, timeout=5)
+    copy_commit_hooks(repo)
+    (repo / "safe.txt").write_text("safe\n", encoding="utf-8")
+    subprocess.run(["git", "add", "safe.txt"], cwd=repo, check=True, timeout=5)
+    result = run_isolated_pre_commit(repo, env={"ALLOW_MAIN_COMMIT": "1"})
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_hook_installer_does_not_report_success_when_chmod_fails(tmp_path):
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=5)
@@ -1287,6 +1438,87 @@ def test_hook_installer_configures_hooks_after_prerequisites_succeed(tmp_path):
     assert configured.stdout.strip() == ".githooks"
     for name in ("active", "archive", "scratch", "design", "tools", "raw"):
         assert (repo / "workbench" / name).is_dir()
+    # Ledger L42: nothing asserted the executable bit the whole install exists
+    # to set. A hooksPath pointing at files git cannot execute is a clone that
+    # reports "Hooks installed" and runs no hook at all.
+    for name in ("pre-commit", "pre-push", "commit-msg", "record-audit.sh"):
+        assert os.access(hooks / name, os.X_OK), f"{name} was not made executable"
+
+
+def test_hook_installer_does_not_configure_when_mkdir_fails(tmp_path):
+    # Ledger L47. `mkdir -p` runs before `git config` precisely so a filesystem
+    # fault leaves a previously working hooksPath alone. Untested, that ordering
+    # was one edit away from being lost.
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=5)
+    subprocess.run(
+        ["git", "config", "core.hooksPath", "previous-hooks"],
+        cwd=repo,
+        check=True,
+        timeout=5,
+    )
+    hooks = repo / ".githooks"
+    hooks.mkdir()
+    shutil.copy2(HOOKS / "install.sh", hooks / "install.sh")
+    for name in (
+        "pre-commit",
+        "pre-push",
+        "commit-msg",
+        "check-all.sh",
+        "check-documents.sh",
+        "doc-allowlist.sh",
+        "record-audit.sh",
+    ):
+        (hooks / name).write_text("#!/bin/sh\n", encoding="utf-8")
+
+    env = stub_command(tmp_path, "mkdir", "#!/bin/sh\nexit 1\n")
+    result = subprocess.run(
+        ["sh", ".githooks/install.sh"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+    )
+    assert result.returncode != 0
+    assert "Hooks installed" not in result.stdout
+    configured = subprocess.run(
+        ["git", "config", "--get", "core.hooksPath"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    )
+    assert configured.stdout.strip() == "previous-hooks", (
+        "a failed install must not replace a previously working hook path"
+    )
+
+
+@pytest.mark.parametrize("value", ["0", "true", ""])
+def test_pre_commit_detached_hatch_opens_only_for_the_exact_value_one(tmp_path, value):
+    # Ledger L42, named explicitly: a malformed ALLOW_DETACHED_COMMIT=0 must not
+    # slip past the exact-"1" comparison.
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", "-b", "work/base", str(repo)], check=True, timeout=5)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, timeout=5)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=repo,
+        check=True,
+        timeout=5,
+    )
+    (repo / "safe.txt").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "safe.txt"], cwd=repo, check=True, timeout=5)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True, timeout=5)
+    copy_commit_hooks(repo)
+    subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, check=True, timeout=5)
+    (repo / "safe.txt").write_text("two\n", encoding="utf-8")
+    subprocess.run(["git", "add", "safe.txt"], cwd=repo, check=True, timeout=5)
+    result = run_isolated_pre_commit(repo, env={"ALLOW_DETACHED_COMMIT": value})
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "detached" in result.stderr
 
 
 def copy_commit_hooks(repo):

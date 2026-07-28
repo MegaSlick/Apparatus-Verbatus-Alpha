@@ -65,9 +65,25 @@ fi
 #
 # If the path cannot be resolved, no exemption is granted. A check that cannot
 # run is a failure, not a pass.
+#
+# And existence is not enough. `[ -e ]` is true for a directory, for an empty
+# file, and for a symlink to anything at all, so any leftover object at one of
+# these three paths handed away the attribution rule for every commit made
+# afterwards — silently, since nothing prints when a check merely declines to
+# fire. Require the shape git actually writes: a regular, non-empty file whose
+# first line names a commit that exists here.
+#
+# What this still cannot tell is a *live* merge from a stale MERGE_HEAD left by
+# one that was abandoned, because git's own signal is exactly this file. That
+# limit is stated rather than papered over.
 for state in MERGE_HEAD REVERT_HEAD CHERRY_PICK_HEAD; do
   state_path=$(git rev-parse --git-path "$state" 2>/dev/null) || continue
-  [ -e "$state_path" ] && exit 0
+  [ -f "$state_path" ] || continue
+  [ -s "$state_path" ] || continue
+  state_head=$(sed -n '1p' "$state_path" 2>/dev/null) || continue
+  [ -n "$state_head" ] || continue
+  git rev-parse --verify --quiet "${state_head}^{commit}" >/dev/null 2>&1 || continue
+  exit 0
 done
 
 # `git commit --fixup` and its siblings are the exception to that, and it is

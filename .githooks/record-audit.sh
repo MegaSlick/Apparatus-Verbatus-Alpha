@@ -241,13 +241,31 @@ if ! python3 "$ingress" --audit-receipt "$temporary" >/dev/null; then
   echo "  The complete receipt failed validation; the old receipt was not changed." >&2
   exit 1
 fi
+# Everything that can fail has to fail *before* the receipt is installed.
+# Past the `mv` the receipt exists, and a non-zero exit there reads as "nothing
+# was recorded" — which invites the operator to run the command again, and the
+# retry appends the same reviewer a second time and inflates the number
+# pre-push prints. So count and format from the file that is about to become
+# the receipt, and let the install be the last thing that can go wrong.
+recorded=$(grep -c '^auditor:' "$temporary") || recorded=""
+case "$recorded" in
+  '' | *[!0-9]*)
+    echo "  Could not count the reviewer records in the new receipt." >&2
+    echo "  No receipt was written; the old receipt, if any, is unchanged." >&2
+    exit 1 ;;
+esac
+short=$(echo "$sha" | cut -c1-8)
+
 if ! mv "$temporary" "$receipts/$sha"; then
   echo "  Could not install the complete receipt; the old receipt was not changed." >&2
   exit 1
 fi
 temporary=""
 
-recorded=$(grep -c '^auditor:' "$receipts/$sha")
-printf '%s recorded for %s. %s reviewer(s) on record.\n' \
-  "$auditor" "$(echo "$sha" | cut -c1-8)" "$recorded"
-printf 'It covers %s — %s commit(s) — and that state only.\n' "$range" "$count"
+# Reporting only, and deliberately unable to report a failure to record. The
+# receipt is on disk; a broken stdout must not send anyone back for a second
+# attempt.
+{
+  printf '%s recorded for %s. %s reviewer(s) on record.\n' "$auditor" "$short" "$recorded"
+  printf 'It covers %s — %s commit(s) — and that state only.\n' "$range" "$count"
+} || echo "  The receipt IS installed at $receipts/$sha — do not record it again." >&2
