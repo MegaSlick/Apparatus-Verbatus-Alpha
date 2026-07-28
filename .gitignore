@@ -27,6 +27,18 @@ dist/
 # the contents never are.
 workbench/*
 !workbench/README.md
+
+# Except workbench/active/, which is tracked for alpha. Tyrel's ruling: the live
+# drawer is a spot check on what sessions are actually planning, it gets a
+# reviewer's eyes on the run plan, and a note a session deletes by mistake is
+# recoverable instead of gone. It is cleaned regularly, so it stays small.
+#
+# The rest of workbench/ stays ignored, and that is the point: archive/, raw/,
+# scratch/ and design/ are where the volume lives. The previous repository
+# accumulated 320 markdown files until nobody could tell which document was
+# true, and tracking the whole drawer is how that happens again.
+!workbench/active/
+!workbench/active/**
 private/*
 !private/README.md
 scriptorium/*

@@ -28,6 +28,16 @@ with a reason you say out loud.
 8. **Do not build a picker.** GOVERNANCE 3 forbids anything that selects among witnesses under
    any name. Repeated here because it is the one an agent rebuilds by accident.
 9. **When a rule and a goal pull apart, stop and say so** — GOVERNANCE 0.
+10. **A spawned agent never edits the governing documents.** This file, GOALS, GOVERNANCE,
+    ARCHITECTURE, GLOSSARY and the root README. An agent may propose a change to any of
+    them, with exact wording, in its report; it may not make one. The main session may edit
+    this file, and everything else on that list stays Tyrel's alone. A rule an agent wrote
+    into the file that binds it is not a rule — it is a thing that agreed with itself.
+
+**Code is not on that list and stays open.** Hooks, CI, the agent and skill files,
+`operations/`, tests and everything under the pipeline are written by agents and land through
+review like anything else. The line is between what *governs* and what *executes*, not between
+what is delicate and what is not.
 
 **Subagents and other AI tools never push and never merge.** They read and report; a
 worker may write in its own worktree or the autoclave, and what it writes lands only
@@ -72,12 +82,24 @@ A line nobody can justify does not enter, whoever typed it.
 
 ## Where notes go
 
-**`workbench/` — gitignored, local only.** Every note, handoff, todo list and half-finished
-thought. The drawers are in [workbench/README.md](workbench/README.md).
+**`workbench/` — gitignored and local, except `active/`.** Every note, handoff, todo list and
+half-finished thought. The drawers are in [workbench/README.md](workbench/README.md).
 
-**If it is dated or speculative it is a note, not a document.** Committed documentation is a
-canonical document, a `README.md`, a `HANDOFF.md`, dated evidence under `history/`, or a declared
-harness document — nothing else. `pre-commit` refuses the rest.
+**`workbench/active/` is tracked for alpha.** The live drawer only — what this session is
+planning right now. It rides in the pull request so a reviewer sees the plan alongside the
+code, and so a note deleted by mistake is recoverable rather than gone. It is cleaned every
+session, which is the whole reason it can be tracked: `archive/`, `raw/`, `scratch/` and
+`design/` stay ignored because that is where volume collects, and tracking them is how a
+repository ends up with 320 markdown files and no way to tell which one is true.
+
+Two levels at most under `active/` — files, plus one dated subdirectory. Deeper is a notes
+tree, which is the thing the document check exists to refuse.
+
+**If it is dated or speculative it is a note, not a document** — and `workbench/active/` is the
+single declared exception, because there the dated and speculative *is* the point. Everywhere
+else, committed documentation is a canonical document, a `README.md`, a `HANDOFF.md`, dated
+evidence under `history/`, or a declared harness document — nothing else. `pre-commit` refuses
+the rest.
 
 ## Branches
 
