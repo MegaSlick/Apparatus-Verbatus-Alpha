@@ -44,11 +44,13 @@ git config core.hooksPath .githooks
 
 chmod +x .githooks/pre-commit .githooks/pre-push .githooks/commit-msg \
          .githooks/check-all.sh .githooks/check-documents.sh \
-         .githooks/record-audit.sh .githooks/install.sh 2>/dev/null || true
+         .githooks/doc-allowlist.sh .githooks/record-audit.sh \
+         .githooks/install.sh 2>/dev/null || true
 
 # Git does not preserve empty directories. Recreate the local working areas a
 # fresh clone needs; their tracked README files explain what belongs in each.
-mkdir -p workbench/active workbench/archive workbench/scratch
+mkdir -p workbench/active workbench/archive workbench/scratch \
+         workbench/design workbench/tools workbench/raw
 
 echo "Hooks installed for this clone."
 echo ""
