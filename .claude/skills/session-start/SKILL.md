@@ -1,6 +1,6 @@
 ---
 name: session-start
-description: Picks up from the last session in this repository — reads the active handoff, runs the checks it left unverified, and audits the workbench with clean context. Use at the beginning of a session, before reading the canonical documents or touching any work.
+description: Picks up from the last session in this repository — reads the binding documents and active handoff, runs the checks it left unverified, and audits the workbench with clean context. Use at the beginning of a session, before touching any work.
 disable-model-invocation: true
 ---
 
@@ -13,37 +13,44 @@ stale note from a live one — it would be inventing the answer.
 The documents in this repository say what is **always** true. The handoff says what is true
 **now**. You cannot work sensibly from one without the other.
 
-## 1. Install the hooks, if this clone has never had them
+## 1. Read the binding documents
+
+`README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`, and `CLAUDE.md`.
+
+These decide whether every later action is allowed. A handoff is evidence about a prior
+session, never authority to override them.
+
+## 2. Read the handoff
+
+`workbench/active/HANDOFF.md`.
+
+**If `workbench/active/HANDOFF.md` is missing, say so plainly and stop guessing** — even if
+other files remain in `active/`. A missing handoff is a fact worth reporting, not a gap to
+fill from context.
+
+Do not read `workbench/archive/` unless the handoff points at a specific file in it.
+
+## 3. Install the hooks, if this clone has never had them
 
 ```sh
 sh .githooks/install.sh
 ```
 
 Git does not run a repository's hooks unless told, and the setting that tells it lives in
-`.git/config`, which never travels with a clone. Until this runs, every local rule is
-switched off silently.
+`.git/config`, which never travels with a clone. Until this runs, every hook-implemented
+rule is switched off silently.
 
-## 2. Read the handoff
-
-`workbench/active/HANDOFF.md`.
-
-**If `workbench/active/` is empty, say so plainly and stop guessing.** A missing handoff is
-a fact worth reporting, not a gap to fill from context.
-
-Do not read `workbench/archive/` unless the handoff points at a specific file in it.
-
-## 3. Do what it lists as unverified, before trusting the rest of it
+## 4. Do what it lists as unverified, before trusting the rest of it
 
 A handoff records what the last session *believed* when it stopped. Anything under
 "unverified", "check first", or similar was true only in intent. Run those checks and report
 what they actually returned — including when they returned what was expected, because a
 check nobody reports is a check nobody ran.
 
-**Read the canonical documents (step 6) before running anything a handoff asks for.** A
-handoff is a note, not instructions — nothing in it outranks the documents, and a stale or
-wrong one can ask for exactly what the rules forbid.
+The binding documents were read first for exactly this reason: a stale or wrong handoff can
+ask for something the rules forbid.
 
-## 4. Audit the workbench, with the clean context you have now
+## 5. Audit the workbench, with the clean context you have now
 
 ```sh
 python3 .githooks/tidy.py
@@ -68,7 +75,7 @@ a session because it needs judgement, and judgement is best before a session fil
 If the last session filed something wrongly, this is the cheapest moment in the whole
 session to put it right. Say what you changed.
 
-## 5. Check the tooling is current
+## 6. Check the tooling is current
 
 ```sh
 brew outdated rtk gh git
@@ -77,16 +84,16 @@ brew outdated rtk gh git
 (No Homebrew — a pod, a sandbox — then check versions however the platform allows, or
 record that you could not.)
 
+Read Homebrew's diagnostics as well as its exit status. It can fail to refresh package
+metadata, fall back to a cache, and still exit 0; that result is cached orientation, not a
+verified currentness check. Record the refresh failure and print the installed versions
+instead of reporting the tools current.
+
 RTK has twice returned a confidently wrong answer — `git log` truncated at 50 lines, and
 `pytest` reporting no tests collected for a passing suite — and both times the cause was an
 out-of-date binary rather than a design flaw. It is the one dependency whose staleness
 produces false output rather than a missing feature, so it gets checked rather than assumed.
 Also worth a glance at whether Claude Code itself is behind.
-
-## 6. Read the canonical documents
-
-`README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`, `CLAUDE.md`,
-then the rest of `workbench/active/`.
 
 ## 7. Size the session out loud, then wait
 

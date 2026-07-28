@@ -20,18 +20,27 @@ loss. If you are reaching for `rm`, you have left the procedure.
 Work through it in order. Filing before writing is not a preference: the handoff you are
 about to replace is the only account of how the last session reached its conclusions.
 
+**Review-only exception.** Still establish the state, archive and replace the handoff and
+next-session brief, and report. Skip the filing moves in steps 2 and 3 and the phone
+notification in step 8. Reviewing must not silently reorganize or message about work it did
+not own.
+
 ## 1. Establish what you are leaving behind
 
 ```sh
-rtk proxy git status --porcelain
-rtk proxy git log --oneline origin/main..HEAD
+git status --porcelain
+git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}'
 ```
 
-Use `rtk proxy git`, not bare `git` — the proxy path is the one output the summarising
-wrapper is guaranteed not to filter. The wrapper's known failures (a truncated `git log`, a
-passing suite reported as no tests) were fixed by upgrading RTK, but a stale binary brings
-them back silently — which is why `/session-start` checks `brew outdated rtk` and this step
-does not trust the filtered path at the moment of record.
+If the upstream resolves, run `git log --oneline <upstream>..HEAD`. If it does not, try the
+declared bases that actually exist (`origin/main`, then `main`). If none resolves, report
+that the ahead range is unknown and show `git log --oneline --decorate HEAD` without
+pretending it is a comparison. A remote-less review clone is a supported diagnostic
+environment, not evidence of zero unpushed commits.
+
+Use unfiltered Git output. If the environment routes Git through a summarising wrapper, use
+the wrapper's documented bypass or bare Git and say which one you used. No repository file
+can guarantee how an installed third-party wrapper behaves.
 
 Uncommitted changes are a fact the next session needs. Do not tidy them away to make the
 report look clean.
@@ -53,8 +62,11 @@ recording "no model wrote this" over a commit a model helped assemble.
 python3 .githooks/tidy.py --file
 ```
 
-Moves anything in `active/` byte-identical to an archived copy into `scratch/`. Safe at any
-context, because a checksum decides it rather than you.
+Moves anything in `active/` byte-identical to an archived copy into `scratch/`. Run it only
+when this session owns `active/` and no concurrent writer is using it. The checksum prevents a
+known non-duplicate from moving, but it is not a lock: a concurrent edit after the last digest
+can still race the move into disposable `scratch/`. If exclusive ownership is uncertain, run
+`python3 .githooks/tidy.py` in report-only mode and leave the files in place.
 
 ## 3. File the work that finished
 
@@ -86,9 +98,15 @@ are.
 
 ## 5. Archive the outgoing handoff, then write the new one
 
+Choose a short session topic, create `workbench/archive/<date>_<session-topic>/`, and use that
+as this session's archive folder. Do this even in a review-only session or when no other work
+finished; the outgoing continuity record still needs a defined preservation target.
+
 Copy `workbench/active/HANDOFF.md` into this session's archive folder **before** overwriting
-it. If that folder already holds a `HANDOFF.md`, suffix the copy (`HANDOFF-2.md`) rather
-than overwrite — the archive never loses an earlier account.
+it. Archive an existing `workbench/active/NEXT_SESSION_BRIEF.md` beside it before replacing
+that too. If the folder already holds either name, suffix the copy (`HANDOFF-2.md`,
+`NEXT_SESSION_BRIEF-2.md`) rather than overwrite — the archive never loses an earlier
+account.
 
 ### The one rule
 
@@ -148,16 +166,17 @@ extra length should be those three things and nothing else.
 What was archived, what went to `scratch/`, and what you deliberately left in `active/` and
 why.
 
-**This is not the end of the procedure.** Steps 7 and 8 are mandatory: the next session is
-briefed and its opening prompt written, and only then is Tyrel told the session is over. A
-session that reports what moved and stops here has left the next one with no queue line and
-left him with no notification — which is most of what this skill exists to produce.
+**This is not the end of the procedure.** Step 7 is mandatory, and step 8 is mandatory except
+for the review-only exception above: the next session is briefed and its opening prompt
+written before the session closes. A normal session that reports what moved and stops here
+has left the next one with no queue line and left Tyrel with no notification attempt.
 
 **A session that both starts and ends in one sitting still writes one.**
 
 ## 7. Brief the next session, and write the prompt that starts it
 
-Two things, both in the chat where he can reach them.
+Write `workbench/active/NEXT_SESSION_BRIEF.md` first so the queue survives a closed chat.
+Then provide two things in the chat where Tyrel can reach them.
 
 **First, the queue line:** **the goal, the model and effort to open with, the size of the
 chunk, and an honest duration — including whether it can run overnight unattended.** Tyrel
@@ -173,7 +192,8 @@ queued as a night is a wasted night, and so is an eight-hour chunk queued as a c
 send without editing. He is often launching at midnight and should not have to compose
 anything; asking a tired human to write the prompt is how a night gets queued wrong.
 
-The prompt opens with `/session-start` so the new session runs its own procedure, and it
+The same prompt is stored in `NEXT_SESSION_BRIEF.md`. It opens with `/session-start` so the
+new session runs its own procedure, and it
 **points at the documents rather than restating them** — the handoff and any brief are on
 disk, and a prompt that repeats them burns the context the session was meant to save. What
 it must carry in its own words: whether the session is attended, the effort to open at, the
@@ -194,8 +214,12 @@ Keep it short enough to read at a glance and complete enough to run unattended.
 sh operations/notify/notify.sh done "<what landed; what needs him; next session, model, size>"
 ```
 
-One line, sent last, after the handoff is written. He is often away when a session ends, and
-the handoff he cannot see yet is the whole reason this exists. If something needs him, say
-which thing — "3 files landed, checks green, needs the reviewer pass" beats "session complete".
+One line, sent last, after the handoff is written. The bearer topic may arrive only through
+the process environment; never put it in this command or any file. The client refuses a
+legacy `private/ntfy.conf` without reading it. If the command exits non-zero, report that no
+notification was accepted; never describe a phone as reached merely because a request was
+attempted.
 
-CLAUDE.md's Reporting section holds the other three events and the rule about noise.
+Skip this step for a review-only session. If something needs him, say which thing — "3 files
+landed, checks green, needs the reviewer pass" beats "session complete". CLAUDE.md's
+Reporting section holds the other three events and the rule about noise.
