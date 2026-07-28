@@ -767,19 +767,26 @@ def safe_output(text: str, label: str) -> str:
     return f"<redacted-{label}:{fingerprint}>"
 
 
-def report(issues: list[Issue]) -> int:
+def report(issues: list[Issue], limit: int = 100) -> int:
     if not issues:
         print("Ingress check passed for the requested scope.")
         return 0
     print("BLOCKED: repository ingress policy failed.", file=sys.stderr)
-    for issue in issues[:100]:
+    shown = issues if limit == 0 else issues[:limit]
+    for issue in shown:
         path = safe_output(issue.path, "metadata")
         context = safe_output(issue.context, "context")
         detail = safe_output(issue.detail, "detail")
         where = f" ({context})" if context else ""
         print(f"  {path}{where}: [{issue.rule}] {detail}", file=sys.stderr)
-    if len(issues) > 100:
-        print(f"  ...and {len(issues) - 100} more issue(s)", file=sys.stderr)
+    if len(shown) < len(issues):
+        # The remainder used to be unreachable: a count, and no way to see
+        # what it counted.
+        print(
+            f"  ...and {len(issues) - len(shown)} more issue(s); "
+            "re-run with --max-findings 0 to list them all",
+            file=sys.stderr,
+        )
     print(
         "Recognized credentials are forbidden; repository trees must also satisfy payload policy.",
         file=sys.stderr,
@@ -834,7 +841,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="check repository paths for characters unsafe to line-oriented policies",
     )
+    parser.add_argument(
+        "--max-findings",
+        type=int,
+        default=100,
+        metavar="N",
+        help="print at most N findings; 0 prints every finding",
+    )
     args = parser.parse_args(argv)
+    if args.max_findings < 0:
+        parser.error("--max-findings must be 0 or greater")
     try:
         if args.staged:
             issues = scan_tree(index_tree(), "index")
@@ -861,7 +877,7 @@ def main(argv: list[str] | None = None) -> int:
             issues = path_issues(repository_paths(), "worktree")
         else:
             issues = scan_history(args.history)
-        return report(unique_issues(issues))
+        return report(unique_issues(issues), args.max_findings)
     except (OSError, ScanFailure) as exc:
         error = safe_output(str(exc), "error")
         print(f"BLOCKED: ingress check could not run: {error}", file=sys.stderr)

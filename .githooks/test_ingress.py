@@ -710,6 +710,43 @@ def test_ordinary_prose_and_short_values_are_not_credential_findings(repo, line)
     assert result.returncode == 0, result.stderr
 
 
+def test_findings_past_the_hundredth_can_be_retrieved(repo):
+    # L25. The report truncated at 100 and printed a remainder count with no
+    # way to see the rest, which is a dead end for whoever has 150 of them.
+    secrets = ["rpa_" + f"{index:024d}" for index in range(150)]
+    write(repo, "dump.txt", "".join(f"line {index}: {s}\n" for index, s in enumerate(secrets)))
+    stage(repo, "dump.txt")
+
+    truncated = run_scan(repo, "--staged")
+    assert truncated.returncode == 1
+    assert truncated.stderr.count("[runpod-api-key]") == 100
+    assert "50 more" in truncated.stderr
+    assert "--max-findings" in truncated.stderr
+
+    full = run_scan(repo, "--staged", "--max-findings", "0")
+    assert full.returncode == 1
+    assert full.stderr.count("[runpod-api-key]") == 150
+    assert "more issue" not in full.stderr
+    for secret in secrets:
+        assert secret not in full.stderr
+
+    refused = run_scan(repo, "--staged", "--max-findings", "-1")
+    assert refused.returncode == 2
+
+
+def test_the_declared_secret_fixture_set_stays_empty():
+    # L40. The source calls empty "the intended resting state" and says an
+    # exemption nobody can audit inside a credential scanner is worse than no
+    # exemption at all. Nothing enforced that, so a triple could be added to a
+    # credential scanner with no test objecting. Adding one now has to break
+    # this test, which is the moment someone has to justify it in a review.
+    module = scanner_module()
+    assert module.DECLARED_SECRET_FIXTURES == frozenset(), (
+        "a credential exemption was added; it must arrive with its reason, and "
+        "removing it must fail the scan"
+    )
+
+
 def test_worktree_scan_still_ignores_a_deleted_tracked_file(repo):
     # A tracked path missing from disk is a working-tree deletion, not an
     # unscannable payload; the fail-closed read must not turn it into one.
