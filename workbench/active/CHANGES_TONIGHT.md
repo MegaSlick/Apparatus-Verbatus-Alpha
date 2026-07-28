@@ -4,12 +4,18 @@
 > track it later." Every change, in-repo and out, committed and not. Nothing was pushed and
 > nothing was merged.
 >
-> This pushes `active/` to 7 files against a budget of 6. Deliberate — it is a live document
+> This pushes `active/` past its budget of 6 files. Deliberate — it is a live document
 > for the next conversation, and it gets archived the moment we have talked it through.
+
+**Correction, 2026-07-28.** This file is a snapshot of one night and the repository has moved
+since. Three claims below were true when written and are not now, so they are corrected in
+place rather than left to mislead: the drawer's file count, the commit count, and `maxTurns`.
+Counts that change hourly are given as the command that answers them, not as a number.
 
 ## Committed — three commits on `infra/workspace-readiness`
 
-Nothing is pushed. `git log origin/main..HEAD` is 9 commits, of which these are tonight's 3.
+Nothing is pushed. These three were tonight's; the branch has grown since, and
+`git log --oneline origin/main..HEAD` is the only trustworthy count.
 
 ### `9292273` — seat.sh announces where a writing seat actually ran
 - `operations/codex/seat.sh` — prints the resolved workdir; strips the trailing slash
@@ -21,7 +27,9 @@ Nothing is pushed. `git log origin/main..HEAD` is 9 commits, of which these are 
 
 ### `555d9ff` — the roster's bounds, and what is off on purpose
 - All six `.claude/agents/*.md` — added `maxTurns` and `disallowedTools`. No behaviour of
-  an agent's *instructions* changed; only its limits.
+  an agent's *instructions* changed; only its limits. **`maxTurns` did not survive the
+  night**: T19 removed it from all six files again, with the deadline stated in the prompt
+  instead (`PUSH_PLAN.md`, row 2). The roster files carry no `maxTurns` today.
 - `.claude/agents/README.md` — **new file.** Records that `memory` is off by your ruling
   and `isolation: worktree` is off pending your decision, so neither looks like an oversight.
 - `.claude/skills/session-end/SKILL.md` — two fixes: hand edits no longer routed through
@@ -42,7 +50,7 @@ Nothing is pushed. `git log origin/main..HEAD` is 9 commits, of which these are 
   Your documents call Temp_Stage a read-only window; the permissions granted write across
   all of it. **Any other machine, clone, pod or sandbox needs this done again.**
 
-## Workbench (all gitignored — local only)
+## Workbench (local only when this was written — `active/` is tracked now)
 
 **New notes for you to read:**
 - `workbench/design/gpt_output_watcher.md` — the watcher, specified not built, with three
@@ -84,7 +92,9 @@ Nothing is pushed. `git log origin/main..HEAD` is 9 commits, of which these are 
 
 ## How to undo any of it
 
-The three commits are the only tracked changes. `git revert <sha>` handles each
-independently; they touch disjoint files. The workbench is gitignored, so deleting a folder
-under `workbench/` reverts that part with no git involvement. The permission change is two
+The three commits were the only tracked changes that night. `git revert <sha>` handles each
+independently; they touch disjoint files. `workbench/` was gitignored throughout, so deleting
+a folder under it reverted that part with no git involvement — **that is no longer true of
+`workbench/active/`, which this branch now tracks (T17).** Deleting a note there is a tracked
+deletion like any other. The permission change is two
 lines in `.claude/settings.local.json` that can be moved back to `allow`.

@@ -18,7 +18,7 @@ implemented — it had been recorded as an answer but never made it into the fix
 | 2 | `maxTurns` gone from all six roster files; deadline injected by `seat.sh` | dry run shows the budget in the prompt; 4 new tests; 51 seat tests pass |
 | 3 | `--ephemeral` / `--strict-config` | both real in `codex exec --help`; nothing stripped |
 | 4 | two digest exemptions removed | scanner passes on the whole worktree with them gone |
-| 5 | every Sol edit to CLAUDE.md reverted | all six protected documents byte-identical to `1001db7` |
+| 5 | every Sol edit to CLAUDE.md reverted | all six protected documents were byte-identical to `1001db7` **when this row was written**; CLAUDE.md and `.gitignore` have changed since, by Tyrel's own hand. Re-prove with `git diff 1001db7 -- <file>` before relying on it |
 | 6 | machine path out of `autoclave/README.md` | no `/Users/tyrel` in any tracked file |
 | 7 | `ALLOW_DETACHED_COMMIT=1` | 2 tests: blocked without, clean with |
 | T21 | `pre-push` counts three **distinct** reviewers | 2 tests: unknown future releases pass, one name three times fails |
@@ -48,7 +48,9 @@ every one a deliberate deviation listed above.
    failure it guards against is silence. **Needs Tyrel's go-ahead to send.**
 2. **T17** — whether `workbench/active/` rides in this push or lands as its own pull request
    straight after. My recommendation is still separate; 148KB of prose in a harness diff means
-   reviewers read handoffs instead of hooks. **Unanswered.**
+   reviewers read handoffs instead of hooks. **Overtaken by events: the drawer is tracked on
+   this branch now** (`git ls-files workbench/active`), so the live question is no longer
+   whether to track it but whether to split it out of this push. Still Tyrel's to answer.
 3. **The reviewer pass itself.** The Opus and Fable reviews were of *Sol's clone*, not of this
    assembled result. They are preparation. The gate needs three reviewers on `3bd303a` exactly.
 4. **Tyrel applies the CLAUDE.md changes he wants** from `CLAUDE_MD_PROPOSALS.md`, including
@@ -161,7 +163,8 @@ named `ALLOW_` variable, matching how every other guard here works.
 2. **Grouped coherently**, not one giant commit: hooks and their tests; the agent roster and
    skills; operations and `seat.sh`; documentation truthfulness fixes; the notify group last
    and separable.
-3. **Nothing from `workbench/` enters** — gitignored, and T17 is unanswered.
+3. **Nothing from `workbench/` enters except `active/`**, which this branch tracks (T17).
+   The rest stays gitignored.
 4. **Run everything**: `check-all.sh`, the full suite (403 tests at last count), `tidy.py`,
    and the ingress scanner over the assembled tree.
 5. **Then stop.** The branch sits unpushed until Tyrel says go, and the real three-reviewer
@@ -173,7 +176,8 @@ named `ALLOW_` variable, matching how every other guard here works.
 ## Held back from this push
 
 - **The notify group** ships only after a real phone test (T20).
-- **Everything in `workbench/`** (T17 unanswered).
+- **Everything in `workbench/` except `active/`** — `active/` is tracked on this branch now
+  and will ride in a push unless Tyrel splits it out (T17).
 - **Sol's CLAUDE.md edits** — proposals now (T22).
 - **`isolation: worktree`** — still off, still needs the branching answer (T11).
 

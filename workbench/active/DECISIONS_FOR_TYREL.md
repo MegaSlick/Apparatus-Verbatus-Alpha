@@ -123,6 +123,12 @@ tests, named as the clearest over-engineering in the repository.
 **ANSWER:**
 
 ### T17. Track `workbench/active/` in git for alpha?
+
+> **Status, 2026-07-28: the branch already tracks it** — `git ls-files workbench/active`
+> lists every file below, and the two edits named in this entry were made. Read what follows
+> as the reasoning behind an act already taken, not as a pending question. What is still
+> yours to answer: whether it stays tracked, and whether it rides in this push or a separate
+> pull request. Everything in the drawer is a published claim while it is tracked.
 **Your reasoning:** a spot check on new sessions and plans, cleaned regularly so nothing
 goes stale, and recoverable if a session deletes something it shouldn't have.
 **What I found when I tested it — with a correction from Tyrel:** the allowlist's
