@@ -476,6 +476,28 @@ BLOCK = [
         'git commit -m "chore: $(git push origin main)"',
         "a commit message is not a quarantine — the shell runs this before git sees it",
     ),
+    # Destructive git cleanup: the guard never claimed these, and an ordinary
+    # unattended session reaches for them by accident. What they destroy is
+    # uncommitted, so no reflog holds it. Audit ledger L2.
+    ("git reset --hard HEAD", "throws away every uncommitted change in the worktree"),
+    ("git reset --hard origin/main", "the same, with a remote ref"),
+    ("git restore .", "restore without --staged overwrites the worktree"),
+    ("git restore --worktree src", "the same, spelled explicitly"),
+    ("git checkout -- .", "the older spelling of the same discard"),
+    ("git checkout --force main", "a forced switch discards uncommitted work"),
+    ("git switch -f main", "the same, in the newer verb"),
+    ("git worktree remove --force ../wt", "another agent's uncommitted work lives there"),
+    ("git branch -D work/topic", "deletes an unmerged branch that may not be yours"),
+    ("git branch --delete --force work/topic", "the same, spelled long"),
+    ("git stash clear", "drops every stash at once"),
+    ("git stash drop", "drops a stash nobody can list afterwards"),
+    ("git clean -fdx", "already blocked, and this keeps the family together"),
+    # Disabling the hooks without naming core.hooksPath. Audit ledger L3.
+    ("chmod -x .git/hooks/pre-push", "an un-executable hook is a hook that does not run"),
+    ("chmod 644 .githooks/pre-commit", "the same, by mode"),
+    ("rm .githooks/pre-push", "a deleted hook is a disabled hook"),
+    ("mv .githooks/pre-push /tmp/parked", "a moved hook is a disabled hook"),
+    ("rm -f .git/hooks/commit-msg", "the installed copy is the one git runs"),
 ]
 
 # ----------------------------------------------------------- must NOT block
@@ -687,6 +709,56 @@ ALLOW = [
     ('echo "${HOME}/notes and ${MISSING:-none}"', "parameter expansion is not a command"),
     # a body field named deleteAfter is not a shutdown
     (f"curl -X DELETE https://{REST}/v1/pods/abc", "removing your own pod is cleanup"),
+    # Over-refusals. A guard that fires on ordinary work gets switched off, and
+    # then nothing is guarded — the file's own docstring says so. Audit ledger
+    # L7, every case of which was met in real work rather than imagined.
+    (
+        "cd /tmp && cat <<'EOF'\nplain data\nEOF",
+        "the heredoc belongs to cat, not to the cd in front of it",
+    ),
+    (
+        "cd /tmp; cat > notes.txt <<'EOF'\nplain data\nEOF",
+        "the same, separated by a semicolon",
+    ),
+    ("grep -c foo <<'END'\nfoo\nEND", "grep reads its stdin; it never runs it"),
+    ("sed -n '1p' <<'END'\nfoo\nEND", "nor does sed"),
+    ("jq . <<'JSON'\n{}\nJSON", "nor does jq"),
+    ("wc -l <<'END'\nfoo\nEND", "nor does wc"),
+    (
+        "cat <<END-JSON\n{}\nEND-JSON",
+        "a descriptive delimiter is still a delimiter",
+    ),
+    (
+        "cat <<'END-JSON'\n{}\nEND-JSON",
+        "and quoted, it is inert as well",
+    ),
+    # L6: a RunPod host named in a request *body* is a mention, not a
+    # destination. Refusing these taught a session that writing about RunPod
+    # was the same act as calling it.
+    (
+        "curl -X POST https://example.com/api -d 'the docs are at rest.runpod.io'",
+        "the host is in the body, and the request goes elsewhere",
+    ),
+    (
+        "curl -X POST https://example.com/hook --data-raw 'host=api.runpod.io'",
+        "the same, spelled as a form field",
+    ),
+    # L2 and L3 in the other direction: the ordinary neighbours of the refusals
+    # above must stay open, or the new checks are themselves an over-refusal.
+    ("git reset --soft HEAD~1", "a soft reset keeps the worktree"),
+    ("git reset HEAD~1", "a mixed reset keeps the worktree too"),
+    ("git restore --staged src/file.py", "unstaging destroys nothing"),
+    ("git checkout main", "switching branches is not discarding"),
+    ("git checkout -b work/topic", "nor is starting one"),
+    ("git switch work/topic", "nor is the newer verb"),
+    ("git branch -d work/merged", "a safe delete refuses unmerged work by itself"),
+    ("git worktree remove ../wt", "without --force git refuses a dirty worktree itself"),
+    ("git stash push -m wip", "stashing saves work rather than destroying it"),
+    ("git stash list", "and listing reads it"),
+    ("chmod +x operations/notify/notify.sh", "an ordinary script, not a hook"),
+    ("rm workbench/scratch/note.txt", "scratch is disposable by CLAUDE.md"),
+    ("cat .githooks/pre-push", "reading a hook is how you check it is installed"),
+    ("sh .githooks/install.sh", "installing the hooks is the thing we want done"),
 ]
 
 

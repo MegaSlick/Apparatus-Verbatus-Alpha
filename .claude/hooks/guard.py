@@ -26,6 +26,11 @@ disclaimer on it, and every entry in it was run against this guard.
   * pushes at main spelled as `git push` or `git send-pack`, force-push in any
     spelling, and `--no-verify`                main moves only by merge
   * `git clean` without --dry-run              ignored evidence is not recoverable
+  * git cleanup that discards uncommitted work — `reset --hard`, `restore`
+    over the worktree, `checkout` with a pathspec or --force, `switch --force`,
+    `worktree remove --force`, `branch -D`, `stash drop|clear`
+  * `chmod`, `mv` or `rm` of a file under `.githooks/` or `.git/hooks/`
+                                               a hook that cannot run is a hook that is off
   * `rm` of the repository, .git/.githooks/.claude, your home, or workbench
     records outside scratch
 
@@ -59,9 +64,16 @@ cannot parse — an unbalanced `$(`, or bash 5.3's `${ cmd; }` — is refused
 rather than assumed harmless.
 
 Executable and ambiguous heredocs are refused because this guard cannot
-validate arbitrary code. A `cat`/`tee` data heredoc is allowed only while it is
-really data: a quoted delimiter (`<<'EOF'`) makes the body literal, while a
-bare `<<EOF` lets the shell run `$(...)` in it before `cat` ever starts.
+validate arbitrary code. A heredoc read by a command that cannot execute its
+input — `cat`, `tee`, `grep`, `sed`, `jq` and the rest of HEREDOC_DATA_SINKS —
+is allowed only while it is really data: a quoted delimiter (`<<'EOF'`) makes
+the body literal, while a bare `<<EOF` lets the shell run `$(...)` in it before
+the reader ever starts. The heredoc is judged by the piece of the line that
+declares it, so `cd /tmp && cat <<'EOF'` belongs to `cat`.
+
+Only what a client would fetch is read as its destination. A RunPod host named
+inside a curl request *body* is a mention, not a call; wget and HTTPie are
+still judged on the whole command line, which over-refuses rather than under.
 
 One refusal is deliberate rather than a limitation, and is recorded here so it
 is not mistaken for a bug: an inline `python3 -c` / `node -e` write to the
@@ -584,7 +596,10 @@ def heredoc_declarations(line: str):
                 break
             i += 1
         raw = line[start:i]
-        identifier = r"[A-Za-z_][A-Za-z_0-9]*"
+        # `-` and `.` are ordinary in a delimiter and common in a descriptive
+        # one — `END-JSON`, `EOF.1`. Refusing them as "syntax the guard cannot
+        # verify" refused a perfectly plain data heredoc.
+        identifier = r"[A-Za-z_][A-Za-z_0-9.-]*"
         found = re.fullmatch(rf"(?:({identifier})|'({identifier})'|\"({identifier})\")", raw)
         delimiter = next((group for group in found.groups() if group), None) if found else None
         # Only group 1 — the bare, unquoted spelling — leaves the body exposed
@@ -594,18 +609,65 @@ def heredoc_declarations(line: str):
     return out
 
 
+def command_pieces(line: str):
+    """One line split at unquoted `;`, `&&`, `||` and `|` — its commands.
+
+    A heredoc belongs to the piece that declares it, not to the whole line.
+    Judging the line meant `cd /tmp && cat <<'EOF'` was refused because of the
+    `cd`, which is an over-refusal met in ordinary work rather than imagined.
+    """
+    out, current, quote, i = [], [], None, 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(line):
+            current.append(ch)
+            current.append(line[i + 1])
+            i += 2
+            continue
+        if ch in "'\"":
+            quote = ch
+            current.append(ch)
+            i += 1
+            continue
+        if ch in ";|":
+            out.append("".join(current))
+            current = []
+            while i < len(line) and line[i] in ";|":
+                i += 1
+            continue
+        if ch == "&" and not (i and line[i - 1].isdigit()):
+            # `2>&1` is a redirection, not a separator.
+            out.append("".join(current))
+            current = []
+            while i < len(line) and line[i] == "&":
+                i += 1
+            continue
+        current.append(ch)
+        i += 1
+    out.append("".join(current))
+    return out
+
+
 def split_heredocs(command: str):
-    """Remove all bodies and return them with their opening command lines."""
+    """Remove all bodies and return them with their opening commands."""
     lines = command.split("\n")
     cleaned, blocks, i = [], [], 0
     while i < len(lines):
         line = lines[i]
         cleaned.append(line)
-        declarations = heredoc_declarations(line)
+        declarations = []
+        for piece in command_pieces(line):
+            declarations.extend((piece, *found) for found in heredoc_declarations(piece))
         i += 1
-        for operator, tag, expands in declarations:
+        for piece, operator, tag, expands in declarations:
             if tag is None:
-                blocks.append((line, "", False, False))
+                blocks.append((piece, "", False, False))
                 continue
             j = i
             while j < len(lines):
@@ -613,7 +675,7 @@ def split_heredocs(command: str):
                 if terminator == tag:
                     break
                 j += 1
-            blocks.append((line, "\n".join(lines[i:j]), True, expands))
+            blocks.append((piece, "\n".join(lines[i:j]), True, expands))
             # An unterminated heredoc consumes the rest of the shell input as
             # data. There can be no later command line to inspect.
             i = j + 1
@@ -916,6 +978,45 @@ def curl_options(argv):
         i += 1
 
 
+def curl_urls(argv):
+    """The tokens curl would fetch, rather than the ones it would send.
+
+    Host detection used to read the whole command line, so `curl -X POST
+    https://example.com/hook -d 'docs are at rest.runpod.io'` was refused as a
+    write to RunPod. A host named in a request body is a mention; the
+    destination is the URL.
+    """
+    urls = []
+    i = 1
+    while i < len(argv):
+        token = argv[i]
+        if token == "--":
+            urls.extend(argv[i + 1 :])
+            break
+        if token.startswith("--"):
+            name, separator, attached = token.partition("=")
+            name = name.lower()
+            if name == "--url":
+                urls.append(attached if separator else (argv[i + 1] if i + 1 < len(argv) else ""))
+            if name in CURL_LONG_VALUE_OPTS and not separator:
+                i += 1
+            i += 1
+            continue
+        if token.startswith("-") and token != "-":
+            short = token[1:]
+            for j, option in enumerate(short):
+                if option in CURL_SHORT_VALUE_OPTS:
+                    # A joined value ends the token; a separate one eats the next.
+                    if j + 1 >= len(short):
+                        i += 1
+                    break
+            i += 1
+            continue
+        urls.append(token)
+        i += 1
+    return urls
+
+
 def httpie_body_item(token: str) -> bool:
     """Whether one HTTPie request item supplies a body rather than a read."""
     if token.startswith("-") or token.lower().startswith(("http://", "https://")):
@@ -1090,6 +1191,62 @@ def check_git(argv):
         if not dry_run:
             deny("git clean deletes untracked or ignored work that Git cannot restore")
 
+    # Cleanup that destroys work no reflog holds. The guard never claimed
+    # these, which is why they sat open — but an unattended session reaches for
+    # `reset --hard` by accident more readily than for anything else here, and
+    # what it discards was never committed. Each refusal names the keeping
+    # alternative, so the answer is not to route around the guard.
+    if sub == "reset" and "--hard" in flags:
+        deny(
+            "git reset --hard discards every uncommitted change in the worktree — "
+            "`git stash` keeps them, and `git reset --soft` keeps the files"
+        )
+    if sub == "restore":
+        if "--staged" not in flags or "--worktree" in flags or "-W" in flags:
+            deny(
+                "git restore overwrites the working tree from the index — "
+                "`git stash` first if you may want it back"
+            )
+    if sub == "checkout":
+        operands = positional_args(args, GIT_VALUE_OPTS)
+        if (
+            "--force" in flags
+            or has_short_flag(args, "f", frozenset({"b", "B", "t"}))
+            or "--" in args
+            or "." in operands
+        ):
+            deny(
+                "this checkout discards uncommitted changes — "
+                "`git stash` first, or name a branch without a pathspec"
+            )
+    if sub == "switch" and (
+        "--force" in flags
+        or "--discard-changes" in flags
+        or has_short_flag(args, "f", frozenset({"c", "C"}))
+    ):
+        deny("a forced switch discards uncommitted changes — `git stash` first")
+    if sub == "worktree":
+        operands = positional_args(args, GIT_VALUE_OPTS)
+        if operands[:1] == ["remove"] and ("--force" in flags or has_short_flag(args, "f")):
+            deny(
+                "removing a worktree by force deletes work another agent is holding — "
+                "without --force git refuses a dirty worktree by itself, which is the check"
+            )
+    if sub == "branch" and (
+        has_short_flag(args, "D") or ("--delete" in flags and "--force" in flags)
+    ):
+        deny(
+            "a forced branch delete drops commits nothing else points at, "
+            "and the branch may not be yours — `git branch -d` refuses unmerged work"
+        )
+    if sub == "stash":
+        operands = positional_args(args, GIT_VALUE_OPTS)
+        if operands[:1] in (["clear"], ["drop"]):
+            deny(
+                "a dropped stash cannot be listed afterwards — "
+                "`git stash pop` applies it and removes it in one step"
+            )
+
     if sub in ("commit", "merge", "push", "rebase", "am", "cherry-pick"):
         if "--no-verify" in flags:
             deny("--no-verify skips the hooks that protect main, the documents and the audit gate")
@@ -1163,9 +1320,14 @@ def check_runpodctl(argv):
 
 def check_http(argv):
     joined = " ".join(argv).lower()
-    if not any(host in joined for host in RUNPOD_HOSTS):
-        return
     client = base(argv[0]).lower()
+    # For curl the destination is knowable exactly, so judge that and not the
+    # body. For the other clients the guard cannot separate the two as
+    # reliably, and reads the whole line — which over-refuses rather than
+    # under-refuses, and is recorded as such in the docstring.
+    addressed = curl_urls(argv) if client == "curl" else argv[1:]
+    if not any(host in " ".join(addressed).lower() for host in RUNPOD_HOSTS):
+        return
     writes = False
     request_method = None
 
@@ -1393,7 +1555,30 @@ def _operand_paths(operand: str, project: str, command_cwd: str | None = None):
     return paths
 
 
+def check_hook_files(argv, command_cwd: str | None = None):
+    """Hooks can be disabled without ever naming core.hooksPath.
+
+    Removing the exec bit, moving the file aside or deleting it stops the hook
+    running just as completely as rewriting the setting, and none of those
+    commands contains the string this guard was watching for. Reading a hook
+    stays open — checking that `install.sh` worked is the thing we want done.
+    """
+    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    for operand in argv[1:]:
+        if operand.startswith("-"):
+            continue
+        for path in _operand_paths(operand, project, command_cwd):
+            marked = path.replace(os.sep, "/") + "/"
+            if "/.githooks/" in marked or "/.git/hooks/" in marked:
+                deny(
+                    f"'{operand}' is a Git hook — changing, moving or deleting one "
+                    f"disables the cross-tool alarms for this clone as surely as "
+                    f"core.hooksPath does"
+                )
+
+
 def check_rm(argv, command_cwd: str | None = None):
+    check_hook_files(argv, command_cwd)
     recursive = False
     operands = []
     options_ended = False
@@ -1494,7 +1679,12 @@ DISPATCH = {
     "deno": check_node,
     "rm": check_rm,
     "aws": check_aws,
+    "chmod": check_hook_files,
+    "mv": check_hook_files,
 }
+
+# Handlers that need to know where the command line had got to by `cd`.
+CWD_HANDLERS = (check_rm, check_hook_files)
 
 # Verbs that start the meter. `stop`, `terminate` and `delete` are absent on
 # purpose: they end billing, and Governance 8 requires shutdown to be verified
@@ -1671,6 +1861,47 @@ def check_tool_input(tool: str, tool_input) -> None:
 
 SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
 
+# Commands that read a heredoc body as data and never execute it. `python3 -`,
+# `sh` and friends are deliberately absent: they run the body. The list exists
+# because refusing `grep <<'END'` and `jq . <<'JSON'` taught a session that
+# ordinary text handling was suspicious, and a guard that fires on ordinary
+# work is a guard somebody switches off.
+HEREDOC_DATA_SINKS = frozenset(
+    {
+        "cat",
+        "tee",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "sed",
+        "awk",
+        "jq",
+        "yq",
+        "wc",
+        "sort",
+        "uniq",
+        "head",
+        "tail",
+        "tr",
+        "cut",
+        "column",
+        "diff",
+        "nl",
+        "tac",
+        "fold",
+        "expand",
+        "base64",
+        "shasum",
+        "md5",
+        "md5sum",
+        "sha256sum",
+        "hexdump",
+        "xxd",
+        "json_pp",
+    }
+)
+
 
 def inspect(command: str, depth: int = 0) -> None:
     for opening, body, supported, expands in heredoc_blocks(command):
@@ -1687,8 +1918,12 @@ def inspect(command: str, depth: int = 0) -> None:
                 continue
             resolved = True
             name = base(argv[0])
-            if name not in ("cat", "tee"):
-                deny(f"a heredoc attached to '{name}' is opaque to the command guard")
+            if name not in HEREDOC_DATA_SINKS:
+                deny(
+                    f"a heredoc attached to '{name}' is opaque to the command guard — "
+                    f"it may run the body. Write the text with `cat <<'EOF' > file` "
+                    f"and run the file as its own step"
+                )
         if not resolved:
             deny("the heredoc opening has no resolvable command on the same line")
 
@@ -1772,7 +2007,7 @@ def inspect(command: str, depth: int = 0) -> None:
         # python3.11, python3.13 — a version suffix is not a different program.
         handler = DISPATCH.get(name) or (check_python if name.startswith("python") else None)
         if handler:
-            if handler is check_rm:
+            if handler in CWD_HANDLERS:
                 handler(argv, command_cwd)
             else:
                 handler(argv)
