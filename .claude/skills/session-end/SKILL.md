@@ -39,8 +39,13 @@ report look clean.
 **Work reaches a pull request by default.** Anything the status shows that is not on its
 way into one — an uncommitted line, an unpushed commit, a branch with no PR — is either
 routed deliberately (read the diff, commit it with the push it belongs to) or named in the
-handoff with the reason it stays behind. That includes Tyrel's own hand edits, which ride
-along under `ALLOW_UNATTRIBUTED=1` rather than sitting +1/−1 for five commits.
+handoff with the reason it stays behind. That includes Tyrel's own hand edits: read the
+diff, then let them ride the next push inside a **normally attributed** commit, rather than
+sitting +1/−1 for five sessions.
+
+`ALLOW_UNATTRIBUTED=1` is **not** the route for those. CLAUDE.md reserves it for a commit
+no machine touched at all, and a session that reaches for it to sweep up a hand edit is
+recording "no model wrote this" over a commit a model helped assemble.
 
 ## 2. File what is provably filed already
 
@@ -141,7 +146,12 @@ extra length should be those three things and nothing else.
 ## 6. Report what moved
 
 What was archived, what went to `scratch/`, and what you deliberately left in `active/` and
-why. Then stop.
+why.
+
+**This is not the end of the procedure.** Steps 7 and 8 are mandatory: the next session is
+briefed and its opening prompt written, and only then is Tyrel told the session is over. A
+session that reports what moved and stops here has left the next one with no queue line and
+left him with no notification — which is most of what this skill exists to produce.
 
 **A session that both starts and ends in one sitting still writes one.**
 

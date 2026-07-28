@@ -74,6 +74,12 @@ literally and produce fewer findings rather than better ones. Never tell a revie
 to argue, and never show it another reviewer's verdict; an anchored critique is not a blind
 review, and the difference does not show up in the output.
 
+**When the change replaces a file, give the reviewer the file it is being replaced *with*.**
+A prompt that hands over only a diff spends the whole review budget on what moved, and the
+question that matters is whether the new file is right — which a diff cannot answer, because
+a clean diff of a wrong file still reads as clean. Show the new file whole. Showing the old
+one as well is fine and often useful; showing only the old one and the delta is not.
+
 **Ask each finding to carry what the reviewer would do instead** — a proposal, not a patch.
 Reviewers propose and never apply. The session verifies a proposal like any other claim
 before adopting it; adopting one is a decision, not a default, and agreement between

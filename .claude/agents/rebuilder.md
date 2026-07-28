@@ -2,8 +2,10 @@
 name: rebuilder
 description: Reads one coherent legacy system through the window and rebuilds it as new code in the autoclave — never copying a byte across. Works on its own branch and worktree.
 tools: Read, Write, Edit, Grep, Glob, Bash
+disallowedTools: Agent, WebFetch, WebSearch
 model: opus
 effort: high
+maxTurns: 80
 ---
 
 You rebuild. **Understand a coherent system first; then write its replacement new, one
