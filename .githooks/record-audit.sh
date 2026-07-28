@@ -2,13 +2,19 @@
 # Record an operator assertion that an agent reviewed the work about to be
 # pushed. This is local evidence, not proof of reviewer identity or coverage.
 #
-#   .githooks/record-audit.sh <auditor> '<what it found>'
+#   .githooks/record-audit.sh [--commit <rev>] <auditor> '<what it found>'
 #
 # e.g.  .githooks/record-audit.sh 'Claude Opus 5' 'no findings'
+#       .githooks/record-audit.sh --commit 6b42def 'GPT-5.6 Sol (OpenAI)' 'one finding'
 #
-# The receipt names exactly one commit — HEAD as it stands now. Add a commit or
-# amend one and the receipt no longer applies and the push is refused again.
-# That is deliberate: an audit is of a state, not of a branch.
+# The receipt names exactly one commit, and that commit is the one the reviewer
+# actually read. Say which with --commit. Without it the commit defaults to
+# HEAD, which is right only when nothing has been committed since the review
+# started — and that is exactly the assumption that failed: reviewers read one
+# commit, the session committed again while they worked, and the receipt was
+# stamped against a commit nobody had opened. Add a commit or amend one and the
+# receipt no longer applies to the new state. That is deliberate: an audit is of
+# a state, not of a branch.
 #
 # It also writes down the range the auditor was meant to read. Nothing checks
 # that they did — pre-push only verifies the receipt names the right commit —
@@ -28,15 +34,42 @@
 
 set -eu
 
+usage() {
+  echo "usage: .githooks/record-audit.sh [--commit <rev>] <auditor> '<what it found>'" >&2
+  echo "" >&2
+  echo "  Auditor and finding are both required. An audit with no finding" >&2
+  echo "  recorded is not an audit — 'no findings' is itself a finding and" >&2
+  echo "  should be written. --commit names the commit the reviewer actually" >&2
+  echo "  read; without it the receipt is written against HEAD." >&2
+  exit 1
+}
+
+reviewed=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --commit)
+      [ $# -ge 2 ] || usage
+      reviewed=$2
+      shift 2 ;;
+    --commit=*)
+      reviewed=${1#--commit=}
+      shift ;;
+    --)
+      shift
+      break ;;
+    -?*)
+      echo "  Unknown option '$1'; no receipt was written." >&2
+      usage ;;
+    *)
+      break ;;
+  esac
+done
+
 auditor=${1-}
 finding=${2-}
 
-if [ -z "$auditor" ] || [ -z "$finding" ]; then
-  echo "usage: .githooks/record-audit.sh <auditor> '<what it found>'" >&2
-  echo "" >&2
-  echo "  Both are required. An audit with no finding recorded is not an" >&2
-  echo "  audit — 'no findings' is itself a finding and should be written." >&2
-  exit 1
+if [ -z "$auditor" ] || [ -z "$finding" ] || [ $# -gt 2 ]; then
+  usage
 fi
 
 # The receipt is line-oriented and pre-push counts `auditor:` records. Without
@@ -66,19 +99,41 @@ if ! printf '%s\0%s\0' "$auditor" "$finding" |
   exit 1
 fi
 
+# Validate the answer, do not merely test it for emptiness. An older git that
+# does not understand --path-format prints the unrecognised option back as a
+# literal line, then the real answer, and exits 0 — so an emptiness test never
+# fires the fallback below, and the receipt would be written into a nonsense
+# path inside the working tree. Require what a real answer looks like: exactly
+# one line, and an absolute path.
+newline='
+'
+single_absolute_path() {
+  case "$1" in
+    "" | *"$newline"*) return 1 ;;
+    /*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
-if [ -z "$common" ]; then
+if ! single_absolute_path "$common"; then
   # Older git has no --path-format. Guard the inner command, not the cd:
   # `cd ""` succeeds and stays put, so the fallback would quietly return $PWD
   # and a receipt would be written into the working tree.
+  common=""
   relative=$(git rev-parse --git-common-dir 2>/dev/null) || relative=""
+  case "$relative" in
+    *"$newline"*) relative="" ;;
+  esac
   if [ -n "$relative" ]; then
     common=$(cd "$relative" 2>/dev/null && pwd) || common=""
   fi
+  single_absolute_path "$common" || common=""
 fi
 if [ -z "$common" ]; then
   echo "  Cannot locate the git directory, so no receipt can be written." >&2
-  echo "  Without one, pre-push will refuse the push — which is correct." >&2
+  echo "  Nothing was recorded, so pre-push's checklist will show this push" >&2
+  echo "  as unreviewed — which is the honest reading of an unwritten receipt." >&2
   exit 1
 fi
 
@@ -89,8 +144,34 @@ if ! mkdir -p "$receipts" 2>/dev/null; then
   exit 1
 fi
 
-sha=$(git rev-parse HEAD)
-branch=$(git rev-parse --abbrev-ref HEAD)
+# The receipt binds to the commit that was reviewed. If the caller named one,
+# resolve exactly that and fail closed when it does not name a commit — a
+# receipt written against the wrong commit is a false record, and a false record
+# is worse than a missing one. Only when no commit is named does HEAD stand in.
+if [ -n "$reviewed" ]; then
+  sha=$(git rev-parse --verify --quiet "$reviewed^{commit}" 2>/dev/null) || sha=""
+  if [ -z "$sha" ]; then
+    echo "  '$reviewed' does not name a commit in this repository." >&2
+    echo "  No receipt was written. Name the commit the reviewer read." >&2
+    exit 1
+  fi
+else
+  sha=$(git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) || sha=""
+  if [ -z "$sha" ]; then
+    echo "  HEAD does not resolve to a commit, and no --commit was given." >&2
+    echo "  No receipt was written." >&2
+    exit 1
+  fi
+fi
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+[ -n "$branch" ] || branch="(unknown)"
+head_sha=$(git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) || head_sha=""
+if [ "$sha" != "$head_sha" ]; then
+  # Say it out loud. The receipt is still correct — it names what was read —
+  # but the branch line describes where it was recorded from, not where the
+  # reviewed commit sits, and the operator should see the difference.
+  branch="$branch (recorded from; reviewed commit is not HEAD)"
+fi
 
 # Serialize writers for this commit. Two reviewers can finish together; without
 # an atomic lock both can observe a missing receipt, both create it, and the
@@ -114,7 +195,7 @@ trap cleanup_lock EXIT
 trap 'exit 1' HUP INT TERM
 
 # What should have been read: everything this branch adds to main.
-base=$(git merge-base origin/main HEAD 2>/dev/null || echo "")
+base=$(git merge-base origin/main "$sha" 2>/dev/null || echo "")
 if [ -n "$base" ] && [ "$base" != "$sha" ]; then
   range="$base..$sha"
   count=$(git rev-list --count "$range" 2>/dev/null || echo "?")

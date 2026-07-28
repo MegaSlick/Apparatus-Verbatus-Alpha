@@ -258,17 +258,72 @@ def make_audit_repo(path):
     ).stdout.strip()
 
 
+def real_git():
+    found = shutil.which("git")
+    assert found, "these tests need a real git on PATH"
+    return found
+
+
+def stub_git(path, body):
+    """Install a fake `git` earlier on PATH and return an env that finds it.
+
+    The hooks resolve the git directory through `git rev-parse`. Two of its
+    failure modes cannot be reproduced with the git on this machine — an old
+    release that does not understand an option, and a git that cannot answer at
+    all — so they are modelled here. Everything the stub does not intercept is
+    handed to the real binary, so the rest of the hook behaves normally.
+    """
+    directory = path / "stub-bin"
+    directory.mkdir(exist_ok=True)
+    (directory / "git").write_text(body, encoding="utf-8")
+    (directory / "git").chmod(0o755)
+    environment = clean_hook_env()
+    environment["PATH"] = f"{directory}{os.pathsep}{environment.get('PATH', '')}"
+    return environment
+
+
+def old_git_stub(path):
+    # An older git, before `--path-format`, does not answer with nothing. It
+    # prints the unrecognised option back as a literal line, then the real
+    # answer, and exits 0 — the behaviour verified on this machine in ledger
+    # finding N6. A resolver that only tests for emptiness never notices.
+    return stub_git(
+        path,
+        "#!/bin/sh\n"
+        'case " $* " in\n'
+        '  *" --path-format=absolute "*)\n'
+        "    printf '%s\\n' '--path-format=absolute'\n"
+        f"    exec {real_git()} rev-parse --git-common-dir ;;\n"
+        "esac\n"
+        f'exec {real_git()} "$@"\n',
+    )
+
+
+def blind_git_stub(path):
+    # A git that cannot say where the git directory is: a broken worktree link,
+    # a hook run from somewhere unexpected, a permissions fault.
+    return stub_git(
+        path,
+        "#!/bin/sh\n"
+        'case " $* " in\n'
+        '  *" --git-common-dir "*) exit 128 ;;\n'
+        "esac\n"
+        f'exec {real_git()} "$@"\n',
+    )
+
+
 def run_isolated_pre_push(
     repo,
     sha,
     *,
     remote_ref="refs/heads/work/example",
     remote_sha=ZERO,
+    env=None,
 ):
     return subprocess.run(
         ["sh", ".githooks/pre-push"],
         cwd=repo,
-        env=clean_hook_env(),
+        env=env or clean_hook_env(),
         input=push_line(remote_ref, local_sha=sha, remote_sha=remote_sha),
         capture_output=True,
         text=True,
@@ -600,6 +655,228 @@ def test_pre_push_does_not_credit_partial_reviewer_records(tmp_path):
     assert "incomplete or invalid" in result.stderr
     assert "[x]" not in result.stderr
     assert result.stderr.count("[ ]") == 3
+
+
+def write_receipt(repo, sha, text):
+    receipts = repo / ".git" / "audit-receipts"
+    receipts.mkdir(exist_ok=True)
+    (receipts / sha).write_text(text, encoding="utf-8")
+    return receipts / sha
+
+
+def test_pre_push_finds_receipts_on_a_git_too_old_for_path_format(tmp_path):
+    # Ledger N6. The compatibility fallback was guarded by an emptiness test,
+    # and an old git does not answer with nothing — it echoes the option back
+    # and then answers. So the fallback never fired, the receipt directory
+    # became two lines of junk, and a fully reviewed push reported no receipt
+    # at all. Dead compatibility code that looks like a safety net is worse
+    # than an honest requirement; this proves the net actually catches.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    names = ("Claude Opus 5", "Claude Fable 5", "GPT-5.6 Sol (OpenAI)")
+    write_receipt(repo, sha, receipt_text(sha, names))
+
+    result = run_isolated_pre_push(repo, sha, env=old_git_stub(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert "3 distinct reviewer(s)" in result.stderr
+    assert "no receipt recorded" not in result.stderr
+
+
+def test_record_audit_writes_to_the_git_directory_on_a_git_too_old_for_path_format(tmp_path):
+    # The same defect in the writer, where the consequence is worse: the
+    # receipt path became a relative one and the receipt would have been
+    # written into the working tree, under a directory named after the option.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    shutil.copy2(HOOKS / "record-audit.sh", repo / ".githooks" / "record-audit.sh")
+
+    result = subprocess.run(
+        ["sh", ".githooks/record-audit.sh", "Claude Opus 5", "no findings"],
+        cwd=repo,
+        env=old_git_stub(tmp_path),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (repo / ".git" / "audit-receipts" / sha).is_file()
+    stray = [entry.name for entry in repo.iterdir() if "path-format" in entry.name]
+    assert not stray, f"receipt written into the working tree: {stray}"
+
+
+def test_pre_push_reports_unknown_coverage_when_it_cannot_look(tmp_path):
+    # NR4 / GOVERNANCE 10. When the git directory cannot be located the hook
+    # has not measured zero reviewers — it has measured nothing. Saying "no
+    # receipt recorded" there is a claim about review coverage made by an
+    # instrument that could not read, at the exact moment a human is deciding
+    # whether the coverage is enough.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    result = run_isolated_pre_push(repo, sha, env=blind_git_stub(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert "cannot locate the git directory" in result.stderr
+    assert "UNKNOWN" in result.stderr
+    assert "not a record of zero reviewers" in result.stderr
+    assert "no receipt recorded" not in result.stderr
+    # And it must not print the empty boxes, which read as a measured zero.
+    assert "[ ]" not in result.stderr
+
+
+def test_pre_push_matches_the_commit_line_despite_surrounding_whitespace(tmp_path):
+    # NR8. `pre-push` matched `commit:  <sha>` on exactly two spaces, which is
+    # how record-audit.sh happens to write it. The receipt validator is stubbed
+    # out here on purpose: it holds its own copy of the format, and the point of
+    # this test is the hook's *own* matcher — if the format is ever loosened
+    # anywhere, pre-push must not silently report every reviewed push as
+    # unreviewed. Stubbing the validator weakens nothing outside this test.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    (repo / ".githooks" / "check_ingress.py").write_text(
+        "import sys\nsys.exit(0)\n", encoding="utf-8"
+    )
+    names = ("Claude Opus 5", "Claude Fable 5", "GPT-5.6 Sol (OpenAI)")
+    reformatted = receipt_text(sha, names).replace(f"commit:  {sha}", f"  commit: {sha} ", 1)
+    write_receipt(repo, sha, reformatted)
+
+    result = run_isolated_pre_push(repo, sha)
+    assert result.returncode == 0, result.stderr
+    assert "3 distinct reviewer(s)" in result.stderr
+    assert "records a different commit" not in result.stderr
+
+
+def test_pre_push_still_rejects_a_commit_line_naming_another_commit(tmp_path):
+    # The tolerance above must be whitespace only. A receipt for a different
+    # commit is still a receipt for a different commit, and the sha must match
+    # in full — a prefix is not a match.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    (repo / ".githooks" / "check_ingress.py").write_text(
+        "import sys\nsys.exit(0)\n", encoding="utf-8"
+    )
+    other = "b" * 39 + "a"
+    write_receipt(repo, sha, receipt_text(sha, ("Claude Opus 5",)).replace(sha, other, 1))
+    result = run_isolated_pre_push(repo, sha)
+    assert result.returncode == 0, result.stderr
+    assert "records a different commit" in result.stderr
+    assert "[x]" not in result.stderr
+
+
+def test_receipt_format_written_matches_what_pre_push_reads(tmp_path):
+    # NR8's other half: pin the format so it cannot drift unnoticed. The writer,
+    # the validator and the hook agree by contract, not by coincidence — this
+    # asserts the exact header record-audit.sh writes and then reads it back
+    # through the real hook and the real validator.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    shutil.copy2(HOOKS / "record-audit.sh", repo / ".githooks" / "record-audit.sh")
+    result = subprocess.run(
+        ["sh", ".githooks/record-audit.sh", "Claude Opus 5", "no findings"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = (repo / ".git" / "audit-receipts" / sha).read_text(encoding="utf-8")
+    assert receipt.splitlines()[0] == f"commit:  {sha}"
+    pushed = run_isolated_pre_push(repo, sha)
+    assert "1 distinct reviewer(s)" in pushed.stderr
+
+
+def test_record_audit_binds_the_receipt_to_the_named_commit(tmp_path):
+    # Ledger N7, and it misfired live: reviewers audited one commit, the session
+    # committed again while they worked, and the receipt was stamped against a
+    # commit nobody had opened. The receipt looked perfect and covered nothing.
+    repo = tmp_path / "repo"
+    reviewed = make_audit_repo(repo)
+    shutil.copy2(HOOKS / "record-audit.sh", repo / ".githooks" / "record-audit.sh")
+    (repo / "later.txt").write_text("later\n", encoding="utf-8")
+    subprocess.run(["git", "add", "later.txt"], cwd=repo, check=True, timeout=5)
+    subprocess.run(["git", "commit", "-qm", "later"], cwd=repo, check=True, timeout=5)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    ).stdout.strip()
+    assert head != reviewed
+
+    result = subprocess.run(
+        ["sh", ".githooks/record-audit.sh", "--commit", reviewed, "Claude Opus 5", "no findings"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (repo / ".git" / "audit-receipts" / reviewed).is_file()
+    assert not (repo / ".git" / "audit-receipts" / head).exists()
+    body = (repo / ".git" / "audit-receipts" / reviewed).read_text(encoding="utf-8")
+    assert body.splitlines()[0] == f"commit:  {reviewed}"
+    assert "not HEAD" in body, "a receipt that is not for HEAD must say so"
+    # And the hook reads it back: coverage lands on the reviewed commit only.
+    assert "1 distinct reviewer(s)" in run_isolated_pre_push(repo, reviewed).stderr
+    assert "no receipt recorded" in run_isolated_pre_push(repo, head).stderr
+
+
+def test_record_audit_defaults_to_head_when_no_commit_is_named(tmp_path):
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    shutil.copy2(HOOKS / "record-audit.sh", repo / ".githooks" / "record-audit.sh")
+    result = subprocess.run(
+        ["sh", ".githooks/record-audit.sh", "Claude Opus 5", "no findings"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (repo / ".git" / "audit-receipts" / sha).is_file()
+
+
+def test_record_audit_refuses_a_commit_it_cannot_resolve(tmp_path):
+    # Fail closed: an unresolvable revision must not quietly fall back to HEAD,
+    # which is the very substitution that produced the false receipt.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    shutil.copy2(HOOKS / "record-audit.sh", repo / ".githooks" / "record-audit.sh")
+    for bad in ("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "no/such/ref"):
+        result = subprocess.run(
+            ["sh", ".githooks/record-audit.sh", "--commit", bad, "Claude Opus 5", "no findings"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        assert result.returncode == 1, result.stdout
+        assert "does not name a commit" in result.stderr
+    assert not (repo / ".git" / "audit-receipts" / sha).exists()
+
+
+def test_record_audit_rejects_an_unknown_option_instead_of_recording_it(tmp_path):
+    # An option-shaped auditor name is a typo, not a reviewer. Recording it
+    # would put a fabricated name on a receipt.
+    repo = tmp_path / "repo"
+    make_audit_repo(repo)
+    shutil.copy2(HOOKS / "record-audit.sh", repo / ".githooks" / "record-audit.sh")
+    result = subprocess.run(
+        ["sh", ".githooks/record-audit.sh", "--commmit", "Claude Opus 5", "no findings"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert "Unknown option" in result.stderr
+    assert not (repo / ".git" / "audit-receipts").exists()
 
 
 def test_record_audit_rejects_multiline_fields_before_writing():

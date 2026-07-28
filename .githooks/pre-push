@@ -26,28 +26,57 @@ is_null_oid() {
 # shares one record. Never committed — a receipt is evidence about a local
 # working session, not a document.
 #
-# Resolved carefully. If this came back empty the path would become
-# /audit-receipts, every push would be refused, and nobody would guess why.
-# `cd ""` succeeds and stays put, so guard the inner command, not the cd —
-# otherwise a failed rev-parse silently yields $PWD and looks like an answer.
+# Resolved carefully, and *validated* rather than merely tested for emptiness.
+# An older Git that does not understand `--path-format` does not answer with
+# nothing: it prints the unrecognised option back as a literal line, then the
+# real answer, and exits 0. An emptiness test therefore never fires the
+# fallback — the variable holds two lines of junk that look like an answer, and
+# the receipt path becomes nonsense nobody would guess at. Require what a real
+# answer looks like instead: exactly one line, and an absolute path.
+newline='
+'
+single_absolute_path() {
+  case "$1" in
+    "" | *"$newline"*) return 1 ;;
+    /*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
-if [ -z "$common" ]; then
+if ! single_absolute_path "$common"; then
+  # Older Git, before --path-format: ask for the plain answer, which may be
+  # relative, and resolve it here. `cd ""` succeeds and stays put, so guard the
+  # inner command, not the cd — otherwise a failed rev-parse silently yields
+  # $PWD and looks like an answer.
+  common=""
   relative=$(git rev-parse --git-common-dir 2>/dev/null) || relative=""
+  case "$relative" in
+    *"$newline"*) relative="" ;;
+  esac
   if [ -n "$relative" ]; then
     common=$(cd "$relative" 2>/dev/null && pwd) || common=""
   fi
+  single_absolute_path "$common" || common=""
 fi
-if [ -z "$common" ]; then
+if [ -n "$common" ]; then
+  receipts="$common/audit-receipts"
+else
   # The reviewer section is a checklist, not a gate, so an unlocatable git
   # directory means the checklist cannot be printed — not that the push is
   # unsafe. Say so loudly and carry on. The blocks that follow do not depend on
   # this path: they read the outgoing refs and history directly.
+  #
+  # Leave the path empty rather than letting it become /audit-receipts. A
+  # lookup against a path we invented would fail and be reported as "no receipt
+  # recorded" — a measurement, in the one case where the instrument could not
+  # read anything at all (GOVERNANCE 10).
+  receipts=""
   echo "" >&2
   echo "  NOTE: cannot locate the git directory, so no review checklist can be" >&2
   echo "  shown for this push. The credential and branch checks below still run." >&2
   echo "" >&2
 fi
-receipts="$common/audit-receipts"
 
 block() {
   echo "" >&2
@@ -184,17 +213,30 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   #    The hard blocks above are unchanged, because none of them turns on
   #    anybody's assertion: main moves only by pull request, and a credential
   #    or an oversized payload in the outgoing history is a fact, not a claim.
-  receipt="$receipts/$audit_sha"
   short=$(echo "$audit_sha" | cut -c1-8)
   reviewers=0
   names=""
-  if [ ! -f "$receipt" ]; then
+  if [ -z "$receipts" ]; then
+    # Could not look. Not the same claim as "nobody reviewed this", and the
+    # difference is the whole of GOVERNANCE 10: an instrument that cannot
+    # measure must not report a measurement. Absent evidence must not read
+    # cleaner — or dirtier — than evidence that was actually examined.
+    receipt_state="unknown"
+    receipt_detail="the git directory could not be located, so no receipt could be looked up"
+  elif [ ! -f "$receipts/$audit_sha" ]; then
     receipt_state="no receipt recorded"
-  elif ! python3 "$ingress" --audit-receipt "$receipt" >/dev/null 2>&1; then
+  elif ! python3 "$ingress" --audit-receipt "$receipts/$audit_sha" >/dev/null 2>&1; then
     receipt_state="receipt is incomplete or invalid"
-  elif ! grep -qx "commit:  $audit_sha" "$receipt" 2>/dev/null; then
+  elif ! grep -Eqx "[[:space:]]*commit:[[:space:]]+$audit_sha[[:space:]]*" \
+       "$receipts/$audit_sha" 2>/dev/null; then
+    # Matched loosely on purpose. The receipt's exact spacing is a contract
+    # between record-audit.sh and check_ingress.py, asserted in test_hooks.py;
+    # welding a third copy of it into this grep would mean any tidy-up of the
+    # writer silently reported every reviewed push as unreviewed. This section
+    # never blocks, so that drift would surface as *lost coverage*, not as a bug.
     receipt_state="receipt records a different commit"
   else
+    receipt="$receipts/$audit_sha"
     receipt_state="ok"
     names=$(sed -n 's/^auditor: //p' "$receipt" | sed '/^[[:space:]]*$/d' | sort -u)
     reviewers=$(printf '%s\n' "$names" | sed '/^$/d' | wc -l | tr -d '[:space:]')
@@ -212,12 +254,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       i=$((i + 1))
     done
     echo "     $reviewers distinct reviewer(s) recorded for this exact commit." >&2
+  elif [ "$receipt_state" = unknown ]; then
+    echo "     [?] review coverage UNKNOWN — $receipt_detail." >&2
+    echo "     This is not a record of zero reviewers. Nothing was read, so" >&2
+    echo "     nothing is claimed either way; judge the coverage from elsewhere." >&2
   else
     echo "     [ ] no reviewer recorded — $receipt_state" >&2
     echo "     [ ] a further independent reviewer" >&2
     echo "     [ ] a further independent reviewer" >&2
   fi
-  if [ "$reviewers" -lt 3 ]; then
+  if [ "$receipt_state" != unknown ] && [ "$reviewers" -lt 3 ]; then
     echo "" >&2
     echo "     Three across two vendors is the standard. Record one with:" >&2
     echo "       .githooks/record-audit.sh '<model that answered>' '<what it found>'" >&2
