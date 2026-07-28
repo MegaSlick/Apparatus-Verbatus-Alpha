@@ -68,8 +68,37 @@ SECRET_PATTERNS = (
     ("openai-api-key", re.compile(rb"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
     ("anthropic-api-key", re.compile(rb"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
     ("huggingface-token", re.compile(rb"\bhf_[A-Za-z0-9]{20,}\b")),
-    ("slack-token", re.compile(rb"\bxox[baprs]-[A-Za-z0-9-]{20,}\b")),
+    ("google-oauth-secret", re.compile(rb"\bGOCSPX-[A-Za-z0-9_-]{20,}")),
+    # `xoxe` is a refresh token and `xapp` an app-level token; both are as
+    # usable as the bot token the original class covered.
+    ("slack-token", re.compile(rb"\bxox[baeprs]-[A-Za-z0-9-]{20,}\b")),
+    ("slack-token", re.compile(rb"\bxapp-[0-9]-[A-Za-z0-9-]{20,}\b")),
+    # A webhook URL is a bearer credential in one string: whoever holds it can
+    # post as the app. Pasting one into a note is an ordinary mistake.
+    (
+        "slack-webhook",
+        re.compile(rb"https://hooks\.slack\.com/services/[A-Za-z0-9]+/[A-Za-z0-9]+/[A-Za-z0-9]{20,}"),
+    ),
     ("stripe-live-key", re.compile(rb"\bsk_live_[A-Za-z0-9]{20,}\b")),
+    ("stripe-restricted-key", re.compile(rb"\brk_live_[A-Za-z0-9]{20,}\b")),
+    ("stripe-webhook-secret", re.compile(rb"\bwhsec_[A-Za-z0-9]{20,}\b")),
+    ("pypi-token", re.compile(rb"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}")),
+    # A signed bearer token carries its own authority until it expires, and
+    # the payload is only base64: it leaks the claims as well as the access.
+    (
+        "json-web-token",
+        re.compile(rb"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    ),
+    # The credential-url rule below is anchored to HTTP. A database URI leaks
+    # exactly the same way and is the likelier paste in this project.
+    (
+        "credential-uri",
+        re.compile(
+            rb"\b(?:postgres|postgresql|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss"
+            rb"|amqp|amqps|ftp|ftps|sftp|ssh|s3|clickhouse)://[^/\s:@]+:[^@\s/]{8,}@[^\s/]+",
+            re.I,
+        ),
+    ),
     # An ntfy topic is unauthenticated by design: the name IS the whole
     # credential, for reading and for forging. The old repository leaked its
     # topic into six committed paths, mostly as pasted working command lines.
@@ -102,13 +131,23 @@ SECRET_PATTERNS = (
 # with the reason, and must fail the scan when removed.
 DECLARED_SECRET_FIXTURES = frozenset()
 
+# The key half tolerates a vendor prefix joined by `_`, `-` or `.`. An
+# earlier `\b` anchor was defeated by the commonest real spelling there is:
+# `aws_secret_access_key`, where the underscore is a word character and so no
+# boundary exists before `secret`. The trailing lookahead keeps the key from
+# ending mid-word, and the assignment operator must still follow immediately,
+# which is what keeps ordinary prose out.
 GENERIC_ASSIGNMENT = re.compile(
     rb"""(?ix)
     (?P<key_quote>["']?)
-    \b(?:
-        runpod_api_key|api[_-]?key|access[_-]?token|auth[_-]?token|
-        client[_-]?secret|secret[_-]?key|password|passwd|token|secret
-    )\b(?P=key_quote)
+    (?<![A-Za-z0-9])
+    (?:[A-Za-z0-9]+[_.-]){0,4}
+    (?:
+        runpod_api_key|api[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token|
+        session[_-]?token|refresh[_-]?token|bearer[_-]?token|
+        client[_-]?secret|secret[_-]?key|secret[_-]?access[_-]?key|
+        private[_-]?key|password|passwd|token|secret
+    )(?![A-Za-z0-9])(?P=key_quote)
     [\t ]*(?::|=)[\t ]*["']?
     (?P<value>[A-Za-z0-9_./+=-]{20,})
     """

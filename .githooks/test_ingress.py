@@ -18,6 +18,10 @@ def scanner_module():
     """Import the scanner by path; `.githooks` is not an importable package."""
     spec = importlib.util.spec_from_file_location("check_ingress", SCANNER)
     module = importlib.util.module_from_spec(spec)
+    # Registered before execution: the scanner's dataclasses resolve their
+    # string annotations through sys.modules under `from __future__ import
+    # annotations`, and fail with an unhelpful AttributeError without it.
+    sys.modules["check_ingress"] = module
     spec.loader.exec_module(module)
     return module
 
@@ -595,6 +599,115 @@ def test_worktree_scan_reports_unscannable_entries_instead_of_skipping_them(repo
     assert result.returncode == 1
     assert "[unscannable]" in result.stderr
     assert "fifo" in result.stderr
+
+
+# One realistic sample per declared pattern. Every value is built
+# discontinuously so this test file never contains a scannable credential:
+# the scanner reads its own repository and must pass on this file.
+PROVIDER_SAMPLES = (
+    ("private-key", "-----BEGIN " + "RSA PRIVATE KEY-----"),
+    ("runpod-api-key", "rpa_" + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r"),
+    ("runpod-s3-secret", "rps_" + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r"),
+    ("aws-access-key", "AKIA" + "Q2W3E4R5T6Y7U8I9"),
+    ("aws-access-key", "ASIA" + "Q2W3E4R5T6Y7U8I9"),
+    ("github-token", "ghp_" + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r1S3t5"),
+    ("github-token", "github_pat_" + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r1S3t5U7v9W2x4"),
+    ("gitlab-token", "glpat-" + "A7b9C2d4E6f8G1h3J5k7"),
+    ("google-api-key", "AIza" + "SyA7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r1S"),
+    ("google-oauth-secret", "GOCSPX-" + "A7b9C2d4E6f8G1h3J5k7L9m2"),
+    ("openai-api-key", "sk-" + "proj-A7b9C2d4E6f8G1h3J5k7L9m2"),
+    ("anthropic-api-key", "sk-ant-" + "api03-A7b9C2d4E6f8G1h3J5k7L9m2"),
+    ("huggingface-token", "hf_" + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8"),
+    ("slack-token", "xox" + "b-2468013579-1357924680-A7b9C2d4E6f8G1h3J5k7L9m2"),
+    ("slack-token", "xap" + "p-1-A0B1C2D3E4F-2468013579-a7b9c2d4e6f8g1h3j5k7l9m2"),
+    ("slack-webhook", "https://hooks.slack" + ".com/services/T02468AC/B13579BD/A7b9C2d4E6f8G1h3J5k7L9m2"),
+    ("stripe-live-key", "sk_live_" + "A7b9C2d4E6f8G1h3J5k7L9m2"),
+    ("stripe-restricted-key", "rk_live_" + "A7b9C2d4E6f8G1h3J5k7L9m2"),
+    ("stripe-webhook-secret", "whsec_" + "A7b9C2d4E6f8G1h3J5k7L9m2"),
+    (
+        "pypi-token",
+        "pypi-"
+        + "AgEIcHlwaS5vcmc"
+        + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r1S3t5U7v9W2x4Y6z8B1c3D5e7F9",
+    ),
+    (
+        "json-web-token",
+        "eyJ" + "hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" + "." + "eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0" + "." + "A7b9C2d4E6f8G1h3J5k7L9m2",
+    ),
+    ("credential-url", "https://svc-user:" + "T0pS3cr3tValue@example.invalid/path"),
+    ("credential-uri", "postgresql://svc-user:" + "T0pS3cr3tValue@db.example.invalid/app"),
+    ("credential-uri", "mongodb+srv://svc-user:" + "T0pS3cr3tValue@db.example.invalid/app"),
+    ("ntfy-topic", "NTFY_" + 'TOPIC = "verbatus-' + "a7b9c2d4e6" + '"'),
+    ("ntfy-topic", "https://ntfy" + ".sh/verbatus-" + "a7b9c2d4e6"),
+)
+
+
+@pytest.mark.parametrize(("rule", "secret"), PROVIDER_SAMPLES)
+def test_each_declared_credential_shape_is_blocked_by_its_own_rule(repo, rule, secret):
+    write(repo, "notes.txt", "pasted into a note: " + secret + "\n")
+    stage(repo, "notes.txt")
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 1
+    assert f"[{rule}]" in result.stderr
+    assert secret not in result.stderr
+
+
+def test_every_declared_pattern_has_a_regression_sample():
+    # Without this, deleting or corrupting a rule stays green: L39. It is the
+    # compiled pattern that must be covered, not merely the rule name, because
+    # several names carry more than one pattern.
+    module = scanner_module()
+    samples = [secret.encode() for _, secret in PROVIDER_SAMPLES]
+    uncovered = [
+        rule for rule, pattern in module.SECRET_PATTERNS
+        if not any(pattern.search(sample) for sample in samples)
+    ]
+    assert not uncovered, f"declared patterns with no regression sample: {uncovered}"
+
+    declared = {rule for rule, _ in module.SECRET_PATTERNS}
+    claimed = {rule for rule, _ in PROVIDER_SAMPLES}
+    assert claimed - declared == set(), "a sample names a rule the scanner no longer declares"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "aws_secret_access_key",
+        "aws_session_token",
+        "AWS_SECRET_ACCESS_KEY",
+        "google_client_secret",
+        "db-password",
+        "runpod.api_key",
+    ],
+)
+def test_vendor_prefixed_credential_names_are_not_defeated_by_the_word_boundary(repo, key):
+    # L20: the generic assignment rule anchored on \b, which a vendor prefix
+    # joined by _ - or . defeats outright -- the commonest real spelling.
+    secret = generic_secret()
+    write(repo, "settings.txt", f"{key} = " + f'"{secret}"\n')
+    stage(repo, "settings.txt")
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 1
+    assert "[literal-credential]" in result.stderr
+    assert secret not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "token_expiry_days = 30\n",
+        "# the access token is issued by the provider, then discarded\n",
+        "see https://ntfy" + ".sh/docs for the publish API\n",
+        "digest = " + '"' + "a" * 64 + '"' + "  # sha256 of a fixture, not a secret\n",
+    ],
+)
+def test_ordinary_prose_and_short_values_are_not_credential_findings(repo, line):
+    # The loosened key grammar must not start refusing ordinary text; an
+    # over-refusing scanner is the mechanism by which the guard gets bypassed.
+    write(repo, "notes.md", line)
+    stage(repo, "notes.md")
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 0, result.stderr
 
 
 def test_worktree_scan_still_ignores_a_deleted_tracked_file(repo):
