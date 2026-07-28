@@ -1,18 +1,25 @@
 #!/bin/sh
-# Send one notification to Tyrel. One way, outbound only, nothing is read back.
+# Send one notification to Tyrel. One way and outbound only: no response body
+# is consumed, only the HTTP status needed to establish server acceptance.
 #
 #   sh operations/notify/notify.sh <event> "<message>"
 #
 # <event> is one of: start, milestone, decision, done.
 #
-# The topic lives in private/ntfy.conf and nowhere else. The old repository
-# hardcoded it in five shell scripts, which is how it ended up in cleartext in
-# a census dump; a value that exists once can be rotated once.
+# The bearer topic comes from NTFY_TOPIC if the environment sets it, and
+# otherwise from private/ntfy.conf, which is gitignored. Tyrel's ruling: an
+# ignored file under private/ is an acceptable home for it. What the topic must
+# never do is reach a commit, a script, a transcript or curl's argv — and none
+# of the handling below lets it.
 #
 # Exit codes carry meaning: start and milestone never fail the caller, but a
 # decision or done that cannot be delivered exits 1 — a session blocked on
 # Tyrel must know he was not reached, or it waits on a message nobody got.
 
+# A caller may itself be running with shell xtrace enabled. Disable it before
+# reading the environment: otherwise the bearer topic is copied into stderr by
+# assignment and comparison traces even though it never enters curl's argv.
+set +x
 set -eu
 
 # Validate the interface before touching any configuration, so a bad call is
@@ -27,10 +34,10 @@ shift
 message=$*
 
 case $event in
-  start)     title="Session started";   prio=low;     tags=computer ;;
-  milestone) title="Milestone";         prio=default; tags=white_check_mark ;;
-  decision)  title="Needs a decision";  prio=high;    tags=warning ;;
-  done)      title="Session complete";  prio=default; tags=checkered_flag ;;
+  start)     title="Session started";   prio=2; tags=computer ;;
+  milestone) title="Milestone";         prio=3; tags=white_check_mark ;;
+  decision)  title="Needs a decision";  prio=4; tags=warning ;;
+  done)      title="Session complete";  prio=3; tags=checkered_flag ;;
   *)         echo "notify: unknown event '$event'" >&2; exit 2 ;;
 esac
 
@@ -49,29 +56,44 @@ fail() {
   esac
 }
 
-root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 conf="$root/private/ntfy.conf"
 
-[ -r "$conf" ] || fail "no $conf — notifications are off until it exists"
+# Two sources, in this order: an injected environment variable wins, and the
+# gitignored config file is the default. Requiring the environment alone was
+# tried and is wrong here — nothing in this repository populates it, so every
+# `start` and `milestone` would exit 0 announcing "notifications are off" and
+# the phone would simply go quiet. That is the failure mode nobody notices,
+# which makes it worse than the one it was guarding against.
+topic=${NTFY_TOPIC:-}
+if [ -z "$topic" ] && [ -f "$conf" ] && [ -r "$conf" ]; then
+  # Read as data. The config is never sourced: a config file that executes is a
+  # config file that can do anything, and this one runs from a hook.
+  #
+  # `-f` and not merely `-r`: a named pipe at this path is readable, and reading
+  # one blocks until something writes. This script runs from the SessionStart
+  # hook, so that is not a failed notification — it is a session that never
+  # starts, with no error to explain why. A regular file, or nothing.
+  topic=$(sed -n 's/^NTFY_TOPIC=//p' "$conf" | tail -n 1 | tr -d '"' | tr -d "'")
+fi
+[ -n "$topic" ] || fail "no topic in the environment or $conf — notifications are off"
 
-# Read the two values as data. The config is never sourced: a config file that
-# executes is a config file that can do anything, and this one runs from a hook.
-NTFY_TOPIC=$(sed -n 's/^NTFY_TOPIC=//p' "$conf" | tail -n 1 | tr -d '"' | tr -d "'")
-NTFY_SERVER=$(sed -n 's/^NTFY_SERVER=//p' "$conf" | tail -n 1 | tr -d '"' | tr -d "'")
-
-[ -n "$NTFY_TOPIC" ] || fail "$conf sets no NTFY_TOPIC"
+# The destination is part of the credential boundary. If an inherited variable
+# could replace it, a stale shell or launcher could send the bearer topic and
+# the notification text to an arbitrary HTTPS server that returns 2xx. Refuse
+# the undocumented override rather than silently trusting ambient state.
+if [ "${NTFY_SERVER+x}" = x ]; then
+  echo "notify: NTFY_SERVER is unsupported; delivery is fixed to https://ntfy.sh" >&2
+  exit 2
+fi
+server=https://ntfy.sh
 
 # The topic is a bearer credential and also becomes part of a URL. A typo that
 # smuggles a slash or a space would look like a network problem forever.
-case $NTFY_TOPIC in
+case $topic in
   *[!A-Za-z0-9_-]*) fail "NTFY_TOPIC contains characters outside [A-Za-z0-9_-]" ;;
 esac
-
-server=${NTFY_SERVER:-https://ntfy.sh}
-case $server in
-  https://*) : ;;
-  *) fail "NTFY_SERVER must be https:// — a bearer credential does not travel in clear" ;;
-esac
+[ "${#topic}" -le 64 ] || fail "NTFY_TOPIC is longer than ntfy's 64-character limit"
 
 # `start` fires from a hook, not a hand. The desktop app can open several
 # sessions in one launch — each fires the hook, and four pings for one sitting
@@ -84,19 +106,55 @@ if [ "$event" = start ] && [ -n "$(find "$stamp" -mmin -15 2>/dev/null)" ]; then
   exit 0
 fi
 
-# --fail so a rejected post is an error; --max-time so a hung network cannot
-# block a session start. curl's own stderr is discarded: the topic is a bearer
-# secret and no error text is worth risking it in a transcript.
-if printf '%s' "$message" | curl -fsS --max-time 10 \
-  -H "Title: $title" \
-  -H "Priority: $prio" \
-  -H "Tags: $tags" \
+# Publish JSON to the server root, which ntfy documents as its fileless
+# publishing form. Python performs only JSON encoding: it never opens a socket.
+# Building the payload in memory keeps the topic out of curl's URL and argv.
+unset payload
+if payload=$(NTFY_TOPIC=$topic NTFY_TITLE=$title NTFY_PRIORITY=$prio NTFY_TAGS=$tags \
+  NTFY_MESSAGE=$message python3 -c '
+import json
+import os
+import sys
+
+json.dump(
+    {
+        "topic": os.environ["NTFY_TOPIC"],
+        "message": os.environ["NTFY_MESSAGE"],
+        "title": os.environ["NTFY_TITLE"],
+        "priority": int(os.environ["NTFY_PRIORITY"]),
+        "tags": [os.environ["NTFY_TAGS"]],
+    },
+    sys.stdout,
+    ensure_ascii=False,
+    separators=(",", ":"),
+)
+'); then
+  :
+else
+  fail "could not encode the notification payload"
+fi
+
+# Do not pass the bearer topic to curl in its inherited environment. `-q` must
+# be curl's first option so a machine-local .curlrc cannot weaken the request.
+# Record the HTTP code explicitly: curl otherwise treats a 3xx response as a
+# successful transfer even though ntfy did not accept the notification.
+# curl's stderr is discarded because request diagnostics can include URLs.
+unset NTFY_TOPIC NTFY_SERVER
+http_code=""
+if http_code=$(printf '%s' "$payload" | curl -q -sS --max-time 10 \
+  --output /dev/null \
+  --write-out '%{http_code}' \
+  -H "Content-Type: application/json" \
   --data-binary @- \
-  "$server/$NTFY_TOPIC" > /dev/null 2>&1; then
+  "$server/" 2>/dev/null) &&
+  case "$http_code" in 2??) true ;; *) false ;; esac
+then
   # Stamp only a *delivered* start, so a failed post never suppresses the retry.
   # Two sessions racing the check can each send one ping; the failure mode of
   # that race is a duplicate, never a loss.
-  [ "$event" = start ] && { touch "$stamp" 2>/dev/null || true; }
+  if [ "$event" = start ] && ! touch "$stamp" 2>/dev/null; then
+    echo "notify: delivered start but could not record its suppression stamp; duplicates may follow" >&2
+  fi
   exit 0
 fi
 
