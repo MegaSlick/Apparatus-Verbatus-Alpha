@@ -79,7 +79,14 @@ def test_handoff_is_never_filed_as_a_duplicate(tmp_path):
     (tidy.ARCHIVE / "2026-01-01_x").mkdir()
     (tidy.ARCHIVE / "2026-01-01_x" / "HANDOFF.md").write_text("identical")
     (tidy.ACTIVE / "HANDOFF.md").write_text("identical")
+    # A second duplicate that *must* move. Without it this test passes against a
+    # tidy.py that files nothing at all, which proves only that nothing ran.
+    (tidy.ARCHIVE / "2026-01-01_x" / "note.md").write_text("also identical")
+    (tidy.ACTIVE / "note.md").write_text("also identical")
+
     tidy.main(["--file"])
+
+    assert (tidy.SCRATCH / "note.md").exists(), "the filing pass did not run"
     assert (tidy.ACTIVE / "HANDOFF.md").exists(), "the live handoff must never move"
     assert not (tidy.SCRATCH / "HANDOFF.md").exists()
 
@@ -88,8 +95,14 @@ def test_design_is_never_touched(tmp_path):
     tidy = load_tidy(tmp_path)
     (tidy.ARCHIVE / "a.md").write_text("dup")
     (tidy.DESIGN / "a.md").write_text("dup")
+    # The same bytes in active/ must move, so the untouched design/ copy is
+    # evidence of an exemption rather than of a run that did nothing.
+    (tidy.ACTIVE / "a.md").write_text("dup")
     (tidy.ACTIVE / "HANDOFF.md").write_text("live")
+
     tidy.main(["--file"])
+
+    assert (tidy.SCRATCH / "a.md").exists(), "the filing pass did not run"
     assert (tidy.DESIGN / "a.md").exists(), "design/ is not tidy.py's to file"
 
 
@@ -107,11 +120,23 @@ def test_memory_links_survive_markdown_shapes(tmp_path, capsys):
     tidy = load_tidy(tmp_path)
     tidy.MEMORY.mkdir(parents=True)
     (tidy.MEMORY / "real.md").write_text("x")
-    (tidy.MEMORY / "MEMORY.md").write_text("- [Real (v2)](./real.md#hook) — parens and prefix\n")
+    (tidy.MEMORY / "spaced name.md").write_text("x")
+    (tidy.MEMORY / "MEMORY.md").write_text(
+        "- [Real (v2)](./real.md#hook) — parens and prefix\n"
+        "- [Spaced](<spaced name.md>) — an angle-bracketed target with a space\n"
+        "- [Gone](vanished.md) — a genuinely dangling target\n"
+    )
     (tidy.ACTIVE / "HANDOFF.md").write_text("live")
+
     tidy.main([])
+
     out = capsys.readouterr().out
-    assert "missing file" not in out, "normalised link shapes must resolve"
+    # The positive control: the audit must actually be reporting, or "no missing
+    # file" below would be satisfied by a run that never looked.
+    assert "missing file: vanished.md" in out, "the memory audit did not run"
+    assert "missing file: real.md" not in out, "normalised link shapes must resolve"
+    assert "missing file: spaced name.md" not in out, "<angle-bracketed> targets may hold spaces"
+    assert "file is in no index line" not in out, "every present memory is linked"
 
 
 def test_budget_report_reflects_post_move_state(tmp_path, capsys):
@@ -120,8 +145,15 @@ def test_budget_report_reflects_post_move_state(tmp_path, capsys):
         (tidy.ARCHIVE / f"d{i}.md").write_text(f"dup {i}")
         (tidy.ACTIVE / f"d{i}.md").write_text(f"dup {i}")
     (tidy.ACTIVE / "HANDOFF.md").write_text("live")
+
+    # The same drawer, unmoved, is over budget — so the silence after --file is
+    # the post-move count talking, not a budget check that never runs.
+    tidy.main([])
+    assert "past the one-sitting budget" in capsys.readouterr().out
+
     tidy.main(["--file"])
     out = capsys.readouterr().out
+    assert "moved 7 to scratch/" in out, "the filing pass did not run"
     assert "past the one-sitting budget" not in out, (
         "the budget must describe active/ as the moves left it"
     )

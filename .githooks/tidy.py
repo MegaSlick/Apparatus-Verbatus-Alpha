@@ -139,10 +139,21 @@ def check_memory():
                 break  # an unclosed link is malformed, not a dangling target
             pos = end + 1
             raw = line[start + 2 : end].strip()
-            target = raw.split()[0] if raw else ""
             # Normalise the shapes markdown allows: <angle-bracketed> targets,
             # ./ prefixes, and #anchors all point at the same file.
-            target = target.strip("<>").removeprefix("./").split("#")[0]
+            #
+            # Angle brackets are how markdown spells a target containing a
+            # space, so the target ends at the closing '>' and not at the
+            # first space — splitting on whitespace first turned
+            # `<spaced name.md>` into `spaced`, which reported a live memory
+            # as dangling and its file as unlisted, both wrongly.
+            if raw.startswith("<"):
+                close = raw.find(">")
+                target = raw[1:close] if close != -1 else raw[1:]
+            else:
+                # Outside angle brackets a space begins the optional title.
+                target = raw.split()[0] if raw else ""
+            target = target.removeprefix("./").split("#")[0]
             if target and not target.startswith(("http:", "https:")):
                 linked.add(target)
     # Compare on paths relative to the memory directory, so a link into a
