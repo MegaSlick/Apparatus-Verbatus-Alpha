@@ -600,19 +600,25 @@ def test_pre_push_counts_any_three_distinct_reviewers_not_three_fixed_names(tmp_
     # product names baked into a safety hook go stale at the next release, and a
     # gate that then forces either a bypass or a mislabelled receipt is worse than
     # no gate. The releases below are deliberately not the current roster.
+    #
+    # Ledger L41. The body used to assert only `returncode == 0`, which this hook
+    # returns for *every* input — no receipt, a receipt for another commit, a
+    # malformed one. So the name promised a count and the body proved nothing
+    # about counting: a hook that ignored off-roster names entirely would have
+    # kept this test green. Assert what the name claims — each name ticked, the
+    # count printed, and no unfilled box left over.
     repo = tmp_path / "repo"
     sha = make_audit_repo(repo)
+    names = ("Claude Opus 7", "Claude Fable 7", "GPT-6.0 Terra (OpenAI)")
     receipts = repo / ".git" / "audit-receipts"
     receipts.mkdir()
-    (receipts / sha).write_text(
-        receipt_text(
-            sha,
-            ("Claude Opus 7", "Claude Fable 7", "GPT-6.0 Terra (OpenAI)"),
-        ),
-        encoding="utf-8",
-    )
+    (receipts / sha).write_text(receipt_text(sha, names), encoding="utf-8")
     result = run_isolated_pre_push(repo, sha)
     assert result.returncode == 0, result.stderr
+    for who in names:
+        assert f"[x] {who}" in result.stderr
+    assert "3 distinct reviewer(s)" in result.stderr
+    assert "[ ]" not in result.stderr
 
 
 def test_pre_push_does_not_count_the_same_reviewer_three_times(tmp_path):
@@ -976,6 +982,218 @@ def test_record_audit_preserves_a_malformed_existing_receipt(tmp_path):
     assert result.returncode == 1
     assert "old receipt was not changed" in result.stderr
     assert receipt.read_text(encoding="utf-8") == partial
+
+
+def stub_command(path, name, body):
+    """Put one fake executable earlier on PATH and return an env that finds it.
+
+    `stub_git` models a whole git; this models a single coreutils binary so the
+    hooks' own failure handling can be exercised. A hook that only works when
+    every tool on PATH works is a hook whose failure mode nobody has seen.
+    """
+    directory = path / "stub-bin"
+    directory.mkdir(exist_ok=True)
+    (directory / name).write_text(body, encoding="utf-8")
+    (directory / name).chmod(0o755)
+    environment = clean_hook_env()
+    environment["PATH"] = f"{directory}{os.pathsep}{environment.get('PATH', '')}"
+    return environment
+
+
+def run_pre_push_raw(repo, input_text, env=None):
+    return subprocess.run(
+        ["sh", ".githooks/pre-push"],
+        cwd=repo,
+        env=env or clean_hook_env(),
+        input=input_text,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+
+def test_pre_push_checks_a_final_record_with_no_trailing_newline(tmp_path):
+    # Ledger L13. `while read -r a b c d` returns non-zero on an unterminated
+    # last line *after* assigning the fields, so the loop body never ran for it.
+    # The ref was pushed with no branch rule, no history scan and no checklist,
+    # and the hook exited 0 — a gate that read nothing and looked like it agreed.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    result = run_pre_push_raw(
+        repo,
+        f"refs/heads/main {sha} refs/heads/main {ZERO}",
+    )
+    assert result.returncode == 1, result.stderr
+    assert "direct push to main" in result.stderr
+
+
+def test_pre_push_checks_the_last_record_when_earlier_ones_are_well_formed(tmp_path):
+    # The same defect in the shape git actually produces it: several refs in one
+    # push, only the last one truncated. The first record passing must not be
+    # allowed to stand in for the last one never being read.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    result = run_pre_push_raw(
+        repo,
+        f"refs/heads/work/example {sha} refs/heads/work/example {ZERO}\n"
+        f"refs/heads/main {sha} refs/heads/main {ZERO}",
+    )
+    assert result.returncode == 1, result.stderr
+    assert "direct push to main" in result.stderr
+
+
+def test_pre_push_says_so_when_it_receives_no_refs(tmp_path):
+    # Measured on git 2.55: an up-to-date push runs this hook with an empty ref
+    # list, so refusing here would refuse a no-op and teach the operator to reach
+    # for --no-verify. It exits 0 — but silently exiting 0 after checking nothing
+    # is indistinguishable from checking something and approving it, which
+    # GOVERNANCE 2 does not allow. Say that nothing was examined.
+    repo = tmp_path / "repo"
+    make_audit_repo(repo)
+    result = run_pre_push_raw(repo, "")
+    assert result.returncode == 0, result.stderr
+    assert "received no refs" in result.stderr
+    assert "nothing was" in result.stderr
+    # No per-ref checklist header, because no ref was examined.
+    assert "── review checklist —" not in result.stderr
+
+
+def test_pre_push_reports_unknown_when_the_reviewer_count_is_not_a_number(tmp_path):
+    # Ledger L12. `reviewers=$(... | wc -l | tr -d ...)` holding text made
+    # `[ "$reviewers" -lt 3 ]` *error* rather than evaluate true, so the whole
+    # shortfall block was skipped: a push with a broken counter printed a number
+    # nobody could read and no warning at all. Unknown is never zero, and it is
+    # never silence either.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    write_receipt(repo, sha, receipt_text(sha, ("Claude Opus 5",)))
+    env = stub_command(tmp_path, "wc", "#!/bin/sh\necho 'not a number'\n")
+    result = run_isolated_pre_push(repo, sha, env=env)
+    assert result.returncode == 0, result.stderr
+    assert "UNKNOWN" in result.stderr
+    assert "count could not be computed" in result.stderr
+    assert "distinct reviewer(s)" not in result.stderr
+    assert "not a number" not in result.stderr
+
+
+def test_pre_push_folds_case_and_whitespace_before_counting_reviewers(tmp_path):
+    # Ledger L11. `sort -u` over raw bytes made three spellings of one model into
+    # three reviewers, and the checklist reported full coverage for a single
+    # read. Overstating coverage is the one failure this checklist cannot have:
+    # it is the number a human uses to decide whether to push.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    write_receipt(
+        repo,
+        sha,
+        receipt_text(sha, ("Claude Opus 5", "claude  opus 5", "CLAUDE OPUS 5")),
+    )
+    result = run_isolated_pre_push(repo, sha)
+    assert result.returncode == 0, result.stderr
+    assert "1 distinct reviewer(s)" in result.stderr
+    assert result.stderr.count("[ ]") == 2
+    # The first spelling recorded is what the operator sees; the folding decides
+    # the count, not what gets displayed.
+    assert "[x] Claude Opus 5" in result.stderr
+    assert result.stderr.count("[x]") == 1
+
+
+def test_pre_push_marks_a_reviewer_name_that_is_not_plain_ascii(tmp_path):
+    # The other half of L11, and the honest half. A Cyrillic С in "Сlaude" is a
+    # different reviewer to any fold this hook could carry, and a partial
+    # confusable table would claim a coverage it does not have (GOVERNANCE 10).
+    # So the name is counted as distinct — and flagged, beside the others, for
+    # the human already reading the list.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    lookalike = "Сlaude Opus 5"
+    write_receipt(repo, sha, receipt_text(sha, ("Claude Opus 5", lookalike)))
+    result = run_isolated_pre_push(repo, sha)
+    assert result.returncode == 0, result.stderr
+    assert "2 distinct reviewer(s)" in result.stderr
+    assert "not plain ASCII" in result.stderr
+    assert result.stderr.count("not plain ASCII") == 1
+
+
+def test_pre_push_scans_the_real_object_not_a_git_replace_substitute(tmp_path):
+    # Ledger L14. `git replace` makes every reader — this hook, the scanner it
+    # calls, and a reviewer running `git show` — see a clean stand-in while the
+    # genuine object is what leaves in the pack. One environment variable turns
+    # the whole mechanism off; without it the receipt, the outgoing scan and the
+    # ancestry check are all reading a different history from the one pushed.
+    repo = tmp_path / "repo"
+    base = make_audit_repo(repo)
+    secret = "rpa_" + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r"
+    (repo / "safe.txt").write_text(f"value = {secret}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "safe.txt"], cwd=repo, check=True, timeout=5)
+    subprocess.run(["git", "commit", "-qm", "unsafe"], cwd=repo, check=True, timeout=5)
+    unsafe = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    ).stdout.strip()
+    innocent = subprocess.run(
+        ["git", "commit-tree", f"{base}^{{tree}}", "-p", base, "-m", "innocent"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "replace", "-f", unsafe, innocent],
+        cwd=repo,
+        check=True,
+        timeout=5,
+        capture_output=True,
+    )
+
+    result = run_isolated_pre_push(repo, unsafe)
+    assert result.returncode == 1, result.stderr
+    assert "outgoing-history" in result.stderr
+    assert secret not in result.stderr
+
+
+def test_pre_push_allows_a_fast_forward_and_refuses_a_divergent_push(tmp_path):
+    # Ledger L42. Every existing force-push test pushes a brand-new ref, where
+    # the remote SHA is all zeroes and the ancestry test never runs. Reversing
+    # the two arguments to `merge-base --is-ancestor` would refuse every ordinary
+    # push and permit every rewrite, and the suite would not have noticed. Both
+    # directions are asserted here against a real divergent history.
+    repo = tmp_path / "repo"
+    first = make_audit_repo(repo)
+    (repo / "safe.txt").write_text("second\n", encoding="utf-8")
+    subprocess.run(["git", "add", "safe.txt"], cwd=repo, check=True, timeout=5)
+    subprocess.run(["git", "commit", "-qm", "second"], cwd=repo, check=True, timeout=5)
+    second = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    ).stdout.strip()
+    # A sibling of `first`, so neither tip is an ancestor of the other.
+    divergent = subprocess.run(
+        ["git", "commit-tree", f"{first}^{{tree}}", "-p", first, "-m", "divergent"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    ).stdout.strip()
+
+    forward = run_isolated_pre_push(repo, second, remote_sha=first)
+    assert forward.returncode == 0, forward.stderr
+    assert "force-push" not in forward.stderr
+
+    rewrite = run_isolated_pre_push(repo, divergent, remote_sha=second)
+    assert rewrite.returncode == 1, rewrite.stderr
+    assert "force-push" in rewrite.stderr
 
 
 def test_hook_installer_does_not_report_success_when_chmod_fails(tmp_path):

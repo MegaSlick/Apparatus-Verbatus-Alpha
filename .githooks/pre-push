@@ -15,6 +15,16 @@
 # commit being pushed and never refuses over it. Tyrel decides whether the
 # coverage is enough, every time, and does not need a keyword to say so.
 
+# Replacement refs make Git hand out a substitute object in place of the real
+# one, everywhere and invisibly. A `refs/replace/<sha>` entry would show this
+# hook — and the scanner it calls, and a reviewer reading the same history — a
+# clean stand-in while the genuine object is what leaves in the pack. Turn the
+# mechanism off for everything this hook runs, and export it so the Python
+# scanner's own `git` calls inherit it. Nothing here has any legitimate use for
+# a replacement: a hook exists to read what is actually being pushed.
+GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_REPLACE_OBJECTS
+
 z40='0000000000000000000000000000000000000000'
 z64='0000000000000000000000000000000000000000000000000000000000000000'
 
@@ -78,6 +88,48 @@ else
   echo "" >&2
 fi
 
+# Which reviewer names in a receipt are distinct, and what to print for each.
+#
+# Distinctness is decided on a normalised key rather than on raw bytes.
+# "Claude Opus 5", "claude  opus 5" and "Claude Opus 5 " are one reviewer, and
+# reporting them as three is the checklist flattering the coverage — the single
+# thing it must never do, since flattering coverage is worse than printing none.
+# Surrounding and internal whitespace collapse, ASCII case folds. The first
+# spelling seen is what gets printed, so the operator still sees what was
+# actually recorded.
+#
+# What this does NOT do, and the checklist says so beside the name: fold
+# look-alike characters. A Cyrillic С in "Сlaude" is a different reviewer to
+# this code, and there is no short table that makes that claim true — a partial
+# confusable fold would assert a coverage it does not have (GOVERNANCE 10).
+# Nor does any fold catch an all-ASCII look-alike such as "Claude 0pus 5".
+# So the honest move is to hand the judgement to the human who is already
+# reading the list, and mark the names that need looking at.
+distinct_reviewer_names() {
+  sed -n 's/^auditor: //p' "$1" | awk '
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      key = line
+      gsub(/[ \t]+/, " ", key)
+      sub(/^ /, "", key)
+      sub(/ $/, "", key)
+      key = tolower(key)
+      if (key == "") next
+      if (!(key in seen)) { seen[key] = 1; order[++n] = line }
+    }
+    END { for (i = 1; i <= n; i++) print order[i] }
+  '
+}
+
+# True only when the name is *provably* plain printable ASCII. Written as a
+# positive test on purpose: a missing or broken grep returns non-zero, the name
+# is marked as needing a look, and the failure shows up as extra scrutiny
+# rather than as a silently unmarked look-alike.
+is_plain_ascii() {
+  printf '%s' "$1" | LC_ALL=C grep -qx '[ -~]*' 2>/dev/null
+}
+
 block() {
   echo "" >&2
   echo "  BLOCKED: $1" >&2
@@ -93,7 +145,41 @@ if [ ! -f "$ingress" ]; then
   push is refused rather than allowed unchecked."
 fi
 
-while read -r local_ref local_sha remote_ref remote_sha; do
+# Read every record, including a final one with no trailing newline.
+#
+# `while read -r a b c d` returns non-zero on an unterminated last line — after
+# it has already assigned the fields. The loop body never runs, so the last ref
+# in the list is pushed without a single check, and the hook exits 0 looking
+# like it agreed. That is the worst failure shape available to a gate: silence
+# that reads as approval. The `|| [ -n ... ]` clause runs the body once more for
+# that partial record.
+#
+# The staged copies are cleared at the top of the body, before any `continue`,
+# so the sentinel cannot be true twice and spin the loop forever.
+#
+# Zero records is a different case and is deliberately NOT a refusal. Measured
+# on git 2.55: an up-to-date `git push` runs this hook with two arguments and an
+# empty ref list. Refusing there would refuse a no-op, which is exactly the
+# over-refusal that teaches an operator to reach for --no-verify. It is reported
+# instead, after the loop, because a run that checked nothing must not look like
+# a run that checked something.
+records=0
+line_local_ref='' line_local_sha='' line_remote_ref='' line_remote_sha=''
+while read -r line_local_ref line_local_sha line_remote_ref line_remote_sha ||
+      [ -n "$line_local_ref$line_local_sha$line_remote_ref$line_remote_sha" ]; do
+  local_ref=$line_local_ref
+  local_sha=$line_local_sha
+  remote_ref=$line_remote_ref
+  remote_sha=$line_remote_sha
+  line_local_ref='' line_local_sha='' line_remote_ref='' line_remote_sha=''
+
+  # A wholly blank line carries no ref, so there is nothing to judge. Anything
+  # with a field present is a record and is checked: a short record leaves
+  # remote_ref empty and falls into the unsupported-ref refusal below, which is
+  # the fail-closed answer for input this hook cannot parse.
+  [ -n "$local_ref$local_sha$remote_ref$remote_sha" ] || continue
+  records=$((records + 1))
+
   # Ref names are repository metadata and can carry a pasted token just as a
   # filename can. Scan them through a framed protocol that never prints the
   # name itself; findings use only a fingerprinted metadata label.
@@ -238,8 +324,33 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   else
     receipt="$receipts/$audit_sha"
     receipt_state="ok"
-    names=$(sed -n 's/^auditor: //p' "$receipt" | sed '/^[[:space:]]*$/d' | sort -u)
-    reviewers=$(printf '%s\n' "$names" | sed '/^$/d' | wc -l | tr -d '[:space:]')
+    if ! names=$(distinct_reviewer_names "$receipt"); then
+      receipt_state="unknown"
+      receipt_detail="the reviewer names in the receipt could not be read"
+      names=""
+    fi
+  fi
+
+  # Count only after the names are in hand, and refuse to believe a count that
+  # is not a number. `wc` or `tr` failing used to leave $reviewers holding text,
+  # and `[ "$reviewers" -lt 3 ]` then *errored* rather than evaluating true — so
+  # the shortfall notice was skipped and a push with no reviewers at all printed
+  # nothing about it. A measurement that did not happen is reported as unknown,
+  # never as zero and never as silence (GOVERNANCE 10).
+  if [ "$receipt_state" = ok ]; then
+    if [ -z "$names" ]; then
+      reviewers=0
+    else
+      reviewers=$(printf '%s\n' "$names" | sed '/^$/d' | wc -l | tr -d '[:space:]')
+    fi
+    case "$reviewers" in
+      '' | *[!0-9]*)
+        receipt_state="unknown"
+        receipt_detail="the reviewer count could not be computed"
+        reviewers=0
+        names=""
+        ;;
+    esac
   fi
 
   echo "" >&2
@@ -247,6 +358,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   if [ "$receipt_state" = ok ]; then
     printf '%s\n' "$names" | sed '/^$/d' | while IFS= read -r who; do
       echo "     [x] $who" >&2
+      if ! is_plain_ascii "$who"; then
+        echo "         this name is not plain ASCII — read it against the others" >&2
+        echo "         before counting it as a separate reviewer." >&2
+      fi
     done
     i=$reviewers
     while [ "$i" -lt 3 ]; do
@@ -273,4 +388,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   echo "     Not a gate. Tyrel decides whether this is enough. Pushing." >&2
   echo "" >&2
 done
+
+if [ "$records" -eq 0 ]; then
+  echo "" >&2
+  echo "  NOTE: this hook received no refs on standard input, so nothing was" >&2
+  echo "  checked and no review checklist was printed. Git does this on an" >&2
+  echo "  up-to-date push, where there is genuinely nothing outgoing. If a ref" >&2
+  echo "  IS leaving, the input was lost and this push went out unexamined." >&2
+  echo "" >&2
+fi
 exit 0
