@@ -245,3 +245,31 @@ def test_history_scan_refuses_an_incomplete_clone(repo, tmp_path):
     result = run_scan(shallow, "--history", "HEAD")
     assert result.returncode == 2
     assert "complete clone" in result.stderr
+
+
+def test_ntfy_topic_is_a_secret_in_both_leak_shapes(repo):
+    # The topic name IS the whole credential — read and forge. The old
+    # repository leaked it as pasted command lines, so both the assignment
+    # form and the URL form are refused. Built discontinuously so this test
+    # file does not itself contain a scannable topic.
+    topic = "verbatus-" + "a7b9c2d4e6"
+    assignment = "NTFY_" + 'TOPIC = "' + topic + '"\n'
+    write(repo, "notes.py", assignment)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+    url_line = "# see https://ntfy" + ".sh/" + topic + "\n"
+    write(repo, "notes.py", url_line)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+
+def test_ntfy_docs_and_placeholder_topics_stay_committable(repo):
+    # ntfy's own documentation URLs and placeholder values are not findings.
+    body = (
+        "# docs: https://docs.ntfy" + ".sh/publish/ and https://ntfy" + ".sh/docs\n"
+        "NTFY_" + 'TOPIC = "EXAMPLE-TOPIC"\n'
+    )
+    write(repo, "notes.py", body)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 0

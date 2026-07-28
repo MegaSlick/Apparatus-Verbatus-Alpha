@@ -73,6 +73,14 @@ while IFS= read -r f; do
       case "${f#.github/}" in */*) printf '%s\n' "$f"; stray=1 ;; esac ;;
     .claude/agents/*.md)
       case "${f#.claude/agents/}" in */*) printf '%s\n' "$f"; stray=1 ;; esac ;;
+    # The session skills. Instructions to a session, so they are harness
+    # documents like the agents beside them. Exactly `.claude/skills/<name>/SKILL.md`
+    # and nothing else under it: a skill may bundle reference files, but each one
+    # is a document this repository has to declare, and an open `*.md` here would
+    # make `.claude/skills/notes/` a notes folder by another name.
+    .claude/skills/*/SKILL.md)
+      rest=${f#.claude/skills/}
+      case "${rest%/SKILL.md}" in */*) printf '%s\n' "$f"; stray=1 ;; esac ;;
     *) printf '%s\n' "$f"; stray=1 ;;
   esac
 done

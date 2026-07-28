@@ -15,7 +15,7 @@
 # So: no commit lands without at least one Co-Authored-By line.
 #
 #   Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-#   Co-Authored-By: Codex (OpenAI) <noreply@openai.com>
+#   Co-Authored-By: GPT-5.6 Sol (OpenAI) <noreply@openai.com>
 #
 # Reading the work is a different contribution from writing it, and it has its
 # own trailer. An auditor that found a defect but wrote no lines is a reviewer:
@@ -87,9 +87,14 @@ echo "  Every commit here carries at least one of these, at the end of" >&2
 echo "  the message, after a blank line:" >&2
 echo "" >&2
 echo "      Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" >&2
-echo "      Co-Authored-By: Codex (OpenAI) <noreply@openai.com>" >&2
+echo "      Co-Authored-By: GPT-5.6 Sol (OpenAI) <noreply@openai.com>" >&2
 echo "" >&2
 echo "  Use every one that applies. All the code here is AI-generated," >&2
 echo "  and the history is where that is recorded." >&2
+echo "" >&2
+echo "  If no machine touched this commit — you wrote it yourself —" >&2
+echo "  say so and the check steps aside:" >&2
+echo "" >&2
+echo "      ALLOW_UNATTRIBUTED=1 git commit ..." >&2
 echo "" >&2
 exit 1

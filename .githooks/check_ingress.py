@@ -45,6 +45,7 @@ SENSITIVE_NAMES = {
     "id_ecdsa",
     "id_ed25519",
     "id_rsa",
+    "ntfy.conf",
     "service-account.json",
 }
 SENSITIVE_SUFFIXES = (".jks", ".key", ".keystore", ".p12", ".pfx")
@@ -69,6 +70,14 @@ SECRET_PATTERNS = (
     ("huggingface-token", re.compile(rb"\bhf_[A-Za-z0-9]{20,}\b")),
     ("slack-token", re.compile(rb"\bxox[baprs]-[A-Za-z0-9-]{20,}\b")),
     ("stripe-live-key", re.compile(rb"\bsk_live_[A-Za-z0-9]{20,}\b")),
+    # An ntfy topic is unauthenticated by design: the name IS the whole
+    # credential, for reading and for forging. The old repository leaked its
+    # topic into six committed paths, mostly as pasted working command lines.
+    ("ntfy-topic", re.compile(rb"\bNTFY_TOPIC[\t ]*=[\t ]*[\"']?[A-Za-z0-9_-]{6,}")),
+    # The URL form is how the old leak actually happened: a working command
+    # line pasted whole. Anchored to this project's topic prefix so ntfy's own
+    # documentation URLs (ntfy.sh/publish, ntfy.sh/docs) stay committable.
+    ("ntfy-topic", re.compile(rb"\bntfy\.sh/verbatus[A-Za-z0-9_-]{4,}")),
     (
         "credential-url",
         re.compile(rb"https?://[^/\s:@]+:[^@\s/]{8,}@[^\s/]+", re.I),

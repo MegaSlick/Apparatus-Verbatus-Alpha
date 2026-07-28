@@ -31,3 +31,7 @@ private/*
 !private/README.md
 scriptorium/*
 !scriptorium/README.md
+
+# autoclave/ is deliberately NOT ignored: drafts commit there on work branches
+# so the reviewers can read them raw. CI refuses to merge until it is empty,
+# which is what keeps main sterile — see autoclave/README.md.

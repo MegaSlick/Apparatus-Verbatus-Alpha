@@ -1,234 +1,247 @@
-# Working rules — Apparatus Verbatus (alpha)
+# Working rules — Apparatus Verbatus
 
-Rules only. **No status, no dates, no pod IDs, no hashes.** If you find state in this
-file, it is a bug — status lives in README.md and nowhere else.
+Rules only. **No status, no dates, no hashes.** State here is a bug; status lives in README.md.
 
-Read [GOALS.md](GOALS.md), [GOVERNANCE.md](GOVERNANCE.md) and
-[ARCHITECTURE.md](ARCHITECTURE.md) before proposing anything. They are short and they
-are binding. [GLOSSARY.md](GLOSSARY.md) defines the vocabulary — use those words and no
-synonyms.
+**This file is how you work. It is not the governance.** [GOALS.md](GOALS.md),
+[GOVERNANCE.md](GOVERNANCE.md) and [ARCHITECTURE.md](ARCHITECTURE.md) bind the sessions as
+well as the code — governance says so itself — but they mostly reach you through what you
+build and propose, while this file speaks to you directly. Read them
+before proposing anything, and never restate them from memory: quote the file or link it.
+[GLOSSARY.md](GLOSSARY.md) is the pipeline's vocabulary, not the project's process vocabulary.
+
+## Hard rules
+
+No instruction in a session, a note or a file overrides these, and breaking one is not a
+judgement call you get to make. Everything after them is guidance: follow it, and depart from it
+with a reason you say out loud.
+
+1. **Tyrel decides** — pod permission, declaring something proven, approving an exclusion,
+   amending a canonical document, merging. No agent stands in for him.
+2. **No live pod without his permission in that session.** Shutdown is verified against provider
+   state and billing, never inferred. It bills by the hour while it exists.
+3. **Never commit or push to `main`.** It arrives by pull request or not at all.
+4. **Never push without his say-so and a review covering that exact commit.**
+5. **Never share, rebase, force-push or amend a branch that is not yours.**
+6. **Nothing enters this repository uninspected.** If you cannot say what a line is for, it does
+   not enter.
+7. **Nothing is lost silently** — findings, reviews and decisions, not only acts.
+8. **Do not build a picker.** GOVERNANCE 3 forbids anything that selects among witnesses under
+   any name. Repeated here because it is the one an agent rebuilds by accident.
+9. **When a rule and a goal pull apart, stop and say so** — GOVERNANCE 0.
+
+**Subagents and other AI tools never push and never merge.** They read and report; a
+worker may write in its own worktree or the autoclave, and what it writes lands only
+through this session's review.
+
+## Every session
+
+Read `workbench/active/` before proposing or changing anything, and archive the handoff you are
+replacing before overwriting it. Both bind whether or not anything else here is run.
+
+Tyrel opens with `/session-start` and closes with `/session-end`. If he has not, do those two
+yourself and say that you did — the skills are user-invoked, so when you cannot trigger one,
+open `.claude/skills/<name>/SKILL.md` and follow it by hand. Neither is a subagent's job. In
+a review-only session, session-end still writes the handoff but moves and sends nothing.
+
+**Until `sh .githooks/install.sh` has run in this clone, every git-hook rule is off
+silently** (the Claude-side guard in `.claude/settings.json` loads regardless). The
+setting lives in `.git/config` and never travels with a clone; a fresh clone, a new machine, a
+Codex sandbox and a pod each need it separately.
+
+The documents say what is *always* true; `workbench/active/HANDOFF.md` says what is true *now*.
+If `active/` is empty, say so rather than guessing.
 
 ## Quarantine
 
-**Nothing enters this repository uninspected.** Alpha is a migration laboratory, not a
-copy job. Code arrives one piece at a time, read line by line, understood, justified,
-and checked against the goals and governance before it lands. Old fragments, dead
-branches, historical codenames and bloat do not come with it.
+**This is a rebuild.** Not a migration, not an import — the word is rebuild, everywhere,
+and the repository is the operating room. The old code was exposed to everything this
+project exists never to catch — pickers, silent loss, leaked register text — so **no byte
+of it ever crosses the boundary.** It is read where it lies (`Temp_Stage`, the frozen old
+repository), through the window, and what enters here is written *new*: the same job,
+rebuilt line by line in this project's vocabulary, justified against the goals and
+governance. Old fragments, dead branches, historical codenames and bloat have nothing to
+cross with.
 
-If you cannot say what a line is for, it does not enter.
-
-## Start here, every session
-
-At the start of every session — after installing the hooks if this is a fresh clone —
-**read `workbench/active/` before proposing or changing anything.** It carries the
-handoff from the last session: what was done, what is open, what was decided and why.
-The documents in this repository say what is *always* true. The handoff says what is
-true *now*, and you cannot work sensibly from one without the other.
-
-If `workbench/active/` is empty, say so rather than guessing. A missing handoff is a fact
-worth reporting, not a gap to fill from context.
-
-**Leave one behind.** The last thing in a session: archive the handoff you were given,
-then write the one you are leaving.
+`autoclave/` is the cleanroom bench where that new code is written. A rebuilding model
+reads the reference through the window and writes its best fresh expression into the tray
+— never a paste, never a port. The tray is tracked so reviewers read the raw draft;
+CI reports a loaded tray, and merging with one is blocked once the check is required on
+GitHub (README.md's status line records whether it is). Code leaves the tray only through
+the sterilizing review, into its proper place, where it is reviewed again in final form.
+A line nobody can justify does not enter, whoever typed it.
 
 ## Where notes go
 
-**`workbench/` — gitignored, local only.** Session notes, handoffs, todo lists, grep
-dumps, design scribbles, half-finished thinking. All of it. None of it in the repository.
+**`workbench/` — gitignored, local only.** Every note, handoff, todo list and half-finished
+thought. The drawers are in [workbench/README.md](workbench/README.md).
 
-- `workbench/active/` — work in play. Small enough to read in one sitting.
-- `workbench/archive/<date>_<topic>/` — filed when the work finishes. Then, not later.
-- `workbench/scratch/` — disposable. Anyone may delete anything here without asking.
-
-**Archive before you overwrite.** A handoff you are replacing goes to `archive/` first.
-It is the record of what the last session believed, and that is worth keeping even where
-it turned out to be wrong — overwriting it destroys the only account of how a decision
-was reached. The moment to preserve it is when you write the next handoff.
-
-**`active/` holds what is in play and nothing else.** A note describing finished work is
-not active, however recently it was written. If you cannot say what the next session is
-meant to *do* with a file, it belongs in `archive/`.
-
-The `pre-commit` hook refuses stray documentation, so a note cannot leak into the
-repository by accident. Committed documentation must be a canonical document, a
-`README.md`, a `HANDOFF.md`, dated evidence under `history/`, or one of the harness's
-declared documents — nothing else.
-
-**If it is dated or speculative it is not a document, it is a note.** The previous
-repository accumulated 320 markdown files for want of this distinction.
-
-## First, in every clone
-
-```sh
-sh .githooks/install.sh
-```
-
-**Do this before anything else, every time you clone.** Git does not run a
-repository's hooks unless it is told to, and the setting that tells it lives in
-`.git/config`, which never travels with a clone. Until you run that line, every
-local rule below is switched off: commits on main, stray notes and unaudited
-pushes all go through silently. GitHub still refuses what GitHub refuses — see
-README.md — but nothing tells you here, and nothing tells you why.
-
-A fresh clone, a new machine, a Codex sandbox and a pod each need it separately.
-Nothing in the repository can do it for you.
+**If it is dated or speculative it is a note, not a document.** Committed documentation is a
+canonical document, a `README.md`, a `HANDOFF.md`, dated evidence under `history/`, or a declared
+harness document — nothing else. `pre-commit` refuses the rest.
 
 ## Branches
-
-Never commit or push to `main` directly. Work happens on a branch and reaches `main`
-only by pull request. Local hooks refuse it here, with a message; GitHub refuses it at
-the other end, without one.
 
 - `work/<topic>` — normal changes
 - `audit/<topic>` — a review that produces findings, not code
 - `infra/<topic>` — risky structural work
 
-One branch per task. Short-lived. Delete on merge. Two agents must never share a branch.
+One branch per task. Short-lived. Delete on merge.
 
 ## Pushing and merging
 
-Two checks, and they are different people.
+**Ask before pushing, and ask before reviewing** — two permissions, neither implying the other. A
+general instruction to work through a list is not permission to push or merge what comes out.
 
-**Tyrel merges.** Every pull request, without exception. No agent merges anything, and
-a general instruction to work through a list is not permission to merge what comes out
-of it.
+**Every push is reviewed** — one Opus, one Fable, one GPT, identical prompt, blind to each other.
+Run `/reviewer-pass`; it holds the procedure and the receipt.
 
-**Nothing is pushed until three reviewers have read it.** Whoever wrote the work does not
-get to be the only one who has seen it leave the machine.
+**The pass opens with a triage.** The session sizes the diff — what changed, what class of
+work, what a defect there could cost — and recommends the coverage it deserves: which
+reviewers, at what effort. Three cross-vendor reviewers is the default, and there is no
+scoring scale beyond sense: a huge diff earns heavy coverage, a one-line fix earns little,
+and anything touching money, launch, shutdown or a governance rule gets the full set —
+sometimes more than one pass. **The recommendation decides nothing.** Tyrel
+approves or overrides it, and his answer is the explicit reduction the gate requires —
+**for that named push only, never inferred** — not from a small diff, a tight budget,
+impatience, or a previous reduction. The next push triages fresh from a default of three. A
+reviewer that errors or is unavailable is the same case — reduced coverage that he approves
+explicitly, never inferred from the outage: record who ran, push with
+`ALLOW_UNAUDITED_PUSH=1`, and let the receipt show the real coverage.
 
-- **Claude Opus 5** — from a Claude session, a subagent with the model set to `opus`
-- **Claude Fable 5** — the same, with the model set to `fable`
-- **GPT** — `codex exec --sandbox read-only "<prompt>"`
+**Agreement between reviewers is evidence, not a verdict.** It settles no governance question,
+permission, or exclusion.
 
-A session that cannot summon all three records the ones it can, and then needs
-`ALLOW_UNAUDITED_PUSH=1` to push — the gate counts three and does not grade on a curve.
-Record the reviewers you did run anyway, so the receipt shows what the coverage actually
-was rather than what it was meant to be.
+Push at the end of a task or session, not continuously.
 
-Give all three an **identical prompt**, blind to each other. Report what they agree on
-and keep their disagreements rather than blending them into one answer — a difference
-between two models is information, and averaging it away destroys it.
+**Work reaches a pull request by default, whatever branch it sits on.** A change left
+behind — an uncommitted line, an unpushed commit, a branch with no PR — is a loose end the
+handoff names, with the reason it stays. Tyrel's own one-line edits count: read the diff,
+then let them ride the next push inside a normally attributed commit. `ALLOW_UNATTRIBUTED=1`
+is only for a commit no machine touched at all.
 
-Agreement between reviewers is evidence, not a verdict. It never settles a governance
-question, a permission, or an exclusion; those are Tyrel's, and unanimity among models
-does not stand in for him.
+**After the push, CodeRabbit is Tyrel's to relay** — do not poll the pull request. When he points
+at a comment, verify the claim before acting: some are style, some are simply wrong, some are
+real. Fix what is real, say why you skip the rest, record a fresh receipt.
 
-**Two vendors, not one, and that is the point rather than belt-and-braces.** A reader
-that shares your blind spots only confirms them. A reader built differently finds what
-the others cannot see, which is not a theory — it is the observed reason this rule
-exists.
+**The gate is discipline, not machinery.** A receipt proves a file was written, not that anything
+was read. `ALLOW_UNAUDITED_PUSH=1`, `--no-verify` and `-c core.hooksPath=` all get past it; the
+last two are blocked for Claude and open to everything else. **Only GitHub's rules do not
+negotiate** — README.md records which are in force.
 
-**Ask before running them.** Reviewing work that is about to change again wastes the
-review and stales the finding. Tyrel decides when a piece of work is settled enough to
-be worth checking. Keep working while it is fresh; the review is the last step before
-the push, not punctuation between edits.
+## Effort and shape
 
-These audits are cheap set against a defect reaching `main`, so the answer is usually
-yes. It is still Tyrel's call.
+**Say what the session is worth running at before starting, and again when the task changes** —
+effort, shape, and why. One paragraph, then wait. `/session-start` holds the worked examples.
 
-Then record it:
+**Small workflows and ordinary subagent use need no ceremony.** A large commitment does: say how
+many agents, at what model and effort, roughly the cost, and put the design past a `consult`
+agent first. Match the model to one *unit of work*, not to the size of the pile.
 
-```sh
-.githooks/record-audit.sh <auditor> '<what it found>'
-```
+## Agents
 
-The receipt names one commit. Amend it or add another and the work must be audited
-again — an audit is of a state, not of a branch.
+The roster lives in `.claude/agents/`, each with model and effort **pinned in its file** —
+effort is declared per role, never inherited from the session by accident.
 
-Push at the end of a task or session, not continuously. Push earlier only when not
-pushing would block the next step.
+**The models, in one breath.** Haiku is the cheap fast reader — about a fifth of Opus's
+burn, fine for finding things, never for judging them. Sonnet 5 is near-Opus on coding,
+follows a spec to the letter, and burns roughly half of what Opus does — the workhorse.
+Opus 5 is the default brain — the strongest agentic judgement for the money — but left
+unprompted it writes walls of text, so the roster files rein its reporting in. Fable 5 is
+the ceiling at twice Opus's burn: always thinking, quiet on the surface, minutes-long
+turns — spent only where being wrong is expensive and the question sits above what Opus
+reliably clears. Across the aisle, GPT Sol is OpenAI's flagship at Opus-class cost —
+notably strong on security-shaped reading, and it spends Tyrel's *other* budget; Terra is
+its half-price sibling for bulk mechanical drafting if Sol's budget tightens.
 
-**After the push, the automated reviewer is Tyrel's to relay.** Do not sit polling a pull
-request waiting for it. He reads its comments and points at what he wants fixed.
+| Agent | Model, effort | One unit of work | Why that model |
+|---|---|---|---|
+| `scout` | haiku, low | find files, references, structure — location, never judgement | cheapest reader; judgement is not asked of it |
+| `worker` | sonnet, medium | a bounded build from a written spec, in a worktree or the autoclave | near-Opus coding at ~half the burn; literal spec-following |
+| `infra-worker` | opus, high | hooks, CI, seals, accounting, money paths — ships the test with the change | a defect here certifies something false or spends money; pay for judgement |
+| `auditor` | per seat, high | blind reviews and governance reads; the reviewer-pass seats | depth pinned so a review never inherits a cheap session |
+| `consult` | per question, xhigh | a second opinion on a design or plan before it runs | a wrong design costs days; the read costs minutes |
+| `rebuilder` | opus, high | one legacy system read through the window, written new into the autoclave | contamination judgement is the whole job |
 
-When he does, **verify the claim before acting on it.** Some are style, some are simply
-wrong, and some are real. Reproduce it first, fix what is real, say plainly why you are
-skipping the rest, and record a fresh receipt for the commit that answers it.
+**Declare agent and workflow use at session start, then run.** Agents and workflows are
+standing-approved; what Tyrel wants is the declaration, not a permission stop. When the
+session's shape is read back (above), say in a line or two which agents and workflows its
+goals will likely need and why — that paragraph *is* the discussion — then continue on
+auto without stopping to ask again. Stop only for money, a governance question, or a
+genuine change of scope. The standing duties: not wasteful, and the best tool for the
+job. A wrong guess in the declaration is corrected by saying so in the report, not by
+pausing the work.
 
-**Subagents and other AI tools do not push at all.** They audit and they report. The
-push is Tyrel's, or the main session's after an audit.
+## The tooling may filter what you see
 
-**These two are discipline, not machinery, and you should know which is which.** The
-receipt proves a file was written, not that anything was read, and nothing here can tell
-an author from an auditor. `ALLOW_UNAUDITED_PUSH=1`, `--no-verify` and
-`-c core.hooksPath=` each get past the gate; the last two are blocked for Claude and
-open to everything else. What the gate stops is the unconsidered push — the one nobody
-meant to skip. It does not stop anyone who means to.
+A hook may route shell commands through a summarising proxy. It has returned confidently wrong
+answers — a truncated log that looked complete, a passing suite reported as no tests at all.
 
-**The server-side rules are the ones that do not negotiate.** Everything in `.githooks/`
-and `.claude/` is local, skippable, and only as present as whoever ran `install.sh`.
-What `main` will and will not accept is enforced by GitHub, out of reach of anything on
-this machine. README.md records which of those rules are in force; read it there rather
-than assuming either way.
+**If a count lands suspiciously round, or a command that should say a lot says little, re-run it
+unfiltered.** A summary is never verification: a pod confirmed shut down by a compressed
+transcript is not confirmed. This binds subagents too.
 
 ## Concurrency
 
-More than one AI may be working here at once, and not all of them are Claude. Assume
-another agent is editing files you cannot see.
+More than one AI may be working here, and not all of them are Claude. Assume another agent is
+editing files you cannot see.
 
-- Work in your own git worktree, on your own branch.
-- Never `git add -A` across the whole repo — stage only the files you touched.
-- Never rebase, force-push, or amend a branch that is not yours.
+- Work in your own worktree, on your own branch.
+- Never `git add -A` — stage only the files you touched.
 - If a file changed under you, stop and re-read it rather than overwriting.
 
 ## Attribution
 
-**Every commit says which machine wrote it.** All the code here is AI-generated; Tyrel
-directs and decides but does not write the lines, and the history is where that is
-recorded rather than something a reader has to be told.
-
-End the message with at least one of these, after a blank line:
+**Every commit names the model that actually wrote it**, one trailer per contributing model. A
+model that found defects but wrote no lines is a reviewer and gets `Reviewed-by:` instead.
 
 ```text
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-Co-Authored-By: Codex (OpenAI) <noreply@openai.com>
-```
-
-**Writing and reviewing are different contributions, and get different trailers.** An
-agent that read the work and found defects but wrote no lines is a reviewer:
-
-```text
 Reviewed-by: Claude Fable 5 <noreply@anthropic.com>
-Reviewed-by: CodeRabbit <noreply@coderabbit.ai>
+Reviewed-by: GPT-5.6 Sol (OpenAI) <noreply@openai.com>
 ```
 
-So a commit can honestly say it was written by Opus and reviewed by Fable and
-CodeRabbit — which is worth knowing, because it shows at a glance which work was
-adversarially read and by what. Collapsing both into one list throws that away.
+Name by release for every vendor — "Claude Opus 5", not "Claude"; "GPT-5.6 Sol (OpenAI)",
+not "Codex". `Codex (OpenAI)` is the fallback only when the serving release is unknowable.
+The commit author stays Tyrel. Track it as you go, because nobody can reconstruct it afterwards, and
+`/session-end` writes it into the handoff.
 
-Only authorship is enforced; an audit covers a branch, not every commit on it. Record a
-review wherever one happened.
-
-Name the model by release — "Claude Opus 5", not "Claude" — because a vendor name alone
-stops meaning anything as the models change. `Codex (OpenAI)` is the one accepted
-exception, and is recorded at vendor level.
-
-The commit author stays Tyrel. He is accountable for what lands; the trailers say which
-machine did the work.
-
-A `commit-msg` hook refuses a commit that names no author, once the hooks are installed.
-It does not refuse everything: git's own merge, revert and cherry-pick messages are
-exempt, `fixup!`, `squash!` and `amend!` subjects are exempt, and `ALLOW_UNATTRIBUTED=1`
-skips it outright. Like every hook here it is an alarm, not a lock.
-
-## Hard rules
-
-These come from GOVERNANCE.md and are repeated because breaking them is expensive.
-
-1. **Tyrel decides.** No agent stands in for him — not for pod permission, not for
-   declaring something proven, not for approving an exclusion, and not for amending the
-   canonical documents.
-2. **No live pod without his explicit permission in that session.** Shutdown is
-   verified, never assumed.
-3. **The Perlector reads; nothing picks among witnesses.** A picker rebuilt under
-   another name is still a picker.
-4. **Nothing is lost silently.** Uncertain, held, or flagged is fine. Missing is not.
-5. **Quality over speed.** More passes and slower runs are acceptable costs.
+`commit-msg` enforces authorship only. It exempts commits made during git's own merge,
+revert and cherry-pick operations, `fixup!`/`squash!`/`amend!` subjects, and anything with
+`ALLOW_UNATTRIBUTED=1`.
 
 ## Reporting
 
-Say what you actually did. If a test failed, show it. If you skipped something, say so.
-Do not report a task complete unless it is complete and verified.
+Say what you actually did. If a test failed, show it. If you skipped something, say so. Never
+report a task complete unless it is complete and verified.
 
-Tyrel is not a programmer. Explain in plain language, give a recommendation rather than
-a survey of options, and do not make him read code to make a decision.
+**Say what comes next** — when work lands, and as a session closes, name the next step and why.
+One recommendation with reasoning short enough to argue with, not a menu.
+
+Tyrel is not a programmer. Plain language, a recommendation rather than a survey of options, and
+never make him read code to make a decision.
+
+### Notifications
+
+Tyrel is not always at the keyboard. Four moments reach his phone, and no others:
+
+```sh
+sh operations/notify/notify.sh <start|milestone|decision|done> "<one line>"
+```
+
+- **start** — fires automatically from the `SessionStart` hook. Never send it by hand.
+- **milestone** — a system works end to end, a stage lands, a long run finishes. Not every
+  commit, and not progress on something still in motion.
+- **decision** — the session is blocked on a judgement only he can make. Send it when you
+  stop, not when you finish explaining, or he reads it after the wait rather than during it.
+- **done** — the session is closing. `/session-end` sends this; see the skill.
+
+**One line, and say the thing.** "Pod shut down, billing verified, run complete" is worth a
+notification. "Working on the launcher" is not — a phone message that carries no decision and
+no result is noise, and noise is what makes the next one get ignored.
+
+**Main session only. Subagents never notify** — they report to the session that spawned them,
+which is the thing holding the context to judge whether it mattered.
+
+The topic lives in `private/ntfy.conf` and nowhere else. It is a bearer secret: anyone holding
+it can read the stream. It never enters a script, a note, a commit or a transcript. The old
+repository hardcoded it in five shell scripts and it ended up in cleartext in a census dump.

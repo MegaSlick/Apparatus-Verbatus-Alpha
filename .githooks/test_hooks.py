@@ -44,6 +44,7 @@ def run_hook(name, *, input_text="", args=(), env=None):
         "history/2026-07-26_audit.md",
         ".github/pull_request_template.md",
         ".claude/agents/auditor.md",
+        ".claude/skills/session-start/SKILL.md",
     ],
 )
 def test_document_allowlist_accepts_declared_documents(path):
@@ -60,6 +61,8 @@ def test_document_allowlist_accepts_declared_documents(path):
         "history/undated-note.md",
         ".github/notes/session.md",
         ".claude/agents/drafts/session.md",
+        ".claude/skills/drafts/nested/SKILL.md",
+        ".claude/skills/session-start/NOTES.md",
     ],
 )
 def test_document_allowlist_rejects_stray_or_undated_documents(path):

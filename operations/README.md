@@ -7,6 +7,7 @@ Anything with a human, a machine, or money on the other end.
 | `submit/` | the page where images are handed in |
 | `pod/` | renting a machine, shutting it down, and **verifying** it shut down |
 | `data/` | moving runs and exports between machines |
+| `notify/` | the one-way line to Tyrel's phone |
 
 There is no `local/`, `remote/`, or `deploy/` here. A pod runs the very same stage
 directories this repository holds. Where code runs is an operational fact, not an

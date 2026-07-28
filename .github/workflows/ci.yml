@@ -5,9 +5,14 @@ on:
   push:
     branches: [main]
 
+# The workflow reads the repository and nothing else.
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
         with:
@@ -32,3 +37,26 @@ jobs:
 
       - name: Repository checks
         run: sh .githooks/check-all.sh
+
+  # main never holds an unsterilized instrument: a pull request may carry
+  # autoclave/ drafts while under review, but it may not merge until the tray
+  # is empty. Kept as its own job so a loaded tray is distinguishable from a
+  # failing check. Make it a required check on main for it to actually gate.
+  autoclave-empty:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: The autoclave is empty
+        # git's own failure must not read as an empty tray: capture ls-files
+        # separately and fail on it, then filter. A check that cannot run is
+        # a failure, not a pass.
+        run: |
+          all=$(git ls-files autoclave/) || { echo "git ls-files failed" >&2; exit 2; }
+          stray=$(printf '%s\n' "$all" | grep -v '^autoclave/README.md$' | grep -v '^$' || true)
+          if [ -n "$stray" ]; then
+            echo "The autoclave still holds unsterilized drafts:" >&2
+            printf '%s\n' "$stray" | sed 's/^/  /' >&2
+            echo "Sterilize and place them, or remove them, before merging." >&2
+            exit 1
+          fi

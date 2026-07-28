@@ -71,12 +71,13 @@ anywhere else in this repository, it is wrong by construction.
 
 ## Versions
 
-**alpha** — a migration laboratory. Build the harness first; prove the workflow,
-branches, rules and contracts. Import old code selectively, cleaning it as it enters.
-Alpha does not need to be a finished pipeline.
+**alpha** — a rebuild laboratory. Build the harness first; prove the workflow,
+branches, rules and contracts. Old code is reference, read through the window; its
+systems are written new here, one piece at a time. Alpha does not need to be a finished
+pipeline.
 
-**Nothing enters this repository uninspected.** Code arrives one piece at a time, read
-line by line and justified, or it does not arrive.
+**Nothing enters this repository uninspected, and no old byte enters at all.** Code is
+written new, read line by line and justified, or it does not arrive.
 
 **beta** — start again in a fresh, clean private environment using only what survived
 alpha. Build there until the system works.

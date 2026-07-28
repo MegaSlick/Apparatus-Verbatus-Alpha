@@ -19,6 +19,10 @@ namespaces = false
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# The autoclave holds presumed-contaminated drafts under review. They are read
+# by reviewers, never linted, formatted, or executed — a loaded tray must not
+# turn checks red, and a check that runs contaminated code is not a check.
+extend-exclude = ["autoclave"]
 
 [tool.ruff.lint]
 # Deliberately narrow. These catch real breakage — undefined names, unused imports,
@@ -41,6 +45,10 @@ addopts = "-q"
 # Setting this key REPLACES pytest's built-in list rather than adding to it, so
 # the ordinary noise directories have to be named again here or collection will
 # start walking them.
+# `autoclave` is load-bearing here, not noise: pytest IMPORTS what it collects,
+# and the tray holds presumed-contaminated drafts. Without this entry, a
+# test_*.py dropped in the tray would execute on this machine and on CI.
 norecursedirs = [".git", ".venv", "venv", ".ruff_cache", ".pytest_cache",
                  ".mypy_cache", ".tox", "node_modules", "build", "dist",
-                 "worktrees", "__pycache__", "workbench", "private", "scriptorium"]
+                 "worktrees", "__pycache__", "workbench", "private", "scriptorium",
+                 "autoclave"]

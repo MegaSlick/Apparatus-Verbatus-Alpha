@@ -93,11 +93,9 @@ if [ -n "$stray" ]; then
   echo "  BLOCKED: stray documentation file(s):" >&2
   printf '%s\n' "$stray" | while IFS= read -r f; do printf '      %s\n' "$f" >&2; done
   echo "" >&2
-  echo "  A committed documentation file must be one of:" >&2
-  echo "      a canonical document at the root" >&2
-  echo "      a README.md or HANDOFF.md in any directory" >&2
-  echo "      dated evidence under history/" >&2
-  echo "      .github/*.md or .claude/agents/*.md, one level deep" >&2
+  echo "  What may be committed is decided by .githooks/doc-allowlist.sh." >&2
+  echo "  Read it rather than trusting this message: a second copy of the" >&2
+  echo "  list is a copy that goes stale, and this one already did once." >&2
   echo "" >&2
   echo "  Notes, handoffs, plans and session summaries go in workbench/active/," >&2
   echo "  which is gitignored. If it is dated or speculative it is not a" >&2
