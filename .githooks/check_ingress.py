@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import sys
 import tomllib
@@ -116,6 +117,46 @@ GENERIC_ASSIGNMENT = re.compile(
 
 class ScanFailure(RuntimeError):
     """The check itself could not make a trustworthy decision."""
+
+
+FILE_KINDS = (
+    (stat.S_ISFIFO, "fifo"),
+    (stat.S_ISSOCK, "socket"),
+    (stat.S_ISCHR, "character device"),
+    (stat.S_ISBLK, "block device"),
+    (stat.S_ISDIR, "directory"),
+    (stat.S_ISLNK, "symbolic link"),
+)
+
+
+def file_kind(mode: int) -> str:
+    for predicate, name in FILE_KINDS:
+        if predicate(mode):
+            return name
+    return "unknown file type"
+
+
+def read_regular_file(path: Path) -> bytes:
+    """Read a path only after the opened descriptor proves it is a regular file.
+
+    A FIFO at a scanned path blocks a plain open forever when no writer
+    exists, and this scanner runs from `pre-commit` and from CI: that is not a
+    failed scan but a session or a build that never finishes and never says
+    why. `O_NONBLOCK` makes the open itself return, and judging the type from
+    `fstat` on the descriptor rather than from the name closes the race where
+    a regular file is swapped for a FIFO between the check and the read.
+    A device that reads cleanly is refused too: a successful read is not
+    evidence that a regular file was scanned.
+    """
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ScanFailure(f"{path} is not a regular file ({file_kind(info.st_mode)})")
+        with open(fd, "rb", closefd=False) as handle:
+            return handle.read()
+    finally:
+        os.close(fd)
 
 
 @dataclass(frozen=True)
@@ -223,14 +264,26 @@ def working_tree() -> dict[str, Blob]:
             continue
         path = os.fsdecode(raw_path)
         source = Path(path)
-        if source.is_symlink():
-            entries[path] = Blob(path, "worktree", "120000", data=os.fsencode(os.readlink(source)))
-        elif source.is_file():
-            entries[path] = Blob(path, "worktree", "100644", data=source.read_bytes())
-        elif source.is_dir():
-            entries[path] = Blob(path, "worktree", "160000", "commit")
-        # A tracked path missing from disk is a working-tree deletion, not a
-        # payload to scan. The staged/index mode still inspects what Git records.
+        try:
+            mode = os.lstat(source).st_mode
+            if stat.S_ISLNK(mode):
+                entries[path] = Blob(
+                    path, "worktree", "120000", data=os.fsencode(os.readlink(source))
+                )
+            elif stat.S_ISREG(mode):
+                entries[path] = Blob(path, "worktree", "100644", data=read_regular_file(source))
+            elif stat.S_ISDIR(mode):
+                entries[path] = Blob(path, "worktree", "160000", "commit")
+            else:
+                # A FIFO, socket or device used to fall through every branch
+                # and the run still reported passed. GOVERNANCE 2: a partial
+                # result is visibly partial, so it is named and it blocks.
+                entries[path] = Blob(path, "worktree", "000000", file_kind(mode))
+        except FileNotFoundError:
+            # A tracked path missing from disk is a working-tree deletion, not
+            # a payload to scan. The staged/index mode still inspects what Git
+            # records.
+            continue
     return entries
 
 
@@ -489,11 +542,13 @@ def scan_tree(entries: dict[str, Blob], context: str) -> list[Issue]:
             )
             continue
         if entry.kind != "blob":
-            issues.append(
-                Issue(
-                    path, "unsupported-object", f"tracked Git object has type {entry.kind}", context
-                )
-            )
+            if entry.kind in ("commit", "tree", "tag"):
+                rule = "unsupported-object"
+                detail = f"tracked Git object has type {entry.kind}"
+            else:
+                rule = "unscannable"
+                detail = f"path is a {entry.kind} and cannot be scanned as a file"
+            issues.append(Issue(path, rule, detail, context))
             continue
 
         size = entry_size(entry)
@@ -624,7 +679,7 @@ def scan_ref_fields(data: bytes) -> list[Issue]:
 
 def scan_audit_receipt(path: Path) -> list[Issue]:
     """Validate a complete receipt and scan all of its text for credentials."""
-    data = path.read_bytes()
+    data = read_regular_file(path)
     issues = secret_issues("<audit-receipt>", data, "receipt")
 
     def malformed(detail: str) -> list[Issue]:
@@ -747,12 +802,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.worktree:
             issues = scan_tree(working_tree(), "worktree")
         elif args.message_file:
-            data = Path(args.message_file).read_bytes()
+            data = read_regular_file(Path(args.message_file))
             issues = secret_issues("<commit-message>", data, "message")
         elif args.file:
             issues = []
             for path in args.file:
-                issues.extend(secret_issues(path, Path(path).read_bytes(), "file"))
+                issues.extend(secret_issues(path, read_regular_file(Path(path)), "file"))
         elif args.stdin_file:
             issues = secret_issues("<standard-input>", sys.stdin.buffer.read(), "buffer")
         elif args.ref_object:

@@ -1,6 +1,8 @@
 """Integration tests for the staged/history repository ingress check."""
 
 import hashlib
+import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +12,14 @@ import pytest
 HOOKS = Path(__file__).resolve().parent
 SCANNER = HOOKS / "check_ingress.py"
 ONE_MIB = 1_048_576
+
+
+def scanner_module():
+    """Import the scanner by path; `.githooks` is not an importable package."""
+    spec = importlib.util.spec_from_file_location("check_ingress", SCANNER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def git(repo, *args):
@@ -534,3 +544,64 @@ def test_ntfy_exact_assignment_does_not_exempt_delimited_placeholder_words(repo)
     result = run_scan(repo, "--staged")
     assert result.returncode == 1
     assert topic not in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["--file", "--message-file", "--audit-receipt"])
+def test_a_fifo_at_a_scanned_path_fails_closed_instead_of_hanging(repo, mode):
+    # Opening a FIFO with no writer blocks forever. This scanner runs from
+    # pre-commit and from CI, so a hang is a session or a build that never
+    # finishes and never says why. The subprocess timeout below is the test:
+    # before the fix it expires, which is the defect.
+    fifo = repo / "pipe"
+    os.mkfifo(fifo)
+    result = run_scan(repo, mode, str(fifo))
+    assert result.returncode == 2
+    assert "could not run" in result.stderr
+    assert "not a regular file" in result.stderr
+
+
+def test_a_symlink_to_a_fifo_is_judged_by_the_open_descriptor(repo):
+    # The type must be decided from the descriptor actually opened, not from
+    # the name; that is the same check that closes the swap race (L23).
+    fifo = repo / "pipe"
+    os.mkfifo(fifo)
+    link = repo / "link"
+    link.symlink_to(fifo)
+    result = run_scan(repo, "--file", str(link))
+    assert result.returncode == 2
+    assert "not a regular file" in result.stderr
+
+
+def test_a_character_device_is_refused_even_though_it_reads_cleanly(repo):
+    # /dev/null returns EOF at once, so "the read succeeded" is not evidence
+    # that a regular file was scanned. Fail closed on anything but S_ISREG.
+    result = run_scan(repo, "--file", "/dev/null")
+    assert result.returncode == 2
+    assert "not a regular file" in result.stderr
+
+
+def test_worktree_scan_reports_unscannable_entries_instead_of_skipping_them(repo):
+    # GOVERNANCE 2: a partial result is visibly partial. A tracked file
+    # replaced on disk by a FIFO used to fall through every branch of the
+    # worktree walk, and the run still reported passed. Git omits untracked
+    # non-regular files from `ls-files --others`, so a tracked path is the
+    # only way one reaches the scanner at all.
+    write(repo, "payload.txt", "safe\n")
+    stage(repo, "payload.txt")
+    commit(repo, "add payload")
+    (repo / "payload.txt").unlink()
+    os.mkfifo(repo / "payload.txt")
+    result = run_scan(repo, "--worktree")
+    assert result.returncode == 1
+    assert "[unscannable]" in result.stderr
+    assert "fifo" in result.stderr
+
+
+def test_worktree_scan_still_ignores_a_deleted_tracked_file(repo):
+    # A tracked path missing from disk is a working-tree deletion, not an
+    # unscannable payload; the fail-closed read must not turn it into one.
+    write(repo, "gone.txt", "safe\n")
+    stage(repo, "gone.txt")
+    commit(repo, "add file")
+    (repo / "gone.txt").unlink()
+    assert run_scan(repo, "--worktree").returncode == 0
