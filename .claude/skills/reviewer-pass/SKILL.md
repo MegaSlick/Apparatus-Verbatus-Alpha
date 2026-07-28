@@ -95,13 +95,16 @@ prompt three times is not an identical-prompt mechanism.
     echo "GPT reviewer output failed credential scanning and was not written" >&2
     exit 1
   fi
-  [ ! -e "$gpt_report" ] || {
+  if [ -e "$gpt_report" ] || [ -L "$gpt_report" ]; then
     unset gpt_output
     echo "GPT report target already exists; refusing to overwrite evidence" >&2
     exit 1
-  }
+  fi
   gpt_temporary=$(mktemp "$report_dir/.gpt-sol.log.XXXXXX") || exit 1
-  trap 'rm -f "$gpt_temporary"' EXIT HUP INT TERM
+  trap 'rm -f "$gpt_temporary"' EXIT
+  trap 'rm -f "$gpt_temporary"; exit 129' HUP
+  trap 'rm -f "$gpt_temporary"; exit 130' INT
+  trap 'rm -f "$gpt_temporary"; exit 143' TERM
   umask 077
   printf '%s\n' "$gpt_output" > "$gpt_temporary"
   unset gpt_output
@@ -122,6 +125,20 @@ prompt three times is not an identical-prompt mechanism.
 
   A failed, nonempty call remains evidence only when its output passes the credential
   scan. It never earns a receipt. An empty call has no evidence to preserve.
+
+  **Three details in that block are load-bearing, and each was once wrong.**
+
+  - Each signal trap *exits*. A trap that deletes the temporary file and returns lets the
+    remaining lines run: the pass would file evidence from a call the operator had just
+    interrupted, and then decide the seat's status from it.
+  - The existence check tests `-L` as well as `-e`. `-e` follows symlinks, so a dangling
+    symlink at the report path reads as "nothing there" and the `mv` writes through it to
+    wherever it points — silently overwriting a file outside the evidence directory.
+  - The saved file is the engine's output with exactly one trailing newline. Command
+    substitution drops trailing newlines, so this capture is faithful in every byte except
+    a run of blank lines at the very end. Say "the report as captured" rather than
+    "byte-for-byte what the engine emitted"; the difference has never mattered to a
+    finding, and claiming more than the mechanism delivers is what GOVERNANCE 10 refuses.
 
 ### When Tyrel reduces it
 
