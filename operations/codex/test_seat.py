@@ -1,9 +1,8 @@
 """Tests for the Codex seat wrapper.
 
-Every test runs with CODEX_SEAT_DRYRUN=1, so the suite never calls Codex and
-never spends a token. What is being tested is the resolution — that a named
-seat produces exactly the command line its line in seats.conf describes, and
-that the refusals refuse.
+Resolution tests use the explicit --dry-run interface, so they never call
+Codex or spend a token. Focused execution tests put a fake ``codex`` on PATH to
+exercise closed stdin and timeout wiring without network access.
 
 The two behaviours worth naming, because both were observed before this
 wrapper existed: a codex call handed an open stdin blocks forever while
@@ -12,6 +11,9 @@ that started it.
 """
 
 import os
+import re
+import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -21,25 +23,46 @@ ROOT = Path(__file__).resolve().parents[2]
 SEAT = ROOT / "operations" / "codex" / "seat.sh"
 SEATS = ROOT / "operations" / "codex" / "seats.conf"
 
-# The efforts the API accepts. `ultra` is deliberately absent: the CLI forwards
-# it, the API enum does not list it, and no seat should spend it.
-API_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+# The efforts this project's tracked seats permit. `ultra` is deliberately
+# absent because automatic delegation is not externally evidenced.
+SEAT_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 SANDBOXES = {"read-only", "workspace-write"}
 
+# The wrapper prepends the seat's deadline to every prompt. The first line is
+# fixed so the tests can find the boundary between the options and the single
+# prompt argument, which is otherwise several printed lines long.
+BUDGET_FIRST_LINE = "Your time budget for this run."
 
-def run(*args, seats=None, stdin=None, dryrun=True, timeout=30):
+
+SEAT_ENV_NAMES = {
+    "CODEX_SEATS_FILE",
+    "CODEX_SEAT_TIMEOUT",
+    "CODEX_SEAT_DRYRUN",
+    "VERBATUS_CODEX_SEATS_FILE",
+    "VERBATUS_CODEX_TIMEOUT",
+    "VERBATUS_CODEX_DRYRUN",
+}
+
+
+def clean_env():
     env = dict(os.environ)
+    for name in SEAT_ENV_NAMES:
+        env.pop(name, None)
+    return env
+
+
+def run(*args, seats=None, stdin=None, dryrun=True, timeout=30, env=None):
+    command = ["sh", str(SEAT)]
     if dryrun:
-        env["CODEX_SEAT_DRYRUN"] = "1"
-    else:
-        env.pop("CODEX_SEAT_DRYRUN", None)
+        command.append("--dry-run")
     if seats is not None:
-        env["CODEX_SEATS_FILE"] = str(seats)
+        command.extend(["--seats", str(seats)])
+    command.extend(args)
     return subprocess.run(
-        ["sh", str(SEAT), *args],
+        command,
         capture_output=True,
         text=True,
-        env=env,
+        env=env or clean_env(),
         input=stdin,
         timeout=timeout,
     )
@@ -52,10 +75,10 @@ def parse_seats(path=SEATS):
         if not line or line.startswith("#"):
             continue
         fields = line.split()
-        assert len(fields) == 5, f"seat line is not five fields: {line!r}"
-        name, model, effort, sandbox, workroot = fields
+        assert len(fields) == 6, f"seat line is not six fields: {line!r}"
+        name, model, effort, sandbox, workroot, timeout_s = fields
         assert name not in out, f"seat {name!r} is declared twice"
-        out[name] = (model, effort, sandbox, workroot)
+        out[name] = (model, effort, sandbox, workroot, timeout_s)
     return out
 
 
@@ -73,33 +96,26 @@ def test_seats_file_parses_and_is_not_empty():
     assert seats, "seats.conf declares no seats"
 
 
-def test_every_declared_effort_is_one_the_api_accepts():
-    for name, (_model, effort, _sandbox, _root) in parse_seats().items():
-        assert effort in API_EFFORTS, f"seat {name} runs at unaccepted effort {effort!r}"
+def test_every_declared_effort_is_allowed_by_the_seat_policy():
+    for name, (_model, effort, _sandbox, _root, _timeout) in parse_seats().items():
+        assert effort in SEAT_EFFORTS, f"seat {name} runs at disallowed effort {effort!r}"
 
 
 def test_no_seat_spends_ultra():
-    # Not an API value, and delegation does not require it: the collaboration
-    # tools are present at every effort.
-    for name, (_m, effort, _s, _r) in parse_seats().items():
+    # A self-report about delegation was contradicted by its transcript.
+    # Keep automatic delegation out until the mechanism leaves external proof.
+    for name, (_m, effort, _s, _r, _timeout) in parse_seats().items():
         assert effort != "ultra", f"seat {name} is pinned to ultra"
 
 
 def test_every_declared_sandbox_is_known_and_never_full_access():
-    for name, (_m, _e, sandbox, _r) in parse_seats().items():
+    for name, (_m, _e, sandbox, _r, _timeout) in parse_seats().items():
         assert sandbox in SANDBOXES, f"seat {name} has sandbox {sandbox!r}"
 
 
 def test_no_writing_seat_runs_inside_the_repository():
-    """Measured: `-C` does not bound a workspace-write sandbox.
-
-    The boundary resolves to an ancestor of `-C` — the enclosing git
-    repository when there is one — so a seat rooted anywhere inside this tree
-    can write all of it. A seat rooted outside was refused an absolute-path
-    write in ("operation not permitted"), so outside is the boundary that
-    holds.
-    """
-    for name, (_m, _e, sandbox, workroot) in parse_seats().items():
+    """Keep the conservative boundary while the sandbox evidence conflicts."""
+    for name, (_m, _e, sandbox, workroot, _timeout) in parse_seats().items():
         if sandbox == "workspace-write":
             assert workroot == "TMPTRAY", (
                 f"seat {name} writes from inside the repository ({workroot!r}); "
@@ -110,17 +126,17 @@ def test_no_writing_seat_runs_inside_the_repository():
 def test_the_drafting_seat_still_exists_and_writes_outside():
     seats = parse_seats()
     assert "build" in seats, "the drafting seat is gone — was it renamed?"
-    _model, _effort, sandbox, workroot = seats["build"]
+    _model, _effort, sandbox, workroot, _timeout = seats["build"]
     assert sandbox == "workspace-write"
     assert workroot == "TMPTRAY"
 
 
-def test_tmptray_resolves_to_a_fresh_directory_outside_the_repository():
+def test_tmptray_dry_run_resolves_outside_without_creating_a_directory():
     r = run("build", "x")
     assert r.returncode == 0, r.stderr
     argv = r.stdout.splitlines()
     workdir = Path(argv[argv.index("-C") + 1])
-    assert workdir.is_dir(), "the tray was not created"
+    assert not workdir.exists(), "a dry run must not create its disposable tray"
     assert ROOT not in workdir.resolve().parents and workdir.resolve() != ROOT, (
         f"the tray {workdir} is inside the repository"
     )
@@ -128,7 +144,86 @@ def test_tmptray_resolves_to_a_fresh_directory_outside_the_repository():
     second = run("build", "x")
     other = second.stdout.splitlines()
     other_dir = other[other.index("-C") + 1]
-    assert str(workdir) != other_dir, "two calls shared a tray; drafts would collide"
+    assert str(workdir) == other_dir, "dry-run output should be stable and side-effect free"
+
+
+def test_live_tmptray_is_created_fresh_outside_the_repository(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    trays = tmp_path / "trays"
+    trays.mkdir()
+    _fake_executable(fake_bin, "codex", "exit 0\n")
+    _fake_executable(fake_bin, "timeout", 'shift 2\nexec "$@"\n')
+    env = clean_env()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["TMPDIR"] = str(trays)
+
+    first = run("build", "x", dryrun=False, env=env)
+    second = run("build", "x", dryrun=False, env=env)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    announced = []
+    for result in (first, second):
+        lines = [
+            line.removeprefix("seat: workdir ")
+            for line in result.stderr.splitlines()
+            if line.startswith("seat: workdir ")
+        ]
+        assert len(lines) == 1
+        workdir = Path(lines[0])
+        assert workdir.is_dir(), "a live drafting call did not create its announced tray"
+        assert workdir.parent == trays.resolve()
+        assert ROOT != workdir and ROOT not in workdir.parents
+        announced.append(workdir)
+    assert announced[0] != announced[1], "two live calls reused one disposable drafting tray"
+
+
+def test_direct_prompt_dry_run_does_not_require_gnu_timeout(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name in ("awk", "dirname", "grep", "sed", "sh"):
+        executable = shutil.which(name)
+        assert executable is not None
+        (fake_bin / name).symlink_to(executable)
+
+    env = clean_env()
+    env["PATH"] = str(fake_bin)
+    result = run("judge", "x", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "codex" in result.stdout
+
+
+def test_repository_root_is_physical_when_wrapper_is_reached_through_a_symlink(tmp_path):
+    checkout = tmp_path / "checkout"
+    codex_dir = checkout / "operations" / "codex"
+    codex_dir.mkdir(parents=True)
+    (codex_dir / "seat.sh").write_bytes(SEAT.read_bytes())
+    (codex_dir / "seats.conf").write_text(
+        "reader gpt-5.6-sol high read-only . 60\n",
+        encoding="utf-8",
+    )
+    alias = tmp_path / "checkout-alias"
+    alias.symlink_to(checkout, target_is_directory=True)
+
+    result = subprocess.run(
+        [
+            "sh",
+            str(alias / "operations" / "codex" / "seat.sh"),
+            "--dry-run",
+            "reader",
+            "x",
+        ],
+        capture_output=True,
+        text=True,
+        env=clean_env(),
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    argv = result.stdout.splitlines()
+    assert Path(argv[argv.index("-C") + 1]) == checkout.resolve()
+    assert f"seat: workdir {checkout.resolve()}" in result.stderr
 
 
 # --- resolution -------------------------------------------------------------
@@ -136,17 +231,32 @@ def test_tmptray_resolves_to_a_fresh_directory_outside_the_repository():
 
 @pytest.mark.parametrize("name", sorted(parse_seats()))
 def test_each_seat_resolves_to_its_declared_line(name):
-    model, effort, sandbox, workroot = parse_seats()[name]
+    model, effort, sandbox, workroot, timeout_s = parse_seats()[name]
     r = run(name, "prompt text")
     assert r.returncode == 0, r.stderr
     argv = r.stdout.splitlines()
 
     assert argv[0] == "codex" and argv[1] == "exec"
+    assert argv.count("--ephemeral") == 1, "ephemeral mode must be declared exactly once"
+    assert argv.index("--ephemeral") < argv.index("--"), (
+        "ephemeral mode appears after the option terminator and would be prompt data"
+    )
     assert "--ignore-user-config" in argv, "the call would inherit ~/.codex/config.toml"
+    assert "--strict-config" in argv, "a stale config key could be ignored silently"
     assert argv[argv.index("-m") + 1] == model
     assert argv[argv.index("-c") + 1] == f"model_reasoning_effort={effort}"
     assert argv[argv.index("-s") + 1] == sandbox
-    assert argv[-1] == "prompt text", "the prompt is not the final argument"
+    # The prompt is one argument that now opens with the injected time budget, so
+    # it spans several printed lines. What must hold is unchanged: `--` is the
+    # last option, and everything after it is that single prompt argument.
+    assert argv[argv.index("--") + 1] == BUDGET_FIRST_LINE, (
+        "the prompt is not protected from Codex option/subcommand parsing"
+    )
+    assert argv[-1] == "prompt text", "the caller's prompt is not the final argument"
+    assert f"killed without warning after {timeout_s} seconds" in r.stdout, (
+        "the seat was not told the deadline it will actually be killed at"
+    )
+    assert f"timeout {timeout_s}s" in r.stderr
 
     resolved = Path(argv[argv.index("-C") + 1]).resolve()
     if workroot == "TMPTRAY":
@@ -161,6 +271,15 @@ def test_the_prompt_is_passed_as_an_argument_not_left_on_stdin():
     r = run("judge", "-", stdin="from stdin\n")
     assert r.returncode == 0, r.stderr
     assert r.stdout.splitlines()[-1] == "from stdin"
+
+
+@pytest.mark.parametrize("prompt", ["--help", "resume"])
+def test_prompt_cannot_be_parsed_as_a_codex_option_or_subcommand(prompt):
+    r = run("judge", prompt)
+    assert r.returncode == 0, r.stderr
+    argv = r.stdout.splitlines()
+    assert argv[argv.index("--") + 1] == BUDGET_FIRST_LINE
+    assert argv[-1] == prompt
 
 
 def test_empty_stdin_prompt_is_refused():
@@ -194,7 +313,7 @@ def test_the_resolved_workdir_is_announced():
     ]
     assert announced, "the resolved workdir was not announced"
     workdir = Path(announced[0])
-    assert workdir.is_dir(), f"the announced workdir {workdir} does not exist"
+    assert not workdir.exists(), "a dry run created the announced workdir"
 
     argv = r.stdout.splitlines()
     given = argv[argv.index("-C") + 1]
@@ -206,15 +325,48 @@ def test_the_resolved_workdir_is_announced():
     )
 
 
-def test_timeout_is_reported_in_the_announcement():
-    env_r = subprocess.run(
-        ["sh", str(SEAT), "judge", "x"],
-        capture_output=True,
-        text=True,
-        env={**os.environ, "CODEX_SEAT_DRYRUN": "1", "CODEX_SEAT_TIMEOUT": "42"},
-        timeout=30,
+def test_timeout_is_reported_in_the_announcement(tmp_path):
+    seats = write_seats(
+        tmp_path,
+        "a gpt-5.6-sol high read-only . 42\n",
     )
+    env_r = run("a", "x", seats=seats)
     assert "timeout 42s" in env_r.stderr
+
+
+def test_the_seat_is_told_the_deadline_it_will_be_killed_at(tmp_path):
+    # A seat blind to its deadline cannot triage against it, and because the
+    # report is written last, the kill deletes the answer rather than shortening
+    # it. The wrapper holds the number, so the wrapper states it: a prompt author
+    # cannot forget, and the stated deadline cannot drift from the real ceiling.
+    seats = write_seats(tmp_path, "a gpt-5.6-sol high read-only . 42\n")
+    r = run("a", "the actual task", seats=seats)
+    assert r.returncode == 0, r.stderr
+    argv = r.stdout.splitlines()
+
+    assert argv[argv.index("--") + 1] == BUDGET_FIRST_LINE
+    assert "killed without warning after 42 seconds" in r.stdout
+    # The target sits below the hard ceiling, leaving margin to write the report.
+    assert "reported by 37 seconds" in r.stdout
+    assert "stop working and write the report anyway" in r.stdout
+    # The caller's own prompt survives intact, and comes last.
+    assert argv[-1] == "the actual task"
+
+
+def test_a_long_deadline_is_also_stated_in_minutes(tmp_path):
+    # Seconds alone stop being readable at the length these seats actually run.
+    seats = write_seats(tmp_path, "a gpt-5.6-sol high read-only . 3600\n")
+    r = run("a", "x", seats=seats)
+    assert "after 3600 seconds (about 60 minutes)" in r.stdout
+    assert "by 3240 seconds (about 54 minutes)" in r.stdout
+
+
+@pytest.mark.parametrize("value", ["", "0", "-1", "ten", "1.5"])
+def test_timeout_must_be_a_positive_whole_number(tmp_path, value):
+    seats = write_seats(tmp_path, f"a gpt-5.6-sol high read-only . {value}\n")
+    r = run("a", "x", seats=seats)
+    assert r.returncode == 2
+    assert "timeout" in r.stderr
 
 
 # --- refusals ---------------------------------------------------------------
@@ -240,28 +392,28 @@ def test_a_seat_cannot_be_run_without_naming_one():
 
 
 def test_duplicate_seat_name_is_refused(tmp_path):
-    seats = write_seats(tmp_path, "a m1 low read-only .\na m2 high read-only .\n")
+    seats = write_seats(tmp_path, "a m1 low read-only . 60\na m2 high read-only . 60\n")
     r = run("a", "x", seats=seats)
     assert r.returncode == 2
     assert "declared 2 times" in r.stderr
 
 
 def test_effort_outside_the_api_enum_is_refused(tmp_path):
-    seats = write_seats(tmp_path, "a gpt-5.6-sol ultra read-only .\n")
+    seats = write_seats(tmp_path, "a gpt-5.6-sol ultra read-only . 60\n")
     r = run("a", "x", seats=seats)
     assert r.returncode == 2
     assert "ultra" in r.stderr
 
 
 def test_danger_full_access_is_refused(tmp_path):
-    seats = write_seats(tmp_path, "a gpt-5.6-sol high danger-full-access .\n")
+    seats = write_seats(tmp_path, "a gpt-5.6-sol high danger-full-access . 60\n")
     r = run("a", "x", seats=seats)
     assert r.returncode == 2
     assert "danger-full-access" in r.stderr
 
 
 def test_unknown_sandbox_is_refused(tmp_path):
-    seats = write_seats(tmp_path, "a gpt-5.6-sol high wide-open .\n")
+    seats = write_seats(tmp_path, "a gpt-5.6-sol high wide-open . 60\n")
     r = run("a", "x", seats=seats)
     assert r.returncode == 2
 
@@ -270,7 +422,7 @@ def test_unknown_sandbox_is_refused(tmp_path):
 def test_workspace_write_anywhere_inside_the_repository_is_refused(tmp_path, workroot):
     # `autoclave` is the important case: it is where drafts belong, and it was
     # this wrapper's first (wrong) answer to confinement.
-    seats = write_seats(tmp_path, f"a gpt-5.6-terra medium workspace-write {workroot}\n")
+    seats = write_seats(tmp_path, f"a gpt-5.6-terra medium workspace-write {workroot} 60\n")
     r = run("a", "x", seats=seats)
     assert r.returncode == 2
     assert "may not run inside the repository" in r.stderr
@@ -282,8 +434,23 @@ def test_incomplete_seat_line_is_refused(tmp_path):
     assert r.returncode == 2
 
 
+def test_extra_seat_fields_are_refused_at_runtime(tmp_path):
+    seats = write_seats(tmp_path, "a gpt-5.6-sol high read-only . 60 extra\n")
+    r = run("a", "x", seats=seats)
+    assert r.returncode == 2
+    assert "exactly six fields" in r.stderr
+
+
+@pytest.mark.parametrize("workroot", ["../outside", "operations/../../outside"])
+def test_non_tmp_workroot_cannot_escape_the_repository(tmp_path, workroot):
+    seats = write_seats(tmp_path, f"a gpt-5.6-sol high read-only {workroot} 60\n")
+    r = run("a", "x", seats=seats)
+    assert r.returncode == 2
+    assert "inside the repository" in r.stderr
+
+
 def test_missing_workroot_directory_is_refused(tmp_path):
-    seats = write_seats(tmp_path, "a gpt-5.6-sol high read-only no/such/dir\n")
+    seats = write_seats(tmp_path, "a gpt-5.6-sol high read-only no/such/dir 60\n")
     r = run("a", "x", seats=seats)
     assert r.returncode == 2
     assert "does not exist" in r.stderr
@@ -294,7 +461,90 @@ def test_missing_seat_file_is_refused(tmp_path):
     assert r.returncode == 2
 
 
-def test_every_shell_script_is_named_in_check_all():
+def test_alternate_seat_file_cannot_execute(tmp_path):
+    seats = write_seats(tmp_path, "a gpt-5.6-sol high read-only . 1\n")
+    result = subprocess.run(
+        ["sh", str(SEAT), "--seats", str(seats), "a", "x"],
+        capture_output=True,
+        text=True,
+        env=clean_env(),
+        timeout=30,
+    )
+    assert result.returncode == 2
+    assert "validation-only" in result.stderr
+
+
+def test_ambient_seat_variables_from_another_clone_are_ignored(tmp_path):
+    stale = write_seats(tmp_path, "wrong stale-model max danger-full-access .. 9999\n")
+    env = clean_env()
+    env.update(
+        {
+            "CODEX_SEATS_FILE": str(stale),
+            "CODEX_SEAT_TIMEOUT": "2700",
+            "CODEX_SEAT_DRYRUN": "1",
+        }
+    )
+    result = run("judge", "x", env=env)
+    assert result.returncode == 0, result.stderr
+    assert "gpt-5.6-sol" in result.stdout
+    assert "stale-model" not in result.stdout
+    assert "timeout 600s" in result.stderr
+
+
+def _fake_executable(directory, name, body):
+    path = directory / name
+    path.write_text(f"#!/bin/sh\n{body}", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_live_wrapper_gives_codex_closed_stdin_without_network(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _fake_executable(
+        fake_bin,
+        "codex",
+        "if IFS= read -r line; then echo 'stdin was open' >&2; exit 9; fi\nexit 0\n",
+    )
+    env = clean_env()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = run("judge", "x", dryrun=False, env=env)
+    assert result.returncode == 0, result.stderr
+    assert "stdin was open" not in result.stderr
+
+
+def test_live_wrapper_passes_tracked_ceiling_and_hard_kill_to_timeout(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "timeout-args"
+    _fake_executable(fake_bin, "codex", "exit 0\n")
+    _fake_executable(
+        fake_bin,
+        "timeout",
+        f"printf '%s\\n' \"$@\" > '{marker}'\nshift 2\nexec \"$@\"\n",
+    )
+    env = clean_env()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = run("judge", "x", dryrun=False, env=env)
+    assert result.returncode == 0, result.stderr
+    args = marker.read_text(encoding="utf-8").splitlines()
+    assert args[:2] == ["--kill-after=10", "600"]
+    assert args[2:4] == ["codex", "exec"]
+
+
+def _continued_command(script, prefix):
+    lines = script.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            parts = [line]
+            while parts[-1].rstrip().endswith("\\"):
+                index += 1
+                parts.append(lines[index])
+            return " ".join(part.rstrip().removesuffix("\\") for part in parts)
+    raise AssertionError(f"check-all.sh has no {prefix!r} command")
+
+
+def test_every_shell_entrypoint_is_in_both_check_all_commands():
     """A new script must not escape the static checks the way this one did.
 
     `check-all.sh` lists its scripts by hand so that each is checked
@@ -304,20 +554,31 @@ def test_every_shell_script_is_named_in_check_all():
     """
     check_all = (ROOT / ".githooks" / "check-all.sh").read_text()
     searched = [ROOT / ".githooks", ROOT / "operations"]
-    scripts = sorted(
-        path.relative_to(ROOT).as_posix()
-        for directory in searched
-        for path in directory.rglob("*.sh")
-    )
+    scripts = []
+    for directory in searched:
+        for path in directory.rglob("*"):
+            if not path.is_file():
+                continue
+            first = path.read_bytes().splitlines()[:1]
+            shell_shebang = first and re.search(
+                rb"^#!.*(?:^|[/ ])(?:ba|da|k|z)?sh(?:[ \r\n]|$)", first[0]
+            )
+            if path.suffix == ".sh" or shell_shebang:
+                scripts.append(path.relative_to(ROOT).as_posix())
+    scripts.sort()
     assert scripts, "found no shell scripts at all — the search paths are wrong"
-    missing = [s for s in scripts if s not in check_all]
-    assert not missing, f"shell scripts not checked by check-all.sh: {missing}"
+    shellcheck_command = shlex.split(_continued_command(check_all, "shellcheck "))[1:]
+    syntax_command = shlex.split(_continued_command(check_all, "sh -n "))[2:]
+    missing_shellcheck = [s for s in scripts if s not in shellcheck_command]
+    missing_syntax = [s for s in scripts if s not in syntax_command]
+    assert not missing_shellcheck, f"shell scripts not checked by shellcheck: {missing_shellcheck}"
+    assert not missing_syntax, f"shell scripts not checked by sh -n: {missing_syntax}"
 
 
 def test_comments_and_blank_lines_are_ignored(tmp_path):
     seats = write_seats(
         tmp_path,
-        "# a comment\n\n   # indented comment\nsolo gpt-5.6-luna low read-only .\n",
+        "# a comment\n\n   # indented comment\nsolo gpt-5.6-luna low read-only . 60\n",
     )
     r = run("solo", "x", seats=seats)
     assert r.returncode == 0, r.stderr

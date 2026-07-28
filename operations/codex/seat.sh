@@ -3,6 +3,8 @@
 #
 #   sh operations/codex/seat.sh <seat> "<prompt>"
 #   sh operations/codex/seat.sh <seat> - < prompt.txt     # prompt from stdin
+#   sh operations/codex/seat.sh --dry-run <seat> "<prompt>"
+#   sh operations/codex/seat.sh --dry-run --seats <file> <seat> "<prompt>"
 #
 # The `-` form reads stdin to the end HERE and passes the text as an argument.
 # It never hands an open stdin to codex, for the reason in the second failure
@@ -13,39 +15,51 @@
 # how a session ends up spending xhigh on a mechanical task because somebody's
 # desktop config said so.
 #
-# Every call passes --ignore-user-config, so nothing is inherited from
-# ~/.codex/config.toml. The seat line is the whole configuration, and it is a
-# tracked file a reviewer can read.
+# Every call passes --ignore-user-config, so Codex's model/effort/sandbox
+# settings are not inherited from ~/.codex/config.toml. Authentication, the
+# process environment, PATH and the wrapper timeout still come from the
+# machine running the call; the seat line is the tracked CLI configuration,
+# not a claim to capture the whole process.
 #
 # Two failure modes this wrapper exists to prevent, both observed:
 #   * `codex exec` blocks forever when stdin never reaches EOF. It prints
 #     "Reading additional input from stdin..." and waits, spending nothing and
 #     looking exactly like deep reasoning. Every call here closes stdin.
-#   * A call with no ceiling can sit until a session dies around it. Every call
-#     is wrapped in timeout.
+#   * A call with no ceiling can sit until a session dies around it. Prompt
+#     intake and Codex execution are each wrapped in a timeout, with a hard-kill
+#     escalation if either ignores TERM.
 #
-# Environment:
-#   CODEX_SEAT_TIMEOUT   seconds before the call is killed (default 600)
-#   CODEX_SEAT_DRYRUN=1  print the resolved command and exit 0, run nothing.
-#                        This is what the tests assert against, so they cost
-#                        no tokens.
-#   CODEX_SEATS_FILE     an alternate seat file. For the tests, which need to
-#                        feed this script malformed seats without editing the
-#                        real one. Not a way to escape the roster — anyone who
-#                        can set it can edit seats.conf. The guard here is
-#                        discipline, as everywhere else in this repository.
+# Timeout is the sixth field of each tracked seat. No environment variable can
+# replace the roster, its ceiling, or execution with a dry run: this wrapper
+# has previously inherited stale variables from another clone and silently run
+# the wrong policy. Alternate seat files are accepted only with --dry-run, for
+# validation tests that cannot call Codex or spend tokens.
 
 set -eu
 
-root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
-seats=${CODEX_SEATS_FILE:-"$root/operations/codex/seats.conf"}
-timeout_s=${CODEX_SEAT_TIMEOUT:-600}
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
+seats="$root/operations/codex/seats.conf"
+input_timeout_s=30
+dryrun=0
+
+if [ "${1:-}" = "--dry-run" ]; then
+  dryrun=1
+  shift
+  if [ "${1:-}" = "--seats" ]; then
+    [ "$#" -ge 2 ] || { echo "seat: --seats needs a file" >&2; exit 2; }
+    seats=$2
+    shift 2
+  fi
+elif [ "${1:-}" = "--seats" ]; then
+  echo "seat: alternate seat files are validation-only; add --dry-run first" >&2
+  exit 2
+fi
 
 usage() {
-  echo "usage: seat.sh <seat> <prompt|->" >&2
+  echo "usage: seat.sh [--dry-run [--seats file]] <seat> <prompt|->" >&2
   if [ -r "$seats" ]; then
     echo "seats:" >&2
-    sed -n 's/^\([a-z][a-z0-9_-]*\)  *\([^ ]*\)  *\([^ ]*\)  *\([^ ]*\).*/  \1  (\2, \3, \4)/p' \
+    sed -n 's/^\([a-z][a-z0-9_-]*\)  *\([^ ]*\)  *\([^ ]*\)  *\([^ ]*\)  *\([^ ]*\)  *\([^ ]*\).*/  \1  (\2, \3, \4, \6s)/p' \
       "$seats" >&2
   fi
   exit 2
@@ -55,12 +69,36 @@ usage() {
 seat=$1
 prompt=$2
 
+# macOS ships no `timeout`. A direct-prompt dry run only resolves and prints
+# configuration, so it needs no process ceiling. Reading stdin or making a live
+# call does: resolve the command only for those two paths.
+timeout_cmd=""
+if [ "$prompt" = "-" ] || [ "$dryrun" -eq 0 ]; then
+  if command -v timeout > /dev/null 2>&1; then
+    timeout_cmd=timeout
+  elif command -v gtimeout > /dev/null 2>&1; then
+    timeout_cmd=gtimeout
+  else
+    echo "seat: no 'timeout' or 'gtimeout' on PATH — install coreutils" >&2
+    echo "seat: refusing to run uncapped; an uncapped input or codex call outlives the session" >&2
+    exit 2
+  fi
+fi
+
 # Drain stdin now, while this shell still owns it, so codex is always handed a
-# closed one.
+# closed one. Give the producer a short, hard ceiling as well.
 if [ "$prompt" = "-" ]; then
-  prompt=$(cat)
+  if prompt=$("$timeout_cmd" --kill-after=10 "$input_timeout_s" cat); then
+    :
+  else
+    status=$?
+    [ "$status" -eq 124 ] &&
+      echo "seat: prompt input did not close within ${input_timeout_s}s" >&2
+    exit "$status"
+  fi
   [ -n "$prompt" ] || { echo "seat: empty prompt on stdin" >&2; exit 2; }
 fi
+[ -n "$prompt" ] || { echo "seat: empty prompt" >&2; exit 2; }
 
 [ -r "$seats" ] || { echo "seat: no $seats" >&2; exit 2; }
 
@@ -77,21 +115,39 @@ count=$(printf '%s' "$matches" | grep -c . || true)
 [ "$count" -ne 0 ] || { echo "seat: no seat named '$seat'" >&2; usage; }
 [ "$count" -eq 1 ] || { echo "seat: '$seat' is declared $count times in $seats" >&2; exit 2; }
 
+field_count=$(printf '%s\n' "$matches" | awk '{print NF}')
+[ "$field_count" -eq 6 ] ||
+  { echo "seat: '$seat' must have exactly six fields in $seats" >&2; exit 2; }
+
 model=$(printf '%s\n' "$matches"  | awk '{print $2}')
 effort=$(printf '%s\n' "$matches" | awk '{print $3}')
 sandbox=$(printf '%s\n' "$matches"| awk '{print $4}')
 workroot=$(printf '%s\n' "$matches" | awk '{print $5}')
+timeout_s=$(printf '%s\n' "$matches" | awk '{print $6}')
 
-for field in "$model" "$effort" "$sandbox" "$workroot"; do
+for field in "$model" "$effort" "$sandbox" "$workroot" "$timeout_s"; do
   [ -n "$field" ] || { echo "seat: '$seat' line is incomplete in $seats" >&2; exit 2; }
 done
 
-# The efforts the API actually accepts, checked here because the CLI does not:
-# it forwarded `ultra` to Luna, whose own catalog does not list it, and a
-# wrong value that does not error is a seat running at a depth nobody chose.
+# Zero disables GNU timeout. The ceiling therefore has to be a strictly
+# positive decimal recorded in the reviewed seat line.
+case $timeout_s in
+  ""|*[!0-9]*)
+    echo "seat: '$seat' timeout must be a positive whole number of seconds" >&2
+    exit 2 ;;
+esac
+if ! [ "$timeout_s" -gt 0 ] 2>/dev/null; then
+  echo "seat: '$seat' timeout must be greater than zero" >&2
+  exit 2
+fi
+
+# The effort levels this project permits in tracked seats. `ultra` is kept out:
+# it couples maximum reasoning to automatic delegation, whose execution cannot
+# currently be verified from the seat's own report. This is project policy, not
+# a claim that the API rejects the value.
 case $effort in
   none|minimal|low|medium|high|xhigh|max) : ;;
-  *) echo "seat: '$effort' is not an effort the API accepts (none minimal low medium high xhigh max)" >&2
+  *) echo "seat: '$effort' is not an allowed seat effort (none minimal low medium high xhigh max)" >&2
      exit 2 ;;
 esac
 
@@ -114,39 +170,94 @@ if [ "$workroot" = TMPTRAY ]; then
     esac
   done
   [ -n "$tmpbase" ] || tmpbase=/
-  workdir=$(mktemp -d "$tmpbase/verbatus-tray-XXXXXX")
+  [ -d "$tmpbase" ] || { echo "seat: temporary base '$tmpbase' does not exist" >&2; exit 2; }
+  tmpbase=$(CDPATH='' cd -- "$tmpbase" && pwd -P)
+  if [ "$dryrun" -eq 1 ]; then
+    # A dry run resolves configuration without creating the disposable tray it
+    # promises not to run in. The marker is never passed to Codex.
+    workdir="$tmpbase/verbatus-tray-DRYRUN"
+  else
+    workdir=$(mktemp -d "$tmpbase/verbatus-tray-XXXXXX")
+    workdir=$(CDPATH='' cd -- "$workdir" && pwd -P)
+  fi
 else
+  case $workroot in
+    /*|../*|*/../*|*/..)
+      echo "seat: workroot '$workroot' must stay inside the repository" >&2
+      exit 2 ;;
+  esac
   workdir="$root/$workroot"
   [ -d "$workdir" ] || { echo "seat: workroot '$workroot' does not exist" >&2; exit 2; }
-  workdir=$(CDPATH='' cd -- "$workdir" && pwd)
-fi
-
-# Measured, not assumed. `-C` does not bound a workspace-write sandbox: the
-# boundary resolves to an ancestor of it — the enclosing git repository when
-# there is one. A seat rooted at `autoclave/` would therefore be free to write
-# anywhere in the tree, which is the reverse of the quarantine.
-#
-# The boundary that IS enforced is the outside one: a seat rooted outside the
-# repository was refused an absolute-path write into it by the OS sandbox. So a
-# writing seat runs outside the tree, and the session carries its output in
-# after reading it — no byte enters that a reviewed session did not place.
-if [ "$sandbox" = workspace-write ]; then
+  workdir=$(CDPATH='' cd -- "$workdir" && pwd -P)
   case $workdir in
-    "$root" | "$root"/*)
-      echo "seat: a workspace-write seat may not run inside the repository." >&2
-      echo "seat: -C does not bound the sandbox — the enclosing git repo does," >&2
-      echo "seat: so this seat could write the whole tree. Use workroot TMPTRAY." >&2
+    "$root" | "$root"/*) : ;;
+    *)
+      echo "seat: workroot '$workroot' resolves outside the repository" >&2
       exit 2 ;;
   esac
 fi
 
+# Sandbox probes have contradicted one another about whether `-C` inside a Git
+# repository grants writes to the whole repository or only the named folder.
+# The exact in-repository case is unresolved. Keep the conservative rejection:
+# an uncertain boundary must not be described as proven confinement.
+#
+# TMPTRAY was refused writes into the repository in the probes that exercised
+# that direction, but it is temporary and can expose the wider system temp
+# area. It is retained pending Tyrel's decision on writing seats, not declared
+# safe. The session must preserve and inspect any draft before it enters here.
+if [ "$sandbox" = workspace-write ]; then
+  case $workdir in
+    "$root" | "$root"/*)
+      echo "seat: a workspace-write seat may not run inside the repository." >&2
+      echo "seat: the in-repository sandbox boundary is unresolved." >&2
+      echo "seat: keep writing seats outside until Tyrel chooses their future." >&2
+      exit 2 ;;
+  esac
+fi
+
+# A seat blind to its own deadline cannot triage against it. It plans work it
+# will not be allowed to finish, and because the report is written last, the
+# kill does not shorten the answer — it deletes it. A run can do an hour of real
+# work, change files, and produce nothing anybody can read. This wrapper already
+# holds the number, so it states it rather than trusting each prompt's author to
+# remember; the ceiling and the announcement can then never drift apart.
+deadline_target_s=$(( timeout_s * 9 / 10 ))
+if [ "$timeout_s" -ge 120 ]; then
+  deadline_human="${timeout_s} seconds (about $(( timeout_s / 60 )) minutes)"
+  target_human="${deadline_target_s} seconds (about $(( deadline_target_s / 60 )) minutes)"
+else
+  deadline_human="${timeout_s} seconds"
+  target_human="${deadline_target_s} seconds"
+fi
+
+prompt="Your time budget for this run.
+
+You will be killed without warning after ${deadline_human}. Aim to be finished
+and reported by ${target_human}, keeping the remainder as margin.
+
+Triage the highest-value work first, and do not begin anything you cannot finish
+inside that budget. Reserve the closing minutes for your report. If you run
+short, stop working and write the report anyway, naming plainly what you left
+half-done and where you left it — an unfinished run that reports honestly is
+worth more than a complete one nobody can read.
+
+--- your task follows ---
+
+$prompt"
+
+# End option parsing before the prompt: instructions such as `resume` or
+# `--help` are data, never Codex subcommands or flags.
 set -- codex exec \
+  --ephemeral \
   --ignore-user-config \
+  --strict-config \
   -m "$model" \
   -c "model_reasoning_effort=$effort" \
   -s "$sandbox" \
   -C "$workdir" \
   --skip-git-repo-check \
+  -- \
   "$prompt"
 
 # Say what is about to run. A seat that cannot be read back from the transcript
@@ -160,27 +271,18 @@ echo "seat: $seat -> $model, effort $effort, sandbox $sandbox, root $workroot, t
 # located has been lost, whatever the exit status said.
 echo "seat: workdir $workdir" >&2
 
-if [ "${CODEX_SEAT_DRYRUN:-}" = 1 ]; then
+if [ "$dryrun" -eq 1 ]; then
   for a in "$@"; do printf '%s\n' "$a"; done
   exit 0
 fi
 
 command -v codex > /dev/null 2>&1 || { echo "seat: codex is not installed" >&2; exit 2; }
 
-# macOS ships no `timeout`. This machine has GNU coreutils, a pod or a fresh
-# Mac may not, and without the check every seat call would die at 127 with a
-# message blaming codex.
-if ! command -v timeout > /dev/null 2>&1; then
-  echo "seat: no 'timeout' on PATH — install coreutils (brew install coreutils)" >&2
-  echo "seat: refusing to run uncapped; an uncapped codex call outlives the session" >&2
-  exit 2
-fi
-
 # </dev/null is the whole reason this wrapper exists; see the header.
 # The if/else is not decoration: under `set -e` a bare call would abort the
 # script before the status could be read, and the timeout case would be
 # reported as a clean exit.
-if timeout "$timeout_s" "$@" < /dev/null; then
+if "$timeout_cmd" --kill-after=10 "$timeout_s" "$@" < /dev/null; then
   status=0
 else
   status=$?
