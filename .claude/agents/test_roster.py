@@ -68,8 +68,7 @@ def test_a_role_that_can_write_is_told_not_to_touch_the_governing_documents(path
 
     body = path.read_text(encoding="utf-8").lower()
     said_dont = any(
-        phrase in body
-        for phrase in ("never edit a governing", "do not touch: canonical documents")
+        phrase in body for phrase in ("never edit a governing", "do not touch: canonical documents")
     )
     assert said_dont, (
         f"{path.name} can Write and Edit but never tells the agent to leave the "

@@ -138,16 +138,15 @@ def test_the_seats_file_header_does_not_contradict_its_own_seat_lines():
     condition the effort was admitted under, not a flat denial.
     """
     comments = "\n".join(
-        line for line in SEATS.read_text(encoding="utf-8").splitlines()
+        line
+        for line in SEATS.read_text(encoding="utf-8").splitlines()
         if line.lstrip().startswith("#")
     )
     efforts = {effort for (_m, effort, _s, _r, _t) in parse_seats().values()}
     if "ultra" not in efforts:
         return
     for stale in ("no tracked seat uses", "deliberately absent", "is not allowed"):
-        assert stale not in comments, (
-            f"a seat runs at ultra, but the header still says {stale!r}"
-        )
+        assert stale not in comments, f"a seat runs at ultra, but the header still says {stale!r}"
     assert "WORKCOPY" in comments, "the header must name the condition ultra was admitted under"
     assert "diff" in comments, "the header must say the seat is read from a diff, not its report"
 

@@ -176,9 +176,7 @@ DELIVERY_FAILURES = {
 
 @pytest.mark.parametrize("event", ["start", "milestone"])
 @pytest.mark.parametrize("scenario", sorted(DELIVERY_FAILURES))
-def test_a_low_priority_failure_exits_zero_but_never_reads_as_delivered(
-    tmp_path, event, scenario
-):
+def test_a_low_priority_failure_exits_zero_but_never_reads_as_delivered(tmp_path, event, scenario):
     """GOVERNANCE 10: exit 0 here means "carry on", never "the phone rang".
 
     `start` and `milestone` deliberately do not fail their caller — a session

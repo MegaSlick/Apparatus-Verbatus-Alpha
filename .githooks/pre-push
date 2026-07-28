@@ -227,7 +227,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     receipt_state="no receipt recorded"
   elif ! python3 "$ingress" --audit-receipt "$receipts/$audit_sha" >/dev/null 2>&1; then
     receipt_state="receipt is incomplete or invalid"
-  elif ! grep -Eqx "[[:space:]]*commit:[[:space:]]+$audit_sha[[:space:]]*" \
+  elif ! grep -Eqx "[[:space:]]*commit:[[:space:]]+${audit_sha}[[:space:]]*" \
        "$receipts/$audit_sha" 2>/dev/null; then
     # Matched loosely on purpose. The receipt's exact spacing is a contract
     # between record-audit.sh and check_ingress.py, asserted in test_hooks.py;
