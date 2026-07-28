@@ -251,9 +251,15 @@ not "Codex". `Codex (OpenAI)` is the fallback only when the serving release is u
 The commit author stays Tyrel. Track it as you go, because nobody can reconstruct it afterwards, and
 `/session-end` writes it into the handoff.
 
-`commit-msg` enforces authorship only. It exempts commits made during git's own merge,
-revert and cherry-pick operations, `fixup!`/`squash!`/`amend!` subjects, and anything with
-`ALLOW_UNATTRIBUTED=1`.
+`commit-msg` does two things, and only one of them has exemptions.
+
+**It credential-scans the message, always.** That runs before every exemption below and
+nothing skips it — a message carrying a token is refused whatever else is true of the commit.
+
+**It enforces authorship, with exemptions.** Commits made during git's own merge, revert and
+cherry-pick operations, `fixup!`/`squash!`/`amend!` subjects, and anything with
+`ALLOW_UNATTRIBUTED=1`. That variable buys an unattributed commit and nothing else; read as
+a general bypass it would be exactly the wrong thing to reach for.
 
 ## Reporting
 
