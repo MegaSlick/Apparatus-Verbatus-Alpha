@@ -734,6 +734,74 @@ def test_findings_past_the_hundredth_can_be_retrieved(repo):
     assert refused.returncode == 2
 
 
+def test_worktree_does_not_read_a_file_it_will_refuse_on_size_alone(repo, monkeypatch):
+    # L24. The worktree walk read every file whole and consulted the size
+    # limit afterwards, so the one file too big to accept was exactly the file
+    # pulled into memory: a corpus commit crashes the scanner instead of
+    # getting the clean oversize diagnosis it was built to produce. The
+    # threshold is lowered here so the decision is observable without a
+    # multi-gigabyte file; `data is None` is the proof that the bytes were
+    # never read, and entry_size answering at all proves the size came from
+    # the stat rather than from Git.
+    module = scanner_module()
+    monkeypatch.setattr(module, "FIXTURE_MAX_BYTES", 128)
+    write(repo, "small.txt", "safe\n")
+    write(repo, "big.txt", "b" * 300)
+    stage(repo, "small.txt", "big.txt")
+    monkeypatch.chdir(repo)
+
+    entries = module.working_tree()
+    assert entries["small.txt"].data == b"safe\n"
+    big = entries["big.txt"]
+    assert big.data is None, "an oversize file was read into memory before its size was consulted"
+    assert module.entry_size(big) == 300
+
+
+def test_an_oversize_worktree_file_still_gets_its_oversize_diagnosis(repo):
+    # The saved read must not cost the diagnosis. Sparse, so it costs no real
+    # disk and no real bytes.
+    with open(repo / "corpus.bin", "wb") as handle:
+        handle.truncate(ONE_MIB + 1)
+    stage(repo, "corpus.bin")
+    result = run_scan(repo, "--worktree")
+    assert result.returncode == 1
+    assert "[oversize]" in result.stderr
+
+
+def test_the_blob_cache_is_bounded_and_never_retains_a_large_payload(repo, monkeypatch):
+    # L24, second half: an unbounded cache on blob data retains every blob of
+    # every commit for the whole of a history scan.
+    module = scanner_module()
+    monkeypatch.chdir(repo)
+    limit = module.cached_blob_data.cache_parameters()["maxsize"]
+    assert limit is not None, "an unbounded blob cache retains every blob of every commit"
+
+    def hash_object(text):
+        result = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=repo,
+            input=text,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        return result.stdout.strip()
+
+    for index in range(limit + 1):
+        module.blob_data(hash_object(f"blob number {index}\n"))
+    info = module.cached_blob_data.cache_info()
+    assert info.currsize == limit, "entries past the ceiling were not evicted"
+
+    # Entry count alone does not bound bytes; a payload above the byte ceiling
+    # is served without being retained.
+    monkeypatch.setattr(module, "BLOB_CACHE_MAX_BYTES", 8)
+    before = module.cached_blob_data.cache_info().currsize
+    large = hash_object("a payload well past the byte ceiling\n")
+    assert module.blob_data(large) == b"a payload well past the byte ceiling\n"
+    assert module.cached_blob_data.cache_info().currsize == before
+
+
 def test_the_declared_secret_fixture_set_stays_empty():
     # L40. The source calls empty "the intended resting state" and says an
     # exemption nobody can audit inside a credential scanner is worse than no

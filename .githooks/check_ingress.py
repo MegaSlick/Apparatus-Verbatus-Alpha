@@ -187,13 +187,28 @@ def read_regular_file(path: Path) -> bytes:
     A device that reads cleanly is refused too: a successful read is not
     evidence that a regular file was scanned.
     """
+    _, data = measured_read(path, None)
+    return data
+
+
+def measured_read(path: Path, max_bytes: int | None) -> tuple[int, bytes | None]:
+    """Return a regular file's size, and its bytes only if it is small enough.
+
+    The size comes from the same descriptor that would be read, so a file that
+    grows between the decision and the read cannot smuggle its payload in. A
+    file past `max_bytes` is refused on its size alone, and pulling it into
+    memory to say so would crash the scanner instead of producing the clean
+    oversize diagnosis it exists to produce.
+    """
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise ScanFailure(f"{path} is not a regular file ({file_kind(info.st_mode)})")
+        if max_bytes is not None and info.st_size > max_bytes:
+            return info.st_size, None
         with open(fd, "rb", closefd=False) as handle:
-            return handle.read()
+            return info.st_size, handle.read()
     finally:
         os.close(fd)
 
@@ -205,6 +220,8 @@ class Blob:
     mode: str
     kind: str = "blob"
     data: bytes | None = None
+    # Set only for worktree entries whose bytes were deliberately not read.
+    size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -239,6 +256,17 @@ def git(*args: str) -> bytes:
     return result.stdout
 
 
+# The size cache holds an integer per object id, so it is bounded by the
+# object count at roughly a hundred bytes an entry; the data cache held every
+# blob of every commit for the length of a history scan, which is bounded by
+# nothing. Two ceilings replace that: at most this many entries, none of them
+# larger than the byte ceiling, so the cache costs 64 MiB at worst. Fixtures
+# above the byte ceiling are re-read per commit instead of retained — slower
+# on a history scan carrying large fixtures, and bounded.
+BLOB_CACHE_ENTRIES = 64
+BLOB_CACHE_MAX_BYTES = NORMAL_MAX_BYTES
+
+
 @lru_cache(maxsize=None)
 def blob_size(oid: str) -> int:
     raw = git("cat-file", "-s", oid).strip()
@@ -248,17 +276,32 @@ def blob_size(oid: str) -> int:
         raise ScanFailure(f"Git returned a non-numeric size for object {oid[:12]}") from exc
 
 
-@lru_cache(maxsize=None)
-def blob_data(oid: str) -> bytes:
+@lru_cache(maxsize=BLOB_CACHE_ENTRIES)
+def cached_blob_data(oid: str) -> bytes:
     return git("cat-file", "blob", oid)
 
 
+def blob_data(oid: str) -> bytes:
+    if blob_size(oid) > BLOB_CACHE_MAX_BYTES:
+        return git("cat-file", "blob", oid)
+    return cached_blob_data(oid)
+
+
 def entry_size(entry: Blob) -> int:
+    if entry.size is not None:
+        return entry.size
     return len(entry.data) if entry.data is not None else blob_size(entry.oid)
 
 
 def entry_data(entry: Blob) -> bytes:
-    return entry.data if entry.data is not None else blob_data(entry.oid)
+    if entry.data is not None:
+        return entry.data
+    if entry.size is not None:
+        # Refused on size, so its bytes were deliberately never read. Asking
+        # for them anyway is a caller defect, not something to answer with an
+        # empty payload that would scan clean.
+        raise ScanFailure(f"{entry.path} was refused on size; its bytes were not read")
+    return blob_data(entry.oid)
 
 
 def index_tree() -> dict[str, Blob]:
@@ -310,7 +353,11 @@ def working_tree() -> dict[str, Blob]:
                     path, "worktree", "120000", data=os.fsencode(os.readlink(source))
                 )
             elif stat.S_ISREG(mode):
-                entries[path] = Blob(path, "worktree", "100644", data=read_regular_file(source))
+                # No legal payload exceeds the fixture ceiling, so a file
+                # above it is refused on size alone and never read: the file
+                # too big to accept was the one being pulled into memory.
+                size, data = measured_read(source, FIXTURE_MAX_BYTES)
+                entries[path] = Blob(path, "worktree", "100644", data=data, size=size)
             elif stat.S_ISDIR(mode):
                 entries[path] = Blob(path, "worktree", "160000", "commit")
             else:
