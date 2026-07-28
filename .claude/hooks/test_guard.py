@@ -403,6 +403,14 @@ BLOCK = [
         "cat <<EOF\n`git push origin main\nEOF",
         "an unterminated backtick cannot be read either",
     ),
+    (
+        "cat <<EOF\n${ git push origin main; }\nEOF",
+        "bash 5.3's ${ cmd; } runs a command too, so it is refused not parsed",
+    ),
+    (
+        "cat <<EOF\n${| git push origin main; }\nEOF",
+        "the value-returning funsub spelling as well",
+    ),
 ]
 
 # ----------------------------------------------------------- must NOT block
@@ -567,6 +575,10 @@ ALLOW = [
     (
         "cat > version.txt <<EOF\nbuilt from $(git rev-parse HEAD)\nEOF",
         "an ordinary substitution runs an ordinary command",
+    ),
+    (
+        "cat <<EOF\nhome is ${HOME} and ${MISSING:-none}\nEOF",
+        "ordinary parameter expansion is not a command",
     ),
     # a body field named deleteAfter is not a shutdown
     (f"curl -X DELETE https://{REST}/v1/pods/abc", "removing your own pod is cleanup"),

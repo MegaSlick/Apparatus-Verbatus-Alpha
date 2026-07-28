@@ -656,6 +656,10 @@ def command_substitutions(text: str):
     In an expanding heredoc body, quotes are *not* special (bash prints the
     quotes verbatim) but a backslash still escapes ``$``, a backtick and
     itself. So the walk here honours escapes only.
+
+    ``${ cmd; }`` and ``${| cmd; }`` — bash 5.3's funsub spellings — also run a
+    command. They are refused rather than parsed, which keeps ordinary
+    ``${VAR}`` expansion untouched while never calling a funsub inert.
     """
     out = []
     i = 0
@@ -683,6 +687,8 @@ def command_substitutions(text: str):
             out.append(text[i + 2 : end - 1])
             i = end
             continue
+        if text.startswith("${", i) and re.match(r"[\s|]", text[i + 2 : i + 3] or ""):
+            raise ValueError("function substitution the guard does not parse")
         i += 1
     return out
 
