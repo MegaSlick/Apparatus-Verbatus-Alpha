@@ -113,13 +113,17 @@ def wheel_command(source: Path, wheels: Path) -> list[str]:
 
 
 def main() -> int:
+    # git terminates the path with a newline and nothing else. Stripping general
+    # whitespace would silently rename a repository whose directory ends in a
+    # space, and the build would then package an empty tree from a path that
+    # does not exist.
     root = Path(
         subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             check=True,
             text=True,
             stdout=subprocess.PIPE,
-        ).stdout.strip()
+        ).stdout.rstrip("\n")
     )
     verify_build_environment(root)
     with tempfile.TemporaryDirectory(prefix="verbatus-wheel-") as temporary:
@@ -145,6 +149,14 @@ def entrypoint() -> int:
         return main()
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"Wheel check failed: {error}", file=sys.stderr)
+        return 1
+    except Exception as error:
+        # Anything else — a missing pyproject.toml, an unreadable file, a
+        # malformed TOML — used to escape as a raw traceback. That still failed
+        # the build, but it read as the checker breaking rather than the check
+        # refusing. The class name is kept so nothing is lost by the shorter
+        # report.
+        print(f"Wheel check failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
 
