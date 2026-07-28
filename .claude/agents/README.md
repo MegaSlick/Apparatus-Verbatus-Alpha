@@ -13,6 +13,8 @@ release.
 
 | Field | Why it is set |
 |---|---|
+| `name` | the roster key a caller dispatches by; it must match the filename or the role cannot be summoned |
+| `description` | what the role is for and when to reach for it — the only field a dispatching session reads before choosing |
 | `model`, `effort` | fixed roles declare both; `auditor`/`consult` select model per call while keeping role effort |
 | `tools` | the allowlist — an auditor with no write tools cannot fix what it is reviewing |
 | `disallowedTools` | a second declaration of the tools the role must not use |

@@ -13,12 +13,21 @@
 #
 # Two callers share this file so the rule cannot drift:
 #
-#   .githooks/pre-commit       what you are about to commit. Local and fast,
-#                              and skippable — `git commit --no-verify` and
-#                              merge-created commits can evade it.
-#   .github/workflows/ci.yml   every tracked file in the repository. Checks
-#                              what the repository *contains*, not what you
-#                              did, so none of those evasions help.
+#   .githooks/pre-commit           what you are about to commit. Local and
+#                                  fast, and skippable — `git commit
+#                                  --no-verify` and merge-created commits can
+#                                  evade it.
+#   .githooks/check-documents.sh   what the repository currently holds: every
+#                                  tracked file *and* every unignored
+#                                  untracked one, so an uncommitted stray is
+#                                  visible too. Checks what the working tree
+#                                  *contains*, not what you did, so none of
+#                                  those evasions help. CI runs this script on
+#                                  every pull request, and check-all.sh runs
+#                                  the same script locally.
+#
+# Nothing else calls it. check-all.sh and install.sh name this file in their
+# lint and install lists without ever running it, which is not a call.
 #
 # Which of the two actually stops a merge is settled by GitHub, not here, and
 # README.md is where that is recorded. Do not restate it in this file: a second

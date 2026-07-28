@@ -9,6 +9,9 @@ These tests extract the `run:` blocks out of `ci.yml` and execute them, so a
 disabled gate fails here. They deliberately avoid PyYAML: CI installs only
 `requirements-dev.txt`, which does not carry it, and a test that cannot run
 is a failure rather than a pass.
+
+The last test guards the documentation gate's own account of who calls it —
+the one duplicated fact in the harness that has already gone stale once.
 """
 
 from __future__ import annotations
@@ -307,3 +310,38 @@ def test_autoclave_gate_fails_closed_when_git_cannot_list(tmp_path):
     result = run_shell(autoclave_gate(), not_a_repo, gate_env(tmp_path))
     assert result.returncode == 2, "an unlistable tray read as empty"
     assert "git ls-files failed" in result.stderr
+
+
+# --- L58: the documentation gate's account of its own callers ---
+
+
+def allowlist_callers() -> set[str]:
+    """Every harness file that actually runs `doc-allowlist.sh`.
+
+    A mention is not a call: `check-all.sh` and `install.sh` list the script for
+    shellcheck without ever executing it, and naming them would be as misleading
+    as omitting a real caller.
+    """
+    invocation = re.compile(r"(?m)^[^#\n]*\bsh\s+(?:[\"']?\$\{?\w*allowlist|\S*doc-allowlist\.sh)")
+    callers = set()
+    for path in sorted((ROOT / ".githooks").iterdir()):
+        if not path.is_file() or path.name.startswith("test_"):
+            continue
+        if path.name == "doc-allowlist.sh":
+            continue
+        if invocation.search(path.read_text(encoding="utf-8", errors="ignore")):
+            callers.add(f".githooks/{path.name}")
+    return callers
+
+
+def test_doc_allowlist_names_the_callers_it_actually_has():
+    header = (ROOT / ".githooks" / "doc-allowlist.sh").read_text(encoding="utf-8")
+    header = header.split("\nstray=", 1)[0]
+    callers = allowlist_callers()
+    assert callers, "no file in .githooks/ runs the documentation allowlist"
+    for caller in sorted(callers):
+        assert caller in header, f"{caller} runs the allowlist and the header does not say so"
+    named = set(re.findall(r"\.githooks/[\w.-]+", header))
+    assert named <= callers, (
+        f"the header names a caller that does not call it: {sorted(named - callers)}"
+    )
