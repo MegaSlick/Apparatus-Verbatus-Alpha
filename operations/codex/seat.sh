@@ -42,6 +42,20 @@ seats="$root/operations/codex/seats.conf"
 input_timeout_s=30
 dryrun=0
 
+# The grace between TERM and KILL, named once so the number passed to `timeout`
+# and the number reported afterwards cannot drift apart.
+kill_grace_s=10
+
+# A wrapper maximum on the tracked ceiling. Be exact about what this is: it is
+# NOT a security boundary. Anyone who can edit a seat line can edit this
+# constant on the line above it, so it stops no deliberate act. It is a typo
+# guard, and typos are the realistic failure here — one extra zero turns the
+# 5400s fix seat into fifteen hours of a paid API sitting on a laptop that was
+# closed hours ago, and nothing else in the path would notice. Raising it is a
+# tracked, reviewed edit, which is the point: a ceiling nobody has to argue for
+# is not a ceiling. 7200s leaves headroom above the longest seat declared.
+max_timeout_s=7200
+
 if [ "${1:-}" = "--dry-run" ]; then
   dryrun=1
   shift
@@ -85,15 +99,28 @@ if [ "$prompt" = "-" ] || [ "$dryrun" -eq 0 ]; then
   fi
 fi
 
+# Check the dependency before anything is created on disk. This used to sit
+# after the working root was resolved, so a live call on a machine without
+# `codex` first made a fresh temporary tray and then refused to run — leaving an
+# empty directory behind for every attempt, indistinguishable from a tray a real
+# writing seat had produced and lost.
+if [ "$dryrun" -eq 0 ]; then
+  command -v codex > /dev/null 2>&1 || { echo "seat: codex is not installed" >&2; exit 2; }
+fi
+
 # Drain stdin now, while this shell still owns it, so codex is always handed a
 # closed one. Give the producer a short, hard ceiling as well.
 if [ "$prompt" = "-" ]; then
-  if prompt=$("$timeout_cmd" --kill-after=10 "$input_timeout_s" cat); then
+  if prompt=$("$timeout_cmd" "--kill-after=${kill_grace_s}" "$input_timeout_s" cat); then
     :
   else
     status=$?
-    [ "$status" -eq 124 ] &&
-      echo "seat: prompt input did not close within ${input_timeout_s}s" >&2
+    case $status in
+      124)
+        echo "seat: prompt input did not close within ${input_timeout_s}s" >&2 ;;
+      137)
+        echo "seat: prompt input ignored the TERM at ${input_timeout_s}s and was hard-killed ${kill_grace_s}s later" >&2 ;;
+    esac
     exit "$status"
   fi
   [ -n "$prompt" ] || { echo "seat: empty prompt on stdin" >&2; exit 2; }
@@ -140,6 +167,29 @@ if ! [ "$timeout_s" -gt 0 ] 2>/dev/null; then
   echo "seat: '$seat' timeout must be greater than zero" >&2
   exit 2
 fi
+if [ "$timeout_s" -gt "$max_timeout_s" ]; then
+  echo "seat: '$seat' asks for ${timeout_s}s, above this wrapper's ${max_timeout_s}s maximum" >&2
+  echo "seat: raise max_timeout_s in seat.sh if the seat really needs longer — deliberately," >&2
+  echo "seat: in a tracked edit, rather than by one extra digit in a seat line." >&2
+  exit 2
+fi
+
+# No model allowlist, and that is a decision rather than an oversight. A list of
+# permitted model names goes stale at the next release, and this repository has
+# already been bitten by exactly that shape of guard in the push gate: a list
+# that has to be edited to keep working eventually gets edited to stop working.
+# What does not go stale is the model name's SHAPE. The value below is handed
+# straight to `-m`, so what has to be refused is a value that stops being a
+# model name and becomes something else — an option, an argument break, a path.
+# Whether the name exists is Codex's question, and it answers it loudly.
+case $model in
+  -*)
+    echo "seat: '$seat' model '$model' begins with a dash and would parse as an option" >&2
+    exit 2 ;;
+  ""|*[!A-Za-z0-9._-]*)
+    echo "seat: '$seat' model '$model' is not a plain model name ([A-Za-z0-9._-])" >&2
+    exit 2 ;;
+esac
 
 # The effort levels this project permits in tracked seats.
 #
@@ -318,7 +368,7 @@ set -- codex exec \
 
 # Say what is about to run. A seat that cannot be read back from the transcript
 # is a seat nobody can check afterwards.
-echo "seat: $seat -> $model, effort $effort, sandbox $sandbox, root $workroot, timeout ${timeout_s}s" >&2
+echo "seat: $seat -> $model, effort $effort, sandbox $sandbox, root $workroot, timeout ${timeout_s}s (+${kill_grace_s}s grace before hard kill)" >&2
 
 # And say where it runs, resolved. TMPTRAY names a directory this script has
 # just created under a random name, so without this line a writing seat's
@@ -332,19 +382,33 @@ if [ "$dryrun" -eq 1 ]; then
   exit 0
 fi
 
-command -v codex > /dev/null 2>&1 || { echo "seat: codex is not installed" >&2; exit 2; }
-
 # </dev/null is the whole reason this wrapper exists; see the header.
 # The if/else is not decoration: under `set -e` a bare call would abort the
 # script before the status could be read, and the timeout case would be
 # reported as a clean exit.
-if "$timeout_cmd" --kill-after=10 "$timeout_s" "$@" < /dev/null; then
+if "$timeout_cmd" "--kill-after=${kill_grace_s}" "$timeout_s" "$@" < /dev/null; then
   status=0
 else
   status=$?
 fi
 
-if [ "$status" -eq 124 ]; then
-  echo "seat: '$seat' hit the ${timeout_s}s ceiling and was killed" >&2
-fi
+# A run that was cut off must not read as a run that finished badly. `timeout`
+# reports 124 only when the process took the TERM; a process that ignores TERM
+# is escalated to KILL after the grace and comes back as 128+9 = 137, which used
+# to fall through here with no explanation at all. That is the worse of the two
+# cases to leave silent, because the seat's report is written last: a 137 seat
+# did real work for the whole ceiling and produced nothing anybody can read.
+#
+# 137 is not exclusively ours — an out-of-memory kill lands on the same number,
+# and nothing here can tell the two apart. So say both, and claim neither.
+case $status in
+  124)
+    echo "seat: '$seat' hit the ${timeout_s}s ceiling and was killed" >&2
+    echo "seat: cut off, not finished — anything it had not written is gone" >&2 ;;
+  137)
+    echo "seat: '$seat' was killed by SIGKILL after roughly ${timeout_s}s" >&2
+    echo "seat: that is how this wrapper's hard kill ends when a run ignores the TERM at its" >&2
+    echo "seat: ${timeout_s}s ceiling; an out-of-memory kill also arrives as 137 and cannot be" >&2
+    echo "seat: told apart from here. Either way the run was cut off, not completed." >&2 ;;
+esac
 exit "$status"

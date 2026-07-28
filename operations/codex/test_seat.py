@@ -8,6 +8,39 @@ The two behaviours worth naming, because both were observed before this
 wrapper existed: a codex call handed an open stdin blocks forever while
 looking like deep reasoning, and a call with no ceiling outlives the session
 that started it.
+
+WHAT A GREEN RUN HERE DOES AND DOES NOT ESTABLISH
+-------------------------------------------------
+Read this before treating a passing suite as a working seat. An audit put it
+plainly and it is true: everything this file asserts about ``codex`` is an
+assertion about a stub written a few lines above the assertion.
+
+It establishes:
+
+* the argument vector the wrapper would build — model, effort, sandbox,
+  working root, the option terminator, the prompt as one final argument;
+* every refusal, which is most of the wrapper's value: unknown seats,
+  duplicate lines, bad efforts, writing seats inside the repository, ceilings
+  outside the permitted range, model fields that are not plain names;
+* that the prompt is drained here and ``codex`` is handed a closed stdin;
+* the real ``timeout`` escalation, including the 137 hard kill. Two tests
+  deliberately use the system ``timeout`` rather than a fake, because the exact
+  status is the thing being measured.
+
+It does not establish that any Codex flag in the vector is real. ``codex`` here
+is a four-line shell script that exits 0. Misspell ``--skip-git-repo-check``,
+pass an option removed in a later CLI, or name a flag that never existed, and
+every test below still passes while every live seat dies at startup — which is
+the concrete instance the audit named. Nor does it establish that a model name
+resolves, that authentication works, or that the sandbox confines anything: the
+in-repository ``workspace-write`` boundary is refused precisely because it is
+*unmeasured*, and refusing it is not the same as knowing.
+
+Only one thing closes that gap — a smoke call against the real binary, which
+spends tokens through an external API. That is Tyrel's to authorise in a
+session, not a test's to do quietly on import. Until it exists: green here
+means the wrapper's policy is intact, and says nothing about whether a seat
+would start.
 """
 
 import os
@@ -613,6 +646,204 @@ def test_live_wrapper_gives_codex_closed_stdin_without_network(tmp_path):
     result = run("judge", "x", dryrun=False, env=env)
     assert result.returncode == 0, result.stderr
     assert "stdin was open" not in result.stderr
+
+
+def _run_live_one_second_seat(tmp_path, codex_body, *, wait):
+    """A real, non-dry-run seat call with a one-second ceiling.
+
+    An alternate seats file is validation-only and refused outside --dry-run —
+    correctly, since it is how a live call would otherwise be pointed at an
+    unreviewed roster. So the short ceiling is arranged the way the wrapper
+    intends: a copy of the wrapper in its own checkout, with its own tracked
+    seats.conf beside it.
+    """
+    real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+    if real_timeout is None:
+        pytest.skip("no GNU timeout on PATH; the escalation cannot be measured")
+
+    checkout = tmp_path / "checkout"
+    codex_dir = checkout / "operations" / "codex"
+    codex_dir.mkdir(parents=True)
+    (codex_dir / "seat.sh").write_bytes(SEAT.read_bytes())
+    (codex_dir / "seats.conf").write_text("a gpt-5.6-sol high read-only . 1\n", encoding="utf-8")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "timeout").symlink_to(real_timeout)
+    _fake_executable(fake_bin, "codex", codex_body)
+
+    env = clean_env()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    return subprocess.run(
+        ["sh", str(codex_dir / "seat.sh"), "a", "x"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=wait,
+    )
+
+
+def test_a_hard_killed_seat_is_reported_as_a_run_that_was_cut_off(tmp_path):
+    """A seat that ignores TERM comes back 137, not 124.
+
+    This one is run against the real `timeout`, not a stub, because the exact
+    number is the finding: `timeout --kill-after` reports 124 only when the
+    process takes the TERM. A process that ignores it is escalated to KILL and
+    the observed status is 128+9. The wrapper tested only for 124, so the case
+    it most needed to explain — a run cut off with its report unwritten —
+    printed nothing at all and read as an ordinary crash.
+
+    It costs the grace period in wall time. That is the price of measuring the
+    real escalation instead of asserting that a fake returns what we told it to.
+    """
+    # Ignores TERM and outlives its ceiling, exactly like a seat mid-reasoning.
+    result = _run_live_one_second_seat(tmp_path, "trap '' TERM\nsleep 120\n", wait=90)
+
+    assert result.returncode == 137, (
+        "the premise of this test is wrong if the escalation does not return 137"
+    )
+    assert "137" in result.stderr or "SIGKILL" in result.stderr, (
+        "a hard-killed seat was reported without saying it was killed; a run that "
+        "was cut off is indistinguishable from a run that finished badly"
+    )
+    assert "cut off" in result.stderr
+    assert "1s ceiling" in result.stderr, "the report does not name the ceiling it blew"
+
+
+def test_a_seat_that_takes_the_term_is_still_reported_as_a_timeout(tmp_path):
+    # The other half: 124 must keep its own explanation, and must not be
+    # relabelled as a hard kill.
+    result = _run_live_one_second_seat(tmp_path, "sleep 120\n", wait=60)
+    assert result.returncode == 124
+    assert "hit the 1s ceiling" in result.stderr
+    assert "SIGKILL" not in result.stderr
+
+
+def test_a_missing_codex_leaves_no_temporary_tray_behind(tmp_path):
+    # The dependency check used to sit after the working root was resolved, so
+    # every attempt on a machine without codex created a fresh tray and then
+    # refused — leaving debris no one could tell from a writing seat's lost draft.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    trays = tmp_path / "trays"
+    trays.mkdir()
+    _fake_executable(fake_bin, "timeout", 'shift 2\nexec "$@"\n')
+    for name in ("awk", "cat", "dirname", "grep", "head", "mktemp", "sed", "sh", "tail"):
+        found = shutil.which(name)
+        if found is not None:
+            (fake_bin / name).symlink_to(found)
+
+    env = clean_env()
+    env["PATH"] = str(fake_bin)
+    env["TMPDIR"] = str(trays)
+    result = run("build", "x", dryrun=False, env=env)
+
+    assert result.returncode == 2
+    assert "codex is not installed" in result.stderr
+    assert list(trays.iterdir()) == [], (
+        f"a refused call left a tray behind: {[p.name for p in trays.iterdir()]}"
+    )
+
+
+# --- bounds (L33) -----------------------------------------------------------
+#
+# The wrapper's ceiling is a typo guard and nothing more: whoever can edit a
+# seat line can edit the constant. It is worth having anyway, because one extra
+# digit in a tracked ceiling is the realistic failure and nothing downstream
+# would notice fifteen hours of paid API on a closed laptop.
+#
+# There is deliberately NO model allowlist. A list of permitted model names goes
+# stale at the next release, and this repository has already been bitten by that
+# shape of guard in the push gate. What is checked is the model name's shape,
+# which does not go stale — the value reaches `-m`, so it must stay a name and
+# not become an option or an argument break.
+
+
+def test_a_ceiling_far_above_the_declared_seats_is_refused(tmp_path):
+    seats = write_seats(tmp_path, "a gpt-5.6-sol high read-only . 54000\n")
+    r = run("a", "x", seats=seats)
+    assert r.returncode == 2
+    assert "maximum" in r.stderr
+    assert "54000" in r.stderr
+
+
+def test_every_declared_seat_is_inside_the_wrapper_maximum():
+    # The constant and the roster must not drift apart: a seat that the wrapper
+    # would refuse is a seat that fails at the moment it is needed.
+    maximum = int(
+        re.search(r"^max_timeout_s=(\d+)$", SEAT.read_text(encoding="utf-8"), re.M).group(1)
+    )
+    for name, (_m, _e, _s, _r, timeout_s) in parse_seats().items():
+        assert int(timeout_s) <= maximum, (
+            f"seat {name} declares {timeout_s}s, above the wrapper maximum {maximum}s"
+        )
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["--dangerously-bypass-approvals", "-m", "gpt;rm", "a/../b", "$(id)", "*"],
+)
+def test_a_model_field_that_is_not_a_plain_name_is_refused(tmp_path, model):
+    # Not an allowlist. The refusal is about shape: a value that stops being a
+    # model name and starts being an option, a command, a path or a glob.
+    seats = write_seats(tmp_path, f"a {model} high read-only . 60\n")
+    r = run("a", "x", seats=seats)
+    assert r.returncode == 2
+    assert "codex" not in r.stdout
+
+
+def test_an_unreleased_model_name_is_accepted_because_there_is_no_allowlist(tmp_path):
+    # The counterpart, and the reason the check is a shape and not a list: a
+    # model that ships tomorrow must work today without editing this wrapper.
+    seats = write_seats(tmp_path, "a gpt-9.9-not-yet-released high read-only . 60\n")
+    r = run("a", "x", seats=seats)
+    assert r.returncode == 0, r.stderr
+    assert "gpt-9.9-not-yet-released" in r.stdout
+
+
+def test_the_announcement_states_the_grace_beyond_the_stated_ceiling(tmp_path):
+    # The seat is told it dies at N seconds; the process is actually TERMed at N
+    # and KILLed at N+grace. A reader reconciling a transcript against a billing
+    # window needs the real number, and the seat needs the conservative one.
+    seats = write_seats(tmp_path, "a gpt-5.6-sol high read-only . 42\n")
+    r = run("a", "x", seats=seats)
+    assert r.returncode == 0, r.stderr
+    assert "timeout 42s" in r.stderr
+    assert "grace before hard kill" in r.stderr
+    assert "killed without warning after 42 seconds" in r.stdout
+
+
+# --- the mirrored audit seats (L43) -----------------------------------------
+
+
+def test_the_paired_audit_seats_differ_only_in_their_model():
+    """The invariant that makes a mirrored audit pass a fair comparison.
+
+    `audit-sol` and `audit-terra` exist to run one identical prompt across two
+    vendlines so that any difference in the reports comes from the model. If one
+    seat's effort, sandbox, working root or ceiling drifts, the comparison
+    silently stops being a comparison and starts measuring the configuration —
+    and every other test in this file would stay green, because each seat is
+    checked against the same file it is declared in.
+    """
+    seats = parse_seats()
+    for name in ("audit-sol", "audit-terra"):
+        assert name in seats, f"the paired audit seat {name} is gone — was it renamed?"
+
+    sol_model, *sol_rest = seats["audit-sol"]
+    terra_model, *terra_rest = seats["audit-terra"]
+    fields = ("effort", "sandbox", "workroot", "timeout")
+    differences = [
+        f"{field}: audit-sol={a!r} audit-terra={b!r}"
+        for field, a, b in zip(fields, sol_rest, terra_rest)
+        if a != b
+    ]
+    assert not differences, (
+        "the paired audit seats are not configured identically, so a difference "
+        "between their reports can no longer be attributed to the model: "
+        + "; ".join(differences)
+    )
+    assert sol_model != terra_model, "the paired audit seats run the same model twice"
 
 
 def test_live_wrapper_passes_tracked_ceiling_and_hard_kill_to_timeout(tmp_path):
