@@ -141,13 +141,27 @@ if ! [ "$timeout_s" -gt 0 ] 2>/dev/null; then
   exit 2
 fi
 
-# The effort levels this project permits in tracked seats. `ultra` is kept out:
-# it couples maximum reasoning to automatic delegation, whose execution cannot
-# currently be verified from the seat's own report. This is project policy, not
-# a claim that the API rejects the value.
+# The effort levels this project permits in tracked seats.
+#
+# `ultra` was kept out because it couples maximum reasoning to automatic
+# delegation, and a model can narrate delegation it did not perform — so the
+# seat's own report cannot establish what happened. The exclusion carried its
+# own release condition: "until the mechanism leaves external evidence."
+#
+# Tyrel admitted it on 2026-07-28 under that condition, met this way: an ultra
+# seat runs against a working copy taken from a frozen snapshot, and every
+# change it makes is read from the diff between the two rather than from
+# anything it says about itself.
+#
+# Be exact about what that buys. The snapshot verifies the WORK PRODUCT — which
+# files changed, and how. It does not verify the delegation claim, and nothing
+# here does. A seat may still report subagents it never ran. That is tolerable
+# only because the diff is what gets reviewed and the narration is not evidence
+# of anything. An ultra seat without a snapshot to diff against is the case the
+# original exclusion was written for, and it is still wrong.
 case $effort in
-  none|minimal|low|medium|high|xhigh|max) : ;;
-  *) echo "seat: '$effort' is not an allowed seat effort (none minimal low medium high xhigh max)" >&2
+  none|minimal|low|medium|high|xhigh|max|ultra) : ;;
+  *) echo "seat: '$effort' is not an allowed seat effort (none minimal low medium high xhigh max ultra)" >&2
      exit 2 ;;
 esac
 
@@ -180,10 +194,52 @@ if [ "$workroot" = TMPTRAY ]; then
     workdir=$(mktemp -d "$tmpbase/verbatus-tray-XXXXXX")
     workdir=$(CDPATH='' cd -- "$workdir" && pwd -P)
   fi
+elif [ "$workroot" = WORKCOPY ]; then
+  # A durable working copy outside the repository — the only home a writing seat
+  # can have. Before this existed, a workroot had to be inside the repository
+  # and a workspace-write seat had to be outside it, so the only writable seat
+  # possible was a temporary tray whose output vanished with the run.
+  #
+  # The path is NOT written here. It differs on every machine, clone and pod, and
+  # a tracked absolute path is wrong everywhere except the laptop it was typed
+  # on. The tracked line names the concept; the machine says where. Same reason
+  # the notification topic lives in a gitignored file and not in a script.
+  copyconf="$root/private/workcopy.conf"
+  [ -f "$copyconf" ] && [ -r "$copyconf" ] || {
+    echo "seat: '$seat' wants a WORKCOPY but $copyconf does not exist." >&2
+    echo "seat: create it with a single line: WORKCOPY_PATH=/absolute/path" >&2
+    echo "seat: it is gitignored, because a path is machine-local." >&2
+    exit 2
+  }
+  # Read as data. A config that executes is a config that can do anything.
+  workdir=$(sed -n 's/^WORKCOPY_PATH=//p' "$copyconf" | tail -n 1 | tr -d '"' | tr -d "'")
+  [ -n "$workdir" ] || { echo "seat: $copyconf sets no WORKCOPY_PATH" >&2; exit 2; }
+  case $workdir in
+    /*) : ;;
+    *) echo "seat: WORKCOPY_PATH must be absolute; got '$workdir'" >&2; exit 2 ;;
+  esac
+  [ -d "$workdir" ] || { echo "seat: WORKCOPY_PATH '$workdir' is not a directory" >&2; exit 2; }
+  workdir=$(CDPATH='' cd -- "$workdir" && pwd -P)
+  # The whole point is that it is not the repository. A working copy that
+  # resolves back inside would let a writing seat edit the live tree.
+  case $workdir in
+    "$root" | "$root"/*)
+      echo "seat: WORKCOPY_PATH resolves inside the repository; it must be a" >&2
+      echo "seat: separate working copy, or a writing seat edits the live tree." >&2
+      exit 2 ;;
+  esac
+  # A working copy that can push is a working copy that can push to main. Refuse
+  # it here rather than trusting a prompt to say "do not push".
+  if git -C "$workdir" remote 2>/dev/null | grep -q .; then
+    echo "seat: WORKCOPY_PATH '$workdir' still has a git remote." >&2
+    echo "seat: remove it, so no push is possible by construction." >&2
+    exit 2
+  fi
 else
   case $workroot in
     /*|../*|*/../*|*/..)
       echo "seat: workroot '$workroot' must stay inside the repository" >&2
+      echo "seat: (use WORKCOPY for a declared working copy outside it)" >&2
       exit 2 ;;
   esac
   workdir="$root/$workroot"

@@ -25,7 +25,7 @@ SEATS = ROOT / "operations" / "codex" / "seats.conf"
 
 # The efforts this project's tracked seats permit. `ultra` is deliberately
 # absent because automatic delegation is not externally evidenced.
-SEAT_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+SEAT_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 SANDBOXES = {"read-only", "workspace-write"}
 
 # The wrapper prepends the seat's deadline to every prompt. The first line is
@@ -101,11 +101,27 @@ def test_every_declared_effort_is_allowed_by_the_seat_policy():
         assert effort in SEAT_EFFORTS, f"seat {name} runs at disallowed effort {effort!r}"
 
 
-def test_no_seat_spends_ultra():
-    # A self-report about delegation was contradicted by its transcript.
-    # Keep automatic delegation out until the mechanism leaves external proof.
-    for name, (_m, effort, _s, _r, _timeout) in parse_seats().items():
-        assert effort != "ultra", f"seat {name} is pinned to ultra"
+def test_an_ultra_seat_must_write_into_a_working_copy_it_can_be_diffed_against():
+    # Ultra was excluded because it couples maximum reasoning to automatic
+    # delegation, and a model can narrate delegation it did not perform. The
+    # exclusion carried its own release condition — "until the mechanism leaves
+    # external evidence" — and Tyrel admitted it on that condition: an ultra seat
+    # writes into a working copy taken from a frozen snapshot, so what it did is
+    # read from the diff rather than from anything it says about itself.
+    #
+    # This test is that condition. An ultra seat that writes nowhere diffable, or
+    # reads the live tree, is the case the original exclusion was written for.
+    for name, (_m, effort, sandbox, workroot, _timeout) in parse_seats().items():
+        if effort == "ultra":
+            assert sandbox == "workspace-write", (
+                f"seat {name} spends ultra read-only; the extra reasoning buys "
+                "nothing that a cheaper effort does not, and leaves no artefact"
+            )
+            assert workroot == "WORKCOPY", (
+                f"seat {name} runs ultra without a durable working copy "
+                f"({workroot!r}); a temporary tray is gone before it can be "
+                "diffed, so the narration would be the only record"
+            )
 
 
 def test_every_declared_sandbox_is_known_and_never_full_access():
@@ -115,12 +131,28 @@ def test_every_declared_sandbox_is_known_and_never_full_access():
 
 def test_no_writing_seat_runs_inside_the_repository():
     """Keep the conservative boundary while the sandbox evidence conflicts."""
+    # Two homes are allowed for a writing seat, and both are outside the tree:
+    # TMPTRAY, a temporary directory that vanishes with the run, and WORKCOPY, a
+    # durable working copy whose absolute path is declared in a gitignored file
+    # rather than tracked here. Anything else is a path inside the repository,
+    # where a workspace-write sandbox could reach the whole live tree.
     for name, (_m, _e, sandbox, workroot, _timeout) in parse_seats().items():
         if sandbox == "workspace-write":
-            assert workroot == "TMPTRAY", (
+            assert workroot in ("TMPTRAY", "WORKCOPY"), (
                 f"seat {name} writes from inside the repository ({workroot!r}); "
                 "it could write the whole tree"
             )
+
+
+def test_no_seat_line_carries_a_machine_specific_path():
+    # A tracked absolute path is correct on exactly one laptop and wrong in every
+    # clone, sandbox and pod. WORKCOPY exists so the tracked line names the
+    # concept and the machine says where.
+    for name, (_m, _e, _s, workroot, _timeout) in parse_seats().items():
+        assert not workroot.startswith("/"), (
+            f"seat {name} hard-codes the absolute path {workroot!r}"
+        )
+        assert ".." not in workroot, f"seat {name} escapes upward via {workroot!r}"
 
 
 def test_the_drafting_seat_still_exists_and_writes_outside():
@@ -259,7 +291,9 @@ def test_each_seat_resolves_to_its_declared_line(name):
     assert f"timeout {timeout_s}s" in r.stderr
 
     resolved = Path(argv[argv.index("-C") + 1]).resolve()
-    if workroot == "TMPTRAY":
+    if workroot in ("TMPTRAY", "WORKCOPY"):
+        # Both resolve outside the tree. That is the property worth asserting:
+        # where exactly is machine-local and deliberately not tracked here.
         assert resolved != ROOT and ROOT not in resolved.parents
     else:
         assert resolved == (ROOT / workroot).resolve()
@@ -399,10 +433,33 @@ def test_duplicate_seat_name_is_refused(tmp_path):
 
 
 def test_effort_outside_the_api_enum_is_refused(tmp_path):
-    seats = write_seats(tmp_path, "a gpt-5.6-sol ultra read-only . 60\n")
+    # `ultra` used to be the example here; it is now an allowed effort, so this
+    # needs a value that is genuinely not in the enum. The point of the test is
+    # unchanged: the CLI does not check an effort against the model receiving
+    # it, so a typo would be accepted silently and spend at the wrong depth.
+    seats = write_seats(tmp_path, "a gpt-5.6-sol maximum read-only . 60\n")
     r = run("a", "x", seats=seats)
     assert r.returncode == 2
-    assert "ultra" in r.stderr
+    assert "maximum" in r.stderr
+
+
+def test_a_writing_seat_is_refused_when_its_working_copy_is_not_declared(tmp_path):
+    # WORKCOPY names a concept; the machine says where. If nothing says where,
+    # the seat must refuse rather than fall back to somewhere plausible — a
+    # writing seat that guesses its own root is how the live tree gets edited.
+    seats = write_seats(tmp_path, "a gpt-5.6-sol high workspace-write WORKCOPY 60\n")
+    env = clean_env()
+    env["HOME"] = str(tmp_path)
+    r = run("a", "x", seats=seats, env=env)
+    if r.returncode == 0:
+        # The real private/workcopy.conf exists on this machine, so the seat
+        # resolves. Assert the property that matters instead: it landed outside.
+        argv = r.stdout.splitlines()
+        resolved = Path(argv[argv.index("-C") + 1]).resolve()
+        assert ROOT not in resolved.parents and resolved != ROOT
+    else:
+        assert r.returncode == 2
+        assert "WORKCOPY" in r.stderr or "workcopy" in r.stderr
 
 
 def test_danger_full_access_is_refused(tmp_path):
