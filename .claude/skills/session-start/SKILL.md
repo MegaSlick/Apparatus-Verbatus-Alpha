@@ -94,6 +94,18 @@ then the rest of `workbench/active/`.
 One short paragraph: what effort this deserves, what shape the work should take, and why.
 He decides — this is a recommendation with reasoning, not a request for permission to think.
 
+**The default shape is an orchestrator** (CLAUDE.md, *Effort and shape*): work done through
+agents across both vendors, model and effort chosen per unit of work, the main context kept
+lean enough to hold the goal. Say so in the read-back, and name the agents and workflows the
+session's goals will likely need. If this session is one of the small exceptions — a single
+question, a bounded one-file change — say that instead, and say why coordinating it would
+cost more than doing it.
+
+**Say whether anyone is watching.** Attended, ask the question rather than guessing at it;
+unattended, never block on him — record what cannot be answered and route around it. The
+two produce different work, and a session that has not decided which it is will block at
+2am or guess at 2pm.
+
 Scale the answer to the goal. Small workflows and ordinary subagent use are encouraged and
 need no ceremony; what earns a conversation is a *large commitment* — a long run, a big
 fan-out, a session that will spend real money or a whole night.

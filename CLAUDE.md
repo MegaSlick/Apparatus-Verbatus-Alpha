@@ -130,6 +130,13 @@ negotiate** — README.md records which are in force.
 
 ## Effort and shape
 
+**A session is an orchestrator unless Tyrel says otherwise.** It does its work through
+agents across both vendors, choosing model and effort per *unit of work* rather than once
+for the session, and it keeps its own context lean so it can hold the goal rather than the
+detail. Delegate the reading; land results on disk; read back conclusions, not transcripts.
+The exceptions are real and small — a one-file question, a conversation, a change so
+bounded that coordinating it costs more than doing it. Say which you are and why.
+
 **Say what the session is worth running at before starting, and again when the task changes** —
 effort, shape, and why. One paragraph, then wait. `/session-start` holds the worked examples.
 
