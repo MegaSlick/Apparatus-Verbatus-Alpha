@@ -40,7 +40,14 @@ fi
 # The cost of that choice, and it is worth knowing: checking out a commit from
 # before a hook existed gives you that commit's hooks, not today's. Protections
 # travel with the branch. Going backwards in history goes backwards in guards.
-if ! chmod +x .githooks/pre-commit .githooks/pre-push .githooks/commit-msg \
+#
+# pre-merge-commit and pre-applypatch are in this list for a reason worth
+# stating: git runs neither `pre-commit` for a merge nor for `git am`, so those
+# two files are the only thing standing on the integration paths. A missing or
+# unexecutable one is a rule that is off without saying so, which is why chmod
+# failing here fails the whole install rather than warning.
+if ! chmod +x .githooks/pre-commit .githooks/pre-merge-commit \
+           .githooks/pre-applypatch .githooks/pre-push .githooks/commit-msg \
            .githooks/check-all.sh .githooks/check-documents.sh \
            .githooks/doc-allowlist.sh .githooks/record-audit.sh \
            .githooks/install.sh; then
@@ -62,6 +69,7 @@ echo "Hooks installed for this clone."
 echo ""
 echo "  Now checked by installed local alarms:"
 echo "    no commits on main            no stray notes in the tree"
+echo "    merges and 'git am' checked   (same rules as a plain commit)"
 echo "    known secret forms/payloads   no undeclared binary fixtures"
 echo "    no direct push to main        no force-push over someone's work"
 echo "    no push without an audit      (.githooks/record-audit.sh)"

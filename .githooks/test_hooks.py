@@ -1361,6 +1361,8 @@ def test_hook_installer_does_not_report_success_when_chmod_fails(tmp_path):
     shutil.copy2(HOOKS / "install.sh", hooks / "install.sh")
     for name in (
         "pre-commit",
+        "pre-merge-commit",
+        "pre-applypatch",
         "pre-push",
         "commit-msg",
         "check-all.sh",
@@ -1408,6 +1410,8 @@ def test_hook_installer_configures_hooks_after_prerequisites_succeed(tmp_path):
     shutil.copy2(HOOKS / "install.sh", hooks / "install.sh")
     for name in (
         "pre-commit",
+        "pre-merge-commit",
+        "pre-applypatch",
         "pre-push",
         "commit-msg",
         "check-all.sh",
@@ -1441,7 +1445,17 @@ def test_hook_installer_configures_hooks_after_prerequisites_succeed(tmp_path):
     # Ledger L42: nothing asserted the executable bit the whole install exists
     # to set. A hooksPath pointing at files git cannot execute is a clone that
     # reports "Hooks installed" and runs no hook at all.
-    for name in ("pre-commit", "pre-push", "commit-msg", "record-audit.sh"):
+    # Ledger L15: the two integration-path hooks are as easy to leave
+    # unexecutable as any other, and a hook git cannot run is a rule that is off
+    # without saying so.
+    for name in (
+        "pre-commit",
+        "pre-merge-commit",
+        "pre-applypatch",
+        "pre-push",
+        "commit-msg",
+        "record-audit.sh",
+    ):
         assert os.access(hooks / name, os.X_OK), f"{name} was not made executable"
 
 
@@ -1462,6 +1476,8 @@ def test_hook_installer_does_not_configure_when_mkdir_fails(tmp_path):
     shutil.copy2(HOOKS / "install.sh", hooks / "install.sh")
     for name in (
         "pre-commit",
+        "pre-merge-commit",
+        "pre-applypatch",
         "pre-push",
         "commit-msg",
         "check-all.sh",
@@ -1764,6 +1780,282 @@ def test_ci_scans_annotated_tag_objects_on_tag_pushes():
     assert "tags: ['**']" in workflow
     assert '--ref-object "$GITHUB_REF"' in workflow
     assert "--ref-fields" in workflow
+
+
+SAMPLE_SECRET = "rpa_" + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r"
+
+INTEGRATION_HOOKS = (
+    "pre-commit",
+    "pre-merge-commit",
+    "pre-applypatch",
+    "commit-msg",
+    "check_ingress.py",
+    "doc-allowlist.sh",
+)
+
+
+def git(repo, *args, check=True, env=None):
+    process_env = clean_hook_env()
+    if env:
+        process_env.update(env)
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        env=process_env,
+        capture_output=True,
+        text=True,
+        check=check,
+        timeout=15,
+    )
+
+
+def install_integration_hooks(repo):
+    """Install the real commit-path hooks the way install.sh does.
+
+    Nothing here disables a hook to build its fixture: the adversarial history
+    is created *before* core.hooksPath is set, so no test needs `--no-verify`
+    or `-c core.hooksPath=` to reach the state it is testing.
+    """
+    hooks = repo / ".githooks"
+    hooks.mkdir(exist_ok=True)
+    for name in INTEGRATION_HOOKS:
+        source = HOOKS / name
+        assert source.is_file(), f"{name} does not exist, so the hook cannot be installed"
+        shutil.copy2(source, hooks / name)
+        (hooks / name).chmod(0o755)
+    git(repo, "config", "core.hooksPath", ".githooks")
+    return hooks
+
+
+def make_integration_repo(path, *, secret=SAMPLE_SECRET):
+    """A repo with a diverged branch and a patch, both carrying a credential.
+
+    Returns the directory holding two patches: one poisoned, one clean.
+    """
+    subprocess.run(["git", "init", "-q", "-b", "work/base", str(path)], check=True, timeout=15)
+    git(path, "config", "user.name", "Test")
+    git(path, "config", "user.email", "test@example.invalid")
+    git(path, "config", "commit.gpgsign", "false")
+    (path / "safe.txt").write_text("safe\n", encoding="utf-8")
+    git(path, "add", "safe.txt")
+    git(path, "commit", "-qm", "base\n\nCo-Authored-By: Test <t@example.invalid>")
+
+    git(path, "switch", "-qc", "work/poisoned")
+    (path / "leaked.txt").write_text(f"token = {secret}\n", encoding="utf-8")
+    git(path, "add", "leaked.txt")
+    git(path, "commit", "-qm", "add credential\n\nCo-Authored-By: Test <t@example.invalid>")
+
+    git(path, "switch", "-q", "work/base")
+    git(path, "switch", "-qc", "work/clean")
+    (path / "harmless.txt").write_text("harmless\n", encoding="utf-8")
+    git(path, "add", "harmless.txt")
+    git(path, "commit", "-qm", "add harmless\n\nCo-Authored-By: Test <t@example.invalid>")
+
+    # Diverge, so a merge is a real merge commit rather than a fast-forward.
+    git(path, "switch", "-q", "work/base")
+    (path / "other.txt").write_text("other\n", encoding="utf-8")
+    git(path, "add", "other.txt")
+    git(path, "commit", "-qm", "diverge\n\nCo-Authored-By: Test <t@example.invalid>")
+
+    patches = path.parent / "patches"
+    git(path, "format-patch", "-q", "-1", "work/poisoned", "-o", str(patches / "poisoned"))
+    git(path, "format-patch", "-q", "-1", "work/clean", "-o", str(patches / "clean"))
+    install_integration_hooks(path)
+    return patches
+
+
+def head_of(repo):
+    return git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_merge_commit_is_checked_like_any_other_commit(tmp_path):
+    # Ledger L15. Git runs `pre-merge-commit`, never `pre-commit`, for a merge
+    # that resolves cleanly. With no such hook the credential scan, the stray
+    # document rule and the branch rule were all absent on the path a session is
+    # most likely to use when integrating someone else's work.
+    repo = tmp_path / "repo"
+    make_integration_repo(repo)
+    before = head_of(repo)
+    result = git(repo, "merge", "--no-edit", "work/poisoned", check=False)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "ingress check" in result.stderr
+    assert SAMPLE_SECRET not in result.stdout + result.stderr
+    assert head_of(repo) == before, "the merge commit was created despite the credential"
+
+
+def test_clean_merge_still_completes(tmp_path):
+    # The guard above must not cost the ordinary case. A merge hook that refuses
+    # every merge would pass the test above and be useless.
+    repo = tmp_path / "repo"
+    make_integration_repo(repo)
+    before = head_of(repo)
+    result = git(repo, "merge", "--no-edit", "work/clean", check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert head_of(repo) != before
+    parents = git(repo, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()
+    assert len(parents) == 3, "expected a two-parent merge commit"
+
+
+def test_merge_on_main_is_refused_like_a_commit_on_main(tmp_path):
+    # Hard rule 3. A local merge into main *is* a commit on main, and the branch
+    # rule has to reach it or the rule is enforced everywhere except the one
+    # command that most looks like integration.
+    repo = tmp_path / "repo"
+    make_integration_repo(repo)
+    git(repo, "branch", "-m", "work/base", "main")
+    before = head_of(repo)
+    result = git(repo, "merge", "--no-edit", "work/clean", check=False)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "commit on main" in result.stderr
+    assert head_of(repo) == before
+
+
+def test_git_am_is_checked_like_any_other_commit(tmp_path):
+    # Ledger L15, the other half: `git am` runs `pre-applypatch`, not
+    # `pre-commit`. The patch is already in the working tree and the index by
+    # then, which is exactly what the ingress check reads.
+    repo = tmp_path / "repo"
+    patches = make_integration_repo(repo)
+    git(repo, "switch", "-qc", "work/apply")
+    before = head_of(repo)
+    poisoned = sorted((patches / "poisoned").glob("*.patch"))
+    assert poisoned, "no patch was produced for the fixture"
+    result = git(repo, "am", *[str(p) for p in poisoned], check=False)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "ingress check" in result.stderr
+    assert SAMPLE_SECRET not in result.stdout + result.stderr
+    assert head_of(repo) == before, "git am committed the patch despite the credential"
+    git(repo, "am", "--abort", check=False)
+
+
+def test_clean_git_am_still_applies(tmp_path):
+    repo = tmp_path / "repo"
+    patches = make_integration_repo(repo)
+    git(repo, "switch", "-qc", "work/apply")
+    before = head_of(repo)
+    clean = sorted((patches / "clean").glob("*.patch"))
+    result = git(repo, "am", *[str(p) for p in clean], check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert head_of(repo) != before
+    assert (repo / "harmless.txt").is_file()
+
+
+def test_commit_message_hook_scans_the_author_header(tmp_path):
+    # Ledger L16. `git commit --author=...` writes operator-supplied text into
+    # the commit object, and nothing scanned it: the message check reads the
+    # message only. A pasted token lives in a name field as happily as in prose.
+    repo = tmp_path / "repo"
+    make_integration_repo(repo)
+    (repo / "note.txt").write_text("note\n", encoding="utf-8")
+    git(repo, "add", "note.txt")
+    result = git(
+        repo,
+        "commit",
+        "--author",
+        f"Pasted {SAMPLE_SECRET} <pasted@example.invalid>",
+        "-m",
+        "add a note\n\nCo-Authored-By: Test <t@example.invalid>",
+        check=False,
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert SAMPLE_SECRET not in result.stdout + result.stderr
+    assert "author" in result.stderr.lower()
+
+
+def test_commit_message_hook_scans_the_committer_header(tmp_path):
+    # The committer identity is separate from the author and equally unscanned.
+    repo = tmp_path / "repo"
+    make_integration_repo(repo)
+    (repo / "note.txt").write_text("note\n", encoding="utf-8")
+    git(repo, "add", "note.txt")
+    result = git(
+        repo,
+        "commit",
+        "-m",
+        "add a note\n\nCo-Authored-By: Test <t@example.invalid>",
+        check=False,
+        env={"GIT_COMMITTER_NAME": f"Pasted {SAMPLE_SECRET}"},
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert SAMPLE_SECRET not in result.stdout + result.stderr
+    assert "committer" in result.stderr.lower()
+
+
+def test_ordinary_commit_still_lands_with_the_identity_scan_in_place(tmp_path):
+    repo = tmp_path / "repo"
+    make_integration_repo(repo)
+    (repo / "note.txt").write_text("note\n", encoding="utf-8")
+    git(repo, "add", "note.txt")
+    result = git(
+        repo,
+        "commit",
+        "-m",
+        "add a note\n\nCo-Authored-By: Test <t@example.invalid>",
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_commit_message_reports_a_check_that_could_not_run_as_such(tmp_path):
+    # Ledger L26 and GOVERNANCE 10. check_ingress.py exits 2 when it could not
+    # read what it was pointed at — a FIFO, a socket, a device, an unreadable
+    # path. The hook treated every non-zero exit as "a credential was found",
+    # which asserts a measurement that never happened and misdirects whoever is
+    # trying to work out why their commit was refused.
+    repo = tmp_path / "repo"
+    make_commit_msg_repo(repo)
+    (repo / ".githooks" / "check_ingress.py").write_text(
+        "import sys\nprint('could not open the file', file=sys.stderr)\nraise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+    result = run_commit_message_in(
+        repo,
+        "Describe change\n\nCo-Authored-By: Test <t@example.invalid>\n",
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "could not run" in result.stderr
+    assert "matched a recognized credential" not in result.stderr
+
+
+def test_commit_message_still_names_a_real_credential_match(tmp_path):
+    # The counterpart: exit 1 must keep saying a credential was found. Splitting
+    # the two exits must not blur them into one vague message.
+    repo = tmp_path / "repo"
+    make_commit_msg_repo(repo)
+    result = run_commit_message_in(
+        repo,
+        f"Do not record {SAMPLE_SECRET}\n\nCo-Authored-By: Test <t@example.invalid>\n",
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "credential" in result.stderr
+    assert SAMPLE_SECRET not in result.stderr
+
+
+def test_pre_push_reports_unknown_for_a_receipt_it_cannot_read(tmp_path):
+    # Ledger L22's remaining half. A path that is not a regular file — a FIFO
+    # planted or left by a crashed process, a socket, a directory — was reported
+    # as "no receipt recorded", which is a measurement of zero coverage taken by
+    # an instrument that read nothing (GOVERNANCE 10).
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    receipts = repo / ".git" / "audit-receipts"
+    receipts.mkdir()
+    os.mkfifo(receipts / sha)
+    result = run_isolated_pre_push(repo, sha)
+    assert result.returncode == 0, "the checklist must never refuse a push"
+    assert "UNKNOWN" in result.stderr
+    assert "no receipt recorded" not in result.stderr
+
+
+def test_pre_push_still_reports_a_missing_receipt_as_missing(tmp_path):
+    # Nothing at the path is a different state from something unreadable at it,
+    # and both must keep their own words.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    result = run_isolated_pre_push(repo, sha)
+    assert result.returncode == 0
+    assert "no reviewer recorded" in result.stderr
+    assert "UNKNOWN" not in result.stderr
 
 
 def test_reviewer_pass_scans_gpt_output_before_first_write():

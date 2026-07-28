@@ -309,25 +309,54 @@ while read -r line_local_ref line_local_sha line_remote_ref line_remote_sha ||
     # cleaner — or dirtier — than evidence that was actually examined.
     receipt_state="unknown"
     receipt_detail="the git directory could not be located, so no receipt could be looked up"
-  elif [ ! -f "$receipts/$audit_sha" ]; then
-    receipt_state="no receipt recorded"
-  elif ! python3 "$ingress" --audit-receipt "$receipts/$audit_sha" >/dev/null 2>&1; then
-    receipt_state="receipt is incomplete or invalid"
-  elif ! grep -Eqx "[[:space:]]*commit:[[:space:]]+${audit_sha}[[:space:]]*" \
-       "$receipts/$audit_sha" 2>/dev/null; then
-    # Matched loosely on purpose. The receipt's exact spacing is a contract
-    # between record-audit.sh and check_ingress.py, asserted in test_hooks.py;
-    # welding a third copy of it into this grep would mean any tidy-up of the
-    # writer silently reported every reviewed push as unreviewed. This section
-    # never blocks, so that drift would surface as *lost coverage*, not as a bug.
-    receipt_state="receipt records a different commit"
   else
     receipt="$receipts/$audit_sha"
-    receipt_state="ok"
-    if ! names=$(distinct_reviewer_names "$receipt"); then
+    if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then
+      receipt_state="no receipt recorded"
+    elif [ ! -f "$receipt" ] || [ ! -r "$receipt" ]; then
+      # Something is at the receipt path, but it is not a regular file this hook
+      # can read: a FIFO, a socket, a device, a directory, a dangling symlink, a
+      # file whose permissions refuse us. Nothing was read, so nothing is
+      # claimed.
+      #
+      # Reporting that as "no receipt recorded" would be a coverage measurement
+      # taken by an instrument that never opened anything (GOVERNANCE 10). It is
+      # also how a planted FIFO hides: `grep` and `sed` block forever on one, so
+      # a push would hang with no explanation rather than say it could not look.
+      # Establishing the file type first is what keeps every later read bounded.
       receipt_state="unknown"
-      receipt_detail="the reviewer names in the receipt could not be read"
-      names=""
+      receipt_detail="the receipt path is not a readable regular file, so nothing could be read"
+    else
+      # The status is captured on its own line rather than read from `$?` after
+      # an `if`: a completed `if` compound sets `$?` to its own status, not the
+      # condition's, so the two cases would collapse into one.
+      python3 "$ingress" --audit-receipt "$receipt" >/dev/null 2>&1
+      scan_status=$?
+      if [ "$scan_status" -eq 1 ]; then
+        receipt_state="receipt is incomplete or invalid"
+      elif [ "$scan_status" -ne 0 ]; then
+        # Exit 1 is a verdict on the receipt. Any other non-zero exit means the
+        # scanner could not run — including the case where the path stopped
+        # being a regular file between the test above and this read.
+        receipt_state="unknown"
+        receipt_detail="the receipt could not be scanned (ingress check exit ${scan_status}), so its contents are unknown"
+      elif ! grep -Eqx "[[:space:]]*commit:[[:space:]]+${audit_sha}[[:space:]]*" \
+           "$receipt" 2>/dev/null; then
+        # Matched loosely on purpose. The receipt's exact spacing is a contract
+        # between record-audit.sh and check_ingress.py, asserted in
+        # test_hooks.py; welding a third copy of it into this grep would mean
+        # any tidy-up of the writer silently reported every reviewed push as
+        # unreviewed. This section never blocks, so that drift would surface as
+        # *lost coverage*, not as a bug.
+        receipt_state="receipt records a different commit"
+      else
+        receipt_state="ok"
+        if ! names=$(distinct_reviewer_names "$receipt"); then
+          receipt_state="unknown"
+          receipt_detail="the reviewer names in the receipt could not be read"
+          names=""
+        fi
+      fi
     fi
   fi
 

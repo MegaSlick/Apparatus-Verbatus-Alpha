@@ -48,8 +48,63 @@ if [ ! -f "$ingress" ]; then
   echo "  BLOCKED: $ingress is missing, so the commit message cannot be checked." >&2
   exit 1
 fi
-if ! python3 "$ingress" --message-file "$message"; then
-  echo "  BLOCKED: the commit message matched a recognized credential pattern." >&2
+# A finding and a failure are opposite states, and the operator is told which
+# one happened. `check_ingress.py` exits 1 when it recognized a credential and 2
+# when it could not read what it was pointed at — a FIFO, a socket, a device, an
+# unreadable path, a scanner that itself broke. Reporting the second as the
+# first asserts a measurement nobody took (GOVERNANCE 10) and misdirects whoever
+# is trying to work out why their commit was refused. Both still block: a check
+# that cannot run is a failure, not a pass.
+#
+# The status is captured on its own line, never with `if ! cmd; then ... $?`:
+# after an `if` compound completes, `$?` is the status of the compound, not of
+# its condition, so reading the exit code that way yields 0 and every failure
+# would report as the wrong kind.
+python3 "$ingress" --message-file "$message"
+status=$?
+if [ "$status" -ne 0 ]; then
+  if [ "$status" -eq 1 ]; then
+    echo "  BLOCKED: the commit message matched a recognized credential pattern." >&2
+  else
+    echo "  BLOCKED: the commit message could not be checked for credentials" >&2
+    echo "  (the ingress check exited ${status}, meaning it could not run)." >&2
+    echo "  Nothing is claimed about the message either way; the commit is" >&2
+    echo "  refused because unknown is not the same as clean." >&2
+  fi
+  exit 1
+fi
+
+# The author and committer headers carry operator-supplied text into the commit
+# object, and until now nothing looked at them: `git commit --author='...'` and
+# a pasted `user.name` will carry a token as happily as any prose. Read from
+# `git var`, which is what git itself will record — it reflects --author, the
+# GIT_AUTHOR_*/GIT_COMMITTER_* environment and the configured identity alike.
+#
+# Handed to --ref-fields, the existing NUL-delimited contract, which fingerprints
+# each field instead of echoing it. An identity that failed a scan must not be
+# reprinted to a terminal, a log or a transcript on its way out.
+if ! author_ident=$(git var GIT_AUTHOR_IDENT 2>/dev/null) ||
+   ! committer_ident=$(git var GIT_COMMITTER_IDENT 2>/dev/null) ||
+   [ -z "$author_ident" ] || [ -z "$committer_ident" ]; then
+  echo "  BLOCKED: the author and committer identity could not be read, so" >&2
+  echo "  they cannot be checked for credentials. A check that cannot run" >&2
+  echo "  is a failure, not a pass." >&2
+  exit 1
+fi
+
+printf '%s\0%s\0' "$author_ident" "$committer_ident" |
+  python3 "$ingress" --ref-fields
+status=$?
+if [ "$status" -ne 0 ]; then
+  if [ "$status" -eq 1 ]; then
+    echo "  BLOCKED: the author or committer header matched a recognized" >&2
+    echo "  credential pattern. The offending text is not reprinted here." >&2
+    echo "  Check what --author, user.name/user.email and the GIT_AUTHOR_*" >&2
+    echo "  and GIT_COMMITTER_* variables are set to." >&2
+  else
+    echo "  BLOCKED: the author and committer headers could not be checked" >&2
+    echo "  (the ingress check exited ${status}, meaning it could not run)." >&2
+  fi
   exit 1
 fi
 
