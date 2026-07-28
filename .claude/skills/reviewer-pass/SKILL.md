@@ -225,11 +225,22 @@ status is no longer empty, do not record the pass: the reviewed state changed. P
 reports as evidence, settle the tree, and run a fresh pass on the new commit. These checks
 catch visible drift; the commit snapshot above is what keeps the reviewers' input stable.
 
+**Always pass `--commit "$reviewed_sha"`.** Without it the receipt binds to whatever `HEAD` is
+at the moment you type the command, which is right only if nothing was committed while the
+reviewers worked — and that assumption has already failed once here. Reviewers read one
+commit, the session committed again while they were reading, and the receipt was stamped
+against a commit nobody had opened. It claimed coverage that did not exist, which is worse
+than claiming none.
+
 ```sh
-.githooks/record-audit.sh 'Claude Opus 5' '<what it found>'
-.githooks/record-audit.sh 'Claude Fable 5' '<what it found>'
-.githooks/record-audit.sh 'GPT-5.6 Sol (OpenAI)' '<what it found>'
+.githooks/record-audit.sh --commit "$reviewed_sha" 'Claude Opus 5' '<what it found>'
+.githooks/record-audit.sh --commit "$reviewed_sha" 'Claude Fable 5' '<what it found>'
+.githooks/record-audit.sh --commit "$reviewed_sha" 'GPT-5.6 Sol (OpenAI)' '<what it found>'
 ```
+
+If the tree has moved on, that is not a problem to route around: the receipt correctly names
+the older commit, and `pre-push` will show the current `HEAD` as unreviewed. That is the true
+state, and seeing it is the point.
 
 **The receipt names one commit.** Amend it or add another and the work must be audited again —
 an audit is of a state, not of a branch.
