@@ -179,8 +179,14 @@ agent first. Match the model to one *unit of work*, not to the size of the pile.
 
 ## Agents
 
-The roster lives in `.claude/agents/`, each with model and effort **pinned in its file** —
-effort is declared per role, never inherited from the session by accident.
+The roster lives in `.claude/agents/`. **Effort is pinned in every file** — declared per role,
+never inherited from the session by accident, which is the property that matters most: a
+review must not quietly run at a cheap session's depth.
+
+**Model is pinned in five of the six.** `consult` declares `inherit`, deliberately, because
+the right model for a second opinion depends on the question rather than the role. Any caller
+may also override the model for a single invocation, so what a file declares is the default
+and the request — never proof of the release that actually answered. Record what answered.
 
 **The models, in one breath.** Haiku is the cheap fast reader — about a fifth of Opus's
 burn, fine for finding things, never for judging them. Sonnet 5 is near-Opus on coding,

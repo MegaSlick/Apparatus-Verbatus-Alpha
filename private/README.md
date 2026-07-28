@@ -10,7 +10,15 @@ enforces that rule even against `git add -f`. This is a path boundary, not a con
 personal-data scanner: alpha may still contain recorded personal data elsewhere under
 Tyrel's 2026-07-28 ruling.
 
-Credentials and notification topics are secrets and do not belong in any file here. The
-notification client refuses `private/ntfy.conf` without reading it and accepts its bearer
-topic only from the process environment. Notifications remain off until Tyrel chooses how
-that environment value is stored and injected without a file.
+Credentials are secrets. This directory is where the ones that must live on disk are kept,
+and it is gitignored precisely so they can be — Tyrel's ruling. Two live here today:
+
+- `ntfy.conf` — the notification bearer topic. `operations/notify/notify.sh` reads it when
+  `NTFY_TOPIC` is not set in the environment. Anyone holding the topic can read the stream.
+- `workcopy.conf` — the absolute path of the working copy a writing Codex seat uses. Not a
+  secret, but machine-local: a path is right on one laptop and wrong everywhere else, so it
+  is declared here rather than tracked in `operations/codex/seats.conf`.
+
+A secret may live here. It may not leave: not into a commit, a script, a note, a transcript
+or a command line. The old repository hardcoded the topic in five shell scripts and it ended
+up in cleartext in a census dump.

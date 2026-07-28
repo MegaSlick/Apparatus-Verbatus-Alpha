@@ -1,7 +1,14 @@
 # workbench
 
-**Local only. Everything here except this file is gitignored and never reaches the
-repository.**
+**Local, except the live drawer. `active/` is tracked; `archive/`, `raw/`, `scratch/` and
+`design/` are gitignored and never reach the repository.**
+
+`active/` was tracked for alpha on Tyrel's ruling, so a reviewer sees what a session is
+actually planning next to the code it produced, and so a note deleted by mistake is
+recoverable. It earned that immediately: an auditor reading the tracked `RUN_PLAN.md` found
+a picker instruction in it, which GOVERNANCE 3 forbids outright — nobody reading the code
+would ever have found it. It stays small because it is cleaned every session, which is the
+whole reason it can be tracked at all.
 
 This is where AI notes, handoffs, session summaries, task lists, grep dumps, design
 scribbles and half-finished thinking live. The old repository had no such place, so
@@ -56,10 +63,16 @@ that should trigger a re-read. Without that it is a daydream, not a plan.
    the drawer's size at session start so it is pruned deliberately rather than when it
    becomes a nuisance.
 
-## Why it is gitignored
+## Why most of it is gitignored
 
 So the repository stays the thing you can trust. The canonical documents bind; dated
 `history/` is evidence, and the autoclave holds material still under review — everything
 speculative, dated, or half-finished beyond those lives here and dies here. The
 `pre-commit` hook refuses stray notes in what you are about to commit, where the hooks
 are installed; CI refuses them across the whole tree at the door.
+
+`active/` is the one declared exception, and it is bounded rather than open: two levels
+deep at most, files plus one dated subdirectory. Deeper is a notes tree, which is precisely
+what this rule exists to refuse — being inside the live drawer is not a licence to grow one.
+The other drawers stay out because they are where volume collects: `raw/` alone is 35MB of
+engine logs. Tracking those is how a repository ends up with 320 markdown files again.

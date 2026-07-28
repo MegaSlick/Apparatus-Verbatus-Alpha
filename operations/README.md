@@ -19,10 +19,12 @@ permission in that session, and shutdown must be verified against provider state
 billing, never inferred from an acknowledgement. The current directory contains that
 contract, not a launcher or verifier.
 
-`notify/notify.sh` accepts its bearer topic only from the `NTFY_TOPIC` process environment
-and refuses the retired `private/ntfy.conf` without reading it. It does not decide how the
-topic is stored or injected; notifications remain off until Tyrel chooses that fileless
-credential boundary. Delivery is fixed to `https://ntfy.sh`; the client refuses an ambient
+`notify/notify.sh` takes its bearer topic from `NTFY_TOPIC` when the environment sets one,
+and otherwise reads `private/ntfy.conf`, which is gitignored. Tyrel's ruling: an ignored file
+under `private/` is an acceptable home for it. The config is parsed as data and never sourced,
+and only a regular file is read — a named pipe there would block forever inside the
+`SessionStart` hook, which is a session that never starts rather than a ping that never
+arrives. Delivery is fixed to `https://ntfy.sh`; the client refuses an ambient
 `NTFY_SERVER` override so stale process state cannot redirect the bearer topic. Start and
 milestone delivery failures are reported but do not fail their caller; decision and done
 failures exit non-zero because somebody may be waiting. The client requires Python 3 for

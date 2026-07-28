@@ -23,8 +23,13 @@ ROOT = Path(__file__).resolve().parents[2]
 SEAT = ROOT / "operations" / "codex" / "seat.sh"
 SEATS = ROOT / "operations" / "codex" / "seats.conf"
 
-# The efforts this project's tracked seats permit. `ultra` is deliberately
-# absent because automatic delegation is not externally evidenced.
+# The efforts this project's tracked seats permit. `ultra` is present, but it is
+# the only one that is not permitted on its own terms: it was excluded because
+# automatic delegation is not externally evidenced, and it was readmitted on the
+# condition that such a seat writes into a working copy that can be diffed
+# against a frozen snapshot. Membership in this set is therefore necessary and
+# not sufficient — test_an_ultra_seat_must_write_into_a_working_copy_it_can_be_
+# diffed_against carries the rest, and seats.conf's header states the rule.
 SEAT_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 SANDBOXES = {"read-only", "workspace-write"}
 
@@ -122,6 +127,29 @@ def test_an_ultra_seat_must_write_into_a_working_copy_it_can_be_diffed_against()
                 f"({workroot!r}); a temporary tray is gone before it can be "
                 "diffed, so the narration would be the only record"
             )
+
+
+def test_the_seats_file_header_does_not_contradict_its_own_seat_lines():
+    """A header that denies what the lines below it declare is a stale claim.
+
+    The comment block is the only thing a reader consults before adding a seat.
+    When it says `ultra` is unused and line 59 runs a seat at `ultra`, the reader
+    is told something that stopped being true — so the header must carry the
+    condition the effort was admitted under, not a flat denial.
+    """
+    comments = "\n".join(
+        line for line in SEATS.read_text(encoding="utf-8").splitlines()
+        if line.lstrip().startswith("#")
+    )
+    efforts = {effort for (_m, effort, _s, _r, _t) in parse_seats().values()}
+    if "ultra" not in efforts:
+        return
+    for stale in ("no tracked seat uses", "deliberately absent", "is not allowed"):
+        assert stale not in comments, (
+            f"a seat runs at ultra, but the header still says {stale!r}"
+        )
+    assert "WORKCOPY" in comments, "the header must name the condition ultra was admitted under"
+    assert "diff" in comments, "the header must say the seat is read from a diff, not its report"
 
 
 def test_every_declared_sandbox_is_known_and_never_full_access():

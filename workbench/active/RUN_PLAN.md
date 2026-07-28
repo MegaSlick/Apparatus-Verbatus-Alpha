@@ -37,8 +37,13 @@ Six verbs: **launch, boot, upload, run, export, close down.** Nothing else is in
   design-heavy sessions where the contract being written is the product.
 - **Tests first, from named invariants.** Every session starts by writing the tests for its
   invariants (by number, from `20_sweeps/test-harvest.md`) and ends with them green.
-- **Everything a stage writes is private by default.** Output goes under `private/`, the
-  pre-commit hook refuses register text by content, and nothing is gated on file extension.
+- **Everything a stage writes is private by default.** Output goes under `private/`, and
+  nothing is gated on file extension. **A content filter for register text is planned and
+  does not exist yet** — see §3 below. Today `pre-commit` refuses credentials, undeclared
+  binaries and oversized payloads only; transcribed prose is ordinary text to it, and
+  `autoclave/README.md` says so. Until that filter is built, the line-by-line review is the
+  only thing standing between register text and a commit. Do not read this bullet as a
+  machine that is already watching.
 - **Every PR is small enough to review.** CodeRabbit reviews each; the reviewer pass runs
   per push; Tyrel merges. No agent pushes or merges, ever.
 
@@ -58,9 +63,11 @@ corpus before anything scales (Governance 9).
    and revisions are in `20_sweeps/docs-facts.md`, cross-confirmed three ways. 47 of 104
    audited files violate this today; every rewrite strips names as it goes.
 3. **Gate on directory and provenance, never on suffix.** The old repo lost 24 files of
-   register text through an extension rule. The new pre-commit refuses staged files by
-   *content* (two or more formulaic act phrases, or `verbatim_text` / `gold_text` /
-   `rows[].name` fields).
+   register text through an extension rule. **To be built:** a pre-commit content filter
+   refusing staged files that carry two or more formulaic act phrases, or `verbatim_text` /
+   `gold_text` / `rows[].name` fields. It is not written, and nothing in the harness does
+   this today. It belongs to the first stage that can produce register text, and no session
+   may describe it as existing before it has a test that proves it refuses a real sample.
 4. **Every export, crop, render and reading lives in `private/`.** What may be committed
    about them is counts, ids, hashes and seeds.
 5. **Counts come from files, never summaries.** The audit corrected its own roll-ups five

@@ -15,6 +15,12 @@ Read `README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`,
 
 ## Rules beyond worker's
 
+- **Never edit a governing document.** `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md`,
+  `ARCHITECTURE.md`, `GLOSSARY.md` and the root `README.md` are Tyrel's. Propose a change
+  with exact wording in your report; do not make one. This is hard rule 10, and it exists
+  because a GPT seat once wrote itself a new hard rule and moved an existing one so its own
+  change would comply. You hold `Write` and `Edit`, and nothing mechanical stops you — the
+  rule is the only thing there is, which is precisely why it is stated here.
 - **Every change ships with the test that would have caught its absence.** A guard that
   was never seen to fail is not a guard — write the failing case first.
 - **Fail closed, always.** A check that cannot run is a failure, not a pass. Unknown is
