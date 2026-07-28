@@ -1,6 +1,8 @@
 # Attestatores — handoff
 
-**What this stage writes:** one Testimonium per witness per act — one shape, whichever model produced it
+**What this stage writes:** one recorded outcome per configured witness per act. A completed
+outcome contains that witness's Testimonium; a non-run or failure is explicit, never an
+absent file that downstream code can mistake for complete coverage.
 
 **Where it writes it:** the run's `{run}/<this stage>/` folder.
 

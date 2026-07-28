@@ -1,6 +1,8 @@
 # Recensor — handoff
 
-**What this stage writes:** its decision: accepted, a rework request, or an item held for review
+**What this stage writes:** an append-only sequence of review outcomes: accepted, a recorded
+coverage-recovery request, or an item held for review. Each recovery attempt and the terminal
+outcome remain visible; a later outcome never overwrites the earlier one.
 
 **Where it writes it:** the run's `{run}/<this stage>/` folder.
 

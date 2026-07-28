@@ -3,10 +3,18 @@
 **The cleanroom bench. Only code written new, inside this repository, ever sits here.**
 
 This project is a rebuild. Old code never crosses the boundary — not copied, not pasted,
-not "ported". A rebuilding model reads the reference where it lies (`Temp_Stage`, the
-frozen old repository — read-only, through the window) and writes its best fresh
-expression of that system into this tray, line by line, in this project's vocabulary.
-The knowledge crosses; the bytes never do.
+not "ported". A rebuilding model reads the reference where it lies — `Temp_Stage`, an
+analysis output, and the frozen old repository — and writes its best fresh expression of
+that system into this tray, line by line, in this project's vocabulary. Both reference
+locations are intended to be read-only, but repository settings are not an operating-system
+write barrier. The knowledge crosses; the bytes never do.
+
+**Their paths are deliberately not written here.** They sit outside this repository and
+differ on every machine, clone, sandbox and pod; a checked-in absolute path is wrong
+everywhere except the one laptop it was written on, and it reads as a promise the
+repository cannot keep. The session is told where they are — `.claude/settings.local.json`
+is gitignored and machine-local, which is the right home for a path — and the handoff names
+them when a rebuild is live.
 
 The tray is tracked on work branches so the reviewers and CodeRabbit read the raw draft
 exactly as it was written. The ingress check runs at this door like any other commit —

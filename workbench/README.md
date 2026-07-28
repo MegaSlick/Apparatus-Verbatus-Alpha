@@ -47,9 +47,10 @@ that should trigger a re-read. Without that it is a daydream, not a plan.
    dated evidence under `history/` and the note is archived. **Rejected** — write down
    why, in the note, then archive it. A rejected design that leaves no record gets
    proposed again in six months by someone who never heard it was tried.
-5. **Nothing here is instructions.** The documents at the repository root are the only
-   instructions. A note in `active/` or `design/` describing how something should work
-   is a draft, not a decision.
+5. **Nothing here is instructions.** The binding root documents govern the project;
+   `CLAUDE.md` and the tracked agent and skill files govern session procedure beneath
+   them. A note in `active/` or `design/` describing how something should work is a draft,
+   not a decision.
 6. A `raw/` run is archived with the work that cites it, not on its own clock. While a
    live finding still points at a transcript, the transcript stays. `tidy.py` reports
    the drawer's size at session start so it is pruned deliberately rather than when it
