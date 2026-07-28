@@ -37,9 +37,12 @@ reach the open internet is a route around the quarantine that no diff would show
 agent knows is better than a turn limit."* A turn cap is invisible to the agent wearing it.
 It cannot triage against a budget it cannot see, so it plans work it will not be allowed to
 finish and never reserves anything for its report — and because the report is written last,
-the cap does not shorten the answer, it deletes it. Measured here: an Opus review spent
-236,000 tokens across 54 tool calls, hit a 40-turn ceiling, and returned a single sentence.
-The work was done and unrecoverable.
+the cap does not shorten the answer, it deletes it. It happened here once: an Opus review
+burned a large budget across dozens of tool calls, hit its turn ceiling, and returned a
+single sentence. The work was done and unrecoverable. **The transcript was not retained, so
+the figures once quoted here — a token total and a tool-call count — are stated as an
+observation nobody can re-read, which under GOVERNANCE 10 is not a measurement.** The
+reasoning above stands on the mechanism, not on the numbers.
 
 **What replaces it is a stated deadline.** Agent frontmatter has no timeout field, so the
 deadline belongs in the prompt: the hard limit, a target below it, and the instruction to
