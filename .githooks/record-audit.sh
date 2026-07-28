@@ -19,10 +19,12 @@
 # never committed. A receipt is evidence about a working session, not a
 # document, and by this repository's own rule that keeps it out of the tree.
 #
-# What this is: a discipline. Anything with a shell can write a receipt or set
-# ALLOW_UNAUDITED_PUSH=1, and nothing here can tell an author from an auditor.
-# What it stops is the unconsidered push — the one where nobody meant to skip
-# the review, it just never happened.
+# What this is: a discipline. Anything with a shell can write a receipt, and
+# nothing here can tell an author from an auditor. `pre-push` does not refuse a
+# push over what it finds — it prints the coverage as a checklist and lets Tyrel
+# judge it. What that catches is the unconsidered push: the one where nobody
+# meant to skip the review, it just never happened, and now the empty boxes are
+# in front of him at the moment he pushes.
 
 set -eu
 

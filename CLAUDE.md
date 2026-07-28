@@ -123,12 +123,21 @@ reviewers, at what effort. Three cross-vendor reviewers is the default, and ther
 scoring scale beyond sense: a huge diff earns heavy coverage, a one-line fix earns little,
 and anything touching money, launch, shutdown or a governance rule gets the full set —
 sometimes more than one pass. **The recommendation decides nothing.** Tyrel
-approves or overrides it, and his answer is the explicit reduction the gate requires —
-**for that named push only, never inferred** — not from a small diff, a tight budget,
-impatience, or a previous reduction. The next push triages fresh from a default of three. A
-reviewer that errors or is unavailable is the same case — reduced coverage that he approves
-explicitly, never inferred from the outage: record who ran, push with
-`ALLOW_UNAUDITED_PUSH=1`, and let the receipt show the real coverage.
+approves or overrides it — **for that named push only, never inferred** — not from a small
+diff, a tight budget, impatience, or a previous reduction. The next push triages fresh from a
+default of three. A reviewer that errors or is unavailable is the same case: reduced coverage
+he approves explicitly, never inferred from the outage. Record who actually ran and let the
+receipt show the real coverage.
+
+**The three is a checklist, not a gate.** `pre-push` prints the reviewer coverage recorded for
+the exact commit being pushed — who is ticked, what is missing — and then pushes. It does not
+refuse, and there is no override keyword, because there is nothing to override. A receipt
+records what the operator *says* happened; it cannot establish who reviewed, whether they were
+independent, or that a line was read. Refusing a push on a number derived from self-asserted
+text bought ceremony rather than safety, and it made the override a routine keystroke, which
+is how a real alarm gets tuned out. **Tyrel decides whether the coverage is enough, every
+time.** The rule that every push is reviewed still binds the session; it is simply no longer
+pretending to be enforced by a hook.
 
 **Agreement between reviewers is evidence, not a verdict.** It settles no governance question,
 permission, or exclusion.
@@ -145,10 +154,12 @@ is only for a commit no machine touched at all.
 at a comment, verify the claim before acting: some are style, some are simply wrong, some are
 real. Fix what is real, say why you skip the rest, record a fresh receipt.
 
-**The gate is discipline, not machinery.** A receipt proves a file was written, not that anything
-was read. `ALLOW_UNAUDITED_PUSH=1`, `--no-verify` and `-c core.hooksPath=` all get past it; the
-last two are blocked for Claude and open to everything else. **Only GitHub's rules do not
-negotiate** — README.md records which are in force.
+**The review is discipline, not machinery** — and now says so out loud. A receipt proves a file
+was written, not that anything was read, so `pre-push` reports the coverage instead of refusing
+over it. What still refuses is only what turns on nobody's word: a push straight at `main`, and
+a credential or oversized payload in the outgoing history. `--no-verify` and
+`-c core.hooksPath=` get past even those; both are blocked for Claude and open to everything
+else. **Only GitHub's rules do not negotiate** — README.md records which are in force.
 
 ## Effort and shape
 

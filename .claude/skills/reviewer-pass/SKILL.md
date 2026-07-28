@@ -133,9 +133,9 @@ Three is the standard. He may cut it to one or two, and when he does:
   reduction are not permission. Ask rather than assume.
 - The next push starts again at three. A reduction never carries forward, and no sequence of
   reductions establishes a new normal.
-- Record what actually ran. The gate counts three and does not grade on a curve, so a reduced
-  pass needs `ALLOW_UNAUDITED_PUSH=1` — and the receipt should then show the real coverage
-  rather than the intended coverage.
+- Record what actually ran. `pre-push` prints the coverage as a checklist and pushes either
+  way, so nothing forces the record straight — which is exactly why it must be written
+  honestly. The receipt shows the real coverage, never the intended coverage.
 
 A reduction is Tyrel spending his own safety margin knowingly. Do not spend it for him.
 
@@ -241,10 +241,11 @@ lies. The names above are the current roster, not a required vocabulary — if a
 something else, write what it resolved to. Put the resolved release and effort in the full
 report as well, where the runtime exposes them. A label is a claim, not proof.
 
-A session that cannot summon all three records the ones it can, and then needs
-`ALLOW_UNAUDITED_PUSH=1` to push: the gate counts three and does not grade on a curve. Record
-the reviewers you did run anyway, so the receipt shows what the coverage actually was rather
-than what it was meant to be.
+A session that cannot summon all three records the ones it can. `pre-push` will print the
+shortfall as unticked boxes and push anyway — it is a checklist, not a gate, and Tyrel judges
+the coverage himself. Record the reviewers you did run, so what he reads is what actually
+happened rather than what was meant to happen. **Nothing stops you writing a flattering
+receipt, which is the whole reason not to.**
 
 ## Afterwards
 

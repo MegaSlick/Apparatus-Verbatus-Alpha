@@ -264,15 +264,11 @@ def run_isolated_pre_push(
     *,
     remote_ref="refs/heads/work/example",
     remote_sha=ZERO,
-    allow_unaudited=False,
 ):
     return subprocess.run(
         ["sh", ".githooks/pre-push"],
         cwd=repo,
-        env={
-            **clean_hook_env(),
-            "ALLOW_UNAUDITED_PUSH": "1" if allow_unaudited else "",
-        },
+        env=clean_hook_env(),
         input=push_line(remote_ref, local_sha=sha, remote_sha=remote_sha),
         capture_output=True,
         text=True,
@@ -284,17 +280,15 @@ def run_isolated_pre_push(
 def test_pre_push_accepts_declared_work_branch(tmp_path):
     repo = tmp_path / "repo"
     sha = make_audit_repo(repo)
-    result = run_isolated_pre_push(repo, sha, allow_unaudited=True)
+    result = run_isolated_pre_push(repo, sha)
     assert result.returncode == 0
 
 
 def test_pre_push_rejects_direct_main_and_unknown_branch_kind(tmp_path):
     repo = tmp_path / "repo"
     sha = make_audit_repo(repo)
-    main = run_isolated_pre_push(repo, sha, remote_ref="refs/heads/main", allow_unaudited=True)
-    unknown = run_isolated_pre_push(
-        repo, sha, remote_ref="refs/heads/misc/example", allow_unaudited=True
-    )
+    main = run_isolated_pre_push(repo, sha, remote_ref="refs/heads/main")
+    unknown = run_isolated_pre_push(repo, sha, remote_ref="refs/heads/misc/example")
     assert main.returncode == 1
     assert unknown.returncode == 1
 
@@ -302,13 +296,12 @@ def test_pre_push_rejects_direct_main_and_unknown_branch_kind(tmp_path):
 def test_pre_push_accepts_new_tag_but_refuses_to_move_published_tag(tmp_path):
     repo = tmp_path / "repo"
     sha = make_audit_repo(repo)
-    new = run_isolated_pre_push(repo, sha, remote_ref="refs/tags/v0.0.0", allow_unaudited=True)
+    new = run_isolated_pre_push(repo, sha, remote_ref="refs/tags/v0.0.0")
     moved = run_isolated_pre_push(
         repo,
         sha,
         remote_ref="refs/tags/v0.0.0",
         remote_sha=sha,
-        allow_unaudited=True,
     )
     assert new.returncode == 0
     assert moved.returncode == 1
@@ -322,7 +315,6 @@ def test_pre_push_refuses_to_delete_a_published_tag(tmp_path):
         ZERO,
         remote_ref="refs/tags/v0.0.0",
         remote_sha=sha,
-        allow_unaudited=True,
     )
     assert result.returncode == 1
     assert "deleting published tag" in result.stderr
@@ -383,14 +375,12 @@ def test_pre_push_recognizes_sha256_null_oids_for_new_refs_and_deletions(tmp_pat
         repo,
         sha,
         remote_sha=ZERO_SHA256,
-        allow_unaudited=True,
     )
     deletion = run_isolated_pre_push(
         repo,
         ZERO_SHA256,
         remote_ref="refs/tags/v0.0.0",
         remote_sha=sha,
-        allow_unaudited=True,
     )
     assert new_ref.returncode == 0
     assert deletion.returncode == 1
@@ -400,7 +390,7 @@ def test_pre_push_recognizes_sha256_null_oids_for_new_refs_and_deletions(tmp_pat
 def test_pre_push_rejects_ref_without_a_declared_policy(tmp_path):
     repo = tmp_path / "repo"
     sha = make_audit_repo(repo)
-    result = run_isolated_pre_push(repo, sha, remote_ref="refs/notes/example", allow_unaudited=True)
+    result = run_isolated_pre_push(repo, sha, remote_ref="refs/notes/example")
     assert result.returncode == 1
 
 
@@ -423,9 +413,7 @@ def test_pre_push_scans_annotated_tag_messages(tmp_path):
         timeout=5,
     ).stdout.strip()
 
-    result = run_isolated_pre_push(
-        repo, tag_sha, remote_ref="refs/tags/unsafe", allow_unaudited=True
-    )
+    result = run_isolated_pre_push(repo, tag_sha, remote_ref="refs/tags/unsafe")
     assert result.returncode == 1
     assert "annotated-tag" in result.stderr
     assert secret not in result.stderr
@@ -451,7 +439,7 @@ def test_pre_push_scans_secrets_deleted_from_the_outgoing_tip(tmp_path):
         timeout=5,
     ).stdout.strip()
 
-    result = run_isolated_pre_push(repo, tip, allow_unaudited=True)
+    result = run_isolated_pre_push(repo, tip)
     assert result.returncode == 1
     assert "outgoing-history" in result.stderr
     assert secret not in result.stderr
@@ -465,7 +453,6 @@ def test_pre_push_scans_credential_shaped_ref_names_without_echoing_them(tmp_pat
         repo,
         sha,
         remote_ref=f"refs/heads/work/{secret}",
-        allow_unaudited=True,
     )
     assert result.returncode == 1
     assert "<git-ref:" in result.stderr
@@ -473,7 +460,12 @@ def test_pre_push_scans_credential_shaped_ref_names_without_echoing_them(tmp_pat
 
 
 @pytest.mark.parametrize("reviewer_count", [0, 1, 2, 3])
-def test_pre_push_audit_gate_requires_the_three_exact_reviewers(tmp_path, reviewer_count):
+def test_pre_push_review_coverage_is_a_checklist_and_never_blocks(tmp_path, reviewer_count):
+    # Tyrel's ruling: the reviewer count is a CHECKLIST, not a gate. A receipt
+    # records what the operator says happened — it cannot establish reviewer
+    # identity, independence, or that anything was read — so refusing a push on
+    # a number derived from self-asserted text bought ceremony, not safety, and
+    # made the override a routine keystroke. It prints the coverage and pushes.
     repo = tmp_path / "repo"
     sha = make_audit_repo(repo)
     names = ("Claude Opus 5", "Claude Fable 5", "GPT-5.6 Sol (OpenAI)")
@@ -486,9 +478,27 @@ def test_pre_push_audit_gate_requires_the_three_exact_reviewers(tmp_path, review
         )
 
     result = run_isolated_pre_push(repo, sha)
-    assert (result.returncode == 0) is (reviewer_count == 3)
-    if reviewer_count < 3:
-        assert f"{reviewer_count} of 3 reviewers" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "review checklist" in result.stderr
+    assert "Not a gate" in result.stderr
+    # Every recorded reviewer is named, and every missing one is a visible gap.
+    for who in names[:reviewer_count]:
+        assert f"[x] {who}" in result.stderr
+    assert result.stderr.count("[ ]") == 3 - reviewer_count
+    if reviewer_count:
+        assert f"{reviewer_count} distinct reviewer(s)" in result.stderr
+
+
+def test_pre_push_checklist_needs_no_override_variable(tmp_path):
+    # The old ALLOW_UNAUDITED_PUSH is gone. A push with no receipt at all still
+    # succeeds, and nothing tells the operator to set a variable that no longer
+    # does anything — a hook that names a dead escape hatch is lying to its user.
+    repo = tmp_path / "repo"
+    sha = make_audit_repo(repo)
+    result = run_isolated_pre_push(repo, sha)
+    assert result.returncode == 0, result.stderr
+    assert "ALLOW_UNAUDITED_PUSH" not in result.stderr
+    assert "no receipt recorded" in result.stderr
 
 
 def test_pre_push_audit_gate_rejects_receipt_for_a_different_commit(tmp_path):
@@ -504,8 +514,12 @@ def test_pre_push_audit_gate_rejects_receipt_for_a_different_commit(tmp_path):
         encoding="utf-8",
     )
     result = run_isolated_pre_push(repo, sha)
-    assert result.returncode == 1
-    assert "0 of 3 reviewers" in result.stderr
+    # Still does not block — but a receipt for a different commit must not be
+    # silently counted as coverage for this one, or the checklist lies.
+    assert result.returncode == 0, result.stderr
+    assert "records a different commit" in result.stderr
+    assert result.stderr.count("[ ]") == 3
+    assert "[x]" not in result.stderr
 
 
 def test_pre_push_counts_any_three_distinct_reviewers_not_three_fixed_names(tmp_path):
@@ -529,8 +543,9 @@ def test_pre_push_counts_any_three_distinct_reviewers_not_three_fixed_names(tmp_
 
 
 def test_pre_push_does_not_count_the_same_reviewer_three_times(tmp_path):
-    # Three passes by one model is one review wearing three hats. Counting
-    # distinct names is what keeps the gate meaning "independent".
+    # Three passes by one model is one review wearing three hats. The checklist
+    # must show that honestly — one ticked, two gaps — rather than reporting
+    # three. It still does not block; it just refuses to flatter the coverage.
     repo = tmp_path / "repo"
     sha = make_audit_repo(repo)
     receipts = repo / ".git" / "audit-receipts"
@@ -540,11 +555,12 @@ def test_pre_push_does_not_count_the_same_reviewer_three_times(tmp_path):
         encoding="utf-8",
     )
     result = run_isolated_pre_push(repo, sha)
-    assert result.returncode == 1
-    assert "1 of 3 reviewers" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "1 distinct reviewer(s)" in result.stderr
+    assert result.stderr.count("[ ]") == 2
 
 
-def test_pre_push_rejects_partial_reviewer_records_instead_of_counting_auditor_lines(tmp_path):
+def test_pre_push_does_not_credit_partial_reviewer_records(tmp_path):
     repo = tmp_path / "repo"
     sha = make_audit_repo(repo)
     receipts = repo / ".git" / "audit-receipts"
@@ -559,9 +575,13 @@ def test_pre_push_rejects_partial_reviewer_records_instead_of_counting_auditor_l
     (receipts / sha).write_text(partial, encoding="utf-8")
 
     result = run_isolated_pre_push(repo, sha)
-    assert result.returncode == 1
+    # A malformed receipt buys no credit. It does not block the push, but it must
+    # never be read as three reviewers — a checklist that overstates coverage is
+    # worse than no checklist, because it is believed.
+    assert result.returncode == 0, result.stderr
     assert "incomplete or invalid" in result.stderr
-    assert "3 of 3 reviewers" not in result.stderr
+    assert "[x]" not in result.stderr
+    assert result.stderr.count("[ ]") == 3
 
 
 def test_record_audit_rejects_multiline_fields_before_writing():

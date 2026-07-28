@@ -9,7 +9,11 @@
 #   ALLOW_FORCE_PUSH=1      rewrite a branch's history
 #   ALLOW_BRANCH_DELETE=x   delete verified-merged branch x
 #   ALLOW_ANY_BRANCH=1      push a branch outside the naming convention
-#   ALLOW_UNAUDITED_PUSH=1  push work no agent has reviewed
+#
+# There is deliberately no variable for the review coverage. The reviewer
+# section is a CHECKLIST, not a gate: it prints what was recorded for the exact
+# commit being pushed and never refuses over it. Tyrel decides whether the
+# coverage is enough, every time, and does not need a keyword to say so.
 
 z40='0000000000000000000000000000000000000000'
 z64='0000000000000000000000000000000000000000000000000000000000000000'
@@ -34,12 +38,14 @@ if [ -z "$common" ]; then
   fi
 fi
 if [ -z "$common" ]; then
+  # The reviewer section is a checklist, not a gate, so an unlocatable git
+  # directory means the checklist cannot be printed — not that the push is
+  # unsafe. Say so loudly and carry on. The blocks that follow do not depend on
+  # this path: they read the outgoing refs and history directly.
   echo "" >&2
-  echo "  BLOCKED: cannot locate the git directory, so the audit gate" >&2
-  echo "  cannot check anything. A check that cannot run is a failure," >&2
-  echo "  not a pass. Set ALLOW_UNAUDITED_PUSH=1 only if you understand why." >&2
+  echo "  NOTE: cannot locate the git directory, so no review checklist can be" >&2
+  echo "  shown for this push. The credential and branch checks below still run." >&2
   echo "" >&2
-  exit 1
 fi
 receipts="$common/audit-receipts"
 
@@ -159,55 +165,66 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     block "tag '$name' failed its annotated-tag ingress check."
   fi
 
-  # 5. Require three named review assertions for this exact commit.
-  #    A receipt records what the operator says occurred. It raises the bar
-  #    against an accidental unaudited push, but it cannot prove reviewer
-  #    identity, independence, prompt equality, or what anyone actually read.
-  reviewers=0
+  # 5. The review checklist for this exact commit.
+  #
+  #    THIS IS A CHECKLIST, NOT A GATE. Tyrel's ruling. It reports the reviewer
+  #    coverage that exists and it never refuses a push over it. He decides
+  #    whether the coverage is enough, every time, and does not need a magic
+  #    variable to say so.
+  #
+  #    That is not a weakening, because the block it replaced never actually
+  #    proved anything. A receipt records what the operator *says* occurred: it
+  #    cannot establish reviewer identity, independence, prompt equality, or
+  #    that a single line was read. Refusing a push on a number derived from
+  #    self-asserted text produced ceremony, not safety — and worse, it made
+  #    `ALLOW_UNAUDITED_PUSH=1` a routine keystroke, which is how a real alarm
+  #    gets tuned out. What is left is the honest thing: print the coverage
+  #    plainly, at the moment of the push, and let the human judge it.
+  #
+  #    The hard blocks above are unchanged, because none of them turns on
+  #    anybody's assertion: main moves only by pull request, and a credential
+  #    or an oversized payload in the outgoing history is a fact, not a claim.
   receipt="$receipts/$audit_sha"
-  if [ -f "$receipt" ] && \
-     ! python3 "$ingress" --audit-receipt "$receipt" >/dev/null; then
-    block "the audit receipt for $(echo "$audit_sha" | cut -c1-8) is incomplete or invalid." \
-"A partial reviewer record is not a review. Re-run the affected reviewer and
-  record its complete result with .githooks/record-audit.sh."
+  short=$(echo "$audit_sha" | cut -c1-8)
+  reviewers=0
+  names=""
+  if [ ! -f "$receipt" ]; then
+    receipt_state="no receipt recorded"
+  elif ! python3 "$ingress" --audit-receipt "$receipt" >/dev/null 2>&1; then
+    receipt_state="receipt is incomplete or invalid"
+  elif ! grep -qx "commit:  $audit_sha" "$receipt" 2>/dev/null; then
+    receipt_state="receipt records a different commit"
+  else
+    receipt_state="ok"
+    names=$(sed -n 's/^auditor: //p' "$receipt" | sed '/^[[:space:]]*$/d' | sort -u)
+    reviewers=$(printf '%s\n' "$names" | sed '/^$/d' | wc -l | tr -d '[:space:]')
   fi
-  # Three *distinct* reviewers, not three particular product names. Tyrel's
-  # ruling: the receipt records the model that actually answered, and the names
-  # are a push-time checklist rather than a string match. Pinning today's
-  # releases into a safety hook dates it at the next rename — a substituted or
-  # renamed seat would then force either ALLOW_UNAUDITED_PUSH=1 or a receipt
-  # that lies about who reviewed, and a gate that rewards a false label is worse
-  # than no gate. Counting distinct names still refuses the same reviewer
-  # recorded three times, which is the failure this actually guards against.
-  if grep -qx "commit:  $audit_sha" "$receipt" 2>/dev/null; then
-    reviewers=$(
-      sed -n 's/^auditor: //p' "$receipt" |
-        sed '/^[[:space:]]*$/d' |
-        sort -u |
-        wc -l |
-        tr -d '[:space:]'
-    )
+
+  echo "" >&2
+  echo "  ── review checklist — $kind '$name' at $short ──" >&2
+  if [ "$receipt_state" = ok ]; then
+    printf '%s\n' "$names" | sed '/^$/d' | while IFS= read -r who; do
+      echo "     [x] $who" >&2
+    done
+    i=$reviewers
+    while [ "$i" -lt 3 ]; do
+      echo "     [ ] a further independent reviewer" >&2
+      i=$((i + 1))
+    done
+    echo "     $reviewers distinct reviewer(s) recorded for this exact commit." >&2
+  else
+    echo "     [ ] no reviewer recorded — $receipt_state" >&2
+    echo "     [ ] a further independent reviewer" >&2
+    echo "     [ ] a further independent reviewer" >&2
   fi
-  if [ "$ALLOW_UNAUDITED_PUSH" != "1" ] && [ "$reviewers" -lt 3 ]; then
-    block "$kind '$name' has $reviewers of 3 reviewers for $(echo "$audit_sha" | cut -c1-8)." \
-"The operator must complete three independent passes on the identical prompt,
-  then record each one under the name of the model that actually answered —
-  by release, across two vendors, one line per reviewer:
-
-      .githooks/record-audit.sh '<model that answered>' '<what it found>'
-
-  Three distinct names are required. The same reviewer recorded three times is
-  one review. An alias requested in a roster file is not proof of the release
-  that served the call; record what answered, not what was asked for.
-
-  They accumulate; none overwrites another. The receipt names one commit,
-  so amending or adding one means auditing again — which is the point.
-
-  Subagents and other AI tools do not push at all. They review and report;
-  the push is Tyrel's or the main session's to make afterwards.
-
-  This receipt is an assertion, not cryptographic proof of who reviewed or
-  what they read. ALLOW_UNAUDITED_PUSH=1 if you genuinely mean to skip it."
+  if [ "$reviewers" -lt 3 ]; then
+    echo "" >&2
+    echo "     Three across two vendors is the standard. Record one with:" >&2
+    echo "       .githooks/record-audit.sh '<model that answered>' '<what it found>'" >&2
+    echo "     Name the release that actually answered, not the one requested." >&2
   fi
+  echo "" >&2
+  echo "     Not a gate. Tyrel decides whether this is enough. Pushing." >&2
+  echo "" >&2
 done
 exit 0
