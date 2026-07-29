@@ -51,7 +51,8 @@ fi
 if ! chmod +x .githooks/pre-commit .githooks/pre-merge-commit \
            .githooks/pre-applypatch .githooks/applypatch-msg \
            .githooks/pre-push .githooks/commit-msg \
-           .githooks/check-all.sh .githooks/check-documents.sh \
+           .githooks/check-all.sh .githooks/check-fast.sh \
+           .githooks/check-static.sh .githooks/check-documents.sh \
            .githooks/doc-allowlist.sh .githooks/record-audit.sh \
            .githooks/install.sh; then
   echo "Could not make the hooks executable. Hooks were not configured and are not usable." >&2
@@ -77,8 +78,11 @@ echo "    known secret forms/payloads   no undeclared binary fixtures"
 echo "    no direct push to main        no force-push over someone's work"
 echo "    review checklist at push      (.githooks/record-audit.sh)"
 echo ""
-echo "  Run all repository checks locally with:"
+echo "  Run the everyday gate locally with:"
 echo "    python3 -m pip install -r requirements-dev.txt"
+echo "    sh .githooks/check-fast.sh"
+echo ""
+echo "  Run the full pre-audit gate with:"
 echo "    sh .githooks/check-all.sh"
 echo ""
 echo "  GitHub enforces its own rules on main, separately from these and"

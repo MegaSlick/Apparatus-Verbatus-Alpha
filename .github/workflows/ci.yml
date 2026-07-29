@@ -25,9 +25,6 @@ jobs:
           # Do not leave GITHUB_TOKEN in local Git config while they execute.
           persist-credentials: false
 
-      - name: Repository document policy
-        run: sh .githooks/check-documents.sh
-
       - name: Set up Python
         # v6.3.0; update deliberately after verifying the upstream release commit.
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
@@ -49,7 +46,7 @@ jobs:
           python -m pip install -r requirements-dev.txt
 
       - name: Repository checks
-        run: sh .githooks/check-all.sh
+        run: sh .githooks/check-all.sh --ci
 
   # main never holds an unsterilized instrument: a pull request may carry
   # autoclave/ drafts while under review, but it may not merge until the tray

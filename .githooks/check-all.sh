@@ -1,67 +1,25 @@
 #!/bin/sh
-# Run the deterministic branch and working-tree checks used by CI. On a tag
-# event, CI additionally scans the annotated tag object named by GITHUB_REF.
-#
-# Bootstrap once in a virtual environment:
-#
-#     python3 -m pip install -r requirements-dev.txt
-#     sh .githooks/check-all.sh
+# Full local/CI gate. CI supplies its own ref-aware history scan once.
 
 set -eu
-
-if ! root=$(git rev-parse --show-toplevel 2>/dev/null); then
-  echo "Not inside a Git repository." >&2
-  exit 1
-fi
+root=$(git rev-parse --show-toplevel 2>/dev/null) ||
+  { echo "check-all: not inside a Git repository" >&2; exit 1; }
 cd "$root"
 
-sh .githooks/check-documents.sh
-
-python3 .githooks/check_ingress.py --history HEAD
-python3 .githooks/check_ingress.py --staged
-python3 .githooks/check_ingress.py --worktree
-
-ruff check .
-ruff format --check .
-
-# CI additionally runs the autoclave-empty merge gate (ci.yml), which a loaded
-# tray legitimately fails mid-review — deliberately not repeated here, because
-# this script must pass on a branch that is still carrying drafts.
-# These two lists are written out rather than globbed, so that a script is
-# checked because somebody decided it should be. The cost is that a new script
-# escapes silently — which it did: operations/codex/seat.sh spent money through
-# an external API for a whole session before anything linted it. The guard
-# against a repeat is a test, not a glob: test_seat.py asserts that every shell
-# script under .githooks/ and operations/ appears on both lines below.
-shellcheck .githooks/applypatch-msg .githooks/check-all.sh \
-           .githooks/check-documents.sh .githooks/commit-msg \
-           .githooks/doc-allowlist.sh .githooks/install.sh \
-           .githooks/pre-applypatch .githooks/pre-commit \
-           .githooks/pre-merge-commit .githooks/pre-push \
-           .githooks/record-audit.sh operations/notify/notify.sh \
-           operations/codex/seat.sh
-
-sh -n .githooks/applypatch-msg .githooks/check-all.sh \
-      .githooks/check-documents.sh .githooks/commit-msg \
-      .githooks/doc-allowlist.sh .githooks/install.sh \
-      .githooks/pre-applypatch .githooks/pre-commit \
-      .githooks/pre-merge-commit .githooks/pre-push \
-      .githooks/record-audit.sh operations/notify/notify.sh \
-      operations/codex/seat.sh
-
-# Tach currently has a real module to inspect only after shared implementation
-# enters common/. Numbered pipeline stages are file-isolated and require their
-# own boundary tests when their first code is imported.
-if ! shared_implementation=$(find common -type f -name '*.py' ! -name '__init__.py'); then
-  echo "could not inspect common/ for shared implementation" >&2
-  exit 1
-fi
-if [ -n "$shared_implementation" ]; then
-  tach check
-else
-  echo "no shared implementation yet — Tach boundary check deferred"
+mode=local
+if [ "${1:-}" = "--ci" ] && [ "$#" -eq 1 ]; then
+  mode=ci
+elif [ "$#" -ne 0 ]; then
+  echo "usage: sh .githooks/check-all.sh [--ci]" >&2
+  exit 2
 fi
 
-python3 -m pytest -q
+sh .githooks/check-static.sh
 
-python3 .githooks/build_wheel.py
+if [ "$mode" = local ]; then
+  python3 .githooks/check_ingress.py --history HEAD
+  python3 .githooks/check_ingress.py --staged
+  python3 .githooks/check_ingress.py --worktree
+fi
+
+python3 -m pytest

@@ -11,8 +11,7 @@
 # which document was true. A rule alone will not prevent that, so it is enforced
 # here instead.
 #
-# Escape hatches, to be used knowingly:
-#   ALLOW_MAIN_COMMIT=1     commit on main
+# Narrow exceptions, to be used knowingly:
 #   ALLOW_STRAY_DOC=1       commit a markdown file outside the allowed set
 #   ALLOW_DETACHED_COMMIT=1 commit while HEAD is detached
 
@@ -31,7 +30,7 @@ if ! branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) &&
   echo "" >&2
   exit 1
 fi
-if [ "$branch" = "main" ] && [ "$ALLOW_MAIN_COMMIT" != "1" ]; then
+if [ "$branch" = "main" ]; then
   echo "" >&2
   echo "  BLOCKED: commit on main." >&2
   echo "" >&2

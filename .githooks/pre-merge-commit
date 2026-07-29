@@ -19,9 +19,8 @@
 # applies here by construction.
 #
 # The branch rule is kept deliberately. A local merge into main IS a commit on
-# main (hard rule 3): main arrives by pull request or not at all. Merging into
-# main locally therefore blocks, with the same ALLOW_MAIN_COMMIT=1 hatch as any
-# other commit there.
+# main (hard rule 3): main arrives by pull request or not at all. There is no
+# environment-variable bypass for that boundary.
 
 hook="$(dirname "$0")/pre-commit"
 if [ ! -f "$hook" ]; then

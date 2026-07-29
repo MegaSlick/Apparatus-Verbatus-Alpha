@@ -34,7 +34,10 @@ select = ["E4", "E7", "E9", "F", "I", "B"]
 [tool.pytest.ini_options]
 testpaths = ["."]
 python_files = ["test_*.py"]
-addopts = "-q"
+addopts = "-q -p no:tach"
+markers = [
+    "full: slower integration and exhaustive boundary cases reserved for the full gate",
+]
 # pytest skips every dotted directory by default, so the harness's own tests
 # under .claude/hooks/ were found by CI's `find` and then collected by nobody —
 # pytest exited 5, "no tests ran", and the step failed.

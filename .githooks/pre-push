@@ -1,437 +1,183 @@
 #!/bin/sh
-# Branch rules implemented as an installed local alarm. They apply to tools
-# that use this clone's Git hooks and do not deliberately bypass them. What
-# `main` itself will accept is settled server-side and is not this file's
-# business — see README.md.
+# Outgoing facts are hard gates; review coverage is an honest checklist.
 #
-# Escape hatches, to be used knowingly and rarely:
-#   ALLOW_MAIN_PUSH=1       push directly to main
-#   ALLOW_FORCE_PUSH=1      rewrite a branch's history
-#   ALLOW_BRANCH_DELETE=x   delete verified-merged branch x
-#   ALLOW_ANY_BRANCH=1      push a branch outside the naming convention
+# Standard-only escape hatches:
+#   ALLOW_ANY_BRANCH=1
+#   ALLOW_BRANCH_DELETE=<exact-branch>
+#   ALLOW_FORCE_PUSH=<exact-owned-branch>
 #
-# There is deliberately no variable for the review coverage. The reviewer
-# section is a CHECKLIST, not a gate: it prints what was recorded for the exact
-# commit being pushed and never refuses over it. Tyrel decides whether the
-# coverage is enough, every time, and does not need a keyword to say so.
+# Direct-main pushes, tag moves, and skipped ingress checks have no convenience
+# bypass here. A non-fast-forward update remains forbidden for a branch that is
+# not exclusively yours by CLAUDE.md hard rule 5.
 
-# Replacement refs make Git hand out a substitute object in place of the real
-# one, everywhere and invisibly. A `refs/replace/<sha>` entry would show this
-# hook — and the scanner it calls, and a reviewer reading the same history — a
-# clean stand-in while the genuine object is what leaves in the pack. Turn the
-# mechanism off for everything this hook runs, and export it so the Python
-# scanner's own `git` calls inherit it. Nothing here has any legitimate use for
-# a replacement: a hook exists to read what is actually being pushed.
+set -eu
 GIT_NO_REPLACE_OBJECTS=1
 export GIT_NO_REPLACE_OBJECTS
 
-z40='0000000000000000000000000000000000000000'
-z64='0000000000000000000000000000000000000000000000000000000000000000'
+zero40=0000000000000000000000000000000000000000
+zero64=0000000000000000000000000000000000000000000000000000000000000000
+ingress="$(dirname "$0")/check_ingress.py"
 
 is_null_oid() {
-  [ "$1" = "$z40" ] || [ "$1" = "$z64" ]
-}
-
-# Where audit receipts live: the *common* git directory, so every worktree
-# shares one record. Never committed — a receipt is evidence about a local
-# working session, not a document.
-#
-# Resolved carefully, and *validated* rather than merely tested for emptiness.
-# An older Git that does not understand `--path-format` does not answer with
-# nothing: it prints the unrecognised option back as a literal line, then the
-# real answer, and exits 0. An emptiness test therefore never fires the
-# fallback — the variable holds two lines of junk that look like an answer, and
-# the receipt path becomes nonsense nobody would guess at. Require what a real
-# answer looks like instead: exactly one line, and an absolute path.
-newline='
-'
-single_absolute_path() {
-  case "$1" in
-    "" | *"$newline"*) return 1 ;;
-    /*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
-if ! single_absolute_path "$common"; then
-  # Older Git, before --path-format: ask for the plain answer, which may be
-  # relative, and resolve it here. `cd ""` succeeds and stays put, so guard the
-  # inner command, not the cd — otherwise a failed rev-parse silently yields
-  # $PWD and looks like an answer.
-  common=""
-  relative=$(git rev-parse --git-common-dir 2>/dev/null) || relative=""
-  case "$relative" in
-    *"$newline"*) relative="" ;;
-  esac
-  if [ -n "$relative" ]; then
-    common=$(cd "$relative" 2>/dev/null && pwd) || common=""
-  fi
-  single_absolute_path "$common" || common=""
-fi
-if [ -n "$common" ]; then
-  receipts="$common/audit-receipts"
-else
-  # The reviewer section is a checklist, not a gate, so an unlocatable git
-  # directory means the checklist cannot be printed — not that the push is
-  # unsafe. Say so loudly and carry on. The blocks that follow do not depend on
-  # this path: they read the outgoing refs and history directly.
-  #
-  # Leave the path empty rather than letting it become /audit-receipts. A
-  # lookup against a path we invented would fail and be reported as "no receipt
-  # recorded" — a measurement, in the one case where the instrument could not
-  # read anything at all (GOVERNANCE 10).
-  receipts=""
-  echo "" >&2
-  echo "  NOTE: cannot locate the git directory, so no review checklist can be" >&2
-  echo "  shown for this push. The credential and branch checks below still run." >&2
-  echo "" >&2
-fi
-
-# Which reviewer names in a receipt are distinct, and what to print for each.
-#
-# Distinctness is decided on a normalised key rather than on raw bytes.
-# "Claude Opus 5", "claude  opus 5" and "Claude Opus 5 " are one reviewer, and
-# reporting them as three is the checklist flattering the coverage — the single
-# thing it must never do, since flattering coverage is worse than printing none.
-# Surrounding and internal whitespace collapse, ASCII case folds. The first
-# spelling seen is what gets printed, so the operator still sees what was
-# actually recorded.
-#
-# What this does NOT do, and the checklist says so beside the name: fold
-# look-alike characters. A Cyrillic С in "Сlaude" is a different reviewer to
-# this code, and there is no short table that makes that claim true — a partial
-# confusable fold would assert a coverage it does not have (GOVERNANCE 10).
-# Nor does any fold catch an all-ASCII look-alike such as "Claude 0pus 5".
-# So the honest move is to hand the judgement to the human who is already
-# reading the list, and mark the names that need looking at.
-distinct_reviewer_names() {
-  sed -n 's/^auditor: //p' "$1" | awk '
-    {
-      line = $0
-      sub(/\r$/, "", line)
-      key = line
-      gsub(/[ \t]+/, " ", key)
-      sub(/^ /, "", key)
-      sub(/ $/, "", key)
-      key = tolower(key)
-      if (key == "") next
-      if (!(key in seen)) { seen[key] = 1; order[++n] = line }
-    }
-    END { for (i = 1; i <= n; i++) print order[i] }
-  '
-}
-
-# True only when the name is *provably* plain printable ASCII. Written as a
-# positive test on purpose: a missing or broken grep returns non-zero, the name
-# is marked as needing a look, and the failure shows up as extra scrutiny
-# rather than as a silently unmarked look-alike.
-is_plain_ascii() {
-  printf '%s' "$1" | LC_ALL=C grep -qx '[ -~]*' 2>/dev/null
+  [ "$1" = "$zero40" ] || [ "$1" = "$zero64" ]
 }
 
 block() {
   echo "" >&2
   echo "  BLOCKED: $1" >&2
+  [ -z "${2:-}" ] || echo "  $2" >&2
   echo "" >&2
-  [ -n "$2" ] && { echo "  $2" >&2; echo "" >&2; }
   exit 1
 }
 
-ingress="$(dirname "$0")/check_ingress.py"
-if [ ! -f "$ingress" ]; then
-  block "$ingress is missing." \
-"The outgoing history and annotated-tag messages cannot be checked, so the
-  push is refused rather than allowed unchecked."
-fi
+[ -f "$ingress" ] ||
+  block "$ingress is missing; outgoing history cannot be checked."
 
-# Read every record, including a final one with no trailing newline.
-#
-# `while read -r a b c d` returns non-zero on an unterminated last line — after
-# it has already assigned the fields. The loop body never runs, so the last ref
-# in the list is pushed without a single check, and the hook exits 0 looking
-# like it agreed. That is the worst failure shape available to a gate: silence
-# that reads as approval. The `|| [ -n ... ]` clause runs the body once more for
-# that partial record.
-#
-# The staged copies are cleared at the top of the body, before any `continue`,
-# so the sentinel cannot be true twice and spin the loop forever.
-#
-# Zero records is a different case and is deliberately NOT a refusal. Measured
-# on git 2.55: an up-to-date `git push` runs this hook with two arguments and an
-# empty ref list. Refusing there would refuse a no-op, which is exactly the
-# over-refusal that teaches an operator to reach for --no-verify. It is reported
-# instead, after the loop, because a run that checked nothing must not look like
-# a run that checked something.
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
+  common=""
+case $common in
+  /*) receipts="$common/audit-receipts" ;;
+  *) receipts="" ;;
+esac
+
+review_names() {
+  sed -n 's/^auditor: //p' "$1" | awk '
+    {
+      display = $0
+      key = tolower($0)
+      gsub(/[ \t]+/, " ", key)
+      sub(/^ /, "", key)
+      sub(/ $/, "", key)
+      if (key != "" && !seen[key]++) print display
+    }
+  '
+}
+
+print_review_checklist() {
+  kind=$1
+  name=$2
+  sha=$3
+  short=$(printf '%s' "$sha" | cut -c1-8)
+  state=missing
+  names=""
+
+  if [ -z "$receipts" ]; then
+    state=unknown
+  else
+    receipt="$receipts/$sha"
+    if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+      if [ -f "$receipt" ] && [ -r "$receipt" ] &&
+        python3 "$ingress" --audit-receipt "$receipt" >/dev/null 2>&1 &&
+        grep -Fqx "commit:  $sha" "$receipt"; then
+        if names=$(review_names "$receipt"); then
+          state=ok
+        else
+          state=unknown
+        fi
+      else
+        state=unknown
+      fi
+    fi
+  fi
+
+  echo "" >&2
+  echo "  review checklist — $kind '$name' at $short" >&2
+  if [ "$state" = ok ]; then
+    count=0
+    if [ -n "$names" ]; then
+      printf '%s\n' "$names" | while IFS= read -r reviewer; do
+        [ -z "$reviewer" ] || echo "    [x] $reviewer" >&2
+      done
+      count=$(printf '%s\n' "$names" | awk 'NF { n++ } END { print n + 0 }')
+    fi
+    remaining=$count
+    while [ "$remaining" -lt 3 ]; do
+      echo "    [ ] another independent reviewer" >&2
+      remaining=$((remaining + 1))
+    done
+    echo "    $count distinct reviewer(s) recorded for this exact commit." >&2
+  elif [ "$state" = unknown ]; then
+    echo "    [?] coverage unknown; the local receipt could not be read or validated." >&2
+  else
+    echo "    [ ] no local review receipt for this exact commit." >&2
+  fi
+  echo "    Checklist only: Tyrel decides whether the coverage is enough." >&2
+  echo "" >&2
+}
+
 records=0
-line_local_ref='' line_local_sha='' line_remote_ref='' line_remote_sha=''
+line_local_ref="" line_local_sha="" line_remote_ref="" line_remote_sha=""
 while read -r line_local_ref line_local_sha line_remote_ref line_remote_sha ||
-      [ -n "$line_local_ref$line_local_sha$line_remote_ref$line_remote_sha" ]; do
+  [ -n "$line_local_ref$line_local_sha$line_remote_ref$line_remote_sha" ]; do
   local_ref=$line_local_ref
   local_sha=$line_local_sha
   remote_ref=$line_remote_ref
   remote_sha=$line_remote_sha
-  line_local_ref='' line_local_sha='' line_remote_ref='' line_remote_sha=''
-
-  # A wholly blank line carries no ref, so there is nothing to judge. Anything
-  # with a field present is a record and is checked: a short record leaves
-  # remote_ref empty and falls into the unsupported-ref refusal below, which is
-  # the fail-closed answer for input this hook cannot parse.
+  line_local_ref="" line_local_sha="" line_remote_ref="" line_remote_sha=""
   [ -n "$local_ref$local_sha$remote_ref$remote_sha" ] || continue
   records=$((records + 1))
 
-  # Ref names are repository metadata and can carry a pasted token just as a
-  # filename can. Scan them through a framed protocol that never prints the
-  # name itself; findings use only a fingerprinted metadata label.
-  if ! printf '%s\0%s\0' "$local_ref" "$remote_ref" |
-       python3 "$ingress" --ref-fields >/dev/null; then
-    block "outgoing Git ref names failed their credential check."
-  fi
+  printf '%s\0%s\0' "$local_ref" "$remote_ref" |
+    python3 "$ingress" --ref-fields >/dev/null ||
+    block "outgoing ref names failed their credential check."
 
-  case "$remote_ref" in
-    refs/heads/*)
-      kind=branch
-      name=${remote_ref#refs/heads/}
-      ;;
-    refs/tags/*)
-      kind=tag
-      name=${remote_ref#refs/tags/}
-      ;;
-    *)
-      block "push to unsupported ref '$remote_ref'." \
-"Only branches and tags have a declared policy here. Refuse an unknown
-  ref rather than letting it leave unchecked."
-      ;;
+  case $remote_ref in
+    refs/heads/*) kind=branch; name=${remote_ref#refs/heads/} ;;
+    refs/tags/*) kind=tag; name=${remote_ref#refs/tags/} ;;
+    *) block "unsupported destination ref '$remote_ref'." ;;
   esac
 
-  # Deleting a short-lived work branch is normal only after its work is known
-  # to have landed. Git gives this hook the remote tip but no trustworthy proof
-  # that another ref retains it, and a stale local main can make an ancestry
-  # test lie by omission. Require a deliberate assertion instead of silently
-  # treating every branch deletion as safe cleanup. Published tags are evidence
-  # and immutable in both directions: allowing deletion here while refusing
-  # only a move made "immutable" mean "immutable unless gone."
   if is_null_oid "$local_sha"; then
-    [ "$kind" = "branch" ] && [ "$name" = "main" ] && block "deleting main."
-    [ "$kind" = "tag" ] && block "deleting published tag '$name' — tags are immutable."
-    if [ "$ALLOW_BRANCH_DELETE" != "$name" ]; then
-      block "deleting branch '$name' without confirming its work is retained." \
-"Verify the branch is merged and no other session owns it, then set
-  ALLOW_BRANCH_DELETE to this exact branch name and repeat. The hook cannot
-  prove either fact from this push."
-    fi
+    [ "$kind" = branch ] || block "published tag '$name' cannot be deleted."
+    [ "$name" != main ] || block "main cannot be deleted."
+    [ "${ALLOW_BRANCH_DELETE:-}" = "$name" ] ||
+      block "branch '$name' deletion needs ALLOW_BRANCH_DELETE=$name." \
+        "Verify it is merged and no other session owns it first."
     continue
   fi
 
-  # 1. main moves only by merging a pull request.
-  if [ "$kind" = "branch" ] && [ "$name" = "main" ] && [ "$ALLOW_MAIN_PUSH" != "1" ]; then
-    block "direct push to main." \
-"main moves only by merge. Put this on a branch:
-      git switch -c work/<short-topic> && git push -u origin work/<short-topic>"
-  fi
-
-  # 2. Branch names describe the work, and there are only three kinds.
-  if [ "$kind" = "branch" ] && [ "$name" != "main" ] && [ "$ALLOW_ANY_BRANCH" != "1" ]; then
-    case "$name" in
-      work/*|audit/*|infra/*) : ;;
-      *) block "branch name '$name' is not one of the three kinds." \
-"      work/<topic>   a normal change
-      audit/<topic>  a review that produces findings, not code
-      infra/<topic>  risky structural work" ;;
-    esac
-  fi
-
-  # 3. Never rewrite history someone else may be holding.
-  #    Detects --force and --force-with-lease alike: the remote tip must be an
-  #    ancestor of what you are pushing. Published tags are immutable too.
-  if [ "$kind" = "branch" ] && ! is_null_oid "$remote_sha" && \
-     [ "$ALLOW_FORCE_PUSH" != "1" ]; then
-    if git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
-      :
-    else
-      ancestry_status=$?
-      if [ "$ancestry_status" -eq 1 ]; then
-        block "force-push to '$name' — this rewrites history." \
-"Another agent may be working from these commits. Pull and merge instead."
-      fi
-      block "unable to verify ancestry for '$name' — git merge-base exited $ancestry_status." \
-"Fetch or deepen the remote history and fix the Git error above, then repeat.
-  An unreadable history is not evidence that this push is a force-push."
+  if [ "$kind" = branch ]; then
+    [ "$name" != main ] ||
+      block "direct push to main." "Use a branch and merge a pull request."
+    if [ "${ALLOW_ANY_BRANCH:-}" != 1 ]; then
+      case $name in
+        work/*|audit/*|infra/*) : ;;
+        *) block "branch '$name' is outside work/, audit/, or infra/." \
+          "Set ALLOW_ANY_BRANCH=1 only for an explicitly confirmed exception." ;;
+      esac
     fi
-  fi
-  if [ "$kind" = "tag" ] && ! is_null_oid "$remote_sha" && \
-     [ "$ALLOW_FORCE_PUSH" != "1" ]; then
-    block "moving existing tag '$name' — tags are immutable once published." \
-"Create a new tag. ALLOW_FORCE_PUSH=1 exists for an intentional exceptional move."
-  fi
-
-  # An annotated tag's local SHA names the tag object, while audits name the
-  # commit that was read. Peel every ref to its commit so a tag at an audited
-  # HEAD is usable and a tag pointing at a non-commit fails closed.
-  audit_sha=$(git rev-parse "$local_sha^{commit}" 2>/dev/null) || audit_sha=""
-  if [ -z "$audit_sha" ]; then
-    block "'$name' does not resolve to a commit, so its history and review receipt cannot be checked."
-  fi
-
-  # 4. Scan everything reachable from the outgoing commit. The pre-commit
-  #    alarm can be bypassed, and server CI only reports after Git has accepted
-  #    the ref. An add-then-delete secret in an ancestor must not leave merely
-  #    because the current tree is clean.
-  if ! python3 "$ingress" --history "$audit_sha" >/dev/null; then
-    block "$kind '$name' failed its outgoing-history ingress check."
-  fi
-
-  # `rev-list` peels an annotated tag to its commit and never returns the tag
-  # message. Scan the ref object separately before publishing an immutable tag.
-  if [ "$kind" = "tag" ] && \
-     ! python3 "$ingress" --ref-object "$local_sha" >/dev/null; then
-    block "tag '$name' failed its annotated-tag ingress check."
-  fi
-
-  # 5. The review checklist for this exact commit.
-  #
-  #    THIS IS A CHECKLIST, NOT A GATE. Tyrel's ruling. It reports the reviewer
-  #    coverage that exists and it never refuses a push over it. He decides
-  #    whether the coverage is enough, every time, and does not need a magic
-  #    variable to say so.
-  #
-  #    That is not a weakening, because the block it replaced never actually
-  #    proved anything. A receipt records what the operator *says* occurred: it
-  #    cannot establish reviewer identity, independence, prompt equality, or
-  #    that a single line was read. Refusing a push on a number derived from
-  #    self-asserted text produced ceremony, not safety — and worse, it made
-  #    `ALLOW_UNAUDITED_PUSH=1` a routine keystroke, which is how a real alarm
-  #    gets tuned out. What is left is the honest thing: print the coverage
-  #    plainly, at the moment of the push, and let the human judge it.
-  #
-  #    The hard blocks above are unchanged, because none of them turns on
-  #    anybody's assertion: main moves only by pull request, and a credential
-  #    or an oversized payload in the outgoing history is a fact, not a claim.
-  short=$(echo "$audit_sha" | cut -c1-8)
-  reviewers=0
-  names=""
-  if [ -z "$receipts" ]; then
-    # Could not look. Not the same claim as "nobody reviewed this", and the
-    # difference is the whole of GOVERNANCE 10: an instrument that cannot
-    # measure must not report a measurement. Absent evidence must not read
-    # cleaner — or dirtier — than evidence that was actually examined.
-    receipt_state="unknown"
-    receipt_detail="the git directory could not be located, so no receipt could be looked up"
-  else
-    receipt="$receipts/$audit_sha"
-    if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then
-      receipt_state="no receipt recorded"
-    elif [ ! -f "$receipt" ] || [ ! -r "$receipt" ]; then
-      # Something is at the receipt path, but it is not a regular file this hook
-      # can read: a FIFO, a socket, a device, a directory, a dangling symlink, a
-      # file whose permissions refuse us. Nothing was read, so nothing is
-      # claimed.
-      #
-      # Reporting that as "no receipt recorded" would be a coverage measurement
-      # taken by an instrument that never opened anything (GOVERNANCE 10). It is
-      # also how a planted FIFO hides: `grep` and `sed` block forever on one, so
-      # a push would hang with no explanation rather than say it could not look.
-      # Establishing the file type first is what keeps every later read bounded.
-      receipt_state="unknown"
-      receipt_detail="the receipt path is not a readable regular file, so nothing could be read"
-    else
-      # The status is captured on its own line rather than read from `$?` after
-      # an `if`: a completed `if` compound sets `$?` to its own status, not the
-      # condition's, so the two cases would collapse into one.
-      python3 "$ingress" --audit-receipt "$receipt" >/dev/null 2>&1
-      scan_status=$?
-      if [ "$scan_status" -eq 1 ]; then
-        receipt_state="receipt is incomplete or invalid"
-      elif [ "$scan_status" -ne 0 ]; then
-        # Exit 1 is a verdict on the receipt. Any other non-zero exit means the
-        # scanner could not run — including the case where the path stopped
-        # being a regular file between the test above and this read.
-        receipt_state="unknown"
-        receipt_detail="the receipt could not be scanned (ingress check exit ${scan_status}), so its contents are unknown"
-      elif ! grep -Eqx "[[:space:]]*commit:[[:space:]]+${audit_sha}[[:space:]]*" \
-           "$receipt" 2>/dev/null; then
-        # Matched loosely on purpose. The receipt's exact spacing is a contract
-        # between record-audit.sh and check_ingress.py, asserted in
-        # test_hooks.py; welding a third copy of it into this grep would mean
-        # any tidy-up of the writer silently reported every reviewed push as
-        # unreviewed. This section never blocks, so that drift would surface as
-        # *lost coverage*, not as a bug.
-        receipt_state="receipt records a different commit"
+    if ! is_null_oid "$remote_sha"; then
+      if git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+        :
       else
-        receipt_state="ok"
-        if ! names=$(distinct_reviewer_names "$receipt"); then
-          receipt_state="unknown"
-          receipt_detail="the reviewer names in the receipt could not be read"
-          names=""
+        status=$?
+        if [ "$status" -eq 1 ]; then
+          [ "${ALLOW_FORCE_PUSH:-}" = "$name" ] ||
+            block "push to '$name' rewrites published history." \
+              "Fetch and integrate it, or confirm ownership and set ALLOW_FORCE_PUSH=$name."
+        else
+          block "ancestry of '$name' could not be verified (git exit $status)."
         fi
       fi
     fi
+  elif ! is_null_oid "$remote_sha"; then
+    block "published tag '$name' cannot be moved."
   fi
 
-  # Count only after the names are in hand, and refuse to believe a count that
-  # is not a number. `wc` or `tr` failing used to leave $reviewers holding text,
-  # and `[ "$reviewers" -lt 3 ]` then *errored* rather than evaluating true — so
-  # the shortfall notice was skipped and a push with no reviewers at all printed
-  # nothing about it. A measurement that did not happen is reported as unknown,
-  # never as zero and never as silence (GOVERNANCE 10).
-  if [ "$receipt_state" = ok ]; then
-    if [ -z "$names" ]; then
-      reviewers=0
-    else
-      reviewers=$(printf '%s\n' "$names" | sed '/^$/d' | wc -l | tr -d '[:space:]')
-    fi
-    case "$reviewers" in
-      '' | *[!0-9]*)
-        receipt_state="unknown"
-        receipt_detail="the reviewer count could not be computed"
-        reviewers=0
-        names=""
-        ;;
-    esac
+  commit=$(git rev-parse "$local_sha^{commit}" 2>/dev/null) || commit=""
+  [ -n "$commit" ] ||
+    block "'$name' does not resolve to a commit."
+
+  python3 "$ingress" --history "$commit" >/dev/null ||
+    block "$kind '$name' failed its outgoing-history ingress check."
+  if [ "$kind" = tag ]; then
+    python3 "$ingress" --ref-object "$local_sha" >/dev/null ||
+      block "tag '$name' failed its annotated-tag ingress check."
   fi
 
-  echo "" >&2
-  echo "  ── review checklist — $kind '$name' at $short ──" >&2
-  if [ "$receipt_state" = ok ]; then
-    printf '%s\n' "$names" | sed '/^$/d' | while IFS= read -r who; do
-      echo "     [x] $who" >&2
-      if ! is_plain_ascii "$who"; then
-        echo "         this name is not plain ASCII — read it against the others" >&2
-        echo "         before counting it as a separate reviewer." >&2
-      fi
-    done
-    i=$reviewers
-    while [ "$i" -lt 3 ]; do
-      echo "     [ ] a further independent reviewer" >&2
-      i=$((i + 1))
-    done
-    echo "     $reviewers distinct reviewer(s) recorded for this exact commit." >&2
-  elif [ "$receipt_state" = unknown ]; then
-    echo "     [?] review coverage UNKNOWN — $receipt_detail." >&2
-    echo "     This is not a record of zero reviewers. Nothing was read, so" >&2
-    echo "     nothing is claimed either way; judge the coverage from elsewhere." >&2
-  else
-    echo "     [ ] no reviewer recorded — $receipt_state" >&2
-    echo "     [ ] a further independent reviewer" >&2
-    echo "     [ ] a further independent reviewer" >&2
-  fi
-  if [ "$receipt_state" != unknown ] && [ "$reviewers" -lt 3 ]; then
-    echo "" >&2
-    echo "     Three across two vendors is the standard. Record one with:" >&2
-    echo "       .githooks/record-audit.sh '<model that answered>' '<what it found>'" >&2
-    echo "     Name the release that actually answered, not the one requested." >&2
-  fi
-  echo "" >&2
-  echo "     Not a gate. Tyrel decides whether this is enough. Pushing." >&2
-  echo "" >&2
+  print_review_checklist "$kind" "$name" "$commit"
 done
 
 if [ "$records" -eq 0 ]; then
-  echo "" >&2
-  echo "  NOTE: this hook received no refs on standard input, so nothing was" >&2
-  echo "  checked and no review checklist was printed. Git does this on an" >&2
-  echo "  up-to-date push, where there is genuinely nothing outgoing. If a ref" >&2
-  echo "  IS leaving, the input was lost and this push went out unexamined." >&2
-  echo "" >&2
+  echo "pre-push: no outgoing refs received; nothing was checked." >&2
 fi
-exit 0

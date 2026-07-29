@@ -36,10 +36,12 @@ session that thinks it was heard will wait forever.
 
 The client requires Python 3 for in-memory JSON encoding and `curl` for HTTPS delivery.
 
-`codex/seat.sh` pins a seat's requested model, effort, sandbox, work root, and elapsed-time
-ceiling. It uses Codex's ephemeral mode so the CLI does not persist a second session record.
-It does **not** cap tokens or cost, prove the runtime-resolved model, or retain the result.
-A caller must preserve the raw output and account for the dispatch separately.
+`codex/seat.sh` pins a read-only evidence seat's requested model, effort, and elapsed-time
+ceiling. Every seat runs at the repository root with closed stdin, ignores desktop model
+defaults, and receives a short reminder that the main session owns scope and decisions. It
+uses Codex's ephemeral mode so the CLI does not persist a second session record. It does
+**not** cap tokens or cost, prove the runtime-resolved model, or retain the result. A caller
+must preserve the raw output and account for the dispatch separately.
 Live calls require the Codex CLI and GNU `timeout` (named `gtimeout` on a normal macOS
 coreutils installation); stdin prompt intake also requires that timeout. A direct-prompt
 dry run needs neither, and the wrapper refuses every path that would otherwise run uncapped.

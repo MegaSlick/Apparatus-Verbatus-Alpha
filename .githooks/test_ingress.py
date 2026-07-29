@@ -12,6 +12,7 @@ import pytest
 HOOKS = Path(__file__).resolve().parent
 SCANNER = HOOKS / "check_ingress.py"
 ONE_MIB = 1_048_576
+pytestmark = pytest.mark.full
 
 
 def scanner_module():

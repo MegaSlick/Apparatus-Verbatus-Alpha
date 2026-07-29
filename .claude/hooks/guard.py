@@ -1,2457 +1,534 @@
 #!/usr/bin/env python3
-"""Tripwire for the things that cost money or destroy work.
+"""Small Claude PreToolUse tripwire for consequential actions.
 
-Runs before every Bash command, every file-writing tool call and every MCP tool
-call. Blocks a short list and stays out of the way otherwise — a guard that
-fires on ordinary work gets disabled, and a disabled guard protects nothing.
+This is not a shell sandbox. It recognizes obvious capabilities and either:
 
-What it recognises — phrasings, not operations. Each line names the spellings
-this file actually inspects. It does not block the operation; it blocks the way
-of writing it. GOVERNANCE.md 10 — "claims are made only about what was actually
-measured" — makes the second list below part of this claim rather than a
-disclaimer on it, and every entry in it was run against this guard.
+* denies actions a subagent may never take, plus direct-main and hook-bypass Git;
+* asks Tyrel to confirm one exact destructive, paid, external, or owned-branch
+  history-rewrite action; or
+* stays silent and leaves Claude Code's normal permission flow in place.
 
-  * RunPod launches spelled as `runpodctl create|start|remove pods`,
-    `runpodctl project deploy|dev`, or an MCP tool whose name holds "runpod"
-    and a starting verb                        Governance 8: only Tyrel, in-session
-  * an MCP tool *payload* that addresses a RunPod URL or path with a write
-    method, or names a create/deploy call, however neutral the tool is
-    called                                     a name is the server's claim, not evidence
-  * RunPod API writes spelled as curl, wget, HTTPie, the runpod Python SDK,
-    inline `requests`/`httpx`/`urllib`/`http.client`, or an inline
-    node/bun/deno script                       same, by another route
-  * network-volume deletes in those same clients and tools
-  * core.hooksPath writes spelled as `git -c`, `git config` in either the flag
-    or the 2.46 subcommand form, or dropping the [core] section — in *this*
-    clone. A `git -C <path>` or a `cd` to an absolute path outside the project
-    is another repository, where a throwaway repo's hooksPath is nobody's
-    business; anything unresolved counts as this clone.
-  * pushes at main spelled as `git push` or `git send-pack`, force-push in any
-    spelling, and `--no-verify`                main moves only by merge
-  * `git clean` without --dry-run              ignored evidence is not recoverable
-  * git cleanup that discards uncommitted work — `reset --hard`, `restore`
-    over the worktree, `checkout` with a pathspec or --force, `switch --force`,
-    `worktree remove --force`, `branch -D`, `stash drop|clear`
-  * `chmod`, `mv` or `rm` of a file under `.githooks/` or `.git/hooks/`
-                                               a hook that cannot run is a hook that is off
-  * `rm` of the repository, .git/.githooks/.claude, your home, or workbench
-    records outside scratch
-  * a `Write`/`Edit`/`MultiEdit`/`NotebookEdit` whose destination resolves to a
-    governing document at the root of this clone or one of its worktrees —
-    GOALS, GOVERNANCE, ARCHITECTURE, GLOSSARY and the root README for every
-    caller, and CLAUDE.md when the payload says a subagent is calling.
-                                               CLAUDE.md hard rule 10
-
-WHAT THIS IS NOT
-================
-It is not a security boundary and it cannot be made into one. Four rounds of
-adversarial audit found a new way past every version of it, which is the
-expected result: inspecting command text can always be defeated by writing the
-command differently. So the honest form of the list above is the list below.
-
-What it does not catch — each one verified against this file, not suspected:
-  * a script file. `sh deploy.sh`, `python3 deploy.py` and `node deploy.js` are
-    opaque; only the inline `-c` / `-e` forms are read at all.
-  * a command assembled from variables, or arriving base64-encoded through a
-    pipe. Any encoding is invisible here.
-  * a command reached indirectly rather than named. Dispatch is by basename,
-    so a git alias, `find -exec`, `env -S`, a glob or ANSI-C-quoted path
-    (`/usr/bin/g[i]t`, `g$'\x69't`), a renamed or symlinked binary, and a
-    module run with `python -m` all arrive under a name this file does not
-    look up. This is the general shape of the thing: what is recognised is a
-    *spelling*, and a spelling can always be changed.
-  * HTTP clients other than those named above, and every language runtime other
-    than Python and node/bun/deno — `perl -e` reaches the API untouched.
-  * git plumbing spelled as its own binary — `git-push`, `git-send-pack` —
-    rather than as `git <subcommand>`.
-  * a governing document rewritten from the shell. `echo x > GOVERNANCE.md`,
-    `sed -i`, `cp`, `mv` and `patch` all reach those files without touching a
-    writing tool. A ref-only `git checkout` may rewrite them while switching
-    revisions; the checkout guard distinguishes refs from pathspecs, not which
-    files differ between refs. What hard rule 10 gets here is a tripwire on the
-    tools an agent actually reaches for, not a seal on the bytes.
-  * a subagent whose payload does not identify it. The CLAUDE.md half of hard
-    rule 10 rests on `agent_type`/`agent_id`, which Claude Code sends and this
-    file cannot verify; if a release stops sending them, that half is off and
-    nothing here would say so. The other five documents are refused to every
-    caller and so do not depend on it.
-  * an MCP payload that hides its request from a reader: encoded, assembled
-    from fields the guard cannot join, or sent through a proxy tool that names
-    neither a RunPod host nor a call this file knows by name.
-
-`bash -c` and `eval` payloads are recursively inspected, up to three deep, and
-so is every command substitution — `$( )` or backticks — wherever the shell
-would run one: bare, inside double quotes, or in an expanding heredoc body.
-What the guard reads is the substitution's *contents*, as a command; quoting is
-not itself suspicious and `"$(git rev-parse HEAD)"` stays ordinary. Single
-quotes really do make a substitution literal, so those stay inert. One it
-cannot parse — an unbalanced `$(`, or bash 5.3's `${ cmd; }` — is refused
-rather than assumed harmless.
-
-Executable and ambiguous heredocs are refused because this guard cannot
-validate arbitrary code. A heredoc read by a command that cannot execute its
-input — `cat`, `tee`, `grep`, `sed`, `jq` and the rest of HEREDOC_DATA_SINKS —
-is allowed only while it is really data: a quoted delimiter (`<<'EOF'`) makes
-the body literal, while a bare `<<EOF` lets the shell run `$(...)` in it before
-the reader ever starts. The heredoc is judged by the piece of the line that
-declares it, so `cd /tmp && cat <<'EOF'` belongs to `cat`.
-
-Only what a client would fetch is read as its destination. A RunPod host named
-inside a curl request *body* is a mention, not a call; wget and HTTPie are
-still judged on the whole command line, which over-refuses rather than under.
-
-One refusal is deliberate rather than a limitation, and is recorded here so it
-is not mistaken for a bug: an inline `python3 -c` / `node -e` write to the
-RunPod API is refused even when its URL ends in `/stop`. The guard can verify a
-shutdown route in curl's argv, where every URL is visible; it cannot verify one
-inside a script that may build the URL from pieces or make a second request.
-`runpodctl stop pod <id>`, curl, and the MCP stop/terminate/delete tools are
-open, and the refusal names them.
-
-It guards **Claude only**. Codex, GPT and a human at a terminal never run it.
-
-Installed Git hooks apply to Git operations made in that clone by any tool that
-does not deliberately bypass them. They do not govern direct filesystem,
-process, or network actions. See `.githooks/install.sh`. This file is a Claude
-tripwire on top: it catches the honest mistake and the careless agent, promptly
-and with a useful message. Treat it as a seatbelt, not a vault.
+Opaque scripts and deliberately disguised commands remain opaque. The durable
+controls are narrow tool permissions, Git hooks, GitHub protection, review, and
+the main session reading every integrated diff.
 """
 
-# The hook line says `python3`, and which python3 that is belongs to whoever's
-# PATH runs the session. On this machine /usr/bin/python3 is 3.9, where the
-# `str | None` annotation below is a TypeError at import — the guard exited 1,
-# the hook runner read "proceed", and nothing was guarded at all. Postponed
-# annotations make the file run on 3.9; the launcher in settings.json turns any
-# remaining failure to start into a refusal.
 from __future__ import annotations
 
 import json
 import os
 import re
 import shlex
-import subprocess
 import sys
-from urllib.parse import urlsplit
+from pathlib import Path
+from typing import Any, Optional, Tuple
 
-# Governance 8 grants pod permission *for a session*. This guard has no notion
-# of a session and is not going to be given one: anything that represented
-# "permission granted" — a file, a variable, a flag — could be written by the
-# thing the rule constrains, and a permission mechanism an agent can forge is
-# worse than none because it looks like proof. So the block is unconditional,
-# and it fires even after Tyrel has said yes in the session.
-#
-# That makes the wording load-bearing. A refusal that reads as a malfunction
-# gets routed around — rewritten, wrapped in a script, or spelled differently
-# until it passes — and every one of those routes exists (see WHAT THIS IS NOT).
-# A refusal that names the way forward does not need to be defeated.
-GOV8 = (
-    "Governance 8: a live pod needs Tyrel's permission in this session, and the guard "
-    "cannot see that permission — it has no notion of a session, so it refuses every "
-    "launch, including one he has already approved. That is deliberate and it is not a "
-    "malfunction to work around: ask Tyrel to start the pod himself, out of band, and "
-    "carry on once he says it is up"
+GOVERNING_DOCUMENTS = frozenset(
+    {"claude.md", "goals.md", "governance.md", "architecture.md", "glossary.md", "readme.md"}
 )
+WRITING_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+PATH_KEYS = ("file_path", "notebook_path", "path")
 
-RUNPOD_HOSTS = ("runpod.io", "runpod.ai")
-
-RUNPODCTL_BLOCKED = {
-    ("create",): (f"creates pods — {GOV8}"),
-    ("start",): (f"wakes a stopped pod, which bills again — {GOV8}"),
-    ("project", "deploy"): (f"deploys billed infrastructure — {GOV8}"),
-    ("project", "dev"): (f"starts a billed session — {GOV8}"),
-    ("remove", "pods"): "removes pods in bulk by name — they may not all be yours",
-}
-
-# git's own options, before the subcommand, that carry a separate value.
-GIT_GLOBAL_VALUE_OPTS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
-# Subcommand options whose value must never be mistaken for an option: this is
-# what stops `git commit -m 'document the --no-verify hatch'` being blocked.
-GIT_VALUE_OPTS = {
-    "-m",
-    "--message",
-    "-F",
-    "--file",
-    "-t",
-    "--template",
-    "--reuse-message",
-    "-C",
-    "-c",
-}
-# Checkout has its own option grammar. In particular, its `-m` and `-t` are
-# Boolean flags, while these options consume the following token. Reusing the
-# commit-oriented set above would hide a real checkout operand.
-GIT_CHECKOUT_VALUE_OPTS = {
-    "-b",
-    "-B",
-    "--orphan",
-    "--conflict",
-    "--pathspec-from-file",
-}
-GIT_PUSH_VALUE_OPTS = GIT_VALUE_OPTS | {
-    "--exec",
-    "--push-option",
-    "--receive-pack",
-    "--repo",
-    "-o",
-    "-r",
-}
-
-# Wrappers that put the real command one or more tokens further in.
-WRAPPERS = {
-    "env",
-    "sudo",
-    "doas",
-    "nohup",
-    "time",
-    "timeout",
-    "nice",
-    "setsid",
-    "stdbuf",
-    "command",
-    "builtin",
-    "exec",
-    "xargs",
-    "script",
-    "uv",
-    "poetry",
-    "pipenv",
-    "hatch",
-    "rye",
-    # rtk is this machine's always-on command proxy, so `rtk git push --force`
-    # is an ordinary thing to type and must not skip every check.
-    "rtk",
-}
-
-# Wrapper options that swallow the next token. Without these, `sudo -u tyrel
-# git push origin main` left `tyrel` sitting in the command position and every
-# check below was skipped.
-WRAPPER_VALUE_OPTS = {
-    "-u",
-    "-g",
-    "-p",
-    "-s",
-    "-k",
-    "-n",
-    "-a",
-    "-I",
-    "-i",
-    "-P",
-    "-d",
-    "-E",
-    "-o",
-    "-e",
-    "-C",
-    "-l",
-    "--user",
-    "--group",
-    "--signal",
-    "--kill-after",
-    "--replace",
-    "--max-procs",
-    "--unset",
-    "--chdir",
-}
-
-# Shell grammar that is never a command name.
-KEYWORDS = {
-    "if",
-    "then",
-    "else",
-    "elif",
-    "fi",
-    "do",
-    "done",
-    "while",
-    "for",
-    "until",
-    "case",
-    "esac",
-    "in",
-    "function",
-    "select",
-    "!",
-    "{",
-    "}",
-}
-
-WRITE_METHODS = ("post", "put", "patch", "delete")
-# `-f` and `-t` are deliberately absent: in curl they are --fail and
-# --telnet-option, both read-only, and blocking `curl -f` blocked exactly the
-# provider-state check Governance 8 asks for.
-CURL_WRITE_FLAGS = (
-    "--form",
-    "--form-string",
-    "--json",
-    "--upload-file",
-)
-WGET_WRITE_FLAGS = (
-    "--post-file",
-    "--post-data",
-    "--body-data",
-    "--body-file",
-)
-
-# curl permits joined short options. Options that take a value consume the
-# remainder of their token, so `-sFname=x` contains a real -F while
-# `-HContent-Type:x` does not contain a -T. This set comes from curl's short
-# option table and lets the guard stop parsing at the right place.
-CURL_SHORT_VALUE_OPTS = frozenset("AbcCdDeEFHhKmoPQrTtUuwxXyYz")
-
-# Long curl options that consume the following token when no `=` is used.
-# Keeping this explicit is what distinguishes `curl --get ...` from
-# `curl --header --get ...`, where `--get` is merely the header value.
-CURL_LONG_VALUE_OPTS = frozenset(
+MUTATION_WORDS = frozenset(
     {
-        "--abstract-unix-socket",
-        "--alt-svc",
-        "--aws-sigv4",
-        "--cacert",
-        "--capath",
-        "--cert",
-        "--cert-type",
-        "--ciphers",
-        "--config",
-        "--connect-timeout",
-        "--connect-to",
-        "--continue-at",
-        "--cookie",
-        "--cookie-jar",
-        "--create-file-mode",
-        "--crlfile",
-        "--curves",
-        "--data",
-        "--data-ascii",
-        "--data-binary",
-        "--data-raw",
-        "--data-urlencode",
-        "--delegation",
-        "--dns-interface",
-        "--dns-ipv4-addr",
-        "--dns-ipv6-addr",
-        "--dns-servers",
-        "--doh-url",
-        "--dump-header",
-        "--egd-file",
-        "--engine",
-        "--etag-compare",
-        "--etag-save",
-        "--expect100-timeout",
-        "--form",
-        "--form-string",
-        "--ftp-account",
-        "--ftp-alternative-to-user",
-        "--ftp-method",
-        "--ftp-port",
-        "--ftp-ssl-ccc-mode",
-        "--haproxy-clientip",
-        "--header",
-        "--help",
-        "--hostpubmd5",
-        "--hostpubsha256",
-        "--hsts",
-        "--interface",
-        "--ipfs-gateway",
-        "--json",
-        "--keepalive-time",
-        "--key",
-        "--key-type",
-        "--krb",
-        "--libcurl",
-        "--limit-rate",
-        "--local-port",
-        "--login-options",
-        "--mail-auth",
-        "--mail-from",
-        "--mail-rcpt",
-        "--max-filesize",
-        "--max-redirs",
-        "--max-time",
-        "--netrc-file",
-        "--noproxy",
-        "--oauth2-bearer",
-        "--output",
-        "--output-dir",
-        "--parallel-max",
-        "--pass",
-        "--pinnedpubkey",
-        "--preproxy",
-        "--proto",
-        "--proto-default",
-        "--proto-redir",
-        "--proxy",
-        "--proxy-cacert",
-        "--proxy-capath",
-        "--proxy-cert",
-        "--proxy-cert-type",
-        "--proxy-ciphers",
-        "--proxy-crlfile",
-        "--proxy-header",
-        "--proxy-key",
-        "--proxy-key-type",
-        "--proxy-pass",
-        "--proxy-pinnedpubkey",
-        "--proxy-service-name",
-        "--proxy-tls13-ciphers",
-        "--proxy-tlsauthtype",
-        "--proxy-tlspassword",
-        "--proxy-tlsuser",
-        "--proxy-user",
-        "--proxy1.0",
-        "--pubkey",
-        "--quote",
-        "--random-file",
-        "--range",
-        "--rate",
-        "--referer",
-        "--request",
-        "--request-target",
-        "--resolve",
-        "--retry",
-        "--retry-delay",
-        "--retry-max-time",
-        "--sasl-authzid",
-        "--service-name",
-        "--socks4",
-        "--socks4a",
-        "--socks5",
-        "--socks5-gssapi-service",
-        "--socks5-hostname",
-        "--speed-limit",
-        "--speed-time",
-        "--stderr",
-        "--telnet-option",
-        "--tftp-blksize",
-        "--time-cond",
-        "--tls-max",
-        "--tls13-ciphers",
-        "--tlsauthtype",
-        "--tlspassword",
-        "--tlsuser",
-        "--trace",
-        "--trace-ascii",
-        "--trace-config",
-        "--unix-socket",
-        "--upload-file",
-        "--upload-flags",
-        "--url",
-        "--url-query",
-        "--user",
-        "--user-agent",
-        "--variable",
-        "--write-out",
+        "add",
+        "approve",
+        "archive",
+        "close",
+        "comment",
+        "create",
+        "delete",
+        "deploy",
+        "destroy",
+        "disable",
+        "edit",
+        "enable",
+        "invite",
+        "launch",
+        "merge",
+        "move",
+        "post",
+        "publish",
+        "remove",
+        "rename",
+        "reply",
+        "resolve",
+        "restart",
+        "send",
+        "set",
+        "start",
+        "stop",
+        "terminate",
+        "uninstall",
+        "update",
+        "upload",
+        "write",
     }
 )
 
-# HTTPie request-item separators. The first separator decides the item's kind:
-# header (`:`), query (`==`), string/JSON body (`=` / `:=`), or file body (`@`).
-HTTPIE_ITEM = re.compile(r"^[^:=@]+(:=|==|=|@|:)")
-HTTPIE_VALUE_OPTS = frozenset(
-    {
-        "-a",
-        "-o",
-        "-p",
-        "--auth",
-        "--boundary",
-        "--cert",
-        "--cert-key",
-        "--ciphers",
-        "--format-options",
-        "--max-headers",
-        "--output",
-        "--print",
-        "--proxy",
-        "--raw",
-        "--session",
-        "--session-read-only",
-        "--ssl",
-        "--style",
-        "--timeout",
-        "--verify",
-    }
+Decision = Optional[Tuple[str, str]]
+
+
+def subagent_name(payload: dict[str, Any]) -> str | None:
+    """Return the runtime-supplied agent identity, absent on the main thread."""
+    for key in ("agent_type", "agent_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            named = payload.get("agent_type")
+            return named.strip() if isinstance(named, str) and named.strip() else "subagent"
+    return None
+
+
+def deny_or_ask(payload: dict[str, Any], reason: str) -> Decision:
+    """Subagents are refused; the accountable main session must ask Tyrel."""
+    agent = subagent_name(payload)
+    if agent:
+        return "deny", f"Subagent {agent} may not {reason}; report it to the main session."
+    return (
+        "ask",
+        f"This would {reason}. Confirm this exact action only if you accept that consequence.",
+    )
+
+
+def project_root() -> Path:
+    return Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+
+
+def worktree_belongs_to_project(directory: Path, project: Path) -> bool:
+    marker = directory / ".git"
+    if not marker.is_file():
+        return False
+    try:
+        text = marker.read_text(encoding="utf-8", errors="replace")[:4096]
+    except OSError:
+        return False
+    match = re.match(r"\s*gitdir:\s*(.+)", text)
+    if not match:
+        return False
+    gitdir = Path(match.group(1).strip()).resolve()
+    return str(gitdir).startswith(str(project / ".git" / "worktrees") + os.sep)
+
+
+def written_path(tool_input: Any, payload: dict[str, Any]) -> Path | None:
+    if not isinstance(tool_input, dict):
+        return None
+    raw = next((tool_input[key] for key in PATH_KEYS if key in tool_input), None)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    expanded = os.path.expandvars(os.path.expanduser(raw.strip()))
+    if os.path.isabs(expanded):
+        return Path(expanded).resolve()
+    cwd = payload.get("cwd")
+    base = Path(cwd) if isinstance(cwd, str) and cwd else project_root()
+    return (base / expanded).resolve()
+
+
+def governing_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
+    if tool not in WRITING_TOOLS:
+        return None
+    target = written_path(tool_input, payload)
+    if target is None:
+        return "deny", "The repository guard could not determine the write destination."
+    if target.name.strip().lower() not in GOVERNING_DOCUMENTS:
+        return None
+
+    project = project_root()
+    parent = target.parent.resolve()
+    if parent != project and not worktree_belongs_to_project(parent, project):
+        return None
+    agent = subagent_name(payload)
+    if agent:
+        return (
+            "deny",
+            f"Hard rule 10 bars subagent {agent} from editing governing document {target.name}; "
+            "propose exact wording to the main session.",
+        )
+    return (
+        "ask",
+        f"{target.name} governs later sessions. Tyrel must approve its exact policy change; "
+        "confirm that this edit is the wording he directed.",
+    )
+
+
+def has(command: str, pattern: str) -> bool:
+    return re.search(pattern, command, flags=re.IGNORECASE | re.DOTALL) is not None
+
+
+GIT_INVOCATION = re.compile(
+    r"(?:^|[;&|]\s*)\s*"
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+)\s+|"
+    r"(?:command|exec|rtk)\s+|"
+    r"sudo(?:(?:\s+(?:-u|--user|-g|--group)\s+\S+)|"
+    r"(?:\s+(?:--user|--group)=\S+)|"
+    r"(?:\s+(?:-n|-E|-H|-S|-k|--non-interactive)))*\s+|"
+    r"env(?:(?:\s+(?:-i|--ignore-environment))|"
+    r"(?:\s+(?:-u|--unset)\s+\S+)|(?:\s+--unset=\S+)|"
+    r"(?:\s+[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+))*\s+)*"
+    r"(?:[^\s;&|]*/)?git\b(?P<tail>[^\n;&|]*)",
+    flags=re.IGNORECASE,
+)
+GIT_GLOBAL_VALUE_OPTIONS = frozenset(
+    {"-c", "-C", "--config-env", "--git-dir", "--work-tree", "--namespace"}
 )
 
-# The fallback when a command will not tokenise. Deliberately narrow: each of
-# these needs a *write* alongside the noun, so that reading about a network
-# volume, grepping for it, or naming it in a commit message stays allowed.
-FALLBACK = [
-    (
-        re.compile(r"networkvolume", re.I),
-        re.compile(r"\b(delete|-X\s*DELETE|--request\s*=?\s*DELETE|remove|destroy)\b", re.I),
-        "deletes a network volume — irreversible, and the corpus lives there",
-    ),
-    (
-        re.compile(
-            r"\b(podFindAndDeployOnDemand|podResume|podRentInterruptable|deleteNetworkVolume)\b",
-            re.I,
-        ),
-        re.compile(r"\b(curl|wget|http|python3?|requests|fetch)\b", re.I),
-        f"deploys, resumes or destroys RunPod resources via the API — {GOV8}",
-    ),
-    (
-        re.compile(r"\brunpodctl\b", re.I),
-        re.compile(r"\b(create|start)\b|\bproject\s+(deploy|dev)\b", re.I),
-        f"brings up billed RunPod infrastructure — {GOV8}",
-    ),
-    (
-        re.compile(r"\brm\b"),
-        re.compile(r"-[a-zA-Z]*r", re.I),
-        "a recursive delete the guard could not parse — rewrite it simply",
-    ),
-]
+
+def git_calls(command: str) -> list[tuple[str, list[str], list[str]]]:
+    """Return recognizable direct Git calls as (action, arguments, all tokens)."""
+    calls = []
+    for match in GIT_INVOCATION.finditer(command):
+        try:
+            tokens = shlex.split(match.group("tail"), posix=True)
+        except ValueError:
+            continue
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                index += 1
+                break
+            if token in GIT_GLOBAL_VALUE_OPTIONS:
+                index += 2
+                continue
+            if token.startswith(("-c", "-C")) and len(token) > 2:
+                index += 1
+                continue
+            if token.startswith(("--config-env=", "--git-dir=", "--work-tree=", "--namespace=")):
+                index += 1
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            break
+        if index < len(tokens):
+            calls.append((tokens[index].lower(), tokens[index + 1 :], tokens))
+    return calls
 
 
-def deny(reason: str) -> None:
+def git_action(command: str, action: str) -> bool:
+    return any(found == action for found, _arguments, _tokens in git_calls(command))
+
+
+def hooks_path_bypass(action: str, arguments: list[str], tokens: list[str]) -> bool:
+    lowered = [token.lower() for token in tokens]
+    for index, token in enumerate(lowered):
+        if token == "-c" and index + 1 < len(lowered):
+            if lowered[index + 1].startswith("core.hookspath="):
+                return True
+        if token.startswith("-ccore.hookspath="):
+            return True
+        if token == "--config-env" and index + 1 < len(lowered):
+            if lowered[index + 1].startswith("core.hookspath="):
+                return True
+        if token.startswith("--config-env=core.hookspath="):
+            return True
+
+    if action != "config":
+        return False
+    lowered_arguments = [argument.lower() for argument in arguments]
+    key_indexes = [
+        index for index, token in enumerate(arguments) if token.lower() == "core.hookspath"
+    ]
+    if (
+        key_indexes
+        and bool({"set", "unset"}.intersection(lowered_arguments))
+        or "remove-section" in lowered_arguments
+        and "core" in lowered_arguments
+        or "rename-section" in lowered_arguments
+        and "core" in lowered_arguments
+    ):
+        return True
+    if not key_indexes:
+        return False
+    mutation_flags = {
+        "--add",
+        "--replace-all",
+        "--unset",
+        "--unset-all",
+        "--rename-section",
+        "--remove-section",
+    }
+    return bool(mutation_flags.intersection(arguments)) or any(
+        arguments[index + 1 :] for index in key_indexes
+    )
+
+
+def push_targets_main(arguments: list[str]) -> bool:
+    for raw in arguments:
+        token = raw.lstrip("+")
+        if token.startswith("-"):
+            continue
+        target = token.split(":", 1)[1] if ":" in token else token
+        if target in {"main", "refs/heads/main"}:
+            return True
+    return False
+
+
+def hard_git_denial(command: str) -> str | None:
+    for action, arguments, tokens in git_calls(command):
+        if any(token == "--no-verify" or token.startswith("--no-verify=") for token in tokens):
+            return "bypassing repository Git hooks is outside the allowed workflow"
+        if hooks_path_bypass(action, arguments, tokens):
+            return "bypassing repository Git hooks is outside the allowed workflow"
+        if action not in {"push", "send-pack"}:
+            continue
+        if push_targets_main(arguments):
+            return "main may move only through a pull-request merge"
+    return None
+
+
+def risky_git(command: str, payload: dict[str, Any]) -> Decision:
+    hard = hard_git_denial(command)
+    if hard:
+        return "deny", f"Blocked by repository hard rule: {hard}."
+
+    for action, arguments, _tokens in git_calls(command):
+        if action in {"push", "send-pack"}:
+            rewriting = any(
+                token in {"-f", "--force", "--force-with-lease", "--force-if-includes"}
+                or token.startswith(("--force=", "--force-with-lease=", "--force-if-includes="))
+                or token.startswith("+")
+                for token in arguments
+            )
+            if rewriting:
+                return deny_or_ask(
+                    payload,
+                    "rewrite published history; hard rule 5 forbids this unless the "
+                    "branch is exclusively yours",
+                )
+            return deny_or_ask(payload, "publish commits or refs to a remote repository")
+        if action == "merge":
+            return deny_or_ask(payload, "merge histories, which Tyrel reserves to himself")
+        if action == "rebase" or (action == "commit" and "--amend" in arguments):
+            return deny_or_ask(payload, "rewrite local commit history")
+        restore_staged = "--staged" in arguments or any(
+            token.startswith("-") and not token.startswith("--") and "S" in token[1:]
+            for token in arguments
+        )
+        restore_worktree = "--worktree" in arguments or any(
+            token.startswith("-") and not token.startswith("--") and "W" in token[1:]
+            for token in arguments
+        )
+        destructive = (
+            action == "reset"
+            and "--hard" in arguments
+            or action == "restore"
+            and (restore_worktree or not restore_staged)
+            or action == "checkout"
+            or action == "clean"
+            and not {"--dry-run", "-n"}.intersection(arguments)
+            or action == "branch"
+            and bool({"-D", "--delete", "--force"}.intersection(arguments))
+            or action == "stash"
+            and bool({"drop", "clear"}.intersection(argument.lower() for argument in arguments))
+            or action == "worktree"
+            and "remove" in arguments
+            and "--force" in arguments
+        )
+        if destructive:
+            return deny_or_ask(payload, "discard or make work difficult to recover")
+    if has(command, r"\bgh\s+pr\s+merge\b"):
+        return deny_or_ask(payload, "merge histories, which Tyrel reserves to himself")
+    return None
+
+
+def protected_delete(command: str, payload: dict[str, Any]) -> Decision:
+    if not has(
+        command,
+        r"(?:^|[;&|]\s*)\s*(?:(?:sudo|command|exec)\s+|"
+        r"env(?:\s+[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+)*\s+)*"
+        r"(?:[^\s;&|]*/)?rm\b",
+    ):
+        return None
+    if has(command, r"\bworkbench/scratch(?:/|\b)") and not has(
+        command, r"\b(?:\.git|\.githooks|\.claude|workbench/(?!scratch)|private)\b"
+    ):
+        return None
+    broad = has(command, r"\brm\b[^\n;&|]*(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r)")
+    protected = has(
+        command,
+        r"(?:^|[\s\"'])(?:/|~|\$HOME|(?:\./)?(?:\.git|\.githooks|\.claude|"
+        r"workbench|private)|/[^\s\"']*/(?:\.git|\.githooks|\.claude|"
+        r"workbench|private))(?:[/\s\"']|$)",
+    )
+    if broad or protected:
+        return deny_or_ask(payload, "delete data recursively or from a protected repository area")
+    return None
+
+
+def governing_shell_write(command: str, payload: dict[str, Any]) -> Decision:
+    if not has(command, r"\b(?:CLAUDE|GOALS|GOVERNANCE|ARCHITECTURE|GLOSSARY|README)\.md\b"):
+        return None
+    if not has(command, r"(?:>|>>|\b(?:tee|mv|cp|sed\s+-i|perl\s+-i|patch)\b)"):
+        return None
+    agent = subagent_name(payload)
+    if agent:
+        return "deny", f"Hard rule 10 bars subagent {agent} from rewriting governing documents."
+    return deny_or_ask(payload, "rewrite a governing document from the shell")
+
+
+def credential_disclosure(command: str, payload: dict[str, Any]) -> Decision:
+    secret_path = has(
+        command,
+        r"(?:private/(?:ntfy|workcopy)\.conf|(?:^|[/\s])\.env(?:[.\s/]|$)|credentials(?:\.json)?|id_(?:rsa|ed25519))",
+    )
+    secret_env = has(
+        command,
+        r"(?:\$(?:\{)?[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY)(?:\})?|\b(?:printenv|export\s+-p)\b)",
+    )
+    environment_dump = has(
+        command,
+        r"(?:^|[;&|]\s*)\s*(?:env(?:\s+-0)?|set|declare\s+-p(?:\s+\S+)*)\s*(?=$|[;&|])",
+    )
+    if secret_path or secret_env or environment_dump:
+        return deny_or_ask(
+            payload, "place credential-shaped material in a transcript or child process"
+        )
+    return None
+
+
+def external_shell_mutation(command: str, payload: dict[str, Any]) -> Decision:
+    runpod_change = has(
+        command,
+        r"\brunpodctl\b[^\n;&|]*\b(?:create|start|deploy|dev|remove|delete|stop|terminate)\b",
+    ) or has(
+        command,
+        r"\brunpod\.(?:create_pod|resume_pod|start_pod|create_endpoint|"
+        r"create_template|delete_network_volume)\s*\(",
+    )
+    runpod_shutdown_only = has(
+        command, r"\brunpodctl\b[^\n;&|]*\b(?:stop|terminate)\b"
+    ) and not has(command, r"\brunpodctl\b[^\n;&|]*\b(?:create|start|deploy|dev|remove|delete)\b")
+    if runpod_change and not (runpod_shutdown_only and not subagent_name(payload)):
+        return deny_or_ask(payload, "change paid RunPod infrastructure")
+    if has(command, r"(?:^|[;&|]\s*)\s*ssh\b"):
+        return deny_or_ask(payload, "run an opaque command on another machine")
+    if has(command, r"\b(?:curl|wget|https?)\b") and has(
+        command,
+        r"(?:\s-X\s*(?:POST|PUT|PATCH|DELETE)\b|--request[=\s]+(?:POST|PUT|PATCH|DELETE)\b|"
+        r"--data(?:-binary|-raw|-urlencode)?\b|(?:^|\s)(?-i:-[dTF]\S+)|"
+        r"(?:^|\s)-d(?:\s|$)|"
+        r"(?:^|\s)(?:-T|--upload-file|-F|--form)(?:[=\s]|$)|"
+        r"(?:^|\s)--json(?:[=\s]|$)|"
+        r"--post-(?:data|file)(?:[=\s]|$)|--method[=\s]+(?:POST|PUT|PATCH|DELETE)\b|"
+        r"--body-(?:data|file)(?:[=\s]|$)|"
+        r"\bhttps?\s+(?:POST|PUT|PATCH|DELETE)\b)",
+    ):
+        return deny_or_ask(payload, "send a state-changing network request")
+    if has(
+        command,
+        r"\bgh\s+(?:pr\s+(?:create|close|comment|edit|merge|ready|reopen|review)|"
+        r"issue\s+(?:close|comment|create|edit|reopen)|"
+        r"repo\s+(?:archive|create|delete|edit|rename)|"
+        r"release\s+(?:create|delete|edit|upload))\b",
+    ):
+        return deny_or_ask(payload, "change GitHub state visible to other people")
+    if has(command, r"\bgh\s+api\b") and has(
+        command, r"(?:--method|-X)[=\s]+(?:POST|PUT|PATCH|DELETE)\b|(?:^|\s)-[fF]\s"
+    ):
+        return deny_or_ask(payload, "send a state-changing GitHub API request")
+    return None
+
+
+def bash_decision(tool_input: Any, payload: dict[str, Any]) -> Decision:
+    if not isinstance(tool_input, dict) or not isinstance(tool_input.get("command"), str):
+        return "deny", "The repository guard could not read the Bash command."
+    command = tool_input["command"]
+    for check in (
+        risky_git,
+        protected_delete,
+        governing_shell_write,
+        credential_disclosure,
+        external_shell_mutation,
+    ):
+        found = check(command, payload)
+        if found:
+            return found
+    if has(command, r"\b(?:chmod|mv|rm)\b[^\n;&|]*(?:\.githooks/|\.git/hooks/)"):
+        return deny_or_ask(payload, "disable or remove an installed Git hook")
+    return None
+
+
+def has_mutating_method(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if (
+                str(key).lower() in {"method", "http_method", "request_method"}
+                and isinstance(item, str)
+                and item.lower() in {"post", "put", "patch", "delete"}
+            ):
+                return True
+            if has_mutating_method(item):
+                return True
+    if isinstance(value, list):
+        return any(has_mutating_method(item) for item in value)
+    return False
+
+
+def mcp_decision(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
+    lowered = tool.lower()
+    segments = {part for part in re.split(r"[^a-z0-9]+", lowered) if part}
+    mutating_method = has_mutating_method(tool_input)
+    named_mutation = bool(segments & MUTATION_WORDS)
+    runpod_mutation = "runpod" in lowered and bool(
+        segments & {"create", "start", "deploy", "remove", "delete", "stop", "terminate"}
+    )
+    runpod_shutdown_only = (
+        "runpod" in lowered
+        and bool(segments & {"stop", "terminate"})
+        and not bool(segments & {"create", "start", "deploy", "remove", "delete"})
+    )
+    if runpod_shutdown_only and not subagent_name(payload):
+        return None
+    if named_mutation or mutating_method or runpod_mutation:
+        return deny_or_ask(payload, f"call external mutation tool {tool}")
+    return None
+
+
+def evaluate(payload: dict[str, Any]) -> Decision:
+    tool = payload.get("tool_name")
+    if not isinstance(tool, str) or not tool:
+        return "deny", "The repository guard received no readable tool name."
+    tool_input = payload.get("tool_input")
+    direct = governing_write(tool, tool_input, payload)
+    if direct:
+        return direct
+    if tool == "Bash":
+        return bash_decision(tool_input, payload)
+    if tool.startswith("mcp__"):
+        return mcp_decision(tool, tool_input, payload)
+    return None
+
+
+def emit(decision: str, reason: str) -> None:
     print(
         json.dumps(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": f"Blocked by repo guard: {reason}. Ask Tyrel.",
+                    "permissionDecision": decision,
+                    "permissionDecisionReason": reason,
                 }
             }
         )
     )
-    sys.exit(0)
 
 
-def base(token: str) -> str:
-    return token.rsplit("/", 1)[-1]
-
-
-def normalise(command: str) -> str:
-    """Fold a command into one line that shlex can read, quotes intact.
-
-    Splitting on newlines first was wrong twice over. A backslash at the end
-    of a line continues it, so `curl ... \\` + `-X POST ...` was read as two
-    commands and the second had no recognisable name. And a newline *inside*
-    quotes — every multi-line commit message — left an unbalanced quote, which
-    threw the parse away entirely and fell back to raw text.
-
-    So: walk the string once, tracking quotes. Unquoted newlines become `;`.
-    Quoted ones stay where they are. Line continuations disappear. Comments
-    are cut at an unquoted `#` that starts a word, as a shell does.
-    """
-    out = []
-    quote = None
-    i = 0
-    while i < len(command):
-        ch = command[i]
-        if quote:
-            if ch == "\\" and quote == '"' and i + 1 < len(command):
-                out.append(ch)
-                out.append(command[i + 1])
-                i += 2
-                continue
-            out.append(ch)
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < len(command):
-            if command[i + 1] == "\n":
-                i += 2  # line continuation: the newline is not there
-                continue
-            out.append(ch)
-            out.append(command[i + 1])
-            i += 2
-            continue
-        if ch in "'\"":
-            quote = ch
-            out.append(ch)
-            i += 1
-            continue
-        if ch == "#" and (not out or out[-1].isspace()):
-            while i < len(command) and command[i] != "\n":
-                i += 1
-            continue
-        out.append(";" if ch == "\n" else ch)
-        i += 1
-    return "".join(out)
-
-
-REDIRECTIONS = {">", ">>", "<", "<<", "<<<", ">&", "<&", ">|"}
-INPUT_REDIRECTIONS = {"<", "<<", "<<<", "<&"}
-
-
-def heredoc_declarations(line: str):
-    """Return real heredocs as ``(operator, delimiter-or-None, expands)`` triples.
-
-    Only a bare identifier or one wholly single/double-quoted identifier is
-    supported. Mixed quoting, escapes and shell expansions are deliberately
-    marked unsupported rather than emulated incompletely.
-
-    ``expands`` says whether the shell will expand the body before the reading
-    command ever sees it. Verified against bash: with a bare delimiter,
-    ``$(echo RAN)`` in the body prints ``RAN``; with ``'EOF'``, ``"EOF"`` or
-    ``\\EOF`` it prints ``$(echo RAN)`` literally. That difference decides
-    whether a body is data or code.
-    """
-    out = []
-    quote = None
-    i = 0
-    while i < len(line):
-        ch = line[i]
-        if quote:
-            if ch == "\\" and quote == '"' and i + 1 < len(line):
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < len(line):
-            i += 2
-            continue
-        if ch in "'\"":
-            quote = ch
-            i += 1
-            continue
-        if ch == "#" and (i == 0 or line[i - 1].isspace()):
-            break
-        if line.startswith("<<<", i):
-            i += 3
-            continue
-        if not line.startswith("<<", i):
-            i += 1
-            continue
-
-        operator = "<<"
-        i += 2
-        if i < len(line) and line[i] == "-":
-            operator = "<<-"
-            i += 1
-        while i < len(line) and line[i].isspace():
-            i += 1
-        if i >= len(line):
-            break
-
-        start = i
-        word_quote = None
-        while i < len(line):
-            current = line[i]
-            if word_quote:
-                if current == "\\" and word_quote == '"' and i + 1 < len(line):
-                    i += 2
-                    continue
-                if current == word_quote:
-                    word_quote = None
-                i += 1
-                continue
-            if current in "'\"":
-                word_quote = current
-                i += 1
-                continue
-            if current == "\\" and i + 1 < len(line):
-                i += 2
-                continue
-            if current.isspace() or current in ";&|()<>":
-                break
-            i += 1
-        raw = line[start:i]
-        # `-` and `.` are ordinary in a delimiter and common in a descriptive
-        # one — `END-JSON`, `EOF.1`. Refusing them as "syntax the guard cannot
-        # verify" refused a perfectly plain data heredoc.
-        identifier = r"[A-Za-z_][A-Za-z_0-9.-]*"
-        found = re.fullmatch(rf"(?:({identifier})|'({identifier})'|\"({identifier})\")", raw)
-        delimiter = next((group for group in found.groups() if group), None) if found else None
-        # Only group 1 — the bare, unquoted spelling — leaves the body exposed
-        # to expansion. Any quoting at all makes it literal.
-        expands = bool(found) and found.group(1) is not None
-        out.append((operator, delimiter, expands))
-    return out
-
-
-def command_pieces(line: str):
-    """One line split at unquoted `;`, `&&`, `||` and `|` — its commands.
-
-    A heredoc belongs to the piece that declares it, not to the whole line.
-    Judging the line meant `cd /tmp && cat <<'EOF'` was refused because of the
-    `cd`, which is an over-refusal met in ordinary work rather than imagined.
-    """
-    out, current, quote, i = [], [], None, 0
-    while i < len(line):
-        ch = line[i]
-        if quote:
-            current.append(ch)
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < len(line):
-            current.append(ch)
-            current.append(line[i + 1])
-            i += 2
-            continue
-        if ch in "'\"":
-            quote = ch
-            current.append(ch)
-            i += 1
-            continue
-        if ch in ";|":
-            out.append("".join(current))
-            current = []
-            while i < len(line) and line[i] in ";|":
-                i += 1
-            continue
-        if ch == "&" and not (
-            (i and line[i - 1] in "<>") or (i + 1 < len(line) and line[i + 1] == ">")
-        ):
-            # Keep redirection operators such as `2>&1`, `<&0`, `&>` and
-            # `&>>` intact. A background separator still splits even when the
-            # preceding command ends in a digit (`sleep 2& cat ...`).
-            out.append("".join(current))
-            current = []
-            while i < len(line) and line[i] == "&":
-                i += 1
-            continue
-        current.append(ch)
-        i += 1
-    out.append("".join(current))
-    return out
-
-
-def split_heredocs(command: str):
-    """Remove all bodies and return them with their opening commands."""
-    lines = command.split("\n")
-    cleaned, blocks, i = [], [], 0
-    while i < len(lines):
-        line = lines[i]
-        cleaned.append(line)
-        declarations = []
-        for piece in command_pieces(line):
-            declarations.extend((piece, *found) for found in heredoc_declarations(piece))
-        i += 1
-        for piece, operator, tag, expands in declarations:
-            if tag is None:
-                blocks.append((piece, "", False, False))
-                continue
-            j = i
-            while j < len(lines):
-                terminator = lines[j].lstrip("\t") if operator == "<<-" else lines[j]
-                if terminator == tag:
-                    break
-                j += 1
-            blocks.append((piece, "\n".join(lines[i:j]), True, expands))
-            # An unterminated heredoc consumes the rest of the shell input as
-            # data. There can be no later command line to inspect.
-            i = j + 1
-            if j == len(lines):
-                i = j
-                break
-    return "\n".join(cleaned), blocks
-
-
-def strip_heredocs(command: str) -> str:
-    """Drop data bodies: the shell does not execute them as commands."""
-    return split_heredocs(command)[0]
-
-
-def heredoc_blocks(command: str):
-    """Return heredocs as ``(opening line, body, supported, expands)`` tuples."""
-    return split_heredocs(command)[1]
-
-
-def _substitution_end(text: str, start: int) -> int:
-    """Index just past the ``)`` closing the ``$(`` whose ``(`` sits at ``start``.
-
-    Inside a substitution the payload is ordinary shell text, so quoting counts
-    again: a ``)`` in `'a)b'` closes nothing. Nesting is handled by depth, which
-    also carries `$(( ))` arithmetic through harmlessly.
-    """
-    depth = 0
-    quote = None
-    i = start
-    while i < len(text):
-        ch = text[i]
-        if quote == "'":
-            if ch == "'":
-                quote = None
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < len(text):
-            i += 2
-            continue
-        if quote == '"':
-            if ch == '"':
-                quote = None
-            i += 1
-            continue
-        if ch in "'\"":
-            quote = ch
-            i += 1
-            continue
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return i + 1
-        i += 1
-    raise ValueError("unbalanced command substitution")
-
-
-def command_substitutions(text: str, quotes: bool = False):
-    """The shell code inside ``$( )`` and backticks, where expansion applies.
-
-    Raises ValueError if a substitution is opened and never closed — the guard
-    then cannot say what would run, which is a refusal and not a pass.
-
-    ``quotes`` selects the context. In an expanding heredoc body quotes are
-    *not* special (bash prints them verbatim), so the walk honours escapes
-    only. In ordinary command text they are: single quotes make a substitution
-    literal, double quotes do **not**. That last fact is the whole reason this
-    takes a flag — `echo "$(git push origin main)"` really does push.
-
-    ``${ cmd; }`` and ``${| cmd; }`` — bash 5.3's funsub spellings — also run a
-    command. They are refused rather than parsed, which keeps ordinary
-    ``${VAR}`` expansion untouched while never calling a funsub inert.
-    """
-    out = []
-    quote = None
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        # Inside single quotes nothing expands, and a backslash is a plain
-        # character — so this test comes before the escape one.
-        if quote == "'":
-            if ch == "'":
-                quote = None
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < len(text):
-            i += 2
-            continue
-        if quotes and ch == "'" and quote is None:
-            quote = "'"
-            i += 1
-            continue
-        if quotes and ch == '"':
-            # Double quotes are tracked only so an apostrophe inside them
-            # ("don't") cannot open a bogus literal region.
-            quote = None if quote == '"' else '"'
-            i += 1
-            continue
-        if ch == "`":
-            j = i + 1
-            while j < len(text):
-                if text[j] == "\\" and j + 1 < len(text):
-                    j += 2
-                    continue
-                if text[j] == "`":
-                    break
-                j += 1
-            if j >= len(text):
-                raise ValueError("unterminated backtick substitution")
-            out.append(text[i + 1 : j])
-            i = j + 1
-            continue
-        if text.startswith("$(", i):
-            end = _substitution_end(text, i + 1)
-            out.append(text[i + 2 : end - 1])
-            i = end
-            continue
-        if text.startswith("${", i) and re.match(r"[\s|]", text[i + 2 : i + 3] or ""):
-            raise ValueError("function substitution the guard does not parse")
-        i += 1
-    return out
-
-
-def segments(command: str):
-    """Split a command into argv lists roughly the way a shell would."""
-    return [argv for argv, _, _ in annotated_segments(command)]
-
-
-def annotated_segments(command: str):
-    """Split commands while retaining whether stdin is piped or redirected."""
-    lexer = shlex.shlex(normalise(strip_heredocs(command)), posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    out, current = [], []
-    skip_next = False
-    piped_input = False
-    redirected_input = False
-    for token in lexer:
-        if skip_next:
-            skip_next = False
-            continue
-        if token in REDIRECTIONS:
-            # `2>/dev/null` leaves a bare fd digit in front of the operator,
-            # and a leading redirection would otherwise become the command.
-            if current and re.fullmatch(r"[0-9]", current[-1]):
-                current.pop()
-            if token in INPUT_REDIRECTIONS:
-                redirected_input = True
-            skip_next = True
-            continue
-        if token and all(c in ";&|()" for c in token):
-            if current:
-                out.append((current, piped_input, redirected_input))
-                current = []
-            piped_input = token in ("|", "|&")
-            redirected_input = False
-        else:
-            current.append(token)
-    if current:
-        out.append((current, piped_input, redirected_input))
-    return out
-
-
-def peel(argv):
-    """Drop VAR=value prefixes, shell keywords and wrappers.
-
-    `ALLOW_FORCE_PUSH=1 git push --force` was invisible to a dispatcher that
-    only looked at argv[0] — and that spelling is the one the hooks' own help
-    text teaches, so it was the likeliest bypass in the file.
-    """
-    seen = 0
-    while argv and seen < 8:
-        head = argv[0]
-        if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", head) or head in KEYWORDS:
-            argv = argv[1:]
-        elif base(head) in WRAPPERS:
-            # Drop the wrapper and its own arguments — `timeout 300 cmd`,
-            # `nice -n 5 cmd`, `sudo -u tyrel cmd`. Crucially, drop the VALUE
-            # a wrapper option takes as well: leaving it behind made `tyrel`
-            # the command name, and every check was skipped.
-            rest = argv[1:]
-            while rest:
-                token = rest[0]
-                if token.startswith("-"):
-                    # One wrapper's value-taking flag is another's boolean:
-                    # `sudo -u tyrel cmd` takes a value, `sudo -E cmd` does not.
-                    # Never swallow a token that is itself a command we check,
-                    # or a token that is another flag — `sudo -E -u tyrel cmd`
-                    # ate the `-u`, left `tyrel` in the command position, and
-                    # every check below was skipped.
-                    takes_value = (
-                        token in WRAPPER_VALUE_OPTS
-                        and "=" not in token
-                        and len(rest) > 1
-                        and not rest[1].startswith("-")
-                        and base(rest[1]) not in DISPATCH
-                        and not base(rest[1]).startswith("python")
-                    )
-                    rest = rest[2:] if takes_value else rest[1:]
-                elif (
-                    re.fullmatch(r"[0-9.]+[smhd]?", token)
-                    or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", token)
-                    or token in ("run", "exec", "proxy", "--")
-                ):
-                    # `uv run python -c ...`, `rtk proxy git push ...`
-                    rest = rest[1:]
-                else:
-                    break
-            argv = rest
-        else:
-            return argv
-        seen += 1
-    return argv
-
-
-def options(argv, value_opts):
-    """Only the tokens that are genuinely options, with their values skipped."""
-    skip = False
-    for token in argv:
-        if skip:
-            skip = False
-            continue
-        if token in value_opts:
-            skip = True
-            continue
-        if token.startswith("-"):
-            yield token
-
-
-def positional_args(argv, value_opts):
-    """Return operands without mistaking option values for operands."""
-    out = []
-    skip = False
-    options_ended = False
-    for token in argv:
-        if skip:
-            skip = False
-            continue
-        if not options_ended and token == "--":
-            options_ended = True
-            continue
-        if not options_ended and token in value_opts:
-            skip = True
-            continue
-        if not options_ended and token.startswith("-"):
-            continue
-        out.append(token)
-    return out
-
-
-def has_short_flag(argv, wanted: str, value_options=frozenset()):
-    """Whether a combined short-option token contains one Boolean flag.
-
-    Once a value-taking option appears, the rest of that token is its value:
-    `-omain` is push option `-o` with value `main`, not `-o -m -a -i -n`.
-    """
-    for token in argv:
-        if not token.startswith("-") or token.startswith("--") or token == "-":
-            continue
-        for option in token[1:]:
-            if option in value_options:
-                break
-            if option == wanted:
-                return True
-    return False
-
-
-def curl_options(argv):
-    """Yield parsed curl options without re-reading option values as flags."""
-    i = 1
-    while i < len(argv):
-        token = argv[i]
-        if token == "--":
-            return
-        if token.startswith("--"):
-            name, separator, attached = token.partition("=")
-            name = name.lower()
-            value = attached if separator else ""
-            if name in CURL_LONG_VALUE_OPTS and not separator and i + 1 < len(argv):
-                value = argv[i + 1]
-                i += 1
-            yield name, value
-            i += 1
-            continue
-        if token.startswith("-") and token != "-":
-            short = token[1:]
-            j = 0
-            while j < len(short):
-                option = short[j]
-                if option in CURL_SHORT_VALUE_OPTS:
-                    value = short[j + 1 :] if j + 1 < len(short) else ""
-                    if not value and i + 1 < len(argv):
-                        value = argv[i + 1]
-                        i += 1
-                    yield option, value
-                    break
-                yield option, ""
-                j += 1
-        i += 1
-
-
-def curl_urls(argv):
-    """The tokens curl would fetch, rather than the ones it would send.
-
-    Host detection used to read the whole command line, so `curl -X POST
-    https://example.com/hook -d 'docs are at rest.runpod.io'` was refused as a
-    write to RunPod. A host named in a request body is a mention; the
-    destination is the URL.
-    """
-    urls = []
-    i = 1
-    while i < len(argv):
-        token = argv[i]
-        if token == "--":
-            urls.extend(argv[i + 1 :])
-            break
-        if token.startswith("--"):
-            name, separator, attached = token.partition("=")
-            name = name.lower()
-            if name == "--url":
-                urls.append(attached if separator else (argv[i + 1] if i + 1 < len(argv) else ""))
-            if name in CURL_LONG_VALUE_OPTS and not separator:
-                i += 1
-            i += 1
-            continue
-        if token.startswith("-") and token != "-":
-            short = token[1:]
-            for j, option in enumerate(short):
-                if option in CURL_SHORT_VALUE_OPTS:
-                    # A joined value ends the token; a separate one eats the next.
-                    if j + 1 >= len(short):
-                        i += 1
-                    break
-            i += 1
-            continue
-        urls.append(token)
-        i += 1
-    return urls
-
-
-def httpie_body_item(token: str) -> bool:
-    """Whether one HTTPie request item supplies a body rather than a read."""
-    if token.startswith("-") or token.lower().startswith(("http://", "https://")):
-        return False
-    if token.startswith("@"):
-        return True
-    found = HTTPIE_ITEM.match(token)
-    return bool(found and found.group(1) in ("=", ":=", "@"))
-
-
-def httpie_method(argv):
-    """Return HTTPie's method from its positional slot, skipping option values."""
-    positional = []
-    skip = False
-    for token in argv[1:]:
-        if skip:
-            skip = False
-            continue
-        if token.startswith("-"):
-            name = token.split("=", 1)[0]
-            if name in HTTPIE_VALUE_OPTS and "=" not in token:
-                skip = True
-            continue
-        if any(host in token.lower() for host in RUNPOD_HOSTS):
-            break
-        positional.append(token)
-    if positional and positional[-1].lower() in (
-        "get",
-        "head",
-        "options",
-        *WRITE_METHODS,
-    ):
-        return positional[-1].lower()
-    return None
-
-
-# --------------------------------------------------------------------- rules
-
-# Git 2.46 gave `git config` subcommands beside its old flags. Both spellings
-# reach the same setting, so both are judged here; only the read forms pass.
-CONFIG_READ_SUBCOMMANDS = frozenset({"get", "list"})
-CONFIG_WRITE_SUBCOMMANDS = frozenset(
-    {
-        "set",
-        "unset",
-        "unset-all",
-        "replace-all",
-        "add",
-        "remove-section",
-        "rename-section",
-    }
-)
-CONFIG_READ_OPTS = frozenset(
-    {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l"}
-)
-CONFIG_SECTION_OPS = frozenset({"--remove-section", "--rename-section"})
-# Options that say how to print a value, or which file to read it from. Not one
-# of them writes anything, so a bare-key read wearing any of them is still a
-# read: `git config --show-origin core.hooksPath` prints where the setting came
-# from. Anything not on this list — --unset, --add, --edit, --replace-all, or a
-# flag this guard has never heard of — leaves the command in the write bucket,
-# so an unknown option fails closed rather than open.
-CONFIG_READ_DECORATIONS = frozenset(
-    {
-        "--show-origin",
-        "--show-scope",
-        "--show-names",
-        "--name-only",
-        "--null",
-        "-z",
-        "--includes",
-        "--no-includes",
-        "--global",
-        "--local",
-        "--system",
-        "--worktree",
-        "--file",
-        "-f",
-        "--blob",
-        "--type",
-        "--no-type",
-        "--default",
-        "--bool",
-        "--int",
-        "--path",
-        "--expiry-date",
-        "--bool-or-int",
-        "--bool-or-str",
-    }
-)
-# Of those, the ones whose value is a separate token, so it is not miscounted
-# as the value being written.
-CONFIG_VALUE_OPTS = frozenset({"--file", "-f", "--blob", "--type", "--default"})
-
-
-def outside_this_clone(path) -> bool:
-    """True only when a command demonstrably operates on another repository.
-
-    A throwaway repo under /private/tmp is not this clone, and setting
-    core.hooksPath in it *installs* hooks rather than disabling any — the
-    refusal's own words ("for every tool in this clone") were false there.
-
-    Fails closed in every unclear case: no path, a path that will not resolve,
-    or one that lands inside the project all count as this clone. Guessing the
-    other way switches off the real guard, which is the expensive direction.
-    """
-    if not path:
-        return False
-    try:
-        resolved = os.path.realpath(path)
-    except (OSError, ValueError):
-        return False
-    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    return resolved != project and not resolved.startswith(project + os.sep)
-
-
-def check_git_config(args, elsewhere: bool = False):
-    """Let every read of core.hooksPath through; refuse every write to it.
-
-    Reading is how you check `install.sh` worked, and the script invites you to.
-    Refusing the read told a session that inspecting its own hooks was
-    destructive, which is how a guard ends up switched off wholesale.
-
-    ``elsewhere`` says the command was proved to address another repository.
-    """
-    if elsewhere:
-        return
-    lowered = [a.lower() for a in args]
-    positional = [a for a in args if not a.startswith("-")]
-    verb = positional[0].lower() if positional else None
-
-    # Deleting or renaming [core] takes core.hooksPath with it, and the key's
-    # name never appears in the command.
-    if any(a in CONFIG_SECTION_OPS for a in lowered) or verb in (
-        "remove-section",
-        "rename-section",
-    ):
-        sections = [p.lower() for p in positional if p.lower() not in CONFIG_WRITE_SUBCOMMANDS]
-        if any(s == "core" or s.startswith("core.") for s in sections):
-            deny("dropping the [core] section takes core.hooksPath with it and disables the hooks")
-
-    if not any("core.hookspath" in a for a in lowered):
-        return
-
-    if verb in CONFIG_WRITE_SUBCOMMANDS:
-        deny("permanently disables the git hooks for every tool in this clone")
-    if verb in CONFIG_READ_SUBCOMMANDS:
-        return
-
-    # The flag spellings. A write always carries either a value as a second
-    # positional argument or a mutating flag (--add, --unset, --replace-all,
-    # --edit), so "the key and nothing else, however it is decorated" is
-    # read-only by construction. --unset stays denied: removing the setting
-    # disables the hooks just as thoroughly as overwriting it.
-    reading = any(a in CONFIG_READ_OPTS for a in lowered)
-    operands = positional_args(args, CONFIG_VALUE_OPTS)
-    decorated = all(
-        a.split("=", 1)[0].lower() in CONFIG_READ_DECORATIONS for a in args if a.startswith("-")
-    )
-    if len(operands) == 1 and decorated:
-        reading = True
-    if not reading:
-        deny("permanently disables the git hooks for every tool in this clone")
-
-
-def _git_probe(global_opts, command_cwd: str | None, args):
-    """Run one read-only Git query in the checkout command's repository context."""
-    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    try:
-        return subprocess.run(
-            ["git", *global_opts, *args],
-            cwd=command_cwd or project,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-            check=False,
-        )
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-
-
-def _git_revision_exists(
-    global_opts, command_cwd: str | None, candidate: str, object_type: str
-) -> bool | None:
-    """Ask Git whether ``candidate`` resolves to the requested object type."""
-    result = _git_probe(
-        global_opts,
-        command_cwd,
-        [
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            "--end-of-options",
-            f"{candidate}^{{{object_type}}}",
-        ],
-    )
-    if result is None:
-        return None
-    if result.returncode == 0:
-        return True
-    if result.returncode == 1:
-        return False
-    return None
-
-
-def _git_pathspec_matches(
-    global_opts,
-    command_cwd: str | None,
-    pathspecs,
-    treeish: str | None = None,
-) -> bool | None:
-    """Ask Git whether pathspecs name paths checkout could overwrite.
-
-    ``ls-files`` reads the index, so it still sees a tracked file deleted from
-    the worktree. ``--with-tree`` also includes paths known to an explicitly
-    named checkout source.
-    """
-    args = ["ls-files", "-z", "--error-unmatch"]
-    if treeish is not None:
-        args.append(f"--with-tree={treeish}")
-    args.extend(["--", *pathspecs])
-    result = _git_probe(global_opts, command_cwd, args)
-    if result is None:
-        return None
-    if result.returncode == 0:
-        return True
-    if result.returncode == 1:
-        return False
-    return None
-
-
-def _checkout_creates_branch(args) -> bool:
-    """Whether checkout syntax explicitly makes/resets a named branch."""
-    for token in args:
-        if token == "--":
-            break
-        if token in ("-b", "-B", "--orphan"):
-            return True
-        if token.startswith(("-b", "-B")) and not token.startswith("--"):
-            return True
-        if token.startswith("--orphan="):
-            return True
-    return False
-
-
-def _checkout_uses_pathspec(global_opts, command_cwd: str | None, args) -> bool | None:
-    """Classify checkout's ambiguous operands with Git's own repository data.
-
-    A single token may be either a ref or a path. Git gives a resolvable ref
-    precedence, so the guard does too. With a tree-ish plus more operands, the
-    remaining tokens are pathspecs against that tree; otherwise all operands
-    are pathspecs against the index. ``None`` means a Git query could not make
-    that distinction reliably.
-    """
-    if any(
-        token == "--pathspec-from-file" or token.startswith("--pathspec-from-file=")
-        for token in args
-    ):
-        return True
-    if _checkout_creates_branch(args):
-        return False
-
-    operands = positional_args(args, GIT_CHECKOUT_VALUE_OPTS)
-    if not operands:
-        return False
-
-    if len(operands) == 1:
-        is_ref = _git_revision_exists(global_opts, command_cwd, operands[0], "commit")
-        if is_ref is None:
-            return None
-        if is_ref:
-            return False
-        return _git_pathspec_matches(global_opts, command_cwd, operands)
-
-    is_tree = _git_revision_exists(global_opts, command_cwd, operands[0], "tree")
-    if is_tree is None:
-        return None
-    if is_tree:
-        return _git_pathspec_matches(global_opts, command_cwd, operands[1:], treeish=operands[0])
-    return _git_pathspec_matches(global_opts, command_cwd, operands)
-
-
-def check_git(argv, command_cwd: str | None = None):
-    opts, sub, args = [], None, []
-    i = 1
-    while i < len(argv):
-        token = argv[i]
-        if token in GIT_GLOBAL_VALUE_OPTS:
-            opts.append(token)
-            if i + 1 < len(argv):
-                opts.append(argv[i + 1])
-            i += 2
-        elif token.startswith("-"):
-            opts.append(token)
-            i += 1
-        else:
-            sub, args = token, argv[i + 1 :]
-            break
-    if sub is None:
-        return
-
-    # Turning the hooks off defeats the branch, document and history checks,
-    # plus the review checklist, at once. Both the one-shot `-c` form and the
-    # permanent `git config` form, which is worse because it binds every later
-    # tool.
-    # `git -C <path>` moves the whole command to another repository, as does a
-    # `cd` earlier on the line. Only a path proved to be outside this project
-    # counts; everything else is this clone.
-    repo_cwd = command_cwd
-    for j, option in enumerate(opts):
-        if option == "-C" and j + 1 < len(opts):
-            target = opts[j + 1]
-            repo_cwd = target if os.path.isabs(target) else os.path.join(repo_cwd or ".", target)
-    elsewhere = outside_this_clone(repo_cwd)
-
-    if any("core.hookspath" in o.lower() for o in opts) and not elsewhere:
-        deny("disables the cross-tool Git alarms for this clone")
-    if sub == "config":
-        check_git_config(args, elsewhere)
-
-    flags = list(options(args, GIT_VALUE_OPTS))
-
-    if sub == "clean":
-        dry_run = "--dry-run" in flags or has_short_flag(args, "n", frozenset({"e"}))
-        if not dry_run:
-            deny("git clean deletes untracked or ignored work that Git cannot restore")
-
-    # Cleanup that destroys work no reflog holds. The guard never claimed
-    # these, which is why they sat open — but an unattended session reaches for
-    # `reset --hard` by accident more readily than for anything else here, and
-    # what it discards was never committed. Each refusal names the keeping
-    # alternative, so the answer is not to route around the guard.
-    if sub == "reset" and "--hard" in flags:
-        deny(
-            "git reset --hard discards every uncommitted change in the worktree — "
-            "`git stash` keeps them, and `git reset --soft` keeps the files"
-        )
-    if sub == "restore":
-        if "--staged" not in flags or "--worktree" in flags or "-W" in flags:
-            deny(
-                "git restore overwrites the working tree from the index — "
-                "`git stash` first if you may want it back"
-            )
-    if sub == "checkout":
-        operands = positional_args(args, GIT_CHECKOUT_VALUE_OPTS)
-        if (
-            "--force" in flags
-            or has_short_flag(args, "f", frozenset({"b", "B", "t"}))
-            or "--" in args
-            or "." in operands
-        ):
-            deny(
-                "this checkout discards uncommitted changes — "
-                "`git stash` first, or name a branch without a pathspec"
-            )
-        path_checkout = _checkout_uses_pathspec(opts, command_cwd, args)
-        if path_checkout is None:
-            deny(
-                "Git could not classify this checkout target as a ref or a pathspec, "
-                "so the guard cannot vouch that it preserves uncommitted work"
-            )
-        if path_checkout:
-            deny(
-                "this checkout writes paths from Git's index or a named tree and can "
-                "discard uncommitted changes — `git stash` first, or use `git switch` "
-                "for a branch"
-            )
-    if sub == "switch" and (
-        "--force" in flags
-        or "--discard-changes" in flags
-        or has_short_flag(args, "f", frozenset({"c", "C"}))
-    ):
-        deny("a forced switch discards uncommitted changes — `git stash` first")
-    if sub == "worktree":
-        operands = positional_args(args, GIT_VALUE_OPTS)
-        if operands[:1] == ["remove"] and ("--force" in flags or has_short_flag(args, "f")):
-            deny(
-                "removing a worktree by force deletes work another agent is holding — "
-                "without --force git refuses a dirty worktree by itself, which is the check"
-            )
-    if sub == "branch" and (
-        has_short_flag(args, "D") or ("--delete" in flags and "--force" in flags)
-    ):
-        deny(
-            "a forced branch delete drops commits nothing else points at, "
-            "and the branch may not be yours — `git branch -d` refuses unmerged work"
-        )
-    if sub == "stash":
-        operands = positional_args(args, GIT_VALUE_OPTS)
-        if operands[:1] in (["clear"], ["drop"]):
-            deny(
-                "a dropped stash cannot be listed afterwards — "
-                "`git stash pop` applies it and removes it in one step"
-            )
-
-    if sub in ("commit", "merge", "push", "rebase", "am", "cherry-pick"):
-        if "--no-verify" in flags:
-            deny("--no-verify skips repository checks installed as Git hooks")
-        if sub == "commit" and has_short_flag(args, "n", frozenset({"m", "F", "t", "C", "c"})):
-            deny("git commit -n is --no-verify, which skips the hooks")
-
-    # `send-pack` is the plumbing behind `push`: same remote, same refspecs,
-    # same reach into main, without the word "push" appearing anywhere.
-    if sub in ("push", "send-pack"):
-        flags = list(options(args, GIT_PUSH_VALUE_OPTS))
-        # `git push --help` opens the manual and pushes nothing. It was refused
-        # with "the push has no explicit non-main refspec", which taught the
-        # session that reading the documentation was the same act as writing to
-        # main — and an over-refusal is how a guard ends up bypassed.
-        if any(f in ("--help", "-h") for f in flags):
-            return
-        dry_run = "--dry-run" in flags or has_short_flag(args, "n", frozenset({"o", "r"}))
-        if dry_run:
-            return
-
-        if any(f in ("--all", "--branches") for f in flags):
-            deny("push --all can update main along with the intended branches")
-        if "--mirror" in flags:
-            deny("push --mirror force-updates and deletes remote refs")
-
-        # `-fu` and `-uf` are the same as `-f`; whole-token comparison missed them.
-        if any(
-            f == "--force" or f.startswith("--force-with-lease") for f in flags
-        ) or has_short_flag(args, "f", frozenset({"o", "r"})):
-            deny("force-push destroys work another agent may be holding")
-        positional = positional_args(args, GIT_PUSH_VALUE_OPTS)
-        repo_by_option = any(a == "--repo" or a.startswith("--repo=") for a in args)
-        refspecs = positional if repo_by_option else positional[1:]
-        # With no explicit refspec, Git reads push.default and branch/remote
-        # configuration. The guard cannot prove that the implicit destination is
-        # not main, so an approving result here would be a false claim.
-        if not refspecs and "--tags" not in flags:
-            deny("the push has no explicit non-main refspec, so its destination cannot be verified")
-
-        for a in refspecs:
-            # A leading + forces, colon or not: `git push origin +main` is
-            # `+main:main`. Requiring a colon here let the colonless form past
-            # BOTH checks at once — past this one, and past the branch check
-            # below, because the target then read as the literal "+main" and
-            # never matched "main". One character defeated the two rules this
-            # guard exists for.
-            if a.startswith("+"):
-                deny("a leading + on a refspec is a force-push by another name")
-            # Strip it anyway before comparing, so the branch check stands on
-            # its own rather than depending on the deny above having fired.
-            target = a.lstrip("+").split(":")[-1]
-            if target in ("main", "refs/heads/main"):
-                deny("main moves only by merging a pull request")
-            if target in ("HEAD", "@"):
-                deny("HEAD is an implicit push destination and may resolve to main")
-
-
-def check_runpodctl(argv):
-    if any(f in ("--help", "-h") for f in options(argv[1:], set())):
-        return  # reading the manual costs nothing
-    verbs = tuple(a for a in argv[1:] if not a.startswith("-"))
-    if verbs[:1] == ("help",):
-        return
-    for pattern, why in RUNPODCTL_BLOCKED.items():
-        if verbs[: len(pattern)] == pattern:
-            deny(why)
-
-
-def check_http(argv):
-    joined = " ".join(argv).lower()
-    client = base(argv[0]).lower()
-    # For curl the destination is knowable exactly, so judge that and not the
-    # body. For the other clients the guard cannot separate the two as
-    # reliably, and reads the whole line — which over-refuses rather than
-    # under-refuses, and is recorded as such in the docstring.
-    addressed = curl_urls(argv) if client == "curl" else argv[1:]
-    if not any(host in " ".join(addressed).lower() for host in RUNPOD_HOSTS):
-        return
-    writes = False
-    request_method = None
-
-    if client == "curl":
-        parsed = list(curl_options(argv))
-
-        # curl -G turns --data-* into a query string. It is not an
-        # unconditional pass: -G with -X POST still sends POST, while -G with
-        # --form or --upload-file remains write-shaped and is refused.
-        force_get = any(option in ("G", "--get") for option, _ in parsed)
-
-        for option, value in parsed:
-            if option in ("F", "T") or option in CURL_WRITE_FLAGS:
-                writes = True
-            if option == "d" and not force_get:
-                writes = True
-            if option.startswith("--data") and not force_get:
-                writes = True
-            if option in ("X", "--request"):
-                request_method = value.lower()
-                if request_method in WRITE_METHODS:
-                    writes = True
-
-    elif client == "wget":
-        for i, token in enumerate(argv[1:], start=1):
-            low = token.lower()
-            flag, separator, attached = low.partition("=")
-            if flag in WGET_WRITE_FLAGS:
-                writes = True
-            if flag == "--method":
-                request_method = (
-                    attached if separator else (argv[i + 1].lower() if i + 1 < len(argv) else "")
-                )
-                if request_method in WRITE_METHODS:
-                    writes = True
-
-    elif client in ("http", "https"):
-        request_method = httpie_method(argv)
-        if request_method in WRITE_METHODS:
-            writes = True
-        for token in argv[1:]:
-            flag = token.lower().split("=", 1)[0]
-            # HTTPie defaults to POST when it receives a body. Treat even an
-            # explicit GET-with-body conservatively: guessing which token was
-            # the method previously opened bypasses through option values.
-            if httpie_body_item(token) or flag == "--raw":
-                writes = True
-
-    if not writes:
-        return
-    if "networkvolume" in joined:
-        deny("writes to a network volume — irreversible, and the corpus lives there")
-
-    # Shutting a pod down saves money, and Governance 8 requires shutdown to be
-    # *verified* against provider state. A guard that blocks stopping a pod is
-    # working against the rule it exists to serve.
-    #
-    # Judge parsed paths on RunPod URLs only. A query value such as
-    # `?callback=/stop`, or an unrelated second URL ending in /stop, must not
-    # turn a pod-creation request into apparent cleanup.
-    runpod_paths = []
-    for token in argv:
-        candidate = token.split("=", 1)[1] if token.lower().startswith("--url=") else token
-        if not any(host in candidate.lower() for host in RUNPOD_HOSTS):
-            continue
-        if not candidate.lower().startswith(("http://", "https://")):
-            candidate = f"https://{candidate}"
-        try:
-            runpod_paths.append(urlsplit(candidate).path.rstrip("/"))
-        except ValueError:
-            continue
-
-    delete_request = request_method == "delete"
-    shutting_down = bool(runpod_paths) and all(
-        path.endswith(("/stop", "/terminate"))
-        or (delete_request and re.search(r"/pods/[^/]+$", path))
-        for path in runpod_paths
-    )
-    if shutting_down:
-        return
-    deny(f"writes to the RunPod API, which creates or destroys billed resources — {GOV8}")
-
-
-# An inline script's write is refused even when its URL ends in /stop, and the
-# refusal has to carry the way through. `curl` is judged on argv: the guard can
-# see every URL in the command and require all of them to be shutdown routes.
-# A script is a different object — it can build the URL from pieces, loop, or
-# make a second request the guard never sees — so "/stop appears in this
-# source text" is not evidence that the request stops a pod. Governance 8 wants
-# shutdown *easy*, and it stays easy: runpodctl and curl are both open, and a
-# session that is refused here is told which to use instead of being left to
-# guess. Fail closed on the unverifiable, and never on the whole operation.
-SHUTDOWN_ROUTE = (
-    "to stop a pod use `runpodctl stop pod <id>` or curl, whose destination the guard can verify"
-)
-
-
-def check_python(argv):
-    inline = " ".join(argv)
-    if not re.search(r"\brunpod\b", inline):
-        return
-    if re.search(
-        r"\b(create_pod|resume_pod|start_pod|create_endpoint|"
-        r"create_template|delete_network_volume)\b",
-        inline,
-    ):
-        deny(f"brings up or destroys RunPod resources through the SDK — {GOV8}")
-    if re.search(
-        r"\b(?:requests|httpx)\s*\.\s*(?:post|put|patch|delete)\s*\(",
-        inline,
-        re.I,
-    ) or re.search(
-        r"\b(?:requests|httpx)\s*\.\s*request\s*\(\s*['\"](?:POST|PUT|PATCH|DELETE)['\"]",
-        inline,
-        re.I,
-    ):
-        deny(f"writes to the RunPod API through an inline HTTP client — {GOV8}; {SHUTDOWN_ROUTE}")
-
-    # The standard library needs no third-party package, so it was the shortest
-    # route past the two names above. A read must stay allowed: Governance 8
-    # requires shutdown and pod state to be *verified*, and that is a GET.
-    if re.search(r"\b(?:urllib|http\.client)\b", inline) and (
-        # a keyword body in a call — `urlopen(url, data=...)`, `Request(url, data=...)`
-        re.search(r"[(,]\s*data\s*=", inline)
-        or re.search(r"\bmethod\s*=\s*['\"](?:POST|PUT|PATCH|DELETE)['\"]", inline, re.I)
-        or re.search(r"\brequest\s*\(\s*['\"](?:POST|PUT|PATCH|DELETE)['\"]", inline, re.I)
-        # a body must be bytes, so an encode is the tell for the positional form
-        or re.search(r"\.encode\(", inline)
-    ):
-        deny(f"writes to the RunPod API through the standard library — {GOV8}; {SHUTDOWN_ROUTE}")
-
-
-# A write from an inline JavaScript one-liner: `fetch(url, {method:'POST'})`,
-# `axios.post(url, body)`, `client.request({method: 'DELETE'})`.
-NODE_WRITE = re.compile(
-    r"method\s*:\s*['\"`](?:POST|PUT|PATCH|DELETE)['\"`]"
-    r"|\bmethod\s*=\s*['\"`](?:POST|PUT|PATCH|DELETE)['\"`]"
-    r"|\.\s*(?:post|put|patch|delete)\s*\(",
-    re.I,
-)
-
-
-def check_node(argv):
-    """Inline JavaScript reaching the RunPod API. `node` was not dispatched at
-    all, so `node -e` was the shortest write past this guard after Python."""
-    inline = " ".join(argv)
-    lowered = inline.lower()
-    if not any(host in lowered for host in RUNPOD_HOSTS) and not re.search(r"\brunpod\b", lowered):
-        return
-    if NODE_WRITE.search(inline):
-        deny(f"writes to the RunPod API from an inline script — {GOV8}; {SHUTDOWN_ROUTE}")
-
-
-def check_httpie_input(command: str) -> None:
-    """Catch HTTPie request bodies supplied by a pipe or input redirection."""
-    visible = normalise(strip_heredocs(command))
-    if not any(host in visible.lower() for host in RUNPOD_HOSTS):
-        return
-    try:
-        parsed = annotated_segments(command)
-    except ValueError:
-        # The general fallback still handles visible explicit HTTP methods. If
-        # shell quoting is malformed, do not guess that ordinary prose is a
-        # piped request.
-        return
-    for argv, piped_input, redirected_input in parsed:
-        argv = peel(argv)
-        if not argv or base(argv[0]).lower() not in ("http", "https"):
-            continue
-        if not any(host in " ".join(argv).lower() for host in RUNPOD_HOSTS):
-            continue
-        if piped_input or redirected_input:
-            deny(f"HTTPie infers POST from piped or redirected request data — {GOV8}")
-
-
-def _precious():
-    """Paths whose recursive deletion is never an accident worth allowing."""
-    project = os.environ.get("CLAUDE_PROJECT_DIR") or ""
-    if not project:
-        # An unset variable must not silently narrow the rule to $HOME alone.
-        project = os.getcwd()
-    project = os.path.realpath(project)
-    home = os.path.realpath(os.path.expanduser("~"))
-    return [
-        project,
-        os.path.join(project, ".git"),
-        os.path.join(project, ".githooks"),
-        os.path.join(project, ".claude"),
-        # Every other agent's uncommitted work lives here.
-        os.path.join(project, ".claude", "worktrees"),
-        # In a worktree session CLAUDE_PROJECT_DIR points at the main checkout,
-        # so `rm -rf .` inside the worktree would otherwise be nobody's business.
-        os.path.realpath(os.getcwd()),
-        home,
-    ]
-
-
-def _workbench_records():
-    """Ignored drawers whose contents are records rather than disposable cache."""
-    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    workbench = os.path.join(project, "workbench")
-    return [
-        os.path.join(workbench, "active"),
-        os.path.join(workbench, "archive"),
-        os.path.join(workbench, "design"),
-        os.path.join(workbench, "raw"),
-        os.path.join(workbench, "tools"),
-    ]
-
-
-def _operand_paths(operand: str, project: str, command_cwd: str | None = None):
-    """Resolve an rm operand as the hook cwd and as the project cwd."""
-    expanded = os.path.expandvars(os.path.expanduser(operand))
-    head = expanded
-    if any(c in expanded for c in "*?["):
-        head = os.path.dirname(expanded.split("*")[0].split("?")[0].split("[")[0]) or "."
-    paths = {os.path.realpath(head), os.path.normpath(os.path.abspath(head))}
-    if not os.path.isabs(head):
-        # Hooks normally inherit the project cwd, but that is a runner
-        # convention rather than part of the JSON contract. Judge a
-        # project-relative spelling against CLAUDE_PROJECT_DIR as well.
-        paths.add(os.path.realpath(os.path.join(project, head)))
-        if command_cwd:
-            paths.add(os.path.realpath(os.path.join(command_cwd, head)))
-    return paths
-
-
-def check_hook_files(argv, command_cwd: str | None = None):
-    """Hooks can be disabled without ever naming core.hooksPath.
-
-    Removing the exec bit, moving the file aside or deleting it stops the hook
-    running just as completely as rewriting the setting, and none of those
-    commands contains the string this guard was watching for. Reading a hook
-    stays open — checking that `install.sh` worked is the thing we want done.
-    """
-    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    for operand in argv[1:]:
-        if operand.startswith("-"):
-            continue
-        for path in _operand_paths(operand, project, command_cwd):
-            marked = path.replace(os.sep, "/") + "/"
-            if "/.githooks/" in marked or "/.git/hooks/" in marked:
-                deny(
-                    f"'{operand}' is a Git hook — changing, moving or deleting one "
-                    f"disables the cross-tool alarms for this clone as surely as "
-                    f"core.hooksPath does"
-                )
-
-
-def check_rm(argv, command_cwd: str | None = None):
-    check_hook_files(argv, command_cwd)
-    recursive = False
-    operands = []
-    options_ended = False
-    for token in argv[1:]:
-        if not options_ended and token == "--":
-            options_ended = True
-        elif not options_ended and token == "--recursive":
-            recursive = True
-        elif not options_ended and token.startswith("--"):
-            continue
-        elif not options_ended and token.startswith("-") and len(token) > 1:
-            recursive = recursive or "r" in token.lower()
-        else:
-            operands.append(token)
-
-    records = _workbench_records()
-    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-
-    # An operand *inside* a records drawer is judged here. An operand that
-    # merely *contains* one is judged after the precious-path checks below,
-    # because `rm -rf ~` contains the workbench and saying so as the reason
-    # named the smallest true thing rather than the largest: the refusal was
-    # right and its explanation was misleading.
-    for operand in operands:
-        for path in _operand_paths(operand, project, command_cwd):
-            for record in records:
-                if path == record or path.startswith(record + os.sep):
-                    deny(
-                        f"delete of '{operand}' — workbench records outside "
-                        f"scratch are not disposable"
-                    )
-
-    def _containing_a_record():
-        for operand in operands:
-            for path in _operand_paths(operand, project, command_cwd):
-                for record in records:
-                    if record.startswith(path + os.sep):
-                        deny(
-                            f"delete of '{operand}' — workbench records outside "
-                            f"scratch are not disposable"
-                        )
-
-    if not recursive:
-        _containing_a_record()
-        return
-
-    # Deny what is precious, rather than allowing only what is scratch. The
-    # allowlist version blocked `rm -rf .venv`, `rm -rf __pycache__` and
-    # `rm -rf workbench/scratch/*` — the last of which CLAUDE.md says outright
-    # that anyone may delete without asking.
-    roots = _precious()
-    for operand in operands:
-        # `$HOME` must resolve. An unknown variable stays literal, which lands
-        # somewhere harmless and relative, and that is the right default.
-        expanded = os.path.expandvars(os.path.expanduser(operand))
-
-        # A glob deletes the *contents* of its directory, so judge the
-        # directory. `rm -rf ~/*` empties your home; `rm -rf *` at the repo
-        # root empties the repo. Both were allowed while the bare `rm -rf ~`
-        # that nobody types was blocked.
-        # By name, wherever it sits: a relative path resolves against the
-        # guard's own working directory, which is not necessarily the project.
-        if os.path.basename(expanded.rstrip("/")) in (".git", ".githooks", ".claude"):
-            deny(
-                f"recursive delete of '{operand}' — that is the repository's "
-                f"history, its hooks, or the guard itself"
-            )
-
-        # realpath follows symlinks, normpath collapses `..` lexically, and
-        # `/tmp/../Users/...` resolves differently under each.
-        for path in _operand_paths(operand, project, command_cwd):
-            if path == "/" or path in roots:
-                deny(
-                    f"recursive delete of '{operand}' — that is the "
-                    f"repository, your home directory, or the guts of one"
-                )
-            for root in roots:
-                if root.startswith(path + os.sep):
-                    deny(
-                        f"recursive delete of '{operand}' — it contains the "
-                        f"repository or your home directory"
-                    )
-
-    _containing_a_record()
-
-
-def check_aws(argv):
-    # `aws --profile prod s3 rm ...` puts the profile's value in the way, so
-    # look for the verb pair wherever it falls rather than at a fixed offset.
-    rest = [a for a in argv[1:] if not a.startswith("-")]
-    for i, token in enumerate(rest[:-1]):
-        if token != "s3":
-            continue
-        if rest[i + 1] == "rm" and "--recursive" in argv:
-            deny("recursive S3 delete — irreversible")
-        if rest[i + 1] == "rb" and "--force" in argv:
-            deny("deletes an S3 bucket and everything in it — irreversible")
-
-
-DISPATCH = {
-    "git": check_git,
-    "runpodctl": check_runpodctl,
-    "runpod": check_runpodctl,
-    "curl": check_http,
-    "wget": check_http,
-    "http": check_http,
-    "https": check_http,
-    "python": check_python,
-    "python3": check_python,
-    "node": check_node,
-    "nodejs": check_node,
-    "bun": check_node,
-    "deno": check_node,
-    "rm": check_rm,
-    "aws": check_aws,
-    "chmod": check_hook_files,
-    "mv": check_hook_files,
-}
-
-# Handlers that need to know where the command line had got to by `cd`.
-CWD_HANDLERS = (check_rm, check_hook_files, check_git)
-
-# Verbs that start the meter. `stop`, `terminate` and `delete` are absent on
-# purpose: they end billing, and Governance 8 requires shutdown to be verified
-# against provider state. Blocking them would work against the rule.
-BLOCKED_TOOL_WORDS = ("create", "start", "resume", "deploy", "launch", "rent")
-
-# What a starting verb starts. Used only to read a verb welded to its object —
-# `startpod` — as the verb it is.
-TOOL_RESOURCE_NOUNS = frozenset(
-    {
-        "pod",
-        "pods",
-        "endpoint",
-        "endpoints",
-        "template",
-        "templates",
-        "instance",
-        "instances",
-        "machine",
-        "machines",
-        "gpu",
-        "gpus",
-        "server",
-        "servers",
-        "worker",
-        "workers",
-        "job",
-        "jobs",
-        "volume",
-        "volumes",
-    }
-)
-
-
-def tool_words(name: str):
-    """An MCP action split into words — separators and camelCase both.
-
-    Substring matching refused `get_started_guide` because "start" is inside
-    "started", and an over-refusal on a documentation read is how a session
-    learns to distrust the guard. Matching words keeps `create-pod`,
-    `createPod` and `runpod_create_pod` caught while letting the reads past.
-    """
-    out = []
-    for part in re.split(r"[^A-Za-z0-9]+", name):
-        out.extend(w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+", part))
-    return out
-
-
-def _starts_the_meter(words) -> bool:
-    for word in words:
-        if word in BLOCKED_TOOL_WORDS:
-            return True
-        for verb in BLOCKED_TOOL_WORDS:
-            # `startpod` is `start pod` with the space removed.
-            if word.startswith(verb) and word[len(verb) :] in TOOL_RESOURCE_NOUNS:
-                return True
-    return False
-
-
-def check_tool(tool: str) -> None:
-    """MCP tools. Server names are arbitrary; the verbs are not."""
-    if "runpod" not in tool.lower():
-        return
-    words = tool_words(tool.rsplit("__", 1)[-1])
-    if any(w in ("volume", "volumes") for w in words) and any(
-        w in ("delete", "remove", "destroy") for w in words
-    ):
-        deny(f"'{tool}' destroys a network volume — the corpus lives there")
-    if _starts_the_meter(words):
-        deny(f"'{tool}' creates, starts or deploys RunPod resources — {GOV8}")
-
-
-# RunPod calls that create or destroy, by the names they carry in a payload
-# rather than in a tool name. The GraphQL mutations are the API's own
-# spellings; the snake/camel pairs are the SDK's.
-MCP_CREATE_NAMES = re.compile(
-    r"\b(?:podFindAndDeployOnDemand|podRentInterruptable|podResume|podDeploy|"
-    r"create[_-]?pod|start[_-]?pod|resume[_-]?pod|deploy[_-]?pod|launch[_-]?pod|"
-    r"rent[_-]?pod|create[_-]?endpoint|create[_-]?template|"
-    r"delete[_-]?network[_-]?volume)\b",
-    re.I,
-)
-# The mutations that END billing. Governance 8 wants these easy.
-MCP_SHUTDOWN_NAMES = re.compile(r"\bpod(?:Stop|Terminate|Delete)\b", re.I)
-MCP_METHOD_KEY = re.compile(r'"(?:method|httpMethod|http_method|verb)"\s*:\s*"([A-Za-z]+)"', re.I)
-
-
-def _payload_strings(value):
-    """Every string in a tool payload, keys included."""
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            if isinstance(key, str):
-                yield key
-            yield from _payload_strings(item)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            yield from _payload_strings(item)
-
-
-def _route(text: str):
-    """The API path a payload string addresses, or None if it addresses none.
-
-    A string with whitespace in it is prose, not a URL — `see runpod.io for
-    the docs` must not read as a request to RunPod. That distinction is the
-    whole difference between judging a request and judging a sentence.
-    """
-    candidate = text.strip()
-    if not candidate or re.search(r"\s", candidate):
-        return None
-    lowered = candidate.lower()
-    if any(host in lowered for host in RUNPOD_HOSTS):
-        if not lowered.startswith(("http://", "https://")):
-            candidate = f"https://{candidate}"
-        try:
-            return urlsplit(candidate).path.rstrip("/")
-        except ValueError:
-            return None
-    if candidate.startswith("/") and re.search(
-        r"/(pods|endpoints|templates|networkvolumes)\b", lowered
-    ):
-        return candidate.split("?", 1)[0].rstrip("/")
-    return None
-
-
-def check_tool_input(tool: str, tool_input) -> None:
-    """The MCP payload. A tool name is a claim made by the thing being judged.
-
-    `mcp__runpod__request` names no verb, and until this ran the payload was
-    never opened at all — so a pod-create body arrived under a neutral name and
-    the meter started. Governance 8 is the rule; this is the one place in the
-    file where the money is spent by something other than a shell command.
-    """
-    if not tool.startswith("mcp__"):
-        return
-    try:
-        text = json.dumps(tool_input, default=str)
-    except (TypeError, ValueError):
-        deny(f"'{tool}' carries a payload the guard cannot read, so it cannot vouch for it")
-        raise AssertionError("deny() returned instead of terminating") from None
-
-    strings = list(_payload_strings(tool_input))
-    routes = [route for route in (_route(s) for s in strings) if route is not None]
-    addressed = any(
-        any(host in s.lower() for host in RUNPOD_HOSTS) and not re.search(r"\s", s) for s in strings
-    )
-    named = MCP_CREATE_NAMES.search(text)
-    if "runpod" not in tool.lower() and not addressed and not named:
-        return
-
-    if named:
-        deny(f"'{tool}' carries a RunPod create or deploy call in its payload — {GOV8}")
-
-    found = MCP_METHOD_KEY.search(text)
-    method = found.group(1).lower() if found else None
-    mutation = bool(re.search(r"\bmutation\b", text, re.I))
-    if method not in WRITE_METHODS and not mutation:
-        return  # reading pod state is exactly what Governance 8 asks for
-
-    if any("networkvolume" in s.lower().replace("_", "").replace("-", "") for s in strings):
-        deny(f"'{tool}' writes to a network volume — irreversible, and the corpus lives there")
-
-    if mutation and MCP_SHUTDOWN_NAMES.search(text):
-        return
-    shutting_down = bool(routes) and all(
-        route.endswith(("/stop", "/terminate"))
-        or (method == "delete" and re.search(r"/pods/[^/]+$", route))
-        for route in routes
-    )
-    if shutting_down:
-        return
-    deny(f"'{tool}' carries a write to the RunPod API in its payload — {GOV8}")
-
-
-# ------------------------------------------ hard rule 10: the governing documents
-
-# CLAUDE.md hard rule 10: "A spawned agent never edits the governing documents.
-# This file, GOALS, GOVERNANCE, ARCHITECTURE, GLOSSARY and the root README. An
-# agent may propose a change to any of them, with exact wording, in its report;
-# it may not make one. The main session may edit this file, and everything else
-# on that list stays Tyrel's alone."
-#
-# Two lists, because the rule has two halves. These five are Tyrel's alone, so
-# no Claude caller writes them — main session or subagent, it makes no
-# difference, and that is what lets this half be enforced without depending on
-# any claim about who is calling.
-# The six governing documents. All are refused to a SPAWNED AGENT and none to
-# the main session, which is the line hard rule 10 actually draws.
-#
-# An earlier version refused five of them to every caller, main session
-# included. Tyrel struck that: "why lock yourself out." He is right, and it was
-# the same mistake as a push rule written earlier the same day that stranded
-# twenty-one commits — a wall built where a rule would do. The main session
-# works with him in the room and asks before it edits; a spawned agent runs
-# unattended and cannot be asked. The rule was never about the file being
-# untouchable, it was about nobody amending the rules that bind them without
-# the human present. Enforcing that needs the guard to tell a subagent from the
-# main thread — see _spawned_agent.
-GOVERNING_DOCUMENTS = frozenset(
-    {
-        "claude.md",
-        "goals.md",
-        "governance.md",
-        "architecture.md",
-        "glossary.md",
-        "readme.md",
-    }
-)
-
-# The tools that write a file directly. Bash is not among them: a shell
-# redirection or `sed -i` reaches these files without any of them, and that
-# hole is declared in "What it does not catch" rather than half-closed here.
-WRITING_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
-PATH_KEYS = ("file_path", "notebook_path", "path")
-
-
-def _spawned_agent(payload):
-    """The subagent behind this tool call, or None for the main session.
-
-    MEASURED, not assumed. A live PreToolUse payload was captured from both
-    sides of one session on 2026-07-28. A subagent's call carries::
-
-        "agent_id": "a767beb9…", "agent_type": "infra-worker"
-
-    and the same session's main-thread call carries neither key. Both are
-    written by Claude Code, not by the model, so a model cannot set them for
-    its own call the way it can set the text of a command.
-
-    The failure direction is stated rather than hidden. Absence of the key is
-    read as "the main session", so if a future Claude Code stops sending it,
-    CLAUDE.md quietly reverts to unguarded. That is the wrong direction for a
-    guard, and it is chosen anyway: reading absence as "subagent" would refuse
-    the main session's own edit to CLAUDE.md, which hard rule 10 permits in so
-    many words — and a guard that blocks the documented workflow is a guard
-    somebody switches off wholesale. The other five documents do not depend on
-    this discrimination at all, which is why they are enforced separately and
-    absolutely.
-    """
-    for key in ("agent_type", "agent_id"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            found = payload.get("agent_type")
-            return found.strip() if isinstance(found, str) and found.strip() else "a subagent"
-    return None
-
-
-def _worktree_of_this_clone(directory: str, project: str) -> bool:
-    """True for a worktree of *this* repository, which holds its own documents.
-
-    The roster requires writing agents to work in a prepared worktree, so the
-    copy a subagent would actually edit usually is not the one under
-    CLAUDE_PROJECT_DIR. A worktree's `.git` is a file holding `gitdir: <path>`
-    that points back into this clone's `.git/worktrees/`, which is what makes
-    this test specific: an unrelated scratch repository somewhere else is not
-    matched, so its own README stays writable.
-    """
-    marker = os.path.join(directory, ".git")
-    if not os.path.isfile(marker):
-        return False
-    try:
-        with open(marker, encoding="utf-8", errors="replace") as handle:
-            text = handle.read(4096)
-    except OSError:
-        return False
-    found = re.match(r"\s*gitdir:\s*(\S.*)", text)
-    if not found:
-        return False
-    gitdir = os.path.realpath(found.group(1).strip())
-    return gitdir.startswith(os.path.join(os.path.realpath(project), ".git") + os.sep)
-
-
-def _document_target_paths(target: str, bases):
-    """Every path one written destination could mean, symlinks resolved.
-
-    A guard that recognised only `/abs/path/GOVERNANCE.md` would have a
-    one-character bypass in `./GOVERNANCE.md`. Both spellings are produced:
-    normpath collapses `..` and doubled separators lexically, realpath follows
-    symlinks — and `/tmp/link -> …/GOVERNANCE.md` resolves only under the
-    second.
-    """
-    expanded = os.path.expandvars(os.path.expanduser(target.strip()))
-    if os.path.isabs(expanded):
-        candidates = [expanded]
-    else:
-        candidates = [os.path.join(b, expanded) for b in bases if b]
-    out = set()
-    for candidate in candidates:
-        out.add(os.path.normpath(os.path.abspath(candidate)))
-        try:
-            out.add(os.path.realpath(candidate))
-        except (OSError, ValueError):
-            continue
-    return out
-
-
-def check_document_write(tool: str, tool_input, payload) -> None:
-    """Refuse a SPAWNED AGENT's write to a governing document — hard rule 10.
-
-    The main session is not refused. It asks Tyrel first, and he is there to
-    answer; that is the whole difference the rule turns on. A guard that locked
-    the session out of these files would not enforce the rule, it would break
-    the workflow the rule permits — and this repository has already paid for
-    that lesson once, with a push rule that stranded twenty-one commits on one
-    disk because it was written as a wall rather than as a rule.
-
-    Only the document at a checkout's root is governed. `pipeline/README.md`
-    and every other nested README are ordinary documentation that agents write
-    and revise; refusing those would be an over-refusal met in daily work.
-
-    Two comparisons are deliberately loose, and each over-refuses rather than
-    under-refuses. Case is folded because macOS resolves `claude.md` to the
-    same bytes as `CLAUDE.md`, which would otherwise be a real bypass; on a
-    case-sensitive filesystem it merely refuses a file nobody meant to write.
-    Surrounding whitespace is stripped for the same reason in reverse — a
-    trailing space names a genuinely different file, but never one anybody
-    intends, so it is refused rather than silently allowed as a near-miss.
-    """
-    if tool not in WRITING_TOOLS:
-        return
-    if not isinstance(tool_input, dict):
-        raise ValueError("a write whose input the guard cannot read")
-    target = next((tool_input[key] for key in PATH_KEYS if key in tool_input), None)
-    if not isinstance(target, str) or not target.strip():
-        # GOVERNANCE.md 10: a check that cannot run is a failure, not a pass.
-        raise ValueError("a write with no readable destination")
-
-    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    call_cwd = payload.get("cwd")
-    bases = [call_cwd if isinstance(call_cwd, str) else None, project, os.getcwd()]
-    agent = _spawned_agent(payload)
-
-    for path in _document_target_paths(target, bases):
-        directory = os.path.realpath(os.path.dirname(path))
-        if directory != project and not _worktree_of_this_clone(directory, project):
-            continue
-        name = os.path.basename(path).strip().lower()
-        if name in GOVERNING_DOCUMENTS and agent:
-            deny(
-                f"'{os.path.basename(path).strip()}' is a governing document, and CLAUDE.md "
-                f"hard rule 10 bars a spawned agent ({agent}) from editing one — 'a rule an "
-                f"agent wrote into the file that binds it is not a rule'. Propose the exact "
-                f"wording in your report; the main session makes the edit, with Tyrel"
-            )
-
-
-SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
-
-# Commands that read a heredoc body as data and never execute it. `python3 -`,
-# `sh` and friends are deliberately absent: they run the body. The list exists
-# because refusing `grep <<'END'` and `jq . <<'JSON'` taught a session that
-# ordinary text handling was suspicious, and a guard that fires on ordinary
-# work is a guard somebody switches off.
-HEREDOC_DATA_SINKS = frozenset(
-    {
-        "cat",
-        "tee",
-        "grep",
-        "egrep",
-        "fgrep",
-        "rg",
-        "sed",
-        "awk",
-        "jq",
-        "yq",
-        "wc",
-        "sort",
-        "uniq",
-        "head",
-        "tail",
-        "tr",
-        "cut",
-        "column",
-        "diff",
-        "nl",
-        "tac",
-        "fold",
-        "expand",
-        "base64",
-        "shasum",
-        "md5",
-        "md5sum",
-        "sha256sum",
-        "hexdump",
-        "xxd",
-        "json_pp",
-    }
-)
-
-
-def inspect(command: str, depth: int = 0) -> None:
-    for opening, body, supported, expands in heredoc_blocks(command):
-        if not supported:
-            deny("the heredoc delimiter uses shell syntax the command guard cannot verify")
-        try:
-            openers = segments(opening)
-        except ValueError:
-            deny("the heredoc opening command cannot be parsed safely")
-        resolved = False
-        for argv in openers:
-            argv = peel(argv)
-            if not argv:
-                continue
-            resolved = True
-            name = base(argv[0])
-            if name not in HEREDOC_DATA_SINKS:
-                deny(
-                    f"a heredoc attached to '{name}' is opaque to the command guard — "
-                    f"it may run the body. Write the text with `cat <<'EOF' > file` "
-                    f"and run the file as its own step"
-                )
-        if not resolved:
-            deny("the heredoc opening has no resolvable command on the same line")
-
-        # A `cat`/`tee` body is data only while the shell leaves it alone. With
-        # an unquoted delimiter the shell expands it first, so `$(...)` and
-        # backticks in the body run before `cat` is even started — which is how
-        # a push to main once travelled inside something the guard called inert.
-        # Inspect exactly the part the shell executes, and nothing else: reading
-        # the whole body as commands would refuse every generated file whose
-        # prose happens to mention `rm -rf`.
-        if not expands or not body:
-            continue
-        try:
-            payloads = command_substitutions(body)
-        except ValueError:
-            deny("the heredoc body opens a command substitution the guard cannot read")
-        for payload in payloads:
-            if depth >= 3:
-                deny("a command substitution nested deeper than the guard inspects")
-            inspect(payload, depth + 1)
-
-    # The same rule one layer out. The shell runs the inside of `"$( )"` before
-    # the surrounding command starts, so quoting hides a command from this
-    # guard's tokeniser without hiding it from the shell: `echo "$(git push
-    # origin main)"` really pushes. Read the substitution's *contents* as a
-    # command — quoting is not itself suspicious, and `"$(git rev-parse HEAD)"`
-    # must stay ordinary. Heredoc bodies are already handled above and are
-    # stripped here so a quoted delimiter stays inert.
-    try:
-        quoted = command_substitutions(strip_heredocs(command), quotes=True)
-    except ValueError:
-        deny("this command opens a command substitution the guard cannot read")
-    for payload in quoted:
-        if depth >= 3:
-            deny("a command substitution nested deeper than the guard inspects")
-        inspect(payload, depth + 1)
-
-    check_httpie_input(command)
-    try:
-        parsed = segments(command)
-    except ValueError:
-        for noun, context, reason in FALLBACK:
-            if noun.search(command) and context.search(command):
-                deny(reason)
-        return
-
-    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    command_cwd = project
-    for argv in parsed:
-        argv = peel(argv)
-        if not argv:
-            continue
-        name = base(argv[0])
-
-        if name == "cd":
-            operands = [a for a in argv[1:] if not a.startswith("-")]
-            if operands:
-                destination = os.path.expandvars(os.path.expanduser(operands[0]))
-                command_cwd = os.path.realpath(
-                    destination
-                    if os.path.isabs(destination)
-                    else os.path.join(command_cwd, destination)
-                )
-            continue
-
-        # `bash -c '<anything>'` and `eval '<anything>'` carry a whole command
-        # as a string. Look inside it. The old raw-text guard caught these for
-        # free; a tokenising one has to be told.
-        if depth < 3:
-            payload = None
-            if name in SHELLS:
-                for i, token in enumerate(argv):
-                    if token.startswith("-") and "c" in token[1:] and i + 1 < len(argv):
-                        payload = argv[i + 1]
-                        break
-            elif name == "eval":
-                payload = " ".join(argv[1:])
-            if payload:
-                inspect(payload, depth + 1)
-
-        # python3.11, python3.13 — a version suffix is not a different program.
-        handler = DISPATCH.get(name) or (check_python if name.startswith("python") else None)
-        if handler:
-            if handler in CWD_HANDLERS:
-                handler(argv, command_cwd)
-            else:
-                handler(argv)
-
-
-def main() -> None:
+def main() -> int:
     try:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict):
             raise ValueError("payload is not an object")
-        # Check the type before coercing: `[] or ""` is `""`, which would let a
-        # malformed tool_name through as an innocent empty string.
-        tool = payload.get("tool_name")
-        if tool is None:
-            tool = ""
-        if not isinstance(tool, str):
-            raise ValueError("tool_name is not a string")
-        tool_input = payload.get("tool_input") or {}
-
-        check_tool(tool)
-        check_tool_input(tool, tool_input)
-        check_document_write(tool, tool_input, payload)
-
-        if tool == "Bash":
-            command = tool_input.get("command") if isinstance(tool_input, dict) else None
-            if not isinstance(command, str):
-                raise ValueError("no command to read")
-            inspect(command)
-    except SystemExit:
-        raise
-    except Exception:
-        # A guard that cannot read its input must never be mistaken for one
-        # that looked and approved — GOVERNANCE.md 10.
-        deny("the guard could not read this tool call, so it cannot vouch for it")
-
-    sys.exit(0)
+        decision = evaluate(payload)
+    except Exception as error:
+        print(
+            f"repository guard could not inspect the tool call: {type(error).__name__}",
+            file=sys.stderr,
+        )
+        return 2
+    if decision:
+        emit(*decision)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
