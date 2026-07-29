@@ -2031,6 +2031,27 @@ def test_commit_message_still_names_a_real_credential_match(tmp_path):
     assert SAMPLE_SECRET not in result.stderr
 
 
+def test_attribution_exemptions_do_not_exempt_a_poisoned_identity(tmp_path):
+    # The message scan sits before every exemption for a stated reason:
+    # attribution exemptions never exempt secrets. The identity scan has to sit
+    # there too, or ALLOW_UNATTRIBUTED=1 — a variable an operator reaches for to
+    # skip an *attribution* rule — silently skips a credential check as well.
+    repo = tmp_path / "repo"
+    make_commit_msg_repo(repo)
+    result = run_commit_message_in(
+        repo,
+        "Describe change\n",
+        env={
+            "ALLOW_UNATTRIBUTED": "1",
+            "GIT_AUTHOR_NAME": f"Pasted {SAMPLE_SECRET}",
+            "GIT_AUTHOR_EMAIL": "pasted@example.invalid",
+        },
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert SAMPLE_SECRET not in result.stdout + result.stderr
+    assert "credential" in result.stderr
+
+
 def test_pre_push_reports_unknown_for_a_receipt_it_cannot_read(tmp_path):
     # Ledger L22's remaining half. A path that is not a regular file — a FIFO
     # planted or left by a crashed process, a socket, a directory — was reported
