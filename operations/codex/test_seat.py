@@ -835,13 +835,12 @@ def test_the_paired_audit_seats_differ_only_in_their_model():
     fields = ("effort", "sandbox", "workroot", "timeout")
     differences = [
         f"{field}: audit-sol={a!r} audit-terra={b!r}"
-        for field, a, b in zip(fields, sol_rest, terra_rest)
+        for field, a, b in zip(fields, sol_rest, terra_rest, strict=True)
         if a != b
     ]
     assert not differences, (
         "the paired audit seats are not configured identically, so a difference "
-        "between their reports can no longer be attributed to the model: "
-        + "; ".join(differences)
+        "between their reports can no longer be attributed to the model: " + "; ".join(differences)
     )
     assert sol_model != terra_model, "the paired audit seats run the same model twice"
 

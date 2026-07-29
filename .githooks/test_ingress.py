@@ -620,19 +620,26 @@ PROVIDER_SAMPLES = (
     ("huggingface-token", "hf_" + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8"),
     ("slack-token", "xox" + "b-2468013579-1357924680-A7b9C2d4E6f8G1h3J5k7L9m2"),
     ("slack-token", "xap" + "p-1-A0B1C2D3E4F-2468013579-a7b9c2d4e6f8g1h3j5k7l9m2"),
-    ("slack-webhook", "https://hooks.slack" + ".com/services/T02468AC/B13579BD/A7b9C2d4E6f8G1h3J5k7L9m2"),
+    (
+        "slack-webhook",
+        "https://hooks.slack" + ".com/services/T02468AC/B13579BD/A7b9C2d4E6f8G1h3J5k7L9m2",
+    ),
     ("stripe-live-key", "sk_live_" + "A7b9C2d4E6f8G1h3J5k7L9m2"),
     ("stripe-restricted-key", "rk_live_" + "A7b9C2d4E6f8G1h3J5k7L9m2"),
     ("stripe-webhook-secret", "whsec_" + "A7b9C2d4E6f8G1h3J5k7L9m2"),
     (
         "pypi-token",
-        "pypi-"
-        + "AgEIcHlwaS5vcmc"
-        + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r1S3t5U7v9W2x4Y6z8B1c3D5e7F9",
+        "pypi-" + "AgEIcHlwaS5vcmc" + "A7b9C2d4E6f8G1h3J5k7L9m2N4p6Q8r1S3t5U7v9W2x4Y6z8B1c3D5e7F9",
     ),
     (
         "json-web-token",
-        "eyJ" + "hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" + "." + "eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0" + "." + "A7b9C2d4E6f8G1h3J5k7L9m2",
+        "eyJ"
+        + "hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        + "."
+        + "eyJ"
+        + "zdWIiOiIxMjM0NTY3ODkwIn0"
+        + "."
+        + "A7b9C2d4E6f8G1h3J5k7L9m2",
     ),
     ("credential-url", "https://svc-user:" + "T0pS3cr3tValue@example.invalid/path"),
     ("credential-uri", "postgresql://svc-user:" + "T0pS3cr3tValue@db.example.invalid/app"),
@@ -659,7 +666,8 @@ def test_every_declared_pattern_has_a_regression_sample():
     module = scanner_module()
     samples = [secret.encode() for _, secret in PROVIDER_SAMPLES]
     uncovered = [
-        rule for rule, pattern in module.SECRET_PATTERNS
+        rule
+        for rule, pattern in module.SECRET_PATTERNS
         if not any(pattern.search(sample) for sample in samples)
     ]
     assert not uncovered, f"declared patterns with no regression sample: {uncovered}"

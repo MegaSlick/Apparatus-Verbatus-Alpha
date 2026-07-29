@@ -33,15 +33,20 @@ ruff format --check .
 # an external API for a whole session before anything linted it. The guard
 # against a repeat is a test, not a glob: test_seat.py asserts that every shell
 # script under .githooks/ and operations/ appears on both lines below.
-shellcheck .githooks/check-all.sh .githooks/check-documents.sh \
-           .githooks/commit-msg .githooks/doc-allowlist.sh \
-           .githooks/install.sh .githooks/pre-commit .githooks/pre-push \
+shellcheck .githooks/applypatch-msg .githooks/check-all.sh \
+           .githooks/check-documents.sh .githooks/commit-msg \
+           .githooks/doc-allowlist.sh .githooks/install.sh \
+           .githooks/pre-applypatch .githooks/pre-commit \
+           .githooks/pre-merge-commit .githooks/pre-push \
            .githooks/record-audit.sh operations/notify/notify.sh \
            operations/codex/seat.sh
 
-sh -n .githooks/check-all.sh .githooks/check-documents.sh .githooks/commit-msg \
-      .githooks/doc-allowlist.sh .githooks/install.sh .githooks/pre-commit \
-      .githooks/pre-push .githooks/record-audit.sh operations/notify/notify.sh \
+sh -n .githooks/applypatch-msg .githooks/check-all.sh \
+      .githooks/check-documents.sh .githooks/commit-msg \
+      .githooks/doc-allowlist.sh .githooks/install.sh \
+      .githooks/pre-applypatch .githooks/pre-commit \
+      .githooks/pre-merge-commit .githooks/pre-push \
+      .githooks/record-audit.sh operations/notify/notify.sh \
       operations/codex/seat.sh
 
 # Tach currently has a real module to inspect only after shared implementation

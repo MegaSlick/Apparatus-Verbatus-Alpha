@@ -1698,17 +1698,16 @@ def test_check_all_fails_when_common_scan_cannot_run(tmp_path):
 
     hooks = repo / ".githooks"
     hooks.mkdir()
-    for name in (
-        "check-all.sh",
-        "check-documents.sh",
-        "commit-msg",
-        "doc-allowlist.sh",
-        "install.sh",
-        "pre-commit",
-        "pre-push",
-        "record-audit.sh",
-    ):
-        shutil.copy2(HOOKS / name, hooks / name)
+    # Copy every hook, derived rather than listed. A hardcoded list here goes
+    # stale the moment a hook is added: three new integration hooks landed and
+    # this fixture then failed with exit 127 and "No such file or directory",
+    # which reads as a broken test rather than an incomplete one. That is the
+    # same drift the entrypoint test in test_seat.py exists to catch, so this
+    # fixture should not reintroduce it one directory away.
+    for source in sorted(HOOKS.iterdir()):
+        if source.is_file() and source.suffix not in (".py",):
+            shutil.copy2(source, hooks / source.name)
+    shutil.copy2(HOOKS / "check_ingress.py", hooks / "check_ingress.py")
     for relative in ("operations/notify/notify.sh", "operations/codex/seat.sh"):
         target = repo / relative
         target.parent.mkdir(parents=True, exist_ok=True)

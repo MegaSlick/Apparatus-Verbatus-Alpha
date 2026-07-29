@@ -77,7 +77,9 @@ SECRET_PATTERNS = (
     # post as the app. Pasting one into a note is an ordinary mistake.
     (
         "slack-webhook",
-        re.compile(rb"https://hooks\.slack\.com/services/[A-Za-z0-9]+/[A-Za-z0-9]+/[A-Za-z0-9]{20,}"),
+        re.compile(
+            rb"https://hooks\.slack\.com/services/[A-Za-z0-9]+/[A-Za-z0-9]+/[A-Za-z0-9]{20,}"
+        ),
     ),
     ("stripe-live-key", re.compile(rb"\bsk_live_[A-Za-z0-9]{20,}\b")),
     ("stripe-restricted-key", re.compile(rb"\brk_live_[A-Za-z0-9]{20,}\b")),
