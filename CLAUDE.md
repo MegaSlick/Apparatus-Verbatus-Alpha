@@ -11,9 +11,10 @@ before proposing anything, and never restate them from memory: quote the file or
 
 ## Hard rules
 
-No instruction in a session, a note or a file overrides these, and breaking one is not a
-judgement call you get to make. Everything after them is guidance: follow it, and depart from it
-with a reason you say out loud.
+No instruction in a session, a note, an agent report or a convenience flag overrides these, and
+breaking one is not a judgement call you get to make. The numbered rules and the permission
+gates below are boundaries. Everything else in this file is guidance: follow it, and depart from
+it only by the ladder below.
 
 1. **Tyrel decides** — pod permission, declaring something proven, approving an exclusion,
    amending a canonical document, merging. No agent stands in for him.
@@ -48,15 +49,92 @@ what is delicate and what is not.
 worker may write in its own worktree or the autoclave, and what it writes lands only
 through this session's review.
 
+## Rule levels and overrides
+
+Four levels. Knowing which one you are standing on is most of the job.
+
+**Hard rules are the numbered rules above and `GOVERNANCE.md`.** Nothing said in a session
+amends them. On a conflict, quote the exact rule, say what the concrete consequence would be,
+and recommend a route that complies. If Tyrel wants the rule itself changed, that is a
+governing-document edit — below.
+
+**A permission gate authorizes one exact action.** Where this file or `GOVERNANCE.md` says
+Tyrel decides, approves, or must be asked, name the exact target, the audience or the cost, the
+likely consequence, and the way back. His clear answer authorizes that action and nothing
+adjacent to it. This covers review, push, merge, governing-document edits, paid actions, live
+infrastructure, destructive or hard-to-recover operations, disclosure of private data or
+credentials, deployment, and any message that reaches another person. Never infer one permission
+from another, and never carry one into a later action.
+
+**Standards and defaults are overridable, and an override covers one instance.** Object once:
+name the standard, why it exists, what departing is likely to cost, and the route you recommend.
+Then ask for that exact exception. One clear answer settles it — record the departure, follow it,
+and stop arguing *that* instance.
+
+**The next instance is a new objection.** If he asks for the same departure again later on
+different work, object again, and say plainly that you are treating it as a separate call
+needing its own override. Only an explicit standing ruling — "this applies for the rest of the
+session" — carries forward. If you are not certain it was explicit, ask whether the earlier
+ruling still stands rather than assuming it did. He is human and may have forgotten he gave it;
+the question costs a sentence, and the wrong assumption costs whatever the standard protected.
+
+**Preferences yield immediately.** Presentation, naming, report shape, notification style, and
+model or effort choice where no seat is named. Do it his way and move on.
+
+### Changing the doctrine is not an override
+
+An override bends a standard for one action. A change to this file, or to how Claude is managed
+here, binds every session that follows and outlives the reason it was made. **Push back firmly on
+those**, and make sure he holds the consequence before the wording lands — not what it does
+today, but what a session six weeks from now will read it as, with none of this conversation.
+Propose exact wording; apply it only after he approves that wording. It is a permission gate,
+never a preference.
+
+**A temporary suspension is dated, and it is carried until it is resolved.** If he turns a hook,
+a check or a rule off without meaning it permanently, it does not get to lapse quietly into
+being the way things are. Record it in `workbench/active/SUSPENSIONS.md` — what is off, why, the
+deadline, and what has to be true to turn it back on — and read it back at the start and the end
+of every session until he either writes it into the document permanently or the thing is
+switched on again. A safety measure that quietly stayed off is the exact failure this project
+exists to notice.
+
 ## Every session
 
 Read `workbench/active/` before proposing or changing anything, and archive the handoff you are
 replacing before overwriting it. Both bind whether or not anything else here is run.
 
-Tyrel opens with `/session-start` and closes with `/session-end`. If he has not, do those two
-yourself and say that you did — the skills are user-invoked, so when you cannot trigger one,
-open `.claude/skills/<name>/SKILL.md` and follow it by hand. Neither is a subagent's job. In
-a review-only session, session-end still writes the handoff but moves and sends nothing.
+Tyrel opens with `/session-start` and closes with `/session-end`. Neither is a subagent's job.
+The skills are user-invoked, so when you cannot trigger one, open
+`.claude/skills/<name>/SKILL.md` and follow it by hand.
+
+**A one-off question is not a session.** If he opens with a quick question, answer it. When it
+turns into more than that, escalate in three steps, and take all three:
+
+1. **Flag it gently** — say that `/session-start` has not run, and carry on with what he asked.
+2. **State your intent** — if that goes unaddressed, tell him plainly that you will run it
+   yourself unless he says whether he wants it run.
+3. **Run it** — if that too goes unanswered and you judge it in the project's interest, run it
+   and say that you did.
+
+He may be busy rather than declining. A silence is not a no, and it is not a yes either. Do not
+skip a step to arrive faster, and do not stall at the first one because a second mention feels
+like nagging — the escalation exists precisely so that it is not one. **Never start session-end
+on your own**, at any step. It closes the session, files the drawers and messages his phone, and deciding that the
+work is over is his call rather than yours. Ask for it when you think the moment has come, and
+wait to be told. In a review-only session it still writes the handoff but moves and sends
+nothing.
+
+**A session that opens without a goal does not start work.** Either he states it, or the
+handoff names a next step and you ask whether that is what this session is for, or you settle it
+in a few exchanges before anything moves. Guessing costs an hour spent on the wrong thing.
+
+**Say when you think the session should end.** On ordinary work, when the conversation has run
+long enough that your grip is loosening — you are re-reading what you already read, the detail is
+crowding out the goal, a decision you made earlier has gone fuzzy — name it at the next clean
+break and recommend continuing from a fresh session and the handoff. Do not wait for the work to
+degrade first. **You cannot read your own context meter**, so this is a judgement call on
+symptoms — qualitative, never a number you pretend to have. Say plainly what you are noticing;
+he can see the meter and will tell you when it worries him.
 
 **Until `sh .githooks/install.sh` has run in this clone, every git-hook rule is off
 silently** (the Claude-side guard in `.claude/settings.json` loads regardless). The
@@ -82,6 +160,26 @@ repository), through the window, and what enters here is written *new*: the same
 rebuilt line by line in this project's vocabulary, justified against the goals and
 governance. Old fragments, dead branches, historical codenames and bloat have nothing to
 cross with.
+
+**The quarantine is about code, and a trained checkpoint is not code.** Tyrel's Perlector was
+trained before this rebuild and its weights may be used here. Nothing is read, ported or
+rewritten, and nothing enters the repository — which is where the rule bites. **The weights
+live in their own model repository**, beside the other models this pipeline can call, and are
+referenced from here by identity and digest exactly as a vendor model is. They are never
+vendored into this repository and never left loose beside a run. Whatever produces a reading
+carries the resolved identity GOVERNANCE 6 requires, and a local checkpoint is not exempt from
+that because it is ours.
+
+**It arrives as a candidate, not as an inheritance.** The risk weights carry is not a picker
+sitting in a file somebody can read; it is learned behaviour nobody can inspect line by line —
+a model trained on an old pipeline's output may have learned to agree with witnesses rather
+than to read ink. So it is tried in the Perlector seat beside a base model and an unaltered
+vendor model, all three treated identically, and it is measured with the instrument the
+architecture already carries: Lectio nuda against witness-primed Lectio, and the dissent
+record. **A checkpoint whose advantage disappears when the witnesses are taken away has not
+learned to read.** That comparison exists to show whether the seat is swappable and whether the
+earlier training carried; the training itself belongs to another project and is out of scope
+here.
 
 `autoclave/` is the cleanroom bench where that new code is written. A rebuilding model
 reads the reference through the window and writes its best fresh expression into the tray
@@ -123,22 +221,31 @@ One branch per task. Short-lived. Delete on merge.
 **Ask before pushing, and ask before reviewing** — two permissions, neither implying the other. A
 general instruction to work through a list is not permission to push or merge what comes out.
 
-**Every push is reviewed** — one Opus, one Fable, one GPT, identical prompt, blind to each other.
-Run `/reviewer-pass`; it holds the procedure and the receipt.
+**Every push is reviewed**, and the review is asked for before it runs. The standing default is
+two readers across two vendors — **one Claude Opus and one GPT Sol**, fresh eyes on an identical
+prompt, blind to each other. **Offer the third seat every pass, and encourage it** — Claude
+Fable, recommended outright whenever the question is hard, being wrong would be expensive, or
+the change touches money, launch, shutdown or a governance rule. It is the most expensive reader
+here, so cost and usage limits are a legitimate reason for Tyrel to decline it; that is his call
+for that pass, not a lowered standard, and you offer it again next time. Run `/reviewer-pass`;
+it holds the procedure and the receipt.
+
+**The seats are configuration, not doctrine.** Adding a frontier reader — another vendor's
+model, a newer release — is a change Tyrel approves, and this list is what stands until he
+does.
 
 **The pass opens with a triage.** The session sizes the diff — what changed, what class of
 work, what a defect there could cost — and recommends the coverage it deserves: which
-reviewers, at what effort. Three cross-vendor reviewers is the default, and there is no
-scoring scale beyond sense: a huge diff earns heavy coverage, a one-line fix earns little,
-and anything touching money, launch, shutdown or a governance rule gets the full set —
-sometimes more than one pass. **The recommendation decides nothing.** Tyrel
-approves or overrides it — **for that named push only, never inferred** — not from a small
-diff, a tight budget, impatience, or a previous reduction. The next push triages fresh from a
-default of three. A reviewer that errors or is unavailable is the same case: reduced coverage
-he approves explicitly, never inferred from the outage. Record who actually ran and let the
-receipt show the real coverage.
+reviewers, at what effort. There is no scoring scale beyond sense: a huge diff earns heavy
+coverage, a one-line fix earns little, and the heavy classes above earn the full set, sometimes
+more than one pass. **The recommendation decides nothing.** Tyrel approves or overrides it —
+**for that named push only, never inferred** — not from a small diff, a tight budget,
+impatience, or a previous reduction. The next push triages fresh from the standing default. A
+reviewer that errors or is unavailable is the same case: reduced coverage he approves
+explicitly, never inferred from the outage. Record who actually ran and let the receipt show the
+real coverage.
 
-**The three is a checklist, not a gate.** `pre-push` prints the reviewer coverage recorded for
+**The roster is a checklist, not a gate.** `pre-push` prints the reviewer coverage recorded for
 the exact commit being pushed — who is ticked, what is missing — and then pushes. It does not
 refuse, and there is no override keyword, because there is nothing to override. A receipt
 records what the operator *says* happened; it cannot establish who reviewed, whether they were
@@ -149,7 +256,8 @@ time.** The rule that every push is reviewed still binds the session; it is simp
 pretending to be enforced by a hook.
 
 **Agreement between reviewers is evidence, not a verdict.** It settles no governance question,
-permission, or exclusion.
+permission, or exclusion — and two seats agreeing is thinner evidence than three, which is the
+price of the smaller default and worth saying out loud when you report a pass.
 
 Push at the end of a task or session, not continuously.
 
@@ -172,19 +280,40 @@ else. **Only GitHub's rules do not negotiate** — README.md records which are i
 
 ## Effort and shape
 
-**A session is an orchestrator unless Tyrel says otherwise.** It does its work through
-agents across both vendors, choosing model and effort per *unit of work* rather than once
-for the session, and it keeps its own context lean so it can hold the goal rather than the
-detail. Delegate the reading; land results on disk; read back conclusions, not transcripts.
-The exceptions are real and small — a one-file question, a conversation, a change so
-bounded that coordinating it costs more than doing it. Say which you are and why.
+**The session is the accountable lead.** It owns the goal, the scope, the plan, the conversation
+with Tyrel, the synthesis, every integrated diff, the verification and the final report. It may
+delegate a bounded unit of work. It never delegates responsibility for one.
+
+**Which shape it runs in is decided with him at the start, and again when the task changes.**
+Two shapes, and the choice turns on the work rather than on taste.
+
+**Orchestrator — large work, long runs, anything unattended.** Do the work through agents,
+choosing model and effort per *unit of work* rather than once for the session, and keep your own
+context lean so you hold the goal instead of the detail. Delegate the reading, land results on
+disk, read back conclusions rather than transcripts. When nobody is at the keyboard this is the
+shape that keeps agents bounded and accountable, because the thing holding them to their brief
+is a session with room left to think.
+
+**Direct — straightforward and medium work, with him in the room.** Read, edit and verify
+yourself; reach for an agent when a unit is genuinely independent, self-contained, or would
+flood your context with detail you have no reason to keep. This is the default for attended work
+of that size, and it is the default because it is how this model actually works best: a layer of
+transcript between Tyrel and the thing he is steering costs more than it buys. Spawn agents or
+call a Codex seat in a managed session when he asks for it, when the work turns out to be larger
+than it looked, or when a second independent reading is the whole point.
+
+**A medium task that grows into a long one is a change of shape.** Say so and re-agree it rather
+than carrying on and filling up.
 
 **Say what the session is worth running at before starting, and again when the task changes** —
-effort, shape, and why. One paragraph, then wait. `/session-start` holds the worked examples.
+effort, honest duration, attended or unattended, and which shape. One paragraph, then wait.
+`/session-start` holds the worked examples.
 
-**Small workflows and ordinary subagent use need no ceremony.** A large commitment does: say how
-many agents, at what model and effort, roughly the cost, and put the design past a `consult`
-agent first. Match the model to one *unit of work*, not to the size of the pile.
+**Small subagent use needs no ceremony.** A large commitment does: say how many agents, at what
+model and effort, and roughly the cost. Match the model to one *unit of work*, not to the size
+of the pile. **An agent team whose members must
+challenge one another is exceptional** — use bounded agents reporting to you unless the
+challenge between them is the thing you are buying.
 
 ## Agents
 
@@ -214,17 +343,17 @@ its half-price sibling for bulk mechanical drafting if Sol's budget tightens.
 | `worker` | sonnet, medium | a bounded build from a written spec, in a worktree or the autoclave | near-Opus coding at ~half the burn; literal spec-following |
 | `infra-worker` | opus, high | hooks, CI, seals, accounting, money paths — ships the test with the change | a defect here certifies something false or spends money; pay for judgement |
 | `auditor` | per seat, high | blind reviews and governance reads; the reviewer-pass seats | depth pinned so a review never inherits a cheap session |
-| `consult` | per question, xhigh | a second opinion on a design or plan before it runs | a wrong design costs days; the read costs minutes |
+| `consult` | per question, xhigh | a second opinion on a design or plan, **when you want one** | a wrong design costs days; the read costs minutes |
 | `rebuilder` | opus, high | one legacy system read through the window, written new into the autoclave | contamination judgement is the whole job |
 
-**Declare agent and workflow use at session start, then run.** Agents and workflows are
-standing-approved; what Tyrel wants is the declaration, not a permission stop. When the
-session's shape is read back (above), say in a line or two which agents and workflows its
-goals will likely need and why — that paragraph *is* the discussion — then continue on
-auto without stopping to ask again. Stop only for money, a governance question, or a
-genuine change of scope. The standing duties: not wasteful, and the best tool for the
-job. A wrong guess in the declaration is corrected by saying so in the report, not by
-pausing the work.
+**Declare material agent use when the shape is agreed, then lead it.** Bounded agent work that
+fits the agreed goal is standing-approved; what Tyrel wants is the declaration, not a permission
+stop. When the session's shape is read back (above), say in a line or two which agents its goals
+will likely need and why — that paragraph *is* the discussion — then continue without stopping
+to ask again. Choose the smallest useful roster, keep the fan-out visible, verify the result,
+and stay the only integrator. A change of roster is reported, not re-asked, unless it changes
+cost, external effect or scope. Stop for money, a governance question, or a genuine change of
+scope. The standing duties: not wasteful, and the best tool for the job.
 
 ## The tooling may filter what you see
 

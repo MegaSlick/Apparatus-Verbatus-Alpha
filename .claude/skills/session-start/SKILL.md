@@ -42,6 +42,11 @@ python3 .githooks/tidy.py
 This is a report. File completed active/raw work when its next use is no longer this sitting;
 preserve evidence in `archive/`, never `scratch/`. Leave uncertain material and name it.
 
+Then read `workbench/active/SUSPENSIONS.md` and **report every live suspension by name, with its
+deadline and what turns it back on**. A rule or hook switched off temporarily is carried at the
+start and the end of every session until Tyrel makes it permanent in the document or it is
+switched back on. If the file is missing, say so rather than assuming nothing is suspended.
+
 ## 4. Orient to the installed tools
 
 Print the versions of the tools this task will actually use. A full package-update audit is a
@@ -49,21 +54,33 @@ maintenance task, not a tax on every session. Run it when output looks stale, a 
 an unfamiliar way, or the handoff requests it. If Homebrew cannot refresh, report installed
 versions rather than claiming currentness.
 
-## 5. Size and lead the session
+## 5. Agree the goal before anything moves
 
-Tell Tyrel, briefly:
+Do not start work on an assumed goal. One of three routes:
 
-- the effort and expected duration;
-- whether this is attended or unattended;
-- which bounded units, if any, deserve agents and why.
+- Tyrel states it — read it back in one line and confirm you have it right;
+- he does not, and `workbench/active/HANDOFF.md` names a next step — say what the handoff
+  says this session is for and ask whether that is what you are doing;
+- neither is clear — ask. A few exchanges settling what the session is for cost less than an
+  hour spent on the wrong thing.
+
+## 6. Agree the shape
+
+With the goal settled, tell him briefly:
+
+- the effort and an honest expected duration;
+- attended or unattended;
+- **orchestrator or direct**, and why. `CLAUDE.md`'s "Effort and shape" decides it, on the size
+  of the work and whether he is in the room — large, long or unattended work is orchestrated;
+  straightforward and medium attended work runs direct;
+- which bounded units, if any, deserve agents.
+
+Recommend one shape rather than offering a menu, then wait for his answer.
 
 The main session remains accountable for the goal, conversation, synthesis, integrated diff,
 verification, and final report. Agents provide evidence, not authority.
 
 Before delegating, form the question yourself. Every agent prompt names objective, allowed
-paths/actions, deadline, deliverable, checks, and stop conditions. Agent output is evidence,
-not authority; verify load-bearing claims and read every proposed diff.
-
-`CLAUDE.md` currently requires agent-first orchestration and an announced wait. Follow that
-binding rule until Tyrel explicitly approves a governing amendment. Keep each assignment
-bounded, and reserve an agent team for work where members must challenge one another.
+paths/actions, deadline, deliverable, checks, and stop conditions. Verify load-bearing claims
+and read every proposed diff. Reserve an agent team for work where members must challenge one
+another.

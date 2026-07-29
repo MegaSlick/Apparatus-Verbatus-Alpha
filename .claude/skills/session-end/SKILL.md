@@ -6,6 +6,10 @@ disable-model-invocation: true
 
 # Session end
 
+**Run this only when Tyrel asks for it.** Never start it on your own initiative — closing the
+session, filing the drawers and messaging his phone is his call. When you think the moment has
+come, say so and wait to be told.
+
 The main session runs this procedure. It owns the facts and must not delegate the
 handoff. Do not delete evidence or use destructive Git commands to make the state look
 clean.
@@ -80,6 +84,7 @@ Report:
 - checks run and their results;
 - what was archived, moved to scratch, or deliberately left active;
 - external actions taken or explicitly not taken;
+- every live entry in `workbench/active/SUSPENSIONS.md`, by name, with its deadline;
 - the next queue line and anything Tyrel must decide.
 
 For a normal state-changing session, send this last:

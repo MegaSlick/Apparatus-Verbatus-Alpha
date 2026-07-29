@@ -66,6 +66,17 @@ Where it produces several readings, it reconciles them **itself, against the ima
 and that reconciliation is bound by "never picks" like any other step. It reads through
 to the end; truncation is a failure, not an output.
 
+**The Perlector seat is swappable, and that is a design requirement rather than a
+convenience.** A stock base model, an unaltered vendor model, and a locally trained checkpoint
+must all be able to sit in it behind the same interface, with the resolved identity of whichever
+one ran bound into every Perlectio. A locally trained checkpoint is *called* like any other
+model, from its own model repository, and is never vendored into the pipeline it serves. Trained weights are a *candidate*, never a privileged
+inheritance: a checkpoint trained on some earlier pipeline's output may have learned to agree
+with witnesses rather than to read ink, and that is not visible by inspection. It is visible in
+the instrument this architecture already carries — **Lectio nuda against witness-primed Lectio,
+and the dissent record.** A candidate whose advantage disappears once the witnesses are taken
+away has not learned to read, whatever its transcription score says.
+
 **Recensor** — *recensio*. The completeness and recovery stage. See below.
 
 **Archetypus** — the established reading. In textual criticism, the ancestor from which

@@ -19,16 +19,25 @@ untracked tree. Materialize that commit into a fresh read-only snapshot with
 `git archive`; every reviewer reads that snapshot, not a changing checkout.
 
 Triage the change in one paragraph: behavior changed, likely cost of a defect,
-and recommended coverage. Three independent readers across two vendors is the
-standard:
+and recommended coverage. The standing default is two independent readers across
+two vendors, with fresh eyes on the change:
 
 - Claude Opus, high effort
-- Claude Fable, high effort
-- `sh operations/codex/seat.sh judge - < "$prompt_path"`
+- `sh operations/codex/seat.sh judge - < "$prompt_path"` — GPT Sol
 
-Tyrel may reduce the standard for this pass. Object once with the lost coverage
-and your recommendation, ask about the exact reduced roster, then follow his
-clear confirmation. Never infer a reduction or carry it into the next pass.
+**Offer the third seat every pass, and name your recommendation in the triage:**
+
+- Claude Fable, high effort — recommend it outright whenever the question is
+  hard, being wrong would be expensive, or the change touches money, launch,
+  shutdown, or a governance rule. It is the most expensive reader here, so cost
+  and usage limits are a legitimate reason for Tyrel to decline. Offer it again
+  next pass regardless.
+
+Tyrel decides the roster for this pass. Object once with the coverage at stake
+and your recommendation, ask about the exact roster, then follow his clear
+confirmation. Never infer a reduction or carry one into the next pass. Report the
+real coverage, and say plainly that two agreeing seats are thinner evidence than
+three.
 
 ## 2. Dispatch bounded, blind reviews
 
