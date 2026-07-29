@@ -30,9 +30,14 @@ with a reason you say out loud.
 9. **When a rule and a goal pull apart, stop and say so** — GOVERNANCE 0.
 10. **A spawned agent never edits the governing documents.** This file, GOALS, GOVERNANCE,
     ARCHITECTURE, GLOSSARY and the root README. An agent may propose a change to any of
-    them, with exact wording, in its report; it may not make one. The main session may edit
-    this file, and everything else on that list stays Tyrel's alone. A rule an agent wrote
+    them, with exact wording, in its report; it may not make one. A rule an agent wrote
     into the file that binds it is not a rule — it is a thing that agreed with itself.
+
+    **The main session may edit all six, at Tyrel's direction and after asking.** The line
+    is unattended versus with him in the room, not which file is precious. He plans and
+    decides; the session implements; agents propose. Locking the session out would not
+    enforce this rule, it would break the way the work actually gets done — and a rule
+    written as a wall instead of a rule has already cost this project a day's work once.
 
 **Code is not on that list and stays open.** Hooks, CI, the agent and skill files,
 `operations/`, tests and everything under the pipeline are written by agents and land through

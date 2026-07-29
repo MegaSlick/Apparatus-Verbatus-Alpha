@@ -1962,13 +1962,28 @@ def check_tool_input(tool: str, tool_input) -> None:
 # no Claude caller writes them — main session or subagent, it makes no
 # difference, and that is what lets this half be enforced without depending on
 # any claim about who is calling.
-TYRELS_DOCUMENTS = frozenset(
-    {"goals.md", "governance.md", "architecture.md", "glossary.md", "readme.md"}
+# The six governing documents. All are refused to a SPAWNED AGENT and none to
+# the main session, which is the line hard rule 10 actually draws.
+#
+# An earlier version refused five of them to every caller, main session
+# included. Tyrel struck that: "why lock yourself out." He is right, and it was
+# the same mistake as a push rule written earlier the same day that stranded
+# twenty-one commits — a wall built where a rule would do. The main session
+# works with him in the room and asks before it edits; a spawned agent runs
+# unattended and cannot be asked. The rule was never about the file being
+# untouchable, it was about nobody amending the rules that bind them without
+# the human present. Enforcing that needs the guard to tell a subagent from the
+# main thread — see _spawned_agent.
+GOVERNING_DOCUMENTS = frozenset(
+    {
+        "claude.md",
+        "goals.md",
+        "governance.md",
+        "architecture.md",
+        "glossary.md",
+        "readme.md",
+    }
 )
-# CLAUDE.md is different: the rule names the main session as a permitted
-# editor. Enforcing that half needs the guard to tell a subagent from the main
-# thread — see _spawned_agent.
-SESSION_DOCUMENT = "claude.md"
 
 # The tools that write a file directly. Bash is not among them: a shell
 # redirection or `sed -i` reaches these files without any of them, and that
@@ -2057,7 +2072,14 @@ def _document_target_paths(target: str, bases):
 
 
 def check_document_write(tool: str, tool_input, payload) -> None:
-    """Refuse a direct write to a governing document — CLAUDE.md hard rule 10.
+    """Refuse a SPAWNED AGENT's write to a governing document — hard rule 10.
+
+    The main session is not refused. It asks Tyrel first, and he is there to
+    answer; that is the whole difference the rule turns on. A guard that locked
+    the session out of these files would not enforce the rule, it would break
+    the workflow the rule permits — and this repository has already paid for
+    that lesson once, with a push rule that stranded twenty-one commits on one
+    disk because it was written as a wall rather than as a rule.
 
     Only the document at a checkout's root is governed. `pipeline/README.md`
     and every other nested README are ordinary documentation that agents write
@@ -2090,18 +2112,12 @@ def check_document_write(tool: str, tool_input, payload) -> None:
         if directory != project and not _worktree_of_this_clone(directory, project):
             continue
         name = os.path.basename(path).strip().lower()
-        if name in TYRELS_DOCUMENTS:
+        if name in GOVERNING_DOCUMENTS and agent:
             deny(
                 f"'{os.path.basename(path).strip()}' is a governing document, and CLAUDE.md "
-                f"hard rule 10 keeps it Tyrel's alone — no session and no agent edits it. "
-                f"Propose the exact wording in your report instead"
-            )
-        if name == SESSION_DOCUMENT and agent:
-            deny(
-                f"CLAUDE.md is the file that governs you, and CLAUDE.md hard rule 10 bars a "
-                f"spawned agent ({agent}) from editing it — 'a rule an agent wrote into the "
-                f"file that binds it is not a rule'. Propose the exact wording in your "
-                f"report; the main session may make the edit"
+                f"hard rule 10 bars a spawned agent ({agent}) from editing one — 'a rule an "
+                f"agent wrote into the file that binds it is not a rule'. Propose the exact "
+                f"wording in your report; the main session makes the edit, with Tyrel"
             )
 
 

@@ -1207,32 +1207,33 @@ def write_call(file_path, tool="Write", caller=None, cwd=PROJECT):
     return payload
 
 
-@pytest.mark.parametrize("name", TYRELS_ALONE)
+GOVERNING = ["CLAUDE.md"] + TYRELS_ALONE
+
+
+@pytest.mark.parametrize("name", GOVERNING)
 @pytest.mark.parametrize("tool", ["Write", "Edit"])
-@pytest.mark.parametrize("caller,who", [(SPAWNED, "a spawned agent"), (None, "the main session")])
-def test_the_documents_that_are_tyrels_alone_are_refused(name, tool, caller, who):
-    """Hard rule 10 leaves these five to Tyrel; no Claude caller may write them."""
-    assert decide(write_call(f"{PROJECT}/{name}", tool=tool, caller=caller)), (
-        f"{tool} to {name} by {who} must be refused"
+def test_a_governing_document_is_refused_to_a_spawned_agent(name, tool):
+    """Hard rule 10: an agent proposes a change to these; it never makes one."""
+    assert decide(write_call(f"{PROJECT}/{name}", tool=tool, caller=SPAWNED)), (
+        f"{tool} to {name} by a spawned agent must be refused"
     )
 
 
+@pytest.mark.parametrize("name", GOVERNING)
 @pytest.mark.parametrize("tool", ["Write", "Edit"])
-def test_claude_md_is_refused_to_a_spawned_agent(tool):
-    assert decide(write_call(f"{PROJECT}/CLAUDE.md", tool=tool, caller=SPAWNED)), (
-        "hard rule 10: a spawned agent never edits the file that binds it"
-    )
+def test_a_governing_document_stays_open_to_the_main_session(name, tool):
+    """The line rule 10 draws is unattended vs Tyrel in the room, not file precious-ness.
 
-
-@pytest.mark.parametrize("tool", ["Write", "Edit"])
-def test_claude_md_stays_open_to_the_main_session(tool):
-    """Rule 10 says outright that the main session may edit this file.
-
-    A guard that blocked it here would break the documented workflow, and a
-    guard that blocked the workflow is a guard somebody switches off.
+    An earlier version refused these five to every caller, main session
+    included. Tyrel struck it — "why lock yourself out" — and he was right: a
+    session that cannot edit GOVERNANCE.md when he asks it to has not enforced
+    the rule, it has broken the workflow the rule permits. He plans and
+    decides, the session implements after asking, agents propose. The same
+    mistake in a push rule stranded twenty-one commits on one disk earlier the
+    same day, which is why this test exists rather than a comment.
     """
-    assert not decide(write_call(f"{PROJECT}/CLAUDE.md", tool=tool, caller=None)), (
-        "the main session's own edit to CLAUDE.md must not be refused"
+    assert not decide(write_call(f"{PROJECT}/{name}", tool=tool, caller=None)), (
+        f"the main session's edit to {name} must not be refused"
     )
 
 
