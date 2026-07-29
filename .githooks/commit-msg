@@ -83,18 +83,23 @@ fi
 # Handed to --ref-fields, the existing NUL-delimited contract, which fingerprints
 # each field instead of echoing it. An identity that failed a scan must not be
 # reprinted to a terminal, a log or a transcript on its way out.
-if ! author_ident=$(git var GIT_AUTHOR_IDENT 2>/dev/null) ||
-   ! committer_ident=$(git var GIT_COMMITTER_IDENT 2>/dev/null) ||
-   [ -z "$author_ident" ] || [ -z "$committer_ident" ]; then
-  echo "  BLOCKED: the author and committer identity could not be read, so" >&2
-  echo "  they cannot be checked for credentials. A check that cannot run" >&2
-  echo "  is a failure, not a pass." >&2
-  exit 1
-fi
+# An unreadable identity is not an unrun check here, and treating it as one was
+# wrong: `git var GIT_AUTHOR_IDENT` fails precisely when no user.name and
+# user.email are configured, and in that state there is no identity for the
+# commit to carry, so there is nothing to leak. Git refuses the commit itself,
+# for its own reasons, immediately after this hook returns. Blocking here made
+# the hook unusable anywhere an identity is not configured — every CI runner,
+# every fresh container — which is how a fail-closed instinct turns into a
+# check nobody can run at all.
+author_ident=$(git var GIT_AUTHOR_IDENT 2>/dev/null) || author_ident=""
+committer_ident=$(git var GIT_COMMITTER_IDENT 2>/dev/null) || committer_ident=""
 
-printf '%s\0%s\0' "$author_ident" "$committer_ident" |
-  python3 "$ingress" --ref-fields
-status=$?
+status=0
+if [ -n "$author_ident" ] || [ -n "$committer_ident" ]; then
+  printf '%s\0%s\0' "$author_ident" "$committer_ident" |
+    python3 "$ingress" --ref-fields
+  status=$?
+fi
 if [ "$status" -ne 0 ]; then
   if [ "$status" -eq 1 ]; then
     echo "  BLOCKED: the author or committer header matched a recognized" >&2

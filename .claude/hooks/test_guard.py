@@ -504,10 +504,13 @@ BLOCK = [
     ("git config core.hooksPath /dev/null", "no path given at all is this clone"),
     ("cd .githooks && git config core.hooksPath /dev/null", "a relative cd stays inside"),
     ("git -C . config core.hooksPath /dev/null", "-C . is this clone"),
-    ("cd /tmp && cd /Users/tyrel/verbatus_alpha && git config core.hooksPath x", "cd back in"),
+    # PROJECT, never a literal path. These two were written with this laptop's
+    # checkout spelled out, so they passed here and failed on a CI runner where
+    # the project lives somewhere else entirely — the guard was right to allow a
+    # path that is not the project, and the test was wrong to name one.
+    (f"cd /tmp && cd {PROJECT} && git config core.hooksPath x", "cd back in"),
     (
-        "cd /private/tmp/scratch && cd /Users/tyrel/verbatus_alpha && "
-        "git config --remove-section core",
+        f"cd /private/tmp/scratch && cd {PROJECT} && git config --remove-section core",
         "leaving and coming back is still coming back",
     ),
 ]
