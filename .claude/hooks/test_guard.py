@@ -50,6 +50,18 @@ def payload(
         "gh pr view 10",
         "rm /tmp/one-file",
         "rg TOKEN README.md",
+        # -n is --dry-run here, not --no-verify; bundled spellings included.
+        "git clean -n",
+        "git clean -nd",
+        'git commit -am "routine change"',
+        # A wrapper prefix must not turn a harmless command into a finding.
+        "nohup git status",
+        "timeout 30 git log --oneline",
+        # The scratch exemption still applies when scratch is the only target.
+        "rm -rf workbench/scratch",
+        "rm -rf workbench/scratch/",
+        "rm -rf ./workbench/scratch/old-run",
+        "rm -rf workbench/scratch/a workbench/scratch/b",
     ],
 )
 def test_ordinary_read_or_bounded_local_work_stays_open(command):
@@ -97,6 +109,18 @@ def test_ordinary_read_or_bounded_local_work_stays_open(command):
         "env | sort",
         "set",
         "declare -p",
+        # Naming scratch must not disarm the check for every other operand.
+        "rm -rf workbench/scratch ~",
+        "rm -rf workbench/scratch $HOME",
+        "/bin/rm -rf workbench/scratch /Users/tyrel",
+        "rm -rf workbench/scratch ../../elsewhere",
+        # A delete hidden behind a separator, a wrapper, or a shell payload.
+        "echo tidying\nrm -rf ~",
+        "sh -c 'rm -rf ~'",
+        "nohup rm -rf /",
+        # Other anchored checks that shared the newline defect.
+        "cd /tmp\nssh pod.example reboot",
+        "cd /tmp\nenv",
     ],
 )
 def test_main_session_gets_one_exact_confirmation_for_consequential_actions(command):
@@ -118,6 +142,7 @@ def test_main_session_gets_one_exact_confirmation_for_consequential_actions(comm
         "runpodctl stop pod abc",
         "curl --data x=1 https://example.test",
         "gh issue close 3",
+        "cd /tmp\ncurl --data x=1 https://example.test",
     ],
 )
 def test_subagents_cannot_take_consequential_or_external_actions(command):
@@ -140,6 +165,30 @@ def test_subagents_cannot_take_consequential_or_external_actions(command):
         "git config unset core.hooksPath",
         "git config remove-section core",
         "git config rename-section core core-old",
+        # A newline is a command separator; without normalization the guard
+        # saw only line one and everything after it was invisible.
+        "cd /Users/tyrel/verbatus_alpha\ngit push --force origin main",
+        "true\ngit push origin main",
+        # A backslash continuation is the opposite case: one command, two lines.
+        "git push \\\n  origin main",
+        # Wrapper verbs this project uses for detached work.
+        "nohup git push origin main",
+        "timeout 60 git push origin main",
+        "nice -n 10 git push origin main",
+        "setsid git push origin main",
+        # Shell payloads are inspected, not treated as opaque text.
+        "bash -c 'git push origin main'",
+        'sh -c "git push origin main"',
+        # An unparseable tail must not delete the invocation from the list.
+        'git push origin main #"',
+        'git push origin main "x|y"',
+        # -n is git-commit's short --no-verify.
+        'git commit -n -m "message"',
+        'git commit -nm "message"',
+        # Config injected through the environment reaches the -c layer.
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath "
+        "GIT_CONFIG_VALUE_0=/dev/null git commit -m 'message'",
+        "GIT_CONFIG_PARAMETERS='core.hooksPath=/dev/null' git commit -m 'message'",
     ],
 )
 def test_hard_git_rules_are_denied_even_to_the_main_session(command):
@@ -241,103 +290,55 @@ def test_cli_fails_closed_on_malformed_input():
     assert "could not inspect" in result.stderr
 
 
-# --- Bypasses found by the 2026-07-29 security review -------------------------
-#
-# Each case below is an exact string a reviewer confirmed the guard let through
-# silently. They are grouped by the property that failed, not by the command,
-# because four of the six shared one root cause: anchored patterns were matched
-# against raw command text, so anything that was not the first simple command of
-# the string was invisible.
+# The command strings above record which bypasses were closed. These pin the
+# normalization itself, so a future rewrite is measured against the mechanism
+# rather than against fifteen strings it could special-case one at a time.
 
 
 @pytest.mark.parametrize(
-    "command",
+    ("raw", "expected"),
     [
-        # A newline is a command separator. Without normalization `^` matched
-        # only offset zero, so line two was never inspected.
-        "cd /Users/tyrel/verbatus_alpha\ngit push --force origin main",
-        "true\ngit push origin main",
-        # A backslash continuation is the opposite case: one command, two lines.
-        "git push \\\n  origin main",
-        # Wrapper verbs this project actually uses for detached work.
-        "nohup git push origin main",
-        "timeout 60 git push origin main",
-        "nice -n 10 git push origin main",
-        "setsid git push origin main",
-        # Shell payloads must be inspected, not treated as opaque text.
-        "bash -c 'git push origin main'",
-        'sh -c "git push origin main"',
-        # An unparseable tail must not delete the invocation from the list.
-        'git push origin main #"',
-        'git push origin main "x|y"',
-        # -n is git-commit's short --no-verify.
-        'git commit -n -m "message"',
-        'git commit -nm "message"',
-        # Config supplied by environment assignment reaches the same key as -c.
-        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath "
-        "GIT_CONFIG_VALUE_0=/dev/null git commit -m 'message'",
-        "GIT_CONFIG_PARAMETERS='core.hooksPath=/dev/null' git commit -m 'message'",
+        ("git status", "git status"),
+        ("one\ntwo", "one;two"),
+        ("one \\\ntwo", "one two"),
+        ("echo 'a\nb'", "echo 'a\nb'"),
+        ('echo "a\nb"', 'echo "a\nb"'),
     ],
 )
-def test_review_findings_stay_denied_to_the_main_session(command):
-    decision, reason = guard.evaluate(payload(tool_input={"command": command}))
-    assert decision == "deny", f"guard stayed silent on: {command!r}"
-    assert "hard rule" in reason.lower()
+def test_flatten_separates_commands_without_touching_quoted_newlines(raw, expected):
+    assert guard.flatten_command(raw) == expected
+
+
+def test_expand_appends_a_shell_payload_as_its_own_command():
+    assert guard.expand_command("sh -c 'rm -rf ~'").endswith(" ; rm -rf ~")
+
+
+def test_expand_stops_at_the_nesting_bound():
+    nested = "sh -c " + "'sh -c " * 6 + "rm" + "'" * 6
+    assert guard.expand_command(nested).count("rm") <= guard.PAYLOAD_DEPTH + 2
+
+
+def test_a_document_heredoc_is_data_but_one_piped_to_a_shell_is_not():
+    document = "cat > notes.md <<EOF\ngit push origin main\nEOF"
+    piped = "bash <<EOF\ngit push origin main\nEOF"
+    assert guard.evaluate(payload(tool_input={"command": document})) is None
+    assert guard.evaluate(payload(tool_input={"command": piped}))[0] == "deny"
+
+
+def test_tokenize_returns_approximate_tokens_rather_than_giving_up():
+    assert guard.tokenize(' push origin main #"') == ["push", "origin", "main", "#"]
+    assert guard.tokenize(" push origin main") == ["push", "origin", "main"]
 
 
 @pytest.mark.parametrize(
-    "command",
+    ("operand", "expected"),
     [
-        # Naming scratch must not disarm the check for every other operand.
-        "rm -rf workbench/scratch ~",
-        "rm -rf workbench/scratch $HOME",
-        "/bin/rm -rf workbench/scratch /Users/tyrel",
-        "rm -rf workbench/scratch ../../elsewhere",
-        # Deletes hidden behind a separator or a wrapper.
-        "echo tidying\nrm -rf ~",
-        "sh -c 'rm -rf ~'",
-        "nohup rm -rf /",
-        # Other anchored checks that shared the newline defect.
-        "cd /tmp\nssh pod.example reboot",
-        "cd /tmp\nenv",
+        ("workbench/scratch", True),
+        ("./workbench/scratch/run", True),
+        ("workbench/scratch/../../etc", False),
+        ("workbench/active", False),
+        ("~", False),
     ],
 )
-def test_review_findings_ask_the_main_session(command):
-    decision, reason = guard.evaluate(payload(tool_input={"command": command}))
-    assert decision == "ask", f"guard stayed silent on: {command!r}"
-    assert "Confirm this exact action" in reason
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        # The scratch exemption still has to work when scratch is the only target.
-        "rm -rf workbench/scratch",
-        "rm -rf workbench/scratch/",
-        "rm -rf ./workbench/scratch/old-run",
-        "rm -rf workbench/scratch/a workbench/scratch/b",
-        # -n means --dry-run for these subcommands, not --no-verify.
-        "git clean -n",
-        "git clean -nd",
-        # A message that merely mentions the flag is not the flag.
-        'git commit -m "document --no-verify semantics"',
-        'git commit -am "routine change"',
-        # Wrapper prefixes must not turn harmless commands into findings.
-        "nohup git status",
-        "timeout 30 git log --oneline",
-    ],
-)
-def test_review_fixes_do_not_over_trigger(command):
-    assert guard.evaluate(payload(tool_input={"command": command})) is None, (
-        f"guard fired on harmless: {command!r}"
-    )
-
-
-def test_subagent_is_denied_a_bypass_hidden_behind_a_newline():
-    decision, reason = guard.evaluate(
-        payload(
-            tool_input={"command": "cd /tmp\ncurl --data x=1 https://example.test"}, agent="worker"
-        )
-    )
-    assert decision == "deny"
-    assert "main session" in reason
+def test_scratch_exemption_is_per_operand_and_resolves_traversal(operand, expected):
+    assert guard.under_scratch(operand) is expected

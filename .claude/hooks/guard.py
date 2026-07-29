@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
 """Small Claude PreToolUse tripwire for consequential actions.
 
-This is not a shell sandbox. It recognizes obvious capabilities and either:
+It recognizes obvious capabilities and either:
 
 * denies actions a subagent may never take, plus direct-main and hook-bypass Git;
 * asks Tyrel to confirm one exact destructive, paid, external, or owned-branch
   history-rewrite action; or
 * stays silent and leaves Claude Code's normal permission flow in place.
 
-Opaque scripts and deliberately disguised commands remain opaque. The durable
-controls are narrow tool permissions, Git hooks, GitHub protection, review, and
-the main session reading every integrated diff.
+**What it reads, and where that stops.** This is not a shell sandbox, but it is
+no longer a plain text match either, and the boundary is worth stating exactly.
+It normalizes a command before deciding: unquoted newlines become separators,
+backslash continuations are joined, a quoted `sh -c` or `eval` payload is
+expanded and inspected to a bounded depth, and a heredoc body is treated as the
+data it is — unless a shell receives it, in which case it is inspected too. It
+errs toward over-recognizing, so a tail it cannot tokenize is judged on
+approximate tokens rather than skipped.
+
+It does **not** understand command substitution, process substitution, shell
+comments, or a wrapper command outside the list below. Anything it fails to
+recognize passes silently.
+
+The durable controls remain narrow tool permissions, Git hooks, GitHub
+protection, review, and the main session reading every integrated diff.
 """
 
 from __future__ import annotations
@@ -163,6 +175,8 @@ def flatten_command(text: str) -> str:
     harmless first line hid everything after it from the entire guard. Quote
     state is tracked so a newline *inside* a quoted argument stays literal.
     """
+    if "\n" not in text:
+        return text  # nothing to flatten, and this is the overwhelming majority
     out: list[str] = []
     quote: str | None = None
     index = 0
@@ -202,10 +216,45 @@ def flatten_command(text: str) -> str:
 
 SHELL_PAYLOAD = re.compile(
     r"\b(?:(?:ba|z|k|da|a)?sh|eval)\b(?:\s+-[A-Za-z]+)*\s+"
-    r"(?P<quote>['\"])(?P<body>(?:\\.|(?!(?P=quote)).)*)(?P=quote)",
+    # The two body alternatives are kept disjoint — a backslash may only be
+    # consumed by the escape branch. Letting both match it makes the engine try
+    # every combination when the closing quote is missing, and this hook blocks
+    # the agent loop while it thinks.
+    r"(?P<quote>['\"])(?P<body>(?:\\.|(?!(?P=quote))[^\\])*)(?P=quote)",
     flags=re.IGNORECASE | re.DOTALL,
 )
 PAYLOAD_DEPTH = 3
+
+
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)(?P<tag>[A-Za-z_][A-Za-z0-9_]*)\1")
+SHELL_VERB = re.compile(r"\b(?:(?:ba|z|k|da|a)?sh|eval)\b", flags=re.IGNORECASE)
+
+
+def split_heredocs(text: str) -> tuple[str, list[str]]:
+    """Lift heredoc bodies out of the command, returning the rest and the bodies.
+
+    A heredoc body is stdin data, not commands: `cat <<EOF` containing the words
+    `git push origin main` is a document, and reading it as a command produced an
+    unappealable refusal on an ordinary write. Bodies are returned separately so
+    the caller can decide — they are commands only when a shell receives them.
+    """
+    lines = text.split("\n")
+    kept: list[str] = []
+    bodies: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        kept.append(line)
+        index += 1
+        for _quote, tag in HEREDOC.findall(line):
+            body: list[str] = []
+            while index < len(lines) and lines[index].strip() != tag:
+                body.append(lines[index])
+                index += 1
+            index += 1  # the terminator line itself
+            if SHELL_VERB.search(line):
+                bodies.append("\n".join(body))
+    return "\n".join(kept), bodies
 
 
 def expand_command(command: str, depth: int = 0) -> str:
@@ -216,50 +265,62 @@ def expand_command(command: str, depth: int = 0) -> str:
     body rather than substituting it keeps the outer text intact for the
     unanchored checks. Depth is bounded so a nested quine cannot recurse away.
     """
-    flat = flatten_command(command)
+    outside, shell_input = split_heredocs(command)
+    flat = flatten_command(outside)
     if depth >= PAYLOAD_DEPTH:
         return flat
     payloads = [
-        expand_command(match.group("body"), depth + 1)
-        for match in SHELL_PAYLOAD.finditer(flat)
-        if match.group("body").strip()
+        expand_command(body, depth + 1)
+        for body in ([match.group("body") for match in SHELL_PAYLOAD.finditer(flat)] + shell_input)
+        if body.strip()
     ]
-    return flat + " ; " + " ; ".join(payloads) if payloads else flat
+    return " ; ".join([flat, *payloads])
 
 
 # Prefixes that may sit between a separator and the command being recognized.
 # `nohup`, `setsid`, `nice` and `timeout` are how this project launches detached
 # work, so they are ordinary usage rather than evasion — and before they were
 # listed here, every one of them made the command behind them invisible.
-WRAPPER_PREFIX = (
-    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+)\s+|"
-    r"(?:command|exec|rtk|nohup|setsid)\s+|"
+#
+# This list fails OPEN, which is the thing to know before editing it: a wrapper
+# that is not named here hides the command behind it from the whole guard.
+# `xargs`, `doas`, `su -c`, `flock`, `script` and `taskset` are not covered.
+_ASSIGNMENT = r"[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+"
+_PLAIN_WRAPPER = r"(?:command|exec|rtk|nohup|setsid)\s+"
+_MEASURED_WRAPPER = (
     r"(?:nice|timeout|stdbuf|ionice|time)"
-    r"(?:\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S+)?|\s+\d+(?:\.\d+)?[smhd]?)*\s+|"
+    r"(?:\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S+)?|\s+\d+(?:\.\d+)?[smhd]?)*\s+"
+)
+_SUDO = (
     r"sudo(?:(?:\s+(?:-u|--user|-g|--group)\s+\S+)|"
     r"(?:\s+(?:--user|--group)=\S+)|"
-    r"(?:\s+(?:-n|-E|-H|-S|-k|--non-interactive)))*\s+|"
+    r"(?:\s+(?:-n|-E|-H|-S|-k|--non-interactive)))*\s+"
+)
+_ENV = (
     r"env(?:(?:\s+(?:-i|--ignore-environment))|"
     r"(?:\s+(?:-u|--unset)\s+\S+)|(?:\s+--unset=\S+)|"
-    r"(?:\s+[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+))*\s+)*"
+    rf"(?:\s+{_ASSIGNMENT}))*\s+"
 )
+WRAPPER_PREFIX = rf"(?:{_ASSIGNMENT}\s+|{_PLAIN_WRAPPER}|{_MEASURED_WRAPPER}|{_SUDO}|{_ENV})*"
 
-GIT_INVOCATION = re.compile(
-    r"(?:^|[;&|]\s*)\s*" + WRAPPER_PREFIX + r"(?:[^\s;&|]*/)?git\b(?P<tail>[^\n;&|]*)",
-    flags=re.IGNORECASE,
-)
-RM_INVOCATION = re.compile(
-    r"(?:^|[;&|]\s*)\s*" + WRAPPER_PREFIX + r"(?:[^\s;&|]*/)?rm\b(?P<tail>[^\n;&|]*)",
-    flags=re.IGNORECASE,
-)
-# core.hooksPath supplied through git's environment-configuration variables
-# reaches exactly the layer `-c core.hooksPath=` writes to. The invocation regex
-# above deliberately consumes leading assignments, so they never reach the token
-# list; this is matched against the whole command instead.
-GIT_CONFIG_HOOKS_ENV = re.compile(
-    r"\bGIT_CONFIG(?:_KEY_\d+|_PARAMETERS)\s*=\s*['\"]?[^\s'\"]*core\.hookspath",
-    flags=re.IGNORECASE,
-)
+
+def invocation(name: str) -> re.Pattern[str]:
+    """Recognize `name` at a command position, with its wrapper prefix captured."""
+    return re.compile(
+        r"(?:^|[;&|]\s*)\s*(?P<prefix>" + WRAPPER_PREFIX + r")"
+        rf"(?:[^\s;&|]*/)?{name}\b(?P<tail>[^\n;&|]*)",
+        flags=re.IGNORECASE,
+    )
+
+
+GIT_INVOCATION = invocation("git")
+RM_INVOCATION = invocation("rm")
+# Configuration handed to git through its environment reaches the same layer
+# `-c core.hooksPath=` writes to, and the guard cannot read a config file it is
+# pointed at. Matched against the assignments attached to *this* invocation —
+# scanning the whole command would fire on a variable named anywhere near an
+# unrelated `git status`.
+GIT_CONFIG_ASSIGNMENT = re.compile(r"\bGIT_CONFIG[A-Z0-9_]*\s*=", flags=re.IGNORECASE)
 GIT_GLOBAL_VALUE_OPTIONS = frozenset(
     {"-c", "-C", "--config-env", "--git-dir", "--work-tree", "--namespace"}
 )
@@ -278,11 +339,11 @@ def tokenize(tail: str) -> list[str]:
     try:
         return shlex.split(tail, posix=True)
     except ValueError:
-        return re.findall(r"[^\s]+", tail.replace("'", " ").replace('"', " "))
+        return tail.replace("'", " ").replace('"', " ").split()
 
 
-def git_calls(command: str) -> list[tuple[str, list[str], list[str]]]:
-    """Return recognizable direct Git calls as (action, arguments, all tokens)."""
+def git_calls(command: str) -> list[tuple[str, list[str], list[str], str]]:
+    """Return recognizable Git calls as (action, arguments, all tokens, wrapper prefix)."""
     calls = []
     for match in GIT_INVOCATION.finditer(command):
         tokens = tokenize(match.group("tail"))
@@ -306,12 +367,10 @@ def git_calls(command: str) -> list[tuple[str, list[str], list[str]]]:
                 continue
             break
         if index < len(tokens):
-            calls.append((tokens[index].lower(), tokens[index + 1 :], tokens))
+            calls.append(
+                (tokens[index].lower(), tokens[index + 1 :], tokens, match.group("prefix"))
+            )
     return calls
-
-
-def git_action(command: str, action: str) -> bool:
-    return any(found == action for found, _arguments, _tokens in git_calls(command))
 
 
 def hooks_path_bypass(action: str, arguments: list[str], tokens: list[str]) -> bool:
@@ -390,30 +449,30 @@ def skips_commit_hooks(action: str, arguments: list[str]) -> bool:
     return action == "commit" and bundled_short_flag(arguments, "n")
 
 
-def hard_git_denial(command: str) -> str | None:
-    calls = git_calls(command)
-    if calls and GIT_CONFIG_HOOKS_ENV.search(command):
-        return "bypassing repository Git hooks is outside the allowed workflow"
-    for action, arguments, tokens in calls:
-        if any(token == "--no-verify" or token.startswith("--no-verify=") for token in tokens):
-            return "bypassing repository Git hooks is outside the allowed workflow"
-        if skips_commit_hooks(action, arguments):
-            return "bypassing repository Git hooks is outside the allowed workflow"
-        if hooks_path_bypass(action, arguments, tokens):
-            return "bypassing repository Git hooks is outside the allowed workflow"
-        if action not in {"push", "send-pack"}:
-            continue
-        if push_targets_main(arguments):
+HOOK_BYPASS = "bypassing repository Git hooks is outside the allowed workflow"
+
+
+def hard_git_denial(calls: list[tuple[str, list[str], list[str], str]]) -> str | None:
+    for action, arguments, tokens, prefix in calls:
+        if (
+            any(token == "--no-verify" or token.startswith("--no-verify=") for token in tokens)
+            or skips_commit_hooks(action, arguments)
+            or hooks_path_bypass(action, arguments, tokens)
+            or GIT_CONFIG_ASSIGNMENT.search(prefix)
+        ):
+            return HOOK_BYPASS
+        if action in {"push", "send-pack"} and push_targets_main(arguments):
             return "main may move only through a pull-request merge"
     return None
 
 
 def risky_git(command: str, payload: dict[str, Any]) -> Decision:
-    hard = hard_git_denial(command)
+    calls = git_calls(command)
+    hard = hard_git_denial(calls)
     if hard:
         return "deny", f"Blocked by repository hard rule: {hard}."
 
-    for action, arguments, _tokens in git_calls(command):
+    for action, arguments, _tokens, _prefix in calls:
         if action in {"push", "send-pack"}:
             rewriting = any(
                 token in {"-f", "--force", "--force-with-lease", "--force-if-includes"}
@@ -432,14 +491,8 @@ def risky_git(command: str, payload: dict[str, Any]) -> Decision:
             return deny_or_ask(payload, "merge histories, which Tyrel reserves to himself")
         if action == "rebase" or (action == "commit" and "--amend" in arguments):
             return deny_or_ask(payload, "rewrite local commit history")
-        restore_staged = "--staged" in arguments or any(
-            token.startswith("-") and not token.startswith("--") and "S" in token[1:]
-            for token in arguments
-        )
-        restore_worktree = "--worktree" in arguments or any(
-            token.startswith("-") and not token.startswith("--") and "W" in token[1:]
-            for token in arguments
-        )
+        restore_staged = "--staged" in arguments or bundled_short_flag(arguments, "S")
+        restore_worktree = "--worktree" in arguments or bundled_short_flag(arguments, "W")
         destructive = (
             action == "reset"
             and "--hard" in arguments
@@ -464,33 +517,40 @@ def risky_git(command: str, payload: dict[str, Any]) -> Decision:
     return None
 
 
-def rm_operands(command: str) -> list[str]:
-    """Every non-flag operand of every recognizable rm in the command."""
+def rm_arguments(command: str) -> tuple[list[str], list[str]] | None:
+    """Flags and operands of every recognizable rm, or None when there is no rm."""
+    matches = list(RM_INVOCATION.finditer(command))
+    if not matches:
+        return None
+    flags: list[str] = []
     operands: list[str] = []
-    for match in RM_INVOCATION.finditer(command):
-        operands.extend(
-            token for token in tokenize(match.group("tail")) if not token.startswith("-")
-        )
-    return operands
+    for match in matches:
+        for token in tokenize(match.group("tail")):
+            (flags if token.startswith("-") else operands).append(token)
+    return flags, operands
 
 
 def under_scratch(operand: str) -> bool:
-    cleaned = operand.strip().strip("\"'")
-    if cleaned.startswith("./"):
-        cleaned = cleaned[2:]
-    return cleaned == "workbench/scratch" or cleaned.startswith("workbench/scratch/")
+    """True only for the scratch drawer itself or something genuinely inside it.
+
+    `normpath` resolves the `./` and `..` spellings, so a traversal back out of
+    scratch stops being exempt rather than reading as a scratch path.
+    """
+    cleaned = os.path.normpath(operand.strip())
+    return cleaned == "workbench/scratch" or cleaned.startswith("workbench/scratch" + os.sep)
 
 
 def protected_delete(command: str, payload: dict[str, Any]) -> Decision:
-    if not RM_INVOCATION.search(command):
+    parsed = rm_arguments(command)
+    if parsed is None:
         return None
+    flags, operands = parsed
     # The scratch exemption is per-operand, not per-command. Testing whether the
     # string merely *mentions* scratch meant `rm -rf workbench/scratch ~` was
     # waved through with the home directory attached to it.
-    operands = rm_operands(command)
     if operands and all(under_scratch(operand) for operand in operands):
         return None
-    broad = has(command, r"\brm\b[^\n;&|]*(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r)")
+    broad = bundled_short_flag(flags, "r") and bundled_short_flag(flags, "f")
     protected = has(
         command,
         r"(?:^|[\s\"'])(?:/|~|\$HOME|(?:\./)?(?:\.git|\.githooks|\.claude|"
