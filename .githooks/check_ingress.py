@@ -775,14 +775,6 @@ def scan_ref_object(revision: str) -> list[Issue]:
         oid = match.group(1).decode("ascii")
 
 
-def scan_audit_fields(data: bytes) -> list[Issue]:
-    """Scan the two NUL-delimited fields written into an audit receipt."""
-    fields = data.split(b"\0")
-    if len(fields) != 3 or fields[-1]:
-        raise ScanFailure("audit input must contain exactly two NUL-delimited fields")
-    return secret_issues("<audit-receipt>", b"\n".join(fields[:2]), "receipt")
-
-
 def scan_ref_fields(data: bytes) -> list[Issue]:
     """Scan one or more NUL-delimited Git ref names without echoing them."""
     fields = data.split(b"\0")
@@ -798,48 +790,6 @@ def scan_ref_fields(data: bytes) -> list[Issue]:
         issues.extend(secret_issues(f"<git-ref:{fingerprint}>", value, "ref"))
     if not nonempty:
         raise ScanFailure("ref input contains no ref name")
-    return issues
-
-
-def scan_audit_receipt(path: Path) -> list[Issue]:
-    """Validate a complete receipt and scan all of its text for credentials."""
-    data = read_regular_file(path)
-    issues = secret_issues("<audit-receipt>", data, "receipt")
-
-    def malformed(detail: str) -> list[Issue]:
-        return issues + [Issue("<audit-receipt>", "receipt-shape", detail, "receipt")]
-
-    if b"\r" in data or not data.endswith(b"\n"):
-        return malformed("receipt must use LF lines and end with a newline")
-    lines = data.split(b"\n")[:-1]
-    if len(lines) < 3:
-        return malformed("receipt header is incomplete")
-    if re.fullmatch(rb"commit:  [0-9a-f]{40}|commit:  [0-9a-f]{64}", lines[0]) is None:
-        return malformed("receipt has no valid commit header")
-    if not lines[1].startswith(b"branch:  ") or not lines[1][9:]:
-        return malformed("receipt has no branch header")
-    if not lines[2].startswith(b"audited: ") or not lines[2][9:]:
-        return malformed("receipt has no audited-range header")
-
-    blocks = lines[3:]
-    if len(blocks) % 4:
-        return malformed("receipt ends inside a reviewer record")
-    for offset in range(0, len(blocks), 4):
-        separator, auditor, when, finding = blocks[offset : offset + 4]
-        if separator:
-            return malformed("reviewer records must be separated by one blank line")
-        if not auditor.startswith(b"auditor: ") or not auditor[9:]:
-            return malformed("reviewer record has no auditor")
-        if (
-            re.fullmatch(
-                rb"when:    [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
-                when,
-            )
-            is None
-        ):
-            return malformed("reviewer record has no valid timestamp")
-        if not finding.startswith(b"finding: ") or not finding[9:]:
-            return malformed("reviewer record has no finding")
     return issues
 
 
@@ -907,19 +857,9 @@ def main(argv: list[str] | None = None) -> int:
         help="credential-scan arbitrary file bytes from standard input before persisting them",
     )
     mode.add_argument(
-        "--audit-fields",
-        action="store_true",
-        help="scan exactly two NUL-delimited audit receipt fields from standard input",
-    )
-    mode.add_argument(
         "--ref-fields",
         action="store_true",
         help="scan one or more NUL-delimited Git ref names from standard input",
-    )
-    mode.add_argument(
-        "--audit-receipt",
-        metavar="PATH",
-        help="validate and credential-scan a complete audit receipt",
     )
     mode.add_argument(
         "--paths",
@@ -952,12 +892,8 @@ def main(argv: list[str] | None = None) -> int:
             issues = secret_issues("<standard-input>", sys.stdin.buffer.read(), "buffer")
         elif args.ref_object:
             issues = scan_ref_object(args.ref_object)
-        elif args.audit_fields:
-            issues = scan_audit_fields(sys.stdin.buffer.read())
         elif args.ref_fields:
             issues = scan_ref_fields(sys.stdin.buffer.read())
-        elif args.audit_receipt:
-            issues = scan_audit_receipt(Path(args.audit_receipt))
         elif args.paths:
             issues = path_issues(repository_paths(), "worktree")
         else:

@@ -13,6 +13,16 @@ HOOKS = Path(__file__).resolve().parent
 SCANNER = HOOKS / "check_ingress.py"
 ONE_MIB = 1_048_576
 pytestmark = pytest.mark.full
+# `-m "not full"` is what the everyday gate runs, and a module-level `full`
+# deselected all 45 of these — so the fast gate ran the credential scanner on
+# every commit while never once testing it. Edit the scanner, run the fast gate,
+# see green. The cases carrying `scanner` below are the ones the everyday gate
+# must prove: that each declared shape is still caught, that no shape has lost
+# its sample, that this project's own topic is a secret, that ordinary prose is
+# not, and that it is the staged bytes being read. The rest stay `full` because
+# they exercise git plumbing rather than detection, and an everyday gate nobody
+# waits for is an everyday gate nobody runs.
+SCANNER_CORE = pytest.mark.scanner
 
 
 def scanner_module():
@@ -99,6 +109,7 @@ reason = "scanner integration test"
 """
 
 
+@SCANNER_CORE
 def test_staged_state_is_scanned_instead_of_working_file(repo):
     path = write(repo, "app.py", "value = 1\n")
     stage(repo, "app.py")
@@ -334,44 +345,6 @@ def test_annotated_tag_message_is_scanned_separately_from_commit_history(repo):
     assert secret not in tagged.stderr
 
 
-def test_audit_field_protocol_fails_closed_and_scans_both_fields(repo):
-    secret = runpod_secret().encode()
-    malformed = subprocess.run(
-        [sys.executable, str(SCANNER), "--audit-fields"],
-        cwd=repo,
-        input=b"one field only",
-        capture_output=True,
-        check=False,
-        timeout=10,
-    )
-    assert malformed.returncode == 2
-
-    blocked = subprocess.run(
-        [sys.executable, str(SCANNER), "--audit-fields"],
-        cwd=repo,
-        input=b"Claude Opus 5\0found " + secret + b"\0",
-        capture_output=True,
-        check=False,
-        timeout=10,
-    )
-    assert blocked.returncode == 1
-    assert secret not in blocked.stderr
-
-
-def test_audit_receipt_validation_rejects_partial_records(repo):
-    receipt = write(
-        repo,
-        "receipt",
-        "commit:  " + "a" * 40 + "\n"
-        "branch:  work/example\n"
-        "audited: unknown (1 commit(s))\n"
-        "\nauditor: Claude Opus 5\n",
-    )
-    result = run_scan(repo, "--audit-receipt", str(receipt))
-    assert result.returncode == 1
-    assert "[receipt-shape]" in result.stderr
-
-
 def test_ref_field_protocol_scans_names_without_echoing_them(repo):
     secret = runpod_secret().encode()
     result = subprocess.run(
@@ -509,6 +482,7 @@ def test_history_scan_refuses_an_incomplete_clone(repo, tmp_path):
     assert "complete clone" in result.stderr
 
 
+@SCANNER_CORE
 def test_ntfy_topic_is_a_secret_in_both_leak_shapes(repo):
     # The topic name IS the whole credential — read and forge. The old
     # repository leaked it as pasted command lines, so both the assignment
@@ -551,7 +525,7 @@ def test_ntfy_exact_assignment_does_not_exempt_delimited_placeholder_words(repo)
     assert topic not in result.stderr
 
 
-@pytest.mark.parametrize("mode", ["--file", "--message-file", "--audit-receipt"])
+@pytest.mark.parametrize("mode", ["--file", "--message-file"])
 def test_a_fifo_at_a_scanned_path_fails_closed_instead_of_hanging(repo, mode):
     # Opening a FIFO with no writer blocks forever. This scanner runs from
     # pre-commit and from CI, so a hang is a session or a build that never
@@ -650,6 +624,7 @@ PROVIDER_SAMPLES = (
 )
 
 
+@SCANNER_CORE
 @pytest.mark.parametrize(("rule", "secret"), PROVIDER_SAMPLES)
 def test_each_declared_credential_shape_is_blocked_by_its_own_rule(repo, rule, secret):
     write(repo, "notes.txt", "pasted into a note: " + secret + "\n")
@@ -660,6 +635,7 @@ def test_each_declared_credential_shape_is_blocked_by_its_own_rule(repo, rule, s
     assert secret not in result.stderr
 
 
+@SCANNER_CORE
 def test_every_declared_pattern_has_a_regression_sample():
     # Without this, deleting or corrupting a rule stays green: L39. It is the
     # compiled pattern that must be covered, not merely the rule name, because
@@ -710,6 +686,7 @@ def test_vendor_prefixed_credential_names_are_not_defeated_by_the_word_boundary(
         "digest = " + '"' + "a" * 64 + '"' + "  # sha256 of a fixture, not a secret\n",
     ],
 )
+@SCANNER_CORE
 def test_ordinary_prose_and_short_values_are_not_credential_findings(repo, line):
     # The loosened key grammar must not start refusing ordinary text; an
     # over-refusing scanner is the mechanism by which the guard gets bypassed.
@@ -844,6 +821,7 @@ def test_blob_cache_evicts_by_bytes_and_never_retains_an_oversize_blob(monkeypat
     assert cache.entry_count == 1
 
 
+@SCANNER_CORE
 def test_the_declared_secret_fixture_set_stays_empty():
     # L40. The source calls empty "the intended resting state" and says an
     # exemption nobody can audit inside a credential scanner is worse than no

@@ -53,7 +53,7 @@ if ! chmod +x .githooks/pre-commit .githooks/pre-merge-commit \
            .githooks/pre-push .githooks/commit-msg \
            .githooks/check-all.sh .githooks/check-fast.sh \
            .githooks/check-static.sh .githooks/check-documents.sh \
-           .githooks/doc-allowlist.sh .githooks/record-audit.sh \
+           .githooks/doc-allowlist.sh \
            .githooks/install.sh; then
   echo "Could not make the hooks executable. Hooks were not configured and are not usable." >&2
   echo "Fix the filesystem permissions, then run this installer again." >&2
@@ -76,7 +76,7 @@ echo "    no commits on main            no stray notes in the tree"
 echo "    merges and 'git am' checked   (same rules as a plain commit)"
 echo "    known secret forms/payloads   no undeclared binary fixtures"
 echo "    no direct push to main        no force-push over someone's work"
-echo "    review checklist at push      (.githooks/record-audit.sh)"
+echo "    reviewers named at push       (from each commit's Reviewed-by lines)"
 echo ""
 echo "  Run the everyday gate locally with:"
 echo "    python3 -m pip install -r requirements-dev.txt"

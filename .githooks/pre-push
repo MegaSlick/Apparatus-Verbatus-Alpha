@@ -33,15 +33,27 @@ block() {
 [ -f "$ingress" ] ||
   block "$ingress is missing; outgoing history cannot be checked."
 
-common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
-  common=""
-case $common in
-  /*) receipts="$common/audit-receipts" ;;
-  *) receipts="" ;;
-esac
+# Who reviewed a commit is read from the commit itself. A local receipt file
+# recorded what the operator said happened, proved nothing, never left this
+# machine, and needed a lock, a staleness reclaim and two credential-scanner
+# modes to maintain. `Reviewed-by:` trailers cost one line, travel with the
+# history, and are visible to anyone reading it later.
+#
+# The scan is bounded so a large first push does not walk an entire history.
+review_scan_limit=200
 
-review_names() {
-  sed -n 's/^auditor: //p' "$1" | awk '
+outgoing_commits() {
+  # What this push would add. A brand-new ref has no remote side to subtract
+  # from, so everything not already on a remote counts as outgoing.
+  if is_null_oid "$2"; then
+    git rev-list --max-count="$review_scan_limit" "$1" --not --remotes
+  else
+    git rev-list --max-count="$review_scan_limit" "$2..$1"
+  fi
+}
+
+distinct_reviewers() {
+  awk '
     {
       display = $0
       key = tolower($0)
@@ -56,50 +68,48 @@ review_names() {
 print_review_checklist() {
   kind=$1
   name=$2
-  sha=$3
-  short=$(printf '%s' "$sha" | cut -c1-8)
-  state=missing
-  names=""
-
-  if [ -z "$receipts" ]; then
-    state=unknown
-  else
-    receipt="$receipts/$sha"
-    if [ -e "$receipt" ] || [ -L "$receipt" ]; then
-      if [ -f "$receipt" ] && [ -r "$receipt" ] &&
-        python3 "$ingress" --audit-receipt "$receipt" >/dev/null 2>&1 &&
-        grep -Fqx "commit:  $sha" "$receipt"; then
-        if names=$(review_names "$receipt"); then
-          state=ok
-        else
-          state=unknown
-        fi
-      else
-        state=unknown
-      fi
-    fi
-  fi
+  local_commit=$3
+  remote_commit=$4
+  short=$(printf '%s' "$local_commit" | cut -c1-8)
 
   echo "" >&2
   echo "  review checklist — $kind '$name' at $short" >&2
-  if [ "$state" = ok ]; then
-    count=0
-    if [ -n "$names" ]; then
-      printf '%s\n' "$names" | while IFS= read -r reviewer; do
-        [ -z "$reviewer" ] || echo "    [x] $reviewer" >&2
-      done
-      count=$(printf '%s\n' "$names" | awk 'NF { n++ } END { print n + 0 }')
+
+  if ! commits=$(outgoing_commits "$local_commit" "$remote_commit" 2>/dev/null); then
+    echo "    [?] could not work out which commits this push adds." >&2
+    echo "    Checklist only: Tyrel decides whether the coverage is enough." >&2
+    echo "" >&2
+    return 0
+  fi
+
+  total=0
+  unreviewed=0
+  trailers=""
+  # Word splitting is intended and safe: rev-list emits one hex object name
+  # per line and nothing else.
+  # shellcheck disable=SC2086
+  for commit in $commits; do
+    total=$((total + 1))
+    found=$(git show --no-patch \
+      --format='%(trailers:key=Reviewed-by,valueonly)' "$commit" 2>/dev/null) || found=""
+    if [ -z "$(printf '%s' "$found" | tr -d '[:space:]')" ]; then
+      unreviewed=$((unreviewed + 1))
+    else
+      trailers="$trailers$found
+"
     fi
-    remaining=$count
-    while [ "$remaining" -lt 3 ]; do
-      echo "    [ ] another independent reviewer" >&2
-      remaining=$((remaining + 1))
+  done
+
+  names=$(printf '%s' "$trailers" | distinct_reviewers)
+  if [ -n "$names" ]; then
+    printf '%s\n' "$names" | while IFS= read -r reviewer; do
+      [ -z "$reviewer" ] || echo "    [x] $reviewer" >&2
     done
-    echo "    $count distinct reviewer(s) recorded for this exact commit." >&2
-  elif [ "$state" = unknown ]; then
-    echo "    [?] coverage unknown; the local receipt could not be read or validated." >&2
   else
-    echo "    [ ] no local review receipt for this exact commit." >&2
+    echo "    [ ] no commit in this push names a reviewer." >&2
+  fi
+  if [ "$unreviewed" -gt 0 ] && [ -n "$names" ]; then
+    echo "    $unreviewed of $total outgoing commit(s) name no reviewer." >&2
   fi
   echo "    Checklist only: Tyrel decides whether the coverage is enough." >&2
   echo "" >&2
@@ -175,7 +185,7 @@ while read -r line_local_ref line_local_sha line_remote_ref line_remote_sha ||
       block "tag '$name' failed its annotated-tag ingress check."
   fi
 
-  print_review_checklist "$kind" "$name" "$commit"
+  print_review_checklist "$kind" "$name" "$commit" "$remote_sha"
 done
 
 if [ "$records" -eq 0 ]; then

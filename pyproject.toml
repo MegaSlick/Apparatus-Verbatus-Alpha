@@ -37,6 +37,7 @@ python_files = ["test_*.py"]
 addopts = "-q -p no:tach"
 markers = [
     "full: slower integration and exhaustive boundary cases reserved for the full gate",
+    "scanner: core credential-detection cases the everyday gate runs even though they are also full",
 ]
 # pytest skips every dotted directory by default, so the harness's own tests
 # under .claude/hooks/ were found by CI's `find` and then collected by nobody —

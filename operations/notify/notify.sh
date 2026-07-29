@@ -53,6 +53,100 @@ if [ "${NTFY_SERVER+x}" = x ]; then
   exit 2
 fi
 
+# `start` fires from a hook, not a hand. The desktop app can open several
+# sessions in one launch — each fires the hook, and four pings for one sitting
+# is noise, which is what makes the next one get ignored. One start per quarter
+# hour is a heartbeat. Deliberate events (milestone, decision, done) are never
+# suppressed: a rate limit on those could swallow a real result, and a decision
+# ping nobody hears is a session waiting on a message that was never sent.
+stamp="$root/private/.notify-start-stamp"
+suppress_window_s=900
+
+# The stamp is evidence that a ping was delivered, so it is checked like
+# evidence rather than trusted because something exists at the path.
+#
+# `find "$stamp" -mmin -15` asked one question — is there anything here that
+# was touched recently — and four different objects answered yes. A directory
+# left by a crashed run, a FIFO, a symlink aimed at some file the machine
+# rewrites every minute, or a stamp dated in the future (a negative age is
+# still "less than fifteen minutes", and a clock skew or a stray `touch -t`
+# suppresses every start for as long as the date says) each silenced a real
+# notification and printed nothing.
+#
+# So: a regular file, not a symlink, holding the epoch second it was written.
+# Unlike the config above, there is no legitimate reason to symlink a
+# suppression stamp anywhere, and here the file is also WRITTEN — a link would
+# redirect that write outside `private/`. Both reasons point the same way, so
+# this path refuses links where the config accepts them.
+#
+# Every refusal below returns "not fresh", which sends the ping. That is the
+# safe direction: the cost of being wrong is one duplicate notification, and
+# the cost of the other direction is a session start nobody hears about. The
+# stamp records a clock reading and nothing else — the topic never enters it.
+start_was_delivered_recently() {
+  [ -e "$stamp" ] || [ -L "$stamp" ] || return 1
+
+  if [ -L "$stamp" ]; then
+    echo "notify: the start stamp is a symlink; not trusting it to suppress a ping" >&2
+    return 1
+  fi
+  if [ ! -f "$stamp" ]; then
+    echo "notify: the start stamp is not a regular file; not trusting it to suppress a ping" >&2
+    return 1
+  fi
+
+  stamp_now=$(date +%s 2>/dev/null) || stamp_now=""
+  stamped=$(head -n 1 "$stamp" 2>/dev/null) || stamped=""
+  case $stamp_now in
+    ""|*[!0-9]*)
+      echo "notify: cannot read the clock; not suppressing the start ping" >&2
+      return 1 ;;
+  esac
+  case $stamped in
+    ""|*[!0-9]*)
+      # Includes every stamp written by the older `touch`-based version, which
+      # left the file empty. One extra ping per machine, once.
+      echo "notify: the start stamp carries no readable timestamp; not suppressing" >&2
+      return 1 ;;
+  esac
+
+  stamp_age=$(( stamp_now - stamped ))
+  if [ "$stamp_age" -lt 0 ]; then
+    echo "notify: the start stamp is dated in the future; not suppressing" >&2
+    return 1
+  fi
+  [ "$stamp_age" -lt "$suppress_window_s" ]
+}
+
+# Write the stamp only where reading it would have been trusted. Refusing to
+# write through a symlink or onto a non-regular file is the same rule as above,
+# in the direction that matters more: a redirected write leaves the topic's
+# neighbourhood entirely. A stamp that cannot be written is reported and never
+# fatal — the ping already went.
+record_start_delivery() {
+  if [ -L "$stamp" ] || { [ -e "$stamp" ] && [ ! -f "$stamp" ]; }; then
+    echo "notify: the start stamp path is not a regular file; could not record its suppression stamp; duplicates may follow" >&2
+    return 0
+  fi
+  stamp_now=$(date +%s 2>/dev/null) || stamp_now=""
+  case $stamp_now in
+    ""|*[!0-9]*)
+      echo "notify: could not record its suppression stamp; duplicates may follow" >&2
+      return 0 ;;
+  esac
+  if ! { printf '%s\n' "$stamp_now" > "$stamp"; } 2>/dev/null; then
+    echo "notify: could not record its suppression stamp; duplicates may follow" >&2
+  fi
+}
+
+if [ "$event" = start ] && start_was_delivered_recently; then
+  # "delivered", not "attempted": the stamp is written only inside the success
+  # branch below, so a failed post never sets it. Saying "attempted" would leave
+  # a reader unable to tell this suppression from a swallowed failure.
+  echo "notify: a start ping was already delivered in the last 15 minutes — suppressed" >&2
+  exit 0
+fi
+
 if ! payload=$(NTFY_TOPIC=$topic NTFY_TITLE=$title NTFY_PRIORITY=$priority \
   NTFY_TAG=$tag NTFY_MESSAGE=$message python3 -c '
 import json, os
@@ -74,6 +168,12 @@ if code=$(printf '%s' "$payload" | curl -q -sS --max-time 10 \
   -H "Content-Type: application/json" --data-binary @- https://ntfy.sh/ 2>/dev/null) &&
   case $code in 2??) true ;; *) false ;; esac
 then
+  # Stamp only a *delivered* start, so a failed post never suppresses the retry.
+  # Two sessions racing the check can each send one ping; the failure mode of
+  # that race is a duplicate, never a loss.
+  if [ "$event" = start ]; then
+    record_start_delivery
+  fi
   exit 0
 fi
 

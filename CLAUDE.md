@@ -223,12 +223,18 @@ general instruction to work through a list is not permission to push or merge wh
 
 **Every push is reviewed**, and the review is asked for before it runs. The standing default is
 two readers across two vendors — **one Claude Opus and one GPT Sol**, fresh eyes on an identical
-prompt, blind to each other. **Offer the third seat every pass, and encourage it** — Claude
-Fable, recommended outright whenever the question is hard, being wrong would be expensive, or
-the change touches money, launch, shutdown or a governance rule. It is the most expensive reader
-here, so cost and usage limits are a legitimate reason for Tyrel to decline it; that is his call
-for that pass, not a lowered standard, and you offer it again next time. Run `/reviewer-pass`;
-it holds the procedure and the receipt.
+prompt, blind to each other. It needs no restating every pass; it is the default because it is
+what Tyrel actually wants. **A third seat is for when the question is hard, being wrong would be
+expensive, or the change touches money, launch, shutdown or a governance rule** — Claude Fable
+is the one that exists today. Recommend it in those cases and let it go otherwise; a seat
+offered every pass and declined most of them trains him to skim the offer. Run `/reviewer-pass`;
+it holds the procedure.
+
+**A reviewer reads; it does not have to write.** A model that examines the change and reports
+findings without touching a line is a reviewer in full — that is what the role *is*, not a
+lesser form of it. A tracked Codex seat, a Claude agent, and a session Tyrel ran himself and
+relayed all count the same. He is the one who says a review happened; nothing here can verify
+it, and nothing pretends to.
 
 **The seats are configuration, not doctrine.** Adding a frontier reader — another vendor's
 model, a newer release — is a change Tyrel approves, and this list is what stands until he
@@ -242,18 +248,28 @@ more than one pass. **The recommendation decides nothing.** Tyrel approves or ov
 **for that named push only, never inferred** — not from a small diff, a tight budget,
 impatience, or a previous reduction. The next push triages fresh from the standing default. A
 reviewer that errors or is unavailable is the same case: reduced coverage he approves
-explicitly, never inferred from the outage. Record who actually ran and let the receipt show the
-real coverage.
+explicitly, never inferred from the outage. Record who actually ran.
 
-**The roster is a checklist, not a gate.** `pre-push` prints the reviewer coverage recorded for
-the exact commit being pushed — who is ticked, what is missing — and then pushes. It does not
-refuse, and there is no override keyword, because there is nothing to override. A receipt
-records what the operator *says* happened; it cannot establish who reviewed, whether they were
-independent, or that a line was read. Refusing a push on a number derived from self-asserted
-text bought ceremony rather than safety, and it made the override a routine keystroke, which
-is how a real alarm gets tuned out. **Tyrel decides whether the coverage is enough, every
-time.** The rule that every push is reviewed still binds the session; it is simply no longer
-pretending to be enforced by a hook.
+**The commit is the record.** Who reviewed a change is written into the commit message as
+`Reviewed-by:` trailers, once the pass has returned — see Attribution below. A message-only
+amend leaves the tree untouched, so the code the reviewers read is byte-identical to the code
+that ships, which is what makes it honest to attach their names after the fact.
+
+This replaced a local receipt file, and the reasons are worth keeping. The receipt recorded what
+the operator *said* happened; it could not establish who reviewed, whether they were
+independent, or that a line was read. It never left the machine that wrote it, so a fresh clone,
+a pod or a sandbox saw nothing. And it had grown a lock, a staleness reclaim and two
+credential-scanner modes to maintain — machinery defending a claim that was self-asserted
+anyway. A trailer costs one line, travels with the history, and is visible to anyone reading it
+in a year.
+
+**The roster is a checklist, not a gate.** `pre-push` prints the reviewers the outgoing commits
+name, and says how many of those commits name nobody. Then it pushes. It does not refuse, and
+there is no override keyword, because there is nothing to override — refusing on self-asserted
+text bought ceremony rather than safety, and it made the override a routine keystroke, which is
+how a real alarm gets tuned out. **Tyrel decides whether the coverage is enough, every time.**
+The rule that every push is reviewed still binds the session; it is simply not pretending to be
+enforced by a hook.
 
 **Agreement between reviewers is evidence, not a verdict.** It settles no governance question,
 permission, or exclusion — and two seats agreeing is thinner evidence than three, which is the
@@ -269,11 +285,12 @@ is only for a commit no machine touched at all.
 
 **After the push, CodeRabbit is Tyrel's to relay** — do not poll the pull request. When he points
 at a comment, verify the claim before acting: some are style, some are simply wrong, some are
-real. Fix what is real, say why you skip the rest, record a fresh receipt.
+real. Fix what is real, say why you skip the rest, and name CodeRabbit in a `Reviewed-by:`
+trailer if it found something.
 
-**The review is discipline, not machinery** — and now says so out loud. A receipt proves a file
-was written, not that anything was read, so `pre-push` reports the coverage instead of refusing
-over it. What still refuses is only what turns on nobody's word: a push straight at `main`, and
+**The review is discipline, not machinery** — and says so out loud. Nothing can prove a model
+read a line, so `pre-push` reports who was named instead of refusing over a count. What still
+refuses is only what turns on nobody's word: a push straight at `main`, and
 a credential or oversized payload in the outgoing history. `--no-verify` and
 `-c core.hooksPath=` get past even those; both are blocked for Claude and open to everything
 else. **Only GitHub's rules do not negotiate** — README.md records which are in force.
@@ -388,6 +405,26 @@ Name by release for every vendor — "Claude Opus 5", not "Claude"; "GPT-5.6 Sol
 not "Codex". `Codex (OpenAI)` is the fallback only when the serving release is unknowable.
 The commit author stays Tyrel. Track it as you go, because nobody can reconstruct it afterwards, and
 `/session-end` writes it into the handoff.
+
+**`Co-Authored-By:` is written when the commit is made. `Reviewed-by:` is written after the
+pass returns**, by amending the message:
+
+```sh
+git commit --amend --no-edit --trailer "Reviewed-by: <release> <noreply@vendor.example>"
+```
+
+The amend moves the commit SHA and leaves the tree SHA alone, so what the reviewers read is what
+ships. That is the whole reason this is honest rather than a convenient fiction.
+
+**Write a trailer for a seat that actually returned a report — never for the roster that was
+planned.** Not the seat that errored, not the one Tyrel declined, not "we usually run both". The
+standing roster means most passes legitimately name Opus and Sol, and that is fine; a trailer
+written from the plan instead of the outcome asserts a review on precisely the commit where none
+happened, which is the commit somebody will one day be reading it on. GOVERNANCE 10: claims are
+made only about what was actually measured.
+
+A reviewer that is not a model gets the same treatment — CodeRabbit, or a GPT session Tyrel ran
+himself and relayed. Name what read it.
 
 `commit-msg` does two things, and only one of them has exemptions.
 

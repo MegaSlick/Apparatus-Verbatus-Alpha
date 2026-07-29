@@ -21,7 +21,7 @@ Read `README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`,
   Never write in the main checkout's live tree.
 - Stage only files you touched. Never `git add -A`. Never commit to `main`, never push,
   never merge.
-- Do not touch: canonical documents, `.githooks/`, CI, seals or receipts, accounting,
+- Do not touch: canonical documents, `.githooks/`, CI, seals, accounting,
   anything that spends money or talks to a pod. If the task turns out to need one of
   those, stop and report — do not do a smaller version of it.
 - If a file changed under you, stop and re-read it.
