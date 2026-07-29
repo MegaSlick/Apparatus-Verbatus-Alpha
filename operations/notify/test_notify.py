@@ -208,7 +208,6 @@ def seed_stamp(script: Path, *, seconds_ago: int) -> Path:
     path = stamp_path(script)
     written = int(time.time()) - seconds_ago
     path.write_text(f"{written}\n", encoding="utf-8")
-    os.utime(path, (written, written))
     return path
 
 
@@ -243,8 +242,6 @@ def test_a_second_start_after_a_delivered_one_is_suppressed(notify_repo):
     second = run(script, env, "start")
     assert second.returncode == 0, second.stderr
     assert not curl_ran(env)
-    # "delivered", not "attempted": the stamp is written only on the success
-    # branch, so a reader can tell this suppression from a swallowed failure.
     assert "already delivered" in second.stderr
     assert "attempted" not in second.stderr
     assert "NOT DELIVERED" not in second.stderr

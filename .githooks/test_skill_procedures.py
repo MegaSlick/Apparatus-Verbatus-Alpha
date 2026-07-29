@@ -33,9 +33,9 @@ printf 'finding one\\nfinding two\\n'
 FAKE_SCAN = "import sys\nsys.stdin.buffer.read()\nraise SystemExit(0)\n"
 
 
-def fenced_blocks(document: Path, language: str = "sh") -> list[str]:
+def fenced_blocks(document: Path) -> list[str]:
     text = document.read_text(encoding="utf-8")
-    blocks = re.findall(rf"(?ms)^\s*```{language}\n(.*?)^\s*```", text)
+    blocks = re.findall(r"(?ms)^\s*```sh\n(.*?)^\s*```", text)
     return [textwrap.dedent(block) for block in blocks]
 
 
@@ -63,14 +63,14 @@ def workspace(tmp_path: Path) -> Path:
     return root
 
 
-def run_snippet(root: Path, snippet: str, *, preamble: str = "", timeout: int = 30):
-    script = f'report_dir="$PWD/reports"\nprompt_path="$PWD/prompt.txt"\n{preamble}{snippet}'
+def run_snippet(root: Path, snippet: str):
+    script = f'report_dir="$PWD/reports"\nprompt_path="$PWD/prompt.txt"\n{snippet}'
     return subprocess.run(
         ["sh", "-c", script],
         cwd=root,
         capture_output=True,
         text=True,
-        timeout=timeout,
+        timeout=30,
         check=False,
         env={**os.environ, "POSIXLY_CORRECT": "1"},
     )

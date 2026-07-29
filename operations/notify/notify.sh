@@ -83,25 +83,44 @@ suppress_window_s=900
 # safe direction: the cost of being wrong is one duplicate notification, and
 # the cost of the other direction is a session start nobody hears about. The
 # stamp records a clock reading and nothing else — the topic never enters it.
+# Two properties are being asserted, and both paths assert both: the path is a
+# plain regular file we own, and its contents are a plausible past clock reading.
+# Each was written out twice, in two spellings, so a hardening applied to the
+# read side and not the write side would have been invisible. One statement each.
+stamp_is_plain_file() {
+  if [ -L "$stamp" ]; then
+    echo "notify: the start stamp is a symlink; not trusting it" >&2
+    return 1
+  fi
+  if [ -e "$stamp" ] && [ ! -f "$stamp" ]; then
+    echo "notify: the start stamp is not a regular file; not trusting it" >&2
+    return 1
+  fi
+}
+
+epoch_now() {
+  now=$(date +%s 2>/dev/null) || now=""
+  case $now in
+    ""|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s' "$now"
+}
+
 start_was_delivered_recently() {
   [ -e "$stamp" ] || [ -L "$stamp" ] || return 1
+  stamp_is_plain_file || return 1
 
-  if [ -L "$stamp" ]; then
-    echo "notify: the start stamp is a symlink; not trusting it to suppress a ping" >&2
+  stamp_now=$(epoch_now) || {
+    echo "notify: cannot read the clock; not suppressing the start ping" >&2
     return 1
-  fi
-  if [ ! -f "$stamp" ]; then
-    echo "notify: the start stamp is not a regular file; not trusting it to suppress a ping" >&2
-    return 1
-  fi
-
-  stamp_now=$(date +%s 2>/dev/null) || stamp_now=""
-  stamped=$(head -n 1 "$stamp" 2>/dev/null) || stamped=""
-  case $stamp_now in
-    ""|*[!0-9]*)
-      echo "notify: cannot read the clock; not suppressing the start ping" >&2
-      return 1 ;;
-  esac
+  }
+  # `read` rather than `head`: no subprocess, and the guards above have already
+  # established this is a regular file, so it cannot block the way a FIFO would.
+  # It returns non-zero on a last line with no trailing newline *having already
+  # assigned it*, so the default is set beforehand rather than in an `||` that
+  # would throw away a perfectly good stamp.
+  stamped=""
+  read -r stamped < "$stamp" 2>/dev/null || true
   case $stamped in
     ""|*[!0-9]*)
       # Includes every stamp written by the older `touch`-based version, which
@@ -118,32 +137,22 @@ start_was_delivered_recently() {
   [ "$stamp_age" -lt "$suppress_window_s" ]
 }
 
-# Write the stamp only where reading it would have been trusted. Refusing to
-# write through a symlink or onto a non-regular file is the same rule as above,
-# in the direction that matters more: a redirected write leaves the topic's
+# Write the stamp only where reading it would have been trusted — in the
+# direction that matters more, since a redirected write leaves the topic's
 # neighbourhood entirely. A stamp that cannot be written is reported and never
-# fatal — the ping already went.
+# fatal: the ping already went.
 record_start_delivery() {
-  if [ -L "$stamp" ] || { [ -e "$stamp" ] && [ ! -f "$stamp" ]; }; then
-    echo "notify: the start stamp path is not a regular file; could not record its suppression stamp; duplicates may follow" >&2
-    return 0
-  fi
-  stamp_now=$(date +%s 2>/dev/null) || stamp_now=""
-  case $stamp_now in
-    ""|*[!0-9]*)
-      echo "notify: could not record its suppression stamp; duplicates may follow" >&2
-      return 0 ;;
-  esac
-  if ! { printf '%s\n' "$stamp_now" > "$stamp"; } 2>/dev/null; then
-    echo "notify: could not record its suppression stamp; duplicates may follow" >&2
-  fi
+  unwritable="notify: could not record its suppression stamp; duplicates may follow"
+  stamp_is_plain_file || { echo "$unwritable" >&2; return 0; }
+  stamp_now=$(epoch_now) || { echo "$unwritable" >&2; return 0; }
+  { printf '%s\n' "$stamp_now" > "$stamp"; } 2>/dev/null || echo "$unwritable" >&2
 }
 
 if [ "$event" = start ] && start_was_delivered_recently; then
   # "delivered", not "attempted": the stamp is written only inside the success
   # branch below, so a failed post never sets it. Saying "attempted" would leave
   # a reader unable to tell this suppression from a swallowed failure.
-  echo "notify: a start ping was already delivered in the last 15 minutes — suppressed" >&2
+  echo "notify: a start ping was already delivered in the last $((suppress_window_s / 60)) minutes — suppressed" >&2
   exit 0
 fi
 

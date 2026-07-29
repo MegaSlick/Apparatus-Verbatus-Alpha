@@ -107,23 +107,26 @@ def make_static_gate_repo(path, broken=None):
     return repo, listed, log, environment
 
 
-def run_static_gate(repo, environment):
-    return command(["sh", ".githooks/check-static.sh"], cwd=repo, env=environment)
-
-
+@pytest.mark.full
 def test_static_gate_syntax_checks_every_script_it_names(tmp_path):
     repo, listed, log, environment = make_static_gate_repo(tmp_path / "repo")
-    result = run_static_gate(repo, environment)
+    result = run_hook(repo, "check-static.sh", env=environment)
     assert result.returncode == 0, result.stdout + result.stderr
     checked = [line for line in log.read_text().splitlines() if line]
     assert checked == listed
 
 
+# These three run the whole static gate inside a fixture repo — the gate testing
+# itself, on every commit. A genuinely broken script is already caught by the real
+# `check-static.sh` run in the same gate; what these add is proof that the *list*
+# is walked, which changes about as often as the list does. Reserved for the full
+# gate so the everyday one stays worth running.
+@pytest.mark.full
 @pytest.mark.parametrize("position", [1, -1])
 def test_static_gate_fails_on_a_broken_script_that_is_not_first(tmp_path, position):
     broken = static_gate_scripts()[position]
     repo, _listed, _log, environment = make_static_gate_repo(tmp_path / "repo", broken=broken)
-    result = run_static_gate(repo, environment)
+    result = run_hook(repo, "check-static.sh", env=environment)
     assert result.returncode != 0, result.stdout + result.stderr
     assert Path(broken).name in result.stderr
     assert "syntax" in result.stderr.lower()
@@ -423,8 +426,11 @@ def test_pre_push_allows_declared_branch_and_prints_missing_review(tmp_path):
     repo, _base, head = audit_repo(tmp_path / "repo")
     result = run_hook(repo, "pre-push", stdin=push_line(head))
     assert result.returncode == 0, result.stderr
+    # Checklist, not gate: an unreviewed push is reported and then allowed,
+    # because nothing here turns on anything but Tyrel's word.
     assert "no commit in this push names a reviewer" in result.stderr
     assert "Checklist only" in result.stderr
+    assert "Tyrel decides whether the coverage is enough" in result.stderr
 
 
 def test_pre_push_hard_blocks_main_even_if_old_bypass_is_set(tmp_path):
@@ -572,17 +578,14 @@ def reviewed_repo(path, subjects_and_reviewers):
     repo = init_repo(path)
     head = commit_file(repo, "safe.txt", "base\n")
     for index, (subject, reviewers) in enumerate(subjects_and_reviewers):
-        (repo / "safe.txt").write_text(f"revision {index}\n")
-        git(repo, "add", "safe.txt")
-        git(repo, "commit", "-q", "-m", reviewed_message(subject, reviewers))
-        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        head = commit_file(
+            repo, "safe.txt", f"revision {index}\n", reviewed_message(subject, reviewers)
+        )
     copy_hooks(repo, "pre-push", "check_ingress.py")
     return repo, head
 
 
 def test_pre_push_lists_the_reviewers_the_outgoing_commits_name(tmp_path):
-    # The commit is the record. A local receipt file said what the operator
-    # typed, proved nothing, and never left the machine it was written on.
     repo, head = reviewed_repo(
         tmp_path / "repo",
         [
@@ -609,13 +612,6 @@ def test_pre_push_counts_one_reviewer_once_across_commits_and_spellings(tmp_path
     assert result.stderr.lower().count("[x] claude") == 1
 
 
-def test_pre_push_says_plainly_when_no_outgoing_commit_names_a_reviewer(tmp_path):
-    repo, _base, head = audit_repo(tmp_path / "repo")
-    result = run_hook(repo, "pre-push", stdin=push_line(head))
-    assert result.returncode == 0, result.stderr
-    assert "no commit in this push names a reviewer" in result.stderr
-
-
 def test_pre_push_reports_outgoing_commits_that_name_nobody(tmp_path):
     # Partial coverage is the case worth surfacing: some commits reviewed, some
     # slipped in behind them. Naming a reviewer at all must not imply the whole
@@ -628,14 +624,6 @@ def test_pre_push_reports_outgoing_commits_that_name_nobody(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "[x] Claude Opus 5" in result.stderr
     assert "outgoing commit(s) name no reviewer" in result.stderr
-
-
-def test_pre_push_never_blocks_on_review_coverage(tmp_path):
-    """Checklist, not gate. Nothing here turns on anything but Tyrel's word."""
-    repo, _base, head = audit_repo(tmp_path / "repo")
-    result = run_hook(repo, "pre-push", stdin=push_line(head))
-    assert result.returncode == 0
-    assert "Tyrel decides whether the coverage is enough" in result.stderr
 
 
 def test_install_configures_local_hooks_after_prerequisites(tmp_path):

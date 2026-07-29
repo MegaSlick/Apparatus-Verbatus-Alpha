@@ -22,12 +22,8 @@ and it is gitignored precisely so they can be — Tyrel's ruling. Two live here 
   secret, but machine-local: a path is right on one laptop and wrong everywhere else, so it
   is declared here rather than tracked in `operations/codex/seats.conf`.
 
-  **No seat reads it today.** An unattended pass narrowed every seat in
-  `operations/codex/seats.conf` to `-s read-only` and removed the writing seat, the `ultra`
-  effort tier and the 7200-second ceiling. Narrowing may well be right, but it reversed a
-  condition Tyrel had granted by name, and hard rule 1 reserves that to him — so the file and
-  this entry stay until he decides whether a writing seat comes back. Read this as a question
-  awaiting an answer, not as documentation of something that works.
+  **No seat reads it today**, and whether a writing seat comes back is an open question for
+  Tyrel — the handoff in `workbench/active/` carries it. The file stays until he rules.
 
 A secret may live here. It may not leave: not into a commit, a script, a note, a transcript
 or a command line. The old repository hardcoded the topic in five shell scripts and it ended

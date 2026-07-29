@@ -17,10 +17,8 @@ data it is — unless a shell receives it, in which case it is inspected too. It
 errs toward over-recognizing, so a tail it cannot tokenize is judged on
 approximate tokens rather than skipped.
 
-Heredocs are found by a quote-aware scanner rather than a pattern, so `<<` inside
-quotes, after a `#` comment, or as the here-string operator `<<<` opens nothing —
-and an unterminated heredoc consumes nothing, because a body that swallows the
-rest of the input takes every remaining command with it.
+Heredocs are found by a quote-aware scanner rather than a pattern; see
+`heredoc_declarations` for what that does and does not open.
 
 It does **not** understand command substitution, process substitution, or a
 wrapper command outside the list below. Comments are recognized only by that
@@ -220,26 +218,34 @@ def flatten_command(text: str) -> str:
     return "".join(out)
 
 
+# Any command may be written path-qualified: `/bin/bash` is `bash`, `/usr/bin/env`
+# is `env`. One definition, used by the shell patterns here and by `invocation()`.
+_PATH = r"(?:[^\s;&|]*/)?"
+_SHELL_NAME = r"(?:(?:ba|z|k|da|a)?sh|eval)"
+
 SHELL_PAYLOAD = re.compile(
-    # A shell at a command position, optionally path-qualified, then whatever
-    # options precede its `-c` payload. Accepting only bundled short flags meant
+    # A shell at a command position, then whatever options precede its `-c`
+    # payload. Accepting only bundled short flags meant
     # `bash --noprofile -c "git push --no-verify origin main"` was never looked
     # inside; long options, options that take a value, and `/bin/bash` all count.
-    r"(?:^|[\s;&|(])(?:[^\s;&|]*/)?(?:(?:ba|z|k|da|a)?sh|eval)\b"
-    # Bounded on purpose. An unbounded run of optional option-arguments is how a
-    # regex engine ends up exploring every combination of a malformed command,
-    # and this hook blocks the agent loop while it thinks.
+    rf"(?:^|[\s;&|(]){_PATH}{_SHELL_NAME}\b"
+    # Unbounded is safe here, and the reason is worth stating because the obvious
+    # worry is wrong: an option must begin with `-` and an option's value may
+    # not, so the two alternatives are disjoint on their first character. Every
+    # token therefore has exactly one role, there is nothing for the engine to
+    # try two ways, and no combination to explore. A counted bound would only
+    # cap how many options may precede `-c` before the payload stops being read.
     r"(?:\s+(?:--[A-Za-z][A-Za-z0-9-]*|-[A-Za-z]+)"
-    r"(?:\s+[A-Za-z0-9_,=.:/+][A-Za-z0-9_,=.:/+-]*)?){0,6}"
-    # The two body alternatives are kept disjoint — a backslash may only be
-    # consumed by the escape branch, for the same reason.
+    r"(?:\s+[A-Za-z0-9_,=.:/+][A-Za-z0-9_,=.:/+-]*)?)*"
+    # The two body alternatives are kept disjoint for the same reason — a
+    # backslash may only be consumed by the escape branch.
     r"\s+(?P<quote>['\"])(?P<body>(?:\\.|(?!(?P=quote))[^\\])*)(?P=quote)",
     flags=re.IGNORECASE | re.DOTALL,
 )
 PAYLOAD_DEPTH = 3
 
 
-SHELL_VERB = re.compile(r"\b(?:(?:ba|z|k|da|a)?sh|eval)\b", flags=re.IGNORECASE)
+SHELL_VERB = re.compile(rf"\b{_SHELL_NAME}\b", flags=re.IGNORECASE)
 HEREDOC_DELIMITER = re.compile(
     r"\s*(?:(?P<quote>['\"])(?P<quoted>[^'\"]*)(?P=quote)|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
 )
@@ -305,11 +311,13 @@ def split_heredocs(text: str) -> tuple[str, list[str]]:
     `git push origin main` is a document, and reading it as a command produced an
     unappealable refusal on an ordinary write. Bodies are returned separately so
     the caller can decide — they are commands only when a shell receives them.
-
-    An *unterminated* heredoc opens nothing. Consuming to end-of-input on a
-    terminator that never arrives let `grep -n '<<EOF' notes.md` swallow the
-    line after it, and that line was free to be `git push origin main`.
+    An unterminated heredoc opens nothing; `heredoc_declarations` says why.
     """
+    if "<<" not in text:
+        # Nothing here can open one, so `kept` would rejoin to exactly `text`.
+        # One C-level substring search instead of a Python character loop, on a
+        # path that runs before every tool call the agent makes.
+        return text, []
     lines = text.split("\n")
     kept: list[str] = []
     bodies: list[str] = []
@@ -320,6 +328,8 @@ def split_heredocs(text: str) -> tuple[str, list[str]]:
         kept.append(line)
         index += 1
         tags, quote = heredoc_declarations(line, quote)
+        if not tags:
+            continue
         fed_to_a_shell = bool(SHELL_VERB.search(line))
         for tag in tags:
             end = index
@@ -366,8 +376,6 @@ def expand_command(command: str, depth: int = 0) -> str:
 # recognized as a prefix at all, the Git call behind it was never seen, and a
 # direct `--no-verify` push to main passed the guard in silence.
 _ASSIGNMENT = r"[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*"
-# Every wrapper may be path-qualified: `/usr/bin/env` is `env`.
-_PATH = r"(?:[^\s;&|]*/)?"
 _PLAIN_WRAPPER = rf"{_PATH}(?:command|exec|rtk|nohup|setsid)\s+"
 _MEASURED_WRAPPER = (
     rf"{_PATH}(?:nice|timeout|stdbuf|ionice|time)"
@@ -390,7 +398,7 @@ def invocation(name: str) -> re.Pattern[str]:
     """Recognize `name` at a command position, with its wrapper prefix captured."""
     return re.compile(
         r"(?:^|[;&|]\s*)\s*(?P<prefix>" + WRAPPER_PREFIX + r")"
-        rf"(?:[^\s;&|]*/)?{name}\b(?P<tail>[^\n;&|]*)",
+        rf"{_PATH}{name}\b(?P<tail>[^\n;&|]*)",
         flags=re.IGNORECASE,
     )
 
@@ -471,39 +479,25 @@ def hooks_path_bypass(action: str, arguments: list[str], tokens: list[str]) -> b
 
     if action != "config":
         return False
-    lowered_arguments = [argument.lower() for argument in arguments]
-    # Deleting or renaming the whole `[core]` section takes `core.hooksPath`
-    # with it and switches every installed hook off — the credential scan, the
-    # document policy, the branch rule, the attribution check. Git accepts the
-    # bare subcommand and the `--`-prefixed flag as the same operation, so both
-    # spellings are recognized here. Only the bare pair was, and the flag pair
-    # fell through the `core.hooksPath` key test below to a silent `False`.
-    section_operations = {
-        "remove-section",
-        "--remove-section",
-        "rename-section",
-        "--rename-section",
-    }
-    if section_operations.intersection(lowered_arguments) and "core" in lowered_arguments:
+    # Normalized once, here, rather than each set below carrying every spelling.
+    # Git accepts an operation as a bare subcommand and as a `--`-prefixed flag,
+    # so listing both doubled every set and it was easy to add one and forget the
+    # other — which is exactly what happened: only `remove-section` was matched,
+    # and `--remove-section` fell through to a silent `False`.
+    operations = {argument.lower().lstrip("-") for argument in arguments}
+    # Deleting or renaming the whole `[core]` section takes `core.hooksPath` with
+    # it and switches every installed hook off — the credential scan, the document
+    # policy, the branch rule, the attribution check.
+    if {"remove-section", "rename-section"} & operations and "core" in operations:
         return True
     key_indexes = [
         index for index, token in enumerate(arguments) if token.lower() == "core.hookspath"
     ]
     if not key_indexes:
         return False
-    if {"set", "unset"}.intersection(lowered_arguments):
+    if {"set", "unset", "add", "replace-all", "unset-all"} & operations:
         return True
-    mutation_flags = {
-        "--add",
-        "--replace-all",
-        "--unset",
-        "--unset-all",
-        "--rename-section",
-        "--remove-section",
-    }
-    return bool(mutation_flags.intersection(arguments)) or any(
-        arguments[index + 1 :] for index in key_indexes
-    )
+    return any(arguments[index + 1 :] for index in key_indexes)
 
 
 def push_targets_main(arguments: list[str]) -> bool:
@@ -517,31 +511,34 @@ def push_targets_main(arguments: list[str]) -> bool:
     return False
 
 
-def short_option(arguments: list[str], letter: str, value_taking: str = "") -> bool:
-    """True when short option `letter` is present, alone or bundled in a token.
+def short_option(arguments: list[str], letters: str, action: str = "") -> bool:
+    """True when any short option in `letters` is present, alone or bundled.
 
-    `value_taking` names the short options of *this particular command* that
-    swallow the remainder of their token as a value. Naming them is the whole
-    point. A generic character search over everything after a dash reads the `n`
-    in `git clean -enode_modules` as `--dry-run` and waves a destructive clean
-    through, and the `n` in `git commit -mno` as `--no-verify` and refuses an
-    ordinary commit. Case is significant throughout: `-D` and `-d` are different
-    options, and `rm -R` is as recursive as `rm -r`.
+    `action` names the Git subcommand, and is used only to look up which of its
+    short options swallow the rest of their token as a value. Naming them is the
+    whole point. A generic character search over everything after a dash reads
+    the `n` in `git clean -enode_modules` as `--dry-run` and waves a destructive
+    clean through, and the `n` in `git commit -mno` as `--no-verify` and refuses
+    an ordinary commit. Case is significant: `-D` and `-d` are different options.
+
+    Several letters may be asked about at once, so "any of these means
+    destructive" is one pass over the arguments rather than one pass per letter.
     """
+    value_taking = VALUE_TAKING.get(action, "")
     for token in arguments:
         if token == "--":
             break  # a POSIX end-of-options marker; the rest are operands
         if not token.startswith("-") or token.startswith("--") or len(token) < 2:
             continue
         for character in token[1:]:
-            if character == letter:
+            if character in letters:
                 return True
             if character in value_taking:
                 break  # the rest of this token is that option's value, not flags
     return False
 
 
-def long_option(arguments: list[str], names: frozenset[str]) -> bool:
+def long_option(arguments: list[str], *names: str) -> bool:
     """True when any of `names` appears as a long option, with or without a value."""
     for token in arguments:
         if token == "--":
@@ -551,12 +548,16 @@ def long_option(arguments: list[str], names: frozenset[str]) -> bool:
     return False
 
 
-# Short options that take a value, per command. Anything omitted here is read as
-# a plain flag, so an addition is safe and an omission is a false reading.
-COMMIT_VALUE_OPTIONS = "mFcCtSu"
-CLEAN_VALUE_OPTIONS = "e"
-RESTORE_VALUE_OPTIONS = "s"
-BRANCH_VALUE_OPTIONS = "u"
+# Short options that take a value, keyed by the subcommand they belong to. A
+# subcommand absent here has none, which is why the default is a declared empty
+# string rather than an argument each caller has to remember to pass — forgetting
+# it was silent, and produced exactly the misreading the parameter exists to stop.
+VALUE_TAKING = {
+    "commit": "mFcCtSu",
+    "clean": "e",
+    "restore": "s",
+    "branch": "u",
+}
 
 
 def skips_commit_hooks(action: str, arguments: list[str]) -> bool:
@@ -567,7 +568,7 @@ def skips_commit_hooks(action: str, arguments: list[str]) -> bool:
     as --no-verify everywhere would refuse a pile of harmless commands, which is
     how a real alarm gets tuned out.
     """
-    return action == "commit" and short_option(arguments, "n", COMMIT_VALUE_OPTIONS)
+    return action == "commit" and short_option(arguments, "n", action)
 
 
 HOOK_BYPASS = "bypassing repository Git hooks is outside the allowed workflow"
@@ -576,7 +577,7 @@ HOOK_BYPASS = "bypassing repository Git hooks is outside the allowed workflow"
 def hard_git_denial(calls: list[tuple[str, list[str], list[str], str]]) -> str | None:
     for action, arguments, tokens, prefix in calls:
         if (
-            any(token == "--no-verify" or token.startswith("--no-verify=") for token in tokens)
+            long_option(tokens, "--no-verify")
             or skips_commit_hooks(action, arguments)
             or hooks_path_bypass(action, arguments, tokens)
             or GIT_CONFIG_ASSIGNMENT.search(prefix)
@@ -587,6 +588,36 @@ def hard_git_denial(calls: list[tuple[str, list[str], list[str], str]]) -> str |
     return None
 
 
+def discards_work(action: str, arguments: list[str]) -> bool:
+    """Whether this Git subcommand discards work or makes it hard to recover.
+
+    One branch per subcommand, so a `git status` pays for none of them — the
+    option scans below used to run for every recognized Git call and be thrown
+    away for all but two of them.
+    """
+    if action == "reset":
+        return long_option(arguments, "--hard")
+    if action == "restore":
+        staged = long_option(arguments, "--staged") or short_option(arguments, "S", action)
+        worktree = long_option(arguments, "--worktree") or short_option(arguments, "W", action)
+        return worktree or not staged
+    if action == "checkout":
+        return True
+    if action == "clean":
+        return not long_option(arguments, "--dry-run") and not short_option(arguments, "n", action)
+    if action == "branch":
+        # `-Df` is `git branch -D --force`; exact token membership saw neither
+        # half of it and deleted an unmerged branch without asking.
+        return long_option(arguments, "--delete", "--force") or short_option(
+            arguments, "DdfM", action
+        )
+    if action == "stash":
+        return bool({"drop", "clear"}.intersection(argument.lower() for argument in arguments))
+    if action == "worktree":
+        return "remove" in arguments and long_option(arguments, "--force")
+    return False
+
+
 def risky_git(command: str, payload: dict[str, Any]) -> Decision:
     calls = git_calls(command)
     hard = hard_git_denial(calls)
@@ -595,11 +626,15 @@ def risky_git(command: str, payload: dict[str, Any]) -> Decision:
 
     for action, arguments, _tokens, _prefix in calls:
         if action in {"push", "send-pack"}:
-            rewriting = any(
-                token in {"-f", "--force", "--force-with-lease", "--force-if-includes"}
-                or token.startswith(("--force=", "--force-with-lease=", "--force-if-includes="))
-                or token.startswith("+")
-                for token in arguments
+            # Read with the same two helpers as everything else. The exact-token
+            # membership this replaces missed a bundled `-fu`, which still asked
+            # — but asked only to "publish", understating what was being agreed
+            # to. One idiom for "is this option present" means one thing to get
+            # right, and the next subcommand added here inherits it.
+            rewriting = (
+                long_option(arguments, "--force", "--force-with-lease", "--force-if-includes")
+                or short_option(arguments, "f", action)
+                or any(token.startswith("+") for token in arguments)
             )
             if rewriting:
                 return deny_or_ask(
@@ -610,37 +645,9 @@ def risky_git(command: str, payload: dict[str, Any]) -> Decision:
             return deny_or_ask(payload, "publish commits or refs to a remote repository")
         if action == "merge":
             return deny_or_ask(payload, "merge histories, which Tyrel reserves to himself")
-        if action == "rebase" or (action == "commit" and "--amend" in arguments):
+        if action == "rebase" or (action == "commit" and long_option(arguments, "--amend")):
             return deny_or_ask(payload, "rewrite local commit history")
-        restore_staged = "--staged" in arguments or short_option(
-            arguments, "S", RESTORE_VALUE_OPTIONS
-        )
-        restore_worktree = "--worktree" in arguments or short_option(
-            arguments, "W", RESTORE_VALUE_OPTIONS
-        )
-        # `-Df` is `git branch -D --force`; exact token membership saw neither
-        # half of it and deleted an unmerged branch without asking.
-        branch_destructive = long_option(arguments, frozenset({"--delete", "--force"})) or any(
-            short_option(arguments, letter, BRANCH_VALUE_OPTIONS) for letter in ("D", "d", "f", "M")
-        )
-        destructive = (
-            action == "reset"
-            and "--hard" in arguments
-            or action == "restore"
-            and (restore_worktree or not restore_staged)
-            or action == "checkout"
-            or action == "clean"
-            and not long_option(arguments, frozenset({"--dry-run"}))
-            and not short_option(arguments, "n", CLEAN_VALUE_OPTIONS)
-            or action == "branch"
-            and branch_destructive
-            or action == "stash"
-            and bool({"drop", "clear"}.intersection(argument.lower() for argument in arguments))
-            or action == "worktree"
-            and "remove" in arguments
-            and "--force" in arguments
-        )
-        if destructive:
+        if discards_work(action, arguments):
             return deny_or_ask(payload, "discard or make work difficult to recover")
     if has(command, r"\bgh\s+pr\s+merge\b"):
         return deny_or_ask(payload, "merge histories, which Tyrel reserves to himself")
@@ -667,11 +674,13 @@ def rm_arguments(command: str) -> tuple[list[str], list[str]] | None:
     return flags, operands
 
 
-# Syntax the shell rewrites before `rm` ever sees the path. `normpath` resolves a
-# literal `..`, but nothing here can resolve `$p` — and `p=../../..` followed by
-# `rm -rf workbench/scratch/$p` deletes far outside the drawer this exemption is
-# for. An operand carrying any of these is not literal, so it is not exempt.
-EXPANDS_BEFORE_EXECUTION = re.compile(r"[$`{}*?\[\]~()]")
+# The characters a literal path may contain. Stated as what IS allowed, not as
+# what is forbidden: this gates an *exemption* from the deletion guard, so an
+# incomplete list must fail toward asking. A denylist of shell metacharacters
+# would exempt every character nobody thought of — and `normpath` resolves a
+# literal `..`, but nothing can resolve `$p`, so `p=../../..` followed by
+# `rm -rf workbench/scratch/$p` deletes far outside the drawer.
+LITERAL_PATH = re.compile(r"[A-Za-z0-9._/-]+")
 
 
 def under_scratch(operand: str) -> bool:
@@ -679,10 +688,10 @@ def under_scratch(operand: str) -> bool:
 
     `normpath` resolves the `./` and `..` spellings, so a traversal back out of
     scratch stops being exempt rather than reading as a scratch path. Anything
-    the shell would expand first is refused outright rather than guessed at.
+    that is not a plain literal path is refused outright rather than guessed at.
     """
     cleaned = operand.strip()
-    if not cleaned or EXPANDS_BEFORE_EXECUTION.search(cleaned):
+    if not LITERAL_PATH.fullmatch(cleaned):
         return False
     cleaned = os.path.normpath(cleaned)
     return cleaned == "workbench/scratch" or cleaned.startswith("workbench/scratch" + os.sep)
@@ -698,16 +707,10 @@ def protected_delete(command: str, payload: dict[str, Any]) -> Decision:
     # waved through with the home directory attached to it.
     if operands and all(under_scratch(operand) for operand in operands):
         return None
-    # `-R` is documented recursive on both BSD and GNU rm, and the long spellings
-    # are the same command written out. Only lowercase bundled `-r` was read, so
-    # `rm -Rf src` and `rm --recursive --force src` deleted without asking while
-    # `rm -rf src` asked.
-    recursive = (
-        short_option(flags, "r")
-        or short_option(flags, "R")
-        or long_option(flags, frozenset({"--recursive"}))
-    )
-    forced = short_option(flags, "f") or long_option(flags, frozenset({"--force"}))
+    # `-R` is recursive on both BSD and GNU rm. Only lowercase bundled `-r` was
+    # read, so `rm -Rf src` deleted without asking while `rm -rf src` asked.
+    recursive = short_option(flags, "rR") or long_option(flags, "--recursive")
+    forced = short_option(flags, "f") or long_option(flags, "--force")
     broad = recursive and forced
     protected = has(
         command,
@@ -720,7 +723,12 @@ def protected_delete(command: str, payload: dict[str, Any]) -> Decision:
     return None
 
 
-_GOVERNING_NAMES = r"(?:CLAUDE|GOALS|GOVERNANCE|ARCHITECTURE|GLOSSARY|README)\.md"
+# Built from GOVERNING_DOCUMENTS so the Write-tool guard and the shell guard can
+# never disagree about what governs. Spelled out separately, a seventh document
+# would have been added to one and forgotten in the other — silently.
+_GOVERNING_NAMES = "(?:{})".format(
+    "|".join(re.escape(name) for name in sorted(GOVERNING_DOCUMENTS))
+)
 # Only a document at the repository root governs anything. `operations/README.md`
 # is an ordinary file, and refusing to `grep` it under hard rule 10 was a refusal
 # with no appeal against a read — and it contradicted this file's own test that a
@@ -873,6 +881,7 @@ def has_mutating_method(value: Any) -> bool:
 
 
 CAMEL_PIECE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+NAME_SEPARATOR = re.compile(r"[^A-Za-z0-9]+")
 
 
 def tool_segments(tool: str) -> set[str]:
@@ -885,10 +894,7 @@ def tool_segments(tool: str) -> set[str]:
     session. camelCase is the MCP naming norm and every test here used snake.
     """
     segments: set[str] = set()
-    for part in re.split(r"[^A-Za-z0-9]+", tool):
-        if not part:
-            continue
-        segments.add(part.lower())
+    for part in NAME_SEPARATOR.split(tool):
         segments.update(piece.lower() for piece in CAMEL_PIECE.findall(part))
     return segments
 

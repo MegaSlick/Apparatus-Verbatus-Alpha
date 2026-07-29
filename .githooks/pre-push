@@ -33,36 +33,31 @@ block() {
 [ -f "$ingress" ] ||
   block "$ingress is missing; outgoing history cannot be checked."
 
-# Who reviewed a commit is read from the commit itself. A local receipt file
-# recorded what the operator said happened, proved nothing, never left this
-# machine, and needed a lock, a staleness reclaim and two credential-scanner
-# modes to maintain. `Reviewed-by:` trailers cost one line, travel with the
-# history, and are visible to anyone reading it later.
+# Who reviewed a commit is read from its `Reviewed-by:` trailers; CLAUDE.md holds
+# why, under "The commit is the record".
 #
-# The scan is bounded so a large first push does not walk an entire history.
+# The scan is bounded so a large first push does not walk an entire history, and
+# one MORE than the bound is fetched so passing it is visible rather than silent.
+# A truncated count reported as a total would be wrong on exactly the push where
+# coverage matters most, which is the failure GOVERNANCE 2 exists to prevent.
 review_scan_limit=200
 
-outgoing_commits() {
-  # What this push would add. A brand-new ref has no remote side to subtract
-  # from, so everything not already on a remote counts as outgoing.
+outgoing_review_lines() {
+  # One line per outgoing commit, holding its Reviewed-by trailers separated by
+  # US (0x1f), prefixed with `-` so a commit naming nobody is an empty field
+  # rather than an empty line that command substitution would strip away.
+  #
+  # `git log` walks the range and formats the trailers itself; asking it once
+  # replaces a shell loop that ran `git show` per commit — up to 200 processes
+  # where one does. A brand-new ref has no remote side to subtract from, so
+  # everything not already on a remote counts as outgoing.
+  format="-%(trailers:key=Reviewed-by,valueonly,separator=%x1f)"
+  count=$((review_scan_limit + 1))
   if is_null_oid "$2"; then
-    git rev-list --max-count="$review_scan_limit" "$1" --not --remotes
+    git log --max-count="$count" --format="$format" "$1" --not --remotes
   else
-    git rev-list --max-count="$review_scan_limit" "$2..$1"
+    git log --max-count="$count" --format="$format" "$2..$1"
   fi
-}
-
-distinct_reviewers() {
-  awk '
-    {
-      display = $0
-      key = tolower($0)
-      gsub(/[ \t]+/, " ", key)
-      sub(/^ /, "", key)
-      sub(/ $/, "", key)
-      if (key != "" && !seen[key]++) print display
-    }
-  '
 }
 
 print_review_checklist() {
@@ -70,46 +65,42 @@ print_review_checklist() {
   name=$2
   local_commit=$3
   remote_commit=$4
-  short=$(printf '%s' "$local_commit" | cut -c1-8)
+  short=${local_commit%"${local_commit#????????}"}
 
   echo "" >&2
   echo "  review checklist — $kind '$name' at $short" >&2
 
-  if ! commits=$(outgoing_commits "$local_commit" "$remote_commit" 2>/dev/null); then
+  if ! reviewed=$(outgoing_review_lines "$local_commit" "$remote_commit" 2>/dev/null); then
     echo "    [?] could not work out which commits this push adds." >&2
-    echo "    Checklist only: Tyrel decides whether the coverage is enough." >&2
-    echo "" >&2
-    return 0
-  fi
-
-  total=0
-  unreviewed=0
-  trailers=""
-  # Word splitting is intended and safe: rev-list emits one hex object name
-  # per line and nothing else.
-  # shellcheck disable=SC2086
-  for commit in $commits; do
-    total=$((total + 1))
-    found=$(git show --no-patch \
-      --format='%(trailers:key=Reviewed-by,valueonly)' "$commit" 2>/dev/null) || found=""
-    if [ -z "$(printf '%s' "$found" | tr -d '[:space:]')" ]; then
-      unreviewed=$((unreviewed + 1))
-    else
-      trailers="$trailers$found
-"
-    fi
-  done
-
-  names=$(printf '%s' "$trailers" | distinct_reviewers)
-  if [ -n "$names" ]; then
-    printf '%s\n' "$names" | while IFS= read -r reviewer; do
-      [ -z "$reviewer" ] || echo "    [x] $reviewer" >&2
-    done
+  elif [ -z "$reviewed" ]; then
+    echo "    [ ] no outgoing commits to review." >&2
   else
-    echo "    [ ] no commit in this push names a reviewer." >&2
-  fi
-  if [ "$unreviewed" -gt 0 ] && [ -n "$names" ]; then
-    echo "    $unreviewed of $total outgoing commit(s) name no reviewer." >&2
+    printf '%s\n' "$reviewed" | awk -v limit="$review_scan_limit" '
+      { total++ }
+      total > limit { truncated = 1; next }
+      {
+        line = substr($0, 2)
+        if (line == "") { unreviewed++; next }
+        fields = split(line, parts, "\037")
+        for (i = 1; i <= fields; i++) {
+          key = tolower(parts[i])
+          gsub(/^[ \t]+|[ \t]+$/, "", key)
+          gsub(/[ \t]+/, " ", key)
+          if (key != "" && !seen[key]++) named[++reviewers] = parts[i]
+        }
+      }
+      END {
+        for (i = 1; i <= reviewers; i++) print "    [x] " named[i]
+        if (reviewers == 0)
+          print "    [ ] no commit in this push names a reviewer."
+        else if (unreviewed > 0)
+          print "    " unreviewed " of " (total > limit ? limit : total) \
+                " outgoing commit(s) name no reviewer."
+        if (truncated)
+          print "    [?] more than " limit " outgoing commits; only the first " \
+                limit " were read."
+      }
+    ' >&2
   fi
   echo "    Checklist only: Tyrel decides whether the coverage is enough." >&2
   echo "" >&2

@@ -31,9 +31,9 @@ operations/notify/notify.sh"
 # shellcheck disable=SC2086
 shellcheck $scripts
 # `sh -n` parses only its first operand and turns the rest into positional
-# parameters, so passing the whole list checked one file and silently ignored
-# fourteen. Walk them one at a time; `set -e` makes the first syntax error the
-# exit status of this check.
+# parameters, so passing the whole list checked the first file and silently
+# ignored the rest. Walk them one at a time; `set -e` makes the first syntax
+# error the exit status of this check.
 #
 # Prefer dash where it exists. On macOS `/bin/sh` is bash in POSIX mode, which
 # parses `a=(1 2)`, `function f() {}` and `for ((;;))` without complaint; CI runs

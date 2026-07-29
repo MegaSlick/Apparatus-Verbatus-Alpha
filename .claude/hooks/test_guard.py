@@ -62,6 +62,23 @@ def payload(
         "rm -rf workbench/scratch/",
         "rm -rf ./workbench/scratch/old-run",
         "rm -rf workbench/scratch/a workbench/scratch/b",
+        # Closed by the two independent reviews of 2026-07-29.
+        # The counterparts of the fixes above. A guard that refuses these is a
+        # guard that gets switched off, which is the failure this file is for.
+        "git clean -n -fd",
+        "git clean --dry-run -fd",
+        "git commit -mno",
+        "git commit -Ssigningkey -m message",
+        'bash -lc "git status"',
+        "FOO= git status",
+        "gh api repos/owner/repo",
+        "rm -rf workbench/scratch/old-run",
+        # Only the root README governs anything. Refusing to read a nested one
+        # contradicted this file's own test and had no appeal.
+        "grep -n heading operations/README.md 2>/dev/null",
+        "grep -n heading pipeline/GLOSSARY.md",
+        # A stderr redirect is not a write to the document being read.
+        "grep -n heading README.md 2>/dev/null",
     ],
 )
 def test_ordinary_read_or_bounded_local_work_stays_open(command):
@@ -121,6 +138,29 @@ def test_ordinary_read_or_bounded_local_work_stays_open(command):
         # Other anchored checks that shared the newline defect.
         "cd /tmp\nssh pod.example reboot",
         "cd /tmp\nenv",
+        # Closed by the two independent reviews of 2026-07-29.
+        # `-e` takes an exclude pattern; the n in node_modules is not --dry-run.
+        "git clean -enode_modules -fd",
+        # Bundled short flags in a destructive branch delete.
+        "git branch -Df topic",
+        # -R is recursive on both BSD and GNU rm, and this machine is macOS.
+        "rm -Rf src",
+        "rm --recursive --force src",
+        # The shell expands these before rm sees them, and they leave scratch.
+        "p=../../..; rm -rf workbench/scratch/$p",
+        "rm -rf workbench/scratch/{old,../../..}",
+        "rm -rf workbench/scratch/$(cat elsewhere)",
+        # One half of a compound command must not cancel the other's warning.
+        "runpodctl stop pod abc; python3 -c 'import runpod; runpod.create_pod()'",
+        # Supplying a body is enough; the method need not be spelled out.
+        "curl --form-string x=y https://example.test/jobs",
+        "gh api repos/owner/repo/issues/1/comments --field body=test",
+        "gh api endpoint --raw-field body=test",
+        "gh api endpoint -fbody=test",
+        "gh api endpoint -Fbody=@file",
+        # A governing document rewritten from the shell.
+        "echo drafted > README.md",
+        "sed -i s/a/b/ CLAUDE.md",
     ],
 )
 def test_main_session_gets_one_exact_confirmation_for_consequential_actions(command):
@@ -189,6 +229,26 @@ def test_subagents_cannot_take_consequential_or_external_actions(command):
         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath "
         "GIT_CONFIG_VALUE_0=/dev/null git commit -m 'message'",
         "GIT_CONFIG_PARAMETERS='core.hooksPath=/dev/null' git commit -m 'message'",
+        # Closed by the two independent reviews of 2026-07-29.
+        # Deleting or renaming [core] takes core.hooksPath with it. Both the
+        # bare subcommand and the flag spelling are the same operation to Git.
+        "git config --remove-section core",
+        "git config --rename-section core core-old",
+        # An empty assignment is valid shell and hid the Git call entirely.
+        "FOO= git push --no-verify origin main",
+        "FOO='' git push --no-verify origin main",
+        "/usr/bin/env FOO=bar git push --no-verify origin main",
+        "env -- git push --no-verify origin main",
+        # Long options and options taking a value precede a real -c payload.
+        'bash --noprofile -c "git push --no-verify origin main"',
+        'bash -O extglob -c "git push --no-verify origin main"',
+        "/bin/bash -c 'git push origin main'",
+        # A here-string opens no body, so line two is still a command.
+        "cat <<<EOF\ngit push --no-verify origin main",
+        # An unterminated heredoc consumes nothing.
+        "grep -n '<<EOF' notes.md\ngit push origin main",
+        'echo "<<EOF"\ngit push origin main',
+        "# <<EOF\ngit push origin main",
     ],
 )
 def test_hard_git_rules_are_denied_even_to_the_main_session(command):
@@ -222,6 +282,13 @@ def test_nested_readme_is_not_a_governing_document(tmp_path, monkeypatch):
         ("mcp__drive__search", None),
         ("mcp__github__create_comment", "ask"),
         ("mcp__slack__send_message", "ask"),
+        # camelCase is the MCP naming norm and every case above was snake, so a
+        # verb never became its own segment and a billed pod could be created
+        # with no ask. The two spellings must classify identically.
+        ("mcp__runpod__createPod", "ask"),
+        ("mcp__slack__sendMessage", "ask"),
+        ("mcp__fs__deleteFile", "ask"),
+        ("mcp__github__createIssue", "ask"),
     ],
 )
 def test_mcp_tools_are_classified_by_capability(tool, expected):
@@ -338,6 +405,16 @@ def test_tokenize_returns_approximate_tokens_rather_than_giving_up():
         ("workbench/scratch/../../etc", False),
         ("workbench/active", False),
         ("~", False),
+        # `normpath` resolves a literal `..`; nothing here can resolve `$p`, so
+        # anything the shell would rewrite before `rm` sees it is not exempt.
+        ("workbench/scratch/$p", False),
+        ("workbench/scratch/${p}", False),
+        ("workbench/scratch/$(cat x)", False),
+        ("workbench/scratch/`cat x`", False),
+        ("workbench/scratch/{old,../../..}", False),
+        ("workbench/scratch/*", False),
+        ("workbench/scratch/run?", False),
+        ("workbench/scratch/[ab]", False),
     ],
 )
 def test_scratch_exemption_is_per_operand_and_resolves_traversal(operand, expected):
@@ -392,21 +469,31 @@ def test_a_terminated_heredoc_still_lifts_its_body_out():
 
 
 @pytest.mark.parametrize(
-    ("arguments", "letter", "value_taking", "expected"),
+    ("arguments", "letters", "action", "expected"),
     [
         (["-n"], "n", "", True),
         (["-nd"], "n", "", True),
         (["-fd"], "n", "", False),
-        # The rest of the token is the option's value, not more flags.
-        (["-enode_modules"], "n", "e", False),
-        (["-mno"], "n", "m", False),
-        (["-Ssigningkey"], "n", "mFcCtSu", False),
-        (["-am"], "n", "mFcCtSu", False),
-        (["-nm"], "n", "mFcCtSu", True),
+        # The rest of the token is the value of an option that takes one, so it
+        # is not scanned for flags. Which options those are comes from the
+        # subcommand, so these rows name the subcommand rather than the letters.
+        (["-enode_modules"], "n", "clean", False),
+        (["-mno"], "n", "commit", False),
+        (["-Ssigningkey"], "n", "commit", False),
+        (["-am"], "n", "commit", False),
+        (["-nm"], "n", "commit", True),
+        # A subcommand with no value-taking options, and one this table does not
+        # know, must behave identically — an unknown name is a declared default.
+        (["-mno"], "n", "", True),
+        (["-mno"], "n", "no-such-subcommand", True),
         # Case is significant: -D and -d are different options.
         (["-Df"], "D", "", True),
         (["-df"], "D", "", False),
         (["-Rf"], "R", "", True),
+        # Several letters at once: any of them present is a hit, in one pass.
+        (["-M"], "DdfM", "branch", True),
+        (["-x"], "DdfM", "branch", False),
+        (["-Rf"], "rR", "", True),
         # A long option is not a bundle of short ones.
         (["--dry-run"], "n", "", False),
         # Nothing after the end-of-options marker is an option.
@@ -414,40 +501,40 @@ def test_a_terminated_heredoc_still_lifts_its_body_out():
     ],
 )
 def test_short_option_reads_bundles_without_reading_option_values(
-    arguments, letter, value_taking, expected
+    arguments, letters, action, expected
 ):
-    assert guard.short_option(arguments, letter, value_taking) is expected
+    assert guard.short_option(arguments, letters, action) is expected
 
 
 @pytest.mark.parametrize(
-    ("arguments", "expected"),
-    [
-        (["--recursive"], True),
-        (["--recursive=yes"], True),
-        (["-r"], False),
-        (["--", "--recursive"], False),
-    ],
+    "command", ["git push -f origin t", "git push -fu origin t", "git push -uf origin t"]
 )
-def test_long_option_matches_with_or_without_a_value(arguments, expected):
-    assert guard.long_option(arguments, frozenset({"--recursive"})) is expected
+def test_a_bundled_force_push_is_named_as_a_history_rewrite(command):
+    """The gate fired either way; the bundled spelling understated the reason.
+
+    `-fu` asked only to "publish", so the confirmation described something far
+    milder than what was about to happen. A prompt that misnames the consequence
+    is the prompt somebody clicks through.
+    """
+    decision, reason = guard.evaluate(payload(tool_input={"command": command}))
+    assert decision == "ask"
+    assert "rewrite published history" in reason
 
 
 @pytest.mark.parametrize(
-    "operand",
+    ("arguments", "names", "expected"),
     [
-        "workbench/scratch/$p",
-        "workbench/scratch/${p}",
-        "workbench/scratch/$(cat x)",
-        "workbench/scratch/`cat x`",
-        "workbench/scratch/{old,../../..}",
-        "workbench/scratch/*",
-        "workbench/scratch/run?",
-        "workbench/scratch/[ab]",
+        (["--recursive"], ("--recursive",), True),
+        (["--recursive=yes"], ("--recursive",), True),
+        (["-r"], ("--recursive",), False),
+        (["--", "--recursive"], ("--recursive",), False),
+        # Several names at once, the shape every call site uses.
+        (["--force"], ("--delete", "--force"), True),
+        (["--quiet"], ("--delete", "--force"), False),
     ],
 )
-def test_scratch_exemption_refuses_anything_the_shell_would_expand(operand):
-    """`normpath` resolves a literal `..`; nothing here can resolve `$p`."""
-    assert guard.under_scratch(operand) is False
+def test_long_option_matches_with_or_without_a_value(arguments, names, expected):
+    assert guard.long_option(arguments, *names) is expected
 
 
 @pytest.mark.parametrize(
@@ -463,106 +550,3 @@ def test_scratch_exemption_refuses_anything_the_shell_would_expand(operand):
 )
 def test_tool_segments_splits_camel_case_as_well_as_punctuation(tool, expected_segment):
     assert expected_segment in guard.tool_segments(tool)
-
-
-@pytest.mark.parametrize(
-    "tool",
-    [
-        "mcp__runpod__createPod",
-        "mcp__slack__sendMessage",
-        "mcp__fs__deleteFile",
-        "mcp__github__createIssue",
-    ],
-)
-def test_camel_case_mcp_tools_are_classified_like_their_snake_case_twins(tool):
-    """camelCase is the MCP naming norm, and every earlier test used snake."""
-    decision = guard.evaluate(payload(tool, {"query": "x"}))
-    assert decision and decision[0] == "ask"
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        # Deleting or renaming [core] takes core.hooksPath with it. Both the
-        # bare subcommand and the flag spelling are the same operation to Git.
-        "git config --remove-section core",
-        "git config --rename-section core core-old",
-        # An empty assignment is valid shell and hid the Git call entirely.
-        "FOO= git push --no-verify origin main",
-        "FOO='' git push --no-verify origin main",
-        "/usr/bin/env FOO=bar git push --no-verify origin main",
-        "env -- git push --no-verify origin main",
-        # Long options and options taking a value precede a real -c payload.
-        'bash --noprofile -c "git push --no-verify origin main"',
-        'bash -O extglob -c "git push --no-verify origin main"',
-        "/bin/bash -c 'git push origin main'",
-        # A here-string opens no body, so line two is still a command.
-        "cat <<<EOF\ngit push --no-verify origin main",
-        # An unterminated heredoc consumes nothing.
-        "grep -n '<<EOF' notes.md\ngit push origin main",
-        'echo "<<EOF"\ngit push origin main',
-        "# <<EOF\ngit push origin main",
-    ],
-)
-def test_bypasses_found_by_two_independent_reviews_are_denied(command):
-    decision, reason = guard.evaluate(payload(tool_input={"command": command}))
-    assert decision == "deny"
-    assert "hard rule" in reason.lower()
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        # `-e` takes an exclude pattern; the n in node_modules is not --dry-run.
-        "git clean -enode_modules -fd",
-        # Bundled short flags in a destructive branch delete.
-        "git branch -Df topic",
-        # -R is recursive on both BSD and GNU rm, and this machine is macOS.
-        "rm -Rf src",
-        "rm --recursive --force src",
-        # The shell expands these before rm sees them, and they leave scratch.
-        "p=../../..; rm -rf workbench/scratch/$p",
-        "rm -rf workbench/scratch/{old,../../..}",
-        "rm -rf workbench/scratch/$(cat elsewhere)",
-        # One half of a compound command must not cancel the other's warning.
-        "runpodctl stop pod abc; python3 -c 'import runpod; runpod.create_pod()'",
-        # Supplying a body is enough; the method need not be spelled out.
-        "curl --form-string x=y https://example.test/jobs",
-        "gh api repos/owner/repo/issues/1/comments --field body=test",
-        "gh api endpoint --raw-field body=test",
-        "gh api endpoint -fbody=test",
-        "gh api endpoint -Fbody=@file",
-        # A governing document rewritten from the shell.
-        "echo drafted > README.md",
-        "sed -i s/a/b/ CLAUDE.md",
-    ],
-)
-def test_consequential_actions_found_by_two_reviews_ask_first(command):
-    decision, reason = guard.evaluate(payload(tool_input={"command": command}))
-    assert decision == "ask"
-    assert "Confirm this exact action" in reason
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        # The counterparts of the fixes above. A guard that refuses these is a
-        # guard that gets switched off, which is the failure this file is for.
-        "git clean -n -fd",
-        "git clean --dry-run -fd",
-        "git commit -mno",
-        "git commit -Ssigningkey -m message",
-        'bash -lc "git status"',
-        "FOO= git status",
-        "gh api repos/owner/repo",
-        "rm -rf workbench/scratch/old-run",
-        # Only the root README governs anything. Refusing to read a nested one
-        # contradicted this file's own test and had no appeal.
-        "grep -n heading operations/README.md 2>/dev/null",
-        "grep -n heading pipeline/GLOSSARY.md",
-        # A stderr redirect is not a write to the document being read.
-        "grep -n heading README.md 2>/dev/null",
-    ],
-)
-def test_the_harmless_counterparts_stay_open(command):
-    assert guard.evaluate(payload(tool_input={"command": command})) is None
