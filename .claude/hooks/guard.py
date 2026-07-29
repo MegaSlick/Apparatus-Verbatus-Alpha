@@ -838,7 +838,7 @@ def external_shell_mutation(command: str, payload: dict[str, Any]) -> Decision:
     if has(command, r"\bgh\s+api\b") and has(
         command,
         r"(?:--method|-X)[=\s]+(?:POST|PUT|PATCH|DELETE)\b|"
-        r"(?:^|\s)--(?:raw-)?field(?:[=\s]|$)|"
+        r"(?:^|\s)--(?:raw-)?field(?:[=\s]|$)|(?:^|\s)--input(?:[=\s]|$)|"
         r"(?:^|\s)-[fF]\S*(?=\s|$)",
     ):
         return deny_or_ask(payload, "send a state-changing GitHub API request")

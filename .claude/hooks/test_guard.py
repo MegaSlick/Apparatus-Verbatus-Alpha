@@ -158,6 +158,9 @@ def test_ordinary_read_or_bounded_local_work_stays_open(command):
         "gh api endpoint --raw-field body=test",
         "gh api endpoint -fbody=test",
         "gh api endpoint -Fbody=@file",
+        # `--input` supplies a body and makes gh api POST, exactly as a field does.
+        "gh api repos/o/r/pulls --input body.json",
+        "gh api repos/o/r/pulls --input -",
         # A governing document rewritten from the shell.
         "echo drafted > README.md",
         "sed -i s/a/b/ CLAUDE.md",
