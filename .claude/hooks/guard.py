@@ -49,6 +49,12 @@ What it does not catch — each one verified against this file, not suspected:
     opaque; only the inline `-c` / `-e` forms are read at all.
   * a command assembled from variables, or arriving base64-encoded through a
     pipe. Any encoding is invisible here.
+  * a command reached indirectly rather than named. Dispatch is by basename,
+    so a git alias, `find -exec`, `env -S`, a glob or ANSI-C-quoted path
+    (`/usr/bin/g[i]t`, `g$'\x69't`), a renamed or symlinked binary, and a
+    module run with `python -m` all arrive under a name this file does not
+    look up. This is the general shape of the thing: what is recognised is a
+    *spelling*, and a spelling can always be changed.
   * HTTP clients other than those named above, and every language runtime other
     than Python and node/bun/deno — `perl -e` reaches the API untouched.
   * git plumbing spelled as its own binary — `git-push`, `git-send-pack` —
@@ -1634,20 +1640,33 @@ def check_rm(argv, command_cwd: str | None = None):
 
     records = _workbench_records()
     project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+
+    # An operand *inside* a records drawer is judged here. An operand that
+    # merely *contains* one is judged after the precious-path checks below,
+    # because `rm -rf ~` contains the workbench and saying so as the reason
+    # named the smallest true thing rather than the largest: the refusal was
+    # right and its explanation was misleading.
     for operand in operands:
         for path in _operand_paths(operand, project, command_cwd):
             for record in records:
-                if (
-                    path == record
-                    or path.startswith(record + os.sep)
-                    or record.startswith(path + os.sep)
-                ):
+                if path == record or path.startswith(record + os.sep):
                     deny(
                         f"delete of '{operand}' — workbench records outside "
                         f"scratch are not disposable"
                     )
 
+    def _containing_a_record():
+        for operand in operands:
+            for path in _operand_paths(operand, project, command_cwd):
+                for record in records:
+                    if record.startswith(path + os.sep):
+                        deny(
+                            f"delete of '{operand}' — workbench records outside "
+                            f"scratch are not disposable"
+                        )
+
     if not recursive:
+        _containing_a_record()
         return
 
     # Deny what is precious, rather than allowing only what is scratch. The
@@ -1686,6 +1705,8 @@ def check_rm(argv, command_cwd: str | None = None):
                         f"recursive delete of '{operand}' — it contains the "
                         f"repository or your home directory"
                     )
+
+    _containing_a_record()
 
 
 def check_aws(argv):

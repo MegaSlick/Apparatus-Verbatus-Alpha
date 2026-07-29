@@ -888,6 +888,13 @@ def test_blocks_extra(command, why):
 # in the same commit, so the file never advertises a hole it has closed or
 # hides one it still has.
 DOCUMENTED_GAPS = [
+    # Indirection, audit ledger L1 — a category rather than a bug. A text
+    # classifier over shell cannot be made complete, so what the file owes is
+    # an honest list, and this test is what keeps the list measured.
+    ("find . -name x -exec git push origin main ;", "find runs it; find is not dispatched"),
+    ('env -S "git push origin main"', "env -S re-splits a string into a command"),
+    ("/usr/bin/g[i]t push origin main", "a glob resolves to git after the guard has read it"),
+    ("python3 -m runpod_cli create pod", "a module run with -m is a script file by another name"),
     ("sh deploy.sh", "a script file is opaque"),
     ("python3 deploy.py", "so is a Python script file"),
     ("node deploy.js", "so is a node script file"),
@@ -1016,6 +1023,45 @@ def test_allows_mcp_payload(tool, payload, why):
 # narrowed to "Bash", or an interpreter that cannot start. Audit ledger L36 and
 # L9. These run what settings.json actually says, through a shell, the way the
 # hook runner does.
+
+# A refusal that gives the wrong reason is still a defect: it teaches the
+# session the wrong thing about its own rules, and it can drift indefinitely
+# while every block/allow test stays green. Audit ledger L10.
+REASONS = [
+    ("git push origin main", "main moves only by merging"),
+    ("git push --force origin work/topic", "force-push destroys work"),
+    ("git send-pack origin HEAD:main", "main moves only by merging"),
+    ("git config core.hooksPath /dev/null", "permanently disables the git hooks"),
+    ("git config --remove-section core", "dropping the [core] section"),
+    ("git clean -fdx", "git clean deletes untracked"),
+    ("git commit --no-verify -m x", "--no-verify skips the hooks"),
+    ("git reset --hard HEAD", "discards every uncommitted change"),
+    ("git branch -D work/topic", "forced branch delete"),
+    ("git worktree remove --force ../wt", "work another agent is holding"),
+    ("rm -rf ~", "your home directory"),
+    ("rm .githooks/pre-push", "is a Git hook"),
+    ("rm -rf workbench/active", "workbench records outside"),
+    (f"{RC} create pod", "creates pods"),
+    (f"{RC} start pod abc", "wakes a stopped pod"),
+    ("python3 - <<'EOF'\nprint(1)\nEOF", "opaque to the command guard"),
+    (f"curl -X POST https://{REST}/v1/pods", "writes to the RunPod API"),
+    (f"curl -X DELETE https://{API}/v1/networkvolumes/x", "network volume"),
+    ("aws s3 rm s3://bucket/x --recursive", "recursive S3 delete"),
+]
+
+
+@pytest.mark.parametrize("command,fragment", REASONS, ids=[c for c, _ in REASONS])
+def test_the_reason_names_the_rule(command, fragment):
+    said = reason(command)
+    assert said, f"expected a refusal for {command!r}"
+    assert fragment in said, f"refused for the wrong reason: {said!r} does not say {fragment!r}"
+
+
+def test_every_refusal_says_who_refused_and_who_to_ask():
+    said = reason("git push origin main")
+    assert said.startswith("Blocked by repo guard: "), said
+    assert said.endswith("Ask Tyrel."), said
+
 
 SETTINGS = Path(PROJECT) / ".claude" / "settings.json"
 
