@@ -25,15 +25,13 @@ def listed(value: str) -> set[str]:
     return {item.strip() for item in value.split(",") if item.strip()}
 
 
-def test_roster_has_the_six_declared_roles():
-    assert {path.stem for path in ROLE_FILES} == {
-        "auditor",
-        "consult",
-        "infra-worker",
-        "rebuilder",
-        "scout",
-        "worker",
-    }
+def test_the_roster_is_not_empty():
+    # Not a list of names: which roles exist is configuration Tyrel changes, and a
+    # test that pins the set makes deleting a role he does not want fail a check for
+    # no protective reason. What must hold is that the roster has entries at all —
+    # every bound below iterates ROLE_FILES, so an empty roster would pass them all
+    # vacuously and report a green suite over no enforcement.
+    assert ROLE_FILES, "no agent definitions found; every capability bound below is vacuous"
 
 
 def test_every_role_declares_identity_model_effort_and_tools():
