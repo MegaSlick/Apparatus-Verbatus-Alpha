@@ -41,13 +41,15 @@ fi
 # before a hook existed gives you that commit's hooks, not today's. Protections
 # travel with the branch. Going backwards in history goes backwards in guards.
 #
-# pre-merge-commit and pre-applypatch are in this list for a reason worth
-# stating: git runs neither `pre-commit` for a merge nor for `git am`, so those
-# two files are the only thing standing on the integration paths. A missing or
-# unexecutable one is a rule that is off without saying so, which is why chmod
-# failing here fails the whole install rather than warning.
+# pre-merge-commit, pre-applypatch and applypatch-msg are in this list for a
+# reason worth stating: git runs `pre-commit` for neither a merge nor `git am`,
+# and runs `commit-msg` for neither, so those three files are the only thing
+# standing on the integration paths. A missing or unexecutable one is a rule
+# that is off without saying so, which is why chmod failing here fails the whole
+# install rather than warning.
 if ! chmod +x .githooks/pre-commit .githooks/pre-merge-commit \
-           .githooks/pre-applypatch .githooks/pre-push .githooks/commit-msg \
+           .githooks/pre-applypatch .githooks/applypatch-msg \
+           .githooks/pre-push .githooks/commit-msg \
            .githooks/check-all.sh .githooks/check-documents.sh \
            .githooks/doc-allowlist.sh .githooks/record-audit.sh \
            .githooks/install.sh; then

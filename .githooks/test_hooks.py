@@ -1363,6 +1363,7 @@ def test_hook_installer_does_not_report_success_when_chmod_fails(tmp_path):
         "pre-commit",
         "pre-merge-commit",
         "pre-applypatch",
+        "applypatch-msg",
         "pre-push",
         "commit-msg",
         "check-all.sh",
@@ -1412,6 +1413,7 @@ def test_hook_installer_configures_hooks_after_prerequisites_succeed(tmp_path):
         "pre-commit",
         "pre-merge-commit",
         "pre-applypatch",
+        "applypatch-msg",
         "pre-push",
         "commit-msg",
         "check-all.sh",
@@ -1452,6 +1454,7 @@ def test_hook_installer_configures_hooks_after_prerequisites_succeed(tmp_path):
         "pre-commit",
         "pre-merge-commit",
         "pre-applypatch",
+        "applypatch-msg",
         "pre-push",
         "commit-msg",
         "record-audit.sh",
@@ -1478,6 +1481,7 @@ def test_hook_installer_does_not_configure_when_mkdir_fails(tmp_path):
         "pre-commit",
         "pre-merge-commit",
         "pre-applypatch",
+        "applypatch-msg",
         "pre-push",
         "commit-msg",
         "check-all.sh",
@@ -1788,6 +1792,7 @@ INTEGRATION_HOOKS = (
     "pre-commit",
     "pre-merge-commit",
     "pre-applypatch",
+    "applypatch-msg",
     "commit-msg",
     "check_ingress.py",
     "doc-allowlist.sh",
@@ -1857,11 +1862,61 @@ def make_integration_repo(path, *, secret=SAMPLE_SECRET):
     git(path, "add", "other.txt")
     git(path, "commit", "-qm", "diverge\n\nCo-Authored-By: Test <t@example.invalid>")
 
+    # A patch arrives as a file from outside this repository: its message is
+    # prose somebody else wrote, and its author header is text somebody else
+    # chose. Both are scanned by different hooks from the patch's content, so
+    # each gets its own fixture branch.
+    git(path, "switch", "-q", "work/base")
+    git(path, "switch", "-qc", "work/poisoned-message")
+    (path / "note-a.txt").write_text("a\n", encoding="utf-8")
+    git(path, "add", "note-a.txt")
+    git(
+        path,
+        "commit",
+        "-qm",
+        f"add note a\n\npasted from the bug report: {secret}"
+        "\n\nCo-Authored-By: Test <t@example.invalid>",
+    )
+
+    git(path, "switch", "-q", "work/base")
+    git(path, "switch", "-qc", "work/poisoned-author")
+    (path / "note-b.txt").write_text("b\n", encoding="utf-8")
+    git(path, "add", "note-b.txt")
+    git(
+        path,
+        "commit",
+        "-qm",
+        "add note b\n\nCo-Authored-By: Test <t@example.invalid>",
+        env={
+            "GIT_AUTHOR_NAME": f"Pasted {secret}",
+            "GIT_AUTHOR_EMAIL": "pasted@example.invalid",
+        },
+    )
+
+    git(path, "switch", "-q", "work/base")
+    git(path, "switch", "-qc", "work/unattributed")
+    (path / "note-c.txt").write_text("c\n", encoding="utf-8")
+    git(path, "add", "note-c.txt")
+    git(path, "commit", "-qm", "add note c with no attribution at all")
+
+    git(path, "switch", "-q", "work/base")
     patches = path.parent / "patches"
-    git(path, "format-patch", "-q", "-1", "work/poisoned", "-o", str(patches / "poisoned"))
-    git(path, "format-patch", "-q", "-1", "work/clean", "-o", str(patches / "clean"))
+    for branch in (
+        "poisoned",
+        "clean",
+        "poisoned-message",
+        "poisoned-author",
+        "unattributed",
+    ):
+        git(path, "format-patch", "-q", "-1", f"work/{branch}", "-o", str(patches / branch))
     install_integration_hooks(path)
     return patches
+
+
+def apply_patch(repo, patches, name, env=None):
+    files = sorted((patches / name).glob("*.patch"))
+    assert files, f"no patch was produced for {name}"
+    return git(repo, "am", *[str(p) for p in files], check=False, env=env)
 
 
 def head_of(repo):
@@ -1938,6 +1993,69 @@ def test_clean_git_am_still_applies(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert head_of(repo) != before
     assert (repo / "harmless.txt").is_file()
+
+
+def test_git_am_scans_the_patch_message(tmp_path):
+    # The likelier leak of the two. A patch file's commit message is prose
+    # written outside this repository — a mailing list post, a colleague's
+    # export, a bug report — and `git am` runs `applypatch-msg` for it, never
+    # `commit-msg`. Nothing read that text at all.
+    repo = tmp_path / "repo"
+    patches = make_integration_repo(repo)
+    git(repo, "switch", "-qc", "work/apply")
+    before = head_of(repo)
+    result = apply_patch(repo, patches, "poisoned-message")
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert SAMPLE_SECRET not in result.stdout + result.stderr
+    assert "credential" in result.stderr
+    assert head_of(repo) == before
+    assert not (repo / "note-a.txt").exists(), (
+        "applypatch-msg runs before the patch is applied; nothing should have landed"
+    )
+    git(repo, "am", "--abort", check=False)
+
+
+def test_git_am_scans_the_patch_author(tmp_path):
+    # The patch's author is not the local identity: at applypatch-msg time
+    # GIT_AUTHOR_NAME is unset and `git var` answers with the committer, so the
+    # incoming author has to be read from git's own author-script or it is not
+    # read at all.
+    repo = tmp_path / "repo"
+    patches = make_integration_repo(repo)
+    git(repo, "switch", "-qc", "work/apply")
+    before = head_of(repo)
+    result = apply_patch(repo, patches, "poisoned-author")
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert SAMPLE_SECRET not in result.stdout + result.stderr
+    assert "author" in result.stderr.lower()
+    assert head_of(repo) == before
+    git(repo, "am", "--abort", check=False)
+
+
+def test_git_am_requires_attribution_like_any_other_commit(tmp_path):
+    # `git am` never ran commit-msg, so a patch could land with no statement of
+    # which machine wrote it — the one thing every other commit here must carry.
+    repo = tmp_path / "repo"
+    patches = make_integration_repo(repo)
+    git(repo, "switch", "-qc", "work/apply")
+    before = head_of(repo)
+    result = apply_patch(repo, patches, "unattributed")
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "does not say which machine wrote it" in result.stderr
+    assert head_of(repo) == before
+    git(repo, "am", "--abort", check=False)
+
+
+def test_git_am_attribution_has_the_declared_escape_hatch(tmp_path):
+    # A patch from a human with no machine involved is exactly the case
+    # ALLOW_UNATTRIBUTED=1 exists for, and it must still work through `git am`.
+    repo = tmp_path / "repo"
+    patches = make_integration_repo(repo)
+    git(repo, "switch", "-qc", "work/apply")
+    before = head_of(repo)
+    result = apply_patch(repo, patches, "unattributed", env={"ALLOW_UNATTRIBUTED": "1"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert head_of(repo) != before
 
 
 def test_commit_message_hook_scans_the_author_header(tmp_path):
