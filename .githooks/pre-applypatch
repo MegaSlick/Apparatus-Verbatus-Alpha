@@ -23,13 +23,12 @@
 #    backend since git 2.26 is `merge`, which does not run this hook at all, so
 #    the ordinary rebase is untouched.
 #
-# 2. This hook sees the patch's CONTENT, not its authorship. Unlike `git commit`,
-#    `git am` does not run `commit-msg` at all, and it leaves the patch's author
-#    in .git/rebase-apply/author-script rather than in the environment (verified:
-#    GIT_AUTHOR_NAME is unset here). So an `am`-applied commit's message and
-#    author fields are still unscanned locally. Closing that needs an
-#    `applypatch-msg` hook, which is not this file. CI's history scan is what
-#    covers it until then.
+# 2. This hook sees the patch's CONTENT, not its authorship. The separate
+#    `applypatch-msg` hook runs earlier: it reads the author from
+#    .git/rebase-apply/author-script and delegates the message to `commit-msg`.
+#    Keeping those checks in their own hook matters because this hook receives
+#    neither field. See `applypatch-msg` for the remaining `git am --continue`
+#    gap and the CI history-scan fallback that covers it.
 
 hook="$(dirname "$0")/pre-commit"
 if [ ! -f "$hook" ]; then

@@ -1,14 +1,13 @@
 """The roster's own claims, asserted.
 
-Hard rule 10 — a spawned agent never edits the governing documents — currently has
-NO mechanical enforcement. The guard inspects Bash and MCP calls only, so `Write`
-and `Edit` are never classified, and `permissions.deny` is empty. That gap is a
-live finding for Tyrel to rule on.
+Hard rule 10 — a spawned agent never edits the governing documents — is stated in
+every writing role and has a tripwire in the Claude-side guard. Neither mechanism
+turns the rule into a security boundary, so a role must still carry both the
+prohibition and the instruction to propose or report the change instead.
 
-Until it is closed, the rule exists in exactly one place: the words in the role
-files that hold write tools. Words are a weak guard, but a word that silently goes
-missing is no guard at all — so these tests assert the words are present. They do
-not make the rule true; they make its absence loud.
+These tests inspect that dedicated policy bullet. Looking for either word anywhere
+in a role let unrelated prose satisfy the rule while the actual instruction was
+missing.
 """
 
 import re
@@ -46,6 +45,37 @@ def tools_of(path):
     return {t.strip() for t in declared.split(",") if t.strip()}
 
 
+def governing_policy(path):
+    """Return the one list item that tells a writing role how to handle governing docs."""
+    blocks = []
+    current = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("- "):
+            if current:
+                blocks.append("\n".join(current))
+            current = [line]
+        elif current:
+            if line.startswith("## "):
+                blocks.append("\n".join(current))
+                current = []
+            else:
+                current.append(line)
+    if current:
+        blocks.append("\n".join(current))
+
+    policies = [
+        block
+        for block in blocks
+        if re.search(r"\b(?:governing|canonical) documents?\b", block, re.I)
+        and re.search(r"\b(?:never edit|do not touch)\b", block, re.I)
+    ]
+    assert len(policies) == 1, (
+        f"{path.name} must carry exactly one governing-document policy bullet; "
+        f"found {len(policies)}"
+    )
+    return policies[0]
+
+
 def test_the_roster_is_not_empty():
     assert ROLES, "no role files found — did the roster move?"
 
@@ -66,14 +96,10 @@ def test_a_role_that_can_write_is_told_not_to_touch_the_governing_documents(path
     if not ({"Write", "Edit"} & tools):
         pytest.skip(f"{path.stem} holds no write tools")
 
-    body = path.read_text(encoding="utf-8").lower()
-    said_dont = any(
-        phrase in body for phrase in ("never edit a governing", "do not touch: canonical documents")
-    )
-    assert said_dont, (
+    policy = governing_policy(path)
+    assert re.search(r"\b(?:never edit|do not touch)\b", policy, re.I), (
         f"{path.name} can Write and Edit but never tells the agent to leave the "
-        "governing documents alone. Nothing mechanical stops it, so the sentence "
-        "in this file is the entire guard."
+        "governing documents alone in its policy block."
     )
 
 
@@ -84,10 +110,10 @@ def test_a_writing_role_says_to_propose_rather_than_amend(path):
     # dropping the change, or making it somewhere adjacent.
     if not ({"Write", "Edit"} & tools_of(path)):
         pytest.skip(f"{path.stem} holds no write tools")
-    body = path.read_text(encoding="utf-8").lower()
-    assert "propose" in body or "report" in body, (
+    policy = governing_policy(path)
+    assert re.search(r"\b(?:propos\w*|report\w*)\b", policy, re.I), (
         f"{path.name} forbids editing the governing documents but never says to "
-        "propose the change instead"
+        "propose or report the change in the same policy block"
     )
 
 

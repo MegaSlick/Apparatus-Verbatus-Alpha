@@ -453,6 +453,10 @@ def test_failed_start_does_not_suppress_the_retry(tmp_path):
     assert evidence["calls"].read_text(encoding="utf-8") == "callcall"
 
 
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores directory write permissions",
+)
 def test_start_reports_when_it_cannot_record_suppression_state(tmp_path):
     # The stamp lives in private/, so the way it becomes unwritable in the field
     # is a permission on that directory, not a broken `touch`.

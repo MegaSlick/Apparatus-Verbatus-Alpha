@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tomllib
+from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -177,22 +178,6 @@ def file_kind(mode: int) -> str:
     return "unknown file type"
 
 
-def read_regular_file(path: Path) -> bytes:
-    """Read a path only after the opened descriptor proves it is a regular file.
-
-    A FIFO at a scanned path blocks a plain open forever when no writer
-    exists, and this scanner runs from `pre-commit` and from CI: that is not a
-    failed scan but a session or a build that never finishes and never says
-    why. `O_NONBLOCK` makes the open itself return, and judging the type from
-    `fstat` on the descriptor rather than from the name closes the race where
-    a regular file is swapped for a FIFO between the check and the read.
-    A device that reads cleanly is refused too: a successful read is not
-    evidence that a regular file was scanned.
-    """
-    _, data = measured_read(path, None)
-    return data
-
-
 def measured_read(path: Path, max_bytes: int | None) -> tuple[int, bytes | None]:
     """Return a regular file's size, and its bytes only if it is small enough.
 
@@ -213,6 +198,22 @@ def measured_read(path: Path, max_bytes: int | None) -> tuple[int, bytes | None]
             return info.st_size, handle.read()
     finally:
         os.close(fd)
+
+
+def read_regular_file(path: Path) -> bytes:
+    """Read a path only after the opened descriptor proves it is a regular file.
+
+    A FIFO at a scanned path blocks a plain open forever when no writer
+    exists, and this scanner runs from `pre-commit` and from CI: that is not a
+    failed scan but a session or a build that never finishes and never says
+    why. `O_NONBLOCK` makes the open itself return, and judging the type from
+    `fstat` on the descriptor rather than from the name closes the race where
+    a regular file is swapped for a FIFO between the check and the read.
+    A device that reads cleanly is refused too: a successful read is not
+    evidence that a regular file was scanned.
+    """
+    _, data = measured_read(path, None)
+    return data
 
 
 @dataclass(frozen=True)
@@ -258,15 +259,13 @@ def git(*args: str) -> bytes:
     return result.stdout
 
 
-# The size cache holds an integer per object id, so it is bounded by the
-# object count at roughly a hundred bytes an entry; the data cache held every
-# blob of every commit for the length of a history scan, which is bounded by
-# nothing. Two ceilings replace that: at most this many entries, none of them
-# larger than the byte ceiling, so the cache costs 64 MiB at worst. Fixtures
-# above the byte ceiling are re-read per commit instead of retained — slower
-# on a history scan carrying large fixtures, and bounded.
-BLOB_CACHE_ENTRIES = 64
-BLOB_CACHE_MAX_BYTES = NORMAL_MAX_BYTES
+# The size cache holds one integer per reachable object id. Blob payloads are
+# much larger, so their cache has a separate aggregate byte budget. An entry
+# count is the wrong bound here: 65 tiny, frequently reused blobs make a
+# 64-entry LRU miss forever, while 64 one-MiB blobs consume the whole intended
+# allowance. The byte-budgeted LRU can retain every small blob that fits and
+# never retains a single blob larger than the entire allowance.
+BLOB_CACHE_MAX_BYTES = 64 * 1_048_576
 
 
 @lru_cache(maxsize=None)
@@ -278,15 +277,52 @@ def blob_size(oid: str) -> int:
         raise ScanFailure(f"Git returned a non-numeric size for object {oid[:12]}") from exc
 
 
-@lru_cache(maxsize=BLOB_CACHE_ENTRIES)
-def cached_blob_data(oid: str) -> bytes:
-    return git("cat-file", "blob", oid)
+class BlobDataCache:
+    """Least-recently-used Git blob cache bounded by retained payload bytes."""
+
+    def __init__(self, max_bytes: int):
+        if max_bytes < 0:
+            raise ValueError("blob cache byte limit must be non-negative")
+        self.max_bytes = max_bytes
+        self.bytes_used = 0
+        self._entries: OrderedDict[str, bytes] = OrderedDict()
+
+    @property
+    def entry_count(self) -> int:
+        return len(self._entries)
+
+    def get(self, oid: str) -> bytes:
+        try:
+            data = self._entries.pop(oid)
+        except KeyError:
+            pass
+        else:
+            # Reinsert the same object at the MRU end. Its payload was already
+            # counted, so a repeated OID must not grow the byte accounting.
+            self._entries[oid] = data
+            return data
+
+        data = git("cat-file", "blob", oid)
+        size = len(data)
+        if size > self.max_bytes:
+            # The caller still receives the bytes it requested, but the cache
+            # cannot retain a payload larger than its whole memory allowance.
+            return data
+
+        while self._entries and self.bytes_used + size > self.max_bytes:
+            _, evicted = self._entries.popitem(last=False)
+            self.bytes_used -= len(evicted)
+
+        self._entries[oid] = data
+        self.bytes_used += size
+        return data
+
+
+_BLOB_DATA_CACHE = BlobDataCache(BLOB_CACHE_MAX_BYTES)
 
 
 def blob_data(oid: str) -> bytes:
-    if blob_size(oid) > BLOB_CACHE_MAX_BYTES:
-        return git("cat-file", "blob", oid)
-    return cached_blob_data(oid)
+    return _BLOB_DATA_CACHE.get(oid)
 
 
 def entry_size(entry: Blob) -> int:

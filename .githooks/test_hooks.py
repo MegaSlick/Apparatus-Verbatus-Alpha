@@ -1195,6 +1195,23 @@ def test_pre_push_allows_a_fast_forward_and_refuses_a_divergent_push(tmp_path):
     assert "force-push" in rewrite.stderr
 
 
+def test_pre_push_does_not_label_an_unreadable_remote_tip_as_a_force_push(tmp_path):
+    # `merge-base --is-ancestor` uses 1 for a proven non-ancestor and a larger
+    # status when it cannot inspect the history at all. Conflating them reports
+    # an unmeasured force-push verdict and hides the fetch or object failure that
+    # tells the operator how to repair the check.
+    repo = tmp_path / "repo"
+    local = make_audit_repo(repo)
+    missing_remote = "f" * 40
+
+    result = run_isolated_pre_push(repo, local, remote_sha=missing_remote)
+
+    assert result.returncode == 1, result.stderr
+    assert "unable to verify ancestry" in result.stderr
+    assert "force-push to" not in result.stderr
+    assert "fetch or deepen" in result.stderr.lower()
+
+
 def test_record_audit_fails_before_installing_the_receipt_not_after(tmp_path):
     # Ledger L19. The reviewer count ran *after* the receipt was moved into
     # place, so a failure there exited non-zero with the receipt permanently

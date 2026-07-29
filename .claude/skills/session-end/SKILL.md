@@ -215,8 +215,8 @@ sh operations/notify/notify.sh done "<what landed; what needs him; next session,
 ```
 
 One line, sent last, after the handoff is written. The bearer topic may arrive only through
-the process environment; never put it in this command or any file. The client refuses a
-legacy `private/ntfy.conf` without reading it. If the command exits non-zero, report that no
+the process environment or the gitignored `private/ntfy.conf` fallback; never put it in this
+command, a tracked file, or a workbench note. If the command exits non-zero, report that no
 notification was accepted; never describe a phone as reached merely because a request was
 attempted.
 

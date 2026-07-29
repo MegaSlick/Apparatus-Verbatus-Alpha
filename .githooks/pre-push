@@ -246,9 +246,17 @@ while read -r line_local_ref line_local_sha line_remote_ref line_remote_sha ||
   #    ancestor of what you are pushing. Published tags are immutable too.
   if [ "$kind" = "branch" ] && ! is_null_oid "$remote_sha" && \
      [ "$ALLOW_FORCE_PUSH" != "1" ]; then
-    if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
-      block "force-push to '$name' — this rewrites history." \
+    if git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+      :
+    else
+      ancestry_status=$?
+      if [ "$ancestry_status" -eq 1 ]; then
+        block "force-push to '$name' — this rewrites history." \
 "Another agent may be working from these commits. Pull and merge instead."
+      fi
+      block "unable to verify ancestry for '$name' — git merge-base exited $ancestry_status." \
+"Fetch or deepen the remote history and fix the Git error above, then repeat.
+  An unreadable history is not evidence that this push is a force-push."
     fi
   fi
   if [ "$kind" = "tag" ] && ! is_null_oid "$remote_sha" && \
@@ -262,7 +270,7 @@ while read -r line_local_ref line_local_sha line_remote_ref line_remote_sha ||
   # HEAD is usable and a tag pointing at a non-commit fails closed.
   audit_sha=$(git rev-parse "$local_sha^{commit}" 2>/dev/null) || audit_sha=""
   if [ -z "$audit_sha" ]; then
-    block "'$name' does not resolve to a commit, so the audit gate cannot check it."
+    block "'$name' does not resolve to a commit, so its history and review receipt cannot be checked."
   fi
 
   # 4. Scan everything reachable from the outgoing commit. The pre-commit

@@ -28,8 +28,9 @@ REST = "rest." + "runpod" + ".io"
 API = "api." + "runpod" + ".io"
 
 
-def decide(payload) -> bool:
+def decide(payload, project=PROJECT) -> bool:
     """True if the guard denies; fail the test if the hook contract is broken."""
+    project = str(project)
     result = subprocess.run(
         [sys.executable, GUARD],
         input=json.dumps(payload) if isinstance(payload, dict) else payload,
@@ -38,7 +39,7 @@ def decide(payload) -> bool:
         # Fixed cwd: relative operands like `.venv` resolve against it, so a
         # result must not depend on where the suite happens to be run from.
         cwd=tempfile.gettempdir(),
-        env={"CLAUDE_PROJECT_DIR": PROJECT, "HOME": HOME, "PATH": "/usr/bin:/bin"},
+        env={"CLAUDE_PROJECT_DIR": project, "HOME": HOME, "PATH": "/usr/bin:/bin"},
         timeout=5,
     )
     assert result.returncode == 0, (
@@ -60,11 +61,11 @@ def decide(payload) -> bool:
     return True
 
 
-def run(command: str) -> bool:
-    return decide({"tool_name": "Bash", "tool_input": {"command": command}})
+def run(command: str, project=PROJECT) -> bool:
+    return decide({"tool_name": "Bash", "tool_input": {"command": command}}, project)
 
 
-def reason(command: str) -> str:
+def reason(command: str, project=PROJECT) -> str:
     """The guard's stated reason for refusing, or "" if it allowed.
 
     A refusal that gives the wrong reason is still a defect: it teaches the
@@ -77,7 +78,7 @@ def reason(command: str) -> str:
         capture_output=True,
         text=True,
         cwd=tempfile.gettempdir(),
-        env={"CLAUDE_PROJECT_DIR": PROJECT, "HOME": HOME, "PATH": "/usr/bin:/bin"},
+        env={"CLAUDE_PROJECT_DIR": str(project), "HOME": HOME, "PATH": "/usr/bin:/bin"},
         timeout=5,
     )
     output = result.stdout.strip()
@@ -735,6 +736,14 @@ ALLOW = [
         "cd /tmp; cat > notes.txt <<'EOF'\nplain data\nEOF",
         "the same, separated by a semicolon",
     ),
+    (
+        "cat 2>&1 <<'EOF'\nplain data\nEOF",
+        "an fd redirection does not turn cat's heredoc into another command",
+    ),
+    (
+        "sleep 2& cat <<'EOF'\nplain data\nEOF",
+        "a digit-ended background command still separates from cat's heredoc",
+    ),
     ("grep -c foo <<'END'\nfoo\nEND", "grep reads its stdin; it never runs it"),
     ("sed -n '1p' <<'END'\nfoo\nEND", "nor does sed"),
     ("jq . <<'JSON'\n{}\nJSON", "nor does jq"),
@@ -802,6 +811,78 @@ def test_blocks(command, why):
 @pytest.mark.parametrize("command,why", ALLOW, ids=[c for c, _ in ALLOW])
 def test_allows(command, why):
     assert not run(command), f"should have been allowed ({why})"
+
+
+@pytest.fixture
+def checkout_repo(tmp_path):
+    """A repository where ref/path ambiguity is deliberate and controlled."""
+    repo = tmp_path / "checkout-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("tracked\n")
+    # Git gives a ref precedence over a same-named tracked path. Keeping both
+    # here catches a classifier that asks only whether the path exists.
+    (repo / "guard-ref").write_text("same name as a branch\n")
+    subprocess.run(["git", "add", "tracked.txt", "guard-ref"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "user.name=Guard Test",
+            "-c",
+            "user.email=guard@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "branch", "guard-ref"], cwd=repo, check=True)
+    subprocess.run(["git", "tag", "guard-tag"], cwd=repo, check=True)
+    return repo
+
+
+def test_checkout_blocks_a_bare_tracked_path(checkout_repo):
+    assert run("git checkout tracked.txt", checkout_repo)
+
+
+def test_checkout_blocks_a_bare_deleted_tracked_path(checkout_repo):
+    (checkout_repo / "tracked.txt").unlink()
+    assert run("git checkout tracked.txt", checkout_repo), (
+        "Git's index still knows a tracked path after its worktree file is deleted"
+    )
+
+
+def test_checkout_blocks_a_treeish_plus_path(checkout_repo):
+    assert run("git checkout HEAD tracked.txt", checkout_repo)
+
+
+def test_checkout_preserves_branch_tag_and_commit_switching(checkout_repo):
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert not run("git checkout guard-ref", checkout_repo)
+    assert not run("git checkout guard-tag", checkout_repo)
+    assert not run(f"git checkout {commit}", checkout_repo)
+
+
+def test_checkout_allows_an_unmatched_typo_that_git_will_reject(checkout_repo):
+    assert not run("git checkout definitely-not-a-ref-or-path", checkout_repo)
+
+
+def test_checkout_fails_closed_when_git_cannot_classify_the_target(tmp_path):
+    not_a_repo = tmp_path / "not-a-repository"
+    not_a_repo.mkdir()
+    said = reason("git checkout possible-path", not_a_repo)
+    assert "could not classify this checkout target" in said
+    assert "cannot vouch that it preserves uncommitted work" in said
 
 
 MCP_BLOCK = [
@@ -1043,7 +1124,8 @@ REASONS = [
     ("git config core.hooksPath /dev/null", "permanently disables the git hooks"),
     ("git config --remove-section core", "dropping the [core] section"),
     ("git clean -fdx", "git clean deletes untracked"),
-    ("git commit --no-verify -m x", "--no-verify skips the hooks"),
+    ("git commit --no-verify -m x", "--no-verify skips repository checks"),
+    ("git checkout .claude/hooks/guard.py", "writes paths from Git's index"),
     ("git reset --hard HEAD", "discards every uncommitted change"),
     ("git branch -D work/topic", "forced branch delete"),
     ("git worktree remove --force ../wt", "work another agent is holding"),
@@ -1070,6 +1152,11 @@ def test_every_refusal_says_who_refused_and_who_to_ask():
     said = reason("git push origin main")
     assert said.startswith("Blocked by repo guard: "), said
     assert said.endswith("Ask Tyrel."), said
+
+
+def test_force_push_refusal_does_not_offer_a_nonexistent_override():
+    said = reason("git push --force origin work/topic")
+    assert "ALLOW_FORCE_PUSH" not in said
 
 
 SETTINGS = Path(PROJECT) / ".claude" / "settings.json"

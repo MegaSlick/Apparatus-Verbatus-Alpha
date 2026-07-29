@@ -65,10 +65,11 @@ What it does not catch — each one verified against this file, not suspected:
   * git plumbing spelled as its own binary — `git-push`, `git-send-pack` —
     rather than as `git <subcommand>`.
   * a governing document rewritten from the shell. `echo x > GOVERNANCE.md`,
-    `sed -i`, `cp`, `mv`, `patch` and `git checkout` all reach those files
-    without touching a writing tool, and none of them is inspected for it. What
-    hard rule 10 gets here is a tripwire on the tools an agent actually reaches
-    for, not a seal on the bytes.
+    `sed -i`, `cp`, `mv` and `patch` all reach those files without touching a
+    writing tool. A ref-only `git checkout` may rewrite them while switching
+    revisions; the checkout guard distinguishes refs from pathspecs, not which
+    files differ between refs. What hard rule 10 gets here is a tripwire on the
+    tools an agent actually reaches for, not a seal on the bytes.
   * a subagent whose payload does not identify it. The CLAUDE.md half of hard
     rule 10 rests on `agent_type`/`agent_id`, which Claude Code sends and this
     file cannot verify; if a release stops sending them, that half is off and
@@ -128,6 +129,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 from urllib.parse import urlsplit
 
@@ -174,6 +176,16 @@ GIT_VALUE_OPTS = {
     "--reuse-message",
     "-C",
     "-c",
+}
+# Checkout has its own option grammar. In particular, its `-m` and `-t` are
+# Boolean flags, while these options consume the following token. Reusing the
+# commit-oriented set above would hide a real checkout operand.
+GIT_CHECKOUT_VALUE_OPTS = {
+    "-b",
+    "-B",
+    "--orphan",
+    "--conflict",
+    "--pathspec-from-file",
 }
 GIT_PUSH_VALUE_OPTS = GIT_VALUE_OPTS | {
     "--exec",
@@ -682,8 +694,12 @@ def command_pieces(line: str):
             while i < len(line) and line[i] in ";|":
                 i += 1
             continue
-        if ch == "&" and not (i and line[i - 1].isdigit()):
-            # `2>&1` is a redirection, not a separator.
+        if ch == "&" and not (
+            (i and line[i - 1] in "<>") or (i + 1 < len(line) and line[i + 1] == ">")
+        ):
+            # Keep redirection operators such as `2>&1`, `<&0`, `&>` and
+            # `&>>` intact. A background separator still splits even when the
+            # preceding command ends in a digit (`sleep 2& cat ...`).
             out.append("".join(current))
             current = []
             while i < len(line) and line[i] == "&":
@@ -1223,6 +1239,124 @@ def check_git_config(args, elsewhere: bool = False):
         deny("permanently disables the git hooks for every tool in this clone")
 
 
+def _git_probe(global_opts, command_cwd: str | None, args):
+    """Run one read-only Git query in the checkout command's repository context."""
+    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    try:
+        return subprocess.run(
+            ["git", *global_opts, *args],
+            cwd=command_cwd or project,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _git_revision_exists(
+    global_opts, command_cwd: str | None, candidate: str, object_type: str
+) -> bool | None:
+    """Ask Git whether ``candidate`` resolves to the requested object type."""
+    result = _git_probe(
+        global_opts,
+        command_cwd,
+        [
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            f"{candidate}^{{{object_type}}}",
+        ],
+    )
+    if result is None:
+        return None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    return None
+
+
+def _git_pathspec_matches(
+    global_opts,
+    command_cwd: str | None,
+    pathspecs,
+    treeish: str | None = None,
+) -> bool | None:
+    """Ask Git whether pathspecs name paths checkout could overwrite.
+
+    ``ls-files`` reads the index, so it still sees a tracked file deleted from
+    the worktree. ``--with-tree`` also includes paths known to an explicitly
+    named checkout source.
+    """
+    args = ["ls-files", "-z", "--error-unmatch"]
+    if treeish is not None:
+        args.append(f"--with-tree={treeish}")
+    args.extend(["--", *pathspecs])
+    result = _git_probe(global_opts, command_cwd, args)
+    if result is None:
+        return None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    return None
+
+
+def _checkout_creates_branch(args) -> bool:
+    """Whether checkout syntax explicitly makes/resets a named branch."""
+    for token in args:
+        if token == "--":
+            break
+        if token in ("-b", "-B", "--orphan"):
+            return True
+        if token.startswith(("-b", "-B")) and not token.startswith("--"):
+            return True
+        if token.startswith("--orphan="):
+            return True
+    return False
+
+
+def _checkout_uses_pathspec(global_opts, command_cwd: str | None, args) -> bool | None:
+    """Classify checkout's ambiguous operands with Git's own repository data.
+
+    A single token may be either a ref or a path. Git gives a resolvable ref
+    precedence, so the guard does too. With a tree-ish plus more operands, the
+    remaining tokens are pathspecs against that tree; otherwise all operands
+    are pathspecs against the index. ``None`` means a Git query could not make
+    that distinction reliably.
+    """
+    if any(
+        token == "--pathspec-from-file" or token.startswith("--pathspec-from-file=")
+        for token in args
+    ):
+        return True
+    if _checkout_creates_branch(args):
+        return False
+
+    operands = positional_args(args, GIT_CHECKOUT_VALUE_OPTS)
+    if not operands:
+        return False
+
+    if len(operands) == 1:
+        is_ref = _git_revision_exists(global_opts, command_cwd, operands[0], "commit")
+        if is_ref is None:
+            return None
+        if is_ref:
+            return False
+        return _git_pathspec_matches(global_opts, command_cwd, operands)
+
+    is_tree = _git_revision_exists(global_opts, command_cwd, operands[0], "tree")
+    if is_tree is None:
+        return None
+    if is_tree:
+        return _git_pathspec_matches(global_opts, command_cwd, operands[1:], treeish=operands[0])
+    return _git_pathspec_matches(global_opts, command_cwd, operands)
+
+
 def check_git(argv, command_cwd: str | None = None):
     opts, sub, args = [], None, []
     i = 1
@@ -1242,9 +1376,10 @@ def check_git(argv, command_cwd: str | None = None):
     if sub is None:
         return
 
-    # Turning the hooks off defeats the branch guard, the stray-note check and
-    # the audit gate at once. Both the one-shot `-c` form and the permanent
-    # `git config` form, which is worse because it binds every later tool.
+    # Turning the hooks off defeats the branch, document and history checks,
+    # plus the review checklist, at once. Both the one-shot `-c` form and the
+    # permanent `git config` form, which is worse because it binds every later
+    # tool.
     # `git -C <path>` moves the whole command to another repository, as does a
     # `cd` earlier on the line. Only a path proved to be outside this project
     # counts; everything else is this clone.
@@ -1284,7 +1419,7 @@ def check_git(argv, command_cwd: str | None = None):
                 "`git stash` first if you may want it back"
             )
     if sub == "checkout":
-        operands = positional_args(args, GIT_VALUE_OPTS)
+        operands = positional_args(args, GIT_CHECKOUT_VALUE_OPTS)
         if (
             "--force" in flags
             or has_short_flag(args, "f", frozenset({"b", "B", "t"}))
@@ -1294,6 +1429,18 @@ def check_git(argv, command_cwd: str | None = None):
             deny(
                 "this checkout discards uncommitted changes — "
                 "`git stash` first, or name a branch without a pathspec"
+            )
+        path_checkout = _checkout_uses_pathspec(opts, command_cwd, args)
+        if path_checkout is None:
+            deny(
+                "Git could not classify this checkout target as a ref or a pathspec, "
+                "so the guard cannot vouch that it preserves uncommitted work"
+            )
+        if path_checkout:
+            deny(
+                "this checkout writes paths from Git's index or a named tree and can "
+                "discard uncommitted changes — `git stash` first, or use `git switch` "
+                "for a branch"
             )
     if sub == "switch" and (
         "--force" in flags
@@ -1325,7 +1472,7 @@ def check_git(argv, command_cwd: str | None = None):
 
     if sub in ("commit", "merge", "push", "rebase", "am", "cherry-pick"):
         if "--no-verify" in flags:
-            deny("--no-verify skips the hooks that protect main, the documents and the audit gate")
+            deny("--no-verify skips repository checks installed as Git hooks")
         if sub == "commit" and has_short_flag(args, "n", frozenset({"m", "F", "t", "C", "c"})):
             deny("git commit -n is --no-verify, which skips the hooks")
 
@@ -1352,10 +1499,7 @@ def check_git(argv, command_cwd: str | None = None):
         if any(
             f == "--force" or f.startswith("--force-with-lease") for f in flags
         ) or has_short_flag(args, "f", frozenset({"o", "r"})):
-            deny(
-                "force-push destroys work another agent may be holding "
-                "(ALLOW_FORCE_PUSH=1 if you truly mean it)"
-            )
+            deny("force-push destroys work another agent may be holding")
         positional = positional_args(args, GIT_PUSH_VALUE_OPTS)
         repo_by_option = any(a == "--repo" or a.startswith("--repo=") for a in args)
         refspecs = positional if repo_by_option else positional[1:]
@@ -1916,6 +2060,7 @@ def check_tool_input(tool: str, tool_input) -> None:
         text = json.dumps(tool_input, default=str)
     except (TypeError, ValueError):
         deny(f"'{tool}' carries a payload the guard cannot read, so it cannot vouch for it")
+        raise AssertionError("deny() returned instead of terminating") from None
 
     strings = list(_payload_strings(tool_input))
     routes = [route for route in (_route(s) for s in strings) if route is not None]

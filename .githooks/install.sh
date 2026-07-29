@@ -10,9 +10,10 @@
 # committed and never travels with a clone.
 #
 # So every rule implemented by these hooks — no commits on main, no stray
-# notes, no force-push, no push without an audit — is switched off in a fresh
-# clone until someone runs this. A new machine, a Codex sandbox, a pod, a second
-# checkout: all of them start with no installed Git alarms.
+# notes, no force-push, outgoing-history scanning and the review checklist — is
+# switched off in a fresh clone until someone runs this. A new machine, a Codex
+# sandbox, a pod, a second checkout: all of them start with no installed Git
+# alarms.
 #
 # Nothing can fix that from inside the repository. A clone cannot configure
 # itself. All that is possible is to make the command short, put it in the
@@ -74,7 +75,7 @@ echo "    no commits on main            no stray notes in the tree"
 echo "    merges and 'git am' checked   (same rules as a plain commit)"
 echo "    known secret forms/payloads   no undeclared binary fixtures"
 echo "    no direct push to main        no force-push over someone's work"
-echo "    no push without an audit      (.githooks/record-audit.sh)"
+echo "    review checklist at push      (.githooks/record-audit.sh)"
 echo ""
 echo "  Run all repository checks locally with:"
 echo "    python3 -m pip install -r requirements-dev.txt"

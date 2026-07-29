@@ -262,12 +262,12 @@ state, and seeing it is the point.
 **The receipt names one commit.** Amend it or add another and the work must be audited again —
 an audit is of a state, not of a branch.
 
-**Record the model that actually answered, not the one you asked for.** The gate counts three
-*distinct* names; it does not hold a list of approved ones, because a hook carrying today's
-product names dates at the next release and would then force either a bypass or a receipt that
-lies. The names above are the current roster, not a required vocabulary — if a seat resolved to
-something else, write what it resolved to. Put the resolved release and effort in the full
-report as well, where the runtime exposes them. A label is a claim, not proof.
+**Record the model that actually answered, not the one you asked for.** The checklist counts
+three *distinct* names; it does not hold a list of approved ones, because a hook carrying
+today's product names dates at the next release and would then invite a receipt that lies. The
+names above are the current roster, not a required vocabulary — if a seat resolved to something
+else, write what it resolved to. Put the resolved release and effort in the full report as well,
+where the runtime exposes them. A label is a claim, not proof.
 
 A session that cannot summon all three records the ones it can. `pre-push` will print the
 shortfall as unticked boxes and push anyway — it is a checklist, not a gate, and Tyrel judges

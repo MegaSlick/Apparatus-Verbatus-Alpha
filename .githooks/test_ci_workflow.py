@@ -239,15 +239,16 @@ def test_history_scan_refuses_a_shallow_clone(tmp_path):
 
 
 def test_ci_checks_out_full_history_for_the_job_that_scans_it():
+    scanned = False
     for name in ("check", "autoclave-empty"):
         block = job_block(name)
         if "--history HEAD" not in block:
             continue
+        scanned = True
         assert re.search(r"(?m)^\s*fetch-depth:\s*0\s*$", block), (
             f"job {name!r} scans full history without checking it out"
         )
-        return
-    raise AssertionError("no CI job runs the full-history secret scan")
+    assert scanned, "no CI job runs the full-history secret scan"
 
 
 # --- L37: the autoclave gate ---

@@ -140,7 +140,7 @@ fi
 receipts="$common/audit-receipts"
 if ! mkdir -p "$receipts" 2>/dev/null; then
   echo "  Cannot create $receipts, so no receipt was written." >&2
-  echo "  The push will stay blocked until this is fixed." >&2
+  echo "  Pre-push's checklist will show the commit as unreviewed until this is fixed." >&2
   exit 1
 fi
 

@@ -776,38 +776,71 @@ def test_an_oversize_worktree_file_still_gets_its_oversize_diagnosis(repo):
     assert "[oversize]" in result.stderr
 
 
-def test_the_blob_cache_is_bounded_and_never_retains_a_large_payload(repo, monkeypatch):
-    # L24, second half: an unbounded cache on blob data retains every blob of
-    # every commit for the whole of a history scan.
+def test_blob_cache_uses_a_byte_budget_instead_of_the_legacy_64_entry_limit(monkeypatch):
+    # The old 64-entry LRU thrashed on 65 blobs even when their combined
+    # payload was only a few hundred bytes. A second pass over this working
+    # set must be served wholly from the aggregate-byte cache.
     module = scanner_module()
-    monkeypatch.chdir(repo)
-    limit = module.cached_blob_data.cache_parameters()["maxsize"]
-    assert limit is not None, "an unbounded blob cache retains every blob of every commit"
+    payloads = {f"{index:040x}": f"{index:08d}".encode("ascii") for index in range(65)}
+    reads = []
 
-    def hash_object(text):
-        result = subprocess.run(
-            ["git", "hash-object", "-w", "--stdin"],
-            cwd=repo,
-            input=text,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
-        )
-        return result.stdout.strip()
+    def fake_git(*args):
+        assert args[:2] == ("cat-file", "blob")
+        oid = args[2]
+        reads.append(oid)
+        return payloads[oid]
 
-    for index in range(limit + 1):
-        module.blob_data(hash_object(f"blob number {index}\n"))
-    info = module.cached_blob_data.cache_info()
-    assert info.currsize == limit, "entries past the ceiling were not evicted"
+    cache = module.BlobDataCache(sum(map(len, payloads.values())))
+    monkeypatch.setattr(module, "git", fake_git)
+    monkeypatch.setattr(module, "_BLOB_DATA_CACHE", cache)
 
-    # Entry count alone does not bound bytes; a payload above the byte ceiling
-    # is served without being retained.
-    monkeypatch.setattr(module, "BLOB_CACHE_MAX_BYTES", 8)
-    before = module.cached_blob_data.cache_info().currsize
-    large = hash_object("a payload well past the byte ceiling\n")
-    assert module.blob_data(large) == b"a payload well past the byte ceiling\n"
-    assert module.cached_blob_data.cache_info().currsize == before
+    for _ in range(2):
+        for oid, expected in payloads.items():
+            assert module.blob_data(oid) == expected
+
+    assert reads == list(payloads), "the second pass re-read blobs that fit the byte budget"
+    assert cache.entry_count == 65
+    assert cache.bytes_used == sum(map(len, payloads.values()))
+
+
+def test_blob_cache_evicts_by_bytes_and_never_retains_an_oversize_blob(monkeypatch):
+    module = scanner_module()
+    payloads = {
+        "a" * 40: b"a" * 6,
+        "b" * 40: b"b" * 4,
+        "c" * 40: b"c" * 7,
+        "d" * 40: b"d" * 11,
+    }
+    reads = []
+
+    def fake_git(*args):
+        assert args[:2] == ("cat-file", "blob")
+        oid = args[2]
+        reads.append(oid)
+        return payloads[oid]
+
+    cache = module.BlobDataCache(10)
+    monkeypatch.setattr(module, "git", fake_git)
+    monkeypatch.setattr(module, "_BLOB_DATA_CACHE", cache)
+
+    assert module.blob_data("a" * 40) == payloads["a" * 40]
+    assert module.blob_data("a" * 40) == payloads["a" * 40]
+    assert cache.bytes_used == 6
+    assert reads.count("a" * 40) == 1, "a repeated cached OID was fetched or counted twice"
+
+    assert module.blob_data("b" * 40) == payloads["b" * 40]
+    assert cache.bytes_used == 10
+    assert module.blob_data("c" * 40) == payloads["c" * 40]
+    assert cache.bytes_used == 7
+    assert cache.entry_count == 1
+
+    # The cache stays unchanged while an individually oversize blob is
+    # returned correctly on each request.
+    assert module.blob_data("d" * 40) == payloads["d" * 40]
+    assert module.blob_data("d" * 40) == payloads["d" * 40]
+    assert reads.count("d" * 40) == 2
+    assert cache.bytes_used == 7
+    assert cache.entry_count == 1
 
 
 def test_the_declared_secret_fixture_set_stays_empty():
