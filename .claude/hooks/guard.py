@@ -515,26 +515,35 @@ def short_option(arguments: list[str], letters: str, action: str = "") -> bool:
     """True when any short option in `letters` is present, alone or bundled.
 
     `action` names the Git subcommand, and is used only to look up which of its
-    short options swallow the rest of their token as a value. Naming them is the
-    whole point. A generic character search over everything after a dash reads
-    the `n` in `git clean -enode_modules` as `--dry-run` and waves a destructive
-    clean through, and the `n` in `git commit -mno` as `--no-verify` and refuses
-    an ordinary commit. Case is significant: `-D` and `-d` are different options.
+    short options swallows the rest of its token or the following token as a
+    value. Naming them is the whole point. A generic character search over
+    everything after a dash reads the `n` in `git clean -enode_modules` as
+    `--dry-run` and waves a destructive clean through, and the `n` in
+    `git commit -mno` as `--no-verify` and refuses an ordinary commit. Case is
+    significant: `-D` and `-d` are different options.
 
     Several letters may be asked about at once, so "any of these means
     destructive" is one pass over the arguments rather than one pass per letter.
     """
     value_taking = VALUE_TAKING.get(action, "")
-    for token in arguments:
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
         if token == "--":
             break  # a POSIX end-of-options marker; the rest are operands
         if not token.startswith("-") or token.startswith("--") or len(token) < 2:
+            index += 1
             continue
-        for character in token[1:]:
+        for position, character in enumerate(token[1:], start=1):
             if character in letters:
                 return True
             if character in value_taking:
-                break  # the rest of this token is that option's value, not flags
+                # The rest of this token, or the next token when there is no
+                # attached text, is this option's value rather than more flags.
+                if position + 1 == len(token) and index + 1 < len(arguments):
+                    index += 1
+                break
+        index += 1
     return False
 
 
@@ -548,15 +557,115 @@ def long_option(arguments: list[str], *names: str) -> bool:
     return False
 
 
-# Short options that take a value, keyed by the subcommand they belong to. A
-# subcommand absent here has none, which is why the default is a declared empty
-# string rather than an argument each caller has to remember to pass — forgetting
-# it was silent, and produced exactly the misreading the parameter exists to stop.
+def option_values(
+    arguments: list[str],
+    short: str = "",
+    *names: str,
+    value_taking: str = "",
+    long_value_taking: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Return the values given to one option, in every spelling it accepts.
+
+    `-XPOST`, `-X POST`, `--request=POST` and `--request POST` are the same
+    request. Asking only whether the option is *present* is not enough here:
+    `curl -X GET` is an ordinary read and `curl -X DELETE` is not, so the caller
+    has to see the value. `value_taking` is the same idea as in `short_option` —
+    a letter earlier in a bundle that swallows the rest of its token means the
+    letter we are looking for is that value, not a separate option.
+    """
+    values: list[str] = []
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token == "--":
+            break
+        if token.startswith("--"):
+            name, separator, attached = token.partition("=")
+            if name in names:
+                if separator:
+                    values.append(attached)
+                elif index + 1 < len(arguments):
+                    index += 1
+                    values.append(arguments[index])
+            elif not separator and name in long_value_taking and index + 1 < len(arguments):
+                index += 1
+        elif short and token.startswith("-") and len(token) > 1:
+            for position, character in enumerate(token[1:], start=1):
+                if character == short:
+                    attached = token[position + 1 :]
+                    if attached:
+                        values.append(attached)
+                    elif index + 1 < len(arguments):
+                        index += 1
+                        values.append(arguments[index])
+                    break
+                if character in value_taking:
+                    if position + 1 == len(token) and index + 1 < len(arguments):
+                        index += 1
+                    break
+        index += 1
+    return values
+
+
+def operands(
+    arguments: list[str],
+    *,
+    short_value_taking: str = "",
+    long_value_taking: frozenset[str] = frozenset(),
+) -> list[str]:
+    """The non-option tokens of an argument list, in order.
+
+    Subcommands are operands: `create` in `runpodctl create pods`, `pr comment`
+    in `gh pr comment 10`. The caller names the short and long options that take
+    a separate value, so `o/r` in `gh --repo o/r pr create` is skipped before
+    the command pair is read.
+    """
+    found: list[str] = []
+    past_marker = False
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token == "--" and not past_marker:
+            past_marker = True
+            index += 1
+            continue
+        if not past_marker and token.startswith("--"):
+            name, separator, _attached = token.partition("=")
+            if not separator and name in long_value_taking and index + 1 < len(arguments):
+                index += 1
+            index += 1
+            continue
+        if not past_marker and token.startswith("-") and len(token) > 1:
+            for position, character in enumerate(token[1:], start=1):
+                if character in short_value_taking:
+                    if position + 1 == len(token) and index + 1 < len(arguments):
+                        index += 1
+                    break
+            index += 1
+            continue
+        found.append(token)
+        index += 1
+    return found
+
+
+# Short options that take a value, keyed by the command or subcommand they
+# belong to. A command absent here has none, which is why the default is a
+# declared empty string rather than an argument each caller has to remember to
+# pass — forgetting it was silent, and produced exactly the misreading the
+# parameter exists to stop.
 VALUE_TAKING = {
     "commit": "mFcCtSu",
     "clean": "e",
     "restore": "s",
     "branch": "u",
+    # curl bundles heavily and half its alphabet swallows a value, so the list
+    # has to be complete rather than convenient: `curl -fsS url` must not read
+    # as a body-sending call, and `curl -obody.json url` must not read the `o`
+    # value as one either.
+    "curl": "AbcCdDeEFhHKmoPQrtTuUwxXyYz",
+    # gh api: -f/-F are fields, -H a header, -q a jq filter, -t a template,
+    # -p a preview, -X the method.
+    "gh": "fFHqtpX",
 }
 
 
@@ -784,11 +893,173 @@ def credential_disclosure(command: str, payload: dict[str, Any]) -> Decision:
     return None
 
 
-def external_shell_mutation(command: str, payload: dict[str, Any]) -> Decision:
-    runpod_ctl_change = has(
-        command,
-        r"\brunpodctl\b[^\n;&|]*\b(?:create|start|deploy|dev|remove|delete|stop|terminate)\b",
+# The four commands below used to be judged by matching regexes against the
+# whole command line, while `git` and `rm` went through `invocation()` and
+# `tokenize()`. That mismatch cost both directions. It raised false alarms,
+# because a flag was found anywhere in the line rather than inside the call that
+# owns it — `gh api repos/o/r > out.json; rg -f patterns.txt out.json` asked
+# about a GitHub write on the strength of ripgrep's `-f`. And it left real gaps,
+# because a pattern covers the spellings somebody thought of: `gh api --input
+# body.json` POSTs a request body and passed in silence until the spelling was
+# added by hand. Reading each call's own argument list closes both at once, and
+# stops the fix being a list that has to be extended every time.
+CURL_INVOCATION = invocation("curl")
+WGET_INVOCATION = invocation("wget")
+# httpie takes its method as the first operand: `http POST https://…`.
+HTTPIE_INVOCATION = invocation("https?")
+GH_INVOCATION = invocation("gh")
+RUNPODCTL_INVOCATION = invocation("runpodctl")
+
+MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+RUNPOD_SHUTDOWN_VERBS = frozenset({"stop", "terminate"})
+RUNPOD_ESCALATION_VERBS = frozenset({"create", "start", "deploy", "dev", "remove", "delete"})
+RUNPOD_CHANGE_VERBS = RUNPOD_SHUTDOWN_VERBS | RUNPOD_ESCALATION_VERBS
+# Every one of these is visible to somebody who is not Tyrel.
+GH_PUBLIC_VERBS = {
+    "pr": frozenset({"create", "close", "comment", "edit", "merge", "ready", "reopen", "review"}),
+    "issue": frozenset({"close", "comment", "create", "edit", "reopen"}),
+    "repo": frozenset({"archive", "create", "delete", "edit", "rename"}),
+    "release": frozenset({"create", "delete", "edit", "upload"}),
+}
+GH_GLOBAL_SHORT_VALUE_OPTIONS = "R"
+GH_GLOBAL_LONG_VALUE_OPTIONS = frozenset({"--repo"})
+GH_API_SHORT_VALUE_OPTIONS = "fFHqtpXR"
+GH_API_LONG_VALUE_OPTIONS = frozenset(
+    {
+        "--cache",
+        "--field",
+        "--header",
+        "--hostname",
+        "--input",
+        "--jq",
+        "--method",
+        "--preview",
+        "--raw-field",
+        "--repo",
+        "--template",
+    }
+)
+
+
+def argument_lists(pattern: re.Pattern[str], command: str) -> list[list[str]]:
+    """The argument list of each call to one recognized command."""
+    return [tokenize(match.group("tail")) for match in pattern.finditer(command)]
+
+
+def mutating_method(
+    arguments: list[str],
+    short: str,
+    *names: str,
+    value_taking: str = "",
+    long_value_taking: frozenset[str] = frozenset(),
+) -> bool:
+    values = option_values(
+        arguments,
+        short,
+        *names,
+        value_taking=value_taking,
+        long_value_taking=long_value_taking,
     )
+    return any(value.upper() in MUTATING_METHODS for value in values)
+
+
+def sends_a_request_body(command: str) -> bool:
+    """True when curl, wget or httpie is called in a way that changes remote state."""
+    for arguments in argument_lists(CURL_INVOCATION, command):
+        # -d, -T and -F are data, upload-file and form. Case matters: curl's
+        # lowercase -f is --fail and its -t is --telnet-option.
+        if short_option(arguments, "dTF", "curl") or long_option(
+            arguments,
+            "--data",
+            "--data-ascii",
+            "--data-binary",
+            "--data-raw",
+            "--data-urlencode",
+            "--upload-file",
+            "--form",
+            "--form-string",
+            "--json",
+        ):
+            return True
+        if mutating_method(arguments, "X", "--request", value_taking=VALUE_TAKING["curl"]):
+            return True
+    for arguments in argument_lists(WGET_INVOCATION, command):
+        # wget has no short option for a body, and its `-d` is --debug — which
+        # the old whole-command pattern read as curl's `--data`.
+        if long_option(arguments, "--post-data", "--post-file", "--body-data", "--body-file"):
+            return True
+        if mutating_method(arguments, "", "--method"):
+            return True
+    for arguments in argument_lists(HTTPIE_INVOCATION, command):
+        given = operands(arguments)
+        if given and given[0].upper() in MUTATING_METHODS:
+            return True
+    return False
+
+
+def changes_github_state(command: str) -> bool:
+    for arguments in argument_lists(GH_INVOCATION, command):
+        given = [
+            token.lower()
+            for token in operands(
+                arguments,
+                short_value_taking=GH_GLOBAL_SHORT_VALUE_OPTIONS,
+                long_value_taking=GH_GLOBAL_LONG_VALUE_OPTIONS,
+            )
+        ]
+        if len(given) >= 2 and given[1] in GH_PUBLIC_VERBS.get(given[0], frozenset()):
+            return True
+    return False
+
+
+def gh_api_sends_a_body(command: str) -> bool:
+    """`gh api` defaults to POST as soon as anything supplies a body.
+
+    A field, a raw field or `--input` is as good as an explicit `--method`, and
+    the guard has to say so without depending on which of those the caller
+    happened to type.
+    """
+    for arguments in argument_lists(GH_INVOCATION, command):
+        given = operands(
+            arguments,
+            short_value_taking=GH_API_SHORT_VALUE_OPTIONS,
+            long_value_taking=GH_API_LONG_VALUE_OPTIONS,
+        )
+        if not given or given[0].lower() != "api":
+            continue
+        if short_option(arguments, "fF", "gh") or long_option(
+            arguments, "--field", "--raw-field", "--input"
+        ):
+            return True
+        if mutating_method(
+            arguments,
+            "X",
+            "--method",
+            value_taking=VALUE_TAKING["gh"],
+            long_value_taking=GH_API_LONG_VALUE_OPTIONS,
+        ):
+            return True
+    return False
+
+
+def runpodctl_verbs(command: str) -> set[str]:
+    """The subcommand verbs every `runpodctl` call in this command names.
+
+    A runpodctl call has one command verb: its first operand. Reading every
+    operand as a verb made a pod ID or output filename named `start` look like
+    a request to start paid infrastructure.
+    """
+    found: set[str] = set()
+    for arguments in argument_lists(RUNPODCTL_INVOCATION, command):
+        given = operands(arguments)
+        if given:
+            found.add(given[0].lower())
+    return found
+
+
+def external_shell_mutation(command: str, payload: dict[str, Any]) -> Decision:
+    runpod_verbs = runpodctl_verbs(command)
+    runpod_ctl_change = bool(runpod_verbs & RUNPOD_CHANGE_VERBS)
     runpod_api_change = has(
         command,
         r"\brunpod\.(?:create_pod|resume_pod|start_pod|create_endpoint|"
@@ -804,43 +1075,18 @@ def external_shell_mutation(command: str, payload: dict[str, Any]) -> Decision:
     runpod_shutdown_only = (
         runpod_ctl_change
         and not runpod_api_change
-        and has(command, r"\brunpodctl\b[^\n;&|]*\b(?:stop|terminate)\b")
-        and not has(command, r"\brunpodctl\b[^\n;&|]*\b(?:create|start|deploy|dev|remove|delete)\b")
+        and bool(runpod_verbs & RUNPOD_SHUTDOWN_VERBS)
+        and not runpod_verbs & RUNPOD_ESCALATION_VERBS
     )
     if runpod_change and not (runpod_shutdown_only and not subagent_name(payload)):
         return deny_or_ask(payload, "change paid RunPod infrastructure")
     if has(command, r"(?:^|[;&|]\s*)\s*ssh\b"):
         return deny_or_ask(payload, "run an opaque command on another machine")
-    if has(command, r"\b(?:curl|wget|https?)\b") and has(
-        command,
-        r"(?:\s-X\s*(?:POST|PUT|PATCH|DELETE)\b|--request[=\s]+(?:POST|PUT|PATCH|DELETE)\b|"
-        r"--data(?:-binary|-raw|-urlencode)?\b|(?:^|\s)(?-i:-[dTF]\S+)|"
-        r"(?:^|\s)-d(?:\s|$)|"
-        r"(?:^|\s)(?:-T|--upload-file|--form-string|-F|--form)(?:[=\s]|$)|"
-        r"(?:^|\s)--json(?:[=\s]|$)|"
-        r"--post-(?:data|file)(?:[=\s]|$)|--method[=\s]+(?:POST|PUT|PATCH|DELETE)\b|"
-        r"--body-(?:data|file)(?:[=\s]|$)|"
-        r"\bhttps?\s+(?:POST|PUT|PATCH|DELETE)\b)",
-    ):
+    if sends_a_request_body(command):
         return deny_or_ask(payload, "send a state-changing network request")
-    if has(
-        command,
-        r"\bgh\s+(?:pr\s+(?:create|close|comment|edit|merge|ready|reopen|review)|"
-        r"issue\s+(?:close|comment|create|edit|reopen)|"
-        r"repo\s+(?:archive|create|delete|edit|rename)|"
-        r"release\s+(?:create|delete|edit|upload))\b",
-    ):
+    if changes_github_state(command):
         return deny_or_ask(payload, "change GitHub state visible to other people")
-    # `gh api` defaults to POST as soon as any field parameter is supplied, so a
-    # field is as good as an explicit --method. Only whitespace-separated `-f`
-    # and `-F` were recognized, which left `--field`, `--raw-field` and the
-    # attached `-fbody=test` spelling posting comments without an ask.
-    if has(command, r"\bgh\s+api\b") and has(
-        command,
-        r"(?:--method|-X)[=\s]+(?:POST|PUT|PATCH|DELETE)\b|"
-        r"(?:^|\s)--(?:raw-)?field(?:[=\s]|$)|(?:^|\s)--input(?:[=\s]|$)|"
-        r"(?:^|\s)-[fF]\S*(?=\s|$)",
-    ):
+    if gh_api_sends_a_body(command):
         return deny_or_ask(payload, "send a state-changing GitHub API request")
     return None
 

@@ -553,3 +553,122 @@ def test_long_option_matches_with_or_without_a_value(arguments, names, expected)
 )
 def test_tool_segments_splits_camel_case_as_well_as_punctuation(tool, expected_segment):
     assert expected_segment in guard.tool_segments(tool)
+
+
+# The external CLIs used to be scanned with whole-command regexes. These cases
+# pin the parser routing added after the 2026-07-29 reviews: a flag or verb
+# belongs only to the invocation and option position that owns it.
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gh api repos/o/r > out.json; rg -f patterns.txt out.json",
+        "rg -- --data notes.md; curl -fsS https://example.test/status",
+        "rg -T json --data-dir .; wget https://example.test/file",
+        "runpodctl get pod abc --output create.json",
+        "runpodctl get pod start",
+        "wget -d https://example.test/file",
+        "rg -F --input README.md; gh api repos/o/r",
+        "curl -fsSL -o out.json https://example.test/status",
+        "curl -X GET https://example.test/status",
+        "curl -H 'X-Debug: -d' https://example.test/status",
+        "curl -D headers.txt https://example.test/status",
+        "curl -obody.json https://example.test/status",
+        "gh api repos/o/r --jq '.items[] | .number'",
+        "gh pr view 10 --json title,body",
+        # A value belonging to another option is not a second option.
+        "curl -H -d https://example.test/status",
+        "gh api endpoint -H -f",
+        "gh api endpoint --header -X",
+        'git commit -m "-n"',
+    ],
+)
+def test_external_cli_parser_does_not_borrow_flags_or_verbs(command):
+    assert guard.evaluate(payload(tool_input={"command": command})) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl -X POST https://example.test/jobs",
+        "curl -XPOST https://example.test/jobs",
+        "curl --request=DELETE https://example.test/jobs/1",
+        "curl --request PUT https://example.test/jobs/1",
+        "curl -fsSX DELETE https://example.test/jobs/1",
+        "curl -dfoo=bar https://example.test/jobs",
+        "curl -d foo=bar https://example.test/jobs",
+        "curl --data foo=bar https://example.test/jobs",
+        "curl -T artifact.bin https://example.test/upload",
+        "curl -Tartifact.bin https://example.test/upload",
+        "curl -F file=@artifact.bin https://example.test/upload",
+        "curl -Ffile=@artifact.bin https://example.test/upload",
+        "curl --form file=@artifact.bin https://example.test/upload",
+        "curl --json '{}' https://example.test/jobs",
+        "curl --data-urlencode a=b https://example.test/jobs",
+        "curl --data-ascii a=b https://example.test/jobs",
+        "curl --data-binary @f https://example.test/jobs",
+        "curl --data-raw a=b https://example.test/jobs",
+        "curl --form-string x=y https://example.test/jobs",
+        "curl --upload-file f https://example.test/jobs",
+        "wget --post-data=x https://example.test/jobs",
+        "wget --post-file=x https://example.test/jobs",
+        "wget --body-data=x https://example.test/jobs",
+        "wget --body-file=x https://example.test/jobs",
+        "wget --method=PUT https://example.test/jobs/1",
+        "wget --method PUT https://example.test/jobs/1",
+        "http POST https://example.test/jobs",
+        "https PUT https://example.test/jobs/1",
+        "gh pr comment 10 --body fixed",
+        "gh pr create --title x",
+        "gh issue close 3",
+        "gh repo edit --visibility public",
+        "gh release upload v1 file",
+        "gh --repo o/r pr create --title x",
+        "gh -Ro/r pr create --title x",
+        "gh api repos/o/r/issues/1/comments --field body=test",
+        "gh api endpoint --raw-field body=test",
+        "gh api endpoint -fbody=test",
+        "gh api endpoint -Fbody=@file",
+        "gh api repos/o/r/pulls --input body.json",
+        "gh api repos/o/r/pulls --input -",
+        "gh api repos/o/r --method DELETE",
+        "gh api repos/o/r -X PATCH",
+        "gh api -H 'Accept: x' repos/o/r -f body=test",
+        "runpodctl create pods",
+        "runpodctl start pod abc",
+        "runpodctl stop pod abc; python3 -c 'import runpod; runpod.create_pod()'",
+    ],
+)
+def test_external_cli_parser_recognizes_each_mutating_spelling(command):
+    decision = guard.evaluate(payload(tool_input={"command": command}))
+    assert decision and decision[0] == "ask"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (["-XPOST"], ["POST"]),
+        (["-X", "POST"], ["POST"]),
+        (["--request=POST"], ["POST"]),
+        (["--request", "POST"], ["POST"]),
+        # -H takes the following token, so that token is not a request option.
+        (["-H", "-X", "https://example.test"], []),
+    ],
+)
+def test_option_values_reads_attached_and_separate_spellings(arguments, expected):
+    assert (
+        guard.option_values(
+            arguments,
+            "X",
+            "--request",
+            value_taking=guard.VALUE_TAKING["curl"],
+        )
+        == expected
+    )
+
+
+def test_operands_skip_option_values_before_a_command_pair():
+    assert guard.operands(
+        ["--repo", "o/r", "pr", "create"],
+        short_value_taking=guard.GH_GLOBAL_SHORT_VALUE_OPTIONS,
+        long_value_taking=guard.GH_GLOBAL_LONG_VALUE_OPTIONS,
+    ) == ["pr", "create"]
