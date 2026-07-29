@@ -94,23 +94,11 @@ while IFS= read -r f; do
     .claude/skills/*/SKILL.md)
       rest=${f#.claude/skills/}
       case "${rest%/SKILL.md}" in */*) printf '%s\n' "$f"; stray=1 ;; esac ;;
-    # The live workbench drawer, tracked for alpha so a reviewer sees what
-    # sessions are actually planning and a mistaken deletion is recoverable.
-    # These *are* dated and speculative — that is what they are for — so they
-    # are the one declared exception to the rule that a note is not a document.
-    #
-    # Two levels at most: files directly in active/, and one subdirectory for a
-    # dated set such as reviews-YYYY-MM-DD/. Deeper is a notes tree, which is
-    # the thing this whole check exists to refuse, and nothing else in this
-    # repository is allowed to nest without saying so either.
-    #
-    # Only active/. archive/, raw/, scratch/ and design/ stay ignored and stay
-    # out — active/ is bounded because it is cleaned every session; they are not.
-    workbench/active/*)
-      rest=${f#workbench/active/}
-      case "$rest" in
-        */*/*) printf '%s\n' "$f"; stray=1 ;;
-      esac ;;
+    # workbench/ has no exception. `active/` had one briefly, so a reviewer could
+    # read the run plan beside the code; that answered its question and the drawer
+    # is ignored again. These are task files that `session-end` moves to archive/
+    # when the work closes, so tracking them meant tracking things whose purpose
+    # is to move.
     *) printf '%s\n' "$f"; stray=1 ;;
   esac
 done

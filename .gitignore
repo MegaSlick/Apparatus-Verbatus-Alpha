@@ -28,17 +28,16 @@ dist/
 workbench/*
 !workbench/README.md
 
-# Except workbench/active/, which is tracked for alpha. Tyrel's ruling: the live
-# drawer is a spot check on what sessions are actually planning, it gets a
-# reviewer's eyes on the run plan, and a note a session deletes by mistake is
-# recoverable instead of gone. It is cleaned regularly, so it stays small.
+# workbench/active/ was tracked briefly, to see what a reviewer would make of the
+# run plan. The answer was worth having: CodeRabbit read RUN_PLAN.md and
+# independently found a picker instruction in it, which GOVERNANCE 3 forbids
+# outright — a defect in the plan propagates into everything built afterwards,
+# and nobody reading the code would ever have found it.
 #
-# The rest of workbench/ stays ignored, and that is the point: archive/, raw/,
-# scratch/ and design/ are where the volume lives. The previous repository
-# accumulated 320 markdown files until nobody could tell which document was
-# true, and tracking the whole drawer is how that happens again.
-!workbench/active/
-!workbench/active/**
+# It is ignored again because these are task files with a lifecycle, not records.
+# `session-end` files them into archive/ when the work closes, so tracking them
+# meant tracking things whose whole purpose is to move: added in one session's
+# diff and deleted in the next. The history of this branch keeps what was there.
 private/*
 !private/README.md
 scriptorium/*

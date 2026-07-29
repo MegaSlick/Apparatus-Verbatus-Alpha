@@ -56,11 +56,11 @@ def run_hook(name, *, input_text="", args=(), env=None):
         ".github/pull_request_template.md",
         ".claude/agents/auditor.md",
         ".claude/skills/session-start/SKILL.md",
-        # The live workbench drawer, tracked for alpha. Dated and speculative by
-        # design, and the one declared exception to "a note is not a document".
-        "workbench/active/RUN_PLAN.md",
+        # Not a workbench exception — this matches the older `*/HANDOFF.md` rule,
+        # written for the pipeline stages. A session handoff merely shares the
+        # filename, and .gitignore is what actually keeps it out of the tree.
+        # Two artefacts under one name is the collision recorded as T18.
         "workbench/active/HANDOFF.md",
-        "workbench/active/reviews-2026-07-27/DISPOSITION.md",
     ],
 )
 def test_document_allowlist_accepts_declared_documents(path):
@@ -79,19 +79,18 @@ def test_document_allowlist_accepts_declared_documents(path):
         ".claude/agents/drafts/session.md",
         ".claude/skills/drafts/nested/SKILL.md",
         ".claude/skills/session-start/NOTES.md",
-        # active/ is bounded to two levels: a notes tree is exactly what this
-        # check exists to refuse, and being inside the live drawer is not a
-        # licence to grow one.
-        "workbench/active/a/b/deep.md",
-        # The other drawers stay out. active/ is tracked because it is cleaned
-        # every session; archive/, raw/ and scratch/ are where volume collects.
+        # The whole drawer is refused again. active/ was tracked briefly so a
+        # reviewer could read the run plan beside the code; it answered that
+        # question and went back to being a drawer. These are task files that
+        # session-end moves into archive/ when the work closes.
         #
-        # Not listed here: workbench/archive/<dated>/HANDOFF.md. The older
-        # `*/HANDOFF.md` rule matches it, because that rule was written for the
-        # pipeline stages' HANDOFF.md — a stage declaring what it writes — and a
-        # session handoff merely shares the filename. .gitignore is what actually
-        # keeps archive/ out. Two different artefacts under one name is the
-        # collision recorded as T18, and renaming one of them is the real fix.
+        # Not listed here: any `*/HANDOFF.md`, which the older pipeline-stage
+        # rule still matches wherever it sits. That is T18, and .gitignore is
+        # what keeps those out.
+        "workbench/active/RUN_PLAN.md",
+        "workbench/active/AUDIT_LEDGER.md",
+        "workbench/active/reviews-2026-07-27/DISPOSITION.md",
+        "workbench/active/a/b/deep.md",
         "workbench/raw/run.md",
         "workbench/scratch/disposable.md",
         "workbench/design/iterative_reader.md",

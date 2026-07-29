@@ -1,14 +1,14 @@
 # workbench
 
-**Local, except the live drawer. `active/` is tracked; `archive/`, `raw/`, `scratch/` and
-`design/` are gitignored and never reach the repository.**
+**Local only. Everything here except this file is gitignored and never reaches the
+repository.**
 
-`active/` was tracked for alpha on Tyrel's ruling, so a reviewer sees what a session is
-actually planning next to the code it produced, and so a note deleted by mistake is
-recoverable. It earned that immediately: an auditor reading the tracked `RUN_PLAN.md` found
-a picker instruction in it, which GOVERNANCE 3 forbids outright — nobody reading the code
-would ever have found it. It stays small because it is cleaned every session, which is the
-whole reason it can be tracked at all.
+`active/` was tracked for one branch, so a reviewer could read the run plan beside the code.
+That answered its question — an auditor and CodeRabbit each found a picker instruction in
+`RUN_PLAN.md` independently, which GOVERNANCE 3 forbids outright and which nobody reading the
+code would have found. Then it went back to being a drawer, because these are task files that
+`session-end` files into `archive/` when the work closes: tracking them meant tracking things
+whose purpose is to move.
 
 This is where AI notes, handoffs, session summaries, task lists, grep dumps, design
 scribbles and half-finished thinking live. The old repository had no such place, so
