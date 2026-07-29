@@ -154,17 +154,110 @@ def has(command: str, pattern: str) -> bool:
     return re.search(pattern, command, flags=re.IGNORECASE | re.DOTALL) is not None
 
 
-GIT_INVOCATION = re.compile(
-    r"(?:^|[;&|]\s*)\s*"
+def flatten_command(text: str) -> str:
+    """Rewrite unquoted newlines as `;` and join backslash continuations.
+
+    Every anchored check below recognizes a command at the start of the string
+    or after `;`, `&` or `|`. A newline is a separator too, and Python's `^`
+    without re.MULTILINE matches only offset zero — so before this existed, a
+    harmless first line hid everything after it from the entire guard. Quote
+    state is tracked so a newline *inside* a quoted argument stays literal.
+    """
+    out: list[str] = []
+    quote: str | None = None
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if quote == "'":
+            out.append(char)
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char == "\\" and index + 1 < length:
+            following = text[index + 1]
+            if quote is None and following == "\n":
+                index += 2  # line continuation: one command, not two
+                continue
+            out.append(char)
+            out.append(following)
+            index += 2
+            continue
+        if quote == '"':
+            out.append(char)
+            if char == '"':
+                quote = None
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            out.append(char)
+            index += 1
+            continue
+        out.append(";" if char == "\n" else char)
+        index += 1
+    return "".join(out)
+
+
+SHELL_PAYLOAD = re.compile(
+    r"\b(?:(?:ba|z|k|da|a)?sh|eval)\b(?:\s+-[A-Za-z]+)*\s+"
+    r"(?P<quote>['\"])(?P<body>(?:\\.|(?!(?P=quote)).)*)(?P=quote)",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+PAYLOAD_DEPTH = 3
+
+
+def expand_command(command: str, depth: int = 0) -> str:
+    """Flatten separators, then append any `sh -c` / `eval` payload as its own command.
+
+    `sh -c 'rm -rf ~'` is not a disguise, it is ordinary shell, and treating the
+    payload as opaque text meant every check inside it was skipped. Appending the
+    body rather than substituting it keeps the outer text intact for the
+    unanchored checks. Depth is bounded so a nested quine cannot recurse away.
+    """
+    flat = flatten_command(command)
+    if depth >= PAYLOAD_DEPTH:
+        return flat
+    payloads = [
+        expand_command(match.group("body"), depth + 1)
+        for match in SHELL_PAYLOAD.finditer(flat)
+        if match.group("body").strip()
+    ]
+    return flat + " ; " + " ; ".join(payloads) if payloads else flat
+
+
+# Prefixes that may sit between a separator and the command being recognized.
+# `nohup`, `setsid`, `nice` and `timeout` are how this project launches detached
+# work, so they are ordinary usage rather than evasion — and before they were
+# listed here, every one of them made the command behind them invisible.
+WRAPPER_PREFIX = (
     r"(?:(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+)\s+|"
-    r"(?:command|exec|rtk)\s+|"
+    r"(?:command|exec|rtk|nohup|setsid)\s+|"
+    r"(?:nice|timeout|stdbuf|ionice|time)"
+    r"(?:\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S+)?|\s+\d+(?:\.\d+)?[smhd]?)*\s+|"
     r"sudo(?:(?:\s+(?:-u|--user|-g|--group)\s+\S+)|"
     r"(?:\s+(?:--user|--group)=\S+)|"
     r"(?:\s+(?:-n|-E|-H|-S|-k|--non-interactive)))*\s+|"
     r"env(?:(?:\s+(?:-i|--ignore-environment))|"
     r"(?:\s+(?:-u|--unset)\s+\S+)|(?:\s+--unset=\S+)|"
     r"(?:\s+[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+))*\s+)*"
-    r"(?:[^\s;&|]*/)?git\b(?P<tail>[^\n;&|]*)",
+)
+
+GIT_INVOCATION = re.compile(
+    r"(?:^|[;&|]\s*)\s*" + WRAPPER_PREFIX + r"(?:[^\s;&|]*/)?git\b(?P<tail>[^\n;&|]*)",
+    flags=re.IGNORECASE,
+)
+RM_INVOCATION = re.compile(
+    r"(?:^|[;&|]\s*)\s*" + WRAPPER_PREFIX + r"(?:[^\s;&|]*/)?rm\b(?P<tail>[^\n;&|]*)",
+    flags=re.IGNORECASE,
+)
+# core.hooksPath supplied through git's environment-configuration variables
+# reaches exactly the layer `-c core.hooksPath=` writes to. The invocation regex
+# above deliberately consumes leading assignments, so they never reach the token
+# list; this is matched against the whole command instead.
+GIT_CONFIG_HOOKS_ENV = re.compile(
+    r"\bGIT_CONFIG(?:_KEY_\d+|_PARAMETERS)\s*=\s*['\"]?[^\s'\"]*core\.hookspath",
     flags=re.IGNORECASE,
 )
 GIT_GLOBAL_VALUE_OPTIONS = frozenset(
@@ -172,14 +265,27 @@ GIT_GLOBAL_VALUE_OPTIONS = frozenset(
 )
 
 
+def tokenize(tail: str) -> list[str]:
+    """Split a command tail, falling back to a permissive split rather than giving up.
+
+    GOVERNANCE.md 10: a check that cannot run is a failure, not a pass. `shlex`
+    raises on an unbalanced quote — which bash itself may never see, because
+    `git push origin main #"` is a comment to bash and an unterminated string to
+    `shlex`. Dropping the invocation there let every hard denial be skipped by
+    one stray quote, so an unparseable tail now yields approximate tokens and is
+    judged on those. Over-recognizing a malformed command is the safe direction.
+    """
+    try:
+        return shlex.split(tail, posix=True)
+    except ValueError:
+        return re.findall(r"[^\s]+", tail.replace("'", " ").replace('"', " "))
+
+
 def git_calls(command: str) -> list[tuple[str, list[str], list[str]]]:
     """Return recognizable direct Git calls as (action, arguments, all tokens)."""
     calls = []
     for match in GIT_INVOCATION.finditer(command):
-        try:
-            tokens = shlex.split(match.group("tail"), posix=True)
-        except ValueError:
-            continue
+        tokens = tokenize(match.group("tail"))
         index = 0
         while index < len(tokens):
             token = tokens[index]
@@ -263,9 +369,35 @@ def push_targets_main(arguments: list[str]) -> bool:
     return False
 
 
+def bundled_short_flag(arguments: list[str], letter: str) -> bool:
+    """True when a short flag carrying `letter` appears, bundled or alone."""
+    for token in arguments:
+        if token.startswith("--") or not token.startswith("-") or len(token) < 2:
+            continue
+        if letter in token[1:]:
+            return True
+    return False
+
+
+def skips_commit_hooks(action: str, arguments: list[str]) -> bool:
+    """`-n` is git-commit's short --no-verify — and only git-commit's.
+
+    Kept deliberately narrow: `-n` means --dry-run for push, clean and checkout,
+    --no-stat for merge, and --no-commit for revert and cherry-pick. Treating it
+    as --no-verify everywhere would refuse a pile of harmless commands, which is
+    how a real alarm gets tuned out.
+    """
+    return action == "commit" and bundled_short_flag(arguments, "n")
+
+
 def hard_git_denial(command: str) -> str | None:
-    for action, arguments, tokens in git_calls(command):
+    calls = git_calls(command)
+    if calls and GIT_CONFIG_HOOKS_ENV.search(command):
+        return "bypassing repository Git hooks is outside the allowed workflow"
+    for action, arguments, tokens in calls:
         if any(token == "--no-verify" or token.startswith("--no-verify=") for token in tokens):
+            return "bypassing repository Git hooks is outside the allowed workflow"
+        if skips_commit_hooks(action, arguments):
             return "bypassing repository Git hooks is outside the allowed workflow"
         if hooks_path_bypass(action, arguments, tokens):
             return "bypassing repository Git hooks is outside the allowed workflow"
@@ -315,7 +447,8 @@ def risky_git(command: str, payload: dict[str, Any]) -> Decision:
             and (restore_worktree or not restore_staged)
             or action == "checkout"
             or action == "clean"
-            and not {"--dry-run", "-n"}.intersection(arguments)
+            and "--dry-run" not in arguments
+            and not bundled_short_flag(arguments, "n")
             or action == "branch"
             and bool({"-D", "--delete", "--force"}.intersection(arguments))
             or action == "stash"
@@ -331,17 +464,31 @@ def risky_git(command: str, payload: dict[str, Any]) -> Decision:
     return None
 
 
+def rm_operands(command: str) -> list[str]:
+    """Every non-flag operand of every recognizable rm in the command."""
+    operands: list[str] = []
+    for match in RM_INVOCATION.finditer(command):
+        operands.extend(
+            token for token in tokenize(match.group("tail")) if not token.startswith("-")
+        )
+    return operands
+
+
+def under_scratch(operand: str) -> bool:
+    cleaned = operand.strip().strip("\"'")
+    if cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    return cleaned == "workbench/scratch" or cleaned.startswith("workbench/scratch/")
+
+
 def protected_delete(command: str, payload: dict[str, Any]) -> Decision:
-    if not has(
-        command,
-        r"(?:^|[;&|]\s*)\s*(?:(?:sudo|command|exec)\s+|"
-        r"env(?:\s+[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+)*\s+)*"
-        r"(?:[^\s;&|]*/)?rm\b",
-    ):
+    if not RM_INVOCATION.search(command):
         return None
-    if has(command, r"\bworkbench/scratch(?:/|\b)") and not has(
-        command, r"\b(?:\.git|\.githooks|\.claude|workbench/(?!scratch)|private)\b"
-    ):
+    # The scratch exemption is per-operand, not per-command. Testing whether the
+    # string merely *mentions* scratch meant `rm -rf workbench/scratch ~` was
+    # waved through with the home directory attached to it.
+    operands = rm_operands(command)
+    if operands and all(under_scratch(operand) for operand in operands):
         return None
     broad = has(command, r"\brm\b[^\n;&|]*(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r)")
     protected = has(
@@ -432,7 +579,7 @@ def external_shell_mutation(command: str, payload: dict[str, Any]) -> Decision:
 def bash_decision(tool_input: Any, payload: dict[str, Any]) -> Decision:
     if not isinstance(tool_input, dict) or not isinstance(tool_input.get("command"), str):
         return "deny", "The repository guard could not read the Bash command."
-    command = tool_input["command"]
+    command = expand_command(tool_input["command"])
     for check in (
         risky_git,
         protected_delete,

@@ -239,3 +239,105 @@ def test_cli_fails_closed_on_malformed_input():
     assert result.returncode == 2
     assert result.stdout == ""
     assert "could not inspect" in result.stderr
+
+
+# --- Bypasses found by the 2026-07-29 security review -------------------------
+#
+# Each case below is an exact string a reviewer confirmed the guard let through
+# silently. They are grouped by the property that failed, not by the command,
+# because four of the six shared one root cause: anchored patterns were matched
+# against raw command text, so anything that was not the first simple command of
+# the string was invisible.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A newline is a command separator. Without normalization `^` matched
+        # only offset zero, so line two was never inspected.
+        "cd /Users/tyrel/verbatus_alpha\ngit push --force origin main",
+        "true\ngit push origin main",
+        # A backslash continuation is the opposite case: one command, two lines.
+        "git push \\\n  origin main",
+        # Wrapper verbs this project actually uses for detached work.
+        "nohup git push origin main",
+        "timeout 60 git push origin main",
+        "nice -n 10 git push origin main",
+        "setsid git push origin main",
+        # Shell payloads must be inspected, not treated as opaque text.
+        "bash -c 'git push origin main'",
+        'sh -c "git push origin main"',
+        # An unparseable tail must not delete the invocation from the list.
+        'git push origin main #"',
+        'git push origin main "x|y"',
+        # -n is git-commit's short --no-verify.
+        'git commit -n -m "message"',
+        'git commit -nm "message"',
+        # Config supplied by environment assignment reaches the same key as -c.
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath "
+        "GIT_CONFIG_VALUE_0=/dev/null git commit -m 'message'",
+        "GIT_CONFIG_PARAMETERS='core.hooksPath=/dev/null' git commit -m 'message'",
+    ],
+)
+def test_review_findings_stay_denied_to_the_main_session(command):
+    decision, reason = guard.evaluate(payload(tool_input={"command": command}))
+    assert decision == "deny", f"guard stayed silent on: {command!r}"
+    assert "hard rule" in reason.lower()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Naming scratch must not disarm the check for every other operand.
+        "rm -rf workbench/scratch ~",
+        "rm -rf workbench/scratch $HOME",
+        "/bin/rm -rf workbench/scratch /Users/tyrel",
+        "rm -rf workbench/scratch ../../elsewhere",
+        # Deletes hidden behind a separator or a wrapper.
+        "echo tidying\nrm -rf ~",
+        "sh -c 'rm -rf ~'",
+        "nohup rm -rf /",
+        # Other anchored checks that shared the newline defect.
+        "cd /tmp\nssh pod.example reboot",
+        "cd /tmp\nenv",
+    ],
+)
+def test_review_findings_ask_the_main_session(command):
+    decision, reason = guard.evaluate(payload(tool_input={"command": command}))
+    assert decision == "ask", f"guard stayed silent on: {command!r}"
+    assert "Confirm this exact action" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The scratch exemption still has to work when scratch is the only target.
+        "rm -rf workbench/scratch",
+        "rm -rf workbench/scratch/",
+        "rm -rf ./workbench/scratch/old-run",
+        "rm -rf workbench/scratch/a workbench/scratch/b",
+        # -n means --dry-run for these subcommands, not --no-verify.
+        "git clean -n",
+        "git clean -nd",
+        # A message that merely mentions the flag is not the flag.
+        'git commit -m "document --no-verify semantics"',
+        'git commit -am "routine change"',
+        # Wrapper prefixes must not turn harmless commands into findings.
+        "nohup git status",
+        "timeout 30 git log --oneline",
+    ],
+)
+def test_review_fixes_do_not_over_trigger(command):
+    assert guard.evaluate(payload(tool_input={"command": command})) is None, (
+        f"guard fired on harmless: {command!r}"
+    )
+
+
+def test_subagent_is_denied_a_bypass_hidden_behind_a_newline():
+    decision, reason = guard.evaluate(
+        payload(
+            tool_input={"command": "cd /tmp\ncurl --data x=1 https://example.test"}, agent="worker"
+        )
+    )
+    assert decision == "deny"
+    assert "main session" in reason
