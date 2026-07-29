@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Tripwire for the things that cost money or destroy work.
 
-Runs before every Bash command and every MCP tool call. Blocks a short list and
-stays out of the way otherwise — a guard that fires on ordinary work gets
-disabled, and a disabled guard protects nothing.
+Runs before every Bash command, every file-writing tool call and every MCP tool
+call. Blocks a short list and stays out of the way otherwise — a guard that
+fires on ordinary work gets disabled, and a disabled guard protects nothing.
 
 What it recognises — phrasings, not operations. Each line names the spellings
 this file actually inspects. It does not block the operation; it blocks the way
@@ -36,6 +36,11 @@ disclaimer on it, and every entry in it was run against this guard.
                                                a hook that cannot run is a hook that is off
   * `rm` of the repository, .git/.githooks/.claude, your home, or workbench
     records outside scratch
+  * a `Write`/`Edit`/`MultiEdit`/`NotebookEdit` whose destination resolves to a
+    governing document at the root of this clone or one of its worktrees —
+    GOALS, GOVERNANCE, ARCHITECTURE, GLOSSARY and the root README for every
+    caller, and CLAUDE.md when the payload says a subagent is calling.
+                                               CLAUDE.md hard rule 10
 
 WHAT THIS IS NOT
 ================
@@ -59,6 +64,16 @@ What it does not catch — each one verified against this file, not suspected:
     than Python and node/bun/deno — `perl -e` reaches the API untouched.
   * git plumbing spelled as its own binary — `git-push`, `git-send-pack` —
     rather than as `git <subcommand>`.
+  * a governing document rewritten from the shell. `echo x > GOVERNANCE.md`,
+    `sed -i`, `cp`, `mv`, `patch` and `git checkout` all reach those files
+    without touching a writing tool, and none of them is inspected for it. What
+    hard rule 10 gets here is a tripwire on the tools an agent actually reaches
+    for, not a seal on the bytes.
+  * a subagent whose payload does not identify it. The CLAUDE.md half of hard
+    rule 10 rests on `agent_type`/`agent_id`, which Claude Code sends and this
+    file cannot verify; if a release stops sending them, that half is off and
+    nothing here would say so. The other five documents are refused to every
+    caller and so do not depend on it.
   * an MCP payload that hides its request from a reader: encoded, assembled
     from fields the guard cannot join, or sent through a proxy tool that names
     neither a RunPod host nor a call this file knows by name.
@@ -116,7 +131,24 @@ import shlex
 import sys
 from urllib.parse import urlsplit
 
-GOV8 = "Governance 8: a live pod needs Tyrel's explicit permission this session"
+# Governance 8 grants pod permission *for a session*. This guard has no notion
+# of a session and is not going to be given one: anything that represented
+# "permission granted" — a file, a variable, a flag — could be written by the
+# thing the rule constrains, and a permission mechanism an agent can forge is
+# worse than none because it looks like proof. So the block is unconditional,
+# and it fires even after Tyrel has said yes in the session.
+#
+# That makes the wording load-bearing. A refusal that reads as a malfunction
+# gets routed around — rewritten, wrapped in a script, or spelled differently
+# until it passes — and every one of those routes exists (see WHAT THIS IS NOT).
+# A refusal that names the way forward does not need to be defeated.
+GOV8 = (
+    "Governance 8: a live pod needs Tyrel's permission in this session, and the guard "
+    "cannot see that permission — it has no notion of a session, so it refuses every "
+    "launch, including one he has already approved. That is deliberate and it is not a "
+    "malfunction to work around: ask Tyrel to start the pod himself, out of band, and "
+    "carry on once he says it is up"
+)
 
 RUNPOD_HOSTS = ("runpod.io", "runpod.ai")
 
@@ -1918,6 +1950,161 @@ def check_tool_input(tool: str, tool_input) -> None:
     deny(f"'{tool}' carries a write to the RunPod API in its payload — {GOV8}")
 
 
+# ------------------------------------------ hard rule 10: the governing documents
+
+# CLAUDE.md hard rule 10: "A spawned agent never edits the governing documents.
+# This file, GOALS, GOVERNANCE, ARCHITECTURE, GLOSSARY and the root README. An
+# agent may propose a change to any of them, with exact wording, in its report;
+# it may not make one. The main session may edit this file, and everything else
+# on that list stays Tyrel's alone."
+#
+# Two lists, because the rule has two halves. These five are Tyrel's alone, so
+# no Claude caller writes them — main session or subagent, it makes no
+# difference, and that is what lets this half be enforced without depending on
+# any claim about who is calling.
+TYRELS_DOCUMENTS = frozenset(
+    {"goals.md", "governance.md", "architecture.md", "glossary.md", "readme.md"}
+)
+# CLAUDE.md is different: the rule names the main session as a permitted
+# editor. Enforcing that half needs the guard to tell a subagent from the main
+# thread — see _spawned_agent.
+SESSION_DOCUMENT = "claude.md"
+
+# The tools that write a file directly. Bash is not among them: a shell
+# redirection or `sed -i` reaches these files without any of them, and that
+# hole is declared in "What it does not catch" rather than half-closed here.
+WRITING_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+PATH_KEYS = ("file_path", "notebook_path", "path")
+
+
+def _spawned_agent(payload):
+    """The subagent behind this tool call, or None for the main session.
+
+    MEASURED, not assumed. A live PreToolUse payload was captured from both
+    sides of one session on 2026-07-28. A subagent's call carries::
+
+        "agent_id": "a767beb9…", "agent_type": "infra-worker"
+
+    and the same session's main-thread call carries neither key. Both are
+    written by Claude Code, not by the model, so a model cannot set them for
+    its own call the way it can set the text of a command.
+
+    The failure direction is stated rather than hidden. Absence of the key is
+    read as "the main session", so if a future Claude Code stops sending it,
+    CLAUDE.md quietly reverts to unguarded. That is the wrong direction for a
+    guard, and it is chosen anyway: reading absence as "subagent" would refuse
+    the main session's own edit to CLAUDE.md, which hard rule 10 permits in so
+    many words — and a guard that blocks the documented workflow is a guard
+    somebody switches off wholesale. The other five documents do not depend on
+    this discrimination at all, which is why they are enforced separately and
+    absolutely.
+    """
+    for key in ("agent_type", "agent_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            found = payload.get("agent_type")
+            return found.strip() if isinstance(found, str) and found.strip() else "a subagent"
+    return None
+
+
+def _worktree_of_this_clone(directory: str, project: str) -> bool:
+    """True for a worktree of *this* repository, which holds its own documents.
+
+    The roster requires writing agents to work in a prepared worktree, so the
+    copy a subagent would actually edit usually is not the one under
+    CLAUDE_PROJECT_DIR. A worktree's `.git` is a file holding `gitdir: <path>`
+    that points back into this clone's `.git/worktrees/`, which is what makes
+    this test specific: an unrelated scratch repository somewhere else is not
+    matched, so its own README stays writable.
+    """
+    marker = os.path.join(directory, ".git")
+    if not os.path.isfile(marker):
+        return False
+    try:
+        with open(marker, encoding="utf-8", errors="replace") as handle:
+            text = handle.read(4096)
+    except OSError:
+        return False
+    found = re.match(r"\s*gitdir:\s*(\S.*)", text)
+    if not found:
+        return False
+    gitdir = os.path.realpath(found.group(1).strip())
+    return gitdir.startswith(os.path.join(os.path.realpath(project), ".git") + os.sep)
+
+
+def _document_target_paths(target: str, bases):
+    """Every path one written destination could mean, symlinks resolved.
+
+    A guard that recognised only `/abs/path/GOVERNANCE.md` would have a
+    one-character bypass in `./GOVERNANCE.md`. Both spellings are produced:
+    normpath collapses `..` and doubled separators lexically, realpath follows
+    symlinks — and `/tmp/link -> …/GOVERNANCE.md` resolves only under the
+    second.
+    """
+    expanded = os.path.expandvars(os.path.expanduser(target.strip()))
+    if os.path.isabs(expanded):
+        candidates = [expanded]
+    else:
+        candidates = [os.path.join(b, expanded) for b in bases if b]
+    out = set()
+    for candidate in candidates:
+        out.add(os.path.normpath(os.path.abspath(candidate)))
+        try:
+            out.add(os.path.realpath(candidate))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def check_document_write(tool: str, tool_input, payload) -> None:
+    """Refuse a direct write to a governing document — CLAUDE.md hard rule 10.
+
+    Only the document at a checkout's root is governed. `pipeline/README.md`
+    and every other nested README are ordinary documentation that agents write
+    and revise; refusing those would be an over-refusal met in daily work.
+
+    Two comparisons are deliberately loose, and each over-refuses rather than
+    under-refuses. Case is folded because macOS resolves `claude.md` to the
+    same bytes as `CLAUDE.md`, which would otherwise be a real bypass; on a
+    case-sensitive filesystem it merely refuses a file nobody meant to write.
+    Surrounding whitespace is stripped for the same reason in reverse — a
+    trailing space names a genuinely different file, but never one anybody
+    intends, so it is refused rather than silently allowed as a near-miss.
+    """
+    if tool not in WRITING_TOOLS:
+        return
+    if not isinstance(tool_input, dict):
+        raise ValueError("a write whose input the guard cannot read")
+    target = next((tool_input[key] for key in PATH_KEYS if key in tool_input), None)
+    if not isinstance(target, str) or not target.strip():
+        # GOVERNANCE.md 10: a check that cannot run is a failure, not a pass.
+        raise ValueError("a write with no readable destination")
+
+    project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    call_cwd = payload.get("cwd")
+    bases = [call_cwd if isinstance(call_cwd, str) else None, project, os.getcwd()]
+    agent = _spawned_agent(payload)
+
+    for path in _document_target_paths(target, bases):
+        directory = os.path.realpath(os.path.dirname(path))
+        if directory != project and not _worktree_of_this_clone(directory, project):
+            continue
+        name = os.path.basename(path).strip().lower()
+        if name in TYRELS_DOCUMENTS:
+            deny(
+                f"'{os.path.basename(path).strip()}' is a governing document, and CLAUDE.md "
+                f"hard rule 10 keeps it Tyrel's alone — no session and no agent edits it. "
+                f"Propose the exact wording in your report instead"
+            )
+        if name == SESSION_DOCUMENT and agent:
+            deny(
+                f"CLAUDE.md is the file that governs you, and CLAUDE.md hard rule 10 bars a "
+                f"spawned agent ({agent}) from editing it — 'a rule an agent wrote into the "
+                f"file that binds it is not a rule'. Propose the exact wording in your "
+                f"report; the main session may make the edit"
+            )
+
+
 SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
 
 # Commands that read a heredoc body as data and never execute it. `python3 -`,
@@ -2088,6 +2275,7 @@ def main() -> None:
 
         check_tool(tool)
         check_tool_input(tool, tool_input)
+        check_document_write(tool, tool_input, payload)
 
         if tool == "Bash":
             command = tool_input.get("command") if isinstance(tool_input, dict) else None

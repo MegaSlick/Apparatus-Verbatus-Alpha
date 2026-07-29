@@ -903,6 +903,12 @@ DOCUMENTED_GAPS = [
     (f"perl -e \"post('https://{REST}/v1/pods')\"", "a runtime the guard does not dispatch"),
     ("git-push origin main", "plumbing spelled as its own binary"),
     ("git-send-pack origin HEAD:main", "the same, for send-pack"),
+    # Hard rule 10 is enforced on the writing tools, not on the bytes. The
+    # shell reaches the same files and is not inspected for it; guard.py's
+    # docstring says so, and this is what keeps that claim measured.
+    ("echo x > GOVERNANCE.md", "a shell redirection reaches a governing document"),
+    ("sed -i '' s/a/b/ CLAUDE.md", "an in-place edit from the shell"),
+    ("cp /tmp/mine.md GOVERNANCE.md", "a copy over a governing document"),
 ]
 
 
@@ -1168,3 +1174,255 @@ def test_the_launcher_fails_closed_with_no_project_directory():
         timeout=10,
     )
     assert result.returncode == 2, "an unset CLAUDE_PROJECT_DIR must block, not proceed"
+
+
+# ------------------------------------------- hard rule 10: the governing documents
+
+# CLAUDE.md hard rule 10: "A spawned agent never edits the governing documents.
+# This file, GOALS, GOVERNANCE, ARCHITECTURE, GLOSSARY and the root README. ...
+# The main session may edit this file, and everything else on that list stays
+# Tyrel's alone."
+#
+# Until this section existed the rule had no mechanical enforcement at all:
+# settings.json showed the guard only `Bash` and `mcp__*`, so `Write` and `Edit`
+# — which `worker`, `infra-worker` and `rebuilder` all hold — were never
+# inspected. The discriminator these tests rely on was measured, not assumed:
+# a live PreToolUse payload from a spawned agent carries `agent_type` and
+# `agent_id`; the same session's main-thread payload carries neither.
+
+SPAWNED = {"agent_id": "a767beb9bd6ca01c3", "agent_type": "infra-worker"}
+
+TYRELS_ALONE = ["GOALS.md", "GOVERNANCE.md", "ARCHITECTURE.md", "GLOSSARY.md", "README.md"]
+
+
+def write_call(file_path, tool="Write", caller=None, cwd=PROJECT):
+    """A Write/Edit tool call as Claude Code presents it to the hook."""
+    payload = {
+        "cwd": cwd,
+        "hook_event_name": "PreToolUse",
+        "tool_name": tool,
+        "tool_input": {"file_path": file_path, "content": "x"},
+    }
+    payload.update(caller or {})
+    return payload
+
+
+@pytest.mark.parametrize("name", TYRELS_ALONE)
+@pytest.mark.parametrize("tool", ["Write", "Edit"])
+@pytest.mark.parametrize("caller,who", [(SPAWNED, "a spawned agent"), (None, "the main session")])
+def test_the_documents_that_are_tyrels_alone_are_refused(name, tool, caller, who):
+    """Hard rule 10 leaves these five to Tyrel; no Claude caller may write them."""
+    assert decide(write_call(f"{PROJECT}/{name}", tool=tool, caller=caller)), (
+        f"{tool} to {name} by {who} must be refused"
+    )
+
+
+@pytest.mark.parametrize("tool", ["Write", "Edit"])
+def test_claude_md_is_refused_to_a_spawned_agent(tool):
+    assert decide(write_call(f"{PROJECT}/CLAUDE.md", tool=tool, caller=SPAWNED)), (
+        "hard rule 10: a spawned agent never edits the file that binds it"
+    )
+
+
+@pytest.mark.parametrize("tool", ["Write", "Edit"])
+def test_claude_md_stays_open_to_the_main_session(tool):
+    """Rule 10 says outright that the main session may edit this file.
+
+    A guard that blocked it here would break the documented workflow, and a
+    guard that blocked the workflow is a guard somebody switches off.
+    """
+    assert not decide(write_call(f"{PROJECT}/CLAUDE.md", tool=tool, caller=None)), (
+        "the main session's own edit to CLAUDE.md must not be refused"
+    )
+
+
+# Only the ROOT README is governed. Every nested one is ordinary documentation
+# that agents write and revise, and refusing them would be an over-refusal met
+# in ordinary work rather than an imagined one.
+NESTED_READMES = [
+    f"{PROJECT}/pipeline/README.md",
+    f"{PROJECT}/pipeline/1_exemplar/README.md",
+    f"{PROJECT}/.claude/agents/README.md",
+    f"{PROJECT}/workbench/README.md",
+    f"{PROJECT}/autoclave/README.md",
+]
+
+
+@pytest.mark.parametrize("path", NESTED_READMES, ids=NESTED_READMES)
+def test_nested_readmes_stay_writable(path):
+    assert not decide(write_call(path, caller=SPAWNED)), f"{path} is not the root README"
+
+
+STILL_WRITABLE = [
+    f"{PROJECT}/.claude/hooks/guard.py",
+    f"{PROJECT}/pipeline/1_exemplar/exemplar.py",
+    f"{PROJECT}/autoclave/draft.py",
+    f"{PROJECT}/.claude/agents/worker.md",
+    # A note that merely mentions a document by name is not that document.
+    f"{PROJECT}/workbench/active/GOVERNANCE.md.notes",
+]
+
+
+@pytest.mark.parametrize("path", STILL_WRITABLE, ids=STILL_WRITABLE)
+def test_code_and_notes_stay_writable(path):
+    """CLAUDE.md: "Code is not on that list and stays open." """
+    assert not decide(write_call(path, caller=SPAWNED)), f"{path} must stay writable"
+
+
+# One document, spelled every way a path can be spelled. A guard that catches
+# only the absolute form is a guard with a one-character bypass.
+SPELLINGS = [
+    (f"{PROJECT}/GOVERNANCE.md", PROJECT, "absolute"),
+    ("GOVERNANCE.md", PROJECT, "bare and relative to the tool call's cwd"),
+    ("./GOVERNANCE.md", PROJECT, "dot-slash relative"),
+    ("../GOVERNANCE.md", f"{PROJECT}/pipeline", "traversal up out of a subdirectory"),
+    (f"{PROJECT}/pipeline/../GOVERNANCE.md", PROJECT, "traversal inside an absolute path"),
+    (f"{PROJECT}/./GOVERNANCE.md", PROJECT, "a redundant dot segment"),
+    (f"{PROJECT}//GOVERNANCE.md", PROJECT, "a doubled separator"),
+    (f"{PROJECT}/GOVERNANCE.md ", PROJECT, "a trailing space"),
+]
+
+
+@pytest.mark.parametrize("path,cwd,why", SPELLINGS, ids=[w for _, _, w in SPELLINGS])
+def test_every_spelling_of_the_same_document_is_refused(path, cwd, why):
+    assert decide(write_call(path, caller=SPAWNED, cwd=cwd)), f"{why} reached the document"
+
+
+def test_a_symlink_to_a_document_is_refused(tmp_path):
+    """realpath, not the name typed: a link is the file it points at."""
+    link = tmp_path / "harmless_notes.md"
+    link.symlink_to(Path(PROJECT) / "GOVERNANCE.md")
+    assert decide(write_call(str(link), caller=SPAWNED)), (
+        "a symlink is a second name for the same bytes"
+    )
+
+
+def test_a_symlinked_directory_to_the_project_is_refused(tmp_path):
+    link = tmp_path / "repo"
+    link.symlink_to(Path(PROJECT))
+    assert decide(write_call(str(link / "GOVERNANCE.md"), caller=SPAWNED)), (
+        "the project reached through a linked directory is the same project"
+    )
+
+
+MALFORMED_WRITES = [
+    {"cwd": PROJECT, "tool_name": "Write", "tool_input": {"content": "x"}},
+    {"cwd": PROJECT, "tool_name": "Edit", "tool_input": {"file_path": None}},
+    {"cwd": PROJECT, "tool_name": "Write", "tool_input": {"file_path": ["CLAUDE.md"]}},
+    {"cwd": PROJECT, "tool_name": "Write", "tool_input": "CLAUDE.md"},
+]
+
+
+@pytest.mark.parametrize(
+    "payload", MALFORMED_WRITES, ids=[str(p["tool_input"]) for p in MALFORMED_WRITES]
+)
+def test_a_write_the_guard_cannot_read_fails_closed(payload):
+    """GOVERNANCE.md 10: a check that cannot run is a failure, not a pass."""
+    assert decide(payload), "a write with no readable destination must deny"
+
+
+def test_the_refusal_names_the_rule_and_the_way_forward():
+    said = json.loads(
+        subprocess.run(
+            [sys.executable, GUARD],
+            input=json.dumps(write_call(f"{PROJECT}/GOVERNANCE.md", caller=SPAWNED)),
+            capture_output=True,
+            text=True,
+            cwd=tempfile.gettempdir(),
+            env={"CLAUDE_PROJECT_DIR": PROJECT, "HOME": HOME, "PATH": "/usr/bin:/bin"},
+            timeout=5,
+        ).stdout
+    )["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "hard rule 10" in said, f"the refusal must name the rule: {said}"
+    assert "propose" in said.lower(), f"the refusal must name the way forward: {said}"
+
+
+def test_the_matcher_reaches_write_and_edit():
+    """Audit ledger shape: every case above stays green if the hook never runs."""
+    matcher, _ = wired_hook()
+    for name in ["Write", "Edit"]:
+        assert re.fullmatch(matcher, name), (
+            f"settings.json matcher {matcher!r} never shows the guard {name}, "
+            f"so hard rule 10 would be enforced by a guard nobody calls"
+        )
+
+
+def test_the_wired_command_refuses_a_write_to_a_governing_document():
+    result = run_wired(write_call(f"{PROJECT}/GOVERNANCE.md", caller=SPAWNED))
+    assert result.returncode == 0, f"the wired guard did not run: {result.stderr.strip()}"
+    decision = json.loads(result.stdout)["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+
+
+# ------------------------------------------- the pod refusal explains itself
+
+# Governance 8 grants pod permission for a session. The guard has no notion of
+# a session and cannot be given one — anything representing "permission
+# granted" can be forged by the thing it constrains — so it refuses even after
+# Tyrel has said yes. A refusal that reads as a malfunction gets routed around;
+# this one has to name the way forward instead.
+LAUNCH_REFUSALS = [
+    f"{RC} create pod --gpuType A100",
+    f"{RC} start pod abc123",
+    f"{RC} project deploy",
+    f"curl -X POST https://{REST}/v1/pods",
+]
+
+
+@pytest.mark.parametrize("command", LAUNCH_REFUSALS, ids=LAUNCH_REFUSALS)
+def test_the_pod_refusal_names_the_way_forward(command):
+    said = reason(command)
+    assert said, f"expected a refusal for {command!r}"
+    assert "ask Tyrel to start the pod himself" in said, (
+        f"the refusal must name what to do instead, not just refuse: {said}"
+    )
+    assert "not a malfunction" in said, (
+        f"the refusal must say it is deliberate, or it reads as a bug: {said}"
+    )
+
+
+def test_a_case_variant_is_refused():
+    """macOS resolves `governance.md` to the same bytes — a real bypass, not a near-miss."""
+    assert decide(write_call(f"{PROJECT}/governance.md", caller=SPAWNED)), (
+        "a case-insensitive filesystem makes this the governing document itself"
+    )
+
+
+def test_a_worktree_copy_of_a_document_is_refused(tmp_path):
+    """The roster requires writing agents to work in a worktree.
+
+    Refusing only the path under CLAUDE_PROJECT_DIR would leave hard rule 10
+    unenforced in the exact place a subagent is told to write.
+    """
+    worktree = tmp_path / "topic"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {PROJECT}/.git/worktrees/topic\n")
+    assert decide(write_call(str(worktree / "GOVERNANCE.md"), caller=SPAWNED)), (
+        "a worktree of this clone holds its own copy of every governing document"
+    )
+    assert decide(write_call(str(worktree / "CLAUDE.md"), caller=SPAWNED))
+    assert not decide(write_call(str(worktree / "pipeline" / "README.md"), caller=SPAWNED)), (
+        "still only the root README"
+    )
+
+
+def test_an_unrelated_repository_keeps_its_own_readme(tmp_path):
+    """An over-refusal here would fire on ordinary work outside this project."""
+    elsewhere = tmp_path / "someone-elses-repo"
+    (elsewhere / ".git").mkdir(parents=True)
+    assert not decide(write_call(str(elsewhere / "README.md"), caller=SPAWNED)), (
+        "another repository's README is not a governing document of this one"
+    )
+
+
+def test_an_agent_id_alone_still_identifies_a_subagent():
+    """Neither key is asserted to always travel with the other."""
+    assert decide(write_call(f"{PROJECT}/CLAUDE.md", caller={"agent_id": "a767beb9bd6ca01c3"})), (
+        "agent_id on its own is still Claude Code saying a subagent is calling"
+    )
+
+
+def test_an_empty_agent_type_is_not_a_subagent_claim():
+    assert not decide(write_call(f"{PROJECT}/CLAUDE.md", caller={"agent_type": "   "})), (
+        "a blank field is no evidence either way, and blocking here breaks the main session"
+    )
