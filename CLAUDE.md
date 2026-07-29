@@ -58,6 +58,12 @@ silently** (the Claude-side guard in `.claude/settings.json` loads regardless). 
 setting lives in `.git/config` and never travels with a clone; a fresh clone, a new machine, a
 Codex sandbox and a pod each need it separately.
 
+That includes integration. Git runs `pre-merge-commit` for a merge and `pre-applypatch` for
+`git am` — never `pre-commit` — so somebody else's work is checked only in a clone where the
+installer has run. Those two hooks exist and delegate to `pre-commit`; they did not exist
+until they were found missing, and until then every merge and every applied patch entered
+without a credential scan, a document check or a branch rule.
+
 The documents say what is *always* true; `workbench/active/HANDOFF.md` says what is true *now*.
 If `active/` is empty, say so rather than guessing.
 
