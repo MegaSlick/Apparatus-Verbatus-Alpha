@@ -15,11 +15,12 @@ scribbles and half-finished thinking live. The old repository had no such place,
 all of that went into `docs/` — 320 markdown files, 32 of them written in a single
 two-month stretch, until nobody could tell which document was true.
 
-## Six drawers
+## Seven drawers
 
 | Drawer | What goes in it | Lifespan |
 |---|---|---|
 | `active/` | work currently in play — notes, handoffs, todo lists | until the work finishes |
+| `standing/` | the ledgers that outlive sessions — suspensions, alpha shortcuts, the adopted plan | until superseded or the phase ends |
 | `design/` | proposals for later — not in play, not abandoned | until tested or rejected |
 | `archive/` | finished work, filed under a dated folder | kept, out of the way |
 | `raw/` | verbatim engine output — Codex transcripts, reviewer logs | until the work that cites it closes |
@@ -62,6 +63,11 @@ that should trigger a re-read. Without that it is a daydream, not a plan.
    live finding still points at a transcript, the transcript stays. `tidy.py` reports
    the drawer's size at session start so it is pruned deliberately rather than when it
    becomes a nuisance.
+7. `standing/` holds only what must persist across sessions and is read at open and
+   close — it is never filed, never aged, and never counted against `active/`'s
+   budget. It exists so `active/` can genuinely empty each sitting and its over-budget
+   alarm means something. A note that merely *might* matter later is not standing; it
+   is `design/` or it is finished.
 
 ## Why most of it is gitignored
 

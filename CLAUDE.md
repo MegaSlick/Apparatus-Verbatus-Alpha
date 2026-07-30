@@ -20,7 +20,8 @@ it only by the ladder below.
    amending a canonical document, merging. No agent stands in for him.
 2. **No live pod without his permission in that session.** Shutdown is verified against provider
    state and billing, never inferred. It bills by the hour while it exists.
-3. **Never commit or push to `main`.** It arrives by pull request or not at all.
+3. **Never commit, push, or work on `main`.** A session moves off it before anything
+   else; changes arrive by pull request or not at all.
 4. **Never push without his say-so and a review covering that exact commit.**
 5. **Never share, rebase, force-push or amend a branch that is not yours.**
 6. **Nothing enters this repository uninspected.** If you cannot say what a line is for, it does
@@ -92,7 +93,7 @@ never a preference.
 
 **A temporary suspension is dated, and it is carried until it is resolved.** If he turns a hook,
 a check or a rule off without meaning it permanently, it does not get to lapse quietly into
-being the way things are. Record it in `workbench/active/SUSPENSIONS.md` — what is off, why, the
+being the way things are. Record it in `workbench/standing/SUSPENSIONS.md` — what is off, why, the
 deadline, and what has to be true to turn it back on — and read it back at the start and the end
 of every session until he either writes it into the document permanently or the thing is
 switched on again. A safety measure that quietly stayed off is the exact failure this project
@@ -215,6 +216,11 @@ declared harness document — nothing else. `pre-commit` refuses the rest.
 - `infra/<topic>` — risky structural work
 
 One branch per task. Short-lived. Delete on merge.
+
+A session never works from `main`, even before anything is committed. The hooks
+refuse a commit on main and a push to main; what they cannot see is a session
+reading, editing and planning from it, so the session names its branch at the start
+and moves off main before anything else.
 
 ## Pushing and merging
 
@@ -358,12 +364,15 @@ its half-price sibling for bulk mechanical drafting if Sol's budget tightens.
 
 | Agent | Model, effort | One unit of work | Why that model |
 |---|---|---|---|
-| `scout` | haiku, low | find files, references, structure — location, never judgement | cheapest reader; judgement is not asked of it |
+| `scout` | haiku, low | find files, references, structure; extractive digests — location, never judgement | cheapest reader; judgement is not asked of it |
 | `worker` | sonnet, medium | a bounded build from a written spec, in a worktree or the autoclave | near-Opus coding at ~half the burn; literal spec-following |
 | `infra-worker` | opus, high | hooks, CI, seals, accounting, money paths — ships the test with the change | a defect here certifies something false or spends money; pay for judgement |
-| `auditor` | per seat, high | blind reviews and governance reads; the reviewer-pass seats | depth pinned so a review never inherits a cheap session |
+| `auditor` | per seat, high | blind reviews and governance reads; the reviewer-pass seats | depth floored so a review never inherits a cheap session |
 | `consult` | per question, xhigh | a second opinion on a design or plan, **when you want one** | a wrong design costs days; the read costs minutes |
 | `rebuilder` | opus, high | one legacy system read through the window, written new into the autoclave | contamination judgement is the whole job |
+
+The table names each seat's declared effort; `.claude/agents/README.md` says which are
+floors and which are defaults with a sanctioned range.
 
 **Declare material agent use when the shape is agreed, then lead it.** Bounded agent work that
 fits the agreed goal is standing-approved; what Tyrel wants is the declaration, not a permission

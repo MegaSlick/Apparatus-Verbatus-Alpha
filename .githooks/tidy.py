@@ -30,6 +30,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 WORKBENCH = REPO / "workbench"
 ACTIVE = WORKBENCH / "active"
+STANDING = WORKBENCH / "standing"
 DESIGN = WORKBENCH / "design"
 ARCHIVE = WORKBENCH / "archive"
 SCRATCH = WORKBENCH / "scratch"
@@ -235,6 +236,15 @@ def main(argv=None):
             f"({len(files)}/{ACTIVE_FILE_BUDGET} files, "
             f"{total_bytes // 1024}/{ACTIVE_BYTE_BUDGET // 1024} KB)."
         )
+
+    # standing/ holds the ledgers that outlive sessions — suspensions, alpha
+    # shortcuts, the adopted plan. Never filed, never aged, never counted against
+    # active/'s budget: a drawer for what must persist is not a drawer over budget.
+    standing = sorted(p for p in STANDING.rglob("*") if p.is_file()) if STANDING.is_dir() else []
+    if standing:
+        print(f"\nstanding/ {len(standing)} ledgers — read at open and close, never filed:")
+        for path in standing:
+            print(f"  {rel_or_abs(path)}")
 
     # design/ is never aged, never filed, never counted against the budget. A
     # proposal waiting for the stage it concerns is not stale, however long it

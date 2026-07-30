@@ -13,6 +13,18 @@ conversation.
 | `consult` | inherited model | `xhigh` — floor; `max` sanctioned | read-only design objection |
 | `rebuilder` | Opus | `high` — floor | rebuild one coherent legacy system in the autoclave |
 
+## The models, in one breath
+
+Haiku is the cheap fast reader — about a fifth of Opus's burn, fine for finding things,
+never for judging them. Sonnet 5 is near-Opus on coding, follows a spec to the letter,
+at roughly half Opus's burn — the workhorse. Opus 5 is the default brain — the strongest
+agentic judgement for the money; prompt its report shape and length explicitly (below).
+Fable 5 is the ceiling at twice Opus's burn — always thinking, minutes-long turns —
+spent only where being wrong is expensive and the question sits above what Opus reliably
+clears. Across the aisle, GPT Sol is OpenAI's flagship at Opus-class cost, notably
+strong on security-shaped reading, and it spends Tyrel's *other* budget; Terra is its
+half-price sibling for bulk mechanical drafting when Sol's budget tightens.
+
 ## Effort semantics
 
 - A **floor** never moves down without Tyrel's override, given per instance: a review must
@@ -33,7 +45,10 @@ conversation.
   CLAUDE.md's permission rules; unattended, hold the work rather than self-authorize.
 - Every dispatch records what was **requested** — model and effort — and preserves the
   **resolved** values when the runtime exposes them; when it does not, the record says
-  so. A request is never proof of what answered.
+  so. A request is never proof of what answered. The record lives with the session and
+  lands in its handoff at close. A review seat whose resolved effort is under its floor
+  is non-qualifying coverage — redispatch or Tyrel's per-instance override, never a
+  trailer (the reviewer-pass skill states the same rule).
 
 ## Prompting the roster
 
@@ -44,10 +59,12 @@ conversation.
 - A review prompt sets no severity floor and never says "only serious issues" — ask for
   everything and filter afterwards. The instrument may not constrain what it measures
   (GOVERNANCE 10).
+- Effort controls thinking volume, never visible response length — official guidance is
+  explicit that changing effort does not reliably shorten responses. Prompt for length
+  and shape directly, and for files on disk say what the document needs and no more.
 - Cross-vendor seats live in `operations/codex/seats.conf` — read-only evidence seats
-  today. If a cross-vendor writing seat returns (a recorded ruling allows one in
-  principle), it arrives only through its own reviewed change and what it drafts lands in
-  the autoclave. That routing is about that future seat, not the Claude writing roles,
+  today. If a cross-vendor writing seat is ever restored, it arrives only through its
+  own reviewed change to that file, and what it drafts lands in the autoclave. That routing is about that future seat, not the Claude writing roles,
   whose worktree and autoclave rules are their own files'.
 
 ## Bounds

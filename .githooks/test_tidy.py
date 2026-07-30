@@ -30,12 +30,13 @@ def load_tidy(tmp_path):
     mod.REPO = repo
     mod.WORKBENCH = wb
     mod.ACTIVE = wb / "active"
+    mod.STANDING = wb / "standing"
     mod.DESIGN = wb / "design"
     mod.ARCHIVE = wb / "archive"
     mod.SCRATCH = wb / "scratch"
     mod.RAW = wb / "raw"
     mod.MEMORY = tmp_path / "memory"
-    for d in (mod.ACTIVE, mod.DESIGN, mod.ARCHIVE, mod.SCRATCH, mod.RAW):
+    for d in (mod.ACTIVE, mod.STANDING, mod.DESIGN, mod.ARCHIVE, mod.SCRATCH, mod.RAW):
         d.mkdir(parents=True)
     return mod
 
@@ -168,3 +169,23 @@ def test_an_over_full_active_is_reported_against_the_budget(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "past the one-sitting budget" in out
     assert f"{tidy.ACTIVE_FILE_BUDGET + 1}/{tidy.ACTIVE_FILE_BUDGET} files" in out
+
+
+def test_standing_ledgers_are_listed_but_never_budgeted_or_filed(tmp_path, capsys):
+    # standing/ holds what outlives sessions. It is reported so it is read, but
+    # it must not trip the attention exit, count against active/'s budget, or be
+    # offered as a filing candidate however byte-identical to archived material.
+    tidy = load_tidy(tmp_path)
+    (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
+    (tidy.ARCHIVE / "twin.md").write_text("same bytes")
+    (tidy.STANDING / "SUSPENSIONS.md").write_text("same bytes")
+    (tidy.STANDING / "MASTER_PLAN.md").write_text("the plan")
+
+    assert tidy.main([]) == 0, "standing ledgers alone must not want attention"
+    out = capsys.readouterr().out
+    assert "standing/ 2 ledgers" in out
+    assert "SUSPENSIONS.md" in out
+    assert "already archived" not in out, (
+        "a standing ledger is never a filing candidate, however identical"
+    )
+    assert "past the one-sitting budget" not in out

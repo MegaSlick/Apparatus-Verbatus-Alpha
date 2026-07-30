@@ -64,7 +64,9 @@ Write one neutral prompt and give its exact bytes to every reviewer. Include:
 
 Reviewers remain blind to one another. Preserve resolved model/effort metadata
 when available. A model substitution counts only if Tyrel explicitly accepts
-it for this pass.
+it for this pass. A seat whose **resolved** effort lands under its role's floor
+is non-qualifying coverage — redispatch it, or ask Tyrel for a per-instance
+override; never write a trailer for it as if it qualified.
 
 ## 3. Preserve and verify
 
