@@ -1474,3 +1474,60 @@ def test_a_subagent_still_cannot_spend_on_a_seat_despite_the_allow_rule():
     )
     assert decision == "deny"
     assert "spend money" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Quoted text is data. A reviewer found each of these three in turn: the first
+        # two defeated version one of the httpie stdin check, the third defeated
+        # version two, because `invocation()` reads `| http` inside a string as a
+        # command position.
+        "sed 's|http://old|http://new|g' file.txt",
+        'echo "<https://example.com>"',
+        "echo 'example: x | http y'",
+        'git commit -m "route x | http y in the docs"',
+        "rg 'cat body | http POST url' notes.md",
+    ],
+)
+def test_a_pipeline_merely_mentioned_in_quoted_text_is_not_a_request(command):
+    assert guard.evaluate(payload(tool_input={"command": command})) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        """printf '%s' '{"q":1}' | http https://api.example.test/graphql""",
+        "http https://api.example.test/graphql < body.json",
+        "http POST https://api.example.test/graphql",
+        "cat body.json | https api.example.test/graphql",
+    ],
+)
+def test_a_real_httpie_body_survives_the_quote_blanking(command):
+    decision, _ = guard.evaluate(payload(tool_input={"command": command}))
+    assert decision == "ask"
+
+
+def test_without_quoted_text_preserves_length_and_blanks_only_quoted_spans():
+    # Length is preserved so an offset into the result still maps to the original.
+    for original in (
+        "echo 'x | http y' && curl -X POST https://e.test",
+        'a "b c" d',
+        "unterminated 'quote to the end",
+        r"escaped \' apostrophe outside quotes",
+    ):
+        blanked = guard.without_quoted_text(original)
+        assert len(blanked) == len(original), original
+    # The structure outside quotes survives; the payload inside does not.
+    blanked = guard.without_quoted_text("echo 'x | http y' && curl -X POST https://e.test")
+    assert "| http" not in blanked
+    assert "&& curl -X POST" in blanked
+
+
+def test_the_heredoc_gate_no_longer_advertises_a_shell_only_rule():
+    # Two comments claimed bodies are inspected only when a shell receives them, which
+    # stopped being true when the gate widened to interpreters. A reviewer found both,
+    # and found SHELL_VERB orphaned by the same change.
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "SHELL_VERB = re.compile" not in source, "the orphaned constant is back"
+    assert "unless a shell receives it" not in source

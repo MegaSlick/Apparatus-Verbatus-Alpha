@@ -65,8 +65,14 @@ if [ "$prompt" = "-" ]; then
     :
   else
     status=$?
-    echo "seat: prompt input did not close within ${input_timeout_s}s" >&2
-    exit "$status"
+    # Exit 2, not `timeout`'s own status. A prompt that never arrived means the seat
+    # never started, which is the one thing `capture-seat-report.sh` reads 2 to mean —
+    # and this path was propagating 124 instead, so a seat that never ran would have
+    # been filed as a seat that ran and failed. A reviewer caught the comment below
+    # claiming every earlier exit was 2 while this line contradicted it. The original
+    # status is reported in text.
+    echo "seat: prompt input did not close within ${input_timeout_s}s (status $status)" >&2
+    exit 2
   fi
 fi
 [ -n "$prompt" ] || { echo "seat: empty prompt" >&2; exit 2; }

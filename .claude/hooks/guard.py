@@ -13,7 +13,8 @@ no longer a plain text match either, and the boundary is worth stating exactly.
 It normalizes a command before deciding: unquoted newlines become separators,
 backslash continuations are joined, a quoted `sh -c` or `eval` payload is
 expanded and inspected to a bounded depth, and a heredoc body is treated as the
-data it is — unless a shell receives it, in which case it is inspected too. It
+data it is — unless something that *executes* it receives it, a shell or an
+interpreter, in which case it is inspected too. It
 errs toward over-recognizing, so a tail it cannot tokenize is judged on
 approximate tokens rather than skipped.
 
@@ -291,6 +292,46 @@ def harness_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decisi
     )
 
 
+def without_quoted_text(command: str) -> str:
+    """The command with quoted spans replaced by spaces, same length throughout.
+
+    Quoted text is data. `echo 'example: x | http y'` names no pipeline, and a commit
+    message quoting one names no pipeline either — but every pattern in this file reads
+    raw text, so both looked like one. `invocation()` has the same blindness and treats
+    `| http` inside a string as a command position.
+
+    This is not shell parsing and does not pretend to be: it tracks single and double
+    quotes and a backslash escape, which is enough to stop prose being read as
+    structure. It is deliberately *narrow* in application — used where a false alarm on
+    quoted text was actually observed, not applied wholesale to checks whose current
+    behaviour is proven by tests. Widening it is a change with its own review.
+
+    Length is preserved so an offset into the result still maps to the original.
+    """
+    out: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if quote is None and char == "\\" and index + 1 < len(command):
+            out.append(char)
+            out.append(command[index + 1])
+            index += 2
+            continue
+        if quote is None and char in "'\"":
+            quote = char
+            out.append(" ")
+        elif quote is not None and char == quote:
+            quote = None
+            out.append(" ")
+        elif quote is not None:
+            out.append(" " if not char.isspace() else char)
+        else:
+            out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def has(command: str, pattern: str) -> bool:
     return re.search(pattern, command, flags=re.IGNORECASE | re.DOTALL) is not None
 
@@ -370,7 +411,9 @@ SHELL_PAYLOAD = re.compile(
 PAYLOAD_DEPTH = 3
 
 
-SHELL_VERB = re.compile(rf"\b{_SHELL_NAME}\b", flags=re.IGNORECASE)
+# `SHELL_VERB` used to live here and was orphaned when the heredoc gate widened to
+# interpreters; a reviewer noticed the dead constant. `EXECUTES_A_HEREDOC` replaces it.
+#
 # A heredoc body is data unless something *executes* it, and a shell is not the only
 # thing that does. A reviewer found `python3 <<'PY'` with a push inside silent to a
 # subagent and to the session alike, while the same push through `python3 -c` was
@@ -445,7 +488,8 @@ def split_heredocs(text: str) -> tuple[str, list[str]]:
     A heredoc body is stdin data, not commands: `cat <<EOF` containing the words
     `git push origin main` is a document, and reading it as a command produced an
     unappealable refusal on an ordinary write. Bodies are returned separately so
-    the caller can decide — they are commands only when a shell receives them.
+    the caller can decide — they are commands when something that runs them receives
+    them, a shell or an interpreter; see `EXECUTES_A_HEREDOC`.
     An unterminated heredoc opens nothing; `heredoc_declarations` says why.
     """
     if "<<" not in text:
@@ -1178,7 +1222,16 @@ def sends_a_request_body(command: str) -> bool:
             return True
         if mutating_method(arguments, "", "--method"):
             return True
-    for arguments in argument_lists(HTTPIE_INVOCATION, command):
+    # `visible` for httpie throughout — the explicit-method branch below shares the
+    # blindness. Writing the test for the stdin branch caught `rg 'cat body | http POST
+    # url' notes.md` still asking, because that loop read the operand `POST` from inside
+    # the quotes. Same family as the two failures the comment further down records; it
+    # predates them and one line closes it. curl and wget above are left on the raw text
+    # deliberately: their behaviour is pinned by a long list of tests, and widening the
+    # quote treatment to them is a change that should earn its own review rather than
+    # ride along with this one.
+    visible = without_quoted_text(command)
+    for arguments in argument_lists(HTTPIE_INVOCATION, visible):
         given = operands(arguments)
         if given and given[0].upper() in MUTATING_METHODS:
             return True
@@ -1188,19 +1241,26 @@ def sends_a_request_body(command: str) -> bool:
     # alike, while the identical curl spelling asked — a hole in one tool only, which
     # is the kind nobody trips over until it matters. The subagent tripwire does not
     # cover it either: a plain pipe is not one of INSPECTION_BLIND_SPOTS.
-    # Matched through `invocation()` rather than by looking for the letters `http`
-    # after a pipe. The first version of this did the latter and a reviewer caught it
-    # raising on `sed 's|http://old|http://new|g'` and on a markdown bare link
-    # `<https://example.com>` — a prompt on a find-and-replace, which is exactly the
-    # false alarm this file argues at length that it must not produce. `invocation()`
-    # requires httpie to actually be the command at that position.
-    for arguments in argument_lists(HTTPIE_INVOCATION, command):
-        # A body arrives on stdin either from a pipe into this invocation or from a
-        # redirect among its own arguments.
+    # HTTPie infers POST from a body on stdin, so a pipe or a redirect into it is a
+    # state-changing request carrying no method operand to recognize.
+    #
+    # This took three attempts and both failures are worth recording, because they were
+    # the same mistake twice. Version one looked for the letters `http` after a pipe and
+    # raised on `sed 's|http://old|http://new|g'`. Version two routed it through
+    # `invocation()`, which fixed that and still raised on
+    # `echo 'example: x | http y'` — because `invocation()` is itself quote-blind and
+    # reads `| http` inside a string as a command position. A reviewer caught each one.
+    #
+    # So quoted spans are blanked before the text is examined at all. Prose that merely
+    # *mentions* a pipeline is no longer a pipeline, which is the property both earlier
+    # versions lacked, and a commit message quoting one stops being a finding.
+    for arguments in argument_lists(HTTPIE_INVOCATION, visible):
+        # A body arrives either by a pipe into this invocation or by a redirect among
+        # its own arguments.
         if any(token == "<" or token.startswith("<") for token in arguments):
             return True
-    if re.search(r"\|\s*" + _PATH + r"https?\b(?:\s|$)", command) and argument_lists(
-        HTTPIE_INVOCATION, command
+    if re.search(r"\|\s*" + _PATH + r"https?\b(?:\s|$)", visible) and argument_lists(
+        HTTPIE_INVOCATION, visible
     ):
         return True
     return False
