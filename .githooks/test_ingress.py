@@ -326,7 +326,61 @@ def test_secret_in_commit_message_is_blocked_locally_and_in_history(repo, tmp_pa
     commit(repo, f"do not keep {secret}")
     history = run_scan(repo, "--history", "HEAD")
     assert history.returncode == 1
-    assert "<commit-message>" in history.stderr
+    assert "<commit-object>" in history.stderr
+    assert secret not in history.stderr
+
+
+def test_secret_in_an_author_or_committer_identity_is_blocked_in_history(repo):
+    """A review found history mode reading `--format=%B` and nothing else.
+
+    `commit-msg` does scan the author and committer identities, but only in a clone
+    where the hooks were installed. This scan is the one that is supposed to catch
+    what a missing hook let through, so it has to read the whole commit object.
+    """
+    secret = runpod_secret()
+    write(repo, "safe.txt", "safe\n")
+    stage(repo, "safe.txt")
+    git(
+        repo,
+        "-c",
+        f"user.name={secret}",
+        "-c",
+        "user.email=author@example.invalid",
+        "commit",
+        "-m",
+        "an ordinary subject",
+    )
+
+    history = run_scan(repo, "--history", "HEAD")
+    assert history.returncode == 1
+    assert "<commit-object>" in history.stderr
+    assert "runpod-api-key" in history.stderr
+    assert secret not in history.stderr
+
+
+def test_secret_in_a_committer_identity_alone_is_blocked_in_history(repo):
+    # The committer differs from the author whenever a commit is amended, rebased
+    # or applied from a patch, so the two headers need proving separately.
+    secret = runpod_secret()
+    write(repo, "safe.txt", "safe\n")
+    stage(repo, "safe.txt")
+    subprocess.run(
+        ["git", "commit", "-m", "an ordinary subject"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+        env={
+            **os.environ,
+            "GIT_COMMITTER_NAME": secret,
+            "GIT_COMMITTER_EMAIL": "committer@example.invalid",
+        },
+    )
+
+    history = run_scan(repo, "--history", "HEAD")
+    assert history.returncode == 1
+    assert "runpod-api-key" in history.stderr
     assert secret not in history.stderr
 
 

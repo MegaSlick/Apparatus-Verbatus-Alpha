@@ -27,12 +27,19 @@ and only a regular file is read — a named pipe there would block forever insid
 arrives. Delivery is fixed to `https://ntfy.sh`; the client refuses an ambient
 `NTFY_SERVER` override so stale process state cannot redirect the bearer topic.
 
-**`start` and `milestone` exit 0 whether or not delivery succeeded, so their exit status says
-nothing about the phone.** That is deliberate — a session must not die because a ping did not
-land — but it means the status cannot be read as evidence. Read stderr instead: every failure
-prints one line beginning `notify: NOT DELIVERED`, and a real delivery prints nothing at all.
-`decision` and `done` exit non-zero on failure, because somebody is waiting on those and a
-session that thinks it was heard will wait forever.
+**Every event exits non-zero when delivery failed**, and prints one line beginning
+`notify: NOT DELIVERED`. A real delivery prints nothing at all. So the exit status is evidence
+for all four events, and a session that thinks it was heard cannot wait forever on a message
+that was never sent.
+
+`start` and `milestone` used to exit 0 even after printing that line, deliberately, so a
+session could not die because a ping did not land. Two independent reviewers found the same
+defect in it: a caller reading the status was told the phone had a message it never received,
+and `milestone` is often the only announcement a long unattended run ever makes. The reason
+the exit code was 0 is provided elsewhere — the `SessionStart` hook in `.claude/settings.json`
+declares `"async": true`, so it runs detached and cannot block or fail the session whatever it
+returns. Keeping a caller non-blocking is the caller's job; misreporting delivery to buy it
+spent the one thing this script exists to protect.
 
 The client requires Python 3 for in-memory JSON encoding and `curl` for HTTPS delivery.
 

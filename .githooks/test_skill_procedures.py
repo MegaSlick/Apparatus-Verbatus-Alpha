@@ -220,3 +220,28 @@ def test_the_skill_calls_the_script_rather_than_carrying_a_copy(tmp_path):
     skill = (ROOT / ".claude" / "skills" / "reviewer-pass" / "SKILL.md").read_text(encoding="utf-8")
     assert "capture-seat-report.sh" in skill, "the skill no longer invokes the capture script"
     assert "mktemp" not in skill, "the skill has grown its own copy of the capture procedure"
+
+
+def test_it_refuses_a_target_that_appears_after_the_check(tmp_path):
+    """The check-then-publish race two reviewers found.
+
+    The existence check and the publish are separate steps. `mv` would replace a
+    file created in between; a hard link fails instead, which is what makes the two
+    steps one decision. Simulated by making the seat itself create the target while
+    the script is mid-flight — the same interleaving, deterministically.
+    """
+    root = workspace(tmp_path)
+    (root / "operations" / "codex" / "seat.sh").write_text(
+        "#!/bin/sh\nprintf 'other findings\\n' > \"$PWD/reports/gpt-sol.log\"\n"
+        "printf 'my findings\\n'\n",
+        encoding="utf-8",
+    )
+
+    result = run_capture(root)
+
+    assert result.returncode == 1
+    assert "refusing to overwrite evidence" in result.stderr
+    assert (root / "reports" / "gpt-sol.log").read_text(encoding="utf-8") == "other findings\n"
+    assert [p.name for p in (root / "reports").iterdir()] == ["gpt-sol.log"], (
+        "a temporary file survived the refused publish"
+    )

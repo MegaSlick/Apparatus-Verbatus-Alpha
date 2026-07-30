@@ -728,8 +728,16 @@ def scan_history(revision: str) -> list[Issue]:
     issues = []
     for commit in commits:
         issues.extend(scan_tree(commit_tree(commit), commit[:12]))
-        message = git("show", "-s", "--format=%B", commit)
-        issues.extend(secret_issues("<commit-message>", message, commit[:12]))
+        # The whole commit object, not `--format=%B`. The message alone left the
+        # author and committer headers unscanned, so credential-shaped text placed
+        # in a name or an email address entered the raw object and passed both this
+        # scan and `pre-push`. `commit-msg` does check those identities, but only in
+        # a clone where the hooks were installed — and this scan is the one that is
+        # supposed to catch what a missing hook let through. One subprocess either
+        # way; `cat-file` simply returns the headers as well as the message.
+        issues.extend(
+            secret_issues("<commit-object>", git("cat-file", "commit", commit), commit[:12])
+        )
     return unique_issues(issues)
 
 

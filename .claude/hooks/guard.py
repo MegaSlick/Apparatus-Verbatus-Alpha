@@ -808,6 +808,16 @@ def risky_git(command: str, payload: dict[str, Any]) -> Decision:
                     "rewrite published history; hard rule 5 forbids this unless the "
                     "branch is exclusively yours",
                 )
+            # A deletion is not a publication, and the prompt has to say which.
+            # This file already records the standard: a bundled `-fu` "asked only
+            # to 'publish', so the confirmation described something far milder than
+            # what was about to happen. A prompt that misnames the consequence is
+            # the prompt somebody clicks through." A review found the same defect
+            # unfixed for the spellings that remove a branch from the remote.
+            if long_option(arguments, "--delete", "--mirror") or short_option(
+                arguments, "d", action
+            ):
+                return deny_or_ask(payload, "delete or overwrite refs on the remote repository")
             return deny_or_ask(payload, "publish commits or refs to a remote repository")
         if action == "merge":
             return deny_or_ask(payload, "merge histories, which Tyrel reserves to himself")

@@ -82,7 +82,18 @@ trap 'rm -f "$temporary"; exit 143' TERM
 umask 077
 printf '%s\n' "$output" >"$temporary"
 unset output
-mv "$temporary" "$report"
+# `ln` rather than `mv`, because `mv` replaces an existing target. Two reviewers
+# found the same race: the existence check above and the publish below are separate
+# steps, so a second seat writing the same path in between had its evidence silently
+# overwritten by this one — the exact thing guard 2 in the header forbids. A hard
+# link fails when the destination exists, which makes the check and the publish one
+# decision instead of two. Same directory, so the link cannot cross a filesystem.
+if ! ln "$temporary" "$report" 2>/dev/null; then
+  echo "report target $report appeared while this report was being written;" >&2
+  echo "refusing to overwrite evidence" >&2
+  exit 1
+fi
+rm -f "$temporary"
 temporary=""
 trap - EXIT HUP INT TERM
 

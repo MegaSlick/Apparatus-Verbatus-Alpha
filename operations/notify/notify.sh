@@ -14,11 +14,13 @@ event=$1
 shift
 message=$*
 
+# No `waiting` field any more. It marked `start` and `milestone` as events whose
+# failure was reported as success, and every event now reports failure honestly.
 case $event in
-  start) title="Session started"; priority=2; tag=computer; waiting=0 ;;
-  milestone) title="Milestone"; priority=3; tag=white_check_mark; waiting=0 ;;
-  decision) title="Needs a decision"; priority=4; tag=warning; waiting=1 ;;
-  done) title="Session complete"; priority=3; tag=checkered_flag; waiting=1 ;;
+  start) title="Session started"; priority=2; tag=computer ;;
+  milestone) title="Milestone"; priority=3; tag=white_check_mark ;;
+  decision) title="Needs a decision"; priority=4; tag=warning ;;
+  done) title="Session complete"; priority=3; tag=checkered_flag ;;
   *) echo "notify: unknown event '$event'" >&2; exit 2 ;;
 esac
 
@@ -36,9 +38,20 @@ if [ -z "$topic" ] && [ -f "$conf" ] && [ -r "$conf" ]; then
   topic=$(sed -n 's/^NTFY_TOPIC=//p' "$conf" | tail -n 1 | tr -d "\"'")
 fi
 
+# Every event exits non-zero when delivery failed, including `start` and
+# `milestone`. Two reviewers found those two returning 0 after printing NOT
+# DELIVERED, so a caller checking the status was told the phone had it. A milestone
+# is often the only announcement of a long unattended result, which makes it the
+# worst one to lie about.
+#
+# It used to exit 0 for those two deliberately, so that a session could not die
+# because a ping did not land. That reason no longer needs the exit code: the
+# `SessionStart` hook in `.claude/settings.json` declares `"async": true`, so it
+# runs detached and cannot block or fail the session whatever it returns. Keeping a
+# caller non-blocking is the caller's job; misreporting delivery to buy it was
+# paying in the one currency this script exists to protect.
 fail() {
   echo "notify: NOT DELIVERED ($event) — $1" >&2
-  [ "$waiting" -eq 0 ] && exit 0
   exit 1
 }
 

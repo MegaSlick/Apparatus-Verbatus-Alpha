@@ -90,12 +90,39 @@ def test_waiting_event_fails_when_delivery_is_not_confirmed(notify_repo, status,
 
 
 @pytest.mark.full
-def test_nonwaiting_event_reports_failure_but_does_not_block_session(notify_repo):
+@pytest.mark.parametrize("event", ["start", "milestone", "decision", "done"])
+def test_every_event_reports_a_failed_delivery_honestly(notify_repo, event):
+    """`start` and `milestone` used to exit 0 after printing NOT DELIVERED.
+
+    Two reviewers found it independently. The reason it was 0 — a session must not
+    die because a ping did not land — is provided by `"async": true` on the
+    SessionStart hook, not by the exit status, so the status is free to be true.
+    """
     script, env = notify_repo
     env["FAKE_STATUS"] = "503"
-    result = run(script, env, "start")
-    assert result.returncode == 0
+    result = run(script, env, event)
+    assert result.returncode == 1
     assert "NOT DELIVERED" in result.stderr
+
+
+@pytest.mark.full
+def test_the_session_start_hook_is_declared_async_so_a_failure_cannot_block(tmp_path):
+    # The property that replaced the false success. If this ever stops being async,
+    # a failed start ping could fail the session, and the reasoning above lapses.
+    settings = json.loads(
+        (Path(__file__).resolve().parents[2] / ".claude" / "settings.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    entries = [
+        hook
+        for block in settings["hooks"]["SessionStart"]
+        for hook in block["hooks"]
+        if "notify.sh" in hook["command"]
+    ]
+    assert entries, "no SessionStart hook invokes notify.sh"
+    for hook in entries:
+        assert hook.get("async") is True, "a failed start ping could now block the session"
 
 
 @pytest.mark.full
@@ -330,7 +357,9 @@ def test_a_failed_start_writes_no_stamp_and_does_not_suppress_the_retry(notify_r
     script, env = notify_repo
     env["FAKE_STATUS"] = "503"
     first = run(script, env, "start")
-    assert first.returncode == 0
+    # 1, not 0: a failed delivery now says so for every event. The subject of this
+    # test is the stamp and the retry, and neither depends on the exit status.
+    assert first.returncode == 1
     assert "NOT DELIVERED" in first.stderr
     assert not stamp_path(script).exists(), "a failed post recorded itself as delivered"
     forget_curl(env)
