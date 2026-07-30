@@ -1,6 +1,6 @@
 # config
 
-The knobs. One question per file, each answerable without reading code.
+The knobs. One question per planned file, each answerable without reading code.
 
 | File | The question it answers |
 |---|---|
@@ -9,5 +9,6 @@ The knobs. One question per file, each answerable without reading code.
 | `spend.toml` | money caps |
 | `formats.toml` | which formats the Armarium writes |
 
-`models.toml` is the cast list. It is the only place in the repository that names a
-model, which is what makes swapping one a one-line change.
+`models.toml` is the operational cast list. Model assignments belong there rather
+than in stage code or stage documentation, which keeps a swap to one configuration
+change.

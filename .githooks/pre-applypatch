@@ -1,0 +1,42 @@
+#!/bin/sh
+# A patch applied with `git am` becomes a commit, and it is checked like one.
+#
+# Git does not run `pre-commit` for `git am`. It runs THIS hook, after the patch
+# has been applied to the working tree and the index but before the commit is
+# made — so with no file here, a patch from a mailing list, an attachment or
+# another agent's export entered the history with none of the commit-path checks
+# ever looking at it.
+#
+# Verified against git 2.55.0 rather than assumed: at this point HEAD is still
+# the pre-patch commit, the index already holds the applied patch, and
+# `git diff --cached` lists the patch's files. That is the state `pre-commit`
+# expects, so it runs unchanged — same delegation, same reasons, as
+# `pre-merge-commit`.
+#
+# TWO LIMITS, STATED RATHER THAN PAPERED OVER.
+#
+# 1. `git rebase --apply` also runs this hook, and a rebase detaches HEAD. So a
+#    rebase on that backend meets `pre-commit`'s detached-HEAD rule and stops,
+#    naming ALLOW_DETACHED_COMMIT=1 in its own message. That is not an accident
+#    to be quietly excepted: a detached commit really can become unreachable,
+#    and the rule already anticipates a rebase and says so. The default rebase
+#    backend since git 2.26 is `merge`, which does not run this hook at all, so
+#    the ordinary rebase is untouched.
+#
+# 2. This hook sees the patch's CONTENT, not its authorship. The separate
+#    `applypatch-msg` hook runs earlier: it reads the author from
+#    .git/rebase-apply/author-script and delegates the message to `commit-msg`.
+#    Keeping those checks in their own hook matters because this hook receives
+#    neither field. See `applypatch-msg` for the remaining `git am --continue`
+#    gap and the CI history-scan fallback that covers it.
+
+hook="$(dirname "$0")/pre-commit"
+if [ ! -f "$hook" ]; then
+  echo "" >&2
+  echo "  BLOCKED: ${hook} is missing, so this patch cannot be checked." >&2
+  echo "  A check that cannot run is a failure, not a pass." >&2
+  echo "" >&2
+  exit 1
+fi
+
+exec sh "$hook"

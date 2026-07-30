@@ -15,7 +15,7 @@
 # So: no commit lands without at least one Co-Authored-By line.
 #
 #   Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-#   Co-Authored-By: Codex (OpenAI) <noreply@openai.com>
+#   Co-Authored-By: GPT-5.6 Sol (OpenAI) <noreply@openai.com>
 #
 # Reading the work is a different contribution from writing it, and it has its
 # own trailer. An auditor that found a defect but wrote no lines is a reviewer:
@@ -33,14 +33,87 @@
 # Escape hatch, for a commit no machine touched:
 #   ALLOW_UNATTRIBUTED=1
 
-[ "$ALLOW_UNATTRIBUTED" = "1" ] && exit 0
-
 message=$1
 if [ -z "$message" ] || [ ! -f "$message" ]; then
   echo "  BLOCKED: no commit message to read, so attribution cannot be" >&2
   echo "  checked. A check that cannot run is a failure, not a pass." >&2
   exit 1
 fi
+
+# Attribution exemptions never exempt secrets. Scan the exact message file
+# before any merge/fixup/ALLOW_UNATTRIBUTED exit; CI repeats the same scan over
+# reachable commit messages so bypassing this local hook cannot clean history.
+ingress="$(dirname "$0")/check_ingress.py"
+if [ ! -f "$ingress" ]; then
+  echo "  BLOCKED: $ingress is missing, so the commit message cannot be checked." >&2
+  exit 1
+fi
+# A finding and a failure are opposite states, and the operator is told which
+# one happened. `check_ingress.py` exits 1 when it recognized a credential and 2
+# when it could not read what it was pointed at — a FIFO, a socket, a device, an
+# unreadable path, a scanner that itself broke. Reporting the second as the
+# first asserts a measurement nobody took (GOVERNANCE 10) and misdirects whoever
+# is trying to work out why their commit was refused. Both still block: a check
+# that cannot run is a failure, not a pass.
+#
+# The status is captured on its own line, never with `if ! cmd; then ... $?`:
+# after an `if` compound completes, `$?` is the status of the compound, not of
+# its condition, so reading the exit code that way yields 0 and every failure
+# would report as the wrong kind.
+python3 "$ingress" --message-file "$message" >/dev/null
+status=$?
+if [ "$status" -ne 0 ]; then
+  if [ "$status" -eq 1 ]; then
+    echo "  BLOCKED: the commit message matched a recognized credential pattern." >&2
+  else
+    echo "  BLOCKED: the commit message could not be checked for credentials" >&2
+    echo "  (the ingress check exited ${status}, meaning it could not run)." >&2
+    echo "  Nothing is claimed about the message either way; the commit is" >&2
+    echo "  refused because unknown is not the same as clean." >&2
+  fi
+  exit 1
+fi
+
+# The author and committer headers carry operator-supplied text into the commit
+# object, and until now nothing looked at them: `git commit --author='...'` and
+# a pasted `user.name` will carry a token as happily as any prose. Read from
+# `git var`, which is what git itself will record — it reflects --author, the
+# GIT_AUTHOR_*/GIT_COMMITTER_* environment and the configured identity alike.
+#
+# Handed to --ref-fields, the existing NUL-delimited contract, which fingerprints
+# each field instead of echoing it. An identity that failed a scan must not be
+# reprinted to a terminal, a log or a transcript on its way out.
+# An unreadable identity is not an unrun check here, and treating it as one was
+# wrong: `git var GIT_AUTHOR_IDENT` fails precisely when no user.name and
+# user.email are configured, and in that state there is no identity for the
+# commit to carry, so there is nothing to leak. Git refuses the commit itself,
+# for its own reasons, immediately after this hook returns. Blocking here made
+# the hook unusable anywhere an identity is not configured — every CI runner,
+# every fresh container — which is how a fail-closed instinct turns into a
+# check nobody can run at all.
+author_ident=$(git var GIT_AUTHOR_IDENT 2>/dev/null) || author_ident=""
+committer_ident=$(git var GIT_COMMITTER_IDENT 2>/dev/null) || committer_ident=""
+
+status=0
+if [ -n "$author_ident" ] || [ -n "$committer_ident" ]; then
+  printf '%s\0%s\0' "$author_ident" "$committer_ident" |
+    python3 "$ingress" --ref-fields
+  status=$?
+fi
+if [ "$status" -ne 0 ]; then
+  if [ "$status" -eq 1 ]; then
+    echo "  BLOCKED: the author or committer header matched a recognized" >&2
+    echo "  credential pattern. The offending text is not reprinted here." >&2
+    echo "  Check what --author, user.name/user.email and the GIT_AUTHOR_*" >&2
+    echo "  and GIT_COMMITTER_* variables are set to." >&2
+  else
+    echo "  BLOCKED: the author and committer headers could not be checked" >&2
+    echo "  (the ingress check exited ${status}, meaning it could not run)." >&2
+  fi
+  exit 1
+fi
+
+[ "$ALLOW_UNATTRIBUTED" = "1" ] && exit 0
 
 # Some commit messages are written by git, and there is no machine to name.
 #
@@ -52,9 +125,25 @@ fi
 #
 # If the path cannot be resolved, no exemption is granted. A check that cannot
 # run is a failure, not a pass.
+#
+# And existence is not enough. `[ -e ]` is true for a directory, for an empty
+# file, and for a symlink to anything at all, so any leftover object at one of
+# these three paths handed away the attribution rule for every commit made
+# afterwards — silently, since nothing prints when a check merely declines to
+# fire. Require the shape git actually writes: a regular, non-empty file whose
+# first line names a commit that exists here.
+#
+# What this still cannot tell is a *live* merge from a stale MERGE_HEAD left by
+# one that was abandoned, because git's own signal is exactly this file. That
+# limit is stated rather than papered over.
 for state in MERGE_HEAD REVERT_HEAD CHERRY_PICK_HEAD; do
   state_path=$(git rev-parse --git-path "$state" 2>/dev/null) || continue
-  [ -e "$state_path" ] && exit 0
+  [ -f "$state_path" ] || continue
+  [ -s "$state_path" ] || continue
+  state_head=$(sed -n '1p' "$state_path" 2>/dev/null) || continue
+  [ -n "$state_head" ] || continue
+  git rev-parse --verify --quiet "${state_head}^{commit}" >/dev/null 2>&1 || continue
+  exit 0
 done
 
 # `git commit --fixup` and its siblings are the exception to that, and it is
@@ -87,9 +176,14 @@ echo "  Every commit here carries at least one of these, at the end of" >&2
 echo "  the message, after a blank line:" >&2
 echo "" >&2
 echo "      Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" >&2
-echo "      Co-Authored-By: Codex (OpenAI) <noreply@openai.com>" >&2
+echo "      Co-Authored-By: GPT-5.6 Sol (OpenAI) <noreply@openai.com>" >&2
 echo "" >&2
 echo "  Use every one that applies. All the code here is AI-generated," >&2
 echo "  and the history is where that is recorded." >&2
+echo "" >&2
+echo "  If no machine touched this commit — you wrote it yourself —" >&2
+echo "  say so and the check steps aside:" >&2
+echo "" >&2
+echo "      ALLOW_UNATTRIBUTED=1 git commit ..." >&2
 echo "" >&2
 exit 1

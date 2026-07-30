@@ -1,7 +1,7 @@
 # Attestator 2
 
-A numbered chair, not a model. Which model sits here is one line in
-`config/models.toml`, together with its pinned revision.
+A numbered chair, not a model. Before this stage is implemented, the model and pinned
+revision for this chair will be declared in the planned `config/models.toml`.
 
-Nothing outside this directory names the model. Swapping it changes this
-folder and that one config line — and nothing else.
+The chair path stays stable when its assigned model changes. The planned configuration,
+not this directory, will encode the assignment.

@@ -66,6 +66,17 @@ Where it produces several readings, it reconciles them **itself, against the ima
 and that reconciliation is bound by "never picks" like any other step. It reads through
 to the end; truncation is a failure, not an output.
 
+**The Perlector seat is swappable, and that is a design requirement rather than a
+convenience.** A stock base model, an unaltered vendor model, and a locally trained checkpoint
+must all be able to sit in it behind the same interface, with the resolved identity of whichever
+one ran bound into every Perlectio. A locally trained checkpoint is *called* like any other
+model, from its own model repository, and is never vendored into the pipeline it serves. Trained weights are a *candidate*, never a privileged
+inheritance: a checkpoint trained on some earlier pipeline's output may have learned to agree
+with witnesses rather than to read ink, and that is not visible by inspection. It is visible in
+the instrument this architecture already carries — **Lectio nuda against witness-primed Lectio,
+and the dissent record.** A candidate whose advantage disappears once the witnesses are taken
+away has not learned to read, whatever its transcription score says.
+
 **Recensor** — *recensio*. The completeness and recovery stage. See below.
 
 **Archetypus** — the established reading. In textual criticism, the ancestor from which
@@ -102,12 +113,11 @@ review, so the system cannot reconsider itself indefinitely. Every loop is recor
 nothing may disappear inside one. The starting proposal is one fallback recrop and one
 page-level reread; the actual budget is established through alpha testing.
 
-Roughly, with the branches drawn out — model names here are illustrative of the initial
-assignment, not part of the naming:
+Roughly, with the branches drawn out:
 
 ```mermaid
 flowchart LR
-    E["Exemplar"] --> D["Designator<br/>Chandra + YOLO"]
+    E["Exemplar"] --> D["Designator<br/>vision + region detector"]
     D --> A["Attestatores<br/>unverified testimony"]
     A --> P["Perlector<br/>reads the act"]
     P --> R["Recensor<br/>completeness and logic"]
@@ -147,40 +157,6 @@ instrumentation.
 It is not a quality signal on its own. Most lines in a parish register are easy and
 every witness agrees; zero dissent there is the correct output. A metric that rewards
 disagreement rewards hallucination.
-
-## Alpha experiment — the iterative reader
-
-**Not a proven mechanism. To be tested during alpha.**
-
-The proposal: rather than showing the Perlector every witness at once, prime each pass
-with a single witness, take one **Lectio nuda** with no witness as a baseline, and
-reconcile. Optionally feed the Perlector's own prior reading back as another fallible
-prior.
-
-The reasoning is that every candidate is then independently grounded in the ink, so
-reconciliation chooses among *readings* rather than among *reports*. It does not remove
-reconciliation — it relocates it to better inputs, and Governance 3 still binds it.
-
-The risk it must be tested against: a pass primed by witness *k* is biased toward
-witness *k*, so reconciling primed passes could amplify parroting rather than suppress
-it. The Lectio nuda exists to make that visible — divergence between the bare pass and
-the primed ones is the priming measurement, on every act.
-
-**The experiment:** begin with one deliberately poor witness. Feed the Perlector's own
-reading back each round. Find how many rounds improve the result before the model starts
-ignoring the image, reinforcing an error, changing correct text, or inventing material.
-
-The prompt must not assert that the prior reading was wrong — that forces a change.
-Neutral form: *"This is a prior reading. It may be correct, incomplete, or wrong.
-Independently reread the image, preserve what the ink supports, and change only what the
-image justifies."*
-
-Retain every iteration; never overwrite. Record: corrections to the bad witness,
-convergence and stability, changes to previously correct text, fabrication, reinforced
-errors, witness dependence, truncation, cost and pass count.
-
-If iterative self-reading becomes production inference, training must eventually expose
-the model to the same pattern.
 
 ## Invariants
 

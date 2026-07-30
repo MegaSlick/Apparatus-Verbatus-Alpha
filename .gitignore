@@ -1,18 +1,58 @@
 .DS_Store
 *.log
+*.py[cod]
 .venv/
 __pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Credentials belong outside the repository. Example files are safe to track.
+.env
+.env.*
+!.env.example
 
 # Agents work in their own worktree under here. They are checkouts, not
 # content: a `git add -A` in the main checkout would otherwise commit every
 # other agent's working copy into the tree.
 .claude/worktrees/
 
+# Machine-local permissions and the quarantine paths. `autoclave/README.md` says
+# this file "is gitignored and machine-local, which is the right home for a path" —
+# and a review found that nothing in this repository made that true. The only thing
+# ignoring it was `~/.config/git/ignore`, a user-level file no clone carries, so on
+# any other machine it was an ordinary untracked file holding absolute paths to the
+# quarantined old code and a list of pre-approved commands. That is the same failure
+# CLAUDE.md devotes a section to for git hooks: a setting outside the repository
+# never travels with a clone. One line here makes the claim true everywhere.
+.claude/settings.local.json
+
 # Local working areas. The README in each explains the rule and is versioned;
 # the contents never are.
 workbench/*
 !workbench/README.md
+
+# workbench/active/ was tracked briefly, to see what a reviewer would make of the
+# run plan. The answer was worth having: CodeRabbit read RUN_PLAN.md and
+# independently found a picker instruction in it, which GOVERNANCE 3 forbids
+# outright — a defect in the plan propagates into everything built afterwards,
+# and nobody reading the code would ever have found it.
+#
+# It is ignored again because these are task files with a lifecycle, not records.
+# `session-end` files them into archive/ when the work closes, so tracking them
+# meant tracking things whose whole purpose is to move: added in one session's
+# diff and deleted in the next. The history of this branch keeps what was there.
 private/*
 !private/README.md
 scriptorium/*
 !scriptorium/README.md
+
+# autoclave/ is deliberately NOT ignored: drafts commit there on work branches
+# so the reviewers can read them raw. CI refuses to merge until it is empty,
+# which is what keeps main sterile — see autoclave/README.md.

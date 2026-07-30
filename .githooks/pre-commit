@@ -1,26 +1,61 @@
 #!/bin/sh
-# Two rules, both local so they bind every tool — Claude, Codex, GPT, you.
+# Three local commit-path alarms. They apply to every tool that uses this
+# clone's installed hooks and does not deliberately bypass them.
 #
 #   1. No commits while sitting on main.
-#   2. No stray markdown. Notes belong in workbench/, which is gitignored.
+#   2. No secrets, undeclared binaries, or oversized blobs in the Git index.
+#   3. No stray documentation. Notes belong in workbench/, which is gitignored.
 #
-# Rule 2 exists because the previous repository accumulated 320 markdown files —
+# Rule 3 exists because the previous repository accumulated 320 markdown files —
 # design notes, session handoffs, dated status boards — until nobody could tell
 # which document was true. A rule alone will not prevent that, so it is enforced
 # here instead.
 #
-# Escape hatches, to be used knowingly:
-#   ALLOW_MAIN_COMMIT=1   commit on main
-#   ALLOW_STRAY_DOC=1     commit a markdown file outside the allowed set
+# Narrow exceptions, to be used knowingly:
+#   ALLOW_STRAY_DOC=1       commit a markdown file outside the allowed set
+#   ALLOW_DETACHED_COMMIT=1 commit while HEAD is detached
 
-branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-if [ "$branch" = "main" ] && [ "$ALLOW_MAIN_COMMIT" != "1" ]; then
+if ! branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) &&
+   [ "$ALLOW_DETACHED_COMMIT" != "1" ]; then
+  echo "" >&2
+  echo "  BLOCKED: commit while HEAD is detached or its branch cannot be resolved." >&2
+  echo "" >&2
+  echo "  A detached commit can become unreachable when checkout moves. Switch" >&2
+  echo "  to your work/<topic>, audit/<topic>, or infra/<topic> branch first." >&2
+  echo "" >&2
+  echo "  An interactive rebase detaches HEAD legitimately. If that is where you" >&2
+  echo "  are, and you mean it:" >&2
+  echo "" >&2
+  echo "      ALLOW_DETACHED_COMMIT=1 git commit ..." >&2
+  echo "" >&2
+  exit 1
+fi
+if [ "$branch" = "main" ]; then
   echo "" >&2
   echo "  BLOCKED: commit on main." >&2
   echo "" >&2
   echo "  Move to a branch first (your staged changes come with you):" >&2
   echo "" >&2
   echo "      git switch -c work/<short-topic>" >&2
+  echo "" >&2
+  exit 1
+fi
+
+# Inspect the index rather than the working files. A secret that was staged and
+# then erased from the working copy is still the secret Git is about to record.
+# This runs before ALLOW_STRAY_DOC: skipping one document rule must never skip
+# the unrelated ingress gate as a side effect.
+ingress="$(dirname "$0")/check_ingress.py"
+if [ ! -f "$ingress" ]; then
+  echo "" >&2
+  echo "  BLOCKED: $ingress is missing." >&2
+  echo "  The secret and payload check cannot run, so this commit is refused." >&2
+  echo "" >&2
+  exit 1
+fi
+if ! python3 "$ingress" --staged; then
+  echo "" >&2
+  echo "  BLOCKED: the staged repository failed its ingress check." >&2
   echo "" >&2
   exit 1
 fi
@@ -41,8 +76,8 @@ if [ ! -f "$allowlist" ]; then
   exit 1
 fi
 
-# ACMR, not A: a rename is how you smuggle a note past a check that only ever
-# looks at what was added. quotePath=false so an accented filename arrives as
+# ACMR, not A: a rename can smuggle a note past a check that only ever looks at
+# additions. quotePath=false so an accented filename arrives as
 # itself rather than as an escaped string no pattern can match.
 #
 # Run the diff on its own line. A pipeline reports only its *last* command's
@@ -70,14 +105,12 @@ fi
 
 if [ -n "$stray" ]; then
   echo "" >&2
-  echo "  BLOCKED: stray markdown file(s):" >&2
+  echo "  BLOCKED: stray documentation file(s):" >&2
   printf '%s\n' "$stray" | while IFS= read -r f; do printf '      %s\n' "$f" >&2; done
   echo "" >&2
-  echo "  A committed .md must be one of:" >&2
-  echo "      a canonical document at the root" >&2
-  echo "      a README.md or HANDOFF.md in any directory" >&2
-  echo "      dated evidence under history/" >&2
-  echo "      .github/*.md or .claude/agents/*.md, one level deep" >&2
+  echo "  What may be committed is decided by .githooks/doc-allowlist.sh." >&2
+  echo "  Read it rather than trusting this message: a second copy of the" >&2
+  echo "  list is a copy that goes stale, and this one already did once." >&2
   echo "" >&2
   echo "  Notes, handoffs, plans and session summaries go in workbench/active/," >&2
   echo "  which is gitignored. If it is dated or speculative it is not a" >&2

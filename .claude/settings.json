@@ -1,23 +1,39 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1"
+  },
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|mcp__.*",
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py\""
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py\" || { echo 'The repository guard could not run (python3 missing, guard.py missing, or it failed to start), so it cannot vouch for this tool call. GOVERNANCE.md 10: a check that cannot run is a failure, not a pass.' >&2; exit 2; }"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/operations/notify/notify.sh\" start \"An Apparatus Verbatus session has opened.\"",
+            "async": true,
+            "timeout": 15
           }
         ]
       }
     ]
   },
   "permissions": {
-    "deny": [
-      "Bash(git push --force:*)",
-      "Bash(git push -f:*)",
-      "Bash(rm -rf /*)"
-    ]
+    "allow": [
+      "Bash(sh operations/codex/seat.sh:*)",
+      "Bash(sh operations/codex/capture-seat-report.sh:*)"
+    ],
+    "deny": []
   }
 }

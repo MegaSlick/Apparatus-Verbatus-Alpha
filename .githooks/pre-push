@@ -1,116 +1,187 @@
 #!/bin/sh
-# Branch rules, enforced locally so they bind every tool — Claude, Codex, GPT, you.
-# They catch a mistake here, at the moment it is made, with a message that says
-# what to do instead. What `main` itself will accept is settled server-side and
-# is not this file's business — see README.md.
+# Outgoing facts are hard gates; review coverage is an honest checklist.
 #
-# Escape hatches, to be used knowingly and rarely:
-#   ALLOW_MAIN_PUSH=1       push directly to main
-#   ALLOW_FORCE_PUSH=1      rewrite a branch's history
-#   ALLOW_ANY_BRANCH=1      push a branch outside the naming convention
-#   ALLOW_UNAUDITED_PUSH=1  push work no agent has reviewed
-
-z40='0000000000000000000000000000000000000000'
-
-# Where audit receipts live: the *common* git directory, so every worktree
-# shares one record. Never committed — a receipt is evidence about a local
-# working session, not a document.
+# Standard-only escape hatches:
+#   ALLOW_ANY_BRANCH=1
+#   ALLOW_BRANCH_DELETE=<exact-branch>
+#   ALLOW_FORCE_PUSH=<exact-owned-branch>
 #
-# Resolved carefully. If this came back empty the path would become
-# /audit-receipts, every push would be refused, and nobody would guess why.
-# `cd ""` succeeds and stays put, so guard the inner command, not the cd —
-# otherwise a failed rev-parse silently yields $PWD and looks like an answer.
-common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
-if [ -z "$common" ]; then
-  relative=$(git rev-parse --git-common-dir 2>/dev/null) || relative=""
-  if [ -n "$relative" ]; then
-    common=$(cd "$relative" 2>/dev/null && pwd) || common=""
-  fi
-fi
-if [ -z "$common" ]; then
-  echo "" >&2
-  echo "  BLOCKED: cannot locate the git directory, so the audit gate" >&2
-  echo "  cannot check anything. A check that cannot run is a failure," >&2
-  echo "  not a pass. Set ALLOW_UNAUDITED_PUSH=1 only if you understand why." >&2
-  echo "" >&2
-  exit 1
-fi
-receipts="$common/audit-receipts"
+# Direct-main pushes, tag moves, and skipped ingress checks have no convenience
+# bypass here. A non-fast-forward update remains forbidden for a branch that is
+# not exclusively yours by CLAUDE.md hard rule 5.
+
+set -eu
+GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_REPLACE_OBJECTS
+
+zero40=0000000000000000000000000000000000000000
+zero64=0000000000000000000000000000000000000000000000000000000000000000
+ingress="$(dirname "$0")/check_ingress.py"
+
+is_null_oid() {
+  [ "$1" = "$zero40" ] || [ "$1" = "$zero64" ]
+}
 
 block() {
   echo "" >&2
   echo "  BLOCKED: $1" >&2
+  [ -z "${2:-}" ] || echo "  $2" >&2
   echo "" >&2
-  [ -n "$2" ] && { echo "  $2" >&2; echo "" >&2; }
   exit 1
 }
 
-while read -r _local_ref local_sha remote_ref remote_sha; do
-  branch=${remote_ref#refs/heads/}
+[ -f "$ingress" ] ||
+  block "$ingress is missing; outgoing history cannot be checked."
 
-  # Deleting a branch is normal cleanup after a merge — allow it, except for main.
-  if [ "$local_sha" = "$z40" ]; then
-    [ "$branch" = "main" ] && block "deleting main."
+# Who reviewed a commit is read from its `Reviewed-by:` trailers; CLAUDE.md holds
+# why, under "The commit is the record".
+#
+# The scan is bounded so a large first push does not walk an entire history, and
+# one MORE than the bound is fetched so passing it is visible rather than silent.
+# A truncated count reported as a total would be wrong on exactly the push where
+# coverage matters most, which is the failure GOVERNANCE 2 exists to prevent.
+review_scan_limit=200
+
+outgoing_review_lines() {
+  # One line per outgoing commit, holding its Reviewed-by trailers separated by
+  # US (0x1f), prefixed with `-` so a commit naming nobody is an empty field
+  # rather than an empty line that command substitution would strip away.
+  #
+  # `git log` walks the range and formats the trailers itself; asking it once
+  # replaces a shell loop that ran `git show` per commit — up to 200 processes
+  # where one does. A brand-new ref has no remote side to subtract from, so
+  # everything not already on a remote counts as outgoing.
+  format="-%(trailers:key=Reviewed-by,valueonly,separator=%x1f)"
+  count=$((review_scan_limit + 1))
+  if is_null_oid "$2"; then
+    git log --max-count="$count" --format="$format" "$1" --not --remotes
+  else
+    git log --max-count="$count" --format="$format" "$2..$1"
+  fi
+}
+
+print_review_checklist() {
+  # POSIX sh has no `local`; rc_-prefixed so kind/name — the two names the
+  # ref loop also uses — cannot be overwritten if a statement is ever added
+  # after the call site. The other assignments here shadow nothing.
+  rc_kind=$1
+  rc_name=$2
+  local_commit=$3
+  remote_commit=$4
+  short=${local_commit%"${local_commit#????????}"}
+
+  echo "" >&2
+  echo "  review checklist — $rc_kind '$rc_name' at $short" >&2
+
+  if ! reviewed=$(outgoing_review_lines "$local_commit" "$remote_commit" 2>/dev/null); then
+    echo "    [?] could not work out which commits this push adds." >&2
+  elif [ -z "$reviewed" ]; then
+    echo "    [ ] no outgoing commits to review." >&2
+  else
+    printf '%s\n' "$reviewed" | awk -v limit="$review_scan_limit" '
+      { total++ }
+      total > limit { truncated = 1; next }
+      {
+        line = substr($0, 2)
+        if (line == "") { unreviewed++; next }
+        fields = split(line, parts, "\037")
+        for (i = 1; i <= fields; i++) {
+          key = tolower(parts[i])
+          gsub(/^[ \t]+|[ \t]+$/, "", key)
+          gsub(/[ \t]+/, " ", key)
+          if (key != "" && !seen[key]++) named[++reviewers] = parts[i]
+        }
+      }
+      END {
+        for (i = 1; i <= reviewers; i++) print "    [x] " named[i]
+        if (reviewers == 0)
+          print "    [ ] no commit in this push names a reviewer."
+        else if (unreviewed > 0)
+          print "    " unreviewed " of " (total > limit ? limit : total) \
+                " outgoing commit(s) name no reviewer."
+        if (truncated)
+          print "    [?] more than " limit " outgoing commits; only the first " \
+                limit " were read."
+      }
+    ' >&2
+  fi
+  echo "    Checklist only: Tyrel decides whether the coverage is enough." >&2
+  echo "" >&2
+}
+
+records=0
+line_local_ref="" line_local_sha="" line_remote_ref="" line_remote_sha=""
+while read -r line_local_ref line_local_sha line_remote_ref line_remote_sha ||
+  [ -n "$line_local_ref$line_local_sha$line_remote_ref$line_remote_sha" ]; do
+  local_ref=$line_local_ref
+  local_sha=$line_local_sha
+  remote_ref=$line_remote_ref
+  remote_sha=$line_remote_sha
+  line_local_ref="" line_local_sha="" line_remote_ref="" line_remote_sha=""
+  [ -n "$local_ref$local_sha$remote_ref$remote_sha" ] || continue
+  records=$((records + 1))
+
+  printf '%s\0%s\0' "$local_ref" "$remote_ref" |
+    python3 "$ingress" --ref-fields >/dev/null ||
+    block "outgoing ref names failed their credential check."
+
+  case $remote_ref in
+    refs/heads/*) kind=branch; name=${remote_ref#refs/heads/} ;;
+    refs/tags/*) kind=tag; name=${remote_ref#refs/tags/} ;;
+    *) block "unsupported destination ref '$remote_ref'." ;;
+  esac
+
+  if is_null_oid "$local_sha"; then
+    [ "$kind" = branch ] || block "published tag '$name' cannot be deleted."
+    [ "$name" != main ] || block "main cannot be deleted."
+    [ "${ALLOW_BRANCH_DELETE:-}" = "$name" ] ||
+      block "branch '$name' deletion needs ALLOW_BRANCH_DELETE=$name." \
+        "Verify it is merged and no other session owns it first."
     continue
   fi
 
-  # 1. main moves only by merging a pull request.
-  if [ "$branch" = "main" ] && [ "$ALLOW_MAIN_PUSH" != "1" ]; then
-    block "direct push to main." \
-"main moves only by merge. Put this on a branch:
-      git switch -c work/<short-topic> && git push -u origin work/<short-topic>"
-  fi
-
-  # 2. Branch names describe the work, and there are only three kinds.
-  if [ "$branch" != "main" ] && [ "$ALLOW_ANY_BRANCH" != "1" ]; then
-    case "$branch" in
-      work/*|audit/*|infra/*) : ;;
-      *) block "branch name '$branch' is not one of the three kinds." \
-"      work/<topic>   a normal change
-      audit/<topic>  a review that produces findings, not code
-      infra/<topic>  risky structural work" ;;
-    esac
-  fi
-
-  # 3. Never rewrite history someone else may be holding.
-  #    Detects --force and --force-with-lease alike: the remote tip must be an
-  #    ancestor of what you are pushing.
-  if [ "$remote_sha" != "$z40" ] && [ "$ALLOW_FORCE_PUSH" != "1" ]; then
-    if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
-      block "force-push to '$branch' — this rewrites history." \
-"Another agent may be working from these commits. Pull and merge instead."
+  if [ "$kind" = branch ]; then
+    [ "$name" != main ] ||
+      block "direct push to main." "Use a branch and merge a pull request."
+    if [ "${ALLOW_ANY_BRANCH:-}" != 1 ]; then
+      case $name in
+        work/*|audit/*|infra/*) : ;;
+        *) block "branch '$name' is outside work/, audit/, or infra/." \
+          "Set ALLOW_ANY_BRANCH=1 only for an explicitly confirmed exception." ;;
+      esac
     fi
+    if ! is_null_oid "$remote_sha"; then
+      if git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+        :
+      else
+        status=$?
+        if [ "$status" -eq 1 ]; then
+          [ "${ALLOW_FORCE_PUSH:-}" = "$name" ] ||
+            block "push to '$name' rewrites published history." \
+              "Fetch and integrate it, or confirm ownership and set ALLOW_FORCE_PUSH=$name."
+        else
+          block "ancestry of '$name' could not be verified (git exit $status)."
+        fi
+      fi
+    fi
+  elif ! is_null_oid "$remote_sha"; then
+    block "published tag '$name' cannot be moved."
   fi
 
-  # 4. Nothing leaves this machine that three reviewers have not read.
-  #    Whoever wrote the work does not get to be the only one who has seen it
-  #    leave, and one reviewer that shares the author's blind spots is not
-  #    much better than none. Record each with .githooks/record-audit.sh; they
-  #    accumulate in one receipt rather than overwriting each other.
-  #    The receipt must name the commit it covers, so an empty file dropped in
-  #    by `touch` does not read as a review. This raises the bar; it is not a
-  #    lock, and nothing here can tell an author from an auditor.
-  reviewers=0
-  if grep -qx "commit:  $local_sha" "$receipts/$local_sha" 2>/dev/null; then
-    # Distinct names, not lines: three entries from one reviewer is one
-    # reviewer with a stutter, and the whole point is independent readers.
-    reviewers=$(grep '^auditor:' "$receipts/$local_sha" | sort -u | wc -l | tr -d ' ')
+  commit=$(git rev-parse "$local_sha^{commit}" 2>/dev/null) || commit=""
+  [ -n "$commit" ] ||
+    block "'$name' does not resolve to a commit."
+
+  python3 "$ingress" --history "$commit" >/dev/null ||
+    block "$kind '$name' failed its outgoing-history ingress check."
+  if [ "$kind" = tag ]; then
+    python3 "$ingress" --ref-object "$local_sha" >/dev/null ||
+      block "tag '$name' failed its annotated-tag ingress check."
   fi
-  if [ "$ALLOW_UNAUDITED_PUSH" != "1" ] && [ "$reviewers" -lt 3 ]; then
-    block "'$branch' has $reviewers of 3 reviewers for $(echo "$local_sha" | cut -c1-8)." \
-"Three reviewers read the work before it is pushed — Claude Opus 5, Claude
-  Fable 5, and GPT — on an identical prompt, blind to each other. Record
-  each one as it reports:
 
-      .githooks/record-audit.sh <reviewer> '<what it found>'
-
-  They accumulate; none overwrites another. The receipt names one commit,
-  so amending or adding one means auditing again — which is the point.
-
-  Subagents and other AI tools do not push at all. They review and report;
-  the push is Tyrel's or the main session's to make afterwards.
-
-  ALLOW_UNAUDITED_PUSH=1 if you genuinely mean to skip this."
-  fi
+  print_review_checklist "$kind" "$name" "$commit" "$remote_sha"
 done
-exit 0
+
+if [ "$records" -eq 0 ]; then
+  echo "pre-push: no outgoing refs received; nothing was checked." >&2
+fi

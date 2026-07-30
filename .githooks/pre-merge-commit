@@ -1,0 +1,34 @@
+#!/bin/sh
+# A merge commit is a commit, and it is checked like one.
+#
+# Git does not run `pre-commit` for a merge. When a merge resolves cleanly it
+# runs THIS hook instead, and nothing else — so with no file here the credential
+# scan, the stray-document rule and the branch rule were all absent on exactly
+# the path a session uses to integrate someone else's work. (When a merge
+# conflicts, the operator resolves it and runs `git commit`, which does run
+# `pre-commit`. The hole was only ever the clean case, which is the common one.)
+#
+# Verified against git 2.55.0 rather than assumed: at this point the merge has
+# resolved, HEAD is still the first parent, the index holds the merged result,
+# and `git diff --cached` lists what the merge is bringing in. That is exactly
+# the state `pre-commit` expects, so it runs unchanged.
+#
+# Delegation, not a copy. Two copies of a credential scan drift, and the one
+# that drifts is the one nobody reads. Everything `pre-commit` enforces —
+# including its ALLOW_* hatches, which keep their existing names and meanings —
+# applies here by construction.
+#
+# The branch rule is kept deliberately. A local merge into main IS a commit on
+# main (hard rule 3): main arrives by pull request or not at all. There is no
+# environment-variable bypass for that boundary.
+
+hook="$(dirname "$0")/pre-commit"
+if [ ! -f "$hook" ]; then
+  echo "" >&2
+  echo "  BLOCKED: ${hook} is missing, so this merge commit cannot be checked." >&2
+  echo "  A check that cannot run is a failure, not a pass." >&2
+  echo "" >&2
+  exit 1
+fi
+
+exec sh "$hook"

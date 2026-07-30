@@ -1,7 +1,7 @@
 # Governance — Apparatus Verbatus
 
 How we are allowed to pursue the goals. These bind every stage, every plan, and every
-working session. No dates, defects, or audits — those live in a work queue.
+working session. No dates, defects, or audits — those live in the workbench.
 
 ## Who decides
 
@@ -19,6 +19,12 @@ Training, research, search, and correction happen elsewhere and are not governed
 
 ---
 
+## 0. When a rule and a goal pull apart, stop
+
+These rules exist to serve the goals. Where following one to the letter would cost an act,
+lose a reading, or hide a result, that is not a decision to resolve in the moment — say so
+and hand it to Tyrel. A rule obeyed into a lost act has failed at the thing it was for.
+
 ## 1. Quality over speed
 
 Extra passes, extra effort, and slower runs are acceptable costs. Speed is never a
@@ -29,6 +35,10 @@ reason to read less carefully.
 An act may be uncertain, unreadable, or held for review. It may not disappear behind a
 successful status. A partial result is visibly partial; "complete" is refused unless
 everything reconciles.
+
+This covers what we produce *about* the pipeline as well as what it produces: a finding, a
+review, a defect, a decision. A result that exists only in a transcript nobody reads has
+been lost, whatever produced it.
 
 ## 3. The Perlector never picks
 
@@ -76,6 +86,10 @@ counts as small, reasonable, and well.
 
 A metric that cannot be measured is a failure, not a pass. Claims are made only about
 what was actually measured.
+
+**The instrument may not constrain what it measures.** A grading prompt that sets a severity
+floor, budgets a confidence level, or tells a reader which way to argue reports the
+instruction rather than the finding. Ask for everything and filter afterwards.
 
 Goals are what we aim at. Claims are what we assert. Do not confuse them.
 

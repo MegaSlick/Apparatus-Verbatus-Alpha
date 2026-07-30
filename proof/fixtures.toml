@@ -1,0 +1,5 @@
+version = 1
+
+# A public-safe proof image is added as an exact [[fixture]] entry carrying:
+# path, sha256, bytes, media_type, source, and reason. The ingress check accepts
+# JPEG, PNG, and TIFF only when all six fields match the staged image exactly.
