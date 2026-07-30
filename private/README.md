@@ -11,7 +11,8 @@ personal-data scanner: alpha may still contain recorded personal data elsewhere 
 Tyrel's 2026-07-28 ruling.
 
 Credentials are secrets. This directory is where the ones that must live on disk are kept,
-and it is gitignored precisely so they can be — Tyrel's ruling. Two live here today:
+and it is gitignored precisely so they can be — Tyrel's ruling. Three files live here, and
+only the first is a secret:
 
 - `ntfy.conf` — the notification bearer topic. `operations/notify/notify.sh` reads it when
   `NTFY_TOPIC` is not set in the environment. Anyone holding the topic can read the stream.

@@ -148,4 +148,22 @@ case $status in
   124) echo "seat: '$seat' hit its ${timeout_s}s ceiling; output may be incomplete" >&2 ;;
   137) echo "seat: '$seat' was hard-killed; output may be incomplete" >&2 ;;
 esac
+
+# Every exit above this line is 2, and every one means the seat never started: an
+# unreadable table, an unknown name, a bad effort or timeout, no `timeout` command.
+# `capture-seat-report.sh` relies on that to tell "never ran" from "ran and failed",
+# because the first must not be filed as a reviewer's report and the second must not
+# be thrown away. So a *child* returning 2 cannot also be allowed to mean 2 — Codex
+# choosing that status for its own reasons would have been read as a wrapper
+# precondition failure, and a real finding discarded with the harness announcing that
+# nothing had run. A reviewer found the collision; GOVERNANCE 2 and 10 both bite.
+#
+# 3 is the substitute because it is outside every status this wrapper assigns itself
+# and outside the 124/137 timeout pair. The original is reported in text so nothing
+# about the child's own answer is lost.
+if [ "$status" -eq 2 ]; then
+  echo "seat: '$seat' ran and exited 2; reported as 3 so it cannot be mistaken for a" >&2
+  echo "seat that never started. Its own status was 2." >&2
+  status=3
+fi
 exit "$status"

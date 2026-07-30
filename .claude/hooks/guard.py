@@ -371,6 +371,16 @@ PAYLOAD_DEPTH = 3
 
 
 SHELL_VERB = re.compile(rf"\b{_SHELL_NAME}\b", flags=re.IGNORECASE)
+# A heredoc body is data unless something *executes* it, and a shell is not the only
+# thing that does. A reviewer found `python3 <<'PY'` with a push inside silent to a
+# subagent and to the session alike, while the same push through `python3 -c` was
+# denied and `sh <<EOF` was denied — one capability, three spellings, one of them
+# uncovered. The docstring at the top of this file also claimed a heredoc is inspected
+# when "a shell receives it", which described the code and not the risk.
+EXECUTES_A_HEREDOC = re.compile(
+    rf"\b(?:{_SHELL_NAME}|python3?|perl|ruby|node|deno|php|osascript)\b",
+    flags=re.IGNORECASE,
+)
 HEREDOC_DELIMITER = re.compile(
     r"\s*(?:(?P<quote>['\"])(?P<quoted>[^'\"]*)(?P=quote)|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
 )
@@ -455,14 +465,14 @@ def split_heredocs(text: str) -> tuple[str, list[str]]:
         tags, quote = heredoc_declarations(line, quote)
         if not tags:
             continue
-        fed_to_a_shell = bool(SHELL_VERB.search(line))
+        fed_to_something_that_runs_it = bool(EXECUTES_A_HEREDOC.search(line))
         for tag in tags:
             end = index
             while end < len(lines) and lines[end].strip() != tag:
                 end += 1
             if end >= len(lines):
                 continue  # no terminator: those lines stay commands
-            if fed_to_a_shell:
+            if fed_to_something_that_runs_it:
                 bodies.append("\n".join(lines[index:end]))
             index = end + 1  # skip the body and its terminator line
     return "\n".join(kept), bodies
@@ -1171,8 +1181,19 @@ def sends_a_request_body(command: str) -> bool:
     # alike, while the identical curl spelling asked — a hole in one tool only, which
     # is the kind nobody trips over until it matters. The subagent tripwire does not
     # cover it either: a plain pipe is not one of INSPECTION_BLIND_SPOTS.
-    if has(command, r"(?:\||<)\s*" + _PATH + r"https?\b") or has(
-        command, r"(?:^|[;&|]\s*)\s*" + _PATH + r"https?\b[^\n;&|]*<"
+    # Matched through `invocation()` rather than by looking for the letters `http`
+    # after a pipe. The first version of this did the latter and a reviewer caught it
+    # raising on `sed 's|http://old|http://new|g'` and on a markdown bare link
+    # `<https://example.com>` — a prompt on a find-and-replace, which is exactly the
+    # false alarm this file argues at length that it must not produce. `invocation()`
+    # requires httpie to actually be the command at that position.
+    for arguments in argument_lists(HTTPIE_INVOCATION, command):
+        # A body arrives on stdin either from a pipe into this invocation or from a
+        # redirect among its own arguments.
+        if any(token == "<" or token.startswith("<") for token in arguments):
+            return True
+    if re.search(r"\|\s*" + _PATH + r"https?\b(?:\s|$)", command) and argument_lists(
+        HTTPIE_INVOCATION, command
     ):
         return True
     return False
@@ -1321,6 +1342,18 @@ INSPECTION_BLIND_SPOTS = (
         "a wrapper command",
     ),
     (re.compile(r"\bfind\b[^;&|]*-(?:exec|execdir|delete)\b"), "a find action"),
+    # A heredoc handed to an interpreter. `split_heredocs` now captures the body so
+    # the checks at least see it, but seeing it is not the same as understanding it:
+    # `python3 <<'PY'` with `subprocess.run(["git","push"])` inside puts `git` inside a
+    # quoted Python list, which is not a command position, so no Git check can fire.
+    # That is this file's oldest admitted limit and no parser closes it. What closes it
+    # for the audience nobody is watching is treating the construct itself as a blind
+    # spot, which is what a reviewer recommended once the body-inspection route turned
+    # out not to reach. The main session is unaffected, as with every entry here.
+    (
+        re.compile(r"\b(?:python3?|perl|ruby|node|deno|php|osascript)\b[^\n;&|]*<<"),
+        "a heredoc handed to an interpreter",
+    ),
 )
 
 # Capabilities worth stopping when this file cannot see what is being done with

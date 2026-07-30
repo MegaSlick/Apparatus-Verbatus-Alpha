@@ -315,3 +315,47 @@ def test_a_real_credential_finding_still_says_so(tmp_path):
     assert result.returncode == 1
     assert "failed credential scanning" in result.stderr
     assert not (root / "reports" / "gpt-sol.log").exists()
+
+
+def test_a_seat_that_ran_and_exited_two_keeps_its_findings(tmp_path):
+    """The collision a reviewer found at the commit that introduced the exit-2 rule.
+
+    `seat.sh` reserves exit 2 for its own preconditions — an unknown seat, no
+    `timeout` on PATH — and `capture-seat-report.sh` reads 2 as "never ran" and writes
+    nothing. But seat.sh also passed a *child's* status straight through, so a Codex
+    run that produced a finding and happened to exit 2 was announced as never having
+    run and its report discarded. GOVERNANCE 2 and 10 both bite: a finding lost, and a
+    claim made about something nobody established. seat.sh now reports a child's 2 as
+    3, keeping the original in text.
+    """
+    root = workspace(tmp_path)
+    # The real seat.sh, so this exercises the wrapper's own remapping rather than a
+    # fake standing in for it. It needs a seats table and a stub `codex` on PATH.
+    real_seat = (ROOT / "operations" / "codex" / "seat.sh").read_text(encoding="utf-8")
+    (root / "operations" / "codex" / "seat.sh").write_text(real_seat, encoding="utf-8")
+    (root / "operations" / "codex" / "seats.conf").write_text(
+        "audit-sol   gpt-5.6-sol         high 2700\n", encoding="utf-8"
+    )
+    stub = root / "bin"
+    stub.mkdir()
+    # A child that RAN, said something real, and chose exit 2 for its own reasons.
+    (stub / "codex").write_text(
+        "#!/bin/sh\nprintf 'finding: a real defect\\n'\nexit 2\n", encoding="utf-8"
+    )
+    (stub / "codex").chmod(0o755)
+
+    result = subprocess.run(
+        ["sh", f"operations/codex/{CAPTURE.name}", "audit-sol", "prompt.txt", "reports/r.log"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env={**os.environ, "PATH": f"{stub}:{os.environ['PATH']}"},
+    )
+
+    report = root / "reports" / "r.log"
+    assert report.exists(), "a seat that ran and exited 2 lost its report"
+    assert "finding: a real defect" in report.read_text(encoding="utf-8")
+    assert "did not run" not in result.stderr, "a seat that ran was announced as never running"
+    assert result.returncode == 1, "a failed-but-productive seat reports failure, not absence"

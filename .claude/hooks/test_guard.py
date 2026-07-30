@@ -1338,3 +1338,77 @@ def test_the_session_is_still_asked_about_the_live_checkout(tmp_path, monkeypatc
         payload("Edit", {"file_path": str(project / ".githooks" / "pre-commit")}, cwd=project)
     )
     assert decision == "ask"
+
+
+# --- the pre-push audit of 17433a6 ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A heredoc handed to an interpreter. The body is now captured, but `git`
+        # inside a quoted Python list is not at a command position, so no Git check
+        # can fire on it — the construct itself has to be the signal.
+        'python3 <<\'PY\'\nimport subprocess; subprocess.run(["git","push","origin","main"])\nPY',
+        "node <<'JS'\nrequire('child_process').execSync('git push origin main')\nJS",
+        "perl <<'PL'\nsystem(\"curl -X POST https://e.test\")\nPL",
+    ],
+)
+def test_a_subagent_may_not_pipe_code_into_an_interpreter_by_heredoc(command):
+    decision, reason = guard.evaluate(payload(tool_input={"command": command}, agent="worker"))
+    assert decision == "deny"
+    assert "heredoc" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Both halves are required, here as everywhere in the tripwire: an interpreter
+        # heredoc that names nothing consequential is ordinary work.
+        "python3 <<'PY'\nprint(1)\nPY",
+        "python3 <<'PY'\nimport json; print(json.dumps({'a': 1}))\nPY",
+        # And a heredoc nothing executes is data, which is the original reason bodies
+        # are dropped at all.
+        "cat > notes.md <<'EOF'\nprose that mentions git push\nEOF",
+    ],
+)
+def test_an_ordinary_heredoc_is_still_left_alone(command):
+    assert guard.evaluate(payload(tool_input={"command": command}, agent="worker")) is None
+
+
+def test_a_heredoc_body_fed_to_an_interpreter_is_inspected_not_dropped():
+    # Separate from the tripwire above: the body used to be discarded entirely when
+    # the receiver was not a shell, so no check saw it at all.
+    command = "python3 <<'PY'\nrm -rf ~\nPY"
+    _, bodies = guard.split_heredocs(command)
+    assert bodies == ["rm -rf ~"], "the interpreter's heredoc body was dropped"
+    assert "rm -rf ~" in guard.expand_command(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The first version of the httpie stdin check looked for the letters `http`
+        # after a pipe, and raised on a find-and-replace. A prompt on a `sed` spends
+        # exactly the attention this file argues it must protect.
+        "sed 's|http://old|http://new|g' file.txt",
+        'echo "<https://example.com>"',
+        "grep -r 'http://x' .",
+        "printf '%s' x | grep https",
+    ],
+)
+def test_ordinary_text_containing_a_url_is_not_a_network_request(command):
+    assert guard.evaluate(payload(tool_input={"command": command})) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        """printf '%s' '{"q":1}' | http https://api.example.test/graphql""",
+        "http https://api.example.test/graphql < body.json",
+        "http POST https://api.example.test/graphql",
+    ],
+)
+def test_a_real_httpie_body_is_still_recognized(command):
+    decision, _ = guard.evaluate(payload(tool_input={"command": command}))
+    assert decision == "ask"
