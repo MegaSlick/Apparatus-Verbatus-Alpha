@@ -68,62 +68,25 @@ complete nonempty reports beneath one new
 `workbench/raw/<date>_<short-sha>_reviewer-pass/` directory without overwriting
 existing evidence. Scan those exact files again with `--file`.
 
-Set `report_dir` to that directory and create it before dispatch. Capture the
-shell-dispatched seat with this snippet rather than relying on the chat
-transcript — **run it as a script, not pasted line by line.** `set -eu` is what
-makes each guard below fatal, and a pasted line that fails simply carries on to
-the next one:
+Create that directory before dispatch, then capture each shell-dispatched seat
+with `operations/codex/capture-seat-report.sh` rather than relying on the chat
+transcript:
 
 ```sh
-set -eu
-gpt_seat="${gpt_seat:-audit-sol}"   # the seat the triage chose; see step 1
-gpt_report="$report_dir/gpt-sol.log"
-gpt_output=""
-if gpt_output=$(sh operations/codex/seat.sh "$gpt_seat" - < "$prompt_path" 2>&1); then
-  gpt_status=0
-else
-  gpt_status=$?
-fi
-[ -n "$gpt_output" ] || {
-  echo "GPT reviewer returned an empty report" >&2
-  exit 1
-}
-if ! printf '%s\n' "$gpt_output" |
-     python3 .githooks/check_ingress.py --stdin-file; then
-  unset gpt_output
-  echo "GPT reviewer output failed credential scanning and was not written" >&2
-  exit 1
-fi
-if [ -e "$gpt_report" ] || [ -L "$gpt_report" ]; then
-  unset gpt_output
-  echo "GPT report target already exists; refusing to overwrite evidence" >&2
-  exit 1
-fi
-gpt_temporary=$(mktemp "$report_dir/.gpt-sol.log.XXXXXX") || exit 1
-trap 'rm -f "$gpt_temporary"' EXIT
-trap 'rm -f "$gpt_temporary"; exit 129' HUP
-trap 'rm -f "$gpt_temporary"; exit 130' INT
-trap 'rm -f "$gpt_temporary"; exit 143' TERM
-umask 077
-printf '%s\n' "$gpt_output" > "$gpt_temporary"
-unset gpt_output
-mv "$gpt_temporary" "$gpt_report"
-gpt_temporary=""
-trap - EXIT HUP INT TERM
-if [ "$gpt_status" -ne 0 ]; then
-  echo "GPT reviewer failed with exit $gpt_status; clean evidence remains at $gpt_report" >&2
-  exit 1
-fi
+sh operations/codex/capture-seat-report.sh audit-sol "$prompt_path" "$report_dir/gpt-sol.log"
 ```
 
-Five things there are load-bearing, and prose could not enforce any of them:
-the refusal to overwrite an existing report, the refusal to write through a
-dangling symlink (`[ -e ]` follows links, so `[ -L ]` is tested too), keeping
-partial output when the seat exits non-zero, writing nothing at all until the
-ingress scan clears the text, and aborting rather than resuming on HUP, INT or
-TERM. `.githooks/test_skill_procedures.py` lifts this block out of this file and
-runs it against fakes, so an edit that breaks it fails there; a rewording does
-not.
+The seat name is whatever the triage in step 1 chose; run it once per
+shell-dispatched seat, with a different report path each time.
+
+Five things that script enforces are load-bearing, and prose could enforce none
+of them: the refusal to overwrite an existing report, the refusal to write
+through a dangling symlink (`[ -e ]` follows links, so `[ -L ]` is tested too),
+keeping partial output when the seat exits non-zero, writing nothing at all
+until the ingress scan clears the text, and aborting rather than resuming on
+HUP, INT or TERM. Its header explains each one, and
+`.githooks/test_skill_procedures.py` runs the real file against fakes — so an
+edit that breaks a guard fails there, while a rewording of this page does not.
 
 Keep disagreements. Verify each proposed fix against the code and governing
 documents; reviewers supply evidence, not verdicts. If a real finding changes

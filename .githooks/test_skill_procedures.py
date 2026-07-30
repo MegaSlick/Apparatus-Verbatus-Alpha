@@ -1,53 +1,36 @@
 """Execute the shell the skills tell a session to run.
 
-The reviewer-pass snippet produces the evidence a push decision rests on. When it
-was prose, nothing ran: every failure mode inside it was unobserved, and the five
-guards it carries could be reworded away without anything noticing.
+`operations/codex/capture-seat-report.sh` produces the evidence a push decision
+rests on. When it was prose in `reviewer-pass/SKILL.md`, nothing ran: every failure
+mode inside it was unobserved, and the five guards it carries could be reworded away
+without anything noticing. These tests then lifted the fenced block back out of the
+Markdown to run it — which worked, and meant the executable half of a procedure was
+stored as documentation.
 
-These tests lift the fenced block straight out of the Markdown and run it against
-fakes. A snippet edited into something that does not work fails here; a snippet
-that is only reworded does not.
+It is now a file, and these run that file against fakes. A guard edited into
+something that does not work fails here; a rewording of the skill page does not.
 """
 
 from __future__ import annotations
 
 import os
-import re
 import subprocess
-import textwrap
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-REVIEWER_PASS = ROOT / ".claude" / "skills" / "reviewer-pass" / "SKILL.md"
+CAPTURE = ROOT / "operations" / "codex" / "capture-seat-report.sh"
 
 FAKE_SEAT = """\
 #!/bin/sh
 printf 'finding one\\nfinding two\\n'
 """
 
-# The subject here is the snippet's file handling, not the scanner: a real
+# The subject here is the script's file handling, not the scanner: a real
 # check_ingress.py run would make this test fail whenever that file is
 # mid-edit, which is a different thing being tested.
 FAKE_SCAN = "import sys\nsys.stdin.buffer.read()\nraise SystemExit(0)\n"
-
-
-def fenced_blocks(document: Path) -> list[str]:
-    text = document.read_text(encoding="utf-8")
-    blocks = re.findall(r"(?ms)^\s*```sh\n(.*?)^\s*```", text)
-    return [textwrap.dedent(block) for block in blocks]
-
-
-def gpt_capture_snippet() -> str:
-    """The reviewer-pass block that captures, scans and files the GPT report."""
-    for block in fenced_blocks(REVIEWER_PASS):
-        # Located by what the block does, not by which seat it names: the seat
-        # is chosen per pass by the triage, and pinning the name here would make
-        # a legitimate roster change look like a broken procedure.
-        if "operations/codex/seat.sh" in block and "--stdin-file" in block:
-            return block
-    raise AssertionError("the reviewer-pass skill no longer contains the GPT capture snippet")
 
 
 def workspace(tmp_path: Path) -> Path:
@@ -57,16 +40,23 @@ def workspace(tmp_path: Path) -> Path:
     seat = root / "operations" / "codex" / "seat.sh"
     seat.write_text(FAKE_SEAT, encoding="utf-8")
     seat.chmod(0o755)
+    # The real script under test, in the place it expects to be run from — the
+    # copy is what lets seat.sh and check_ingress.py be fakes at the same relative
+    # paths without touching the repository's own.
+    (root / "operations" / "codex" / CAPTURE.name).write_text(
+        CAPTURE.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     (root / ".githooks" / "check_ingress.py").write_text(FAKE_SCAN, encoding="utf-8")
     (root / "prompt.txt").write_text("review this\n", encoding="utf-8")
     (root / "reports").mkdir()
     return root
 
 
-def run_snippet(root: Path, snippet: str):
-    script = f'report_dir="$PWD/reports"\nprompt_path="$PWD/prompt.txt"\n{snippet}'
+def run_capture(root: Path, *arguments: str):
+    if not arguments:
+        arguments = ("audit-sol", "prompt.txt", "reports/gpt-sol.log")
     return subprocess.run(
-        ["sh", "-c", script],
+        ["sh", f"operations/codex/{CAPTURE.name}", *arguments],
         cwd=root,
         capture_output=True,
         text=True,
@@ -76,9 +66,9 @@ def run_snippet(root: Path, snippet: str):
     )
 
 
-def test_the_gpt_capture_snippet_files_a_clean_report(tmp_path):
+def test_it_files_a_clean_report(tmp_path):
     root = workspace(tmp_path)
-    result = run_snippet(root, gpt_capture_snippet())
+    result = run_capture(root)
 
     assert result.returncode == 0, result.stdout + result.stderr
     report = root / "reports" / "gpt-sol.log"
@@ -86,49 +76,100 @@ def test_the_gpt_capture_snippet_files_a_clean_report(tmp_path):
     assert list((root / "reports").iterdir()) == [report], "a temporary file was left behind"
 
 
-def test_the_snippet_refuses_to_write_through_a_dangling_symlink(tmp_path):
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        (),
+        ("audit-sol",),
+        ("audit-sol", "prompt.txt"),
+        ("audit-sol", "prompt.txt", "reports/a.log", "extra"),
+    ],
+)
+def test_it_refuses_the_wrong_number_of_arguments(tmp_path, arguments):
+    # Exit 2, not 1: a caller that got the call wrong has not had a review fail,
+    # and the two must not read the same to whatever is checking.
+    root = workspace(tmp_path)
+    result = subprocess.run(
+        ["sh", f"operations/codex/{CAPTURE.name}", *arguments],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "usage:" in result.stderr
+
+
+def test_it_refuses_a_missing_prompt_file(tmp_path):
+    root = workspace(tmp_path)
+    result = run_capture(root, "audit-sol", "absent.txt", "reports/gpt-sol.log")
+    assert result.returncode == 2
+    assert "no prompt file" in result.stderr
+    assert list((root / "reports").iterdir()) == []
+
+
+def test_it_refuses_a_missing_report_directory(tmp_path):
+    root = workspace(tmp_path)
+    result = run_capture(root, "audit-sol", "prompt.txt", "absent/gpt-sol.log")
+    assert result.returncode == 2
+    assert "no report directory" in result.stderr
+
+
+def test_it_refuses_to_write_through_a_dangling_symlink(tmp_path):
     """`[ ! -e ]` follows symlinks, so a dangling link reads as "nothing there"."""
     root = workspace(tmp_path)
     victim = root / "earlier-evidence.log"
     (root / "reports" / "gpt-sol.log").symlink_to(victim)
 
-    result = run_snippet(root, gpt_capture_snippet())
+    result = run_capture(root)
 
-    assert not victim.exists(), "the snippet wrote through a symlink onto another path"
+    assert not victim.exists(), "the script wrote through a symlink onto another path"
     assert result.returncode == 1, result.stdout + result.stderr
     assert "refusing to overwrite evidence" in result.stderr
 
 
-def test_the_snippet_refuses_when_the_report_already_exists(tmp_path):
+def test_it_refuses_when_the_report_already_exists(tmp_path):
     root = workspace(tmp_path)
     existing = root / "reports" / "gpt-sol.log"
     existing.write_text("an earlier reviewer's report\n", encoding="utf-8")
 
-    result = run_snippet(root, gpt_capture_snippet())
+    result = run_capture(root)
 
     assert result.returncode == 1
     assert existing.read_text(encoding="utf-8") == "an earlier reviewer's report\n"
 
 
-def test_the_snippet_keeps_the_evidence_when_the_seat_fails(tmp_path):
+def test_it_keeps_the_evidence_when_the_seat_fails(tmp_path):
     root = workspace(tmp_path)
     seat = root / "operations" / "codex" / "seat.sh"
     seat.write_text("#!/bin/sh\nprintf 'partial finding\\n'\nexit 3\n", encoding="utf-8")
 
-    result = run_snippet(root, gpt_capture_snippet())
+    result = run_capture(root)
 
     assert result.returncode == 1
     assert (root / "reports" / "gpt-sol.log").read_text(encoding="utf-8") == "partial finding\n"
     assert "failed with exit 3" in result.stderr
 
 
-def test_the_snippet_writes_nothing_when_the_scan_refuses(tmp_path):
+def test_it_refuses_an_empty_report(tmp_path):
+    root = workspace(tmp_path)
+    (root / "operations" / "codex" / "seat.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+    result = run_capture(root)
+
+    assert result.returncode == 1
+    assert "empty report" in result.stderr
+    assert list((root / "reports").iterdir()) == []
+
+
+def test_it_writes_nothing_when_the_scan_refuses(tmp_path):
     root = workspace(tmp_path)
     (root / ".githooks" / "check_ingress.py").write_text(
         "import sys\nsys.stdin.buffer.read()\nraise SystemExit(1)\n", encoding="utf-8"
     )
 
-    result = run_snippet(root, gpt_capture_snippet())
+    result = run_capture(root)
 
     assert result.returncode == 1
     assert not (root / "reports" / "gpt-sol.log").exists()
@@ -138,7 +179,7 @@ def test_the_snippet_writes_nothing_when_the_scan_refuses(tmp_path):
 def trap_lines() -> list[str]:
     return [
         line.strip()
-        for line in gpt_capture_snippet().splitlines()
+        for line in CAPTURE.read_text(encoding="utf-8").splitlines()
         if line.strip().startswith("trap ") and "- EXIT" not in line
     ]
 
@@ -147,17 +188,17 @@ def trap_lines() -> list[str]:
 def test_the_cleanup_trap_stops_the_procedure_it_cleans_up_after(tmp_path, signal_name):
     """A trap that tidies up and returns lets the next step run anyway.
 
-    The snippet's remaining steps write the report and then judge the seat's
-    exit status. Resuming after a signal means writing evidence from a call
-    that was interrupted, and the push decision would then rest on it.
+    The remaining steps write the report and then judge the seat's exit status.
+    Resuming after a signal means writing evidence from a call that was
+    interrupted, and the push decision would then rest on it.
     """
     root = workspace(tmp_path)
     traps = "\n".join(trap_lines())
-    assert traps, "the snippet installs no cleanup trap"
+    assert traps, "the script installs no cleanup trap"
 
     script = (
         "set -eu\n"
-        'gpt_temporary=$(mktemp "$PWD/reports/.gpt-sol.log.XXXXXX")\n'
+        'temporary=$(mktemp "$PWD/reports/.capture-seat-report.XXXXXX")\n'
         f"{traps}\n"
         f"kill -{signal_name} $$\n"
         'echo resumed > "$PWD/resumed"\n'
@@ -171,3 +212,11 @@ def test_the_cleanup_trap_stops_the_procedure_it_cleans_up_after(tmp_path, signa
     )
     assert result.returncode != 0, f"an interrupted procedure reported success after {signal_name}"
     assert list((root / "reports").iterdir()) == [], "the temporary file survived the signal"
+
+
+def test_the_skill_calls_the_script_rather_than_carrying_a_copy(tmp_path):
+    # The point of the extraction: the procedure lives in one place. A fenced
+    # reimplementation in the skill would drift from the file these tests cover.
+    skill = (ROOT / ".claude" / "skills" / "reviewer-pass" / "SKILL.md").read_text(encoding="utf-8")
+    assert "capture-seat-report.sh" in skill, "the skill no longer invokes the capture script"
+    assert "mktemp" not in skill, "the skill has grown its own copy of the capture procedure"
