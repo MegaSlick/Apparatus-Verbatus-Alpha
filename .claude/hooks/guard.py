@@ -23,7 +23,14 @@ Heredocs are found by a quote-aware scanner rather than a pattern; see
 It does **not** understand command substitution, process substitution, or a
 wrapper command outside the list below. Comments are recognized only by that
 heredoc scanner; every other check still reads a `#` line as ordinary text.
-Anything it fails to recognize passes silently.
+
+**Where that leaves a subagent is different, deliberately.** For the main session
+anything unrecognized passes silently, because precision here buys quiet and a
+false alarm spends Tyrel's attention. A subagent is unattended by definition and a
+false alarm against it costs nothing — it reports back and the accountable session
+runs the step itself. So a subagent naming a consequential capability *through* one
+of those blind spots is refused outright rather than passed; see
+`subagent_blind_spot`. The thresholds differ because the cost of being wrong does.
 
 The durable controls remain narrow tool permissions, Git hooks, GitHub
 protection, review, and the main session reading every integrated diff.
@@ -1091,6 +1098,90 @@ def external_shell_mutation(command: str, payload: dict[str, Any]) -> Decision:
     return None
 
 
+# The blind spots this module's own docstring admits to: constructs it does not
+# parse, and wrappers whose real command it never sees. Each entry is deliberately
+# a plain text match — the point is breadth, not precision. See subagent_blind_spot.
+INSPECTION_BLIND_SPOTS = (
+    (re.compile(r"\$\("), "a command substitution"),
+    (re.compile(r"`[^`]"), "a backtick substitution"),
+    (re.compile(r"[<>]\("), "a process substitution"),
+    (
+        re.compile(
+            r"\b(?:xargs|env|nohup|timeout|setsid|stdbuf|nice|ionice|parallel|watch|script)\b"
+        ),
+        "a wrapper command",
+    ),
+    (re.compile(r"\bfind\b[^;&|]*-(?:exec|execdir|delete)\b"), "a find action"),
+)
+
+# Capabilities worth stopping when this file cannot see what is being done with
+# them. Names, not verbs: MUTATION_WORDS carries "add", "set" and "write", which
+# appear in ordinary commands and would make the tripwire below useless. Bare
+# `git` is out for the same reason — `$(git rev-parse HEAD)` is not the risk;
+# the named history and publishing verbs are.
+CONSEQUENTIAL_CAPABILITIES = frozenset(
+    {
+        "push",
+        "merge",
+        "rebase",
+        "reset",
+        "clean",
+        "filter-branch",
+        "curl",
+        "wget",
+        "http",
+        "https",
+        "gh",
+        "runpod",
+        "runpodctl",
+        "ssh",
+        "scp",
+        "rsync",
+        "chmod",
+        "chown",
+        "pip",
+        "npm",
+        "brew",
+    }
+)
+CAPABILITY_WORD = re.compile(r"[A-Za-z][A-Za-z-]*")
+
+
+def subagent_blind_spot(command: str, payload: dict[str, Any]) -> Decision:
+    """Refuse a subagent a consequential capability this file cannot read.
+
+    **Asymmetric on purpose.** The precise parsing in this module exists to avoid
+    false alarms, and a false alarm only costs something when it interrupts Tyrel.
+    Raised against a subagent it costs nothing at all: the agent reports back and
+    the accountable main session runs the command itself, having read it. So the
+    two audiences justify different thresholds, and the cheap one belongs on the
+    side nobody is watching.
+
+    The checks above are precise and fire on what they recognize. This one fires
+    on what they *cannot* recognize — a substitution, a wrapper, a `find -exec` —
+    when a consequential capability is named anywhere in the same command. It
+    closes every blind spot in the docstring at once, including spellings nobody
+    has thought of yet, for the audience that is unattended by definition.
+
+    It runs last, so a recognized action still gets its specific reason.
+    """
+    agent = subagent_name(payload)
+    if not agent:
+        return None
+    named = {word.lower() for word in CAPABILITY_WORD.findall(command)} & CONSEQUENTIAL_CAPABILITIES
+    if not named:
+        return None
+    for pattern, description in INSPECTION_BLIND_SPOTS:
+        if pattern.search(command):
+            return (
+                "deny",
+                f"Subagent {agent} may not reach {', '.join(sorted(named))} through "
+                f"{description}, which the repository guard cannot read. Run the step "
+                f"without it, or report it to the main session.",
+            )
+    return None
+
+
 def bash_decision(tool_input: Any, payload: dict[str, Any]) -> Decision:
     if not isinstance(tool_input, dict) or not isinstance(tool_input.get("command"), str):
         return "deny", "The repository guard could not read the Bash command."
@@ -1107,7 +1198,7 @@ def bash_decision(tool_input: Any, payload: dict[str, Any]) -> Decision:
             return found
     if has(command, r"\b(?:chmod|mv|rm)\b[^\n;&|]*(?:\.githooks/|\.git/hooks/)"):
         return deny_or_ask(payload, "disable or remove an installed Git hook")
-    return None
+    return subagent_blind_spot(command, payload)
 
 
 def has_mutating_method(value: Any) -> bool:

@@ -672,3 +672,103 @@ def test_operands_skip_option_values_before_a_command_pair():
         short_value_taking=guard.GH_GLOBAL_SHORT_VALUE_OPTIONS,
         long_value_taking=guard.GH_GLOBAL_LONG_VALUE_OPTIONS,
     ) == ["pr", "create"]
+
+
+# --- the asymmetric subagent tripwire -------------------------------------
+#
+# The precise checks above buy quiet for the main session. These prove the other
+# half of the trade: a subagent naming a consequential capability through a
+# construct this file cannot parse is refused, where the same command from the
+# accountable session passes as it always did.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Command substitution hides what is really being run.
+        "git $(printf push) origin main",
+        'eval "$(echo git push)"',
+        # Backticks are the older spelling of the same hole.
+        "git `printf push` origin main",
+        # Process substitution.
+        "diff <(gh api repos/o/r) /dev/null",
+        # A wrapper the parser does not see through.
+        "xargs -I{} git push origin {} < branches.txt",
+        "nohup rsync -a . remote:/backup",
+        # find -exec runs an arbitrary command per match.
+        "find . -name '*.sh' -exec chmod +x {} ;",
+    ],
+)
+def test_a_subagent_may_not_reach_a_capability_through_a_blind_spot(command):
+    decision, reason = guard.evaluate(payload(tool_input={"command": command}, agent="worker"))
+    assert decision == "deny"
+    assert "worker" in reason
+    assert "cannot read" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # These reach a *recognized* capability despite the wrapper, so the
+        # precise checks get there first and give their own specific reason.
+        # Kept as cases because which check fires is an implementation detail;
+        # that an agent is refused is not.
+        "env GIT_DIR=.git git push origin main",
+        "timeout 60 curl -X POST https://example.test/hook",
+    ],
+)
+def test_a_wrapped_capability_the_precise_checks_do_see_is_still_refused(command):
+    decision, reason = guard.evaluate(payload(tool_input={"command": command}, agent="worker"))
+    assert decision == "deny"
+    assert reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # No consequential capability named: a wrapper alone is not a finding,
+        # or every agent test run and timed command would be refused.
+        "timeout 300 .venv/bin/pytest -q",
+        "env PYTHONPATH=. .venv/bin/pytest .githooks/test_tidy.py",
+        "xargs -I{} rg {} README.md < patterns.txt",
+        "find . -name '*.py' -exec ruff check {} ;",
+        # Substitution around something harmless. Bare `git` is deliberately not
+        # a capability word, so reading the current SHA still works.
+        "echo $(git rev-parse HEAD)",
+        "git diff --stat $(git merge-base HEAD main)",
+        # A capability named without any blind spot is left to the precise
+        # checks, which already ask or deny with their own specific reason.
+        "rg 'git push' .claude/skills",
+    ],
+)
+def test_the_tripwire_does_not_fire_without_both_halves(command):
+    assert guard.evaluate(payload(tool_input={"command": command}, agent="worker")) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git $(printf push) origin main",
+        "xargs -I{} git push origin {} < branches.txt",
+        "timeout 60 curl -X POST https://example.test/hook",
+        "find . -name '*.sh' -exec chmod +x {} ;",
+    ],
+)
+def test_the_main_session_is_not_subject_to_the_tripwire(command):
+    # The asymmetry is the whole point: precision serves the session, breadth
+    # serves the unattended agent. A command the tripwire denies an agent must
+    # reach the session's ordinary flow unchanged, or this became a new
+    # false-alarm source aimed at exactly the wrong audience.
+    decision = guard.evaluate(payload(tool_input={"command": command}))
+    assert decision is None or decision[0] == "ask"
+
+
+def test_a_recognized_action_keeps_its_specific_reason_for_an_agent():
+    # The tripwire runs last. An agent pushing plainly must still be told it may
+    # not publish commits, not given the vaguer blind-spot message. A branch other
+    # than main, because a push at main is refused by a harder rule than this one.
+    decision, reason = guard.evaluate(
+        payload(tool_input={"command": "git push origin work/topic"}, agent="worker")
+    )
+    assert decision == "deny"
+    assert "publish commits" in reason
