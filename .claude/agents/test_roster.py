@@ -106,15 +106,17 @@ def test_a_writing_role_says_to_propose_rather_than_amend():
 
 def test_judgement_roles_keep_their_effort_floors():
     # Floors, not pins: frontmatter may exceed the floor, never sit under it. A
-    # review must not quietly run at a cheap session's depth. Deleting a role
-    # stays Tyrel's configuration call, so absence skips rather than fails.
+    # review must not quietly run at a cheap session's depth. Fail closed: a
+    # judgement seat cannot shed its floor by deletion or rename — removing one
+    # is a reviewed change that edits this dict in the same commit.
     rank = {"low": 0, "medium": 1, "high": 2, "xhigh": 3, "max": 4}
     # Duplicated in README.md's roster table on purpose; change both together.
     floors = {"auditor": "high", "infra-worker": "high", "rebuilder": "high", "consult": "xhigh"}
     for name, floor in floors.items():
         path = AGENTS / f"{name}.md"
-        if not path.exists():
-            continue
+        assert path.exists(), (
+            f"{name}.md is missing; a judgement seat cannot shed its floor silently"
+        )
         effort = frontmatter(path)["effort"]
         assert rank[effort] >= rank[floor], (
             f"{name} declares effort {effort}, under its floor {floor}"
