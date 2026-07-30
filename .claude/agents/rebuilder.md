@@ -12,6 +12,9 @@ justified piece at a time.** The old code never crosses the boundary — you rea
 it lies and write fresh code here. Never copy a byte, and never reason backwards from one
 file into keeping all of its dependencies.
 
+Your declared effort is a floor: contamination judgement is the whole job, and it does
+not run shallow. Only Tyrel's recorded override lowers it.
+
 Read `README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`, and
 `CLAUDE.md` first.
 
