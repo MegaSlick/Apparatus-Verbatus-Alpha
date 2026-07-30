@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Report on the state of workbench/, and file what is provably duplicated.
+"""Report on the state of workbench/. Changes nothing.
 
 The mechanical half of the session-start and session-end procedures. It exists so
 that a model running at high context is answering questions rather than composing
 shell — and so that the answers are measured rather than remembered.
 
-**It never deletes.** Proven duplicates move to `scratch/`; everything else is
-reported and left alone. Note what `scratch/` means: workbench/README.md declares
-it deletable by anyone at any time without asking, so a move there is a *deferred*
-deletion, not a safe harbour. Recover a mistake before someone empties the drawer.
-That is still strictly better than deleting at the end of a long session, which is
-the mistake this file exists to make impossible.
+    python3 .githooks/tidy.py
 
-    python3 .githooks/tidy.py            # report only, changes nothing
-    python3 .githooks/tidy.py --file     # also move proven duplicates to scratch/
+**It reads and reports; it never moves, writes or deletes.** It once carried a
+`--file` mode that moved provably duplicated notes into `scratch/`, and that mode
+had no caller: `session-start` runs the report, and `session-end` runs the report
+and then makes the archive move itself, deliberately, because only the session that
+did the work can say which notes are finished. A mover nothing invoked was a
+mutation path on the drawer holding the live handoff, kept alive by its own
+docstring. Filing stays a judgement a session makes with its hands.
 
 Exit status is 0 when nothing wants attention, 1 when something does, and 2 when
 the check itself broke. **Exit 1 is the ordinary, informative case** — it means the
@@ -23,7 +23,6 @@ caller must treat it as one and never as a pass — GOVERNANCE.md 10.
 
 import argparse
 import hashlib
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -50,13 +49,13 @@ RAW_BYTE_BUDGET = 2_000_000
 # It is reported, never moved: only the session that did the work can say.
 STALE_DAYS = 3
 
-# Never filed as a duplicate, however byte-identical it looks.
+# Never reported as a duplicate, however byte-identical it looks.
 #
-# session-end copies the outgoing handoff into archive/ and then overwrites it.
-# A session that is interrupted between those two steps — or one whose new handoff
-# happens to match the old — leaves active/HANDOFF.md identical to the archived
-# copy. Treating that as a duplicate moves the live handoff into the drawer anyone
-# may empty, which destroys the one file the whole procedure exists to preserve.
+# session-end copies the outgoing handoff into archive/ and then overwrites it. A
+# session interrupted between those two steps — or one whose new handoff happens to
+# match the old — leaves active/HANDOFF.md identical to the archived copy. That is
+# the procedure working, not a note somebody forgot to file, and reporting the live
+# handoff as redundant invites exactly the one deletion that cannot be recovered.
 NEVER_FILED = {"HANDOFF.md"}
 
 # Claude Code derives this directory name from the repository's absolute path,
@@ -165,13 +164,11 @@ def check_memory():
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument(
-        "--file",
-        action="store_true",
-        help="move proven duplicates out of active/ into scratch/. Without it, nothing changes.",
-    )
-    args = ap.parse_args(argv)
+    # No options. The parser stays so that --help works and an unrecognised
+    # argument is refused rather than silently ignored — a caller passing the
+    # retired --file must be told it is gone, not quietly given a report it
+    # believes performed a move.
+    argparse.ArgumentParser(description=__doc__).parse_args(argv)
 
     if not WORKBENCH.is_dir():
         print(f"workbench/ not found at {WORKBENCH}", file=sys.stderr)
@@ -212,43 +209,11 @@ def main(argv=None):
             print(f"  in play   {rel(path)}")
 
     if duplicates:
+        wants_attention = True
         print(f"\nalready archived, byte-identical — {len(duplicates)}:")
         for path, match in duplicates:
             print(f"  {rel(path)}  ==  {rel(match)}")
-        if args.file:
-            confirmed = []
-            for path, match in duplicates:
-                # Another session may edit active/ while this one is filing.
-                # Re-prove identity before the move phase; a stale hash must
-                # not send newly changed work into the disposable drawer.
-                # This narrows the race window; it is not a filesystem lock.
-                if not path.is_file() or not match.is_file() or digest(path) != digest(match):
-                    wants_attention = True
-                    print(f"  -> not moved: {rel(path)} changed after the duplicate scan")
-                    continue
-                confirmed.append(path)
-            for path in confirmed:
-                # Keep the path under active/, so a mistaken move can be undone
-                # by reversing it rather than guessing where a bare name came from.
-                target = SCRATCH / path.relative_to(ACTIVE)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                stamp = 1
-                while target.exists():
-                    target = target.with_name(f"{path.stem}.{stamp}{path.suffix}")
-                    stamp += 1
-                shutil.move(str(path), str(target))
-            if confirmed:
-                print(f"  -> moved {len(confirmed)} to scratch/ (not deleted)")
-            # The budget below must describe active/ as it now stands, not as
-            # it stood before the moves — a drawer this run just emptied must
-            # not be reported over budget on its old contents.
-            files = active_files()
-            total_bytes = sum(p.stat().st_size for p in files)
-        else:
-            # Only outstanding duplicates want attention. Moving them is this
-            # run doing its job, and a job done should not read as a failure.
-            wants_attention = True
-            print("  -> re-run with --file to move these to scratch/")
+        print("  -> archived already. Delete from active/ only if you know the work closed.")
 
     if stale:
         wants_attention = True

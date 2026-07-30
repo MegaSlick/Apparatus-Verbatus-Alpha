@@ -1,15 +1,22 @@
-"""Tests for tidy.py — the one script in the harness that moves files.
+"""Tests for tidy.py — a report that changes nothing.
 
 Each test builds a disposable workbench and points the module at it. What is
-proven: a byte-identical duplicate is reported and, with --file, moved to
-scratch/ rather than deleted; HANDOFF.md is never moved however identical;
-design/ is never touched; an empty active/ still audits project memory (the
-report must not stop at the missing handoff); and the one-sitting budget is
-reported on the drawer as the run leaves it, not as it found it.
+proven: a byte-identical duplicate is reported and left where it is; the retired
+`--file` flag is refused rather than silently accepted; HANDOFF.md is never
+reported as redundant however identical it looks; design/ is not tidy.py's to
+judge; an empty active/ still audits project memory, so the report does not stop
+at the missing handoff; markdown link shapes resolve; and an over-full active/ is
+reported against the one-sitting budget.
+
+Several tests carry a positive control — a second file that *must* appear in the
+report — because an assertion that something is absent is satisfied just as well
+by a run that never looked.
 """
 
 import importlib.util
 from pathlib import Path
+
+import pytest
 
 HOOKS = Path(__file__).resolve().parent
 
@@ -33,7 +40,7 @@ def load_tidy(tmp_path):
     return mod
 
 
-def test_duplicate_reported_then_moved_only_with_file(tmp_path, capsys):
+def test_duplicate_is_reported_and_nothing_moves(tmp_path, capsys):
     tidy = load_tidy(tmp_path)
     (tidy.ARCHIVE / "old.md").write_text("same bytes")
     (tidy.ACTIVE / "note.md").write_text("same bytes")
@@ -42,68 +49,55 @@ def test_duplicate_reported_then_moved_only_with_file(tmp_path, capsys):
     assert tidy.main([]) == 1
     out = capsys.readouterr().out
     assert "already archived" in out
-    assert (tidy.ACTIVE / "note.md").exists(), "report-only run must move nothing"
-
-    tidy.main(["--file"])
-    assert not (tidy.ACTIVE / "note.md").exists()
-    assert (tidy.SCRATCH / "note.md").exists(), "moved to scratch, never deleted"
+    assert "note.md" in out
+    assert (tidy.ACTIVE / "note.md").exists(), "the report must leave active/ alone"
+    assert not any(tidy.SCRATCH.iterdir()), "tidy.py no longer writes anywhere"
 
 
-def test_duplicate_changed_after_scan_is_not_moved(tmp_path, capsys, monkeypatch):
+def test_the_retired_file_flag_is_refused(tmp_path):
+    # A caller that still passes --file believed a move happened. Accepting the
+    # flag and reporting instead would let it go on believing that.
     tidy = load_tidy(tmp_path)
-    (tidy.ARCHIVE / "old.md").write_text("same bytes")
-    active = tidy.ACTIVE / "note.md"
-    active.write_text("same bytes")
-
-    real_digest = tidy.digest
-    active_reads = 0
-
-    def changing_digest(path):
-        nonlocal active_reads
-        if path == active:
-            active_reads += 1
-            if active_reads == 2:
-                active.write_text("new work")
-        return real_digest(path)
-
-    monkeypatch.setattr(tidy, "digest", changing_digest)
-    assert tidy.main(["--file"]) == 1
-    out = capsys.readouterr().out
-    assert "changed after the duplicate scan" in out
-    assert active.read_text() == "new work"
-    assert not (tidy.SCRATCH / "note.md").exists()
+    with pytest.raises(SystemExit) as exit_info:
+        tidy.main(["--file"])
+    assert exit_info.value.code == 2
 
 
-def test_handoff_is_never_filed_as_a_duplicate(tmp_path):
+def test_handoff_is_never_reported_as_a_duplicate(tmp_path, capsys):
     tidy = load_tidy(tmp_path)
     (tidy.ARCHIVE / "2026-01-01_x").mkdir()
     (tidy.ARCHIVE / "2026-01-01_x" / "HANDOFF.md").write_text("identical")
     (tidy.ACTIVE / "HANDOFF.md").write_text("identical")
-    # A second duplicate that *must* move. Without it this test passes against a
-    # tidy.py that files nothing at all, which proves only that nothing ran.
+    # The positive control: a second duplicate that must be reported. Without it
+    # this passes against a tidy.py whose duplicate scan does nothing at all.
     (tidy.ARCHIVE / "2026-01-01_x" / "note.md").write_text("also identical")
     (tidy.ACTIVE / "note.md").write_text("also identical")
 
-    tidy.main(["--file"])
+    tidy.main([])
 
-    assert (tidy.SCRATCH / "note.md").exists(), "the filing pass did not run"
-    assert (tidy.ACTIVE / "HANDOFF.md").exists(), "the live handoff must never move"
-    assert not (tidy.SCRATCH / "HANDOFF.md").exists()
+    out = capsys.readouterr().out
+    assert "note.md" in out, "the duplicate scan did not run"
+    assert "HANDOFF.md" not in out.split("already archived")[1], (
+        "the live handoff must never be reported as redundant"
+    )
 
 
-def test_design_is_never_touched(tmp_path):
+def test_design_is_never_reported(tmp_path, capsys):
     tidy = load_tidy(tmp_path)
     (tidy.ARCHIVE / "a.md").write_text("dup")
     (tidy.DESIGN / "a.md").write_text("dup")
-    # The same bytes in active/ must move, so the untouched design/ copy is
-    # evidence of an exemption rather than of a run that did nothing.
+    # The same bytes in active/ must be reported, so design/'s absence from the
+    # duplicate list is an exemption rather than a run that did nothing.
     (tidy.ACTIVE / "a.md").write_text("dup")
     (tidy.ACTIVE / "HANDOFF.md").write_text("live")
 
-    tidy.main(["--file"])
+    tidy.main([])
 
-    assert (tidy.SCRATCH / "a.md").exists(), "the filing pass did not run"
-    assert (tidy.DESIGN / "a.md").exists(), "design/ is not tidy.py's to file"
+    out = capsys.readouterr().out
+    duplicates = out.split("already archived")[1].split("\n\n")[0]
+    assert "active/a.md" in duplicates, "the duplicate scan did not run"
+    assert "design/a.md" not in duplicates, "design/ is not tidy.py's to judge"
+    assert (tidy.DESIGN / "a.md").exists()
 
 
 def test_empty_active_still_audits_memory(tmp_path, capsys):
@@ -139,21 +133,12 @@ def test_memory_links_survive_markdown_shapes(tmp_path, capsys):
     assert "file is in no index line" not in out, "every present memory is linked"
 
 
-def test_budget_report_reflects_post_move_state(tmp_path, capsys):
+def test_an_over_full_active_is_reported_against_the_budget(tmp_path, capsys):
     tidy = load_tidy(tmp_path)
-    for i in range(7):
-        (tidy.ARCHIVE / f"d{i}.md").write_text(f"dup {i}")
-        (tidy.ACTIVE / f"d{i}.md").write_text(f"dup {i}")
-    (tidy.ACTIVE / "HANDOFF.md").write_text("live")
+    for i in range(tidy.ACTIVE_FILE_BUDGET + 1):
+        (tidy.ACTIVE / f"n{i}.md").write_text(f"note {i}")
 
-    # The same drawer, unmoved, is over budget — so the silence after --file is
-    # the post-move count talking, not a budget check that never runs.
-    tidy.main([])
-    assert "past the one-sitting budget" in capsys.readouterr().out
-
-    tidy.main(["--file"])
+    assert tidy.main([]) == 1
     out = capsys.readouterr().out
-    assert "moved 7 to scratch/" in out, "the filing pass did not run"
-    assert "past the one-sitting budget" not in out, (
-        "the budget must describe active/ as the moves left it"
-    )
+    assert "past the one-sitting budget" in out
+    assert f"{tidy.ACTIVE_FILE_BUDGET + 1}/{tidy.ACTIVE_FILE_BUDGET} files" in out

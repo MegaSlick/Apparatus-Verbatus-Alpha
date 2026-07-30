@@ -36,9 +36,10 @@ verified; do not call an unmeasured state clean.
 
 ## 2. File without loss
 
-Before moving anything, run `python3 .githooks/tidy.py` in report-only mode. Use
-`--file` only when this session owns `workbench/active/` exclusively; it moves only
-byte-identical archived duplicates into recoverable `scratch/`.
+Before moving anything, run `python3 .githooks/tidy.py`. It reads and reports; it
+moves nothing, and it has no mode that does. Anything it names as already archived
+and byte-identical is a candidate you decide on — only this session knows which work
+closed.
 
 Move notes for genuinely finished work to
 `workbench/archive/<date>_<short-topic>/`. Move cited `raw/` evidence with its work.
