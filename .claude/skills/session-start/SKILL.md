@@ -28,8 +28,15 @@ git log -3 --oneline --decorate
 git config --get core.hooksPath
 ```
 
-If the last command does not print `.githooks`, run `sh .githooks/install.sh`. Do not
-reinstall already-configured hooks.
+**Name the branch, out loud, every session — before installing anything.** If it is
+`main`, or `HEAD` resolves to no branch at all, stop: switch to a branch and say so
+before any file is edited, staged or committed and before any configuration is
+installed. A provisional name is fine — step 5 settles it once the goal is known. A
+session never works from `main`, even uncommitted; the read-only checks below may run
+either way. Any other branch: say which, and carry it to step 5.
+
+If the hooks-path command does not print `.githooks`, run `sh .githooks/install.sh`. Do
+not reinstall already-configured hooks.
 
 Run every check the handoff marks unverified before relying on its result.
 
@@ -63,6 +70,10 @@ Do not start work on an assumed goal. One of three routes:
   says this session is for and ask whether that is what you are doing;
 - neither is clear — ask. A few exchanges settling what the session is for cost less than an
   hour spent on the wrong thing.
+
+The goal settles the branch. Confirm the branch named in step 2 is the branch for this
+task; if it is not, create or switch to the right one — `work/<topic>`, `audit/<topic>`
+or `infra/<topic>`, as CLAUDE.md's Branches section assigns — before anything moves.
 
 ## 6. Agree the shape
 
