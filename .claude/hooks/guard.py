@@ -173,6 +173,56 @@ def governing_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
     )
 
 
+# The machinery that decides what is allowed. Shell tampering with these was
+# already refused — `chmod`/`mv`/`rm` on `.githooks/`, every `core.hooksPath` and
+# `--no-verify` bypass — but a plain Write or Edit to the same paths passed in
+# silence, for subagents as much as the session, and three roles hold Write.
+#
+# What makes that worse than an ordinary code edit: `settings.json` invokes this
+# file fresh from the working tree on every tool call, and `core.hooksPath` points
+# at the tracked `.githooks/`, so an edit here judges the *next* action. Two quiet
+# edits and one consequential command is a rogue action nobody sees at the time.
+#
+# Matched on the path tail rather than against the project root, so a worktree or a
+# second clone is covered too. Deliberately loose: over-recognizing another
+# repository's hooks costs one prompt, and this file's stated posture is to err that
+# way. Not a wall — an agent can still write a script and run it, and CLAUDE.md
+# keeps code open on purpose. It closes the careless path, which is most of them.
+SELF_PROTECTING_TAILS = (
+    "/.claude/hooks/",
+    "/.claude/settings.json",
+    "/.claude/settings.local.json",
+    "/.githooks/",
+)
+
+
+def protects_the_guard(target: Path) -> bool:
+    text = str(target)
+    return any(
+        text.endswith(tail.rstrip("/")) or tail in text + "/" for tail in SELF_PROTECTING_TAILS
+    )
+
+
+def harness_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
+    if tool not in WRITING_TOOLS:
+        return None
+    target = written_path(tool_input, payload)
+    if target is None or not protects_the_guard(target):
+        return None
+    agent = subagent_name(payload)
+    if agent:
+        return (
+            "deny",
+            f"Subagent {agent} may not edit {target.name}, which decides what tools are "
+            "allowed to do; propose the change to the main session.",
+        )
+    return (
+        "ask",
+        f"{target.name} decides what every later tool call is allowed to do, and the next one "
+        "is judged by what you are about to write. Confirm this is the change Tyrel directed.",
+    )
+
+
 def has(command: str, pattern: str) -> bool:
     return re.search(pattern, command, flags=re.IGNORECASE | re.DOTALL) is not None
 
@@ -881,9 +931,15 @@ def governing_shell_write(command: str, payload: dict[str, Any]) -> Decision:
 
 
 def credential_disclosure(command: str, payload: dict[str, Any]) -> Decision:
+    # `private/` as a directory rather than two filenames. Naming the files meant
+    # `cat private/ntfy.conf` was refused while `cat private/*.conf` and
+    # `grep -r NTFY private/` reached the same bytes in silence — a review found
+    # both. README.md is excluded because it is tracked, carries no secret, and
+    # explains the drawer; refusing it would be a false alarm on the one file in
+    # there anybody has a reason to read.
     secret_path = has(
         command,
-        r"(?:private/(?:ntfy|workcopy)\.conf|(?:^|[/\s])\.env(?:[.\s/]|$)|credentials(?:\.json)?|id_(?:rsa|ed25519))",
+        r"(?:private/(?!README\.md\b)|(?:^|[/\s])\.env(?:[.\s/]|$)|credentials(?:\.json)?|id_(?:rsa|ed25519))",
     )
     secret_env = has(
         command,
@@ -1087,8 +1143,17 @@ def external_shell_mutation(command: str, payload: dict[str, Any]) -> Decision:
     )
     if runpod_change and not (runpod_shutdown_only and not subagent_name(payload)):
         return deny_or_ask(payload, "change paid RunPod infrastructure")
-    if has(command, r"(?:^|[;&|]\s*)\s*ssh\b"):
-        return deny_or_ask(payload, "run an opaque command on another machine")
+    if has(command, r"(?:^|[;&|]\s*)\s*(?:ssh|scp|sftp)\b"):
+        return deny_or_ask(payload, "move data to or run a command on another machine")
+    # rsync only when an operand names a remote host. `ssh`, `scp` and `sftp` are
+    # remote by nature, but rsync is an ordinary local copy tool and is in this
+    # machine's allow list, so an unconditional ask would be a false alarm on every
+    # local use. A remote target carries a colon — `host:path` or `user@host:path` —
+    # and `rsync://`. A Windows drive letter cannot appear here, and a bare local
+    # path with a colon in its name would over-recognize, which is the safe way to
+    # be wrong.
+    if has(command, r"(?:^|[;&|]\s*)\s*rsync\b[^\n;&|]*(?:rsync://|[\w.@-]+:)"):
+        return deny_or_ask(payload, "copy data to another machine")
     if sends_a_request_body(command):
         return deny_or_ask(payload, "send a state-changing network request")
     if changes_github_state(command):
@@ -1182,6 +1247,57 @@ def subagent_blind_spot(command: str, payload: dict[str, Any]) -> Decision:
     return None
 
 
+# Scripts in this repository whose *effect* is consequential even though the
+# command line naming them looks ordinary. A review found all three silent to a
+# subagent: `seat.sh` spends money on a paid model seat, `notify.sh` reaches
+# Tyrel's phone — and CLAUDE.md says subagents never notify, a rule that until now
+# had nothing behind it — and `capture-seat-report.sh` writes reviewer evidence.
+CONSEQUENTIAL_SCRIPTS = (
+    (re.compile(r"operations/codex/seat\.sh"), "spend money on a paid model seat"),
+    (re.compile(r"operations/notify/notify\.sh"), "send a notification to Tyrel's phone"),
+    (
+        re.compile(r"operations/codex/capture-seat-report\.sh"),
+        "write reviewer evidence",
+    ),
+)
+
+# An interpreter handed code on its own command line does anything at all, and the
+# text of that code is opaque to every check in this file. `python3 -c
+# 'subprocess.run(["git","push"])'` was silent to a subagent while a plain
+# `git push` was denied — the guard was reading spellings, not capabilities.
+#
+# Denied for subagents only. The main session uses these constantly and an ask on
+# every one would be the false-alarm flood that gets a guard switched off; the
+# session is also the accountable reader of its own commands.
+INLINE_INTERPRETER = re.compile(
+    r"(?:^|[;&|]\s*)\s*(?:python3?|perl|ruby|node|deno|php|osascript)\b[^\n;&|]*"
+    r"(?:\s-c\b|\s-e\b|\s-r\b|\s--eval\b|\s--command\b)"
+)
+
+
+def subagent_consequential_script(command: str, payload: dict[str, Any]) -> Decision:
+    """Refuse a subagent the scripts and interpreters that act through this file's blind side.
+
+    Both halves are subagent-only and deliberate. The main session runs `python3 -c`
+    and dispatches seats as ordinary work, with Tyrel reading the result; an agent
+    doing either is spending his money, writing to his phone, or executing code
+    nothing inspected — unattended, which is the whole distinction this guard draws.
+    """
+    agent = subagent_name(payload)
+    if not agent:
+        return None
+    for pattern, reason in CONSEQUENTIAL_SCRIPTS:
+        if pattern.search(command):
+            return "deny", f"Subagent {agent} may not {reason}; report it to the main session."
+    if INLINE_INTERPRETER.search(command):
+        return (
+            "deny",
+            f"Subagent {agent} may not run code supplied inline to an interpreter, which this "
+            "guard cannot read. Put the work in a reviewed file, or report it to the main session.",
+        )
+    return None
+
+
 def bash_decision(tool_input: Any, payload: dict[str, Any]) -> Decision:
     if not isinstance(tool_input, dict) or not isinstance(tool_input.get("command"), str):
         return "deny", "The repository guard could not read the Bash command."
@@ -1192,6 +1308,7 @@ def bash_decision(tool_input: Any, payload: dict[str, Any]) -> Decision:
         governing_shell_write,
         credential_disclosure,
         external_shell_mutation,
+        subagent_consequential_script,
     ):
         found = check(command, payload)
         if found:
@@ -1264,6 +1381,9 @@ def evaluate(payload: dict[str, Any]) -> Decision:
     direct = governing_write(tool, tool_input, payload)
     if direct:
         return direct
+    harness = harness_write(tool, tool_input, payload)
+    if harness:
+        return harness
     if tool == "Bash":
         return bash_decision(tool_input, payload)
     if tool.startswith("mcp__"):
