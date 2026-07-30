@@ -29,11 +29,12 @@ git config --get core.hooksPath
 ```
 
 **Name the branch, out loud, every session — before installing anything.** If it is
-`main`, or `HEAD` resolves to no branch at all, stop: switch to a branch and say so
+`main`, or `HEAD` resolves to no branch at all, stop: create a fresh provisional
+branch from where you stand — `git switch -c work/<provisional-topic>` — and say so,
 before any file is edited, staged or committed and before any configuration is
-installed. A provisional name is fine — step 5 settles it once the goal is known. A
-session never works from `main`, even uncommitted; the read-only checks below may run
-either way. Any other branch: say which, and carry it to step 5.
+installed. Never switch onto an existing branch while the tree holds uncommitted
+work. A session never works from `main`, even uncommitted; the read-only checks in
+steps 2–4 may run either way. Any other branch: say which, and carry it to step 5.
 
 If the hooks-path command does not print `.githooks`, run `sh .githooks/install.sh`. Do
 not reinstall already-configured hooks.
@@ -73,7 +74,9 @@ Do not start work on an assumed goal. One of three routes:
 
 The goal settles the branch. Confirm the branch named in step 2 is the branch for this
 task; if it is not, create or switch to the right one — `work/<topic>`, `audit/<topic>`
-or `infra/<topic>`, as CLAUDE.md's Branches section assigns — before anything moves.
+or `infra/<topic>`, as CLAUDE.md's Branches section assigns — before anything moves. A
+provisional branch from step 2 is renamed (`git branch -m`) rather than abandoned; a
+stranded empty branch is the clutter the one-branch-per-task rule exists to prevent.
 
 ## 6. Agree the shape
 
