@@ -32,13 +32,19 @@ two vendors, with fresh eyes on the change:
   looking like a complete one. Use `audit-sol` for a full-diff or high-risk
   pass and `judge` only for a genuinely bounded one.
 
-**Offer the third seat every pass, and name your recommendation in the triage:**
+**Recommend the third seat when the change earns it, and let it go otherwise:**
 
-- Claude Fable, high effort — recommend it outright whenever the question is
-  hard, being wrong would be expensive, or the change touches money, launch,
-  shutdown, or a governance rule. It is the most expensive reader here, so cost
-  and usage limits are a legitimate reason for Tyrel to decline. Offer it again
-  next pass regardless.
+- Claude Fable, high effort — recommend it when the question is hard, being wrong
+  would be expensive, or the change touches money, launch, shutdown, or a
+  governance rule. Say in the triage which of those applies. Outside those
+  classes, do not offer it: `CLAUDE.md` is explicit that "a seat offered every
+  pass and declined most of them trains him to skim the offer," and an offer he
+  skims is worth less than no offer at all. It is also the most expensive reader
+  here, so cost is a legitimate reason for him to decline one you do recommend.
+
+  This page used to say to offer it every pass regardless, which contradicted
+  `CLAUDE.md` outright — a reviewer found the conflict. The governing document
+  wins, and the criteria above are its words.
 
 Tyrel decides the roster for this pass. Object once with the coverage at stake
 and your recommendation, ask about the exact roster, then follow his clear

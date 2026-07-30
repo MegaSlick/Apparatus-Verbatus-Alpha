@@ -23,6 +23,16 @@ dist/
 # other agent's working copy into the tree.
 .claude/worktrees/
 
+# Machine-local permissions and the quarantine paths. `autoclave/README.md` says
+# this file "is gitignored and machine-local, which is the right home for a path" —
+# and a review found that nothing in this repository made that true. The only thing
+# ignoring it was `~/.config/git/ignore`, a user-level file no clone carries, so on
+# any other machine it was an ordinary untracked file holding absolute paths to the
+# quarantined old code and a list of pre-approved commands. That is the same failure
+# CLAUDE.md devotes a section to for git hooks: a setting outside the repository
+# never travels with a clone. One line here makes the claim true everywhere.
+.claude/settings.local.json
+
 # Local working areas. The README in each explains the rule and is versioned;
 # the contents never are.
 workbench/*
