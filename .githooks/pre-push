@@ -61,14 +61,17 @@ outgoing_review_lines() {
 }
 
 print_review_checklist() {
-  kind=$1
-  name=$2
+  # POSIX sh has no `local`; rc_-prefixed so kind/name — the two names the
+  # ref loop also uses — cannot be overwritten if a statement is ever added
+  # after the call site. The other assignments here shadow nothing.
+  rc_kind=$1
+  rc_name=$2
   local_commit=$3
   remote_commit=$4
   short=${local_commit%"${local_commit#????????}"}
 
   echo "" >&2
-  echo "  review checklist — $kind '$name' at $short" >&2
+  echo "  review checklist — $rc_kind '$rc_name' at $short" >&2
 
   if ! reviewed=$(outgoing_review_lines "$local_commit" "$remote_commit" 2>/dev/null); then
     echo "    [?] could not work out which commits this push adds." >&2

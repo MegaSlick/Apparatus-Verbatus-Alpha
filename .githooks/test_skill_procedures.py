@@ -338,6 +338,10 @@ def test_a_seat_that_ran_and_exited_two_keeps_its_findings(tmp_path):
     )
     stub = root / "bin"
     stub.mkdir()
+    # seat.sh refuses to run uncapped; supply the deadline wrapper it looks for
+    # so this test does not depend on coreutils being installed on the host.
+    (stub / "timeout").write_text('#!/bin/sh\nshift 2\nexec "$@"\n', encoding="utf-8")
+    (stub / "timeout").chmod(0o755)
     # A child that RAN, said something real, and chose exit 2 for its own reasons.
     (stub / "codex").write_text(
         "#!/bin/sh\nprintf 'finding: a real defect\\n'\nexit 2\n", encoding="utf-8"

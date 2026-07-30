@@ -184,7 +184,11 @@ def test_live_call_closes_stdin_and_passes_the_deadline(tmp_path):
     )
     env = clean_env()
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
-    result = run("judge", "x", dryrun=False, env=env)
+    # Feed stdin something that must not be read: seat.sh closes the child's
+    # stdin with </dev/null, and under pytest an inherited stdin is empty
+    # anyway, so without this line a regression that stopped closing it would
+    # leave the fake codex's read failing for the wrong reason and stay green.
+    result = run("judge", "x", stdin="must-not-be-read\n", dryrun=False, env=env)
     assert result.returncode == 0, result.stderr
     assert timeout_args.read_text().splitlines()[:4] == [
         "--kill-after=10",

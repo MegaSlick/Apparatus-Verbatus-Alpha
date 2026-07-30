@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).with_name("guard.py")
+PROJECT = SCRIPT.parents[2]
 SPEC = importlib.util.spec_from_file_location("verbatus_guard", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 guard = importlib.util.module_from_spec(SPEC)
@@ -325,7 +326,7 @@ def test_cli_emits_claude_hook_json():
         text=True,
         capture_output=True,
         check=False,
-        env={**os.environ, "CLAUDE_PROJECT_DIR": str(SCRIPT.parents[2])},
+        env={**os.environ, "CLAUDE_PROJECT_DIR": str(PROJECT)},
     )
     assert result.returncode == 0
     output = json.loads(result.stdout)
@@ -452,11 +453,24 @@ def test_scratch_exemption_is_per_operand_and_resolves_traversal(operand, expect
         # A delimiter this scanner cannot read must open nothing rather than
         # guess, because a guess consumes commands it can never terminate.
         ("cat <<$TAG", []),
+        # `<<''` used to append None to a list[str]; the lines after it stayed
+        # commands only because no terminator ever matched. Empty opens
+        # nothing, so that outcome is now declared rather than accidental.
+        ("cat <<''", []),
+        ('cat <<""', []),
     ],
 )
 def test_heredoc_scanner_reads_operators_and_not_look_alikes(line, tags):
     found, _quote = guard.heredoc_declarations(line, None)
     assert found == tags
+
+
+def test_an_empty_delimiter_leaves_following_commands_visible():
+    """Pins the outcome the fix makes deliberate; the old code also passed
+    this, but only because an unmatchable None tag fell into the
+    no-terminator branch. This holds either way."""
+    kept, _bodies = guard.split_heredocs("cat <<''\n\ngit push origin main")
+    assert "git push origin main" in kept
 
 
 def test_an_unterminated_heredoc_consumes_nothing():
@@ -1107,7 +1121,7 @@ def test_the_wired_command_points_at_a_guard_that_exists():
     assert SCRIPT.exists(), "the wired guard file is not present"
 
 
-def test_the_wired_command_actually_refuses(tmp_path):
+def test_the_wired_command_actually_refuses():
     # Run the literal string from settings.json, not a hand-written equivalent.
     command = pretooluse_block()["hooks"][0]["command"]
     result = subprocess.run(
@@ -1116,7 +1130,7 @@ def test_the_wired_command_actually_refuses(tmp_path):
         capture_output=True,
         text=True,
         timeout=30,
-        env={**os.environ, "CLAUDE_PROJECT_DIR": str(SCRIPT.parents[1].parent)},
+        env={**os.environ, "CLAUDE_PROJECT_DIR": str(PROJECT)},
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"

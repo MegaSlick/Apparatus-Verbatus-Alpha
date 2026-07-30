@@ -475,8 +475,16 @@ def heredoc_declarations(line: str, quote: str | None) -> tuple[list[str], str |
                 # command disappears, so an unknown spelling opens nothing.
                 index = cursor
                 continue
-            tags.append(found.group("quoted") or found.group("bare"))
+            tag = found.group("quoted") or found.group("bare")
             index = found.end()
+            if not tag:
+                # `<<''` put None into a list[str]. Harmless in practice —
+                # a None tag matches no terminator, and split_heredocs keeps
+                # unterminated lines as commands — but only by accident of
+                # that loop's shape. An empty delimiter opens nothing, same
+                # as `<<$TAG`, so the safety stops depending on the accident.
+                continue
+            tags.append(tag)
             continue
         index += 1
     return tags, quote
@@ -1715,7 +1723,7 @@ def main() -> int:
         if not isinstance(payload, dict):
             raise ValueError("payload is not an object")
         decision = evaluate(payload)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - the guard must fail closed, not crash open
         print(
             f"repository guard could not inspect the tool call: {type(error).__name__}",
             file=sys.stderr,

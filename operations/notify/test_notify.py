@@ -49,7 +49,10 @@ exit "${FAKE_EXIT:-0}"
     env = {key: value for key, value in os.environ.items() if not key.startswith(PREFIX)}
     env.update(
         {
-            "PATH": f"{binary}:/usr/local/bin:/usr/bin:/bin",
+            # The fake bin comes first so its curl always wins; the inherited
+            # PATH stays behind it because notify.sh also needs python3, which
+            # a venv, pyenv or Homebrew-only box does not keep under /usr/bin.
+            "PATH": f"{binary}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
             "FAKE_ARGS": str(tmp_path / "args"),
             "FAKE_BODY": str(tmp_path / "body"),
         }

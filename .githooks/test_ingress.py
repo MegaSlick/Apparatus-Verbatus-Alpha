@@ -330,6 +330,20 @@ def test_secret_in_commit_message_is_blocked_locally_and_in_history(repo, tmp_pa
     assert secret not in history.stderr
 
 
+def test_an_empty_mode_value_is_refused_with_a_verdict_not_a_traceback(repo):
+    """`--message-file ""` satisfies argparse but is falsy.
+
+    Truthiness dispatch used to drop it through to scan_history(None), which
+    died on a TypeError outside the caught pair — an exit with a traceback
+    instead of a reasoned refusal. Both spellings must land on exit 2.
+    """
+    for flags in (("--message-file", ""), ("--ref-object", "")):
+        result = run_scan(repo, *flags)
+        assert result.returncode == 2, result.stderr
+        assert "could not run" in result.stderr
+        assert "Traceback" not in result.stderr
+
+
 def test_secret_in_an_author_or_committer_identity_is_blocked_in_history(repo):
     """A review found history mode reading `--format=%B` and nothing else.
 

@@ -110,6 +110,32 @@ def test_empty_active_still_audits_memory(tmp_path, capsys):
     assert "missing file: gone.md" in out, "the audit must not stop at active/"
 
 
+def test_a_clean_drawer_reports_nothing_and_exits_zero(tmp_path, capsys):
+    """Callers branch on a three-valued contract; this pins the 0 arm."""
+    tidy = load_tidy(tmp_path)
+    (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
+    assert tidy.main([]) == 0
+    assert "nothing wants attention" in capsys.readouterr().out
+
+
+def test_a_missing_workbench_is_a_failure_not_a_pass(tmp_path, capsys):
+    """And the 2 arm: a report that could not look must not read as clean."""
+    tidy = load_tidy(tmp_path)
+    tidy.WORKBENCH = tmp_path / "absent"
+    assert tidy.main([]) == 2
+    assert "workbench/ not found" in capsys.readouterr().err
+
+
+def test_an_index_link_to_a_non_markdown_file_that_exists_is_not_dangling(tmp_path, capsys):
+    tidy = load_tidy(tmp_path)
+    (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
+    tidy.MEMORY.mkdir(parents=True)
+    (tidy.MEMORY / "log.txt").write_text("kept\n")
+    (tidy.MEMORY / "MEMORY.md").write_text("- [Log](log.txt) — exists, just not markdown\n")
+    assert tidy.main([]) == 0, "an existing target is unusual, not missing"
+    assert "missing file" not in capsys.readouterr().out
+
+
 def test_memory_links_survive_markdown_shapes(tmp_path, capsys):
     tidy = load_tidy(tmp_path)
     tidy.MEMORY.mkdir(parents=True)

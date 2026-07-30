@@ -9,7 +9,7 @@ conversation.
 | `scout` | Haiku, low | locate files and references |
 | `worker` | Sonnet, medium | implement one written, non-critical specification |
 | `infra-worker` | Opus, high | hooks, CI, accounting, seals, money paths |
-| `auditor` | Opus, high | read-only review |
+| `auditor` | Opus pinned, set per seat in a reviewer pass; high | read-only review |
 | `consult` | inherited model, xhigh | read-only design objection |
 | `rebuilder` | Opus, high | rebuild one coherent legacy system in the autoclave |
 

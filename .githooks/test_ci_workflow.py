@@ -78,7 +78,11 @@ def test_workflow_has_one_history_scan_and_immutable_dependencies():
     assert text.count("python3 .githooks/check_ingress.py --history HEAD") == 1
     assert "run: sh .githooks/check-all.sh --ci" in text
     assert "fetch-depth: 0" in text
-    assert text.count("persist-credentials: false") == 2
+    # The property, not the tally: every checkout step must decline to persist
+    # credentials, however many jobs the workflow grows.
+    checkouts = re.findall(r"(?ms)^\s*-\s+uses:\s*actions/checkout@\S+\n(.*?)(?=^\s*-\s|\Z)", text)
+    assert checkouts, "no actions/checkout step found"
+    assert all("persist-credentials: false" in block for block in checkouts)
     uses = re.findall(r"(?m)^\s*-\s+uses:\s*(\S+)\s*$", text)
     assert uses
     assert all(re.search(r"@[0-9a-f]{40}$", value) for value in uses)

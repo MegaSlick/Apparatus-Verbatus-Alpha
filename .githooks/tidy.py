@@ -158,7 +158,10 @@ def check_memory():
     # Compare on paths relative to the memory directory, so a link into a
     # subdirectory is matched rather than reported dangling on its bare name.
     present = {str(p.relative_to(MEMORY)) for p in MEMORY.rglob("*.md")} - {"MEMORY.md"}
-    dangling = sorted(linked - present)
+    # Dangling is resolved against the filesystem, not against `present`: an
+    # index entry pointing at a non-.md file is unusual but not missing, and
+    # reporting it as missing is a false alarm. `unlisted` stays .md-scoped.
+    dangling = sorted(name for name in linked if not (MEMORY / name).exists())
     unlisted = sorted(present - linked)
     return dangling, unlisted, None
 

@@ -889,23 +889,30 @@ def main(argv: list[str] | None = None) -> int:
             issues = scan_tree(index_tree(), "index")
         elif args.worktree:
             issues = scan_tree(working_tree(), "worktree")
-        elif args.message_file:
+        elif args.message_file is not None:
+            # `is not None`, not truthiness: an empty-string value satisfies the
+            # required mode group but is falsy, and falling through here used to
+            # end in scan_history(None) — a traceback, not a reasoned verdict.
             data = read_regular_file(Path(args.message_file))
             issues = secret_issues("<commit-message>", data, "message")
-        elif args.file:
+        elif args.file is not None:
             issues = []
             for path in args.file:
                 issues.extend(secret_issues(path, read_regular_file(Path(path)), "file"))
         elif args.stdin_file:
             issues = secret_issues("<standard-input>", sys.stdin.buffer.read(), "buffer")
-        elif args.ref_object:
+        elif args.ref_object is not None:
             issues = scan_ref_object(args.ref_object)
         elif args.ref_fields:
             issues = scan_ref_fields(sys.stdin.buffer.read())
         elif args.paths:
             issues = path_issues(repository_paths(), "worktree")
-        else:
+        elif args.history is not None:
             issues = scan_history(args.history)
+        else:
+            # Unreachable while the mode group stays required; a scanner that
+            # scanned nothing must still refuse rather than report a pass.
+            raise ScanFailure("no scan mode was selected")
         return report(unique_issues(issues), args.max_findings)
     except (OSError, ScanFailure) as exc:
         error = safe_output(str(exc), "error")
