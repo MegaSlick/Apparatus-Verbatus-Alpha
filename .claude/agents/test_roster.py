@@ -116,4 +116,6 @@ def test_judgement_roles_keep_their_effort_floors():
         if not path.exists():
             continue
         effort = frontmatter(path)["effort"]
-        assert rank[effort] >= rank[floor], f"{name} declares effort {effort}, under its floor {floor}"
+        assert rank[effort] >= rank[floor], (
+            f"{name} declares effort {effort}, under its floor {floor}"
+        )
