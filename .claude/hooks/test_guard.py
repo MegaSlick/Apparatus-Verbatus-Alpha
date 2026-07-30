@@ -918,3 +918,103 @@ def test_an_agent_still_writes_freely_where_it_is_supposed_to(tmp_path):
         guard.evaluate(payload("Write", {"file_path": str(target)}, agent="worker", cwd=tmp_path))
         is None
     )
+
+
+# --- the decision record -------------------------------------------------
+#
+# Every part of this harness could refuse and none of it could remember. A review
+# found a denied push, a blind-spot refusal and an ask clicked through at 2am all
+# living only in a transcript, which hard rule 7 calls lost.
+
+
+def decision_log(tmp_path, monkeypatch):
+    (tmp_path / "private").mkdir()
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    return tmp_path / "private" / "guard-decisions.log"
+
+
+def test_a_denial_leaves_a_line_naming_the_agent_and_the_class(tmp_path, monkeypatch):
+    log = decision_log(tmp_path, monkeypatch)
+    command = "sh operations/codex/seat.sh audit-sol 'x'"
+    guard.record(
+        payload(tool_input={"command": command}, agent="worker"),
+        *guard.evaluate(payload(tool_input={"command": command}, agent="worker")),
+    )
+    line = log.read_text(encoding="utf-8").strip()
+    assert "\tdeny\t" in line
+    assert "\tworker\t" in line
+    assert "spend money" in line
+    assert line.count("\n") == 0, "one decision is one line"
+
+
+def test_an_ask_is_recorded_as_the_main_session(tmp_path, monkeypatch):
+    log = decision_log(tmp_path, monkeypatch)
+    command = "git push origin work/topic"
+    guard.record(
+        payload(tool_input={"command": command}),
+        *guard.evaluate(payload(tool_input={"command": command})),
+    )
+    assert "\task\tmain-session\t" in log.read_text(encoding="utf-8")
+
+
+def test_the_record_never_contains_the_command_text(tmp_path, monkeypatch):
+    """A refused command is exactly the kind that may carry a credential.
+
+    Writing it down would persist the secret this guard exists to keep out of
+    transcripts, so only the reason class, the tool and the actor are recorded.
+    """
+    log = decision_log(tmp_path, monkeypatch)
+    # Two things this placeholder had to avoid, both found by check_ingress.py
+    # refusing this very file, which is that scanner doing its job on a test tree
+    # like any other: a realistic `sk-…` value matched its openai-api-key rule, and
+    # naming the variable `secret` matched its generic `secret = "<20+ chars>"` rule.
+    # Neither shape matters here — the test needs a distinctive string to search the
+    # log for, and what it proves is that the command never reaches the log at all.
+    marker = "PLACEHOLDER-command-text-must-not-be-recorded"
+    command = f'curl -H "Authorization: Bearer {marker}" -X POST https://example.test'
+    guard.record(
+        payload(tool_input={"command": command}),
+        *guard.evaluate(payload(tool_input={"command": command})),
+    )
+    written = log.read_text(encoding="utf-8")
+    assert written.strip(), "the decision was not recorded at all"
+    assert marker not in written
+    assert "curl" not in written
+    assert "Authorization" not in written
+
+
+def test_repeated_decisions_append_rather_than_replace(tmp_path, monkeypatch):
+    log = decision_log(tmp_path, monkeypatch)
+    for command in ("git push origin work/a", "git merge work/b", "git rebase main"):
+        guard.record(
+            payload(tool_input={"command": command}),
+            *guard.evaluate(payload(tool_input={"command": command})),
+        )
+    assert len(log.read_text(encoding="utf-8").strip().splitlines()) == 3
+
+
+def test_a_record_that_cannot_be_written_says_so_and_does_not_block(tmp_path, monkeypatch, capsys):
+    # A full disk or a read-only checkout must not stop the guard deciding — but
+    # hard rule 7 means the loss is announced rather than swallowed.
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path / "absent"))
+    guard.record(payload(tool_input={"command": "git push origin work/a"}), "ask", "reason")
+    # A missing private/ is the ordinary case in a fresh clone, so it returns quietly.
+    (tmp_path / "private").mkdir()
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    (tmp_path / "private" / "guard-decisions.log").mkdir()  # a directory where the file goes
+    guard.record(payload(tool_input={"command": "git push origin work/a"}), "ask", "reason")
+    assert "could not record its decision" in capsys.readouterr().err
+
+
+def test_the_guard_does_not_ask_about_reading_its_own_record():
+    # Found by using it: the broadened private/ pattern was asking about the log,
+    # which is written without command text precisely so it is safe to read.
+    assert (
+        guard.evaluate(payload(tool_input={"command": "cat private/guard-decisions.log"})) is None
+    )
+    assert (
+        guard.evaluate(payload(tool_input={"command": "tail -20 private/guard-decisions.log"}))
+        is None
+    )
+    # The drawer around it is still protected.
+    assert guard.evaluate(payload(tool_input={"command": "cat private/ntfy.conf"}))[0] == "ask"

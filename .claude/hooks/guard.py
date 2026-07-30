@@ -43,6 +43,7 @@ import os
 import re
 import shlex
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -944,12 +945,17 @@ def credential_disclosure(command: str, payload: dict[str, Any]) -> Decision:
     # `private/` as a directory rather than two filenames. Naming the files meant
     # `cat private/ntfy.conf` was refused while `cat private/*.conf` and
     # `grep -r NTFY private/` reached the same bytes in silence — a review found
-    # both. README.md is excluded because it is tracked, carries no secret, and
-    # explains the drawer; refusing it would be a false alarm on the one file in
-    # there anybody has a reason to read.
+    # both.
+    #
+    # Two files in there are excluded, both because they hold no secret and both
+    # because refusing them is a false alarm on a file somebody has a reason to open.
+    # `README.md` is tracked and explains the drawer. `guard-decisions.log` is this
+    # guard's own record, written specifically without command text so that it is safe
+    # to read — and it was asking about itself, which is how this exclusion was found.
     secret_path = has(
         command,
-        r"(?:private/(?!README\.md\b)|(?:^|[/\s])\.env(?:[.\s/]|$)|credentials(?:\.json)?|id_(?:rsa|ed25519))",
+        r"(?:private/(?!(?:README\.md|guard-decisions\.log)\b)"
+        r"|(?:^|[/\s])\.env(?:[.\s/]|$)|credentials(?:\.json)?|id_(?:rsa|ed25519))",
     )
     secret_env = has(
         command,
@@ -1401,6 +1407,54 @@ def evaluate(payload: dict[str, Any]) -> Decision:
     return None
 
 
+# Every part of this harness could refuse; none of it could remember. A review
+# found that a denied subagent push, a blind-spot refusal, an ask clicked through at
+# two in the morning — all of it existed only in a chat transcript, which hard rule 7
+# says is where a finding goes to be lost. Tyrel is often away from the keyboard, so
+# "did anything try" is a question he currently has no way to ask.
+#
+# One line per decision, appended. It does not gate, refuse, or claim anything; the
+# receipt this project retired failed because it asserted that a review happened, and
+# this asserts only what the guard itself did.
+DECISION_LOG = Path("private") / "guard-decisions.log"
+
+# **The command text is deliberately not recorded.** A refused command is exactly the
+# kind that may carry a credential — `curl -H "Authorization: Bearer …"`, a topic, a
+# key — and writing it to a file would persist the secret this guard exists to keep
+# out of transcripts. The reason strings above name the *class* of action and were
+# written to be safe to repeat, which is what makes them the right thing to log. Tool
+# name and agent name are structural and carry no payload.
+LOG_LINE_MAX = 400
+
+
+def record(payload: dict[str, Any], decision: str, reason: str) -> None:
+    """Append one line about a decision. Never raises, never blocks the decision."""
+    try:
+        target = project_root() / DECISION_LOG
+        if not target.parent.is_dir():
+            return
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        tool = payload.get("tool_name")
+        actor = subagent_name(payload) or "main-session"
+        line = (
+            f"{stamp}\t{decision}\t{actor}\t{tool if isinstance(tool, str) else '?'}\t"
+            f"{' '.join(reason.split())[:LOG_LINE_MAX]}\n"
+        )
+        # Opened per call rather than held: the guard is a fresh process every time.
+        # Append mode with one write of one line is atomic enough for concurrent
+        # agents on every filesystem this runs on.
+        with target.open("a", encoding="utf-8") as log:
+            log.write(line)
+    except Exception as error:  # noqa: BLE001 - a failed record must not block a decision
+        # Not silent, and not fatal. A full disk or a read-only checkout must not
+        # stop the guard deciding, but hard rule 7 means the loss has to be visible
+        # rather than swallowed.
+        print(
+            f"repository guard could not record its decision: {type(error).__name__}",
+            file=sys.stderr,
+        )
+
+
 def emit(decision: str, reason: str) -> None:
     print(
         json.dumps(
@@ -1428,6 +1482,7 @@ def main() -> int:
         )
         return 2
     if decision:
+        record(payload, *decision)
         emit(*decision)
     return 0
 
