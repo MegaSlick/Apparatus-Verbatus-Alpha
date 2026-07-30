@@ -1018,3 +1018,51 @@ def test_the_guard_does_not_ask_about_reading_its_own_record():
     )
     # The drawer around it is still protected.
     assert guard.evaluate(payload(tool_input={"command": "cat private/ntfy.conf"}))[0] == "ask"
+
+
+# --- one pod-verb table, two routes ---------------------------------------
+
+
+@pytest.mark.parametrize("verb", sorted(guard.RUNPOD_ESCALATION_VERBS))
+def test_every_escalating_pod_verb_is_caught_on_the_mcp_route(verb):
+    # `mcp__runpod__resumePod` was silent for the main session and an agent alike,
+    # because mcp_decision carried its own copy of these verbs and the copy had
+    # drifted. A billable machine started with no prompt; GOVERNANCE 8.
+    decision, _ = guard.evaluate(payload(f"mcp__runpod__{verb}Pod", {"pod": "abc"}))
+    assert decision == "ask", f"{verb} through MCP starts or changes a paid pod silently"
+
+
+@pytest.mark.parametrize("verb", sorted(guard.RUNPOD_ESCALATION_VERBS))
+def test_every_escalating_pod_verb_is_caught_on_the_shell_route(verb):
+    decision, _ = guard.evaluate(payload(tool_input={"command": f"runpodctl {verb} pod abc"}))
+    assert decision == "ask", f"{verb} through runpodctl starts or changes a paid pod silently"
+
+
+@pytest.mark.parametrize("verb", sorted(guard.RUNPOD_ESCALATION_VERBS))
+def test_an_escalating_verb_is_denied_to_a_subagent_on_both_routes(verb):
+    for call in (
+        payload(f"mcp__runpod__{verb}Pod", {"pod": "abc"}, agent="worker"),
+        payload(tool_input={"command": f"runpodctl {verb} pod abc"}, agent="worker"),
+    ):
+        decision, _ = guard.evaluate(call)
+        assert decision == "deny"
+
+
+@pytest.mark.parametrize("verb", sorted(guard.RUNPOD_SHUTDOWN_VERBS))
+def test_shutdown_alone_stays_open_to_the_session_on_both_routes(verb):
+    # The exemption exists so Tyrel can stop a billing machine without a prompt in
+    # the way. It must survive the tables being shared, on both routes.
+    assert guard.evaluate(payload(f"mcp__runpod__{verb}Pod", {"pod": "abc"})) is None
+    assert guard.evaluate(payload(tool_input={"command": f"runpodctl {verb} pod abc"})) is None
+
+
+def test_the_two_routes_read_the_same_table_rather_than_two_copies():
+    # The property that stops this drifting again: mcp_decision must not carry its
+    # own verb literals. If somebody reintroduces a copy, the parametrized tests
+    # above still pass while the copy silently falls behind — this one does not.
+    source = SCRIPT.read_text(encoding="utf-8")
+    body = source.split("def mcp_decision", 1)[1].split("\ndef ", 1)[0]
+    for verb in guard.RUNPOD_ESCALATION_VERBS | guard.RUNPOD_SHUTDOWN_VERBS:
+        assert f'"{verb}"' not in body, (
+            f"mcp_decision spells {verb!r} itself instead of reading the shared table"
+        )

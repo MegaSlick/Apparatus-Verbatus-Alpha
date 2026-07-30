@@ -114,6 +114,26 @@ def deny_or_ask(payload: dict[str, Any], reason: str) -> Decision:
     )
 
 
+def deny_agent_or_ask(
+    payload: dict[str, Any], agent_message: str, session_message: str
+) -> Decision:
+    """The same branch as `deny_or_ask`, for checks whose wording differs per audience.
+
+    `deny_or_ask` covers the common case, where one phrase reads correctly in both
+    sentences. Three checks need different ones — they name a hard rule, a document,
+    or the file being written — and each was hand-rolling this branch instead, which
+    two reviewers flagged independently. `{agent}` in `agent_message` is filled in.
+
+    What is shared is the *condition*, and that is the point: which audience gets
+    refused rather than asked is now decided in two places in this file rather than
+    five, and `subagent_name` is called once per decision rather than twice.
+    """
+    agent = subagent_name(payload)
+    if agent:
+        return "deny", agent_message.format(agent=agent)
+    return "ask", session_message
+
+
 def project_root() -> Path:
     return Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
 
@@ -160,15 +180,10 @@ def governing_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
     parent = target.parent.resolve()
     if parent != project and not worktree_belongs_to_project(parent, project):
         return None
-    agent = subagent_name(payload)
-    if agent:
-        return (
-            "deny",
-            f"Hard rule 10 bars subagent {agent} from editing governing document {target.name}; "
-            "propose exact wording to the main session.",
-        )
-    return (
-        "ask",
+    return deny_agent_or_ask(
+        payload,
+        f"Hard rule 10 bars subagent {{agent}} from editing governing document {target.name}; "
+        "propose exact wording to the main session.",
         f"{target.name} governs later sessions. Tyrel must approve its exact policy change; "
         "confirm that this edit is the wording he directed.",
     )
@@ -198,10 +213,13 @@ SELF_PROTECTING_TAILS = (
 
 
 def protects_the_guard(target: Path) -> bool:
-    text = str(target)
-    return any(
-        text.endswith(tail.rstrip("/")) or tail in text + "/" for tail in SELF_PROTECTING_TAILS
-    )
+    # One condition, not two. This was written as
+    # `text.endswith(tail.rstrip("/")) or tail in text + "/"`, and a reviewer pointed
+    # out the first half is subsumed by the second: if the path ends with the tail then
+    # the tail is a substring of it, and appending the separator covers the bare-
+    # directory case the `endswith` was there for. Two conditions doing one job.
+    text = str(target) + "/"
+    return any(tail in text for tail in SELF_PROTECTING_TAILS)
 
 
 def harness_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
@@ -210,15 +228,10 @@ def harness_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decisi
     target = written_path(tool_input, payload)
     if target is None or not protects_the_guard(target):
         return None
-    agent = subagent_name(payload)
-    if agent:
-        return (
-            "deny",
-            f"Subagent {agent} may not edit {target.name}, which decides what tools are "
-            "allowed to do; propose the change to the main session.",
-        )
-    return (
-        "ask",
+    return deny_agent_or_ask(
+        payload,
+        f"Subagent {{agent}} may not edit {target.name}, which decides what tools are "
+        "allowed to do; propose the change to the main session.",
         f"{target.name} decides what every later tool call is allowed to do, and the next one "
         "is judged by what you are about to write. Confirm this is the change Tyrel directed.",
     )
@@ -935,10 +948,14 @@ def governing_shell_write(command: str, payload: dict[str, Any]) -> Decision:
         return None
     if not (GOVERNING_REDIRECT.search(command) or GOVERNING_REWRITE_TOOL.search(command)):
         return None
-    agent = subagent_name(payload)
-    if agent:
-        return "deny", f"Hard rule 10 bars subagent {agent} from rewriting governing documents."
-    return deny_or_ask(payload, "rewrite a governing document from the shell")
+    # This one was the mixed case: it hand-rolled the deny and then called
+    # `deny_or_ask` for the ask, which meant asking `subagent_name` twice.
+    return deny_agent_or_ask(
+        payload,
+        "Hard rule 10 bars subagent {agent} from rewriting governing documents.",
+        "This would rewrite a governing document from the shell. Confirm this exact "
+        "action only if you accept that consequence.",
+    )
 
 
 def credential_disclosure(command: str, payload: dict[str, Any]) -> Decision:
@@ -990,8 +1007,24 @@ GH_INVOCATION = invocation("gh")
 RUNPODCTL_INVOCATION = invocation("runpodctl")
 
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# One table, read by the shell path, the Python-API pattern and the MCP path alike.
+#
+# It was two tables until a review traced the consequence. `mcp_decision` carried its
+# own inline copy of these verbs, and the copy had already drifted: it was missing
+# `dev`, and *both* copies were missing `resume` and `rent`, which the pre-rebuild
+# guard had blocked by name. So `mcp__runpod__resumePod` split into {resume, pod},
+# matched nothing, and started a machine that bills by the hour with the guard silent
+# — for the main session as well as an agent — while `createPod` correctly asked.
+#
+# Two verbs were lost purely because one fact lived in two places, and GOVERNANCE 8
+# is the rule with an hourly bill attached. A test now asserts the shell route and
+# the MCP route reach the same answer for the same verb, so the next verb added here
+# cannot be added to only one of them.
 RUNPOD_SHUTDOWN_VERBS = frozenset({"stop", "terminate"})
-RUNPOD_ESCALATION_VERBS = frozenset({"create", "start", "deploy", "dev", "remove", "delete"})
+RUNPOD_ESCALATION_VERBS = frozenset(
+    {"create", "start", "resume", "rent", "deploy", "dev", "remove", "delete"}
+)
 RUNPOD_CHANGE_VERBS = RUNPOD_SHUTDOWN_VERBS | RUNPOD_ESCALATION_VERBS
 # Every one of these is visible to somebody who is not Tyrel.
 GH_PUBLIC_VERBS = {
@@ -1076,8 +1109,8 @@ def sends_a_request_body(command: str) -> bool:
     return False
 
 
-def changes_github_state(command: str) -> bool:
-    for arguments in argument_lists(GH_INVOCATION, command):
+def changes_github_state(command: str, calls: list[list[str]] | None = None) -> bool:
+    for arguments in argument_lists(GH_INVOCATION, command) if calls is None else calls:
         given = [
             token.lower()
             for token in operands(
@@ -1091,14 +1124,21 @@ def changes_github_state(command: str) -> bool:
     return False
 
 
-def gh_api_sends_a_body(command: str) -> bool:
+def gh_api_sends_a_body(command: str, calls: list[list[str]] | None = None) -> bool:
     """`gh api` defaults to POST as soon as anything supplies a body.
 
     A field, a raw field or `--input` is as good as an explicit `--method`, and
     the guard has to say so without depending on which of those the caller
     happened to type.
+
+    `calls` lets the caller pass the already-found `gh` invocations. Both this and
+    `changes_github_state` ran the same regex scan and the same tokenization over the
+    same text, on every Bash call that reached them — a reviewer's finding. The cost
+    was microseconds against a process startup that dwarfs it, so this is for the
+    reader rather than the clock: the same work appearing twice is a thing somebody
+    has to notice and reconcile. The default keeps both callable on their own.
     """
-    for arguments in argument_lists(GH_INVOCATION, command):
+    for arguments in argument_lists(GH_INVOCATION, command) if calls is None else calls:
         given = operands(
             arguments,
             short_value_taking=GH_API_SHORT_VALUE_OPTIONS,
@@ -1172,9 +1212,10 @@ def external_shell_mutation(command: str, payload: dict[str, Any]) -> Decision:
         return deny_or_ask(payload, "copy data to another machine")
     if sends_a_request_body(command):
         return deny_or_ask(payload, "send a state-changing network request")
-    if changes_github_state(command):
+    gh_calls = argument_lists(GH_INVOCATION, command)
+    if changes_github_state(command, gh_calls):
         return deny_or_ask(payload, "change GitHub state visible to other people")
-    if gh_api_sends_a_body(command):
+    if gh_api_sends_a_body(command, gh_calls):
         return deny_or_ask(payload, "send a state-changing GitHub API request")
     return None
 
@@ -1340,7 +1381,10 @@ def has_mutating_method(value: Any) -> bool:
             if (
                 str(key).lower() in {"method", "http_method", "request_method"}
                 and isinstance(item, str)
-                and item.lower() in {"post", "put", "patch", "delete"}
+                # MUTATING_METHODS, not a second copy of it: the shell path and this
+                # one must agree about what a state-changing verb is, and a reviewer
+                # found two independently-typed lists with nothing keeping them so.
+                and item.upper() in MUTATING_METHODS
             ):
                 return True
             if has_mutating_method(item):
@@ -1374,13 +1418,12 @@ def mcp_decision(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decisio
     segments = tool_segments(tool)
     mutating_method = has_mutating_method(tool_input)
     named_mutation = bool(segments & MUTATION_WORDS)
-    runpod_mutation = "runpod" in lowered and bool(
-        segments & {"create", "start", "deploy", "remove", "delete", "stop", "terminate"}
-    )
+    # The same two frozensets the shell path reads, not a second copy of them.
+    runpod_mutation = "runpod" in lowered and bool(segments & RUNPOD_CHANGE_VERBS)
     runpod_shutdown_only = (
         "runpod" in lowered
-        and bool(segments & {"stop", "terminate"})
-        and not bool(segments & {"create", "start", "deploy", "remove", "delete"})
+        and bool(segments & RUNPOD_SHUTDOWN_VERBS)
+        and not bool(segments & RUNPOD_ESCALATION_VERBS)
     )
     if runpod_shutdown_only and not subagent_name(payload):
         return None

@@ -37,6 +37,14 @@ prompt_path="$2"
 report="$3"
 report_dir=$(dirname "$report")
 
+# Resolve the repository root rather than assuming the caller's directory. `seat.sh`
+# beside this file does exactly this and every check-*.sh in .githooks/ does too; a
+# reviewer noticed two files written in the same change sitting at two different
+# depths. The paths below were repository-relative and worked only because the caller
+# happened to be at the root. It failed loudly rather than silently, which is why this
+# was a low finding and still worth taking — the mechanism to copy was eleven lines away.
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
+
 [ -f "$prompt_path" ] || {
   echo "capture-seat-report: no prompt file at $prompt_path" >&2
   exit 2
@@ -48,7 +56,7 @@ report_dir=$(dirname "$report")
 
 # The seat's exit status is judged last, after its output is safely on disk (4).
 output=""
-if output=$(sh operations/codex/seat.sh "$seat" - <"$prompt_path" 2>&1); then
+if output=$(sh "$root/operations/codex/seat.sh" "$seat" - <"$prompt_path" 2>&1); then
   status=0
 else
   status=$?
@@ -60,7 +68,7 @@ fi
 }
 
 # (1) Scan before writing, and drop the text from this shell if it fails.
-if ! printf '%s\n' "$output" | python3 .githooks/check_ingress.py --stdin-file; then
+if ! printf '%s\n' "$output" | python3 "$root/.githooks/check_ingress.py" --stdin-file; then
   unset output
   echo "reviewer seat $seat output failed credential scanning and was not written" >&2
   exit 1
