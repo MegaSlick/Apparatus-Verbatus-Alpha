@@ -3,7 +3,9 @@
 
 It recognizes obvious capabilities and either:
 
-* denies actions a subagent may never take, plus direct-main and hook-bypass Git;
+* denies actions a subagent may never take, plus direct-main and hook-bypass Git,
+  and — for the session as much as an agent — writing a file in a checkout that is
+  standing on `main` or moving a checkout onto it;
 * asks Tyrel to confirm one exact destructive, paid, external, or owned-branch
   history-rewrite action; or
 * stays silent and leaves Claude Code's normal permission flow in place.
@@ -163,6 +165,71 @@ def worktree_belongs_to_project(directory: Path, project: Path) -> bool:
     return str(gitdir).startswith(str(project / ".git" / "worktrees") + os.sep)
 
 
+# Hard rule 3. Quoted rather than paraphrased, because a refusal that only names a
+# number tells the reader nothing and this one has to be arguable on sight.
+RULE_THREE = (
+    '3: "Never commit, push, or work on `main`. A session moves off it before '
+    'anything else; changes arrive by pull request or not at all."'
+)
+OFF_MAIN = "Move off it first with `git switch -c work/<topic>`; staged changes come along"
+MAIN_BRANCH_REF = "refs/heads/main"
+MAIN_BRANCH_NAMES = frozenset({"main", MAIN_BRANCH_REF})
+
+
+def git_head_ref(directory: Path) -> str | None:
+    """The branch ref this directory's checkout is standing on, or None.
+
+    None covers three different things on purpose — not a checkout root, a detached
+    HEAD, an unreadable `.git` — because the caller does the same thing with all
+    three: keep walking up. A detached HEAD is standing on no branch and a commit
+    made there moves none, so it is not the state hard rule 3 is about.
+
+    Both spellings of `.git` are read. A linked worktree's `.git` is a file naming
+    the real gitdir, and HEAD there is per-worktree: that is the property that makes
+    this answer for the checkout *containing* a path rather than for the clone it
+    belongs to, which is the whole distinction the rule turns on — a worktree on
+    `work/x` is fine while the clone it was cut from sits on `main`.
+    """
+    marker = directory / ".git"
+    gitdir = marker
+    if marker.is_file():
+        try:
+            text = marker.read_text(encoding="utf-8", errors="replace")[:4096]
+        except OSError:
+            return None
+        match = re.match(r"\s*gitdir:\s*(.+)", text)
+        if not match:
+            return None
+        # `git worktree add --relative-paths` writes a relative gitdir, and it is
+        # relative to the checkout rather than to this process's working directory.
+        # `Path.__truediv__` returns the right operand unchanged when it is absolute,
+        # so one expression reads both spellings.
+        gitdir = (directory / Path(match.group(1).strip())).resolve()
+    elif not marker.is_dir():
+        return None
+    try:
+        head = (gitdir / "HEAD").read_text(encoding="utf-8", errors="replace")[:4096]
+    except OSError:
+        return None
+    reference = head.strip()
+    return reference[4:].strip() if reference.startswith("ref:") else None
+
+
+def containing_checkout(target: Path) -> tuple[Path, str] | None:
+    """The nearest checkout above `target` that is standing on a branch, and the branch.
+
+    Nearest, not outermost: a worktree nested inside a clone governs the files inside
+    it, and it is the one whose HEAD a commit of `target` would move.
+    """
+    for parent in target.parents:
+        reference = git_head_ref(parent)
+        if reference is not None:
+            return parent, reference
+        if parent == parent.parent:  # reached the filesystem root
+            break
+    return None
+
+
 def written_path(tool_input: Any, payload: dict[str, Any]) -> Path | None:
     if not isinstance(tool_input, dict):
         return None
@@ -175,6 +242,38 @@ def written_path(tool_input: Any, payload: dict[str, Any]) -> Path | None:
     cwd = payload.get("cwd")
     base = Path(cwd) if isinstance(cwd, str) and cwd else project_root()
     return (base / expanded).resolve()
+
+
+def writing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
+    """Refuse any write that lands in a checkout standing on `main`.
+
+    A hard denial for the main session as well as an agent, which is unusual in this
+    file and is what hard rule 3 says: the rule was prose only, and it was broken
+    twice in two sessions by a session that simply never looked at which branch it
+    was on. Nothing here judges *what* is being written — the rule is about where
+    you are standing, and the fix costs one command.
+
+    Deliberately not scoped to this project's own checkouts. The guard cannot tell a
+    second clone of this repository from any other clone without guessing at remotes,
+    and this file's stated posture is to over-recognize; the cost of being wrong is
+    one branch switch in a repository somebody was about to commit to `main` anyway.
+
+    The shell route is not covered: `echo x > file` from a checkout on `main` still
+    passes. This closes the tool route, which is how the rule was actually broken.
+    """
+    if tool not in WRITING_TOOLS:
+        return None
+    target = written_path(tool_input, payload)
+    if target is None:
+        return None  # `governing_write` refuses a destination that cannot be read
+    found = containing_checkout(target)
+    if found is None or found[1] != MAIN_BRANCH_REF:
+        return None
+    checkout, _reference = found
+    return (
+        "deny",
+        f"{checkout} is standing on main, and hard rule {RULE_THREE} {OFF_MAIN}.",
+    )
 
 
 def governing_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
@@ -693,7 +792,10 @@ def push_targets_main(arguments: list[str]) -> bool:
         if token.startswith("-"):
             continue
         target = token.split(":", 1)[1] if ":" in token else token
-        if target in {"main", "refs/heads/main"}:
+        # `MAIN_BRANCH_NAMES`, not a second copy of it. This file has already paid
+        # for one fact living in two places (see `RUNPOD_CHANGE_VERBS`), and the
+        # branch-moving check below asks the same question of the same two spellings.
+        if target in MAIN_BRANCH_NAMES:
             return True
     return False
 
@@ -867,6 +969,84 @@ def skips_commit_hooks(action: str, arguments: list[str]) -> bool:
     return action == "commit" and short_option(arguments, "n", action)
 
 
+# The options of `checkout` and `switch` that name a *new* branch to stand on. With
+# one of them present the operand is a start point rather than the destination:
+# `git switch -c work/x main` leaves HEAD on work/x, and `git switch -c main` leaves
+# it on main, which is the same violation spelled differently.
+BRANCH_CREATING_SHORT = "bBcC"
+BRANCH_CREATING_LONG = ("--create", "--force-create", "--orphan")
+# Long options of those two subcommands that take a separate value, so `operands`
+# does not read one as the branch being asked for.
+CHECKOUT_LONG_VALUE_OPTIONS = frozenset(
+    {"--conflict", "--create", "--force-create", "--orphan", "--pathspec-from-file"}
+)
+
+
+def branches_created(arguments: list[str]) -> list[str]:
+    """The branch names this call would create and stand on, in every spelling."""
+    values: list[str] = []
+    for letter in BRANCH_CREATING_SHORT:
+        values += option_values(
+            arguments,
+            letter,
+            value_taking=BRANCH_CREATING_SHORT,
+            long_value_taking=CHECKOUT_LONG_VALUE_OPTIONS,
+        )
+    values += option_values(
+        arguments,
+        "",
+        *BRANCH_CREATING_LONG,
+        value_taking=BRANCH_CREATING_SHORT,
+        long_value_taking=CHECKOUT_LONG_VALUE_OPTIONS,
+    )
+    return values
+
+
+def moves_head_to_main(action: str, arguments: list[str]) -> bool:
+    """True when this call would leave the current checkout standing on `main`.
+
+    Hard rule 3 says a session moves off main before anything else, so the command
+    that puts it back on is refused rather than asked about. A read that merely
+    *names* main is untouched — `git log main..`, `git diff … main`,
+    `git show origin/main:…`, `git fetch origin main:main` — because none of them
+    moves HEAD, and refusing them would be an alarm nobody can act on.
+
+    **A checkout with a pathspec is not this.** `git checkout main -- file` writes
+    files out of main and leaves HEAD exactly where it is, so it is not a rule 3
+    violation; it stays with `discards_work`, which already asks about it as the
+    thing it really is — work overwritten in place. This file's own history says why
+    that matters: a prompt that misnames the consequence is the prompt somebody
+    clicks through. Recognized by the `--` marker, by a second operand
+    (`git checkout main file.txt` is the same operation without the marker), and by
+    `--pathspec-from-file`.
+
+    **Two boundaries, stated because they are permanent.** `git switch -` and
+    `git checkout -` name the previous branch, which no static reader can resolve —
+    they are left alone, and `switch` reaches no other check, so that spelling is
+    simply not covered. `git checkout --track origin/main`, which creates a local
+    `main` from a remote name, is not covered either: stripping a remote off
+    `origin/feature/main` cannot be done reliably, and a wrong hard denial is worse
+    here than a miss that `discards_work` still turns into an ask.
+
+    `--detach` is over-recognized deliberately: `git checkout --detach main` leaves
+    no branch checked out, so it is arguably allowed, and being wrong toward the
+    refusal costs one message.
+    """
+    if action not in {"switch", "checkout"}:
+        return False
+    created = branches_created(arguments)
+    if created:
+        return any(name in MAIN_BRANCH_NAMES for name in created)
+    if "--" in arguments or long_option(arguments, "--pathspec-from-file"):
+        return False
+    given = operands(
+        arguments,
+        short_value_taking=BRANCH_CREATING_SHORT,
+        long_value_taking=CHECKOUT_LONG_VALUE_OPTIONS,
+    )
+    return len(given) == 1 and given[0] in MAIN_BRANCH_NAMES
+
+
 HOOK_BYPASS = "bypassing repository Git hooks is outside the allowed workflow"
 
 
@@ -881,6 +1061,8 @@ def hard_git_denial(calls: list[tuple[str, list[str], list[str], str]]) -> str |
             return HOOK_BYPASS
         if action in {"push", "send-pack"} and push_targets_main(arguments):
             return "main may move only through a pull-request merge"
+        if moves_head_to_main(action, arguments):
+            return f"{RULE_THREE} {OFF_MAIN}"
     return None
 
 
@@ -1642,6 +1824,12 @@ def evaluate(payload: dict[str, Any]) -> Decision:
     if not isinstance(tool, str) or not tool:
         return "deny", "The repository guard received no readable tool name."
     tool_input = payload.get("tool_input")
+    # First, and before the two checks that only ask: standing on main is a hard rule
+    # for both audiences, and an ask that can be clicked through would leave the write
+    # landing on main anyway.
+    on_main = writing_on_main(tool, tool_input, payload)
+    if on_main:
+        return on_main
     direct = governing_write(tool, tool_input, payload)
     if direct:
         return direct

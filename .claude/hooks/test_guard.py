@@ -81,6 +81,19 @@ def payload(
         "grep -n heading pipeline/GLOSSARY.md",
         # A stderr redirect is not a write to the document being read.
         "grep -n heading README.md 2>/dev/null",
+        # Hard rule 3 is about standing on main, not about naming it. None of these
+        # moves HEAD, and refusing a read nobody can act on is how a guard gets
+        # switched off.
+        "git log main..HEAD",
+        "git diff work/topic main",
+        "git show origin/main:pipeline/stage.py",
+        "git fetch origin main:main",
+        "git rev-parse --abbrev-ref main",
+        "git branch --contains main",
+        # The branch being created is the destination; main is only the start point.
+        "git switch -c work/topic main",
+        # Statically unresolvable, and documented as such in the guard.
+        "git switch -",
     ],
 )
 def test_ordinary_read_or_bounded_local_work_stays_open(command):
@@ -166,6 +179,12 @@ def test_ordinary_read_or_bounded_local_work_stays_open(command):
         # A governing document rewritten from the shell.
         "echo drafted > README.md",
         "sed -i s/a/b/ CLAUDE.md",
+        # A checkout with a pathspec writes files out of main and leaves HEAD where
+        # it is, so it is not a hard rule 3 violation — it keeps the treatment it
+        # already had, as work overwritten in place.
+        "git checkout main -- pipeline/stage.py",
+        "git checkout main pipeline/stage.py",
+        "git checkout main --pathspec-from-file=paths.txt",
     ],
 )
 def test_main_session_gets_one_exact_confirmation_for_consequential_actions(command):
@@ -254,6 +273,26 @@ def test_subagents_cannot_take_consequential_or_external_actions(command):
         "grep -n '<<EOF' notes.md\ngit push origin main",
         'echo "<<EOF"\ngit push origin main',
         "# <<EOF\ngit push origin main",
+        # Hard rule 3 was prose only until now: nothing stopped a session standing
+        # itself on main, and it happened twice in two sessions. Every spelling that
+        # ends with HEAD on main is the same act.
+        "git checkout main",
+        "git switch main",
+        "git checkout refs/heads/main",
+        "git switch refs/heads/main",
+        # Creating the branch and standing on it is standing on it.
+        "git switch -c main",
+        "git switch -C main",
+        "git checkout -b main",
+        "git checkout -B main",
+        "git switch --create main",
+        "git checkout --orphan main",
+        # The wrapper, path-qualified and shell-payload spellings the rest of this
+        # file already covers reach this check too.
+        "/usr/bin/git checkout main",
+        "nohup git switch main",
+        "bash -c 'git switch main'",
+        "cd /tmp/repo\ngit checkout main",
     ],
 )
 def test_hard_git_rules_are_denied_even_to_the_main_session(command):
@@ -278,6 +317,108 @@ def test_nested_readme_is_not_a_governing_document(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     target = tmp_path / "pipeline" / "README.md"
     assert guard.evaluate(payload("Write", {"file_path": str(target)}, cwd=tmp_path)) is None
+
+
+# --- hard rule 3: nothing is written from a checkout standing on main -----
+#
+# The rule was prose only, and it was broken twice in two sessions: the guard
+# refused a push to main and said nothing at all about a session that stood itself
+# on main and edited files there.
+
+
+def clone_on(root: Path, reference: str) -> Path:
+    """A directory the guard reads exactly as a clone standing on `reference`."""
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text(f"ref: {reference}\n", encoding="utf-8")
+    return root
+
+
+def linked_worktree(clone: Path, root: Path, name: str, reference: str, *, relative=False) -> Path:
+    """A linked worktree of `clone`, with its own per-worktree HEAD."""
+    gitdir = clone / ".git" / "worktrees" / name
+    gitdir.mkdir(parents=True)
+    (gitdir / "HEAD").write_text(f"ref: {reference}\n", encoding="utf-8")
+    root.mkdir(parents=True, exist_ok=True)
+    written = os.path.relpath(gitdir, root) if relative else gitdir
+    (root / ".git").write_text(f"gitdir: {written}\n", encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize("agent", [None, "worker"])
+@pytest.mark.parametrize(
+    ("tool", "key"),
+    [("Write", "file_path"), ("Edit", "file_path"), ("NotebookEdit", "notebook_path")],
+)
+def test_a_write_in_a_checkout_standing_on_main_is_refused(tmp_path, tool, key, agent):
+    root = clone_on(tmp_path / "repo", "refs/heads/main")
+    target = root / "pipeline" / "stage.py"
+    decision, reason = guard.evaluate(payload(tool, {key: str(target)}, agent=agent, cwd=root))
+    assert decision == "deny"
+    assert "standing on main" in reason
+    assert "git switch -c work/<topic>" in reason
+
+
+def test_a_write_in_a_worktree_on_a_work_branch_stays_open(tmp_path):
+    # The nearest checkout decides. A worktree on work/x is where an agent is meant
+    # to be, whatever branch the clone it was cut from happens to sit on.
+    clone = clone_on(tmp_path / "repo", "refs/heads/main")
+    tree = linked_worktree(clone, tmp_path / "trees" / "topic", "topic", "refs/heads/work/topic")
+    target = tree / "pipeline" / "stage.py"
+    assert guard.evaluate(payload("Write", {"file_path": str(target)}, cwd=tree)) is None
+
+
+def test_a_worktree_standing_on_main_is_refused_like_any_other_checkout(tmp_path):
+    clone = clone_on(tmp_path / "repo", "refs/heads/work/topic")
+    tree = linked_worktree(clone, tmp_path / "trees" / "release", "release", "refs/heads/main")
+    decision, _reason = guard.evaluate(
+        payload("Write", {"file_path": str(tree / "stage.py")}, cwd=tree)
+    )
+    assert decision == "deny"
+
+
+def test_a_worktree_that_names_its_gitdir_relatively_is_read(tmp_path):
+    # `git worktree add --relative-paths` writes the gitdir relative to the worktree.
+    clone = clone_on(tmp_path / "repo", "refs/heads/work/topic")
+    tree = linked_worktree(clone, tmp_path / "trees" / "r", "r", "refs/heads/main", relative=True)
+    decision, _reason = guard.evaluate(
+        payload("Write", {"file_path": str(tree / "stage.py")}, cwd=tree)
+    )
+    assert decision == "deny"
+
+
+def test_a_detached_head_is_not_standing_on_a_branch(tmp_path):
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text("a" * 40 + "\n", encoding="utf-8")
+    assert guard.evaluate(payload("Write", {"file_path": str(root / "stage.py")}, cwd=root)) is None
+
+
+def test_a_path_in_no_checkout_at_all_is_not_this_rule(tmp_path):
+    target = tmp_path / "notes" / "scratch.txt"
+    assert guard.evaluate(payload("Write", {"file_path": str(target)}, cwd=tmp_path)) is None
+
+
+def test_the_branch_rule_outranks_the_checks_that_only_ask(tmp_path, monkeypatch):
+    # An ask can be clicked through, and the write would still land on main.
+    root = clone_on(tmp_path / "repo", "refs/heads/main")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(root))
+    decision, reason = guard.evaluate(
+        payload("Write", {"file_path": str(root / "CLAUDE.md")}, cwd=root)
+    )
+    assert decision == "deny"
+    assert "standing on main" in reason
+
+
+def test_a_pathspec_checkout_from_main_keeps_its_work_discarding_treatment():
+    # It writes files out of main and leaves HEAD alone, so naming hard rule 3 would
+    # misname the consequence — and this file's own history says that is the prompt
+    # somebody clicks through.
+    decision, reason = guard.evaluate(
+        payload(tool_input={"command": "git checkout main -- pipeline/stage.py"})
+    )
+    assert decision == "ask"
+    assert "discard" in reason
+    assert "hard rule" not in reason.lower()
 
 
 @pytest.mark.parametrize(
