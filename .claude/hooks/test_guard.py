@@ -1412,3 +1412,65 @@ def test_ordinary_text_containing_a_url_is_not_a_network_request(command):
 def test_a_real_httpie_body_is_still_recognized(command):
     decision, _ = guard.evaluate(payload(tool_input={"command": command}))
     assert decision == "ask"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # On macOS `/private/tmp` and `/private/var` are the real paths behind `/tmp`
+        # and `/var`, so every session scratch file lives under a directory literally
+        # named `private/`. Broadening the credential check to the drawer made ordinary
+        # temp-file work raise a credential alarm — three interruptions before the
+        # cause was found, and the reason text blamed a secret that was never involved.
+        "cat /private/tmp/claude-501/session/scratchpad/notes.txt",
+        "sh operations/codex/capture-seat-report.sh judge /private/tmp/x/p.txt out.log",
+        "ls /private/var/folders/wv/abc",
+        "python3 script.py > /private/tmp/x/out.txt",
+    ],
+)
+def test_the_macos_private_tmp_path_is_not_the_secret_drawer(command):
+    assert guard.evaluate(payload(tool_input={"command": command})) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The drawer itself must still be protected by every route that reaches it.
+        "cat private/ntfy.conf",
+        "cat private/*.conf",
+        "cd private && cat ntfy.conf",
+        "cp workcopy.conf /tmp/x",
+        "cat /Users/tyrel/verbatus_alpha/private/ntfy.conf",
+        "grep -r NTFY private/",
+    ],
+)
+def test_the_real_drawer_is_still_protected(command):
+    decision, reason = guard.evaluate(payload(tool_input={"command": command}))
+    assert decision == "ask"
+    assert "credential-shaped" in reason
+
+
+def test_the_seat_scripts_are_allowed_without_a_prompt_in_tracked_settings():
+    """A paid seat must dispatch without asking, or unattended work stalls on it.
+
+    Tyrel raised this three times. `settings.local.json` is gitignored, so a rule there
+    would not exist on a pod — which is exactly where an unattended run happens — so the
+    grant belongs in the tracked file. What bounds it is the guard, not the prompt: a
+    subagent is still denied `seat.sh` outright, so only the accountable main session can
+    spend, and `seat.sh` itself is read-only sandboxed with a hard deadline.
+    """
+    allow = json.loads(SETTINGS.read_text(encoding="utf-8"))["permissions"]["allow"]
+    assert "Bash(sh operations/codex/seat.sh:*)" in allow
+    assert "Bash(sh operations/codex/capture-seat-report.sh:*)" in allow
+    # Deliberately NOT a blanket `sh` grant: running an arbitrary script by name is the
+    # guard's largest documented blind spot, and this allow list is what stands there.
+    assert "Bash(sh:*)" not in allow
+
+
+def test_a_subagent_still_cannot_spend_on_a_seat_despite_the_allow_rule():
+    # The allow rule silences the prompt; it does not move the boundary.
+    decision, reason = guard.evaluate(
+        payload(tool_input={"command": "sh operations/codex/seat.sh audit-sol x"}, agent="worker")
+    )
+    assert decision == "deny"
+    assert "spend money" in reason

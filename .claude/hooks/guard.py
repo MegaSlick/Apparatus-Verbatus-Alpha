@@ -1037,9 +1037,16 @@ def credential_disclosure(command: str, payload: dict[str, Any]) -> Decision:
     # brings its own working directory: `cd private && cat ntfy.conf` contains no
     # `private/` and a review found it printing the ntfy topic with this check silent —
     # the one secret that has already leaked out of the old repository.
+    # `tmp`, `var` and `etc` are excluded because on macOS `/private/tmp` and
+    # `/private/var` are the real paths behind `/tmp` and `/var` — so every session
+    # scratch file lives under a directory literally called `private/`. Broadening this
+    # check to the drawer made every command touching a temp file raise a credential
+    # alarm, which cost Tyrel three separate interruptions before the cause was found.
+    # A prompt on `cat /private/tmp/notes.txt` is exactly the false-alarm flood this
+    # file argues at length it must not produce, and it was self-inflicted.
     secret_path = has(
         command,
-        r"(?:private/(?!(?:README\.md|guard-decisions\.log)\b)"
+        r"(?:private/(?!(?:README\.md|guard-decisions\.log)\b|(?:tmp|var|etc)\b)"
         r"|(?:^|[/\s])(?:ntfy|workcopy)\.conf\b"
         r"|(?:^|[/\s])\.env(?:[.\s/]|$)|credentials(?:\.json)?|id_(?:rsa|ed25519))",
     )
