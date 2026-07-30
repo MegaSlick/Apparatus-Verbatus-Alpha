@@ -334,11 +334,11 @@ challenge between them is the thing you are buying.
 
 ## Agents
 
-The roster lives in `.claude/agents/`. **Effort is declared in every file — floors for the
-judgement seats, defaults for the rest** — never inherited from the session by accident. A
-dispatch chooses within a model's sanctioned range; a judgement floor moves down only by
-Tyrel's per-instance override, so a review still cannot quietly run at a cheap session's
-depth.
+The roster lives in `.claude/agents/`. **Effort is declared in every role file — floors for
+the judgement seats, defaults for the rest** — never inherited from the session by accident.
+A dispatch chooses within a role's sanctioned range, subject to any floor; a judgement floor
+moves down only by Tyrel's per-instance override, so a review still cannot quietly run at a
+cheap session's depth.
 
 **Model is pinned in five of the six.** `consult` declares `inherit`, deliberately, because
 the right model for a second opinion depends on the question rather than the role. Any caller
