@@ -67,11 +67,47 @@ fi
   exit 1
 }
 
+# A seat that never started is not a review. `seat.sh` reserves exit 2 for its own
+# usage and precondition failures — an unknown seat name, no `timeout` on PATH — and
+# because its stderr is merged into $output above, that one-line complaint is
+# non-empty, passes the scan, and used to be published as the reviewer's report. A
+# review reproduced it: `reports/gpt-sol.log` containing "seat: no seat named
+# audit-xyz", and then guard 2 refusing the corrected re-run because evidence already
+# existed. A file that looks like a review and is not one is the exact confusion the
+# reviewer pass exists to prevent, so exit 2 is reported and nothing is written.
+if [ "$status" -eq 2 ]; then
+  unset output
+  echo "reviewer seat $seat did not run (exit 2, its usage/precondition status);" >&2
+  echo "nothing was written. Fix the invocation and run it again." >&2
+  exit 2
+fi
+
 # (1) Scan before writing, and drop the text from this shell if it fails.
-if ! printf '%s\n' "$output" | python3 "$root/.githooks/check_ingress.py" --stdin-file; then
+#
+# The status is captured on its own line and 1 is told apart from everything else,
+# the way `commit-msg` and `applypatch-msg` do it and for the reason they cite:
+# check_ingress.py answers 1 for "I recognized a credential" and 2 for "I could not
+# make a trustworthy decision", and 127 means python3 was not there at all. Reporting
+# any of the latter as a credential finding asserts a measurement nobody took, which
+# GOVERNANCE 10 forbids — and it threw away a report that may have cost a 45-minute
+# paid run. The text is still not written in either case; only the account changes.
+# `|| scan_status=$?` rather than a bare pipeline followed by `$?`: under `set -e` a
+# failing pipeline ends the script before the next line runs, so the status would
+# never be read and the guards below would never fire. Writing it the wrong way first
+# is how this comment came to exist.
+scan_status=0
+printf '%s\n' "$output" | python3 "$root/.githooks/check_ingress.py" --stdin-file ||
+  scan_status=$?
+if [ "$scan_status" -eq 1 ]; then
   unset output
   echo "reviewer seat $seat output failed credential scanning and was not written" >&2
   exit 1
+fi
+if [ "$scan_status" -ne 0 ]; then
+  unset output
+  echo "the credential scan could not run (exit $scan_status), so this report is" >&2
+  echo "unverified and was not written. This is not a finding about its contents." >&2
+  exit 2
 fi
 
 # (2) and (3): an existing file or any symlink, dangling or not, stops the write.

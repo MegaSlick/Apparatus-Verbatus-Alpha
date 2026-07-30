@@ -127,10 +127,19 @@ def deny_agent_or_ask(
     What is shared is the *condition*, and that is the point: which audience gets
     refused rather than asked is now decided in two places in this file rather than
     five, and `subagent_name` is called once per decision rather than twice.
+
+    **`replace`, not `format`.** Two call sites build their message with an f-string
+    that also interpolates a filename, so `str.format` saw whatever braces that
+    filename contained: a review reproduced `Write` to `.githooks/odd{name}.py`
+    raising `KeyError` and the guard exiting 2 — failing closed, but reporting itself
+    broken instead of reporting the rule, and skipping `record()` so nothing reached
+    the decision log. It also left two escaping conventions, since an f-string caller
+    had to write `{{agent}}` and a plain-string caller `{agent}`. A literal
+    substitution is inert to braces and reads the same text from both spellings.
     """
     agent = subagent_name(payload)
     if agent:
-        return "deny", agent_message.format(agent=agent)
+        return "deny", agent_message.replace("{agent}", agent)
     return "ask", session_message
 
 
@@ -204,11 +213,20 @@ def governing_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
 # repository's hooks costs one prompt, and this file's stated posture is to err that
 # way. Not a wall — an agent can still write a script and run it, and CLAUDE.md
 # keeps code open on purpose. It closes the careless path, which is most of them.
+#
+# `.git/config` and `.git/hooks/` are here because a review found the write-tool
+# route to them wide open while every shell spelling was hard-denied. `core.hooksPath`
+# lives in `.git/config`, and `install.sh` and CLAUDE.md both say it is the one
+# setting that makes any hook run at all: an agent pointing it elsewhere turns off the
+# credential scan, the document policy, the branch rule and the attribution check
+# together, in a file that is untracked by design so no diff would ever show it.
 SELF_PROTECTING_TAILS = (
     "/.claude/hooks/",
     "/.claude/settings.json",
     "/.claude/settings.local.json",
     "/.githooks/",
+    "/.git/config",
+    "/.git/hooks/",
 )
 
 
@@ -222,16 +240,52 @@ def protects_the_guard(target: Path) -> bool:
     return any(tail in text for tail in SELF_PROTECTING_TAILS)
 
 
+def inside_project_worktree(target: Path, project: Path) -> bool:
+    """True when `target` sits under a git worktree belonging to this project.
+
+    `worktree_belongs_to_project` answers the question for one directory; this walks
+    up from the written path to find the worktree root, because the path being written
+    is several levels below it.
+    """
+    for parent in target.parents:
+        if worktree_belongs_to_project(parent, project):
+            return True
+        if parent == parent.parent:  # reached the filesystem root
+            break
+    return False
+
+
 def harness_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
     if tool not in WRITING_TOOLS:
         return None
     target = written_path(tool_input, payload)
     if target is None or not protects_the_guard(target):
         return None
+
+    # A worktree is where an agent is *supposed* to write this code, and refusing it
+    # there was a rule written as a wall. CLAUDE.md is explicit: "Code is not on that
+    # list and stays open. Hooks, CI, the agent and skill files, `operations/`, tests
+    # and everything under the pipeline are written by agents and land through review
+    # like anything else." Its roster gives `infra-worker` exactly this ground —
+    # "hooks, CI, seals, accounting, money paths" — so denying it here left that role
+    # unable to do the only work it exists for, and this file could not have been
+    # written by the agent meant to write it. A reviewer caught the contradiction;
+    # CLAUDE.md had already warned that a rule shaped as a wall cost this project a
+    # day once.
+    #
+    # The protection that remains is the one the reasoning actually supports: the live
+    # checkout, whose `.githooks/` runs on the next commit and whose `settings.json`
+    # is re-read on the next tool call. A worktree's edits reach the main checkout only
+    # through review, which is the boundary CLAUDE.md names.
+    if inside_project_worktree(target, project_root()):
+        return None
+
     return deny_agent_or_ask(
         payload,
-        f"Subagent {{agent}} may not edit {target.name}, which decides what tools are "
-        "allowed to do; propose the change to the main session.",
+        "Subagent {agent} may not edit "
+        + target.name
+        + " in the live checkout, which decides what tools are allowed to do; work in "
+        "your own worktree, or propose the change to the main session.",
         f"{target.name} decides what every later tool call is allowed to do, and the next one "
         "is judged by what you are about to write. Confirm this is the change Tyrel directed.",
     )
@@ -969,9 +1023,14 @@ def credential_disclosure(command: str, payload: dict[str, Any]) -> Decision:
     # `README.md` is tracked and explains the drawer. `guard-decisions.log` is this
     # guard's own record, written specifically without command text so that it is safe
     # to read — and it was asking about itself, which is how this exclusion was found.
+    # The bearer files are named by basename as well as by drawer, because a Bash call
+    # brings its own working directory: `cd private && cat ntfy.conf` contains no
+    # `private/` and a review found it printing the ntfy topic with this check silent —
+    # the one secret that has already leaked out of the old repository.
     secret_path = has(
         command,
         r"(?:private/(?!(?:README\.md|guard-decisions\.log)\b)"
+        r"|(?:^|[/\s])(?:ntfy|workcopy)\.conf\b"
         r"|(?:^|[/\s])\.env(?:[.\s/]|$)|credentials(?:\.json)?|id_(?:rsa|ed25519))",
     )
     secret_env = has(
@@ -1106,6 +1165,16 @@ def sends_a_request_body(command: str) -> bool:
         given = operands(arguments)
         if given and given[0].upper() in MUTATING_METHODS:
             return True
+    # HTTPie infers POST the moment it is given data on standard input, so a piped or
+    # redirected body needs no method operand at all. A review found
+    # `printf … | http https://…/graphql` silent to the session and to a subagent
+    # alike, while the identical curl spelling asked — a hole in one tool only, which
+    # is the kind nobody trips over until it matters. The subagent tripwire does not
+    # cover it either: a plain pipe is not one of INSPECTION_BLIND_SPOTS.
+    if has(command, r"(?:\||<)\s*" + _PATH + r"https?\b") or has(
+        command, r"(?:^|[;&|]\s*)\s*" + _PATH + r"https?\b[^\n;&|]*<"
+    ):
+        return True
     return False
 
 
@@ -1184,7 +1253,24 @@ def external_shell_mutation(command: str, payload: dict[str, Any]) -> Decision:
         r"\brunpod\.(?:create_pod|resume_pod|start_pod|create_endpoint|"
         r"create_template|delete_network_volume)\s*\(",
     )
-    runpod_change = runpod_ctl_change or runpod_api_change
+    # The SDK spelling above is not the only way inline Python reaches paid
+    # infrastructure. A review found `python3 -c "import requests;
+    # requests.post(url, json=body)"` silent to the main session while the
+    # `runpod.create_pod()` spelling correctly asked — the HTTP-client route that the
+    # pre-rebuild guard covered and this one had quietly dropped. `INLINE_INTERPRETER`
+    # cannot stand in for it: that check is subagent-only by design, and GOVERNANCE 8
+    # binds the session too. Recognized only when the command also mentions runpod, so
+    # an ordinary `requests.post` to anything else is still the session's own business.
+    # No closing `\b`: writing the test for this caught `runpod_url` slipping past a
+    # bounded spelling, because `_` is a word character. `runpod` unbounded also picks
+    # up `runpod.io` and `runpodctl`, which on a path that bills by the hour is the
+    # direction to be wrong in.
+    runpod_http_change = has(command, r"\brunpod") and has(
+        command,
+        r"(?:requests|httpx|session|client)\s*\.\s*(?:post|put|patch|delete)\s*\(|"
+        r"\burllib\b|\bhttp\.client\b|\bRequest\s*\(",
+    )
+    runpod_change = runpod_ctl_change or runpod_api_change or runpod_http_change
     # Every Python-API call recognized above starts or creates something, so its
     # presence disqualifies the shutdown exemption outright. Deriving that
     # exemption from the `runpodctl` text alone let one half of a compound
@@ -1194,6 +1280,7 @@ def external_shell_mutation(command: str, payload: dict[str, Any]) -> Decision:
     runpod_shutdown_only = (
         runpod_ctl_change
         and not runpod_api_change
+        and not runpod_http_change
         and bool(runpod_verbs & RUNPOD_SHUTDOWN_VERBS)
         and not runpod_verbs & RUNPOD_ESCALATION_VERBS
     )
@@ -1309,11 +1396,17 @@ def subagent_blind_spot(command: str, payload: dict[str, Any]) -> Decision:
 # subagent: `seat.sh` spends money on a paid model seat, `notify.sh` reaches
 # Tyrel's phone — and CLAUDE.md says subagents never notify, a rule that until now
 # had nothing behind it — and `capture-seat-report.sh` writes reviewer evidence.
+# Matched on the basename with any directory prefix, because a Bash call carries its
+# own working directory: `cd operations/notify && sh notify.sh done "…"` never
+# contains the joined path these patterns used to require, and a review found all
+# three reachable that way — a message to Tyrel's phone, a paid seat, and reviewer
+# evidence, each from a subagent with this guard silent. The extra asks a bare
+# basename costs are the trade this file already says it makes.
 CONSEQUENTIAL_SCRIPTS = (
-    (re.compile(r"operations/codex/seat\.sh"), "spend money on a paid model seat"),
-    (re.compile(r"operations/notify/notify\.sh"), "send a notification to Tyrel's phone"),
+    (re.compile(r"(?:^|[\s;&|/])seat\.sh\b"), "spend money on a paid model seat"),
+    (re.compile(r"(?:^|[\s;&|/])notify\.sh\b"), "send a notification to Tyrel's phone"),
     (
-        re.compile(r"operations/codex/capture-seat-report\.sh"),
+        re.compile(r"(?:^|[\s;&|/])capture-seat-report\.sh\b"),
         "write reviewer evidence",
     ),
 )
@@ -1326,9 +1419,13 @@ CONSEQUENTIAL_SCRIPTS = (
 # Denied for subagents only. The main session uses these constantly and an ask on
 # every one would be the false-alarm flood that gets a guard switched off; the
 # session is also the accountable reader of its own commands.
+# `_PATH` for the same reason every other command pattern here carries it — a review
+# found `/usr/bin/python3 -c '…'` silent while a bare `python3 -c` was denied. The
+# short-option branch accepts a bundled cluster (`-Sc`), which was the second escape:
+# the flag that supplies the code need not be alone in its word.
 INLINE_INTERPRETER = re.compile(
-    r"(?:^|[;&|]\s*)\s*(?:python3?|perl|ruby|node|deno|php|osascript)\b[^\n;&|]*"
-    r"(?:\s-c\b|\s-e\b|\s-r\b|\s--eval\b|\s--command\b)"
+    r"(?:^|[;&|]\s*)\s*" + _PATH + r"(?:python3?|perl|ruby|node|deno|php|osascript)\b"
+    r"[^\n;&|]*(?:\s-[A-Za-z]*[cer]\b|\s--eval\b|\s--command\b)"
 )
 
 

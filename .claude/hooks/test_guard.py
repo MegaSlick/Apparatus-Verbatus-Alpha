@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1066,3 +1067,274 @@ def test_the_two_routes_read_the_same_table_rather_than_two_copies():
         assert f'"{verb}"' not in body, (
             f"mcp_decision spells {verb!r} itself instead of reading the shared table"
         )
+
+
+# --- the wiring, not just the logic ---------------------------------------
+#
+# Nine tests covering this were deleted and nothing replaced them, so a review
+# found that dropping `Write` from the matcher, renaming this file, or breaking the
+# `|| { … exit 2; }` fallback left the whole suite green. That is the one loss that
+# is invisible by construction: the guard is the thing that would have told you.
+# GOVERNANCE 10 — a check that cannot run is a failure, not a pass.
+
+SETTINGS = Path(__file__).resolve().parents[1] / "settings.json"
+
+
+def pretooluse_block() -> dict:
+    blocks = json.loads(SETTINGS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+    guarding = [b for b in blocks if any("guard.py" in h["command"] for h in b["hooks"])]
+    assert guarding, "no PreToolUse hook invokes guard.py"
+    assert len(guarding) == 1, "more than one PreToolUse block invokes the guard"
+    return guarding[0]
+
+
+@pytest.mark.parametrize(
+    "tool",
+    ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "mcp__runpod__createPod"],
+)
+def test_the_matcher_reaches_every_tool_the_guard_decides_about(tool):
+    # Every tool `evaluate()` has an opinion about must actually reach it. A matcher
+    # that stops covering one of these turns its whole decision path off silently.
+    matcher = pretooluse_block()["matcher"]
+    assert re.fullmatch(matcher, tool), f"the PreToolUse matcher does not reach {tool}"
+
+
+def test_the_wired_command_points_at_a_guard_that_exists():
+    command = pretooluse_block()["hooks"][0]["command"]
+    assert "guard.py" in command
+    # A misspelled path or a renamed guard would leave every other test green.
+    assert SCRIPT.name in command
+    assert SCRIPT.exists(), "the wired guard file is not present"
+
+
+def test_the_wired_command_actually_refuses(tmp_path):
+    # Run the literal string from settings.json, not a hand-written equivalent.
+    command = pretooluse_block()["hooks"][0]["command"]
+    result = subprocess.run(
+        ["sh", "-c", command],
+        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "git push origin main"}}),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "CLAUDE_PROJECT_DIR": str(SCRIPT.parents[1].parent)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_the_wired_command_fails_closed_when_the_guard_cannot_run(tmp_path):
+    """A guard that cannot start must block, not approve.
+
+    The hook runner proceeds on any exit status but 2, so the `|| { … exit 2; }`
+    fallback in the wired command is the whole of this property. Point the command at
+    a project directory with no guard in it and it must still exit 2.
+    """
+    command = pretooluse_block()["hooks"][0]["command"]
+    empty = tmp_path / "no-guard"
+    (empty / ".claude" / "hooks").mkdir(parents=True)
+    result = subprocess.run(
+        ["sh", "-c", command],
+        input='{"tool_name":"Bash","tool_input":{"command":"ls"}}',
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "CLAUDE_PROJECT_DIR": str(empty)},
+    )
+    assert result.returncode == 2, (
+        "a missing guard did not fail closed; the runner would have approved the call"
+    )
+    assert "could not run" in result.stderr
+
+
+# --- the ten findings of the high-effort review at c3af5e8 -----------------
+#
+# Each case below was reproduced against the guard before the fix. They are grouped
+# by the shape of the mistake rather than by file, because the shape is the lesson:
+# five of them were a path or a command matched as text where the text was optional.
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # core.hooksPath lives here, and it is the one setting that makes any hook
+        # run. Every shell spelling was denied; the write-tool route was open.
+        ".git/config",
+        ".git/hooks/pre-commit",
+    ],
+)
+def test_a_subagent_may_not_switch_off_the_hooks_through_a_write(path, tmp_path):
+    target = tmp_path / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    decision, _ = guard.evaluate(
+        payload("Edit", {"file_path": str(target)}, agent="worker", cwd=tmp_path)
+    )
+    assert decision == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A Bash call brings its own working directory, so the directory part of
+        # these paths never had to appear.
+        'cd operations/notify && sh notify.sh done "audit finished"',
+        "cd operations/codex && sh seat.sh audit-sol x",
+        "(cd operations/codex; sh capture-seat-report.sh s p r)",
+    ],
+)
+def test_a_consequential_script_is_recognized_by_its_basename(command):
+    decision, reason = guard.evaluate(payload(tool_input={"command": command}, agent="worker"))
+    assert decision == "deny"
+    assert "report it to the main session" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd private && cat ntfy.conf",
+        "cat ntfy.conf",
+        "cp workcopy.conf /tmp/x",
+    ],
+)
+def test_the_bearer_files_are_recognized_by_basename_too(command):
+    # The ntfy topic is the one secret that has already leaked out of the old
+    # repository, and `cd private` was enough to walk around the check.
+    decision, reason = guard.evaluate(payload(tool_input={"command": command}, agent="worker"))
+    assert decision == "deny"
+    assert "credential-shaped" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # `_PATH`, which every other command pattern in the file carries.
+        '/usr/bin/python3 -c "import subprocess; subprocess.run([1])"',
+        "/opt/homebrew/bin/node -e 'x'",
+        # A bundled cluster: the flag supplying the code need not be alone.
+        'python3 -Sc "print(1)"',
+        "perl -wle 'print 1'",
+    ],
+)
+def test_an_interpreter_cannot_escape_by_how_it_is_spelled(command):
+    decision, reason = guard.evaluate(payload(tool_input={"command": command}, agent="worker"))
+    assert decision == "deny"
+    assert "inline" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # HTTPie infers POST from data on stdin, so no method operand appears.
+        """printf '%s' '{"q":1}' | http https://api.example.test/graphql""",
+        "http https://api.example.test/graphql < body.json",
+        "cat body.json | https api.example.test/graphql",
+    ],
+)
+def test_httpie_infers_post_from_a_piped_or_redirected_body(command):
+    decision, _ = guard.evaluate(payload(tool_input={"command": command}))
+    assert decision == "ask", "a state-changing request drew no prompt"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The HTTP-client route to paid infrastructure, which the SDK pattern missed.
+        'python3 -c "import requests, runpod; requests.post(url, json=body)"',
+        "python3 -c 'import httpx; httpx.post(\"https://api.runpod.io/graphql\", json=q)'",
+        'python3 -c "import urllib.request; urllib.request.urlopen(runpod_url, data=b)"',
+    ],
+)
+def test_inline_python_reaching_paid_infrastructure_asks_the_session_too(command):
+    # GOVERNANCE 8 binds the session, and INLINE_INTERPRETER is subagent-only by
+    # design, so it cannot stand in for this.
+    decision, reason = guard.evaluate(payload(tool_input={"command": command}))
+    assert decision == "ask"
+    assert "RunPod" in reason
+
+
+def test_an_ordinary_http_post_is_still_the_sessions_own_business():
+    # The runpod mention is what makes it a money path; without it this is work.
+    assert (
+        guard.evaluate(
+            payload(
+                tool_input={"command": 'python3 -c "import requests; requests.post(u, json=b)"'}
+            )
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("name", ["odd{name}.py", "a{0}b.sh", "brace}only.py"])
+def test_a_brace_in_a_protected_filename_does_not_crash_the_guard(name, tmp_path):
+    # It used to raise KeyError out of str.format: the guard exited 2, reported
+    # itself broken rather than reporting the rule, and skipped its own decision log.
+    target = tmp_path / ".githooks" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    decision, reason = guard.evaluate(
+        payload("Write", {"file_path": str(target)}, agent="worker", cwd=tmp_path)
+    )
+    assert decision == "deny"
+    assert name in reason
+    assert "worker" in reason
+
+
+def worktree_of(tmp_path):
+    """A project plus one git worktree belonging to it, the shape install.sh creates."""
+    project = tmp_path / "project"
+    (project / ".git" / "worktrees" / "topic").mkdir(parents=True)
+    (project / ".githooks").mkdir(parents=True)
+    tree = tmp_path / "topic"
+    (tree / ".githooks").mkdir(parents=True)
+    (tree / ".git").write_text(
+        f"gitdir: {project / '.git' / 'worktrees' / 'topic'}\n", encoding="utf-8"
+    )
+    return project, tree
+
+
+def test_an_agent_may_write_hooks_in_its_own_worktree(tmp_path, monkeypatch):
+    """CLAUDE.md: "Code is not on that list and stays open."
+
+    Denying this made `infra-worker` — whose stated unit of work is "hooks, CI, seals,
+    accounting, money paths" — unable to do the only thing it exists for, and a
+    reviewer pointed out the guard file itself could not have been written by the
+    agent meant to write it. CLAUDE.md had already warned that a rule shaped as a
+    wall cost this project a day once.
+    """
+    project, tree = worktree_of(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
+    assert (
+        guard.evaluate(
+            payload(
+                "Write",
+                {"file_path": str(tree / ".githooks" / "pre-commit")},
+                agent="infra-worker",
+                cwd=tree,
+            )
+        )
+        is None
+    )
+
+
+def test_the_live_checkout_is_still_closed_to_an_agent(tmp_path, monkeypatch):
+    # The protection the reasoning actually supports: this .githooks/ runs on the next
+    # commit and this settings.json is re-read on the next tool call.
+    project, _ = worktree_of(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
+    decision, reason = guard.evaluate(
+        payload(
+            "Write",
+            {"file_path": str(project / ".githooks" / "pre-commit")},
+            agent="infra-worker",
+            cwd=project,
+        )
+    )
+    assert decision == "deny"
+    assert "own worktree" in reason, "the refusal must name the route that is open"
+
+
+def test_the_session_is_still_asked_about_the_live_checkout(tmp_path, monkeypatch):
+    project, _ = worktree_of(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
+    decision, _ = guard.evaluate(
+        payload("Edit", {"file_path": str(project / ".githooks" / "pre-commit")}, cwd=project)
+    )
+    assert decision == "ask"

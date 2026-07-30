@@ -245,3 +245,73 @@ def test_it_refuses_a_target_that_appears_after_the_check(tmp_path):
     assert [p.name for p in (root / "reports").iterdir()] == ["gpt-sol.log"], (
         "a temporary file survived the refused publish"
     )
+
+
+def test_a_seat_that_never_ran_is_not_published_as_a_report(tmp_path):
+    """`seat.sh` exit 2 is its own usage/precondition status, not a review.
+
+    Its stderr is merged into the captured output, so a one-line complaint like
+    "no seat named audit-xyz" was non-empty, passed the scan, and got filed as the
+    reviewer's report — after which the refusal-to-overwrite guard blocked the
+    corrected re-run. Reproduced by a review before this was fixed.
+    """
+    root = workspace(tmp_path)
+    (root / "operations" / "codex" / "seat.sh").write_text(
+        '#!/bin/sh\necho "seat: no seat named audit-xyz" >&2\nexit 2\n', encoding="utf-8"
+    )
+
+    result = run_capture(root, "audit-xyz", "prompt.txt", "reports/gpt-sol.log")
+
+    assert result.returncode == 2, "a seat that never ran must not read as a failed review"
+    assert "did not run" in result.stderr
+    assert not (root / "reports" / "gpt-sol.log").exists()
+    assert list((root / "reports").iterdir()) == [], "a temporary file survived"
+
+
+def test_a_seat_that_ran_and_then_failed_still_keeps_its_evidence(tmp_path):
+    # The counterpart, and the reason exit 2 had to be singled out rather than all
+    # non-zero statuses: a reviewer that said something real and then crashed must
+    # not lose it. Exit 3 is not seat.sh's usage status.
+    root = workspace(tmp_path)
+    (root / "operations" / "codex" / "seat.sh").write_text(
+        "#!/bin/sh\nprintf 'partial finding\\n'\nexit 3\n", encoding="utf-8"
+    )
+
+    result = run_capture(root)
+
+    assert result.returncode == 1
+    assert (root / "reports" / "gpt-sol.log").read_text(encoding="utf-8") == "partial finding\n"
+
+
+@pytest.mark.parametrize("scan_exit", [2, 127])
+def test_a_scan_that_could_not_run_is_not_reported_as_a_finding(tmp_path, scan_exit):
+    """check_ingress.py answers 1 for "found one" and 2 for "could not decide".
+
+    Collapsing them told the operator a credential had been found when nothing had
+    been measured — GOVERNANCE 10 — and discarded a report that may have cost a
+    45-minute paid run. `commit-msg` and `applypatch-msg` already distinguish them.
+    """
+    root = workspace(tmp_path)
+    (root / ".githooks" / "check_ingress.py").write_text(
+        f"import sys\nsys.stdin.buffer.read()\nraise SystemExit({scan_exit})\n", encoding="utf-8"
+    )
+
+    result = run_capture(root)
+
+    assert result.returncode == 2
+    assert "could not run" in result.stderr
+    assert "not a finding about its contents" in result.stderr
+    assert not (root / "reports" / "gpt-sol.log").exists()
+
+
+def test_a_real_credential_finding_still_says_so(tmp_path):
+    root = workspace(tmp_path)
+    (root / ".githooks" / "check_ingress.py").write_text(
+        "import sys\nsys.stdin.buffer.read()\nraise SystemExit(1)\n", encoding="utf-8"
+    )
+
+    result = run_capture(root)
+
+    assert result.returncode == 1
+    assert "failed credential scanning" in result.stderr
+    assert not (root / "reports" / "gpt-sol.log").exists()
