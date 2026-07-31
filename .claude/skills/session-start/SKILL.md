@@ -85,10 +85,12 @@ idempotent, and the installer only runs in fresh clones — and **open every led
 it**, not only the suspensions file: a session that never reads the adopted plan is
 working under a plan it has not seen. Transition check: if
 `workbench/active/SUSPENSIONS.md` exists, it predates the standing drawer. Read it and
-report its live entries first, exactly as below. Then, if `standing/` holds no ledger,
-move it there and say so; if both exist, read and report both, move the legacy file to
-`workbench/standing/SUSPENSIONS_LEGACY.md` (never overwriting), and put the
-reconciliation to Tyrel — two ledgers is a state to resolve, not to leave.
+report its live entries first, exactly as below. Then, if
+`workbench/standing/SUSPENSIONS.md` does not exist, move it there and say so; if it
+does, read and report both, move the legacy file to
+`workbench/standing/SUSPENSIONS_LEGACY.md` — adding a numeric suffix rather than ever
+overwriting — and put the reconciliation to Tyrel: two ledgers is a state to resolve,
+not to leave.
 
 From `workbench/standing/SUSPENSIONS.md`, **report every live suspension by name, with
 its deadline and what turns it back on**. A rule or hook switched off temporarily is

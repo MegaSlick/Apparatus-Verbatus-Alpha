@@ -59,12 +59,15 @@ if it is not, name each file that stays and why it is still this coming sitting'
 The next session boots on whatever this checkout holds — skills, CLAUDE.md, settings,
 guard and git hooks all load from here before anyone has read a word. Park the checkout
 **before** writing the handoff, so the handoff describes the state that is real, never
-the state intended. Ref-only, never checking out `main`. Parking needs
-`git status --porcelain` empty — tracked and untracked alike; the gitignored
-workbench never shows there. Uncommitted work at close means the branch is not
-finished as it stands: carry it to the provisional branch (`git switch -c` brings
-the working tree along) and name it in the handoff — never commit it onto a branch
-whose pull request already merged.
+the state intended. Ref-only, never checking out `main`. Before parking, read
+`git status --porcelain` — tracked and untracked alike; the gitignored workbench
+never shows there. Empty: park. Not empty: the branch is not finished as it
+stands — carry the work to the provisional branch (`git switch -c` brings the
+working tree along), leave it uncommitted there, and name every carried file in
+the handoff; never commit it onto a branch whose pull request already merged. If
+the switch is refused because a carried file conflicts with `origin/main`, do not
+force it: stay where you are, say the park did not happen, and name the
+conflicting files in the handoff.
 
 ```sh
 git fetch origin
@@ -82,10 +85,16 @@ anything trusts this checkout" into the handoff.
   repository squash-merges, so `git branch -d` refuses even a genuinely merged
   branch's tip. Deletion needs two facts, both verified out loud:
   `gh pr view <number> --json state,headRefOid` shows `MERGED`, **and** the branch
-  tip (`git rev-parse <branch>`) equals that `headRefOid` — a merged pull request
-  says nothing about commits added to the branch afterwards, and `-D` would take
-  them silently. Both true: say so, then `git branch -D <branch>`. Either false:
-  the branch stays, and the handoff names the unmatched commits and why.
+  tip — read branch-qualified, `git rev-parse --verify refs/heads/<branch>`,
+  because a bare name can resolve a same-named tag and prove the wrong ref —
+  equals that `headRefOid`; a merged pull request says nothing about commits added
+  afterwards. Both true: say so, then delete atomically with the verified tip
+  pinned — `git update-ref -d refs/heads/<branch> <verified-oid>` — so a
+  concurrent move of the branch between check and delete fails the delete rather
+  than losing the move. `MERGED` false — a pull request closed unmerged is
+  finished but never deletable this way — the branch stays, recorded as closed
+  unmerged. Tip mismatch: the branch stays, and the handoff names the commits
+  past the merged head.
 - **Work continues on this branch:** stay on it, and write in the handoff how far
   behind `origin/main` it is, so the next session's sync step knows before it trusts
   anything local.
@@ -145,8 +154,10 @@ Report:
 - checks run and their results;
 - what was archived, moved to scratch, or deliberately left active;
 - external actions taken or explicitly not taken;
-- every live entry in `workbench/standing/SUSPENSIONS.md`, by name, with its
-  deadline — and if the ledger itself is missing, say that, never an empty "none";
+- every live entry in every suspensions ledger under `workbench/standing/` —
+  `SUSPENSIONS.md` and any `SUSPENSIONS_LEGACY*` awaiting reconciliation — by
+  name, with its deadline; if no suspensions ledger exists at all, say that,
+  never an empty "none";
 - the next queue line and anything Tyrel must decide.
 
 For a normal state-changing session, send this last:
