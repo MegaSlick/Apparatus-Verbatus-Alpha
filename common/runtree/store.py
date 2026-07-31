@@ -111,7 +111,22 @@ class RunTree:
         run_file = tree.root / RUN_FILE
         if run_file.exists():
             existing = tree.read_run()
-            differing = [field for field in _BOUND_FIELDS if existing[field] != authority[field]]
+            # `.get`, not `[...]`: a run.json missing a bound field used to raise a
+            # bare KeyError out of the reuse check, which is a traceback and an
+            # exit 1 where the contract promises a named refusal. A missing field
+            # is also not "equal" to anything, so it lands in `differing` and is
+            # refused with the reason spelled out.
+            if existing.get("schema") != authority["schema"]:
+                raise IncompatibleReuse(
+                    f"run {run_id!r} was written under schema "
+                    f"{existing.get('schema')!r} and this is {authority['schema']!r}; "
+                    "the two describe different shapes and cannot share a tree"
+                )
+            differing = [
+                field
+                for field in _BOUND_FIELDS
+                if field not in existing or existing[field] != authority[field]
+            ]
             if differing:
                 raise IncompatibleReuse(
                     f"run {run_id!r} already exists and is bound to different "

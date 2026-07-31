@@ -173,6 +173,22 @@ def test_unbound_outcomes_need_no_approval():
     require_approval(DESIGNATOR, "proposed", None)
 
 
+def test_the_armarium_category_that_names_approval_also_requires_one():
+    """`excluded` and `excluded-with-approval` are the same fact at two stages.
+    Matching only the first left the terminal category that *names* approval as
+    the one place the check did not reach."""
+    with pytest.raises(ApprovalRefusal):
+        require_approval(ARMARIUM, ArmariumCategory.EXCLUDED_WITH_APPROVAL.value, None)
+    require_approval(
+        ARMARIUM, ArmariumCategory.EXCLUDED_WITH_APPROVAL.value, "art_0123456789abcdef"
+    )
+
+
+def test_other_armarium_categories_need_no_approval():
+    for category in (ArmariumCategory.DELIVERED, ArmariumCategory.CONFIRMED_BLANK):
+        require_approval(ARMARIUM, category.value, None)
+
+
 # --- Witness coverage ----------------------------------------------------------
 
 

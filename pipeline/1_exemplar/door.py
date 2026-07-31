@@ -70,9 +70,14 @@ def main() -> int:
     admitted = 0
     for page in fixture["page"]:
         source = fixture_root / page["path"]
-        outcome, reason, digest = inspect(source, page["sha256"])
+        outcome, reason, digest, data = inspect(source, page["sha256"])
         if outcome == "admitted":
-            _, published = tree.put_blob(DOOR, source.read_bytes())
+            # Store the bytes that were actually verified. Reading the file a
+            # second time here would open a window in which the file changed
+            # between the check and the store, leaving an admission whose recorded
+            # digest describes bytes the run does not hold. What is sealed must be
+            # what was inspected.
+            _, published = tree.put_blob(DOOR, data)
             context.publish(
                 kind="admission",
                 subject_id=f"source-{page['ordinal']}",
@@ -110,21 +115,25 @@ def main() -> int:
     return EXIT_COMPLETE
 
 
-def inspect(source: Path, declared_sha256: str) -> tuple[str, str, str]:
-    """Decide one file, and say why when the answer is no."""
+def inspect(source: Path, declared_sha256: str) -> tuple[str, str, str, bytes]:
+    """Decide one file, and hand back the exact bytes the decision was made on.
+
+    Returning the bytes rather than the caller re-reading them is what makes the
+    decision and the stored evidence describe the same thing.
+    """
     if not source.exists():
-        return "refused", f"{source} does not exist", ""
+        return "refused", f"{source} does not exist", "", b""
     data = source.read_bytes()
     if not data:
-        return "refused", f"{source} is empty", ""
+        return "refused", f"{source} is empty", "", b""
     if not data.startswith(PNG_SIGNATURE):
         # By signature, never by extension: a text file renamed .png is exactly
         # the case the old upload endpoint let through to die deep in a run.
-        return "refused", f"{source} does not carry a PNG signature", ""
+        return "refused", f"{source} does not carry a PNG signature", "", b""
     digest = digest_bytes(data)
     if digest != declared_sha256:
-        return "refused", f"{source} has digest {digest}, not the declared one", digest
-    return "admitted", "", digest
+        return "refused", f"{source} has digest {digest}, not the declared one", digest, b""
+    return "admitted", "", digest, data
 
 
 if __name__ == "__main__":

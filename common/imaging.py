@@ -120,13 +120,31 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     if not seen_ihdr or width is None or height is None:
         raise ValueError("unsupported PNG: missing IHDR")
 
+    # Bound the decompression before it happens, not after. `zlib.decompress` on
+    # attacker-shaped input will materialize whatever the stream expands to, so a
+    # few hundred bytes of IDAT can become gigabytes in memory and the length
+    # check below never gets to run. The header already tells us exactly how many
+    # bytes a valid image must produce, so ask for one more than that and refuse
+    # anything that keeps going.
+    stride = width + 1  # one filter-type byte per scanline
+    expected = stride * height
+
+    decompressor = zlib.decompressobj()
     try:
-        raw = zlib.decompress(bytes(idat))
+        raw = decompressor.decompress(bytes(idat), expected + 1)
     except zlib.error as error:
         raise ValueError(f"corrupt PNG: image data would not decompress ({error})") from error
 
-    stride = width + 1  # one filter-type byte per scanline
-    if len(raw) != stride * height:
+    if len(raw) > expected:
+        raise ValueError(
+            f"corrupt PNG: image data expands past the {expected} bytes its own header declares"
+        )
+    # A truncated stream can return exactly `expected` bytes without raising, so
+    # the length check alone would pass it. `eof` is what distinguishes a complete
+    # stream from one that merely got far enough.
+    if not decompressor.eof:
+        raise ValueError("corrupt PNG: image data stream is truncated")
+    if len(raw) != expected:
         raise ValueError("corrupt PNG: decompressed data has the wrong length")
 
     rows: list[bytearray] = []

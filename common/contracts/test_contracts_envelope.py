@@ -170,6 +170,22 @@ def test_the_same_input_listed_twice_is_refused():
     assert "listed twice" in str(caught.value)
 
 
+def test_the_same_path_with_two_different_digests_is_refused():
+    """One file cannot hold two sets of bytes. Keying the duplicate check on
+    (path, digest) let the contradiction through, and it splits consumers:
+    whichever reference a reader verifies first decides what it believes."""
+    with pytest.raises(SchemaRefusal) as caught:
+        validate_envelope(
+            sound_envelope(
+                inputs=[
+                    PAGE_REF,
+                    {"relative_path": PAGE_REF["relative_path"], "sha256": "a" * 64},
+                ]
+            )
+        )
+    assert "two digests" in str(caught.value)
+
+
 def test_inputs_are_stored_in_a_stable_order():
     """Two runs that gathered the same inputs in different orders must produce
     identical bytes, or byte-for-byte reuse on resume is not testable."""

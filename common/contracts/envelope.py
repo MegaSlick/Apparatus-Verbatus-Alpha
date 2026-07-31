@@ -135,7 +135,13 @@ def validate_input_refs(inputs: Any) -> None:
     """Every input reference names a path and the digest of the bytes there."""
     if not isinstance(inputs, list):
         raise SchemaRefusal("inputs is not a list")
-    seen: set[tuple[str, str]] = set()
+    # Keyed on the path alone, not on (path, digest). Keying on the pair let one
+    # path be listed twice with two different digests — a contradiction, since one
+    # file cannot hold two sets of bytes, and one that splits consumers: whichever
+    # reference a reader checks first decides what it believes. It also let a page
+    # be counted twice in the inputs, which is the double-count this refusal exists
+    # to prevent.
+    seen: dict[str, str] = {}
     for ref in inputs:
         if not isinstance(ref, dict):
             raise SchemaRefusal("an input reference is not an object")
@@ -149,9 +155,15 @@ def validate_input_refs(inputs: Any) -> None:
             )
         if not isinstance(sha, str) or len(sha) != 64 or not _is_hex(sha):
             raise SchemaRefusal(f"input reference {path!r} has no sha256 digest")
-        if (path, sha) in seen:
-            raise SchemaRefusal(f"input reference {path!r} is listed twice")
-        seen.add((path, sha))
+        if path in seen:
+            conflict = (
+                f", with two digests ({seen[path]} and {sha}): one path cannot hold "
+                "two sets of bytes"
+                if seen[path] != sha
+                else ""
+            )
+            raise SchemaRefusal(f"input reference {path!r} is listed twice{conflict}")
+        seen[path] = sha
 
 
 def verify_input_bytes(ref: dict[str, str], data: bytes) -> None:

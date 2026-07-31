@@ -93,6 +93,21 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
         raise ApprovalRefusal(f"approval record has action {record['action']!r}")
     if not isinstance(record["subject_ids"], list) or not record["subject_ids"]:
         raise ApprovalRefusal("approval record names no subjects")
+    # The validator is the gate for records read off disk, so it has to be at
+    # least as strict as the builder. It was not: the builder refuses an empty
+    # reason or target version, and this only checked that the keys existed — so a
+    # record written by hand or by another tool could pass with both blank, and
+    # its self-hash would verify happily, because a hash covers whatever bytes
+    # were sealed rather than whether they meant anything. The exact-version
+    # binding this module exists for would then name no target at all.
+    for field in ("reason", "target_version_hash", "timestamp"):
+        value = record[field]
+        if not isinstance(value, str) or not value.strip():
+            raise ApprovalRefusal(
+                f"approval record field {field!r} is empty or not a string; an "
+                "approval that does not say what it approved, why, or when is "
+                "unreviewable later, which is the whole point of writing it down"
+            )
     if not verify_self_hash(record):
         raise ApprovalRefusal(
             "approval record fails its own self-hash: it was edited after it was "

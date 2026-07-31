@@ -162,6 +162,24 @@ def test_missing_fields_are_refused():
     assert checked == 7
 
 
+def test_a_hand_written_record_with_blank_fields_is_refused():
+    """The validator gates records read off disk, so it must be at least as
+    strict as the builder. It was not: a record written by hand with an empty
+    reason and an empty target version passed, and its self-hash verified —
+    because a hash covers whatever bytes were sealed, not whether they meant
+    anything."""
+    checked = 0
+    for field in ("reason", "target_version_hash", "timestamp"):
+        record = sound_approval()
+        record[field] = "   "
+        record["self_hash"] = self_hash(record)
+        with pytest.raises(ApprovalRefusal) as caught:
+            validate_approval_record(record)
+        assert field in str(caught.value)
+        checked += 1
+    assert checked == 3
+
+
 def test_subject_ids_are_stored_sorted():
     record = build_approval_record(
         subject_ids=["act_bbbbbbbbbbbbbbbb", "act_aaaaaaaaaaaaaaaa"],

@@ -36,6 +36,7 @@ from common.contracts.stages import (  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    latest_attempt,
     open_context,
     run_stage,
     stage_parser,
@@ -182,7 +183,16 @@ def main() -> int:
             subject_id=act_id,
             outcome=outcome,
             attempt=attempt_id(act_id, "recense", ordinal),
-            inputs=[context.input_ref(readings[0]["payload"]["basis"]["regions"][0]["image_path"])],
+            # The reading this outcome is actually about, not whichever artifact
+            # id happened to sort first. `readings[0]` is manifest order, which is
+            # a hash: after a recovery it could cite the superseded attempt's crop
+            # as the basis for accepting the new one. Deterministic, and wrong.
+            inputs=[
+                context.input_ref(reference["image_path"])
+                for reference in latest_attempt(readings, f"reading of {act_id}")["payload"][
+                    "basis"
+                ]["regions"]
+            ],
             payload={
                 "act_key": act_key,
                 "attempt_ordinal": ordinal,

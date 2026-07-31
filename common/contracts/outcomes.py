@@ -218,11 +218,16 @@ def require_approval(stage: str, outcome: Any, approval_ref: Any) -> None:
     left the pipeline as `completed` without anyone reading its text. A claimed
     approval with no artifact is no approval.
     """
-    if outcome != "excluded":
+    # Both spellings, because they are the same fact at two stages. A stage says
+    # `excluded`; the Armarium's terminal category for it is
+    # `excluded-with-approval`. Matching only the first left the category that
+    # *names* approval as the one place the check did not reach, so an export
+    # entry could carry it with no approval reference at all.
+    if outcome not in ("excluded", ArmariumCategory.EXCLUDED_WITH_APPROVAL.value):
         return
     if not isinstance(approval_ref, str) or not approval_ref:
         raise ApprovalRefusal(
-            f"{stage} outcome 'excluded' carries no approval-record reference; "
+            f"{stage} outcome {outcome!r} carries no approval-record reference; "
             "only Tyrel approves an exclusion, and the artifact is the approval"
         )
 
