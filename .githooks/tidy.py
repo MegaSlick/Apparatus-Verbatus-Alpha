@@ -61,7 +61,14 @@ STALE_DAYS = 3
 # match the old — leaves active/HANDOFF.md identical to the archived copy. That is
 # the procedure working, not a note somebody forgot to file, and reporting the live
 # handoff as redundant invites exactly the one deletion that cannot be recovered.
-NEVER_FILED = {"HANDOFF.md"}
+#
+# NEXT_SESSION_BRIEF.md is archived by the same step, in the same order, and one
+# sentence of the session-end skill covers both: "Copy the outgoing
+# workbench/active/HANDOFF.md and NEXT_SESSION_BRIEF.md there before overwriting
+# either." Only the handoff was listed here, so an interrupted close left the live
+# brief reported as already archived — the file the next session opens with, offered
+# for deletion by the report that is supposed to protect it.
+NEVER_FILED = {"HANDOFF.md", "NEXT_SESSION_BRIEF.md"}
 
 # Claude Code derives this directory name from the repository's absolute path,
 # with both separators and underscores flattened to hyphens. Deriving it rather

@@ -167,11 +167,24 @@ def worktree_belongs_to_project(directory: Path, project: Path) -> bool:
 
 # Hard rule 3. Quoted rather than paraphrased, because a refusal that only names a
 # number tells the reader nothing and this one has to be arguable on sight.
-RULE_THREE = (
-    '3: "Never commit, push, or work on `main`. A session moves off it before '
-    'anything else; changes arrive by pull request or not at all."'
-)
+#
+# **Only the sentence that has survived every rewrite is quoted, and the rest is a
+# pointer.** This constant carried the rule's middle sentence until a branch replaced
+# it with a ref-only bootstrap exception, and the guard went on attributing words to
+# CLAUDE.md that appear nowhere in it — found by three reviewers at once. Quoting less
+# is what makes the quotation durable; the pointer sends a reader to both places the
+# rule is written out, which no fixed excerpt can keep up with. A test reads every
+# quoted span here back out of the real CLAUDE.md, so the next rewrite fails the suite
+# rather than shipping a stale quotation.
+RULE_THREE = '3: "Never commit, push, or work on `main`." (CLAUDE.md, Hard rules and Branches)'
 OFF_MAIN = "Move off it first with `git switch -c work/<topic>`; staged changes come along"
+# The remedy for a *rename*, which is a different act and needs a different sentence.
+# "Move off it first" describes nothing somebody spelling `branch -m main` is doing:
+# no checkout is being moved, a name is being chosen, and the way out is to choose
+# another one. A prompt that names a remedy the caller cannot carry out is the prompt
+# somebody reads as noise, which is the same failure this file records for prompts
+# that misname the consequence.
+NOT_NAMED_MAIN = "Choose a target name that is not `main`, such as `work/<topic>`"
 MAIN_BRANCH_REF = "refs/heads/main"
 MAIN_BRANCH_NAMES = frozenset({"main", MAIN_BRANCH_REF})
 
@@ -869,12 +882,53 @@ def short_option(arguments: list[str], letters: str, action: str = "") -> bool:
     return False
 
 
-def long_option(arguments: list[str], *names: str) -> bool:
+# The shortest abbreviation of a long option this file will read as one. Git accepts
+# any unambiguous prefix — `git switch --tra origin/main` is `--track` — and every
+# check here read the full spelling only, which a reviewer probed live: `--tra` and
+# `branch --mov main` were both silent while their full spellings were denied.
+#
+# Three, not one, and the floor is the whole of the safety argument. `--t` uniquely
+# prefixes `--track` in a one-name list and is also the beginning of half the options
+# git has, so a one-character floor would read unrelated commands as branch moves. At
+# three the collisions stop being plausible, and the cost is a real gap: git resolves
+# `--tr` and this does not. That gap is pinned by a test rather than left implicit.
+LONG_OPTION_PREFIX_FLOOR = 3
+
+
+def long_option_matches(token_name: str, names, *, prefixes: bool) -> bool:
+    """Whether an option token names one of `names`, optionally by unambiguous prefix.
+
+    **Ambiguity is judged against `names`, not against git's option table**, and that
+    is a deliberate simplification rather than an omission. Modelling every
+    subcommand's full table would be a second implementation of git's parser, kept in
+    step with git by hand; judging against the handful of options a check cares about
+    cannot be wrong in the dangerous direction. It can over-recognize — a prefix git
+    would reject as ambiguous against options this check never looks at is read as the
+    one it does look at — and that costs exactly one message, which is the posture
+    this file states at the top and applies everywhere else.
+
+    An abbreviation is a prefix, not an elision: `--forc` abbreviates `--force-move`
+    and `--for-mov` does not. An ambiguous prefix matches nothing, so the check falls
+    through to whatever it would have decided without the option — the same answer as
+    before this existed. `prefixes` is off by default so no check inherits this by
+    accident: `discards_work` reads `--dry-run` to *suppress* an ask, and a prefix
+    match there would wave a destructive clean through.
+    """
+    if token_name in names:
+        return True
+    if not prefixes or not token_name.startswith("--"):
+        return False
+    if len(token_name) - 2 < LONG_OPTION_PREFIX_FLOOR:
+        return False
+    return sum(1 for name in names if name.startswith(token_name)) == 1
+
+
+def long_option(arguments: list[str], *names: str, prefixes: bool = False) -> bool:
     """True when any of `names` appears as a long option, with or without a value."""
     for token in arguments:
         if token == "--":
             break
-        if token.split("=", 1)[0] in names:
+        if long_option_matches(token.split("=", 1)[0], names, prefixes=prefixes):
             return True
     return False
 
@@ -885,6 +939,7 @@ def option_values(
     *names: str,
     value_taking: str = "",
     long_value_taking: frozenset[str] = frozenset(),
+    prefixes: bool = False,
 ) -> list[str]:
     """Return the values given to one option, in every spelling it accepts.
 
@@ -894,6 +949,11 @@ def option_values(
     has to see the value. `value_taking` is the same idea as in `short_option` —
     a letter earlier in a bundle that swallows the rest of its token means the
     letter we are looking for is that value, not a separate option.
+
+    `prefixes` reaches both option lists, so that an unambiguous abbreviation behaves
+    exactly as the full option does — `--cre main` names the branch being created and
+    `--con merge` swallows its value, the same as `--create` and `--conflict`. Reading
+    one list by prefix and not the other would invent a spelling git does not have.
     """
     values: list[str] = []
     index = 0
@@ -903,13 +963,17 @@ def option_values(
             break
         if token.startswith("--"):
             name, separator, attached = token.partition("=")
-            if name in names:
+            if long_option_matches(name, names, prefixes=prefixes):
                 if separator:
                     values.append(attached)
                 elif index + 1 < len(arguments):
                     index += 1
                     values.append(arguments[index])
-            elif not separator and name in long_value_taking and index + 1 < len(arguments):
+            elif (
+                not separator
+                and long_option_matches(name, long_value_taking, prefixes=prefixes)
+                and index + 1 < len(arguments)
+            ):
                 index += 1
         elif short and token.startswith("-") and len(token) > 1:
             for position, character in enumerate(token[1:], start=1):
@@ -934,6 +998,7 @@ def operands(
     *,
     short_value_taking: str = "",
     long_value_taking: frozenset[str] = frozenset(),
+    prefixes: bool = False,
 ) -> list[str]:
     """The non-option tokens of an argument list, in order.
 
@@ -941,6 +1006,9 @@ def operands(
     in `gh pr comment 10`. The caller names the short and long options that take
     a separate value, so `o/r` in `gh --repo o/r pr create` is skipped before
     the command pair is read.
+
+    `prefixes` reads an abbreviated long option as the option it abbreviates; see
+    `long_option_matches`. Off by default, and only the branch-moving checks set it.
     """
     found: list[str] = []
     past_marker = False
@@ -953,7 +1021,11 @@ def operands(
             continue
         if not past_marker and token.startswith("--"):
             name, separator, _attached = token.partition("=")
-            if not separator and name in long_value_taking and index + 1 < len(arguments):
+            if (
+                not separator
+                and long_option_matches(name, long_value_taking, prefixes=prefixes)
+                and index + 1 < len(arguments)
+            ):
                 index += 1
             index += 1
             continue
@@ -1016,7 +1088,12 @@ CHECKOUT_LONG_VALUE_OPTIONS = frozenset(
 
 
 def branches_created(arguments: list[str]) -> list[str]:
-    """The branch names this call would create and stand on, in every spelling."""
+    """The branch names this call would create and stand on, in every spelling.
+
+    Including abbreviated ones: `git switch --cre main` is `--create`, and reading
+    only the full spelling left the abbreviation to be judged by whatever the operand
+    happened to be. See `long_option_matches` for how short an abbreviation may be.
+    """
     values: list[str] = []
     for letter in BRANCH_CREATING_SHORT:
         values += option_values(
@@ -1024,6 +1101,7 @@ def branches_created(arguments: list[str]) -> list[str]:
             letter,
             value_taking=BRANCH_CREATING_SHORT,
             long_value_taking=CHECKOUT_LONG_VALUE_OPTIONS,
+            prefixes=True,
         )
     values += option_values(
         arguments,
@@ -1031,6 +1109,7 @@ def branches_created(arguments: list[str]) -> list[str]:
         *BRANCH_CREATING_LONG,
         value_taking=BRANCH_CREATING_SHORT,
         long_value_taking=CHECKOUT_LONG_VALUE_OPTIONS,
+        prefixes=True,
     )
     return values
 
@@ -1070,8 +1149,36 @@ def moves_head_to_main(action: str, arguments: list[str]) -> bool:
     branch cannot be done without asking git. That spelling is left alone, and a
     `-c`/`-C` name always wins, because then the caller has said where HEAD lands.
 
-    **Four boundaries, stated because they are permanent.** `git switch -` and
-    `git checkout -` name the previous branch, which no static reader can resolve, and
+    **Long options are read by unambiguous prefix**, because git accepts them that
+    way and this file read only the full spelling until a reviewer probed the
+    installed guard: `--tra origin/main` and `--mov main` were silent while `--track`
+    and `--move` were denied. `long_option_matches` holds the rule and the floor.
+    It reads the *exclusions* the same way, which is the one place the prefix moves a
+    command toward the milder answer: an abbreviated `--pathspec-from-file` is read as
+    the pathspec checkout it is, so it degrades to `discards_work`'s ask exactly as
+    the full spelling already does. An abbreviation behaving differently from the
+    option it abbreviates would be a spelling git does not have.
+
+    **`symbolic-ref` is denied outright**, and it is the one addition here that is not
+    a checkout at all: `git symbolic-ref HEAD refs/heads/main` writes the same file a
+    switch writes, leaving the checkout standing on main without a switch, a checkout
+    or a rename ever appearing in the command. The tokenizer reads it cleanly — the
+    action is `symbolic-ref` and the two operands are `HEAD` and the ref — so there is
+    nothing to guess at. A read (`git symbolic-ref --short HEAD`) has one operand and
+    is untouched, and a *remote* HEAD is somebody else's ref and untouched too.
+
+    **Manufacturing a local `main` without moving HEAD is not covered.**
+    `git branch main`, `git branch -c/-C/--copy main` and `git worktree add <path>
+    main` all end with a local `main` existing, and none of them moves this checkout;
+    what hard rule 3 refuses is standing on it and writing from there. The worktree
+    case is the one worth naming twice, because it does put *a* checkout on main — a
+    separate one — and what protects that is `writing_on_main`, which reads the branch
+    of the checkout containing the file being written and refuses every write inside
+    it. Recorded here, and pinned by a test, so they stay decisions rather than gaps.
+
+    **Boundaries that stay open, stated because they are permanent.** `git switch -`
+    and `git checkout -` name the previous branch, which no static reader can resolve,
+    and
     `switch` reaches no other check, so that spelling is not covered. `git commit`
     while already standing on main is not here at all — the guard never sees which
     branch a shell command runs on; that is `pre-commit`'s job, and it refuses.
@@ -1085,15 +1192,24 @@ def moves_head_to_main(action: str, arguments: list[str]) -> bool:
 
     `--detach` is over-recognized deliberately: `git checkout --detach main` leaves
     no branch checked out, so it is arguably allowed, and being wrong toward the
-    refusal costs one message.
+    refusal costs one message. It needs no entry in any option table, abbreviated or
+    not: an unrecognized long option is skipped and the operand still reads as main.
     """
+    if action == "symbolic-ref":
+        # `HEAD` compared case-insensitively for the same reason everything else here
+        # over-recognizes: git wants the ref spelled as it is stored, and being wrong
+        # toward the refusal costs one message.
+        pointed = operands(arguments)
+        return (
+            len(pointed) == 2 and pointed[0].upper() == "HEAD" and pointed[1] in MAIN_BRANCH_NAMES
+        )
     if action not in {"switch", "checkout"}:
         return False
     created = branches_created(arguments)
     if created:
         return any(name in MAIN_BRANCH_NAMES for name in created)
     if action == "checkout":
-        if long_option(arguments, "--pathspec-from-file"):
+        if long_option(arguments, "--pathspec-from-file", prefixes=True):
             return False
         if "--" in arguments and arguments[arguments.index("--") + 1 :]:
             return False
@@ -1101,12 +1217,13 @@ def moves_head_to_main(action: str, arguments: list[str]) -> bool:
         arguments,
         short_value_taking=BRANCH_CREATING_SHORT,
         long_value_taking=CHECKOUT_LONG_VALUE_OPTIONS,
+        prefixes=True,
     )
     if len(given) != 1:
         return False
     if given[0] in MAIN_BRANCH_NAMES:
         return True
-    if long_option(arguments, "--track") or short_option(arguments, "t", action):
+    if long_option(arguments, "--track", prefixes=True) or short_option(arguments, "t", action):
         _remote, separator, branch = given[0].partition("/")
         return bool(separator) and branch == "main"
     return False
@@ -1134,12 +1251,17 @@ def renames_a_branch_to_main(action: str, arguments: list[str]) -> bool:
     manufacturing a local `main` by rename is the neighbourhood the rule guards, and
     being wrong costs one message. More than two operands is not a rename git will
     accept, so it is left alone rather than guessed at.
+
+    The long spellings are read by unambiguous prefix — `--mov` is `--move` to git and
+    was silent here — and `-c`/`-C`/`--copy` are *not* a rename: they leave a second
+    branch named main without moving HEAD, which `moves_head_to_main` records as a
+    boundary rather than covering.
     """
     if action != "branch":
         return False
     if not (
         short_option(arguments, BRANCH_RENAME_SHORT, action)
-        or long_option(arguments, *BRANCH_RENAME_LONG)
+        or long_option(arguments, *BRANCH_RENAME_LONG, prefixes=True)
     ):
         return False
     given = operands(arguments, short_value_taking=VALUE_TAKING["branch"])
@@ -1162,8 +1284,14 @@ def hard_git_denial(calls: list[tuple[str, list[str], list[str], str]]) -> str |
             return HOOK_BYPASS
         if action in {"push", "send-pack"} and push_targets_main(arguments):
             return "main may move only through a pull-request merge"
-        if moves_head_to_main(action, arguments) or renames_a_branch_to_main(action, arguments):
+        # Same rule, two remedies, because the two calls are doing different things.
+        # A checkout is standing somewhere and the way out is to stand somewhere else;
+        # a rename is choosing a name and the way out is to choose another. Sharing
+        # one sentence told a rename caller to move off a branch it was not moving to.
+        if moves_head_to_main(action, arguments):
             return f"{RULE_THREE} {OFF_MAIN}"
+        if renames_a_branch_to_main(action, arguments):
+            return f"{RULE_THREE} {NOT_NAMED_MAIN}"
     return None
 
 

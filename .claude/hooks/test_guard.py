@@ -103,9 +103,46 @@ def payload(
         # without knowing which of them is the remote, so it is left alone. Pinned
         # here so the boundary is a decision on record rather than an oversight.
         "git switch --track origin/feature/main",
+        # An unrelated long option that merely begins near one the branch checks care
+        # about. Reading branches merged into main is a read, and prefix recognition
+        # must not spill onto it: `--merged` is no prefix of `--move`.
+        "git branch --merged main",
+        # Reading where HEAD points, and pointing a *remote* HEAD at a remote main,
+        # move nothing in this checkout.
+        "git symbolic-ref --short HEAD",
+        "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main",
     ],
 )
 def test_ordinary_read_or_bounded_local_work_stays_open(command):
+    assert guard.evaluate(payload(tool_input={"command": command})) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The floor: fewer than three characters after the dashes is not read as an
+        # abbreviation, although git itself resolves `--tr` to `--track` here. Three
+        # is where over-recognition stops being cheap — `--t` uniquely prefixes
+        # `--track` in a one-name list and matches half the options git has.
+        "git switch --tr origin/main",
+        # A separate checkout standing on main. It moves nothing in *this* checkout,
+        # and every write inside it is refused by the write-path check instead.
+        "git worktree add /tmp/wt main",
+        # These manufacture a local `main` without moving HEAD onto it. Naming them
+        # here keeps the boundary a decision on record rather than an oversight.
+        "git branch -c main",
+        "git branch -C main",
+        "git branch --copy main",
+        "git branch main",
+    ],
+)
+def test_branch_boundaries_stay_uncovered_and_are_recorded(command):
+    """Spellings the branch checks deliberately do not deny, pinned as decisions.
+
+    Each is documented in `moves_head_to_main`. A change that starts denying one of
+    these is not wrong, but it is a change somebody chose rather than one that crept
+    in, and this test is where it has to be argued.
+    """
     assert guard.evaluate(payload(tool_input={"command": command})) is None
 
 
@@ -335,12 +372,60 @@ def test_subagents_cannot_take_consequential_or_external_actions(command):
         # Over-recognized on purpose: `-C` names another repository, and the guard
         # refuses rather than reasoning about which clone is meant.
         "git -C /tmp/other-repo checkout main",
+        # Git accepts any unambiguous prefix of a long option, and these checks read
+        # only the full spelling until a reviewer probed the installed guard live:
+        # `switch --tra origin/main` and `branch --mov main` were both silent.
+        "git switch --tra origin/main",
+        "git switch --trac origin/main",
+        "git checkout --tra upstream/main",
+        "git branch --mov main",
+        "git branch --forc main",
+        "git switch --cre main",
+        "git checkout --orp main",
+        # `--detach` needs no table entry of its own: an unrecognized long option is
+        # skipped and the operand still reads as main, which is the over-recognition
+        # the guard already declares for the full spelling.
+        "git checkout --det main",
+        # One command that respells exactly what this check refuses: HEAD is pointed
+        # at main without a checkout, a switch or a rename ever happening.
+        "git symbolic-ref HEAD refs/heads/main",
+        # Over-recognized deliberately — git wants a full ref here and would refuse
+        # the short name, and being wrong toward the refusal costs one message.
+        "git symbolic-ref HEAD main",
     ],
 )
 def test_hard_git_rules_are_denied_even_to_the_main_session(command):
     decision, reason = guard.evaluate(payload(tool_input={"command": command}))
     assert decision == "deny"
     assert "hard rule" in reason.lower()
+
+
+def test_a_long_option_prefix_is_read_only_when_it_is_long_enough_and_unambiguous():
+    # An abbreviation is a prefix, not an elision: `--forc` abbreviates
+    # `--force-move` and `--for-mov` does not.
+    assert guard.long_option_matches("--mov", ("--move", "--force-move"), prefixes=True)
+    assert guard.long_option_matches("--forc", ("--move", "--force-move"), prefixes=True)
+    assert not guard.long_option_matches("--for-mov", ("--move", "--force-move"), prefixes=True)
+    # Ambiguous against the names this check cares about: no match, so the guard
+    # falls through to whatever it would have decided without the option.
+    assert not guard.long_option_matches("--forc", ("--force-move", "--force-copy"), prefixes=True)
+    # Below the floor, and off by default so no other check inherits this.
+    assert not guard.long_option_matches("--mo", ("--move",), prefixes=True)
+    assert not guard.long_option_matches("--mov", ("--move",), prefixes=False)
+    # A short option is never an abbreviated long one.
+    assert not guard.long_option_matches("-m", ("--move",), prefixes=True)
+
+
+def test_the_rename_denial_names_a_remedy_a_rename_caller_can_carry_out():
+    # "Move off it first" describes nothing somebody spelling a rename is doing;
+    # the fix is choosing a target name that is not main.
+    _, rename = guard.evaluate(payload(tool_input={"command": "git branch -m main"}))
+    # The positive control: the checkout spelling still names the move, so this is a
+    # split message rather than a remedy dropped from both.
+    _, moved = guard.evaluate(payload(tool_input={"command": "git switch main"}))
+    assert "Move off it first" in moved
+    assert "Move off it first" not in rename
+    assert "not `main`" in rename
 
 
 @pytest.mark.parametrize("name", sorted(guard.GOVERNING_DOCUMENTS))
@@ -1786,18 +1871,36 @@ def test_the_heredoc_gate_no_longer_advertises_a_shell_only_rule():
 
 
 def test_no_comment_quotes_wording_claude_md_no_longer_contains():
-    """A quotation is a claim about another file, and CLAUDE.md was rewritten.
+    """A quotation is a claim about another file, and CLAUDE.md keeps being rewritten.
 
-    Both retired sentences said something true and still do — code stays open, and
-    a rule shaped as a wall has cost this project real time — but they are no
-    longer that document's words, and a reader checking a quotation against the
-    file it names would find neither. Paraphrase, or name the section.
+    The blocklist below is the older half of this check: two retired sentences that
+    said something true and still do — code stays open, and a rule shaped as a wall
+    has cost this project real time — but are no longer that document's words. They
+    are kept because a regression guard that has already caught something is not
+    worth dropping, and they are assembled from halves so that this file does not
+    contain the literals it forbids, which would make the check pass on itself.
 
-    The phrases are assembled from halves so that this file does not contain the
-    literals it forbids, which would make the check pass on itself.
+    The blocklist alone was not enough, and three reviewers found the same stale
+    quotation on the same day: `RULE_THREE` still carried a middle sentence the
+    branch had deleted from hard rule 3, and no test could see it because a
+    blocklist only knows the wordings somebody thought to forbid. So the check that
+    matters now is the positive one — every span the guard presents inside quotation
+    marks as CLAUDE.md's words is read back out of the real CLAUDE.md. A rewrite
+    that moves the sentence fails the suite instead of shipping a quotation of a file
+    that does not say it.
     """
     retired = ("Code is not on that list" + " and stays open", "a rule shaped as a wall" + " cost")
     for path in (SCRIPT, Path(__file__)):
         source = path.read_text(encoding="utf-8")
         for phrase in retired:
             assert phrase not in source, f"{path.name} quotes wording CLAUDE.md no longer carries"
+
+    document = PROJECT / "CLAUDE.md"
+    # Unknown is not a pass: a missing document means the quotation cannot be
+    # checked, which is a failure of this test rather than a clean run.
+    assert document.is_file(), f"no CLAUDE.md at {document} — the quotation cannot be checked"
+    text = document.read_text(encoding="utf-8")
+    quoted = re.findall(r'"([^"]+)"', guard.RULE_THREE)
+    assert quoted, "RULE_THREE presents no quotation, so this check would prove nothing"
+    for span in quoted:
+        assert span in text, f"the guard quotes CLAUDE.md as saying {span!r}, and it does not"

@@ -2,8 +2,9 @@
 
 Each test builds a disposable workbench and points the module at it. What is
 proven: a byte-identical duplicate is reported and left where it is; the retired
-`--file` flag is refused rather than silently accepted; HANDOFF.md is never
-reported as redundant however identical it looks; design/ is not tidy.py's to
+`--file` flag is refused rather than silently accepted; neither HANDOFF.md nor
+NEXT_SESSION_BRIEF.md is reported as redundant however identical it looks, since
+session-end archives both by copying and then overwriting; design/ is not tidy.py's to
 judge; an empty active/ still audits project memory, so the report does not stop
 at the missing handoff; markdown link shapes resolve; an over-full active/ is
 reported against the one-sitting budget; and a standing/ that is absent, or that
@@ -71,17 +72,26 @@ def test_handoff_is_never_reported_as_a_duplicate(tmp_path, capsys):
     (tidy.ARCHIVE / "2026-01-01_x").mkdir()
     (tidy.ARCHIVE / "2026-01-01_x" / "HANDOFF.md").write_text("identical")
     (tidy.ACTIVE / "HANDOFF.md").write_text("identical")
-    # The positive control: a second duplicate that must be reported. Without it
-    # this passes against a tidy.py whose duplicate scan does nothing at all.
+    # session-end archives the brief in the same copy-then-overwrite step as the
+    # handoff, so an interrupted close leaves it byte-identical to its archive too.
+    (tidy.ARCHIVE / "2026-01-01_x" / "NEXT_SESSION_BRIEF.md").write_text("identical brief")
+    (tidy.ACTIVE / "NEXT_SESSION_BRIEF.md").write_text("identical brief")
+    # A positive control for each exemption: a duplicate beside it that must be
+    # reported, with content of its own so neither is named as the other's match.
+    # Without them this passes against a tidy.py whose duplicate scan does nothing.
     (tidy.ARCHIVE / "2026-01-01_x" / "note.md").write_text("also identical")
     (tidy.ACTIVE / "note.md").write_text("also identical")
+    (tidy.ARCHIVE / "2026-01-01_x" / "queue.md").write_text("a third duplicate")
+    (tidy.ACTIVE / "queue.md").write_text("a third duplicate")
 
     tidy.main([])
 
-    out = capsys.readouterr().out
-    assert "note.md" in out, "the duplicate scan did not run"
-    assert "HANDOFF.md" not in out.split("already archived")[1], (
-        "the live handoff must never be reported as redundant"
+    reported = capsys.readouterr().out.split("already archived")[1]
+    assert "note.md" in reported, "the duplicate scan did not run"
+    assert "queue.md" in reported, "the brief's positive control did not run"
+    assert "HANDOFF.md" not in reported, "the live handoff must never be reported as redundant"
+    assert "NEXT_SESSION_BRIEF.md" not in reported, (
+        "the live brief must never be reported as redundant"
     )
 
 
