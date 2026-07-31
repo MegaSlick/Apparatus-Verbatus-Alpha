@@ -111,6 +111,9 @@ def payload(
         # move nothing in this checkout.
         "git symbolic-ref --short HEAD",
         "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main",
+        # The control for `symbolic-ref -m`: the reason is the option's value, and
+        # skipping it must not stop the real target being read.
+        "git symbolic-ref -m tidy HEAD refs/heads/work/topic",
     ],
 )
 def test_ordinary_read_or_bounded_local_work_stays_open(command):
@@ -125,8 +128,14 @@ def test_ordinary_read_or_bounded_local_work_stays_open(command):
         # is where over-recognition stops being cheap — `--t` uniquely prefixes
         # `--track` in a one-name list and matches half the options git has.
         "git switch --tr origin/main",
+        # The same floor at two more sites, so its width is a decision on record
+        # rather than one example. Git resolves `--cr` to `--create` and `--mo` to
+        # `--move`; this reads neither, and both spellings pass in silence.
+        "git switch --cr main origin/main",
+        "git branch --mo main",
         # A separate checkout standing on main. It moves nothing in *this* checkout,
-        # and every write inside it is refused by the write-path check instead.
+        # and every Write/Edit-tool write inside it is refused by the write-path
+        # check instead — the shell route is uncovered there as it is everywhere.
         "git worktree add /tmp/wt main",
         # These manufacture a local `main` without moving HEAD onto it. Naming them
         # here keeps the boundary a decision on record rather than an oversight.
@@ -231,6 +240,13 @@ def test_branch_boundaries_stay_uncovered_and_are_recorded(command):
         "git checkout main -- pipeline/stage.py",
         "git checkout main pipeline/stage.py",
         "git checkout main --pathspec-from-file=paths.txt",
+        # `git branch --force main` force-resets a local `main` pointer and moves no
+        # HEAD, which is the class `git branch main` sits in on the open-boundary
+        # list. It is pinned here rather than there because `--force` already reaches
+        # the work-discarding ask on its own; what changed is that it is no longer
+        # *denied* as a rename, which it never was. The abbreviation answers the same.
+        "git branch --force main",
+        "git branch --forc main",
         # Quoted prose naming one of these commands after a separator is read as a
         # command position — this file's oldest admitted blindness, not a new one.
         # It lands in the ask class it always did, because the tokens after the
@@ -363,7 +379,12 @@ def test_subagents_cannot_take_consequential_or_external_actions(command):
         "git branch -m main",
         "git branch -M main",
         "git branch --move main",
-        "git branch --force-move main",
+        # Forcing a rename is `--force --move`, in either order, or `-M`. There is no
+        # `--force-move` option: git rejects it as unknown, and while this file
+        # carried the invented name a real `--force` uniquely prefixed it and was
+        # denied as a rename it is not. Both real spellings are denied here.
+        "git branch --force --move main",
+        "git branch --move --force main",
         "git branch -m work/topic main",
         # `--track origin/main` creates a local `main` and stands on it.
         "git switch --track origin/main",
@@ -379,9 +400,14 @@ def test_subagents_cannot_take_consequential_or_external_actions(command):
         "git switch --trac origin/main",
         "git checkout --tra upstream/main",
         "git branch --mov main",
-        "git branch --forc main",
         "git switch --cre main",
         "git checkout --orp main",
+        # `--force-create` in full and by a prefix no real option contends for.
+        "git switch --force-create main",
+        "git switch --force-c main",
+        # Ambiguous between `--force` and `--force-create`, so it names neither and
+        # the bare operand is read exactly as `git switch main` is.
+        "git switch --forc main",
         # `--detach` needs no table entry of its own: an unrecognized long option is
         # skipped and the operand still reads as main, which is the over-recognition
         # the guard already declares for the full spelling.
@@ -389,6 +415,13 @@ def test_subagents_cannot_take_consequential_or_external_actions(command):
         # One command that respells exactly what this check refuses: HEAD is pointed
         # at main without a checkout, a switch or a rename ever happening.
         "git symbolic-ref HEAD refs/heads/main",
+        # `-m` records a reason for the reflog and takes a value. Until that was
+        # named, the reason counted as a third operand and the whole command passed
+        # in silence — verified live against the installed guard. Every spelling of
+        # the option is the same act: detached, bundled, and attached.
+        "git symbolic-ref -m tidy HEAD refs/heads/main",
+        "git symbolic-ref -qm tidy HEAD refs/heads/main",
+        "git symbolic-ref -mtidy HEAD refs/heads/main",
         # Over-recognized deliberately — git wants a full ref here and would refuse
         # the short name, and being wrong toward the refusal costs one message.
         "git symbolic-ref HEAD main",
@@ -402,18 +435,52 @@ def test_hard_git_rules_are_denied_even_to_the_main_session(command):
 
 def test_a_long_option_prefix_is_read_only_when_it_is_long_enough_and_unambiguous():
     # An abbreviation is a prefix, not an elision: `--forc` abbreviates
-    # `--force-move` and `--for-mov` does not.
-    assert guard.long_option_matches("--mov", ("--move", "--force-move"), prefixes=True)
-    assert guard.long_option_matches("--forc", ("--move", "--force-move"), prefixes=True)
-    assert not guard.long_option_matches("--for-mov", ("--move", "--force-move"), prefixes=True)
+    # `--force-create` and `--for-cre` does not. Every option named here is one git
+    # actually has; the earlier spelling of this test argued about `--force-move`,
+    # which git does not know, and the invented name was itself the defect.
+    assert guard.long_option_matches("--mov", ("--move",), prefixes=True)
+    assert guard.long_option_matches("--forc", ("--force-create",), prefixes=True)
+    assert not guard.long_option_matches("--for-cre", ("--force-create",), prefixes=True)
     # Ambiguous against the names this check cares about: no match, so the guard
     # falls through to whatever it would have decided without the option.
-    assert not guard.long_option_matches("--forc", ("--force-move", "--force-copy"), prefixes=True)
+    assert not guard.long_option_matches(
+        "--force", ("--force-create", "--force-if-includes"), prefixes=True
+    )
     # Below the floor, and off by default so no other check inherits this.
     assert not guard.long_option_matches("--mo", ("--move",), prefixes=True)
     assert not guard.long_option_matches("--mov", ("--move",), prefixes=False)
     # A short option is never an abbreviated long one.
     assert not guard.long_option_matches("-m", ("--move",), prefixes=True)
+
+
+def test_a_decoy_option_is_counted_in_the_ambiguity_but_never_matched_as():
+    # `--force` is a real option of `checkout` and `switch`, and this check never
+    # looks for it — so without naming it, `--force` was the one *unique* prefix of
+    # `--force-create` and a plain forced checkout was read as a branch creation.
+    names, decoys = ("--force-create",), ("--force",)
+    assert guard.long_option_matches("--force-c", names, prefixes=True, decoys=decoys)
+    assert not guard.long_option_matches("--forc", names, prefixes=True, decoys=decoys)
+    assert not guard.long_option_matches("--force", names, prefixes=True, decoys=decoys)
+    # A decoy is never itself a match, and it narrows nothing it does not prefix.
+    assert guard.long_option_matches("--orp", ("--orphan",), prefixes=True, decoys=decoys)
+
+
+def test_a_real_force_is_not_read_as_an_abbreviated_force_create():
+    # Verified live against the installed guard: `git checkout --force main -- <path>`
+    # was hard-denied under rule 3 though it moves no HEAD at all — a refusal naming
+    # the wrong act, which this file's history says is the one somebody clicks
+    # through. It degrades to the ask that names what it really does.
+    decision, reason = guard.evaluate(
+        payload(tool_input={"command": "git checkout --force main -- pipeline/stage.py"})
+    )
+    assert decision == "ask"
+    assert "discard" in reason
+    assert "hard rule" not in reason.lower()
+    # The positive control: the option it was being mistaken for still denies, in
+    # full and by a prefix nothing real contends for.
+    for command in ("git switch --force-create main", "git switch --force-c main"):
+        found = guard.evaluate(payload(tool_input={"command": command}))
+        assert found and found[0] == "deny"
 
 
 def test_the_rename_denial_names_a_remedy_a_rename_caller_can_carry_out():
@@ -601,6 +668,55 @@ def test_a_pathspec_checkout_from_main_keeps_its_work_discarding_treatment():
     assert decision == "ask"
     assert "discard" in reason
     assert "hard rule" not in reason.lower()
+
+
+@pytest.mark.parametrize(
+    ("abbreviated", "full"),
+    [
+        # Verified live against the installed guard: `--no-verif` slid past the
+        # hook-bypass denial into a publish ask labelled as an ordinary push, while
+        # CLAUDE.md says the option is blocked for Claude outright.
+        ("git push --no-verif origin work/topic", "git push --no-verify origin work/topic"),
+        ('git commit --no-verif -m "message"', 'git commit --no-verify -m "message"'),
+        ("git reset --har HEAD", "git reset --hard HEAD"),
+        # The three forcing spellings all mean the same answer here, so a prefix
+        # ambiguous between them is not ambiguous about the decision. `--forc` is the
+        # one entry git itself refuses to run — it is ambiguous between
+        # `--force-with-lease` and `--force-if-includes` — and it is read as the force
+        # prompt deliberately: the heavier answer on a command that cannot execute.
+        ("git push --forc origin work/topic", "git push --force origin work/topic"),
+        (
+            "git push --force-with-l origin work/topic",
+            "git push --force-with-lease origin work/topic",
+        ),
+        ("git push --del origin work/topic", "git push --delete origin work/topic"),
+        ("git push --mir origin", "git push --mirror origin"),
+        ("git branch --del work/topic", "git branch --delete work/topic"),
+        ("git worktree remove --forc /tmp/wt", "git worktree remove --force /tmp/wt"),
+    ],
+)
+def test_an_abbreviated_triggering_option_answers_as_its_full_spelling_does(abbreviated, full):
+    """An abbreviation may never buy a milder answer than the option it abbreviates.
+
+    Git resolves any unambiguous prefix, and every abbreviation here was run against
+    git to confirm it resolves — except `--forc` on push, noted above, which git
+    rejects and this reads toward the heavier prompt. Reading only the full spelling
+    meant the abbreviation reached a different check, or none: a denial became an ask,
+    and an ask became a prompt naming the wrong consequence.
+    """
+    short = guard.evaluate(payload(tool_input={"command": abbreviated}))
+    spelled = guard.evaluate(payload(tool_input={"command": full}))
+    assert spelled is not None, "the control must itself be recognized"
+    assert short == spelled
+
+
+def test_a_suppressing_option_is_still_read_only_in_its_full_spelling():
+    # The opt-in is the whole design. `--dry-run` *suppresses* the clean ask, so
+    # reading a prefix as it would wave a destructive clean through on a spelling
+    # nobody checked; unrecognized, the abbreviation fails toward the ask instead.
+    abbreviated = guard.evaluate(payload(tool_input={"command": "git clean --dry-ru -fd"}))
+    assert abbreviated and abbreviated[0] == "ask"
+    assert guard.evaluate(payload(tool_input={"command": "git clean --dry-run -fd"})) is None
 
 
 @pytest.mark.parametrize(

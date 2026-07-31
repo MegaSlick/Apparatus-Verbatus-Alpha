@@ -27,6 +27,11 @@ It does **not** understand command substitution, process substitution, or a
 wrapper command outside the list below. Comments are recognized only by that
 heredoc scanner; every other check still reads a `#` line as ordinary text.
 
+Git's triggering options are read by unambiguous prefix, as git resolves them; the
+body options of `curl`, `wget` and `gh api` are read by their full spelling only.
+That is a recorded boundary rather than a claim about those tools — `wget` resolves
+abbreviations too — and widening it is a separate surface with its own review.
+
 **Where that leaves a subagent is different, deliberately.** For the main session
 anything unrecognized passes silently, because precision here buys quiet and a
 false alarm spends Tyrel's attention. A subagent is unattended by definition and a
@@ -895,20 +900,30 @@ def short_option(arguments: list[str], letters: str, action: str = "") -> bool:
 LONG_OPTION_PREFIX_FLOOR = 3
 
 
-def long_option_matches(token_name: str, names, *, prefixes: bool) -> bool:
+def long_option_matches(token_name: str, names, *, prefixes: bool, decoys=()) -> bool:
     """Whether an option token names one of `names`, optionally by unambiguous prefix.
 
-    **Ambiguity is judged against `names`, not against git's option table**, and that
-    is a deliberate simplification rather than an omission. Modelling every
-    subcommand's full table would be a second implementation of git's parser, kept in
-    step with git by hand; judging against the handful of options a check cares about
-    cannot be wrong in the dangerous direction. It can over-recognize — a prefix git
-    would reject as ambiguous against options this check never looks at is read as the
-    one it does look at — and that costs exactly one message, which is the posture
-    this file states at the top and applies everywhere else.
+    **Ambiguity is judged against `names` and `decoys`, not against git's option
+    table**, and that is a deliberate simplification rather than an omission.
+    Modelling every subcommand's full table would be a second implementation of git's
+    parser, kept in step with git by hand; judging against the handful of options a
+    check cares about cannot be wrong in the dangerous direction. It can
+    over-recognize — a prefix git would reject as ambiguous against options this check
+    never looks at is read as the one it does look at — and that costs exactly one
+    message, which is the posture this file states at the top and applies everywhere
+    else.
 
-    An abbreviation is a prefix, not an elision: `--forc` abbreviates `--force-move`
-    and `--for-mov` does not. An ambiguous prefix matches nothing, so the check falls
+    **A decoy is where that simplification was wrong in the other direction.** It is a
+    real option of the same subcommand that this check never matches *as*, named here
+    only so it can contend for an abbreviation. `--force` is a real option of
+    `checkout` and `switch`; unnamed, it was the one unique prefix of `--force-create`,
+    so `git checkout --force main -- <path>` — which moves no HEAD and discards work
+    in place — was denied under hard rule 3, a refusal naming the wrong act. Counted
+    as a decoy, `--force` and `--forc` name nothing here and the command falls back to
+    the ask that describes what it really does, while `--force-c` still resolves.
+
+    An abbreviation is a prefix, not an elision: `--forc` abbreviates `--force-create`
+    and `--for-cre` does not. An ambiguous prefix matches nothing, so the check falls
     through to whatever it would have decided without the option — the same answer as
     before this existed. `prefixes` is off by default so no check inherits this by
     accident: `discards_work` reads `--dry-run` to *suppress* an ask, and a prefix
@@ -920,7 +935,11 @@ def long_option_matches(token_name: str, names, *, prefixes: bool) -> bool:
         return False
     if len(token_name) - 2 < LONG_OPTION_PREFIX_FLOOR:
         return False
-    return sum(1 for name in names if name.startswith(token_name)) == 1
+    # An exact decoy is an ambiguity of its own: git resolves `--force` to `--force`,
+    # never to `--force-create`, so a token spelling a decoy in full must match here
+    # exactly as an ambiguous prefix does — nothing.
+    candidates = [name for name in (*names, *decoys) if name.startswith(token_name)]
+    return len(candidates) == 1 and candidates[0] in names
 
 
 def long_option(arguments: list[str], *names: str, prefixes: bool = False) -> bool:
@@ -940,6 +959,7 @@ def option_values(
     value_taking: str = "",
     long_value_taking: frozenset[str] = frozenset(),
     prefixes: bool = False,
+    decoys: tuple[str, ...] = (),
 ) -> list[str]:
     """Return the values given to one option, in every spelling it accepts.
 
@@ -954,6 +974,8 @@ def option_values(
     exactly as the full option does — `--cre main` names the branch being created and
     `--con merge` swallows its value, the same as `--create` and `--conflict`. Reading
     one list by prefix and not the other would invent a spelling git does not have.
+    `decoys` reaches both for the same reason: an abbreviation a decoy contends for
+    names no option, and it must therefore swallow no value either.
     """
     values: list[str] = []
     index = 0
@@ -963,7 +985,7 @@ def option_values(
             break
         if token.startswith("--"):
             name, separator, attached = token.partition("=")
-            if long_option_matches(name, names, prefixes=prefixes):
+            if long_option_matches(name, names, prefixes=prefixes, decoys=decoys):
                 if separator:
                     values.append(attached)
                 elif index + 1 < len(arguments):
@@ -971,7 +993,7 @@ def option_values(
                     values.append(arguments[index])
             elif (
                 not separator
-                and long_option_matches(name, long_value_taking, prefixes=prefixes)
+                and long_option_matches(name, long_value_taking, prefixes=prefixes, decoys=decoys)
                 and index + 1 < len(arguments)
             ):
                 index += 1
@@ -999,6 +1021,7 @@ def operands(
     short_value_taking: str = "",
     long_value_taking: frozenset[str] = frozenset(),
     prefixes: bool = False,
+    decoys: tuple[str, ...] = (),
 ) -> list[str]:
     """The non-option tokens of an argument list, in order.
 
@@ -1007,8 +1030,10 @@ def operands(
     a separate value, so `o/r` in `gh --repo o/r pr create` is skipped before
     the command pair is read.
 
-    `prefixes` reads an abbreviated long option as the option it abbreviates; see
-    `long_option_matches`. Off by default, and only the branch-moving checks set it.
+    `prefixes` reads an abbreviated long option as the option it abbreviates, and
+    `decoys` names the real options an abbreviation must contend with; see
+    `long_option_matches`. Both are off by default, and only the branch-moving checks
+    set them.
     """
     found: list[str] = []
     past_marker = False
@@ -1023,7 +1048,7 @@ def operands(
             name, separator, _attached = token.partition("=")
             if (
                 not separator
-                and long_option_matches(name, long_value_taking, prefixes=prefixes)
+                and long_option_matches(name, long_value_taking, prefixes=prefixes, decoys=decoys)
                 and index + 1 < len(arguments)
             ):
                 index += 1
@@ -1052,6 +1077,10 @@ VALUE_TAKING = {
     "clean": "e",
     "restore": "s",
     "branch": "u",
+    # `-m` records a reflog reason. Unnamed, that reason counted as a third operand,
+    # and `symbolic-ref -m tidy HEAD refs/heads/main` — which stands the checkout on
+    # main without a checkout, a switch or a rename — passed the guard in silence.
+    "symbolic-ref": "m",
     # curl bundles heavily and half its alphabet swallows a value, so the list
     # has to be complete rather than convenient: `curl -fsS url` must not read
     # as a body-sending call, and `curl -obody.json url` must not read the `o`
@@ -1085,6 +1114,11 @@ BRANCH_CREATING_LONG = ("--create", "--force-create", "--orphan")
 CHECKOUT_LONG_VALUE_OPTIONS = frozenset(
     {"--conflict", "--create", "--force-create", "--orphan", "--pathspec-from-file"}
 )
+# Real options of those two subcommands that these checks never match as, named only
+# so an abbreviation has to contend with them; see `long_option_matches`. `--force` is
+# the one that mattered: it is a real `checkout`/`switch` option and the sole unique
+# prefix of `--force-create`, so a forced checkout was read as a branch creation.
+CHECKOUT_DECOY_OPTIONS = ("--force",)
 
 
 def branches_created(arguments: list[str]) -> list[str]:
@@ -1102,6 +1136,7 @@ def branches_created(arguments: list[str]) -> list[str]:
             value_taking=BRANCH_CREATING_SHORT,
             long_value_taking=CHECKOUT_LONG_VALUE_OPTIONS,
             prefixes=True,
+            decoys=CHECKOUT_DECOY_OPTIONS,
         )
     values += option_values(
         arguments,
@@ -1110,6 +1145,7 @@ def branches_created(arguments: list[str]) -> list[str]:
         value_taking=BRANCH_CREATING_SHORT,
         long_value_taking=CHECKOUT_LONG_VALUE_OPTIONS,
         prefixes=True,
+        decoys=CHECKOUT_DECOY_OPTIONS,
     )
     return values
 
@@ -1159,13 +1195,22 @@ def moves_head_to_main(action: str, arguments: list[str]) -> bool:
     the full spelling already does. An abbreviation behaving differently from the
     option it abbreviates would be a spelling git does not have.
 
+    **`--force` is a decoy here, not an option this check reads.** It is real, and it
+    was the sole unique prefix of `--force-create`, so `git checkout --force main --
+    <path>` was hard-denied under rule 3 although it moves no HEAD at all. Named in
+    `CHECKOUT_DECOY_OPTIONS`, it resolves to nothing here and the command falls back
+    to the ask that names what it does; `--force-c` still reads as `--force-create`.
+
     **`symbolic-ref` is denied outright**, and it is the one addition here that is not
     a checkout at all: `git symbolic-ref HEAD refs/heads/main` writes the same file a
     switch writes, leaving the checkout standing on main without a switch, a checkout
     or a rename ever appearing in the command. The tokenizer reads it cleanly — the
     action is `symbolic-ref` and the two operands are `HEAD` and the ref — so there is
-    nothing to guess at. A read (`git symbolic-ref --short HEAD`) has one operand and
-    is untouched, and a *remote* HEAD is somebody else's ref and untouched too.
+    nothing to guess at — once `-m` is named as taking a value, which it was not:
+    its reflog reason counted as a third operand and the command passed in silence,
+    in every spelling of the option. A read (`git symbolic-ref --short HEAD`) has one
+    operand and is untouched, and a *remote* HEAD is somebody else's ref and
+    untouched too.
 
     **Manufacturing a local `main` without moving HEAD is not covered.**
     `git branch main`, `git branch -c/-C/--copy main` and `git worktree add <path>
@@ -1173,8 +1218,9 @@ def moves_head_to_main(action: str, arguments: list[str]) -> bool:
     what hard rule 3 refuses is standing on it and writing from there. The worktree
     case is the one worth naming twice, because it does put *a* checkout on main — a
     separate one — and what protects that is `writing_on_main`, which reads the branch
-    of the checkout containing the file being written and refuses every write inside
-    it. Recorded here, and pinned by a test, so they stay decisions rather than gaps.
+    of the checkout containing the file being written and refuses every Write/Edit-tool
+    write inside it — the shell route is uncovered there as it is everywhere. Recorded
+    here, and pinned by a test, so they stay decisions rather than gaps.
 
     **Boundaries that stay open, stated because they are permanent.** `git switch -`
     and `git checkout -` name the previous branch, which no static reader can resolve,
@@ -1199,7 +1245,7 @@ def moves_head_to_main(action: str, arguments: list[str]) -> bool:
         # `HEAD` compared case-insensitively for the same reason everything else here
         # over-recognizes: git wants the ref spelled as it is stored, and being wrong
         # toward the refusal costs one message.
-        pointed = operands(arguments)
+        pointed = operands(arguments, short_value_taking=VALUE_TAKING["symbolic-ref"])
         return (
             len(pointed) == 2 and pointed[0].upper() == "HEAD" and pointed[1] in MAIN_BRANCH_NAMES
         )
@@ -1218,6 +1264,7 @@ def moves_head_to_main(action: str, arguments: list[str]) -> bool:
         short_value_taking=BRANCH_CREATING_SHORT,
         long_value_taking=CHECKOUT_LONG_VALUE_OPTIONS,
         prefixes=True,
+        decoys=CHECKOUT_DECOY_OPTIONS,
     )
     if len(given) != 1:
         return False
@@ -1230,9 +1277,17 @@ def moves_head_to_main(action: str, arguments: list[str]) -> bool:
 
 
 # `git branch -m main` renames the branch you are standing on. Short and long
-# spellings, and the forcing variants, are one operation to git.
+# spellings are one operation to git, and forcing one is `-M`, or `--force` and
+# `--move` given together in either order — `--force` on its own renames nothing.
+#
+# **There is no `--force-move`.** It was listed here as though there were, and the
+# invented name did real damage in the direction nobody expects: `--force` uniquely
+# prefixed it, so an ordinary `git branch --force main` was denied as a rename to
+# main, which is not what it does. Removing the name narrows the recognizer onto
+# what git actually accepts. `--force` still reaches `discards_work`'s ask on its
+# own, and paired with `--move` it is denied by the recognizer below.
 BRANCH_RENAME_SHORT = "mM"
-BRANCH_RENAME_LONG = ("--move", "--force-move")
+BRANCH_RENAME_LONG = ("--move",)
 
 
 def renames_a_branch_to_main(action: str, arguments: list[str]) -> bool:
@@ -1255,7 +1310,9 @@ def renames_a_branch_to_main(action: str, arguments: list[str]) -> bool:
     The long spellings are read by unambiguous prefix — `--mov` is `--move` to git and
     was silent here — and `-c`/`-C`/`--copy` are *not* a rename: they leave a second
     branch named main without moving HEAD, which `moves_head_to_main` records as a
-    boundary rather than covering.
+    boundary rather than covering. Neither is `--force` on its own, whatever it was
+    listed as here once: it force-resets a pointer and keeps the work-discarding ask,
+    and only `-M`, or `--force` together with `--move`, forces a rename.
     """
     if action != "branch":
         return False
@@ -1276,7 +1333,10 @@ HOOK_BYPASS = "bypassing repository Git hooks is outside the allowed workflow"
 def hard_git_denial(calls: list[tuple[str, list[str], list[str], str]]) -> str | None:
     for action, arguments, tokens, prefix in calls:
         if (
-            long_option(tokens, "--no-verify")
+            # By prefix: git runs `--no-verif` exactly as it runs `--no-verify`, and
+            # reading only the full spelling let the abbreviation slide past this
+            # denial into the publish ask below — a hard rule answered with a prompt.
+            long_option(tokens, "--no-verify", prefixes=True)
             or skips_commit_hooks(action, arguments)
             or hooks_path_bypass(action, arguments, tokens)
             or GIT_CONFIG_ASSIGNMENT.search(prefix)
@@ -1301,9 +1361,17 @@ def discards_work(action: str, arguments: list[str]) -> bool:
     One branch per subcommand, so a `git status` pays for none of them — the
     option scans below used to run for every recognized Git call and be thrown
     away for all but two of them.
+
+    **An option that TRIGGERS an answer here is read by prefix; one that suppresses
+    an answer is not.** Git resolves any unambiguous abbreviation, so `--har` is
+    `--hard` and `--forc` is `--force`, and reading only the full spelling let the
+    abbreviation buy a milder answer than the option it abbreviates. `--dry-run`,
+    `--staged` and their kin stay exact for the opposite reason: a prefix read there
+    fails toward silence on a destructive command, which is the one direction this
+    file may not be wrong in.
     """
     if action == "reset":
-        return long_option(arguments, "--hard")
+        return long_option(arguments, "--hard", prefixes=True)
     if action == "restore":
         staged = long_option(arguments, "--staged") or short_option(arguments, "S", action)
         worktree = long_option(arguments, "--worktree") or short_option(arguments, "W", action)
@@ -1315,13 +1383,13 @@ def discards_work(action: str, arguments: list[str]) -> bool:
     if action == "branch":
         # `-Df` is `git branch -D --force`; exact token membership saw neither
         # half of it and deleted an unmerged branch without asking.
-        return long_option(arguments, "--delete", "--force") or short_option(
+        return long_option(arguments, "--delete", "--force", prefixes=True) or short_option(
             arguments, "DdfM", action
         )
     if action == "stash":
         return bool({"drop", "clear"}.intersection(argument.lower() for argument in arguments))
     if action == "worktree":
-        return "remove" in arguments and long_option(arguments, "--force")
+        return "remove" in arguments and long_option(arguments, "--force", prefixes=True)
     return False
 
 
@@ -1338,8 +1406,22 @@ def risky_git(command: str, payload: dict[str, Any]) -> Decision:
             # — but asked only to "publish", understating what was being agreed
             # to. One idiom for "is this option present" means one thing to get
             # right, and the next subcommand added here inherits it.
+            # Asked in two groups rather than one list, because all three names give
+            # the same answer and a prefix ambiguous *between* them is not ambiguous
+            # about the decision. As one list, `--force-with-l` — which git runs —
+            # matched nothing and fell through to the milder publish ask.
+            #
+            # `--forc` is the deliberate over-recognition: git rejects it outright as
+            # ambiguous (verified against git, which offers `--force-with-lease` and
+            # `--force-if-includes`), so the command never runs, and this reads it as
+            # the force prompt rather than the publish one. Being wrong toward the
+            # heavier prompt on a command that cannot execute is the direction this
+            # file states at the top.
             rewriting = (
-                long_option(arguments, "--force", "--force-with-lease", "--force-if-includes")
+                long_option(arguments, "--force", prefixes=True)
+                or long_option(
+                    arguments, "--force-with-lease", "--force-if-includes", prefixes=True
+                )
                 or short_option(arguments, "f", action)
                 or any(token.startswith("+") for token in arguments)
             )
@@ -1355,7 +1437,7 @@ def risky_git(command: str, payload: dict[str, Any]) -> Decision:
             # what was about to happen. A prompt that misnames the consequence is
             # the prompt somebody clicks through." A review found the same defect
             # unfixed for the spellings that remove a branch from the remote.
-            if long_option(arguments, "--delete", "--mirror") or short_option(
+            if long_option(arguments, "--delete", "--mirror", prefixes=True) or short_option(
                 arguments, "d", action
             ):
                 return deny_or_ask(payload, "delete or overwrite refs on the remote repository")
