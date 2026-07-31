@@ -74,7 +74,12 @@ class RunTree:
 
     def __init__(self, root: Path, run_id: str):
         self.run_id = validate_run_id(run_id)
-        self.root = Path(root) / run_id
+        # Resolved once, here, so every later comparison is against one spelling.
+        # `resolve()` returns a realpath, and `relative_to` is exact rather than
+        # semantic: on macOS a caller passing `/tmp` produced a root of `/tmp/<id>`
+        # and artifact paths under `/private/tmp/<id>`, so the manifest's
+        # `relative_to(self.root)` raised and the run died on a symlink nobody chose.
+        self.root = (Path(root) / run_id).resolve()
 
     # --- Creation and the run authority ---------------------------------------
 
@@ -181,7 +186,7 @@ class RunTree:
         resolved = (self.root / relative_path).resolve()
         # is_relative_to, not a string prefix: with a root of `.../r1`, a prefix
         # test would happily accept the sibling directory `.../r1-scratch`.
-        if not resolved.is_relative_to(self.root.resolve()):
+        if not resolved.is_relative_to(self.root):
             raise SchemaRefusal(f"{relative_path!r} resolves outside the run tree")
         return resolved
 
