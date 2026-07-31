@@ -5,8 +5,9 @@ proven: a byte-identical duplicate is reported and left where it is; the retired
 `--file` flag is refused rather than silently accepted; HANDOFF.md is never
 reported as redundant however identical it looks; design/ is not tidy.py's to
 judge; an empty active/ still audits project memory, so the report does not stop
-at the missing handoff; markdown link shapes resolve; and an over-full active/ is
-reported against the one-sitting budget.
+at the missing handoff; markdown link shapes resolve; an over-full active/ is
+reported against the one-sitting budget; and a standing/ that is absent, or that
+holds no SUSPENSIONS.md, is said out loud rather than read as clean.
 
 Several tests carry a positive control — a second file that *must* appear in the
 report — because an assertion that something is absent is satisfied just as well
@@ -14,6 +15,7 @@ by a run that never looked.
 """
 
 import importlib.util
+import shutil
 from pathlib import Path
 
 import pytest
@@ -115,6 +117,8 @@ def test_a_clean_drawer_reports_nothing_and_exits_zero(tmp_path, capsys):
     """Callers branch on a three-valued contract; this pins the 0 arm."""
     tidy = load_tidy(tmp_path)
     (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
+    # Clean now includes a readable suspension ledger, so the fixture carries one.
+    (tidy.STANDING / "SUSPENSIONS.md").write_text("none in force\n")
     assert tidy.main([]) == 0
     assert "nothing wants attention" in capsys.readouterr().out
 
@@ -130,6 +134,7 @@ def test_a_missing_workbench_is_a_failure_not_a_pass(tmp_path, capsys):
 def test_an_index_link_to_a_non_markdown_file_that_exists_is_not_dangling(tmp_path, capsys):
     tidy = load_tidy(tmp_path)
     (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
+    (tidy.STANDING / "SUSPENSIONS.md").write_text("none in force\n")
     tidy.MEMORY.mkdir(parents=True)
     (tidy.MEMORY / "log.txt").write_text("kept\n")
     (tidy.MEMORY / "MEMORY.md").write_text("- [Log](log.txt) — exists, just not markdown\n")
@@ -189,3 +194,34 @@ def test_standing_ledgers_are_listed_but_never_budgeted_or_filed(tmp_path, capsy
         "a standing ledger is never a filing candidate, however identical"
     )
     assert "past the one-sitting budget" not in out
+
+
+def test_a_missing_standing_drawer_is_reported_loudly(tmp_path, capsys):
+    # CLAUDE.md puts the dated suspensions in workbench/standing/SUSPENSIONS.md and
+    # says they are read at every open and close until resolved. A drawer that is
+    # simply not there used to print nothing at all, which reads exactly like a
+    # drawer with nothing in it — and a safety measure that quietly stayed off is
+    # the failure this project exists to notice.
+    tidy = load_tidy(tmp_path)
+    (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
+    shutil.rmtree(tidy.STANDING)
+
+    assert tidy.main([]) == 1, "a ledger that cannot be read is not a clean report"
+    out = capsys.readouterr().out
+    assert "standing/ MISSING" in out
+    assert "SUSPENSIONS.md" in out, "the report must name what is unreadable"
+
+
+def test_a_standing_drawer_without_the_suspension_ledger_is_reported(tmp_path, capsys):
+    # Present-but-empty is the same unknown as absent: nothing here can tell a
+    # session that no suspension is in force, only that nobody wrote one down.
+    tidy = load_tidy(tmp_path)
+    (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
+    (tidy.STANDING / "MASTER_PLAN.md").write_text("the plan")
+
+    assert tidy.main([]) == 1
+    out = capsys.readouterr().out
+    assert "SUSPENSIONS.md" in out
+    # The positive control: the drawer was read, so the finding is an absence
+    # rather than a listing that never ran.
+    assert "MASTER_PLAN.md" in out

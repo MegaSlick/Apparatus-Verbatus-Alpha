@@ -94,6 +94,15 @@ def payload(
         "git switch -c work/topic main",
         # Statically unresolvable, and documented as such in the guard.
         "git switch -",
+        # A rename that does not end on main is ordinary branch housekeeping.
+        "git branch -m work/old work/new",
+        # An explicit new name decides where HEAD lands, whatever it tracks.
+        "git switch -c work/topic --track origin/main",
+        # The documented boundary: `--track origin/feature/main` creates the local
+        # branch `feature/main`, not `main`. Three components cannot be resolved
+        # without knowing which of them is the remote, so it is left alone. Pinned
+        # here so the boundary is a decision on record rather than an oversight.
+        "git switch --track origin/feature/main",
     ],
 )
 def test_ordinary_read_or_bounded_local_work_stays_open(command):
@@ -185,6 +194,11 @@ def test_ordinary_read_or_bounded_local_work_stays_open(command):
         "git checkout main -- pipeline/stage.py",
         "git checkout main pipeline/stage.py",
         "git checkout main --pathspec-from-file=paths.txt",
+        # Quoted prose naming one of these commands after a separator is read as a
+        # command position — this file's oldest admitted blindness, not a new one.
+        # It lands in the ask class it always did, because the tokens after the
+        # branch name read as a pathspec. Pinned so the boundary is on record.
+        'git commit -m "note; git checkout main is refused"',
     ],
 )
 def test_main_session_gets_one_exact_confirmation_for_consequential_actions(command):
@@ -293,6 +307,34 @@ def test_subagents_cannot_take_consequential_or_external_actions(command):
         "nohup git switch main",
         "bash -c 'git switch main'",
         "cd /tmp/repo\ngit checkout main",
+        # Found by the three-seat review of 846e3ce and reproduced live against the
+        # installed guard: every one of these ends with HEAD on main and every one
+        # of them passed, in silence or under a label naming the wrong consequence.
+        #
+        # `switch` takes no pathspec, so `--` there is only an end-of-options marker
+        # and the exclusion written for `checkout` was letting the plainest spelling
+        # of the violation through.
+        "git switch -- main",
+        "git switch main --",
+        "git switch -- refs/heads/main",
+        # A checkout whose `--` is followed by nothing names no pathspec: it moves
+        # HEAD exactly as the bare spelling does, and was being asked about as
+        # discarded work — a prompt naming the wrong consequence.
+        "git checkout main --",
+        # Renaming the branch you are standing on to main leaves you standing on
+        # main. `-m` reached no check at all; `-M` reached the work-discarding ask.
+        "git branch -m main",
+        "git branch -M main",
+        "git branch --move main",
+        "git branch --force-move main",
+        "git branch -m work/topic main",
+        # `--track origin/main` creates a local `main` and stands on it.
+        "git switch --track origin/main",
+        "git switch -t origin/main",
+        "git checkout --track upstream/main",
+        # Over-recognized on purpose: `-C` names another repository, and the guard
+        # refuses rather than reasoning about which clone is meant.
+        "git -C /tmp/other-repo checkout main",
     ],
 )
 def test_hard_git_rules_are_denied_even_to_the_main_session(command):
@@ -355,7 +397,15 @@ def test_a_write_in_a_checkout_standing_on_main_is_refused(tmp_path, tool, key, 
     decision, reason = guard.evaluate(payload(tool, {key: str(target)}, agent=agent, cwd=root))
     assert decision == "deny"
     assert "standing on main" in reason
-    assert "git switch -c work/<topic>" in reason
+    if agent:
+        # The way out differs by audience, and the agent's is not to switch the
+        # branch: the checkout is shared, and CLAUDE.md's Concurrency section puts
+        # an agent on its own worktree and its own branch. Telling it to move the
+        # shared checkout is telling it to do the one thing it must not.
+        assert "main session" in reason
+        assert "git switch -c" not in reason
+    else:
+        assert "git switch -c work/<topic>" in reason
 
 
 def test_a_write_in_a_worktree_on_a_work_branch_stays_open(tmp_path):
@@ -391,6 +441,53 @@ def test_a_detached_head_is_not_standing_on_a_branch(tmp_path):
     (root / ".git").mkdir(parents=True)
     (root / ".git" / "HEAD").write_text("a" * 40 + "\n", encoding="utf-8")
     assert guard.evaluate(payload("Write", {"file_path": str(root / "stage.py")}, cwd=root)) is None
+
+
+def nested_clone(root: Path, head: str) -> Path:
+    """A plain clone at `root` whose HEAD line is written verbatim."""
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text(head, encoding="utf-8")
+    return root
+
+
+def test_a_detached_nested_checkout_is_not_judged_by_the_clone_around_it(tmp_path):
+    # A reviewer's probe. The nearest checkout governs, and a detached one is still
+    # a checkout: walking past it to an outer clone answers for a repository the
+    # write will never touch, and refuses it in the name of a branch it is not on.
+    clone_on(tmp_path / "repo", "refs/heads/main")
+    inner = nested_clone(tmp_path / "repo" / "vendor" / "thing", "a" * 40 + "\n")
+    assert guard.evaluate(payload("Write", {"file_path": str(inner / "x.py")}, cwd=inner)) is None
+
+
+def test_a_nested_checkout_on_a_work_branch_is_not_judged_by_an_outer_main(tmp_path):
+    # The positive control's other half: the nearest checkout answers, and it says
+    # work/topic.
+    clone_on(tmp_path / "repo", "refs/heads/main")
+    inner = nested_clone(tmp_path / "repo" / "vendor" / "thing", "ref: refs/heads/work/topic\n")
+    assert guard.evaluate(payload("Write", {"file_path": str(inner / "x.py")}, cwd=inner)) is None
+
+
+def test_a_nested_checkout_standing_on_main_is_still_refused(tmp_path):
+    # And the control that proves the two above are exemptions rather than a walk
+    # that stopped looking.
+    clone_on(tmp_path / "repo", "refs/heads/work/topic")
+    inner = nested_clone(tmp_path / "repo" / "vendor" / "thing", "ref: refs/heads/main\n")
+    decision, reason = guard.evaluate(
+        payload("Write", {"file_path": str(inner / "x.py")}, cwd=inner)
+    )
+    assert decision == "deny"
+    assert str(inner) in reason, "the refusal must name the checkout that is on main"
+
+
+def test_a_checkout_whose_head_cannot_be_read_stops_the_walk(tmp_path):
+    # An unreadable `.git` is a checkout whose branch is unknown. Unknown is not
+    # main — but it is not the outer clone's business either, and answering with
+    # the outer clone's branch would be an answer about the wrong repository.
+    clone_on(tmp_path / "repo", "refs/heads/main")
+    inner = tmp_path / "repo" / "vendor" / "thing"
+    inner.mkdir(parents=True)
+    (inner / ".git").write_text("this is not a gitdir line\n", encoding="utf-8")
+    assert guard.evaluate(payload("Write", {"file_path": str(inner / "x.py")}, cwd=inner)) is None
 
 
 def test_a_path_in_no_checkout_at_all_is_not_this_rule(tmp_path):
@@ -1446,13 +1543,13 @@ def worktree_of(tmp_path):
 
 
 def test_an_agent_may_write_hooks_in_its_own_worktree(tmp_path, monkeypatch):
-    """CLAUDE.md: "Code is not on that list and stays open."
+    """CLAUDE.md keeps code open (Hard rules), and hooks are code.
 
-    Denying this made `infra-worker` — whose stated unit of work is "hooks, CI, seals,
-    accounting, money paths" — unable to do the only thing it exists for, and a
+    Denying this made `infra-worker` — whose unit of work is hooks, CI, seals,
+    accounting and money paths — unable to do the only thing it exists for, and a
     reviewer pointed out the guard file itself could not have been written by the
-    agent meant to write it. CLAUDE.md had already warned that a rule shaped as a
-    wall cost this project a day once.
+    agent meant to write it. A rule shaped as a wall has cost this project a day
+    before now.
     """
     project, tree = worktree_of(tmp_path)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
@@ -1686,3 +1783,21 @@ def test_the_heredoc_gate_no_longer_advertises_a_shell_only_rule():
     source = SCRIPT.read_text(encoding="utf-8")
     assert "SHELL_VERB = re.compile" not in source, "the orphaned constant is back"
     assert "unless a shell receives it" not in source
+
+
+def test_no_comment_quotes_wording_claude_md_no_longer_contains():
+    """A quotation is a claim about another file, and CLAUDE.md was rewritten.
+
+    Both retired sentences said something true and still do — code stays open, and
+    a rule shaped as a wall has cost this project real time — but they are no
+    longer that document's words, and a reader checking a quotation against the
+    file it names would find neither. Paraphrase, or name the section.
+
+    The phrases are assembled from halves so that this file does not contain the
+    literals it forbids, which would make the check pass on itself.
+    """
+    retired = ("Code is not on that list" + " and stays open", "a rule shaped as a wall" + " cost")
+    for path in (SCRIPT, Path(__file__)):
+        source = path.read_text(encoding="utf-8")
+        for phrase in retired:
+            assert phrase not in source, f"{path.name} quotes wording CLAUDE.md no longer carries"

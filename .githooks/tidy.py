@@ -36,6 +36,10 @@ ARCHIVE = WORKBENCH / "archive"
 SCRATCH = WORKBENCH / "scratch"
 RAW = WORKBENCH / "raw"
 
+# The one ledger in standing/ whose absence is itself a finding: CLAUDE.md records a
+# dated suspension there and reads it back until it is resolved.
+SUSPENSIONS = "SUSPENSIONS.md"
+
 # active/ is meant to be readable in one sitting. Past this, something finished
 # and nobody filed it. The number is a smell test, not a rule.
 ACTIVE_FILE_BUDGET = 6
@@ -240,11 +244,29 @@ def main(argv=None):
     # standing/ holds the ledgers that outlive sessions — suspensions, alpha
     # shortcuts, the adopted plan. Never filed, never aged, never counted against
     # active/'s budget: a drawer for what must persist is not a drawer over budget.
-    standing = sorted(p for p in STANDING.rglob("*") if p.is_file()) if STANDING.is_dir() else []
-    if standing:
-        print(f"\nstanding/ {len(standing)} ledgers — read at open and close, never filed:")
-        for path in standing:
-            print(f"  {rel_or_abs(path)}")
+    #
+    # Its absence is reported as loudly as a missing active/, and for a harder
+    # reason. CLAUDE.md carries a suspension in workbench/standing/SUSPENSIONS.md and
+    # has it read back at every open and close until it is resolved; a hook or a check
+    # switched off temporarily is exactly what that file is for. A drawer that is not
+    # there prints nothing, which reads identically to a drawer with nothing in it —
+    # so a safety measure would go quietly on being off, which is the failure this
+    # project exists to notice. Unknown is not zero: only a ledger somebody wrote can
+    # say that nothing is suspended.
+    if not STANDING.is_dir():
+        wants_attention = True
+        print(f"\nstanding/ MISSING at {rel_or_abs(STANDING)} — {SUSPENSIONS} cannot be read.")
+        print("  -> unknown is not 'none in force'. Only a written ledger says that.")
+    else:
+        standing = sorted(p for p in STANDING.rglob("*") if p.is_file())
+        if standing:
+            print(f"\nstanding/ {len(standing)} ledgers — read at open and close, never filed:")
+            for path in standing:
+                print(f"  {rel_or_abs(path)}")
+        if not (STANDING / SUSPENSIONS).is_file():
+            wants_attention = True
+            print(f"\nstanding/ has no {SUSPENSIONS} — the dated suspensions cannot be read back.")
+            print("  -> unknown is not 'none in force'. Only a written ledger says that.")
 
     # design/ is never aged, never filed, never counted against the budget. A
     # proposal waiting for the stage it concerns is not stale, however long it
