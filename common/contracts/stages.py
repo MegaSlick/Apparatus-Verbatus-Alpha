@@ -63,6 +63,24 @@ HANDOFFS: Final = (
 )
 
 
+# Where each producer *writes*, which is not the same question as which directory
+# a stage owns. The door owns nothing and writes into the Exemplar's directory, so
+# its refusals sit inside the record of what arrived rather than in a drawer no
+# downstream stage reads.
+WRITING_DIRECTORIES: Final = {**STAGE_DIRECTORIES, DOOR: STAGE_DIRECTORIES[EXEMPLAR]}
+
+
+def writing_directory(stage: str) -> str:
+    """The run-tree directory a producer writes into."""
+    try:
+        return WRITING_DIRECTORIES[stage]
+    except KeyError:
+        raise KeyError(
+            f"{stage!r} writes nowhere in a run tree; "
+            f"known producers: {sorted(WRITING_DIRECTORIES)}"
+        ) from None
+
+
 def stage_directory(stage: str) -> str:
     """The run-tree directory a stage owns."""
     try:
