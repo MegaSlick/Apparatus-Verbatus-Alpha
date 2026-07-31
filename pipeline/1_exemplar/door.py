@@ -77,6 +77,11 @@ def main() -> int:
                 kind="admission",
                 subject_id=f"source-{page['ordinal']}",
                 outcome="admitted",
+                # The admission names the bytes it admitted. Without this the
+                # first handoff would be the one boundary carrying no verifiable
+                # reference, and the boundary test would have to skip it — a
+                # skip-list being precisely how a gap goes unnoticed (#87).
+                inputs=[context.input_ref(published.relative_path)],
                 payload={
                     "declared_path": page["path"],
                     "ordinal": page["ordinal"],
