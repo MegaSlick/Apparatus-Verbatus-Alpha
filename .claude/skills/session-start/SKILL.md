@@ -21,12 +21,17 @@ git status --short --branch
 git rev-list --left-right --count origin/main...HEAD
 ```
 
+If the fetch fails (offline, remote unreachable), say so and treat the checkout as
+possibly behind for the whole session — never as current by default.
+
 If `HEAD` is behind `origin/main`: say so out loud, and for every governing file and
 skill this session will rely on, read the current copy with
 `git show origin/main:<path>` before acting on what was injected. A guard that landed
 on `origin/main` but is absent from this checkout is not protecting you — that
 happened once, and the session that booted stale broke the exact rule its unloaded
-guard existed to stop.
+guard existed to stop. When the gap includes harness files (`.claude/`, `.githooks/`),
+awareness is not enough — the stale guard and hooks keep running all session — so
+recommend rebasing this branch onto `origin/main`, or ask Tyrel, before proceeding.
 
 ## 2. Read what binds and what is current
 
@@ -73,13 +78,20 @@ python3 .githooks/tidy.py
 
 This is a report. File completed active/raw work when its next use is no longer this
 sitting; preserve evidence in `archive/`, never `scratch/`. Leave uncertain material and
-name it. Standing ledgers live in `workbench/standing/` and are never filed.
+name it.
 
-Then read `workbench/standing/SUSPENSIONS.md` and **report every live suspension by
-name, with its deadline and what turns it back on**. A rule or hook switched off
-temporarily is carried at the start and the end of every session until Tyrel makes it
-permanent in the document or it is switched back on. If the file is missing, say so
-rather than assuming nothing is suspended.
+Then the standing ledgers. Ensure the drawer exists — `mkdir -p workbench/standing` is
+idempotent, and the installer only runs in fresh clones — and **open every ledger in
+it**, not only the suspensions file: a session that never reads the adopted plan is
+working under a plan it has not seen. Transition check: if
+`workbench/active/SUSPENSIONS.md` exists, it predates the standing drawer — move it to
+`workbench/standing/` (refusing to overwrite an existing file there) and say so.
+
+From `workbench/standing/SUSPENSIONS.md`, **report every live suspension by name, with
+its deadline and what turns it back on**. A rule or hook switched off temporarily is
+carried at the start and the end of every session until Tyrel makes it permanent in the
+document or it is switched back on. If the file is missing, say so rather than assuming
+nothing is suspended.
 
 ## 5. Orient to the installed tools
 

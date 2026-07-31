@@ -5,7 +5,8 @@ Rules only. **No status, no dates, no hashes.** State here is a bug; status live
 **This file is how you work. It is not the governance.** [GOALS.md](GOALS.md),
 [GOVERNANCE.md](GOVERNANCE.md) and [ARCHITECTURE.md](ARCHITECTURE.md) bind the sessions as
 well as the code; read them before proposing anything, and never restate them from memory —
-quote the file or link it. [GLOSSARY.md](GLOSSARY.md) is the pipeline's vocabulary.
+quote the file or link it. [GLOSSARY.md](GLOSSARY.md) is the pipeline's vocabulary,
+not the project's process vocabulary.
 
 ## Hard rules
 
@@ -16,9 +17,11 @@ below are boundaries; all else here is guidance, departed from only by the ladde
 1. **Tyrel decides** — pod permission, declaring something proven, approving an exclusion,
    amending a canonical document, merging. No agent stands in for him.
 2. **No live pod without his permission in that session.** Shutdown is verified against
-   provider state and billing, never inferred.
-3. **Never commit, push, or work on `main`.** A session moves off it before anything
-   else; changes arrive by pull request or not at all.
+   provider state and billing, never inferred. It bills by the hour while it exists.
+3. **Never commit, push, or work on `main`.** Ref-only syncing, reading, and arming
+   the hooks may happen from wherever the checkout stands; before anything is edited,
+   staged or committed, the session moves off `main`. Changes arrive by pull request
+   or not at all.
 4. **Never push without his say-so and a review covering that exact commit.**
 5. **Never share, rebase, force-push or amend a branch that is not yours.**
 6. **Nothing enters this repository uninspected.** If you cannot say what a line is for,
@@ -29,8 +32,9 @@ below are boundaries; all else here is guidance, departed from only by the ladde
 9. **When a rule and a goal pull apart, stop and say so** — GOVERNANCE 0.
 10. **A spawned agent never edits the governing documents** — this file, GOALS,
     GOVERNANCE, ARCHITECTURE, GLOSSARY, the root README; it proposes exact wording in its
-    report. **The main session may edit all six, at Tyrel's direction and after asking.**
-    He decides; the session implements; agents propose.
+    report. **The main session may edit all six, at Tyrel's direction and after asking**
+    — the line is unattended versus with him in the room. He decides; the session
+    implements; agents propose.
 
 **Code stays open** — hooks, CI, agent and skill files, `operations/`, tests, the
 pipeline: agent-written, landed through review. The line is between what *governs* and
@@ -46,19 +50,22 @@ compliant route.
 **A permission gate authorizes one exact action.** Where a document says Tyrel decides,
 name the exact target, cost or audience, consequence, and the way back; his clear answer
 authorizes that action and nothing adjacent. Gates cover review, push, merge,
-governing-document edits, paid actions, live infrastructure, destructive operations,
-disclosure, deployment, and any message that reaches another person. Never infer one
+governing-document edits, paid actions, live infrastructure, destructive or
+hard-to-recover operations, disclosure, deployment, and any message that reaches
+another person. Never infer one
 permission from another, and never carry one forward.
 
 **Standards are overridable, one instance at a time.** Object once — the standard, its
-point, the likely cost, your route — then ask for that exact exception; one clear answer
-settles that instance. **The next instance is a new objection**, and say so; only an
+point, the likely cost, your route — then ask for that exact exception; one clear
+answer settles that instance — record the departure, follow it, and stop arguing that
+instance. **The next instance is a new objection**, and say so; only an
 explicit standing ruling carries forward, and if unsure it was explicit, ask.
 
 **Preferences yield immediately** — presentation, naming, report shape, notification
 style, model or effort where no seat is named.
 
-**Changing the doctrine is not an override.** A change to this file binds every later
+**Changing the doctrine is not an override.** A change to this file — or to how Claude
+is run here: the skills, the roster README, the guard's policy — binds every later
 session: push back firmly, make sure he holds what a session six weeks out will read it
 as, propose exact wording, apply only after he approves it. **A suspension is dated and
 carried**: record it in `workbench/standing/SUSPENSIONS.md` — what is off, why, deadline,
@@ -87,7 +94,8 @@ the symptoms, he sees the numbers.
 
 **Until `sh .githooks/install.sh` has run in a clone, every git-hook rule is off
 silently** — including on merges and `git am`. The setting never travels; every clone,
-machine, sandbox and pod needs it separately.
+machine, sandbox and pod needs it separately. (The Claude-side guard in
+`.claude/settings.json` loads regardless.)
 
 The documents say what is *always* true; `workbench/active/HANDOFF.md` says what is true
 *now*. If `active/` is empty, say so rather than guessing.
@@ -99,8 +107,9 @@ prevent, so **no byte of it crosses the boundary**. It is read where it lies, th
 window; what enters here is written new, justified against goals and governance.
 
 **A trained checkpoint is not code.** Perlector weights live in their own model
-repository, referenced by identity and digest like any vendor model, never vendored here;
-they arrive as a candidate, tried and measured as ARCHITECTURE requires.
+repository, referenced by identity and digest like any vendor model, never vendored
+here and never left loose beside a run; they arrive as a candidate, tried and measured
+as ARCHITECTURE requires.
 
 `autoclave/` is the cleanroom bench: the rebuilding model reads the reference through the
 window and writes a fresh expression into the tray — never a paste. The tray is tracked
@@ -121,10 +130,11 @@ If a plan is about to be built from, get a reader onto it by some route.
 `work/<topic>` normal changes; `audit/<topic>` findings, not code; `infra/<topic>` risky
 structural work. One branch per task, short-lived, deleted on merge.
 
-A session never works from `main`, even before anything is committed. The hooks refuse a
-commit on main and a push to main; what they cannot see is a session reading, editing and
-planning from it, so the session names its branch at the start and moves off main before
-anything else.
+A session never works from `main`, even before anything is committed. The hooks refuse
+a commit on main and a push to main, and the Claude-side guard refuses the tool-route
+edits and the switch onto it; what none of them can see is a session merely reading and
+planning from it, so the session names its branch at the start and moves off main
+before anything else.
 
 ## Pushing and merging
 
@@ -138,8 +148,10 @@ edits ride the next push inside a normally attributed commit, their diff read fi
 **Every push is reviewed, and the review is asked for first.** Standing default: two
 blind readers across two vendors — Claude Opus and GPT Sol, identical prompts — with a
 Fable third seat recommended when the question is hard, a defect is expensive, or the
-change touches money, launch, shutdown or a governance rule. `/reviewer-pass` holds the
-procedure, triage and trailer rules. Every pass triages fresh; reductions are Tyrel's,
+change touches money, launch, shutdown or a governance rule. The seats are
+configuration, not doctrine: adding or swapping a reader is a change Tyrel approves,
+and the list stands until he does. `/reviewer-pass` holds the procedure, triage and
+trailer rules. Every pass triages fresh; reductions are Tyrel's,
 per named push, never inferred — including from an outage. A reviewer reads; it need not
 write. Tyrel is the one who says a review happened.
 
@@ -148,8 +160,10 @@ returned, amended in after the pass — the amend moves the commit SHA, never th
 which is what makes it honest. **Agreement between reviewers is evidence, not a
 verdict**, and two agreeing seats are thinner evidence than three — say so. The roster is
 a checklist, not a gate: `pre-push` prints who was named, then pushes; Tyrel decides
-whether coverage is enough. Only GitHub's rules do not negotiate — README.md records
-which are in force.
+whether coverage is enough. What still refuses locally, turning on nobody's word: a
+push straight at `main`, and a credential or oversized payload in the outgoing history;
+`--no-verify` and `-c core.hooksPath=` are blocked for Claude and open to everything
+else. Only GitHub's rules do not negotiate — README.md records which are in force.
 
 **After the push, CodeRabbit is Tyrel's to relay** — never poll the pull request. Verify
 each relayed claim; fix what is real, say why you skip the rest, credit it in a trailer
@@ -178,9 +192,12 @@ The roster, effort floors and ranges, prompting rules and bounds live in
 [.claude/agents/README.md](.claude/agents/README.md) — judgement floors never drop
 without Tyrel's per-instance override. Small subagent use needs no ceremony; a large
 commitment states agents, models, efforts and rough cost first. Declare material agent
-use when the shape is agreed, then lead it: smallest useful roster, fan-out visible,
-results verified, session the only integrator. Stop for money, governance, or a genuine
-change of scope. Record what actually answered, never only what was requested. An agent
+use when the shape is agreed, then lead it — bounded agent work that fits the agreed
+goal is standing-approved: the declaration, not a permission stop, and a change of
+roster is reported, not re-asked, unless it changes cost, external effect or scope.
+Smallest useful roster, fan-out visible, results verified, session the only integrator;
+the standing duties are not wasteful and the best tool for the job. Stop for money,
+governance, or a genuine change of scope. Record what actually answered, never only what was requested. An agent
 team whose members must challenge one another is exceptional.
 
 ## The tooling may filter what you see
@@ -201,7 +218,9 @@ re-read it rather than overwriting.
 **Every commit names the model that actually wrote it** — one `Co-Authored-By:` trailer
 per contributing model, at commit; a model that read and found defects gets
 `Reviewed-by:`, amended in after the pass returns. Name by release, every vendor —
-"Claude Opus 5", "GPT-5.6 Sol (OpenAI)"; the author stays Tyrel. Track it as you go;
+"Claude Opus 5", "GPT-5.6 Sol (OpenAI)"; the author stays Tyrel. `Codex (OpenAI)` is
+the fallback only when the serving release is unknowable, and the handoff records that
+it was. Track it as you go;
 `/session-end` writes it into the handoff. A trailer records a seat that actually
 returned a report — never the planned roster (GOVERNANCE 10). `commit-msg`
 credential-scans every message, no exemptions; its authorship check has narrow ones, and
@@ -215,8 +234,9 @@ recommendation with reasoning short enough to argue with, not a menu. Tyrel is n
 programmer — plain language, and never make him read code to decide.
 
 Four moments reach his phone, via `sh operations/notify/notify.sh <kind> "<one line>"`:
-**start** (automatic — never send by hand), **milestone** (a system works end to end),
-**decision** (blocked on his judgement — send when you stop, not after), **done**
+**start** (automatic — never send by hand), **milestone** (a system works end to end, a
+stage lands, a long run finishes), **decision** (blocked on his judgement — send when
+you stop, not after), **done**
 (`/session-end` sends it). One line that says the thing; noise teaches him to ignore the
 next one. **Main session only — subagents never notify.** The topic lives in
 `private/ntfy.conf` and nowhere else — a bearer secret that never enters a script, note,

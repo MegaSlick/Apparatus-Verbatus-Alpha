@@ -34,17 +34,13 @@ two vendors, with fresh eyes on the change:
 
 **Recommend the third seat when the change earns it, and let it go otherwise:**
 
-- Claude Fable, high effort — recommend it when the question is hard, being wrong
-  would be expensive, or the change touches money, launch, shutdown, or a
-  governance rule. Say in the triage which of those applies. Outside those
-  classes, do not offer it: `CLAUDE.md` is explicit that "a seat offered every
-  pass and declined most of them trains him to skim the offer," and an offer he
-  skims is worth less than no offer at all. It is also the most expensive reader
-  here, so cost is a legitimate reason for him to decline one you do recommend.
-
-  This page used to say to offer it every pass regardless, which contradicted
-  `CLAUDE.md` outright — a reviewer found the conflict. The governing document
-  wins, and the criteria above are its words.
+- Claude Fable, high effort — recommend it, in `CLAUDE.md`'s words, "when the
+  question is hard, a defect is expensive, or the change touches money, launch,
+  shutdown or a governance rule." Say in the triage which of those applies. Outside
+  those classes, do not offer it — an offer made every pass and declined most of
+  them trains the reader to skim the offer, and an offer he skims is worth less
+  than no offer at all. It is also the most expensive reader here, so cost is a
+  legitimate reason for him to decline one you do recommend.
 
 Tyrel decides the roster for this pass. Object once with the coverage at stake
 and your recommendation, ask about the exact roster, then follow his clear
@@ -64,9 +60,13 @@ Write one neutral prompt and give its exact bytes to every reviewer. Include:
 
 Reviewers remain blind to one another. Preserve resolved model/effort metadata
 when available. A model substitution counts only if Tyrel explicitly accepts
-it for this pass. A seat whose **resolved** effort lands under its role's floor
-is non-qualifying coverage — redispatch it, or ask Tyrel for a per-instance
-override; never write a trailer for it as if it qualified.
+it for this pass. Every evidence seat in a reviewer pass carries a `high` floor —
+Codex seats included, not only the Claude roles with floors in their files. A seat
+whose **resolved** effort lands under that floor is non-qualifying coverage —
+redispatch it, or ask Tyrel for a per-instance override; never write a trailer for
+it as if it qualified. When the runtime does not expose resolved effort, record
+that it was not exposed: the request stands, and the pass is reported as unverified
+on that point — never silently assumed to qualify.
 
 ## 3. Preserve and verify
 

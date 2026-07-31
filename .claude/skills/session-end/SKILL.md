@@ -1,6 +1,6 @@
 ---
 name: session-end
-description: Close a state-changing session with verified Git state, recoverable filing, a concise handoff, a boot-clean checkout, and the next-session brief.
+description: Close a state-changing session with verified Git state, recoverable filing, a boot-clean checkout, a concise handoff, and the next-session brief.
 disable-model-invocation: true
 ---
 
@@ -10,12 +10,16 @@ disable-model-invocation: true
 the session, filing the drawers and messaging his phone is his call. When you think the
 moment has come, say so and wait to be told.
 
+**If the checkout stands on `main`, move off it before anything else** —
+`git switch -c work/<topic>` — the guard refuses every write in a checkout standing on
+main, including the handoff this procedure must produce.
+
 The main session runs this procedure. It owns the facts and must not delegate the
 handoff. Do not delete evidence or use destructive Git commands to make the state look
 clean.
 
-Review-only sessions still establish state and replace continuity documents, but do not
-reorganize another session's files or send a completion notification.
+Review-only sessions still establish state and replace continuity documents, but move
+nothing and send nothing.
 
 ## 1. Establish the exact state
 
@@ -50,7 +54,36 @@ Standing ledgers live in `workbench/standing/` and are never filed — they outl
 sessions by design. When filing is done, `active/` should be back inside its budget;
 if it is not, name each file that stays and why it is still this coming sitting's work.
 
-## 3. Preserve continuity before replacing it
+## 3. Leave the checkout boot-clean
+
+The next session boots on whatever this checkout holds — skills, CLAUDE.md, settings,
+guard and git hooks all load from here before anyone has read a word. Park the checkout
+**before** writing the handoff, so the handoff describes the state that is real, never
+the state intended. Ref-only, never checking out `main`, and only from a clean tracked
+tree — commit first, or the dirt travels to the parked branch.
+
+```sh
+git fetch origin
+git rev-list --left-right --count origin/main...HEAD
+```
+
+If the fetch fails, do not park blind: stay on the current branch, say the fetch
+failed, and write "possibly behind origin/main — the sync step must run before
+anything trusts this checkout" into the handoff.
+
+- **This branch's work is finished** (its PR merged, or closed with a record): park on
+  a fresh provisional branch cut from the remote tip —
+  `git switch -c work/boot-<date>-<hhmm> --no-track origin/main` (time-suffixed;
+  two closes can share a date). Then delete the finished branch, knowingly: this
+  repository squash-merges, so `git branch -d` refuses even a genuinely merged
+  branch's tip. Verify the PR actually merged (`gh pr view <number>` shows MERGED),
+  say that you verified it, and then `git branch -D <branch>`. A branch you cannot
+  verify merged stays, and the handoff says why.
+- **Work continues on this branch:** stay on it, and write in the handoff how far
+  behind `origin/main` it is, so the next session's sync step knows before it trusts
+  anything local.
+
+## 4. Preserve continuity, then write the handoff
 
 Create this session's archive directory. Copy the outgoing
 `workbench/active/HANDOFF.md` and `NEXT_SESSION_BRIEF.md` there before overwriting
@@ -58,6 +91,8 @@ either. If a target exists, add a numeric suffix; never overwrite an archived ac
 
 The new handoff contains only state that dies with this session:
 
+- the branch the checkout is parked on and its distance from `origin/main` — as they
+  are **now**, verified by the commands above, never as intended;
 - unverified work and exact verification command;
 - local/ignored/external changes Git cannot show;
 - concrete tooling traps;
@@ -67,50 +102,31 @@ The new handoff contains only state that dies with this session:
 - requests that need Tyrel.
 
 **Label every decision and every queued step:** `Tyrel ruled (date)` for what he
-actually decided, in his words or with his words quoted; `session recommends` for
-everything else. The two must be impossible to confuse — a recommendation written as a
-directive is how a note ends up outranking him in a later session, and that has
-happened. And state only what is true when the handoff is written: a branch or file the
-handoff names must exist, verified, not intended.
+actually decided, his words quoted or restated exactly; `session recommends` for
+everything else; a completed act records its actual actor and date. The two must be
+impossible to confuse — a recommendation written as a directive is how a note ends up
+outranking him in a later session, and that has happened. And the handoff states only
+what is true as it is written: a branch or file it names must exist, verified, not
+intended.
 
 Point to durable files instead of restating them. Omit empty sections. Keep a normal
 handoff to one screen.
 
-## 4. Brief the next session
+## 5. Brief the next session
 
-Write `workbench/active/NEXT_SESSION_BRIEF.md` with:
+Write `workbench/active/NEXT_SESSION_BRIEF.md`:
 
-- a first line saying the brief is this session's recommendation, and that Tyrel's
-  stated goal at the next open outranks it;
+- first line, verbatim: "This brief is the outgoing session's recommendation; Tyrel's
+  stated goal at the next open outranks every line of it.";
 - one queue line: goal, recommended model/effort, chunk size, honest duration, and
-  whether it can run unattended — labelled like the handoff;
+  whether it can run unattended;
+- tasks in priority order, **every task line carrying its own label** —
+  `Tyrel ruled (date)` or `session recommends` — not only the queue line;
 - a short paste-ready prompt beginning with `/session-start`;
-- tasks in priority order and standing limits such as no push or live pod;
+- standing limits such as no push or live pod;
 - an instruction to stop cleanly and run this procedure if resources run low.
 
 The prompt points at the handoff and brief; it does not duplicate them.
-
-## 5. Leave the checkout boot-clean
-
-The next session boots on whatever this checkout holds — its skills, CLAUDE.md,
-settings, guard and git hooks all load from here before anyone has read a word. A
-session parked on a stale base hands the next session stale rules; that is how a landed
-guard once failed to fire. So, ref-only, never checking out `main`:
-
-```sh
-git fetch origin
-git rev-list --left-right --count origin/main...HEAD
-```
-
-- **This branch's work is finished** (its PR merged, or closed with a record): park the
-  checkout on a fresh provisional branch cut from the current remote tip —
-  `git switch -c work/boot-<date> --no-track origin/main` — then delete the finished
-  branch with `git branch -d` (it refuses if anything is unmerged; do not force it).
-- **Work continues on this branch:** stay on it, and write in the handoff how far
-  behind `origin/main` it is, so the next session's sync step knows before it trusts
-  anything local.
-
-Name the branch the checkout is parked on in the handoff either way.
 
 ## 6. Report and notify
 

@@ -48,7 +48,9 @@ half-price sibling for bulk mechanical drafting when Sol's budget tightens.
   so. A request is never proof of what answered. The record lives with the session and
   lands in its handoff at close. A review seat whose resolved effort is under its floor
   is non-qualifying coverage — redispatch or Tyrel's per-instance override, never a
-  trailer (the reviewer-pass skill states the same rule).
+  trailer (the reviewer-pass skill states the same rule). When the resolved value is
+  not exposed, record that it was not exposed: the request stands and the pass is
+  reported as unverified on that point, never silently assumed to qualify.
 
 ## Prompting the roster
 
