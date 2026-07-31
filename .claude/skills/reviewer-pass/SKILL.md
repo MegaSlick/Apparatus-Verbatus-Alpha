@@ -23,7 +23,9 @@ and recommended coverage. The standing default is two independent readers across
 two vendors, with fresh eyes on the change:
 
 - Claude Opus, high effort
-- `sh operations/codex/seat.sh audit-sol - < "$prompt_path"` — GPT Sol
+- the `audit-sol` seat — GPT Sol, dispatched and captured only through
+  `capture-seat-report.sh` per step 3; never a bare `seat.sh` invocation, because
+  the capture script's guards are load-bearing and a bare dispatch has none of them
 
   **Pick the seat by the size of the pass.** `audit-sol` and `judge` are the same
   model at the same effort; they differ only in deadline — 2700 seconds against

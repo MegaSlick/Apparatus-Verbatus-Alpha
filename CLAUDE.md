@@ -134,7 +134,7 @@ A session never works from `main`, even before anything is committed. The hooks 
 a commit on main and a push to main, and the Claude-side guard refuses the tool-route
 edits and the switch onto it; what none of them can see is a session merely reading and
 planning from it, so the session names its branch at the start and moves off main
-before anything else.
+before anything is edited, staged or committed.
 
 ## Pushing and merging
 
@@ -197,8 +197,9 @@ goal is standing-approved: the declaration, not a permission stop, and a change 
 roster is reported, not re-asked, unless it changes cost, external effect or scope.
 Smallest useful roster, fan-out visible, results verified, session the only integrator;
 the standing duties are not wasteful and the best tool for the job. Stop for money,
-governance, or a genuine change of scope. Record what actually answered, never only what was requested. An agent
-team whose members must challenge one another is exceptional.
+governance, or a genuine change of scope. Record what actually answered, never only
+what was requested. An agent team whose members must challenge one another is
+exceptional.
 
 ## The tooling may filter what you see
 

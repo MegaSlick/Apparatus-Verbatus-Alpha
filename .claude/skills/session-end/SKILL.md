@@ -59,8 +59,12 @@ if it is not, name each file that stays and why it is still this coming sitting'
 The next session boots on whatever this checkout holds — skills, CLAUDE.md, settings,
 guard and git hooks all load from here before anyone has read a word. Park the checkout
 **before** writing the handoff, so the handoff describes the state that is real, never
-the state intended. Ref-only, never checking out `main`, and only from a clean tracked
-tree — commit first, or the dirt travels to the parked branch.
+the state intended. Ref-only, never checking out `main`. Parking needs
+`git status --porcelain` empty — tracked and untracked alike; the gitignored
+workbench never shows there. Uncommitted work at close means the branch is not
+finished as it stands: carry it to the provisional branch (`git switch -c` brings
+the working tree along) and name it in the handoff — never commit it onto a branch
+whose pull request already merged.
 
 ```sh
 git fetch origin
@@ -76,9 +80,12 @@ anything trusts this checkout" into the handoff.
   `git switch -c work/boot-<date>-<hhmm> --no-track origin/main` (time-suffixed;
   two closes can share a date). Then delete the finished branch, knowingly: this
   repository squash-merges, so `git branch -d` refuses even a genuinely merged
-  branch's tip. Verify the PR actually merged (`gh pr view <number>` shows MERGED),
-  say that you verified it, and then `git branch -D <branch>`. A branch you cannot
-  verify merged stays, and the handoff says why.
+  branch's tip. Deletion needs two facts, both verified out loud:
+  `gh pr view <number> --json state,headRefOid` shows `MERGED`, **and** the branch
+  tip (`git rev-parse <branch>`) equals that `headRefOid` — a merged pull request
+  says nothing about commits added to the branch afterwards, and `-D` would take
+  them silently. Both true: say so, then `git branch -D <branch>`. Either false:
+  the branch stays, and the handoff names the unmatched commits and why.
 - **Work continues on this branch:** stay on it, and write in the handoff how far
   behind `origin/main` it is, so the next session's sync step knows before it trusts
   anything local.
@@ -118,8 +125,9 @@ Write `workbench/active/NEXT_SESSION_BRIEF.md`:
 
 - first line, verbatim: "This brief is the outgoing session's recommendation; Tyrel's
   stated goal at the next open outranks every line of it.";
-- one queue line: goal, recommended model/effort, chunk size, honest duration, and
-  whether it can run unattended;
+- one queue line, opening with its own provenance label like every other line: goal,
+  recommended model/effort, chunk size, honest duration, and whether it can run
+  unattended;
 - tasks in priority order, **every task line carrying its own label** —
   `Tyrel ruled (date)` or `session recommends` — not only the queue line;
 - a short paste-ready prompt beginning with `/session-start`;
@@ -137,7 +145,8 @@ Report:
 - checks run and their results;
 - what was archived, moved to scratch, or deliberately left active;
 - external actions taken or explicitly not taken;
-- every live entry in `workbench/standing/SUSPENSIONS.md`, by name, with its deadline;
+- every live entry in `workbench/standing/SUSPENSIONS.md`, by name, with its
+  deadline — and if the ledger itself is missing, say that, never an empty "none";
 - the next queue line and anything Tyrel must decide.
 
 For a normal state-changing session, send this last:

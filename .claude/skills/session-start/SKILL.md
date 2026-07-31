@@ -84,8 +84,11 @@ Then the standing ledgers. Ensure the drawer exists — `mkdir -p workbench/stan
 idempotent, and the installer only runs in fresh clones — and **open every ledger in
 it**, not only the suspensions file: a session that never reads the adopted plan is
 working under a plan it has not seen. Transition check: if
-`workbench/active/SUSPENSIONS.md` exists, it predates the standing drawer — move it to
-`workbench/standing/` (refusing to overwrite an existing file there) and say so.
+`workbench/active/SUSPENSIONS.md` exists, it predates the standing drawer. Read it and
+report its live entries first, exactly as below. Then, if `standing/` holds no ledger,
+move it there and say so; if both exist, read and report both, move the legacy file to
+`workbench/standing/SUSPENSIONS_LEGACY.md` (never overwriting), and put the
+reconciliation to Tyrel — two ledgers is a state to resolve, not to leave.
 
 From `workbench/standing/SUSPENSIONS.md`, **report every live suspension by name, with
 its deadline and what turns it back on**. A rule or hook switched off temporarily is
