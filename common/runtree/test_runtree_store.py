@@ -109,7 +109,11 @@ def test_a_source_manifest_repeating_an_ordinal_is_refused(tmp_path):
 def test_a_source_page_without_an_integer_ordinal_is_refused(tmp_path):
     """The other direction of the same rule: a run cannot account for pages it
     cannot count. `True` is excluded explicitly because `isinstance(True, int)`."""
-    for bad in ({"relative_path": "p.png", "sha256": "a" * 64}, {"ordinal": "1"}, {"ordinal": True}):
+    for bad in (
+        {"relative_path": "p.png", "sha256": "a" * 64},
+        {"ordinal": "1"},
+        {"ordinal": True},
+    ):
         with pytest.raises(SchemaRefusal):
             make_run(tmp_path, source_manifest=[{"relative_path": "p.png", **bad}])
 

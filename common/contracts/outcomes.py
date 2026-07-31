@@ -342,7 +342,6 @@ def run_aggregate(
     if not act_categories and not (page_census or {}):
         reasons.append("the run accounted for no acts and no pages, so nothing was reconciled")
 
-
     for act, category in act_categories.items():
         if not isinstance(category, ArmariumCategory):
             raise FatalAccounting(f"act {act} carries {category!r}, not a category")
