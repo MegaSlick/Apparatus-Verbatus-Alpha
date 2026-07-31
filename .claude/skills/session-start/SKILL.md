@@ -156,6 +156,25 @@ Worked examples, the length his answer needs:
 > results on disk; the session integrates and verifies before anything is claimed.
 > Stops for money, governance, or scope — everything else waits for you.
 
+**If the answer is unattended, settle the permission question in the same breath.**
+CLAUDE.md, "Effort and shape": an unattended session does not invoke an action that can
+trigger a permission prompt. So before the work starts, name every action in it that
+could prompt — a `git worktree` add or remove, a deletion, a push, anything outside the
+allowlist — and either get those permissions now, while he is still here, or plan a
+route that does not need them. An unsure case counts as prompting.
+
+Ask him plainly whether he will be available for prompts. His answer decides the
+session's whole posture, so it is not a detail to infer:
+
+- **Available** — ask as you would in an attended session.
+- **Not available**, the overnight default — a blocked action is pinged and queued the
+  moment it is discovered, and the session continues *without* it rather than working
+  around it: no second route to the same action, no spelling that dodges the prompt.
+  It is reached only when everything else is finished, or when no further progress is
+  possible without it.
+
+Availability lapses at the close. A later session assumes he is asleep.
+
 The main session remains accountable for the goal, conversation, synthesis, integrated
 diff, verification, and final report. Agents provide evidence, not authority.
 
