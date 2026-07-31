@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from common.contracts.outcomes import OutcomeClass, classify
+from common.contracts.stages import PERLECTOR
 from common.imaging import decode_grayscale_png
 from proof.build_fixture import (
     ACTS,
@@ -194,9 +196,15 @@ def test_the_review_scenario_exercises_the_repaired_failed_state(skeleton):
     assert failures[0]["seat"] in WITNESS_SEATS
 
 
-def test_the_four_scenarios_are_exactly_the_declared_ones(skeleton):
+def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     names = [scenario["name"] for scenario in skeleton["scenario"]]
-    assert names == ["happy", "review", "refused-page", "refused-first-page"]
+    assert names == [
+        "happy",
+        "review",
+        "refused-page",
+        "refused-first-page",
+        "truncated-reading",
+    ]
     by_name = {scenario["name"]: scenario for scenario in skeleton["scenario"]}
     assert by_name["happy"]["recover_acts"] == []
     assert by_name["happy"]["hold_acts"] == []
@@ -206,6 +214,21 @@ def test_the_four_scenarios_are_exactly_the_declared_ones(skeleton):
     assert by_name["refused-page"]["hold_acts"] == []
     assert by_name["refused-first-page"]["recover_acts"] == []
     assert by_name["refused-first-page"]["hold_acts"] == []
+    # Nothing is held or recovered by configuration here: the hold this scenario
+    # produces must come from the reading outcome itself, or it would prove
+    # nothing about the guard.
+    assert by_name["truncated-reading"]["recover_acts"] == []
+    assert by_name["truncated-reading"]["hold_acts"] == []
+
+
+def test_the_declared_reading_failure_is_a_failed_class_outcome_carrying_text(skeleton):
+    """The hazard is a reading that did not succeed but still carries text. A
+    declaration that named a completed-class outcome would exercise nothing."""
+    failures = skeleton["reading_failure"]
+    assert len(failures) == 1
+    assert failures[0]["scenario"] == "truncated-reading"
+    assert failures[0]["act_key"] in {act["key"] for act in skeleton["act"]}
+    assert classify(PERLECTOR, failures[0]["outcome"]) is OutcomeClass.FAILED
 
 
 def test_each_page_refusal_declares_a_digest_the_bytes_cannot_match(skeleton):

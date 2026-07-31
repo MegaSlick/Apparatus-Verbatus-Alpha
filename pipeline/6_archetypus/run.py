@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.contracts.canonical import self_hash  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
-from common.contracts.outcomes import terminal_category  # noqa: E402
+from common.contracts.outcomes import OutcomeClass, classify, terminal_category  # noqa: E402
 from common.contracts.stages import ARCHETYPUS, DESIGNATOR, PERLECTOR, RECENSOR  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -91,6 +91,18 @@ def main() -> int:
             continue
 
         reading = latest_reading(context, act_id)
+        # The Recensor now holds an act whose latest reading did not succeed, so
+        # reaching here with a failed one means that check was bypassed or a
+        # future edit removed it. This is the last stage before the text exists
+        # and the only place a reading becomes "the one text", which is exactly
+        # where a guard should be loudest rather than trusting the stage before.
+        reading_class = classify(PERLECTOR, reading["outcome"])
+        if reading_class is not OutcomeClass.COMPLETED:
+            raise FatalAccounting(
+                f"act {act_id} would be established from a {reading['outcome']!r} "
+                f"reading ({reading_class.value}); the established text may only come "
+                "from a reading that succeeded, and a failed one is held, never written"
+            )
         payload = reading["payload"]
         record = {
             "act_id": act_id,

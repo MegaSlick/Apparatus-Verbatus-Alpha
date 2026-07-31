@@ -731,3 +731,73 @@ def test_the_recensor_refuses_a_continuation_claim_with_one_region(tmp_path):
     assert len(reviews) == 1
     assert reviews[0]["outcome"] == "held-for-review"
     assert "continuation" in reviews[0]["payload"]["reason"]
+
+
+# --- A reading that did not succeed ---------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def truncated_reading_run(tmp_path_factory):
+    """Act a1's reading is `truncated`: a failed-class Perlector outcome that still
+    carries the text it managed. That combination is the dangerous one — the
+    Recensor used to ask only whether a reading *existed*, and the Archetypus
+    copied the text out of whichever reading was latest."""
+    root = tmp_path_factory.mktemp("truncated_reading")
+    result = orchestrate(root, "r", "truncated-reading")
+    assert result.returncode == 3, result.stderr
+    return root, RunTree(root, "r")
+
+
+def test_a_reading_that_did_not_succeed_is_held_and_says_why(truncated_reading_run):
+    """GOALS 2 is accuracy against the ink, and GOVERNANCE 2 refuses a loss hidden
+    behind a successful status. Text nobody successfully read is neither, so it is
+    held — visibly, with the outcome that caused it named in the reason."""
+    _, tree = truncated_reading_run
+    reviews = [
+        record
+        for record in artifacts(tree, RECENSOR, "review")
+        if record["payload"]["act_key"] == "a1"
+    ]
+    assert len(reviews) == 1
+    assert reviews[0]["outcome"] == "held-for-review"
+    assert "truncated" in reviews[0]["payload"]["reason"]
+
+
+def test_the_truncated_reading_never_becomes_established_text(truncated_reading_run):
+    """The whole point: the reading exists and carries text, and none of it reaches
+    the one place that turns a reading into the established text."""
+    _, tree = truncated_reading_run
+    readings = [
+        record
+        for record in artifacts(tree, PERLECTOR, "perlectio")
+        if record["payload"]["act_key"] == "a1"
+    ]
+    assert len(readings) == 1
+    assert readings[0]["outcome"] == "truncated"
+    assert readings[0]["payload"]["text"], "the reading must really carry text to be a hazard"
+
+    established = [
+        record
+        for record in artifacts(tree, ARCHETYPUS, "archetypus")
+        if record["payload"]["act_key"] == "a1"
+    ]
+    assert established == [], "a failed reading may not be established"
+
+    export = export_of(tree)
+    assert [item["act_key"] for item in export["review"]] == ["a1"]
+    assert export["aggregate"]["status"] == "partial"
+
+
+def test_the_act_whose_reading_succeeded_is_still_delivered(truncated_reading_run):
+    """Invariant #14 — the refusal must not have bought its strictness by refusing
+    good readings too. a2 read cleanly in the same run and is established."""
+    _, tree = truncated_reading_run
+    export = export_of(tree)
+    assert [item["act_key"] for item in export["delivered"]] == ["a2"]
+    established = [
+        record
+        for record in artifacts(tree, ARCHETYPUS, "archetypus")
+        if record["payload"]["act_key"] == "a2"
+    ]
+    assert len(established) == 1
+    assert established[0]["outcome"] == "established"

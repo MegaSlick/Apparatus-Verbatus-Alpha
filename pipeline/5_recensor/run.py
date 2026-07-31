@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
-from common.contracts.outcomes import witness_coverage  # noqa: E402
+from common.contracts.outcomes import OutcomeClass, classify, witness_coverage  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
     ATTESTATORES,
     DESIGNATOR,
@@ -213,7 +213,25 @@ def main() -> int:
             )
             continue
 
-        if continuation_shortfall:
+        # Whether the reading *succeeded*, not merely whether one exists. The
+        # check above asks only that `readings` is non-empty, and the Archetypus
+        # copies `payload["text"]` out of whatever the latest reading is — so a
+        # `truncated` or `failed` Perlectio carrying stale text was established
+        # as the one text, and a `not-run` record crashed on the missing field.
+        # GOALS 2 is accuracy against the ink; text nobody successfully read is
+        # not a reading, and GOVERNANCE 2 says it may not vanish behind a
+        # successful status either. So it is held, visibly, with the outcome named.
+        latest = latest_attempt(readings, f"reading of {act_id}")
+        reading_class = classify(PERLECTOR, latest["outcome"])
+
+        if reading_class is not OutcomeClass.COMPLETED:
+            outcome, reason = (
+                "held-for-review",
+                f"the latest reading is {latest['outcome']!r} ({reading_class.value}); "
+                "accepting would establish text that nobody successfully read",
+            )
+            held += 1
+        elif continuation_shortfall:
             outcome, reason = (
                 "held-for-review",
                 f"the seal claims a continuation but only {proposal_count} proposal "
@@ -242,11 +260,19 @@ def main() -> int:
             # id happened to sort first. `readings[0]` is manifest order, which is
             # a hash: after a recovery it could cite the superseded attempt's crop
             # as the basis for accepting the new one. Deterministic, and wrong.
+            # `latest`, computed once above, rather than a second `latest_attempt`
+            # over the same list. A completed reading must cite the regions it
+            # read, and is indexed strictly so a missing basis stays a loud
+            # failure. A held one need not: a `not-run` Perlectio carries no
+            # `basis` key at all, and dereferencing it would turn an honest hold
+            # into a traceback — the raw missing-field crash a reviewer filed.
             inputs=[
                 context.input_ref(reference["image_path"])
-                for reference in latest_attempt(readings, f"reading of {act_id}")["payload"][
-                    "basis"
-                ]["regions"]
+                for reference in (
+                    latest["payload"]["basis"]["regions"]
+                    if reading_class is OutcomeClass.COMPLETED
+                    else latest["payload"].get("basis", {}).get("regions", [])
+                )
             ],
             payload={
                 "act_key": act_key,

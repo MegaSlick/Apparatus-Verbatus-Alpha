@@ -128,6 +128,23 @@ name = "refused-first-page"
 recover_acts = []
 hold_acts = []
 
+[[scenario]]
+name = "truncated-reading"
+recover_acts = []
+hold_acts = []
+
+# A reading that did not succeed. `truncated` is a failed-class Perlector
+# outcome that still carries text, which is the combination that matters: the
+# Recensor used to ask only whether a reading existed, and the Archetypus
+# copied the text out of whichever reading was latest. Stale text from a
+# reading nobody completed could therefore be established as the one text.
+# This scenario drives that exact path, and asserts the act is held instead.
+
+[[reading_failure]]
+scenario = "truncated-reading"
+act_key = "a1"
+outcome = "truncated"
+
 # A seat whose attempt failed, exercising the witness `failed` state that Sol's
 # finding B-2 added to the closed vocabulary. It makes act a2 under-witnessed
 # without changing which acts are held.

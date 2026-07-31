@@ -115,6 +115,20 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     return rows
 
 
+def declared_reading_failure(context, act_key: str) -> str | None:
+    """The non-completed outcome this scenario declares for an act, if any.
+
+    The fixture is the authority on what a scenario does, exactly as it is for a
+    witness failure. A reading that did not succeed still carries whatever text
+    it managed, which is the shape that matters: it is what let a `truncated`
+    reading be established as the one text.
+    """
+    for row in context.fixture.get("reading_failure", []):
+        if row["scenario"] == context.scenario and row["act_key"] == act_key:
+            return row["outcome"]
+    return None
+
+
 def main() -> int:
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, PERLECTOR, ADAPTER_REVISION)
@@ -184,7 +198,7 @@ def main() -> int:
         context.publish(
             kind="perlectio",
             subject_id=act_id,
-            outcome="read",
+            outcome=declared_reading_failure(context, act["act_key"]) or "read",
             attempt=attempt_id(act_id, "perlegere", ordinal),
             inputs=[context.input_ref(basis["image_path"]) for basis in bases],
             payload={
