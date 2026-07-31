@@ -186,6 +186,19 @@ that grows long is a change of shape — say so and re-agree it.**
 attended or unattended, which shape, which units deserve agents. One paragraph, then
 wait. `/session-start` holds the worked examples.
 
+**An unattended session does not invoke an action that can trigger a permission
+prompt.** Not "does not wait on one" — does not invoke one. Before unattended work
+begins, name every action in it that could prompt — a `git worktree` add or remove, a
+deletion, anything outside the allowlist — and plan a route that does not need it. **If
+you are unsure whether something prompts, treat it as though it does.**
+
+When one turns out to be necessary anyway: **ping him the moment you discover it, not
+the moment you stop**; record it in `workbench/active/DEFERRED_ACTIONS.md`; and carry on
+with every piece of work that does not depend on it. Invoke it only once one of two
+things is true — everything else is finished, so waiting costs nothing, or he has
+answered and authorized it. A session sitting on a prompt is doing no work and cannot
+tell you that it is stuck.
+
 ## Agents
 
 The roster, effort floors and ranges, prompting rules and bounds live in
