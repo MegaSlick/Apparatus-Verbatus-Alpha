@@ -133,6 +133,22 @@ def test_every_expected_act_has_exactly_one_terminal_category(happy_run):
     assert len({entry["subject_id"] for entry in entries}) == 2
 
 
+def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(happy_run):
+    """The seal entry is the handoff contract: every entry names its Designator
+    outcome, and `has_continuation` reports the regions actually cut, never the
+    declaration — a claim of a continuation nothing holds is how half an act gets
+    delivered as the act."""
+    _, tree = happy_run
+    seal = tree.read_artifact(
+        DESIGNATOR, "proposal-seal", artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
+    )["payload"]
+    by_key = {entry["act_key"]: entry for entry in seal["expected_acts"]}
+    assert by_key["a1"]["outcome"] == "proposed"
+    assert by_key["a2"]["outcome"] == "proposed"
+    assert by_key["a1"]["has_continuation"] is False
+    assert by_key["a2"]["has_continuation"] is True
+
+
 def test_the_run_used_no_network_and_no_model(happy_run):
     """The adapters are all fakes, declared as such. A run that had reached a real
     model would carry a resolved identity that was not a `fake-*` recipe."""
@@ -497,3 +513,221 @@ def test_contract_error_is_the_only_way_a_stage_reports_refusal():
     """A stage that crashed with a traceback and exited zero would be the vacuous
     green this project exists to notice."""
     assert issubclass(SchemaRefusal, ContractError)
+
+
+# --- 8. A refused page cannot vanish, and no act rides out over one -------------
+#
+# The defect all four reviewers filed first: the Designator skipped any act whose
+# page was not sealed, wrote nothing for it anywhere, and sealed a shorter
+# expected-act list — so the one conservation check in the pipeline reconciled
+# perfectly against a record of the loss's absence. A run that lost a whole page
+# reported `status: complete, reasons: []`.
+
+
+@pytest.fixture(scope="module")
+def refused_page_run(tmp_path_factory):
+    """Page 2 is refused at the door, so a2's continuation cannot be cut."""
+    root = tmp_path_factory.mktemp("refused_page")
+    result = orchestrate(root, "r", "refused-page")
+    assert result.returncode == 3, result.stderr
+    return root, RunTree(root, "r")
+
+
+@pytest.fixture(scope="module")
+def refused_first_page_run(tmp_path_factory):
+    """Page 1 — the page both acts live on — is refused at the door."""
+    root = tmp_path_factory.mktemp("refused_first_page")
+    result = orchestrate(root, "r", "refused-first-page")
+    assert result.returncode == 3, result.stderr
+    return root, RunTree(root, "r")
+
+
+def proposal_seal(tree: RunTree) -> dict:
+    return tree.read_artifact(
+        DESIGNATOR, "proposal-seal", artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
+    )["payload"]
+
+
+def test_the_door_really_refused_page_two_through_its_own_inspection(refused_page_run):
+    _, tree = refused_page_run
+    refusals = [
+        record for record in artifacts(tree, EXEMPLAR, "page") if record["outcome"] == "refused"
+    ]
+    assert len(refusals) == 1
+    assert refusals[0]["payload"]["ordinal"] == 2
+    assert "digest" in refusals[0]["payload"]["reason"]
+
+
+def test_the_page_loss_is_named_and_the_run_is_partial(refused_page_run):
+    _, tree = refused_page_run
+    export = export_of(tree)
+    assert export["aggregate"]["status"] == "partial"
+    assert any(
+        reason.startswith("page 2 was refused:") for reason in export["aggregate"]["reasons"]
+    )
+    assert export["aggregate"]["by_page_outcome"] == {"sealed": 1, "refused": 1}
+
+
+def test_the_act_with_the_lost_continuation_is_held_not_delivered(refused_page_run):
+    """`has_continuation` is derived from the regions actually cut, so it may not
+    claim a continuation nothing holds — and the act whose far side is on the
+    lost page is held rather than delivered as a complete reading of half its ink."""
+    _, tree = refused_page_run
+    seal = proposal_seal(tree)
+    by_key = {entry["act_key"]: entry for entry in seal["expected_acts"]}
+    assert set(by_key) == {"a1", "a2"}, "the seal must still name every declared act"
+    assert by_key["a1"]["outcome"] == "proposed"
+    assert by_key["a2"]["outcome"] == "held"
+    assert by_key["a2"]["has_continuation"] is False
+
+    export = export_of(tree)
+    assert [item["act_key"] for item in export["delivered"]] == ["a1"]
+    assert [item["act_key"] for item in export["review"]] == ["a2"]
+    assert export["review"][0]["category"] == "held-for-review"
+
+
+def test_the_hold_is_a_real_artifact_naming_the_lost_page(refused_page_run):
+    _, tree = refused_page_run
+    holds = artifacts(tree, DESIGNATOR, "hold")
+    assert len(holds) == 1
+    assert holds[0]["outcome"] == "held"
+    assert holds[0]["payload"]["act_key"] == "a2"
+    assert "page 2" in holds[0]["payload"]["reason"]
+    assert holds[0]["inputs"], "the hold must reference the refusal it rests on"
+
+
+def test_no_witness_and_no_reading_pretends_to_have_seen_the_held_act(refused_page_run):
+    """The held act is not silently skipped: every configured seat records an
+    explicit not-run, and the Perlector acknowledges the act without reading it —
+    a reading of the near side alone would be a truncation delivered as an output."""
+    _, tree = refused_page_run
+    testimonia = [
+        record
+        for record in artifacts(tree, ATTESTATORES, "testimonium")
+        if record["payload"]["act_key"] == "a2"
+    ]
+    assert len(testimonia) == 3
+    assert {record["outcome"] for record in testimonia} == {"not-run"}
+
+    readings = [
+        record
+        for record in artifacts(tree, PERLECTOR, "perlectio")
+        if record["payload"]["act_key"] == "a2"
+    ]
+    assert len(readings) == 1
+    assert readings[0]["outcome"] == "not-run"
+    assert "text" not in readings[0]["payload"]
+
+    established = artifacts(tree, ARCHETYPUS, "archetypus")
+    assert [record["payload"]["act_key"] for record in established] == ["a1"]
+
+
+def test_the_refused_page_scenario_is_deterministic_on_rerun(tmp_path):
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "refused-page").returncode == 3
+    before = snapshot(root)
+    assert orchestrate(root, "r", "refused-page").returncode == 3
+    assert snapshot(root) == before
+
+
+def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_first_page_run):
+    """Half one of the defect, driven end to end: an act whose own page was never
+    sealed used to disappear from the seal entirely. Now it appears, held, with a
+    hold artifact each, and the run is partial with the page loss named."""
+    _, tree = refused_first_page_run
+    seal = proposal_seal(tree)
+    assert {entry["act_key"]: entry["outcome"] for entry in seal["expected_acts"]} == {
+        "a1": "held",
+        "a2": "held",
+    }
+    assert artifacts(tree, DESIGNATOR, "region") == [], (
+        "no region may be cut for an act that cannot be fully marked out — an "
+        "orphan continuation crop would be evidence of an act nothing accounts for"
+    )
+    assert len(artifacts(tree, DESIGNATOR, "hold")) == 2
+
+    export = export_of(tree)
+    assert export["aggregate"]["status"] == "partial"
+    assert any(
+        reason.startswith("page 1 was refused:") for reason in export["aggregate"]["reasons"]
+    )
+    assert export["delivered"] == []
+    assert [item["category"] for item in export["review"]] == [
+        "held-for-review",
+        "held-for-review",
+    ]
+    entries = [
+        entry
+        for entry in tree.build_manifest(ARMARIUM)["artifacts"]
+        if entry["kind"] == "manifest-entry"
+    ]
+    assert len(entries) == 2, "conservation: every expected act still has exactly one category"
+
+
+def test_the_recensor_refuses_a_continuation_claim_with_one_region(tmp_path):
+    """Defence in depth for half two: if the seal claims a continuation and the
+    tree holds only one proposal region — drift, tampering, or a future bug —
+    the Recensor holds the act rather than accepting a half reading."""
+    root = tmp_path / "runs"
+    for name, program in (
+        ("door", "pipeline/1_exemplar/door.py"),
+        ("exemplar", "pipeline/1_exemplar/run.py"),
+        ("designator", "pipeline/2_designator/run.py"),
+        ("attestatores", "pipeline/3_attestatores/run.py"),
+        ("perlector", "pipeline/4_perlector/run.py"),
+    ):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / program),
+                "--run-root",
+                str(root),
+                "--run-id",
+                "r",
+                "--scenario",
+                "happy",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{name}: {result.stderr}"
+
+    tree = RunTree(root, "r")
+    continuations = [
+        entry
+        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == "region"
+        and tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])["payload"]["transform"][
+            "source_page_ordinal"
+        ]
+        == 2
+    ]
+    assert len(continuations) == 1
+    tree.resolve(continuations[0]["relative_path"]).unlink()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline" / "5_recensor" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 3, result.stderr
+
+    reviews = [
+        record
+        for record in artifacts(tree, RECENSOR, "review")
+        if record["payload"]["act_key"] == "a2"
+    ]
+    assert len(reviews) == 1
+    assert reviews[0]["outcome"] == "held-for-review"
+    assert "continuation" in reviews[0]["payload"]["reason"]

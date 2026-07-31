@@ -8,6 +8,13 @@ it, a later stage could only ask "did I account for the acts I happen to have se
 rather than "did I account for the acts that were found", and an act lost between
 stages would leave no hole to notice.
 
+Every seal entry carries this stage's outcome for the act: `proposed` when it was
+fully marked out, `held` when it could not be — its page unsealed, or a declared
+continuation whose page never sealed — with a `hold` artifact recording why. An
+act this stage cannot mark out is a unit it still accounts for; before the hold
+existed, such an act was skipped, sealed nowhere, and the run reported complete
+over its absence.
+
 Regions are append-only per act, and each carries an `origin` saying what kind of
 region it is: a **proposal** region is part of what was originally marked out — the
 first crop, and a continuation on the next page, both — while a **recovery** region
@@ -49,19 +56,32 @@ from common.stage import (  # noqa: E402
 ADAPTER_REVISION = "fake-designator-v0"
 
 
-def sealed_pages(context) -> dict[int, dict]:
-    """The pages the Exemplar actually sealed, by ordinal.
+def page_records(context) -> dict[int, dict]:
+    """Every page outcome the Exemplar recorded — sealed and refused — by ordinal.
 
     Read from the Exemplar's artifacts rather than from the fixture, so a page the
-    door refused is a page this stage genuinely does not see.
+    door refused is a page this stage genuinely does not see as ink. The refused
+    records still matter here: they are the evidence a hold rests on.
     """
-    pages = {}
+    records = {}
     for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]:
-        if entry["kind"] != "page" or entry["outcome"] != "sealed":
+        if entry["kind"] != "page":
             continue
         record = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
-        pages[record["payload"]["ordinal"]] = record
-    return pages
+        records[record["payload"]["ordinal"]] = {
+            "record": record,
+            "relative_path": entry["relative_path"],
+        }
+    return records
+
+
+def sealed_pages(records: dict[int, dict]) -> dict[int, dict]:
+    """The sealed subset, by ordinal, each value the page artifact itself."""
+    return {
+        ordinal: entry["record"]
+        for ordinal, entry in records.items()
+        if entry["record"]["outcome"] == "sealed"
+    }
 
 
 def cut_region(context, act, page_record, bounds, ordinal, page_ordinal, origin):
@@ -108,34 +128,101 @@ def cut_region(context, act, page_record, bounds, ordinal, page_ordinal, origin)
     return act_id
 
 
+def hold_act(context, act, act_id: str, unsealed_ordinal: int, records, reason: str) -> None:
+    """Publish the artifact that says why this act could not be marked out.
+
+    The hold is a real record, never a skipped loop iteration: before it existed,
+    an act on an unsealed page was written nowhere at all, the proposal seal came
+    up short, and the Armarium's conservation check reconciled perfectly against
+    a record of the loss's absence. The hold references the Exemplar's own page
+    outcome as its evidence, so the refusal it rests on is one digest-checked
+    hop away.
+    """
+    entry = records.get(unsealed_ordinal)
+    if entry is None:
+        raise ContractError(
+            f"act {act['key']} needs page {unsealed_ordinal}, and the Exemplar "
+            "recorded no outcome for it at all — a page in neither the sealed nor "
+            "the refused set is invariant #10's imbalance, not a page to skip"
+        )
+    context.publish(
+        kind="hold",
+        subject_id=act_id,
+        outcome="held",
+        inputs=[context.input_ref(entry["relative_path"])],
+        payload={
+            "act_key": act["key"],
+            "unsealed_page_ordinal": unsealed_ordinal,
+            "reason": reason,
+        },
+    )
+
+
 def initial_pass(context) -> int:
-    pages = sealed_pages(context)
+    records = page_records(context)
+    pages = sealed_pages(records)
     if not pages:
         raise ContractError("the Designator found no sealed page to mark out")
 
     expected = []
     for act in context.fixture["act"]:
         page_ordinal = act["page_ordinal"]
-        if page_ordinal not in pages:
-            continue
-        act_id = cut_region(
-            context, act, pages[page_ordinal], act_bounds(act), 1, page_ordinal, "proposal"
-        )
-
-        # An act that runs over the page break gets a second region of the SAME
-        # act. A continuation that became its own act would quietly turn one
-        # entry into two and break identity where it is hardest to see.
+        act_id = act_identity(context.fixture, act)
         continuation = continuation_for(context.fixture, act["key"])
-        if continuation and continuation["page_ordinal"] in pages:
-            cut_region(
+        continuation_cut = False
+
+        if page_ordinal not in pages:
+            # The act's own page never sealed. It cannot be marked out, and it
+            # may not disappear either: it is held, with the reason on record,
+            # and no region of it — not even a sealed continuation — is cut. An
+            # orphan far-side crop would be evidence of an act nothing accounts
+            # for.
+            outcome = "held"
+            hold_act(
                 context,
                 act,
-                pages[continuation["page_ordinal"]],
-                {key: continuation[key] for key in ("x", "y", "w", "h")},
-                2,
-                continuation["page_ordinal"],
-                "proposal",
+                act_id,
+                page_ordinal,
+                records,
+                f"page {page_ordinal} was not sealed, so the act could not be marked out",
             )
+        else:
+            cut_region(
+                context, act, pages[page_ordinal], act_bounds(act), 1, page_ordinal, "proposal"
+            )
+
+            # An act that runs over the page break gets a second region of the
+            # SAME act. A continuation that became its own act would quietly turn
+            # one entry into two and break identity where it is hardest to see.
+            if continuation and continuation["page_ordinal"] in pages:
+                cut_region(
+                    context,
+                    act,
+                    pages[continuation["page_ordinal"]],
+                    {key: continuation[key] for key in ("x", "y", "w", "h")},
+                    2,
+                    continuation["page_ordinal"],
+                    "proposal",
+                )
+                continuation_cut = True
+
+            if continuation and not continuation_cut:
+                # The near side is sealed ink and stays cut as evidence for the
+                # reviewer, but the act as marked out is incomplete: delivering
+                # a reading of the near side alone would be a truncation wearing
+                # a complete act's name.
+                outcome = "held"
+                hold_act(
+                    context,
+                    act,
+                    act_id,
+                    continuation["page_ordinal"],
+                    records,
+                    f"the act continues onto page {continuation['page_ordinal']}, "
+                    "which was not sealed, so its continuation could not be cut",
+                )
+            else:
+                outcome = "proposed"
 
         expected.append(
             {
@@ -143,7 +230,12 @@ def initial_pass(context) -> int:
                 "act_key": act["key"],
                 "page_id": page_identity(context.fixture, page_ordinal),
                 "page_ordinal": page_ordinal,
-                "has_continuation": bool(continuation),
+                # Derived from the regions actually cut, never from the fixture
+                # declaration: a seal that claims a continuation nothing holds is
+                # how an act gets read on one side of a page break and delivered
+                # as a complete reading.
+                "has_continuation": continuation_cut,
+                "outcome": outcome,
             }
         )
 
@@ -172,13 +264,19 @@ def recovery_pass(context, act_id: str) -> int:
     match = [item for item in seal["payload"]["expected_acts"] if item["act_id"] == act_id]
     if not match:
         raise ContractError(f"recovery asked for {act_id}, which the proposal seal does not name")
+    if match[0].get("outcome") != "proposed":
+        raise ContractError(
+            f"recovery asked for {act_id}, which the seal holds as "
+            f"{match[0].get('outcome')!r}; a held act is terminal and may not be "
+            "recropped back to life"
+        )
 
     act = next(item for item in context.fixture["act"] if item["key"] == match[0]["act_key"])
     recovery = [row for row in context.fixture.get("recovery", []) if row["act_key"] == act["key"]]
     if not recovery:
         raise ContractError(f"the fixture declares no recovery region for act {act['key']}")
 
-    pages = sealed_pages(context)
+    pages = sealed_pages(page_records(context))
     bounds = {key: recovery[0][key] for key in ("x", "y", "w", "h")}
     ordinal = _next_region_ordinal(context, act_id)
     cut_region(

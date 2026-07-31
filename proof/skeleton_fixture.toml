@@ -101,6 +101,12 @@ reported = "SYNTHETIC ACT TWO delta epsiIon zeta eta"
 # The happy scenario establishes both acts. The review scenario recovers act
 # a1 once -- act identity stable, region and attempt identities changing -- and
 # holds act a2, which therefore reaches no Archetypus at all.
+#
+# The refused-page scenario loses page 2 at the door, so act a2's declared
+# continuation cannot be cut and the act is held rather than delivered on half
+# its ink. The refused-first-page scenario loses page 1, the page both acts
+# live on: neither act can be marked out at all, and both must still end in
+# exactly one terminal category with the page loss named in the aggregate.
 
 [[scenario]]
 name = "happy"
@@ -112,6 +118,16 @@ name = "review"
 recover_acts = ["a1"]
 hold_acts = ["a2"]
 
+[[scenario]]
+name = "refused-page"
+recover_acts = []
+hold_acts = []
+
+[[scenario]]
+name = "refused-first-page"
+recover_acts = []
+hold_acts = []
+
 # A seat whose attempt failed, exercising the witness `failed` state that Sol's
 # finding B-2 added to the closed vocabulary. It makes act a2 under-witnessed
 # without changing which acts are held.
@@ -120,3 +136,17 @@ hold_acts = ["a2"]
 scenario = "review"
 act_key = "a2"
 seat = "attestator_3"
+
+# Per-scenario declared digests the checked-in bytes cannot match, so the
+# door refuses those pages through its real inspection path. The declared
+# digest is all zeros: unmistakably not the digest of anything here.
+
+[[page_refusal]]
+scenario = "refused-page"
+ordinal = 2
+declared_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[[page_refusal]]
+scenario = "refused-first-page"
+ordinal = 1
+declared_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

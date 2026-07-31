@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
-from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
+from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.outcomes import witness_coverage  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
     ATTESTATORES,
@@ -36,9 +36,11 @@ from common.contracts.stages import (  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    expected_acts,
     latest_attempt,
     open_context,
     run_stage,
+    scenario_for,
     stage_parser,
 )
 
@@ -64,13 +66,21 @@ def recovery_budget(root: str = "config") -> dict:
     return {"allowed": allowed, "absolute_cap": cap}
 
 
-def expected_acts(context) -> list[dict]:
-    seal = context.tree.read_artifact(
-        DESIGNATOR,
-        "proposal-seal",
-        artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
+def designator_hold(context, act_id: str) -> tuple[dict, str]:
+    """The Designator's hold record for a seal-held act, and its path.
+
+    Refused loudly when absent: a seal entry that says `held` with no record of
+    why is a claim with no evidence, and absent evidence never reads cleaner
+    than damaged evidence.
+    """
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] == "hold" and entry["subject_id"] == act_id:
+            record = context.tree.read_artifact(DESIGNATOR, "hold", entry["artifact_id"])
+            return record, entry["relative_path"]
+    raise FatalAccounting(
+        f"the seal holds act {act_id} but the Designator published no hold record "
+        "saying why; a hold with no evidence cannot be reviewed"
     )
-    return seal["payload"]["expected_acts"]
 
 
 def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
@@ -106,21 +116,12 @@ def main() -> int:
     context = open_context(args, RECENSOR, ADAPTER_REVISION)
     budget = recovery_budget()
 
-    scenario = next(
-        item for item in context.fixture["scenario"] if item["name"] == context.scenario
-    )
+    scenario = scenario_for(context.fixture, context.scenario)
     floor = context.fixture["witness_floor"]
 
     held = 0
     for act in expected_acts(context):
         act_id, act_key = act["act_id"], act["act_key"]
-
-        readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
-        if not readings:
-            raise FatalAccounting(
-                f"act {act_id} reached the Recensor with no reading at all. A unit "
-                "in no terminal set is a fatal accounting imbalance (#10)"
-            )
 
         outcomes = seat_outcomes(context, act_id)
         missing = set(context.witness_seats) - set(outcomes)
@@ -131,11 +132,58 @@ def main() -> int:
             )
         coverage = witness_coverage(outcomes, floor)
 
+        if act["outcome"] == "held":
+            # The Designator could not mark this act out. There is no reading to
+            # review and no recovery to request — recovery recovers coverage on
+            # sealed ink, and this act's missing ink was never sealed. The act
+            # still gets this stage's explicit outcome, so its terminal category
+            # derives from a review like every other act's.
+            hold, hold_path = designator_hold(context, act_id)
+            context.publish(
+                kind="review",
+                subject_id=act_id,
+                outcome="held-for-review",
+                attempt=attempt_id(act_id, "recense", 1),
+                inputs=[context.input_ref(hold_path)],
+                payload={
+                    "act_key": act_key,
+                    "attempt_ordinal": 1,
+                    "reason": f"the Designator held this act: {hold['payload']['reason']}",
+                    "coverage": coverage,
+                    "recoveries_used": 0,
+                    "budget_allowed": budget["allowed"],
+                    "absolute_cap": budget["absolute_cap"],
+                },
+            )
+            held += 1
+            continue
+
+        readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
+        if not readings:
+            raise FatalAccounting(
+                f"act {act_id} reached the Recensor with no reading at all. A unit "
+                "in no terminal set is a fatal accounting imbalance (#10)"
+            )
+
+        # The seal's continuation claim against the regions the tree actually
+        # holds. A claim with only one proposal region — drift, tampering, or a
+        # future bug reintroducing the declared-not-cut gap — may not be
+        # accepted: the reading it would bless covers one side of a page break
+        # while the record says it covers the act.
+        proposal_count = len(
+            [
+                record
+                for record in artifacts_for(context, DESIGNATOR, "region", act_id)
+                if record["payload"]["origin"] == "proposal"
+            ]
+        )
+        continuation_shortfall = act["has_continuation"] and proposal_count < 2
+
         used = recoveries_so_far(context, act_id)
         wants_recovery = act_key in scenario["recover_acts"] and used == 0
         ordinal = used + 1
 
-        if wants_recovery and used < budget["allowed"]:
+        if not continuation_shortfall and wants_recovery and used < budget["allowed"]:
             # The Recensor asks; the Designator cuts. Recording the request as an
             # artifact is what keeps the loop countable from the tree alone.
             context.publish(
@@ -165,7 +213,14 @@ def main() -> int:
             )
             continue
 
-        if act_key in scenario["hold_acts"]:
+        if continuation_shortfall:
+            outcome, reason = (
+                "held-for-review",
+                f"the seal claims a continuation but only {proposal_count} proposal "
+                "region(s) exist; accepting would deliver part of an act as the act",
+            )
+            held += 1
+        elif act_key in scenario["hold_acts"]:
             outcome, reason = "held-for-review", "the act did not reconcile and needs a human"
             held += 1
         elif wants_recovery:

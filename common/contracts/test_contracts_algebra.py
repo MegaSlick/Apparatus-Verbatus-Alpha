@@ -283,6 +283,55 @@ def test_a_category_that_is_not_a_category_is_fatal():
         run_aggregate({"act_a": "delivered"})
 
 
+# --- The page census: page-level units reconcile at the last boundary too -------
+
+
+def test_a_fully_sealed_census_leaves_a_complete_run_complete():
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        None,
+        {1: {"outcome": "sealed"}, 2: {"outcome": "sealed"}},
+    )
+    assert aggregate["status"] == "complete"
+    assert aggregate["reasons"] == []
+    assert aggregate["by_page_outcome"] == {"sealed": 2}
+
+
+def test_a_refused_page_forces_partial_and_names_the_loss():
+    """GOVERNANCE 2, at page granularity. Before this, the seal was the only
+    conservation authority and it never mentioned pages: a run that lost a whole
+    page at the door could still report `status: complete, reasons: []`."""
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        None,
+        {
+            1: {"outcome": "sealed"},
+            2: {"outcome": "refused", "reason": "digest mismatch at the door"},
+        },
+    )
+    assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == ["page 2 was refused: digest mismatch at the door"]
+    assert aggregate["by_page_outcome"] == {"sealed": 1, "refused": 1}
+
+
+def test_a_refused_page_with_no_recorded_reason_still_forces_partial():
+    """Absent evidence never reads cleaner than damaged evidence."""
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED}, None, {2: {"outcome": "refused"}}
+    )
+    assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == ["page 2 was refused: no reason was recorded"]
+
+
+def test_a_page_outcome_outside_the_exemplar_vocabulary_is_fatal():
+    """Unknown is never zero: a page in neither the sealed nor the refused set is
+    invariant #10's imbalance, not a page to route around."""
+    with pytest.raises(FatalAccounting):
+        run_aggregate({"act_a": ArmariumCategory.DELIVERED}, None, {1: {"outcome": "lost"}})
+    with pytest.raises(FatalAccounting):
+        run_aggregate({"act_a": ArmariumCategory.DELIVERED}, None, {1: {}})
+
+
 def test_armarium_categories_and_vocabulary_cannot_drift_apart():
     """Meta-invariant #91 — drift checks over agreement surfaces: wherever two
     files must agree, a test reads both from source and fails on divergence."""

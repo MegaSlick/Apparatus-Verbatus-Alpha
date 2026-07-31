@@ -25,7 +25,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.contracts.errors import FatalAccounting  # noqa: E402
-from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     ArmariumCategory,
     run_aggregate,
@@ -35,11 +34,13 @@ from common.contracts.stages import (  # noqa: E402
     ARCHETYPUS,
     ARMARIUM,
     DESIGNATOR,
+    EXEMPLAR,
     RECENSOR,
 )
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    expected_acts,
     latest_attempt,
     open_context,
     run_stage,
@@ -49,13 +50,42 @@ from common.stage import (  # noqa: E402
 ADAPTER_REVISION = "fake-armarium-v0"
 
 
-def expected_acts(context) -> list[dict]:
-    seal = context.tree.read_artifact(
-        DESIGNATOR,
-        "proposal-seal",
-        artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
-    )
-    return seal["payload"]["expected_acts"]
+def page_census(context) -> dict[int, dict]:
+    """Every page's Exemplar outcome, by ordinal, reconciled against the sources.
+
+    This is the page-level conservation check the pipeline was missing: the
+    proposal seal only ever names acts that were marked out, so a page the door
+    refused left no hole in the act-level accounting at all. The census closes
+    that — every source the run declared must have exactly one page outcome, and
+    a page with none, or with two, is invariant #10's imbalance at the last
+    boundary.
+    """
+    census: dict[int, dict] = {}
+    for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]:
+        if entry["kind"] != "page":
+            continue
+        record = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        ordinal = record["payload"].get("ordinal")
+        if not isinstance(ordinal, int):
+            raise FatalAccounting(
+                f"page outcome {record['artifact_id']} carries no ordinal and cannot "
+                "be reconciled against the sources that arrived"
+            )
+        if ordinal in census:
+            raise FatalAccounting(f"page {ordinal} carries two Exemplar outcomes")
+        census[ordinal] = {
+            "outcome": record["outcome"],
+            "reason": record["payload"].get("reason", ""),
+        }
+
+    declared = {page["ordinal"] for page in context.run["source_manifest"]}
+    if set(census) != declared:
+        raise FatalAccounting(
+            f"the run declared source pages {sorted(declared)} but the Exemplar "
+            f"accounted for {sorted(census)}; a page in neither the sealed nor the "
+            "refused set is a fatal accounting imbalance, never a warning"
+        )
+    return census
 
 
 def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
@@ -104,6 +134,19 @@ def main() -> int:
     for act in expected_acts(context):
         act_id = act["act_key"]
         category, review, established = categorize(context, act["act_id"])
+
+        # The seal's own word is binding: an act the Designator held terminates
+        # as held, and an export that categorized it any other way would have
+        # quietly outvoted the record of why it could not be marked out.
+        sealed_terminal = terminal_category(DESIGNATOR, act["outcome"])
+        if sealed_terminal is not None and category is not sealed_terminal:
+            raise FatalAccounting(
+                f"act {act['act_id']} is {act['outcome']!r} at the proposal seal "
+                f"(terminal category {sealed_terminal.value}) but the export "
+                f"derived {category.value}; the seal and the export may not "
+                "disagree about a terminal act"
+            )
+
         categories[act_id] = category
         coverages[act_id] = review["payload"]["coverage"]
 
@@ -141,7 +184,8 @@ def main() -> int:
             payload=entry,
         )
 
-    aggregate = run_aggregate(categories, coverages)
+    census = page_census(context)
+    aggregate = run_aggregate(categories, coverages, census)
     expected_count = len(expected_acts(context))
     if len(categories) != expected_count:
         raise FatalAccounting(
@@ -164,6 +208,11 @@ def main() -> int:
             "expected_acts": expected_count,
             "delivered": sorted(delivered, key=lambda item: item["act_key"]),
             "review": sorted(review_items, key=lambda item: item["act_key"]),
+            # The page-level record beside the act-level one: every source the
+            # run declared, with the Exemplar's outcome for it. A page that was
+            # refused is named here and in the aggregate's reasons, never only
+            # implied by an act count that came up short.
+            "pages": [{"ordinal": ordinal, **census[ordinal]} for ordinal in sorted(census)],
             "witness_seats": context.witness_seats,
             "witness_floor": context.fixture["witness_floor"],
         },

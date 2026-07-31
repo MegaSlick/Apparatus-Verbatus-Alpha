@@ -81,6 +81,16 @@ RECOVERY_BOUNDS = {"a1": {"x": 16, "y": 16, "w": 168, "h": 88}}
 WITNESS_SEATS = ("attestator_1", "attestator_2", "attestator_3")
 WITNESS_FLOOR = 3
 
+# Per-scenario declared digests that will not match the checked-in bytes, so the
+# door refuses the page honestly through its real inspection path rather than
+# through any scenario-aware branch. The declared value is deliberately a digest
+# nothing can hash to collide with by accident here: all zeros.
+PAGE_REFUSALS = (
+    {"scenario": "refused-page", "ordinal": 2},
+    {"scenario": "refused-first-page", "ordinal": 1},
+)
+_UNMATCHABLE_SHA256 = "0" * 64
+
 
 def page_descriptor(ordinal):
     for page in PAGES:
@@ -230,6 +240,12 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "# The happy scenario establishes both acts. The review scenario recovers act",
         "# a1 once -- act identity stable, region and attempt identities changing -- and",
         "# holds act a2, which therefore reaches no Archetypus at all.",
+        "#",
+        "# The refused-page scenario loses page 2 at the door, so act a2's declared",
+        "# continuation cannot be cut and the act is held rather than delivered on half",
+        "# its ink. The refused-first-page scenario loses page 1, the page both acts",
+        "# live on: neither act can be marked out at all, and both must still end in",
+        "# exactly one terminal category with the page loss named in the aggregate.",
         "",
         "[[scenario]]",
         'name = "happy"',
@@ -241,6 +257,16 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         'recover_acts = ["a1"]',
         'hold_acts = ["a2"]',
         "",
+        "[[scenario]]",
+        'name = "refused-page"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "[[scenario]]",
+        'name = "refused-first-page"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
         "# A seat whose attempt failed, exercising the witness `failed` state that Sol's",
         "# finding B-2 added to the closed vocabulary. It makes act a2 under-witnessed",
         "# without changing which acts are held.",
@@ -249,7 +275,20 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         'scenario = "review"',
         'act_key = "a2"',
         'seat = "attestator_3"',
+        "",
+        "# Per-scenario declared digests the checked-in bytes cannot match, so the",
+        "# door refuses those pages through its real inspection path. The declared",
+        "# digest is all zeros: unmistakably not the digest of anything here.",
     ]
+
+    for refusal in PAGE_REFUSALS:
+        lines += [
+            "",
+            "[[page_refusal]]",
+            f"scenario = {toml_string(refusal['scenario'])}",
+            f"ordinal = {refusal['ordinal']}",
+            f"declared_sha256 = {toml_string(_UNMATCHABLE_SHA256)}",
+        ]
     return "\n".join(lines) + "\n"
 
 

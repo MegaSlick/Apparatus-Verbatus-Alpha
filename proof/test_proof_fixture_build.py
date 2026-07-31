@@ -194,14 +194,39 @@ def test_the_review_scenario_exercises_the_repaired_failed_state(skeleton):
     assert failures[0]["seat"] in WITNESS_SEATS
 
 
-def test_scenarios_are_exactly_happy_and_review(skeleton):
+def test_the_four_scenarios_are_exactly_the_declared_ones(skeleton):
     names = [scenario["name"] for scenario in skeleton["scenario"]]
-    assert names == ["happy", "review"]
+    assert names == ["happy", "review", "refused-page", "refused-first-page"]
     by_name = {scenario["name"]: scenario for scenario in skeleton["scenario"]}
     assert by_name["happy"]["recover_acts"] == []
     assert by_name["happy"]["hold_acts"] == []
     assert by_name["review"]["recover_acts"] == ["a1"]
     assert by_name["review"]["hold_acts"] == ["a2"]
+    assert by_name["refused-page"]["recover_acts"] == []
+    assert by_name["refused-page"]["hold_acts"] == []
+    assert by_name["refused-first-page"]["recover_acts"] == []
+    assert by_name["refused-first-page"]["hold_acts"] == []
+
+
+def test_each_page_refusal_declares_a_digest_the_bytes_cannot_match(skeleton):
+    """The door must refuse through its real inspection path — a declared digest
+    that happened to match the checked-in bytes would silently turn the refusal
+    scenarios back into happy runs."""
+    refusals = skeleton["page_refusal"]
+    assert len(refusals) == 2
+    true_digests = {page["ordinal"]: page["sha256"] for page in skeleton["page"]}
+    scenario_names = {scenario["name"] for scenario in skeleton["scenario"]}
+    for refusal in refusals:
+        assert refusal["scenario"] in scenario_names
+        assert refusal["ordinal"] in true_digests
+        declared = refusal["declared_sha256"]
+        assert len(declared) == 64
+        assert declared != true_digests[refusal["ordinal"]]
+
+
+def test_the_refusal_scenarios_lose_the_declared_pages(skeleton):
+    by_scenario = {refusal["scenario"]: refusal["ordinal"] for refusal in skeleton["page_refusal"]}
+    assert by_scenario == {"refused-page": 2, "refused-first-page": 1}
 
 
 def test_the_testimony_table_carries_no_seat_the_run_does_not_configure(skeleton):

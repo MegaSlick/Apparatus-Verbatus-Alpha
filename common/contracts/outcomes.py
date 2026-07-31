@@ -307,14 +307,25 @@ def witness_coverage(seat_outcomes: Mapping[str, str], configured_floor: int) ->
 def run_aggregate(
     act_categories: Mapping[str, ArmariumCategory],
     coverage_records: Mapping[str, Mapping[str, Any]] | None = None,
+    page_census: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
     GOVERNANCE 2, read literally: a partial result is visibly partial, and
     "complete" is refused unless everything reconciles. So `complete` here means
-    every act reached a completed-class category AND every configured seat
-    reconciled against the configuration it was run under. Every reason is named
-    in `reasons`; a run is never partial without saying why.
+    every act reached a completed-class category, every configured seat
+    reconciled against the configuration it was run under, AND every page in the
+    census was sealed. Every reason is named in `reasons`; a run is never partial
+    without saying why.
+
+    The page census exists because acts are discovered but pages are given: the
+    proposal seal only ever names acts that were marked out, so a page the door
+    refused left no hole in the act-level conservation check at all. A run that
+    lost a whole page could report `status: complete, reasons: []` — the census,
+    keyed by ordinal with the Exemplar's own outcome for each page, is where that
+    loss becomes visible. A page outcome outside the Exemplar's vocabulary is
+    fatal, never routed around, and a refusal with no recorded reason still
+    forces `partial` — absent evidence never reads cleaner than damaged evidence.
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
@@ -336,8 +347,18 @@ def run_aggregate(
                 f"act {act} has {coverage['unresolved_seats']} seat(s) with no outcome yet"
             )
 
+    by_page_outcome: dict[str, int] = {}
+    for ordinal in sorted(page_census or {}):
+        outcome = page_census[ordinal].get("outcome")
+        classify(EXEMPLAR, outcome)
+        by_page_outcome[outcome] = by_page_outcome.get(outcome, 0) + 1
+        if outcome != "sealed":
+            reason = page_census[ordinal].get("reason") or "no reason was recorded"
+            reasons.append(f"page {ordinal} was {outcome}: {reason}")
+
     return {
         "status": "complete" if not reasons else "partial",
         "by_category": by_category,
+        "by_page_outcome": by_page_outcome,
         "reasons": reasons,
     }

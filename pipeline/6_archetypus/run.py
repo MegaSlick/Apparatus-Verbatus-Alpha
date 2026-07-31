@@ -29,10 +29,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.contracts.canonical import self_hash  # noqa: E402
-from common.contracts.identities import artifact_id  # noqa: E402
+from common.contracts.errors import FatalAccounting  # noqa: E402
+from common.contracts.outcomes import terminal_category  # noqa: E402
 from common.contracts.stages import ARCHETYPUS, DESIGNATOR, PERLECTOR, RECENSOR  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
+    expected_acts,
     latest_attempt,
     open_context,
     run_stage,
@@ -40,15 +42,6 @@ from common.stage import (  # noqa: E402
 )
 
 ADAPTER_REVISION = "fake-archetypus-v0"
-
-
-def expected_acts(context) -> list[dict]:
-    seal = context.tree.read_artifact(
-        DESIGNATOR,
-        "proposal-seal",
-        artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
-    )
-    return seal["payload"]["expected_acts"]
 
 
 def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
@@ -77,6 +70,20 @@ def main() -> int:
     for act in expected_acts(context):
         act_id = act["act_id"]
         review = final_review(context, act_id)
+
+        # An act the seal already holds is terminal at the Designator. If the
+        # Recensor nonetheless accepted it, establishing a text here would
+        # resurrect a held act into a delivered one — refused before a single
+        # character is written, because the Archetypus is the last stage before
+        # the text exists.
+        if terminal_category(DESIGNATOR, act["outcome"]) is not None and (
+            review["outcome"] == "accepted"
+        ):
+            raise FatalAccounting(
+                f"act {act_id} is {act['outcome']!r} at the proposal seal, but the "
+                "Recensor accepted it; a stage may not resurrect a held act into "
+                "an established reading"
+            )
 
         if review["outcome"] != "accepted":
             # Deliberately nothing. A held act has no Archetypus, and that

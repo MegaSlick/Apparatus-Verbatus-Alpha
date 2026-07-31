@@ -26,21 +26,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.contracts.errors import ContractError  # noqa: E402
-from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
+from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
-from common.stage import EXIT_COMPLETE, open_context, run_stage, stage_parser  # noqa: E402
+from common.stage import (  # noqa: E402
+    EXIT_COMPLETE,
+    expected_acts,
+    open_context,
+    run_stage,
+    stage_parser,
+)
 
 ADAPTER_REVISION = "fake-attestatores-v0"
-
-
-def expected_acts(context) -> list[dict]:
-    """The proposal seal is the authority on which acts exist."""
-    seal = context.tree.read_artifact(
-        DESIGNATOR,
-        "proposal-seal",
-        artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
-    )
-    return seal["payload"]["expected_acts"]
 
 
 def proposed_regions(context, act_id: str) -> list[dict]:
@@ -107,6 +103,43 @@ def main() -> int:
 
     recorded = 0
     for act in expected_acts(context):
+        if act["outcome"] == "held":
+            # The Designator held this act: its proposal is incomplete, and a
+            # witness shown only what exists would have read part of an act
+            # while the record said it read the act. Every configured seat
+            # still gets an explicit outcome — `not-run`, an unresolved unit —
+            # because a seat that simply never appears is a silent skip, and a
+            # silent skip is the shape of the original defect.
+            for seat in context.witness_seats:
+                context.publish(
+                    kind="testimonium",
+                    subject_id=act["act_id"],
+                    outcome="not-run",
+                    attempt=attempt_id(act["act_id"], f"read:{seat}", 1),
+                    payload={
+                        "seat": seat,
+                        "act_key": act["act_key"],
+                        "attempt_ordinal": 1,
+                        "regions": [],
+                        "provenance": {
+                            "seat": seat,
+                            "resolved_identity": f"{seat}@{ADAPTER_REVISION}",
+                            "adapter_revision": ADAPTER_REVISION,
+                        },
+                        "format_capabilities": {
+                            "can_express_uncertainty": False,
+                            "can_express_layout": False,
+                        },
+                        "content_health": content_health(None),
+                        "reason": (
+                            "the Designator held this act; its incomplete proposal "
+                            "was not shown to any witness"
+                        ),
+                    },
+                )
+                recorded += 1
+            continue
+
         regions = proposed_regions(context, act["act_id"])
         region_references = [
             {

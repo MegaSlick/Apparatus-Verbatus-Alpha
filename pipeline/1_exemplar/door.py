@@ -32,6 +32,7 @@ from common.stage import (  # noqa: E402
     fixture_config_digest,
     load_fixture,
     run_stage,
+    scenario_for,
     stage_parser,
 )
 
@@ -39,18 +40,46 @@ ADAPTER_REVISION = "fake-door-v0"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
+def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
+    """The digest each page is declared to have, per ordinal, for this scenario.
+
+    A `page_refusal` row substitutes a declared digest the checked-in bytes
+    cannot match, so the refusal scenarios exercise the door's real inspection
+    path — the same comparison, the same refusal artifact — rather than any
+    scenario-aware branch that a real door would not have.
+    """
+    declared = {page["ordinal"]: page["sha256"] for page in fixture["page"]}
+    for row in fixture.get("page_refusal", []):
+        if row["scenario"] != scenario:
+            continue
+        if row["ordinal"] not in declared:
+            raise ContractError(
+                f"page_refusal names ordinal {row['ordinal']}, which no declared page has"
+            )
+        declared[row["ordinal"]] = row["declared_sha256"]
+    return declared
+
+
 def main() -> int:
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     fixture = load_fixture(args.fixture_root)
+    scenario_for(fixture, args.scenario)
     fixture_root = Path(args.fixture_root)
+    declared = declared_digests(fixture, args.scenario)
 
     # The door creates the run: it is the first thing that knows what arrived, so
-    # it is the only stage that can bind a run id to its inputs.
+    # it is the only stage that can bind a run id to its inputs. The manifest
+    # carries the *declared* digests — what this run believed about its sources —
+    # so a refusal and the declaration it was refused against tell one story.
     tree = RunTree.create(
         Path(args.run_root),
         args.run_id,
         source_manifest=[
-            {"relative_path": page["path"], "sha256": page["sha256"], "ordinal": page["ordinal"]}
+            {
+                "relative_path": page["path"],
+                "sha256": declared[page["ordinal"]],
+                "ordinal": page["ordinal"],
+            }
             for page in fixture["page"]
         ],
         config_digest=fixture_config_digest(fixture, args.scenario),
@@ -70,7 +99,7 @@ def main() -> int:
     admitted = 0
     for page in fixture["page"]:
         source = fixture_root / page["path"]
-        outcome, reason, digest, data = inspect(source, page["sha256"])
+        outcome, reason, digest, data = inspect(source, declared[page["ordinal"]])
         if outcome == "admitted":
             # Store the bytes that were actually verified. Reading the file a
             # second time here would open a window in which the file changed
@@ -97,12 +126,18 @@ def main() -> int:
             admitted += 1
         else:
             # Per-file refusal, never per-folder: one unreadable file is refused
-            # alone and named, and the readable pages proceed (harvest #2).
+            # alone and named, and the readable pages proceed (harvest #2). The
+            # ordinal travels with the refusal so the page stays reconcilable as
+            # a unit all the way to the Armarium's census.
             context.publish(
                 kind="admission",
                 subject_id=f"source-{page['ordinal']}",
                 outcome="refused",
-                payload={"declared_path": page["path"], "reason": reason},
+                payload={
+                    "declared_path": page["path"],
+                    "ordinal": page["ordinal"],
+                    "reason": reason,
+                },
             )
 
     if admitted == 0:

@@ -22,6 +22,8 @@ from common.contracts.canonical import digest_of
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id
+from common.contracts.outcomes import classify
+from common.contracts.stages import DESIGNATOR
 from common.runtree.store import PublishResult, RunTree
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
@@ -104,7 +106,10 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--scenario", default="happy", choices=("happy", "review"))
+    # No `choices` here: the fixture declares which scenarios exist, and a
+    # hard-coded list in a second place is a drift surface. `scenario_for`
+    # refuses an undeclared name after the fixture is loaded.
+    parser.add_argument("--scenario", default="happy")
     parser.add_argument("--fixture-root", default="proof")
     parser.add_argument("--operation", default="initial")
     parser.add_argument("--act", default=None, help="one act id, for a recovery operation")
@@ -136,9 +141,44 @@ def fixture_config_digest(fixture: dict[str, Any], scenario: str) -> str:
     return digest_of({"fixture": fixture, "scenario": scenario})
 
 
+def scenario_for(fixture: dict[str, Any], name: str) -> dict[str, Any]:
+    """The declared scenario, refused loudly when the fixture does not name it.
+
+    The fixture is the authority on which scenarios exist; a misspelt scenario
+    that fell through to `happy` behaviour would be a run wearing the wrong
+    configuration with a green exit code.
+    """
+    for scenario in fixture.get("scenario", []):
+        if scenario["name"] == name:
+            return scenario
+    declared = [scenario["name"] for scenario in fixture.get("scenario", [])]
+    raise ContractError(f"the fixture declares no scenario {name!r}; declared: {declared}")
+
+
+def expected_acts(context) -> list[dict[str, Any]]:
+    """Every act the proposal seal expects, each with a validated Designator outcome.
+
+    One reader for all five consumers, because the seal is the downstream
+    expected-act authority and this is the handoff contract: every entry carries
+    the Designator's outcome for that act, and an entry whose outcome is missing
+    or outside the closed vocabulary is invariant #10's imbalance — fatal at the
+    first consumer, never a `.get` that quietly reads as marked-out.
+    """
+    seal = context.tree.read_artifact(
+        DESIGNATOR,
+        "proposal-seal",
+        artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
+    )
+    acts = seal["payload"]["expected_acts"]
+    for act in acts:
+        classify(DESIGNATOR, act.get("outcome"))
+    return acts
+
+
 def open_context(args, stage: str, adapter_revision: str) -> StageContext:
     """Open an existing run for a stage that is not the first to write."""
     fixture = load_fixture(args.fixture_root)
+    scenario_for(fixture, args.scenario)
     tree = RunTree(Path(args.run_root), args.run_id)
     return StageContext(
         tree=tree,

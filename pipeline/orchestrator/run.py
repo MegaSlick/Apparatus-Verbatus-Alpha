@@ -37,7 +37,13 @@ from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.outcomes import check_algebra_is_total  # noqa: E402
 from common.contracts.stages import DESIGNATOR, RECENSOR  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
-from common.stage import EXIT_COMPLETE, EXIT_HELD, latest_attempt, load_fixture  # noqa: E402
+from common.stage import (  # noqa: E402
+    EXIT_COMPLETE,
+    EXIT_HELD,
+    latest_attempt,
+    load_fixture,
+    scenario_for,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -106,7 +112,10 @@ def pending_recoveries(tree: RunTree) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fixture", required=True)
-    parser.add_argument("--scenario", default="happy", choices=("happy", "review"))
+    # The fixture declares which scenarios exist; `scenario_for` refuses an
+    # undeclared name once the fixture is loaded, so there is no second list here
+    # to drift from the declaration.
+    parser.add_argument("--scenario", default="happy")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--fixture-root", default="proof")
@@ -123,6 +132,7 @@ def main() -> int:
             f"asked for fixture {args.fixture!r} but {args.fixture_root} declares "
             f"{fixture['fixture_id']!r}"
         )
+    scenario_for(fixture, args.scenario)
 
     for name, program in SEQUENCE:
         if name == "archetypus":

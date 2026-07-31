@@ -32,21 +32,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
-from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
+from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
-from common.stage import EXIT_COMPLETE, open_context, run_stage, stage_parser  # noqa: E402
+from common.stage import (  # noqa: E402
+    EXIT_COMPLETE,
+    expected_acts,
+    open_context,
+    run_stage,
+    stage_parser,
+)
 
 ADAPTER_REVISION = "fake-perlector-v0"
-
-
-def expected_acts(context) -> list[dict]:
-    seal = context.tree.read_artifact(
-        DESIGNATOR,
-        "proposal-seal",
-        artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
-    )
-    return seal["payload"]["expected_acts"]
 
 
 def regions_of(context, act_id: str) -> list[dict]:
@@ -131,8 +128,34 @@ def main() -> int:
         raise ContractError(f"asked to read {args.act}, which the proposal seal does not name")
 
     read = 0
+    acknowledged = 0
     for act in wanted:
         act_id = act["act_id"]
+        if act["outcome"] == "held":
+            # A held act's proposal is incomplete — its page or its continuation
+            # never sealed. Reading whatever regions exist would produce a
+            # reading of part of an act, and it reads through to the end:
+            # truncation is a failure, not an output. The act is acknowledged
+            # with an explicit unresolved outcome rather than skipped, because
+            # a unit this stage never mentions is invariant #10's imbalance.
+            context.publish(
+                kind="perlectio",
+                subject_id=act_id,
+                outcome="not-run",
+                attempt=attempt_id(act_id, "perlegere", 1),
+                payload={
+                    "act_key": act["act_key"],
+                    "attempt_ordinal": 1,
+                    "reason": (
+                        "the Designator held this act; an incomplete proposal is "
+                        "not read, because a reading of part of an act would be a "
+                        "truncation delivered as an output"
+                    ),
+                },
+            )
+            acknowledged += 1
+            continue
+
         regions = regions_of(context, act_id)
         if not regions:
             raise ContractError(f"act {act_id} reached the Perlector with no region")
@@ -192,8 +215,8 @@ def main() -> int:
         )
         read += 1
 
-    if read == 0:
-        raise ContractError("the Perlector read no act")
+    if read == 0 and acknowledged == 0:
+        raise ContractError("the Perlector read no act and acknowledged no held act")
 
     context.finish()
     return EXIT_COMPLETE

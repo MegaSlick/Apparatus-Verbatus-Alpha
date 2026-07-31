@@ -55,13 +55,20 @@ def main() -> int:
         if admission["outcome"] == "refused":
             # The refusal is carried forward as this stage's own outcome so the
             # page is accounted for here too. A unit that simply stopped being
-            # mentioned would be invariant #10's imbalance.
+            # mentioned would be invariant #10's imbalance — which is why the
+            # ordinal is required, not defaulted: a refusal with no ordinal is a
+            # page the Armarium's census could never reconcile.
+            if not isinstance(ordinal, int):
+                raise ContractError(
+                    f"refused admission {admission['subject_id']} carries no ordinal; "
+                    "an unaccountable refusal is a silent loss wearing a record"
+                )
             context.publish(
                 kind="page",
                 subject_id=admission["subject_id"],
                 outcome="refused",
                 inputs=[context.input_ref(entry["relative_path"])],
-                payload={"reason": admission["payload"]["reason"]},
+                payload={"ordinal": ordinal, "reason": admission["payload"]["reason"]},
             )
             continue
 
