@@ -195,8 +195,8 @@ commitment states agents, models, efforts and rough cost first. Declare material
 use when the shape is agreed, then lead it — bounded agent work that fits the agreed
 goal is standing-approved: the declaration, not a permission stop, and a change of
 roster is reported, not re-asked, unless it changes cost, external effect or scope.
-Smallest useful roster, fan-out visible, results verified, session the only integrator;
-the standing duties are not wasteful and the best tool for the job. Stop for money,
+Smallest useful roster, fan-out visible, results verified, session the only integrator.
+The standing duties: not wasteful, and the best tool for the job. Stop for money,
 governance, or a genuine change of scope. Record what actually answered, never only
 what was requested. An agent team whose members must challenge one another is
 exceptional.

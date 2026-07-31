@@ -48,7 +48,8 @@ closed.
 Move notes for genuinely finished work to
 `workbench/archive/<date>_<short-topic>/`. Move cited `raw/` evidence with its work.
 Leave uncertain or still-actionable files active and name why. Never move evidence to
-`scratch/` merely to empty a drawer.
+`scratch/` merely to empty a drawer. A review-only session reports the filing
+candidates and moves nothing.
 
 Standing ledgers live in `workbench/standing/` and are never filed — they outlive
 sessions by design. When filing is done, `active/` should be back inside its budget;

@@ -270,10 +270,20 @@ def main(argv=None):
             print(f"\nstanding/ {len(standing)} ledgers — read at open and close, never filed:")
             for path in standing:
                 print(f"  {rel_or_abs(path)}")
-        if not (STANDING / SUSPENSIONS).is_file():
+        # Read it, not stat it: is_file() is true for a ledger this process cannot
+        # open, and a report that exits clean over an unreadable safety ledger has
+        # measured nothing (GOVERNANCE 10). The two failures get different words
+        # because their fixes differ.
+        try:
+            (STANDING / SUSPENSIONS).read_text(encoding="utf-8")
+        except FileNotFoundError:
             wants_attention = True
             print(f"\nstanding/ has no {SUSPENSIONS} — the dated suspensions cannot be read back.")
             print("  -> unknown is not 'none in force'. Only a written ledger says that.")
+        except OSError as error:
+            wants_attention = True
+            print(f"\nstanding/ {SUSPENSIONS} exists but cannot be read: {error}")
+            print("  -> unknown is not 'none in force'. Only a readable ledger says that.")
 
     # design/ is never aged, never filed, never counted against the budget. A
     # proposal waiting for the stage it concerns is not stale, however long it

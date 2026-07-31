@@ -22,7 +22,9 @@ git rev-list --left-right --count origin/main...HEAD
 ```
 
 If the fetch fails (offline, remote unreachable), say so and treat the checkout as
-possibly behind for the whole session — never as current by default.
+possibly behind for the whole session — never as current by default. A fetch that
+succeeds without leaving an `origin/main` ref is the same unverified state: stop and
+say the sync cannot be verified.
 
 If `HEAD` is behind `origin/main`: say so out loud, and for every governing file and
 skill this session will rely on, read the current copy with
@@ -125,6 +127,9 @@ task; if it is not, create or switch to the right one — `work/<topic>`, `audit
 or `infra/<topic>`, as CLAUDE.md's Branches section assigns — before anything moves. A
 provisional branch from step 3 is renamed (`git branch -m`) rather than abandoned; a
 stranded empty branch is the clutter the one-branch-per-task rule exists to prevent.
+With uncommitted work in the tree, never switch onto an existing branch (step 3's
+rule): carry the work to a new branch cut from where you stand, or stop and put the
+choice to Tyrel.
 
 ## 7. Agree the shape
 

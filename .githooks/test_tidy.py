@@ -222,6 +222,30 @@ def test_a_missing_standing_drawer_is_reported_loudly(tmp_path, capsys):
     assert "SUSPENSIONS.md" in out, "the report must name what is unreadable"
 
 
+def test_an_unreadable_suspension_ledger_is_reported_not_passed(tmp_path, capsys):
+    # is_file() is true for a ledger this process cannot open, and a report that
+    # exits clean over an unreadable safety ledger has measured nothing
+    # (GOVERNANCE 10). A reviewer found the stat where a read belongs.
+    tidy = load_tidy(tmp_path)
+    (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
+    ledger = tidy.STANDING / "SUSPENSIONS.md"
+    ledger.write_text("none in force\n")
+    ledger.chmod(0)
+    try:
+        try:
+            ledger.read_text()
+        except OSError:
+            pass
+        else:
+            pytest.skip("permissions are not enforced here (running as root?)")
+        assert tidy.main([]) == 1, "an unreadable ledger is not a clean report"
+        out = capsys.readouterr().out
+        assert "cannot be read" in out
+        assert "SUSPENSIONS.md" in out
+    finally:
+        ledger.chmod(0o600)
+
+
 def test_a_standing_drawer_without_the_suspension_ledger_is_reported(tmp_path, capsys):
     # Present-but-empty is the same unknown as absent: nothing here can tell a
     # session that no suspension is in force, only that nobody wrote one down.

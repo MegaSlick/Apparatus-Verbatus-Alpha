@@ -179,8 +179,9 @@ def worktree_belongs_to_project(directory: Path, project: Path) -> bool:
 # CLAUDE.md that appear nowhere in it — found by three reviewers at once. Quoting less
 # is what makes the quotation durable; the pointer sends a reader to both places the
 # rule is written out, which no fixed excerpt can keep up with. A test reads every
-# quoted span here back out of the real CLAUDE.md, so the next rewrite fails the suite
-# rather than shipping a stale quotation.
+# quoted span in this constant — this constant only, not every quote in the file —
+# back out of the real CLAUDE.md, so the next rewrite fails the suite rather than
+# shipping a stale quotation.
 RULE_THREE = '3: "Never commit, push, or work on `main`." (CLAUDE.md, Hard rules and Branches)'
 OFF_MAIN = "Move off it first with `git switch -c work/<topic>`; staged changes come along"
 # The remedy for a *rename*, which is a different act and needs a different sentence.
