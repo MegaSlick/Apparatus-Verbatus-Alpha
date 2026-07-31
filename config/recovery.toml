@@ -1,0 +1,28 @@
+# How many times rework may be asked for before review.
+#
+# Tyrel's ruling, quoted so a later reader does not have to go looking:
+# "PURE ABSOLUTE, STOP AT 3". The absolute cap below is that ruling; it is not a
+# suggestion a stage may argue with, and nothing in the pipeline may raise it at
+# run time.
+#
+# QUEUED FOR TYREL, not decided here: the master plan's ledger records that both
+# mechanisms exist -- a run-level cap and this per-act recovery budget -- and that
+# he confirms which his ruling governed, or blesses both. The skeleton implements
+# the per-act budget and holds the act when it is spent. If the ruling was meant
+# to bind the run level instead, this file is where that changes.
+#
+# Recovery recovers COVERAGE, never quality (GOVERNANCE 11). A suspected
+# fabrication or a poor reading may be flagged for review; it may never be
+# re-rolled until it looks better. Nothing disappears inside a loop: every
+# request and every outcome is an artifact.
+
+# The ceiling no configuration below may exceed, and no stage may raise.
+absolute_cap = 3
+
+[budget]
+# Per act, per run. The starting proposal from ARCHITECTURE is one fallback
+# recrop and one page-level reread; the real budget is established through alpha
+# testing, which has not happened yet. The walking skeleton needs exactly one
+# recrop to prove the loop, so that is what it is allowed.
+fallback_recrop = 1
+page_level_reread = 1

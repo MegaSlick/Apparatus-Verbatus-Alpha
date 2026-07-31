@@ -8,17 +8,16 @@ from __future__ import annotations
 
 import pytest
 
-from proof.synthetic_pages import PAGES, crop_png, page_bytes, render_page
+from common.imaging import crop_png
+from proof.synthetic_pages import PAGES, page_bytes, render_page
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def _decode(png_bytes: bytes):
-    # Reach into the private decoder deliberately: it is the only decoder
-    # this module owns, and the crop/pixel-equality tests need row access.
-    from proof.synthetic_pages import _decode_grayscale_png
+    from common.imaging import decode_grayscale_png
 
-    return _decode_grayscale_png(png_bytes)
+    return decode_grayscale_png(png_bytes)
 
 
 def _walk_for_floats(value) -> bool:

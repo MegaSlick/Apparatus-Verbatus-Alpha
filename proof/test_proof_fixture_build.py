@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from common.imaging import decode_grayscale_png
 from proof.build_fixture import (
     ACTS,
     RECOVERY_BOUNDS,
@@ -30,7 +31,7 @@ from proof.build_fixture import (
     build_skeleton_fixture,
     render_all,
 )
-from proof.synthetic_pages import FIXTURE_ID, PAGES, _decode_grayscale_png, render_page
+from proof.synthetic_pages import FIXTURE_ID, PAGES, render_page
 
 PROOF_ROOT = Path(__file__).resolve().parent
 
@@ -71,8 +72,8 @@ def test_the_checked_in_bytes_decode_to_exactly_the_declared_image():
     checked = 0
     for page in PAGES:
         stored = (PROOF_ROOT / "fixtures" / FIXTURE_ID / f"page-{page['ordinal']}.png").read_bytes()
-        width, height, rows = _decode_grayscale_png(stored)
-        _, _, expected_rows = _decode_grayscale_png(render_page(page))
+        width, height, rows = decode_grayscale_png(stored)
+        _, _, expected_rows = decode_grayscale_png(render_page(page))
 
         assert (width, height) == (page["width"], page["height"])
         assert rows == expected_rows

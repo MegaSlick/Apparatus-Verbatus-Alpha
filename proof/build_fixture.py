@@ -31,12 +31,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from proof.synthetic_pages import (  # noqa: E402
-    FIXTURE_ID,
-    PAGES,
-    crop_png,
-    render_page,
-)
+from common.imaging import crop_png  # noqa: E402
+from proof.synthetic_pages import FIXTURE_ID, PAGES, render_page  # noqa: E402
 
 PROOF_ROOT = Path(__file__).resolve().parent
 FIXTURE_DIR = PROOF_ROOT / "fixtures" / FIXTURE_ID
