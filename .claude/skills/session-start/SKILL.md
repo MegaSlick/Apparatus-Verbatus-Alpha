@@ -8,7 +8,34 @@ disable-model-invocation: true
 
 The main session performs this. Never delegate it.
 
-## 1. Read what binds and what is current
+## 1. Sync your view before trusting it
+
+Everything a session boots with — this skill, CLAUDE.md, the settings, the guard, the
+git hooks — was read from this checkout as the last session left it. A checkout that is
+behind is running on old rules and cannot tell from the inside. So, first, ref-only —
+never check out `main`:
+
+```sh
+git fetch origin
+git status --short --branch
+git rev-list --left-right --count origin/main...HEAD
+```
+
+If the fetch fails (offline, remote unreachable), say so and treat the checkout as
+possibly behind for the whole session — never as current by default. A fetch that
+succeeds without leaving an `origin/main` ref is the same unverified state: stop and
+say the sync cannot be verified.
+
+If `HEAD` is behind `origin/main`: say so out loud, and for every governing file and
+skill this session will rely on, read the current copy with
+`git show origin/main:<path>` before acting on what was injected. A guard that landed
+on `origin/main` but is absent from this checkout is not protecting you — that
+happened once, and the session that booted stale broke the exact rule its unloaded
+guard existed to stop. When the gap includes harness files (`.claude/`, `.githooks/`),
+awareness is not enough — the stale guard and hooks keep running all session — so
+recommend rebasing this branch onto `origin/main`, or ask Tyrel, before proceeding.
+
+## 2. Read what binds and what is current
 
 Read, in order:
 
@@ -16,85 +43,123 @@ Read, in order:
 2. `workbench/active/HANDOFF.md`
 3. only the other active files or specific archive evidence the handoff points to
 
-If the handoff is missing, say so. Do not reconstruct current state from old notes.
+If step 1 found the checkout behind, read these from `origin/main` too. If the handoff
+is missing, say so. Do not reconstruct current state from old notes.
 
-## 2. Verify the checkout
+## 3. Verify the checkout
 
-Run:
+Arm the alarms first, then name where you stand.
 
 ```sh
-git status --short --branch
-git log -3 --oneline --decorate
 git config --get core.hooksPath
 ```
 
-**Name the branch, out loud, every session — before installing anything.** If it is
-`main`, or `HEAD` resolves to no branch at all, stop: create a fresh provisional
-branch from where you stand — `git switch -c work/<provisional-topic>` — and say so,
-before any file is edited, staged or committed and before any configuration is
-installed. Never switch onto an existing branch while the tree holds uncommitted
-work. A session never works from `main`, even uncommitted; the read-only checks in
-steps 2–4 may run either way. Any other branch: say which, and carry it to step 5.
-
-If the hooks-path command does not print `.githooks`, run `sh .githooks/install.sh`. Do
+If that does not print `.githooks`, run `sh .githooks/install.sh` now, before anything
+else — the installer is branch-independent and arms the only local commit blocker. Do
 not reinstall already-configured hooks.
+
+```sh
+git log -3 --oneline --decorate
+```
+
+**Name the branch, out loud, every session.** If it is `main`, or `HEAD` resolves to no
+branch at all, stop: create a fresh provisional branch from where you stand —
+`git switch -c work/<provisional-topic>` — and say so, before any file is edited,
+staged or committed. Never switch onto an existing branch while the tree holds
+uncommitted work. A session never works from `main`, even uncommitted — CLAUDE.md hard
+rule 3; the guard and hooks enforce what they can see, and this step is where the
+session enforces the rest. Any other branch: say which, and carry it to step 6.
 
 Run every check the handoff marks unverified before relying on its result.
 
-## 3. Audit local task state
+## 4. Audit local task state
 
 ```sh
 python3 .githooks/tidy.py
 ```
 
-This is a report. File completed active/raw work when its next use is no longer this sitting;
-preserve evidence in `archive/`, never `scratch/`. Leave uncertain material and name it.
+This is a report. File completed active/raw work when its next use is no longer this
+sitting; preserve evidence in `archive/`, never `scratch/`. Leave uncertain material and
+name it.
 
-Then read `workbench/active/SUSPENSIONS.md` and **report every live suspension by name, with its
-deadline and what turns it back on**. A rule or hook switched off temporarily is carried at the
-start and the end of every session until Tyrel makes it permanent in the document or it is
-switched back on. If the file is missing, say so rather than assuming nothing is suspended.
+Then the standing ledgers. Ensure the drawer exists — `mkdir -p workbench/standing` is
+idempotent, and the installer only runs in fresh clones — and **open every ledger in
+it**, not only the suspensions file: a session that never reads the adopted plan is
+working under a plan it has not seen. Transition check: if
+`workbench/active/SUSPENSIONS.md` exists, it predates the standing drawer. Read it and
+report its live entries first, exactly as below. Then, if
+`workbench/standing/SUSPENSIONS.md` does not exist, move it there and say so; if it
+does, read and report both, move the legacy file to
+`workbench/standing/SUSPENSIONS_LEGACY.md` — adding a numeric suffix rather than ever
+overwriting — and put the reconciliation to Tyrel: two ledgers is a state to resolve,
+not to leave.
 
-## 4. Orient to the installed tools
+From `workbench/standing/SUSPENSIONS.md`, **report every live suspension by name, with
+its deadline and what turns it back on**. A rule or hook switched off temporarily is
+carried at the start and the end of every session until Tyrel makes it permanent in the
+document or it is switched back on. If the file is missing, say so rather than assuming
+nothing is suspended.
 
-Print the versions of the tools this task will actually use. A full package-update audit is a
-maintenance task, not a tax on every session. Run it when output looks stale, a tool fails in
-an unfamiliar way, or the handoff requests it. If Homebrew cannot refresh, report installed
-versions rather than claiming currentness.
+## 5. Orient to the installed tools
 
-## 5. Agree the goal before anything moves
+Print the versions of the tools this task will actually use. A full package-update audit
+is a maintenance task, not a tax on every session. Run it when output looks stale, a
+tool fails in an unfamiliar way, or the handoff requests it. If Homebrew cannot refresh,
+report installed versions rather than claiming currentness.
+
+## 6. Agree the goal before anything moves
+
+**Tyrel's stated goal outranks the handoff and the brief.** Both are the previous
+session's writing: what they call "the next step" is that session's recommendation,
+never his voice. Where his words and the notes differ, follow his words and name the
+difference out loud before proceeding.
 
 Do not start work on an assumed goal. One of three routes:
 
 - Tyrel states it — read it back in one line and confirm you have it right;
-- he does not, and `workbench/active/HANDOFF.md` names a next step — say what the handoff
-  says this session is for and ask whether that is what you are doing;
-- neither is clear — ask. A few exchanges settling what the session is for cost less than an
-  hour spent on the wrong thing.
+- he does not, and `workbench/active/HANDOFF.md` names a next step — say what the
+  handoff says this session is for and ask whether that is what you are doing;
+- neither is clear — ask. A few exchanges settling what the session is for cost less
+  than an hour spent on the wrong thing.
 
-The goal settles the branch. Confirm the branch named in step 2 is the branch for this
+The goal settles the branch. Confirm the branch named in step 3 is the branch for this
 task; if it is not, create or switch to the right one — `work/<topic>`, `audit/<topic>`
 or `infra/<topic>`, as CLAUDE.md's Branches section assigns — before anything moves. A
-provisional branch from step 2 is renamed (`git branch -m`) rather than abandoned; a
+provisional branch from step 3 is renamed (`git branch -m`) rather than abandoned; a
 stranded empty branch is the clutter the one-branch-per-task rule exists to prevent.
+With uncommitted work in the tree, never switch onto an existing branch (step 3's
+rule): carry the work to a new branch cut from where you stand, or stop and put the
+choice to Tyrel.
 
-## 6. Agree the shape
+## 7. Agree the shape
 
 With the goal settled, tell him briefly:
 
 - the effort and an honest expected duration;
 - attended or unattended;
-- **orchestrator or direct**, and why. `CLAUDE.md`'s "Effort and shape" decides it, on the size
-  of the work and whether he is in the room — large, long or unattended work is orchestrated;
-  straightforward and medium attended work runs direct;
+- **orchestrator or direct**, and why. `CLAUDE.md`'s "Effort and shape" decides it, on
+  the size of the work and whether he is in the room — large, long or unattended work
+  is orchestrated; straightforward and medium attended work runs direct;
 - which bounded units, if any, deserve agents.
 
 Recommend one shape rather than offering a menu, then wait for his answer.
 
-The main session remains accountable for the goal, conversation, synthesis, integrated diff,
-verification, and final report. Agents provide evidence, not authority.
+Worked examples, the length his answer needs:
 
-Before delegating, form the question yourself. Every agent prompt names objective, allowed
-paths/actions, deadline, deliverable, checks, and stop conditions. Verify load-bearing claims
-and read every proposed diff. Reserve an agent team for work where members must challenge one
-another.
+> Ten-file text repair from a verified findings list: **direct**, attended, roughly two
+> hours at the agreed effort. Two Sonnet workers take the mechanical clusters; the
+> session keeps the judgement calls and reads every diff; one re-verification seat when
+> it lands — your call which.
+
+> Overnight corpus run, nobody at the keyboard: **orchestrator**, unattended, six
+> hours; model and effort chosen per unit of work, not per session. Workers land
+> results on disk; the session integrates and verifies before anything is claimed.
+> Stops for money, governance, or scope — everything else waits for you.
+
+The main session remains accountable for the goal, conversation, synthesis, integrated
+diff, verification, and final report. Agents provide evidence, not authority.
+
+Before delegating, form the question yourself. Every agent prompt names objective,
+allowed paths/actions, deadline, deliverable, checks, and stop conditions. Verify
+load-bearing claims and read every proposed diff. Reserve an agent team for work where
+members must challenge one another.

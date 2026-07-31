@@ -81,9 +81,77 @@ def payload(
         "grep -n heading pipeline/GLOSSARY.md",
         # A stderr redirect is not a write to the document being read.
         "grep -n heading README.md 2>/dev/null",
+        # Hard rule 3 is about standing on main, not about naming it. None of these
+        # moves HEAD, and refusing a read nobody can act on is how a guard gets
+        # switched off.
+        "git log main..HEAD",
+        "git diff work/topic main",
+        "git show origin/main:pipeline/stage.py",
+        "git fetch origin main:main",
+        "git rev-parse --abbrev-ref main",
+        "git branch --contains main",
+        # The branch being created is the destination; main is only the start point.
+        "git switch -c work/topic main",
+        # Statically unresolvable, and documented as such in the guard.
+        "git switch -",
+        # A rename that does not end on main is ordinary branch housekeeping.
+        "git branch -m work/old work/new",
+        # An explicit new name decides where HEAD lands, whatever it tracks.
+        "git switch -c work/topic --track origin/main",
+        # The documented boundary: `--track origin/feature/main` creates the local
+        # branch `feature/main`, not `main`. Three components cannot be resolved
+        # without knowing which of them is the remote, so it is left alone. Pinned
+        # here so the boundary is a decision on record rather than an oversight.
+        "git switch --track origin/feature/main",
+        # An unrelated long option that merely begins near one the branch checks care
+        # about. Reading branches merged into main is a read, and prefix recognition
+        # must not spill onto it: `--merged` is no prefix of `--move`.
+        "git branch --merged main",
+        # Reading where HEAD points, and pointing a *remote* HEAD at a remote main,
+        # move nothing in this checkout.
+        "git symbolic-ref --short HEAD",
+        "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main",
+        # The control for `symbolic-ref -m`: the reason is the option's value, and
+        # skipping it must not stop the real target being read.
+        "git symbolic-ref -m tidy HEAD refs/heads/work/topic",
     ],
 )
 def test_ordinary_read_or_bounded_local_work_stays_open(command):
+    assert guard.evaluate(payload(tool_input={"command": command})) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The floor: fewer than three characters after the dashes is not read as an
+        # abbreviation, although git itself resolves `--tr` to `--track` here. Three
+        # is where over-recognition stops being cheap — `--t` uniquely prefixes
+        # `--track` in a one-name list and matches half the options git has.
+        "git switch --tr origin/main",
+        # The same floor at two more sites, so its width is a decision on record
+        # rather than one example. Git resolves `--cr` to `--create` and `--mo` to
+        # `--move`; this reads neither, and both spellings pass in silence.
+        "git switch --cr main origin/main",
+        "git branch --mo main",
+        # A separate checkout standing on main. It moves nothing in *this* checkout,
+        # and every Write/Edit-tool write inside it is refused by the write-path
+        # check instead — the shell route is uncovered there as it is everywhere.
+        "git worktree add /tmp/wt main",
+        # These manufacture a local `main` without moving HEAD onto it. Naming them
+        # here keeps the boundary a decision on record rather than an oversight.
+        "git branch -c main",
+        "git branch -C main",
+        "git branch --copy main",
+        "git branch main",
+    ],
+)
+def test_branch_boundaries_stay_uncovered_and_are_recorded(command):
+    """Spellings the branch checks deliberately do not deny, pinned as decisions.
+
+    Each is documented in `moves_head_to_main`. A change that starts denying one of
+    these is not wrong, but it is a change somebody chose rather than one that crept
+    in, and this test is where it has to be argued.
+    """
     assert guard.evaluate(payload(tool_input={"command": command})) is None
 
 
@@ -166,6 +234,24 @@ def test_ordinary_read_or_bounded_local_work_stays_open(command):
         # A governing document rewritten from the shell.
         "echo drafted > README.md",
         "sed -i s/a/b/ CLAUDE.md",
+        # A checkout with a pathspec writes files out of main and leaves HEAD where
+        # it is, so it is not a hard rule 3 violation — it keeps the treatment it
+        # already had, as work overwritten in place.
+        "git checkout main -- pipeline/stage.py",
+        "git checkout main pipeline/stage.py",
+        "git checkout main --pathspec-from-file=paths.txt",
+        # `git branch --force main` force-resets a local `main` pointer and moves no
+        # HEAD, which is the class `git branch main` sits in on the open-boundary
+        # list. It is pinned here rather than there because `--force` already reaches
+        # the work-discarding ask on its own; what changed is that it is no longer
+        # *denied* as a rename, which it never was. The abbreviation answers the same.
+        "git branch --force main",
+        "git branch --forc main",
+        # Quoted prose naming one of these commands after a separator is read as a
+        # command position — this file's oldest admitted blindness, not a new one.
+        # It lands in the ask class it always did, because the tokens after the
+        # branch name read as a pathspec. Pinned so the boundary is on record.
+        'git commit -m "note; git checkout main is refused"',
     ],
 )
 def test_main_session_gets_one_exact_confirmation_for_consequential_actions(command):
@@ -254,12 +340,159 @@ def test_subagents_cannot_take_consequential_or_external_actions(command):
         "grep -n '<<EOF' notes.md\ngit push origin main",
         'echo "<<EOF"\ngit push origin main',
         "# <<EOF\ngit push origin main",
+        # Hard rule 3 was prose only until now: nothing stopped a session standing
+        # itself on main, and it happened twice in two sessions. Every spelling that
+        # ends with HEAD on main is the same act.
+        "git checkout main",
+        "git switch main",
+        "git checkout refs/heads/main",
+        "git switch refs/heads/main",
+        # Creating the branch and standing on it is standing on it.
+        "git switch -c main",
+        "git switch -C main",
+        "git checkout -b main",
+        "git checkout -B main",
+        "git switch --create main",
+        "git checkout --orphan main",
+        # The wrapper, path-qualified and shell-payload spellings the rest of this
+        # file already covers reach this check too.
+        "/usr/bin/git checkout main",
+        "nohup git switch main",
+        "bash -c 'git switch main'",
+        "cd /tmp/repo\ngit checkout main",
+        # Found by the three-seat review of 846e3ce and reproduced live against the
+        # installed guard: every one of these ends with HEAD on main and every one
+        # of them passed, in silence or under a label naming the wrong consequence.
+        #
+        # `switch` takes no pathspec, so `--` there is only an end-of-options marker
+        # and the exclusion written for `checkout` was letting the plainest spelling
+        # of the violation through.
+        "git switch -- main",
+        "git switch main --",
+        "git switch -- refs/heads/main",
+        # A checkout whose `--` is followed by nothing names no pathspec: it moves
+        # HEAD exactly as the bare spelling does, and was being asked about as
+        # discarded work — a prompt naming the wrong consequence.
+        "git checkout main --",
+        # Renaming the branch you are standing on to main leaves you standing on
+        # main. `-m` reached no check at all; `-M` reached the work-discarding ask.
+        "git branch -m main",
+        "git branch -M main",
+        "git branch --move main",
+        # Forcing a rename is `--force --move`, in either order, or `-M`. There is no
+        # `--force-move` option: git rejects it as unknown, and while this file
+        # carried the invented name a real `--force` uniquely prefixed it and was
+        # denied as a rename it is not. Both real spellings are denied here.
+        "git branch --force --move main",
+        "git branch --move --force main",
+        "git branch -m work/topic main",
+        # `--track origin/main` creates a local `main` and stands on it.
+        "git switch --track origin/main",
+        "git switch -t origin/main",
+        "git checkout --track upstream/main",
+        # Over-recognized on purpose: `-C` names another repository, and the guard
+        # refuses rather than reasoning about which clone is meant.
+        "git -C /tmp/other-repo checkout main",
+        # Git accepts any unambiguous prefix of a long option, and these checks read
+        # only the full spelling until a reviewer probed the installed guard live:
+        # `switch --tra origin/main` and `branch --mov main` were both silent.
+        "git switch --tra origin/main",
+        "git switch --trac origin/main",
+        "git checkout --tra upstream/main",
+        "git branch --mov main",
+        "git switch --cre main",
+        "git checkout --orp main",
+        # `--force-create` in full and by a prefix no real option contends for.
+        "git switch --force-create main",
+        "git switch --force-c main",
+        # Ambiguous between `--force` and `--force-create`, so it names neither and
+        # the bare operand is read exactly as `git switch main` is.
+        "git switch --forc main",
+        # `--detach` needs no table entry of its own: an unrecognized long option is
+        # skipped and the operand still reads as main, which is the over-recognition
+        # the guard already declares for the full spelling.
+        "git checkout --det main",
+        # One command that respells exactly what this check refuses: HEAD is pointed
+        # at main without a checkout, a switch or a rename ever happening.
+        "git symbolic-ref HEAD refs/heads/main",
+        # `-m` records a reason for the reflog and takes a value. Until that was
+        # named, the reason counted as a third operand and the whole command passed
+        # in silence — verified live against the installed guard. Every spelling of
+        # the option is the same act: detached, bundled, and attached.
+        "git symbolic-ref -m tidy HEAD refs/heads/main",
+        "git symbolic-ref -qm tidy HEAD refs/heads/main",
+        "git symbolic-ref -mtidy HEAD refs/heads/main",
+        # Over-recognized deliberately — git wants a full ref here and would refuse
+        # the short name, and being wrong toward the refusal costs one message.
+        "git symbolic-ref HEAD main",
     ],
 )
 def test_hard_git_rules_are_denied_even_to_the_main_session(command):
     decision, reason = guard.evaluate(payload(tool_input={"command": command}))
     assert decision == "deny"
     assert "hard rule" in reason.lower()
+
+
+def test_a_long_option_prefix_is_read_only_when_it_is_long_enough_and_unambiguous():
+    # An abbreviation is a prefix, not an elision: `--forc` abbreviates
+    # `--force-create` and `--for-cre` does not. Every option named here is one git
+    # actually has; the earlier spelling of this test argued about `--force-move`,
+    # which git does not know, and the invented name was itself the defect.
+    assert guard.long_option_matches("--mov", ("--move",), prefixes=True)
+    assert guard.long_option_matches("--forc", ("--force-create",), prefixes=True)
+    assert not guard.long_option_matches("--for-cre", ("--force-create",), prefixes=True)
+    # Ambiguous against the names this check cares about: no match, so the guard
+    # falls through to whatever it would have decided without the option.
+    assert not guard.long_option_matches(
+        "--force", ("--force-create", "--force-if-includes"), prefixes=True
+    )
+    # Below the floor, and off by default so no other check inherits this.
+    assert not guard.long_option_matches("--mo", ("--move",), prefixes=True)
+    assert not guard.long_option_matches("--mov", ("--move",), prefixes=False)
+    # A short option is never an abbreviated long one.
+    assert not guard.long_option_matches("-m", ("--move",), prefixes=True)
+
+
+def test_a_decoy_option_is_counted_in_the_ambiguity_but_never_matched_as():
+    # `--force` is a real option of `checkout` and `switch`, and this check never
+    # looks for it — so without naming it, `--force` was the one *unique* prefix of
+    # `--force-create` and a plain forced checkout was read as a branch creation.
+    names, decoys = ("--force-create",), ("--force",)
+    assert guard.long_option_matches("--force-c", names, prefixes=True, decoys=decoys)
+    assert not guard.long_option_matches("--forc", names, prefixes=True, decoys=decoys)
+    assert not guard.long_option_matches("--force", names, prefixes=True, decoys=decoys)
+    # A decoy is never itself a match, and it narrows nothing it does not prefix.
+    assert guard.long_option_matches("--orp", ("--orphan",), prefixes=True, decoys=decoys)
+
+
+def test_a_real_force_is_not_read_as_an_abbreviated_force_create():
+    # Verified live against the installed guard: `git checkout --force main -- <path>`
+    # was hard-denied under rule 3 though it moves no HEAD at all — a refusal naming
+    # the wrong act, which this file's history says is the one somebody clicks
+    # through. It degrades to the ask that names what it really does.
+    decision, reason = guard.evaluate(
+        payload(tool_input={"command": "git checkout --force main -- pipeline/stage.py"})
+    )
+    assert decision == "ask"
+    assert "discard" in reason
+    assert "hard rule" not in reason.lower()
+    # The positive control: the option it was being mistaken for still denies, in
+    # full and by a prefix nothing real contends for.
+    for command in ("git switch --force-create main", "git switch --force-c main"):
+        found = guard.evaluate(payload(tool_input={"command": command}))
+        assert found and found[0] == "deny"
+
+
+def test_the_rename_denial_names_a_remedy_a_rename_caller_can_carry_out():
+    # "Move off it first" describes nothing somebody spelling a rename is doing;
+    # the fix is choosing a target name that is not main.
+    _, rename = guard.evaluate(payload(tool_input={"command": "git branch -m main"}))
+    # The positive control: the checkout spelling still names the move, so this is a
+    # split message rather than a remedy dropped from both.
+    _, moved = guard.evaluate(payload(tool_input={"command": "git switch main"}))
+    assert "Move off it first" in moved
+    assert "Move off it first" not in rename
+    assert "not `main`" in rename
 
 
 @pytest.mark.parametrize("name", sorted(guard.GOVERNING_DOCUMENTS))
@@ -278,6 +511,221 @@ def test_nested_readme_is_not_a_governing_document(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     target = tmp_path / "pipeline" / "README.md"
     assert guard.evaluate(payload("Write", {"file_path": str(target)}, cwd=tmp_path)) is None
+
+
+# --- hard rule 3: nothing is written from a checkout standing on main -----
+#
+# The rule was prose only, and it was broken twice in two sessions: the guard
+# refused a push to main and said nothing at all about a session that stood itself
+# on main and edited files there.
+
+
+def clone_on(root: Path, reference: str) -> Path:
+    """A directory the guard reads exactly as a clone standing on `reference`."""
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text(f"ref: {reference}\n", encoding="utf-8")
+    return root
+
+
+def linked_worktree(clone: Path, root: Path, name: str, reference: str, *, relative=False) -> Path:
+    """A linked worktree of `clone`, with its own per-worktree HEAD."""
+    gitdir = clone / ".git" / "worktrees" / name
+    gitdir.mkdir(parents=True)
+    (gitdir / "HEAD").write_text(f"ref: {reference}\n", encoding="utf-8")
+    root.mkdir(parents=True, exist_ok=True)
+    written = os.path.relpath(gitdir, root) if relative else gitdir
+    (root / ".git").write_text(f"gitdir: {written}\n", encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize("agent", [None, "worker"])
+@pytest.mark.parametrize(
+    ("tool", "key"),
+    [("Write", "file_path"), ("Edit", "file_path"), ("NotebookEdit", "notebook_path")],
+)
+def test_a_write_in_a_checkout_standing_on_main_is_refused(tmp_path, tool, key, agent):
+    root = clone_on(tmp_path / "repo", "refs/heads/main")
+    target = root / "pipeline" / "stage.py"
+    decision, reason = guard.evaluate(payload(tool, {key: str(target)}, agent=agent, cwd=root))
+    assert decision == "deny"
+    assert "standing on main" in reason
+    if agent:
+        # The way out differs by audience, and the agent's is not to switch the
+        # branch: the checkout is shared, and CLAUDE.md's Concurrency section puts
+        # an agent on its own worktree and its own branch. Telling it to move the
+        # shared checkout is telling it to do the one thing it must not.
+        assert "main session" in reason
+        assert "git switch -c" not in reason
+    else:
+        assert "git switch -c work/<topic>" in reason
+
+
+def test_a_write_in_a_worktree_on_a_work_branch_stays_open(tmp_path):
+    # The nearest checkout decides. A worktree on work/x is where an agent is meant
+    # to be, whatever branch the clone it was cut from happens to sit on.
+    clone = clone_on(tmp_path / "repo", "refs/heads/main")
+    tree = linked_worktree(clone, tmp_path / "trees" / "topic", "topic", "refs/heads/work/topic")
+    target = tree / "pipeline" / "stage.py"
+    assert guard.evaluate(payload("Write", {"file_path": str(target)}, cwd=tree)) is None
+
+
+def test_a_worktree_standing_on_main_is_refused_like_any_other_checkout(tmp_path):
+    clone = clone_on(tmp_path / "repo", "refs/heads/work/topic")
+    tree = linked_worktree(clone, tmp_path / "trees" / "release", "release", "refs/heads/main")
+    decision, _reason = guard.evaluate(
+        payload("Write", {"file_path": str(tree / "stage.py")}, cwd=tree)
+    )
+    assert decision == "deny"
+
+
+def test_a_worktree_that_names_its_gitdir_relatively_is_read(tmp_path):
+    # `git worktree add --relative-paths` writes the gitdir relative to the worktree.
+    clone = clone_on(tmp_path / "repo", "refs/heads/work/topic")
+    tree = linked_worktree(clone, tmp_path / "trees" / "r", "r", "refs/heads/main", relative=True)
+    decision, _reason = guard.evaluate(
+        payload("Write", {"file_path": str(tree / "stage.py")}, cwd=tree)
+    )
+    assert decision == "deny"
+
+
+def test_a_detached_head_is_not_standing_on_a_branch(tmp_path):
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text("a" * 40 + "\n", encoding="utf-8")
+    assert guard.evaluate(payload("Write", {"file_path": str(root / "stage.py")}, cwd=root)) is None
+
+
+def nested_clone(root: Path, head: str) -> Path:
+    """A plain clone at `root` whose HEAD line is written verbatim."""
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text(head, encoding="utf-8")
+    return root
+
+
+def test_a_detached_nested_checkout_is_not_judged_by_the_clone_around_it(tmp_path):
+    # A reviewer's probe. The nearest checkout governs, and a detached one is still
+    # a checkout: walking past it to an outer clone answers for a repository the
+    # write will never touch, and refuses it in the name of a branch it is not on.
+    clone_on(tmp_path / "repo", "refs/heads/main")
+    inner = nested_clone(tmp_path / "repo" / "vendor" / "thing", "a" * 40 + "\n")
+    assert guard.evaluate(payload("Write", {"file_path": str(inner / "x.py")}, cwd=inner)) is None
+
+
+def test_a_nested_checkout_on_a_work_branch_is_not_judged_by_an_outer_main(tmp_path):
+    # The positive control's other half: the nearest checkout answers, and it says
+    # work/topic.
+    clone_on(tmp_path / "repo", "refs/heads/main")
+    inner = nested_clone(tmp_path / "repo" / "vendor" / "thing", "ref: refs/heads/work/topic\n")
+    assert guard.evaluate(payload("Write", {"file_path": str(inner / "x.py")}, cwd=inner)) is None
+
+
+def test_a_nested_checkout_standing_on_main_is_still_refused(tmp_path):
+    # And the control that proves the two above are exemptions rather than a walk
+    # that stopped looking.
+    clone_on(tmp_path / "repo", "refs/heads/work/topic")
+    inner = nested_clone(tmp_path / "repo" / "vendor" / "thing", "ref: refs/heads/main\n")
+    decision, reason = guard.evaluate(
+        payload("Write", {"file_path": str(inner / "x.py")}, cwd=inner)
+    )
+    assert decision == "deny"
+    assert str(inner) in reason, "the refusal must name the checkout that is on main"
+
+
+def test_a_checkout_whose_head_cannot_be_read_stops_the_walk(tmp_path):
+    # An unreadable `.git` is a checkout whose branch is unknown. Unknown is not
+    # main — but it is not the outer clone's business either, and answering with
+    # the outer clone's branch would be an answer about the wrong repository.
+    clone_on(tmp_path / "repo", "refs/heads/main")
+    inner = tmp_path / "repo" / "vendor" / "thing"
+    inner.mkdir(parents=True)
+    (inner / ".git").write_text("this is not a gitdir line\n", encoding="utf-8")
+    assert guard.evaluate(payload("Write", {"file_path": str(inner / "x.py")}, cwd=inner)) is None
+
+
+def test_a_path_in_no_checkout_at_all_is_not_this_rule(tmp_path):
+    target = tmp_path / "notes" / "scratch.txt"
+    assert guard.evaluate(payload("Write", {"file_path": str(target)}, cwd=tmp_path)) is None
+
+
+def test_the_branch_rule_outranks_the_checks_that_only_ask(tmp_path, monkeypatch):
+    # An ask can be clicked through, and the write would still land on main.
+    root = clone_on(tmp_path / "repo", "refs/heads/main")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(root))
+    decision, reason = guard.evaluate(
+        payload("Write", {"file_path": str(root / "CLAUDE.md")}, cwd=root)
+    )
+    assert decision == "deny"
+    assert "standing on main" in reason
+
+
+def test_a_pathspec_checkout_from_main_keeps_its_work_discarding_treatment():
+    # It writes files out of main and leaves HEAD alone, so naming hard rule 3 would
+    # misname the consequence — and this file's own history says that is the prompt
+    # somebody clicks through.
+    decision, reason = guard.evaluate(
+        payload(tool_input={"command": "git checkout main -- pipeline/stage.py"})
+    )
+    assert decision == "ask"
+    assert "discard" in reason
+    assert "hard rule" not in reason.lower()
+
+
+@pytest.mark.parametrize(
+    ("abbreviated", "full"),
+    [
+        # Verified live against the installed guard: `--no-verif` slid past the
+        # hook-bypass denial into a publish ask labelled as an ordinary push, while
+        # CLAUDE.md says the option is blocked for Claude outright.
+        ("git push --no-verif origin work/topic", "git push --no-verify origin work/topic"),
+        ('git commit --no-verif -m "message"', 'git commit --no-verify -m "message"'),
+        ("git reset --har HEAD", "git reset --hard HEAD"),
+        # The three forcing spellings all mean the same answer here, so a prefix
+        # ambiguous between them is not ambiguous about the decision. `--forc` is the
+        # one entry git itself refuses to run — it is ambiguous between
+        # `--force-with-lease` and `--force-if-includes` — and it is read as the force
+        # prompt deliberately: the heavier answer on a command that cannot execute.
+        ("git push --forc origin work/topic", "git push --force origin work/topic"),
+        (
+            "git push --force-with-l origin work/topic",
+            "git push --force-with-lease origin work/topic",
+        ),
+        ("git push --del origin work/topic", "git push --delete origin work/topic"),
+        ("git push --mir origin", "git push --mirror origin"),
+        ("git branch --del work/topic", "git branch --delete work/topic"),
+        ("git worktree remove --forc /tmp/wt", "git worktree remove --force /tmp/wt"),
+        # Found by the fix-verification seat: `--worktree` triggers the restore ask
+        # (while `--staged` suppresses it and stays exact), and `--amend` triggers
+        # the history-rewrite ask; both were exact-spelling only, so the abbreviation
+        # bought silence. Git runs both abbreviations.
+        (
+            "git restore --staged --worktr pipeline/stage.py",
+            "git restore --staged --worktree pipeline/stage.py",
+        ),
+        ('git commit --amen -m "message"', 'git commit --amend -m "message"'),
+    ],
+)
+def test_an_abbreviated_triggering_option_answers_as_its_full_spelling_does(abbreviated, full):
+    """An abbreviation may never buy a milder answer than the option it abbreviates.
+
+    Git resolves any unambiguous prefix, and every abbreviation here was run against
+    git to confirm it resolves — except `--forc` on push, noted above, which git
+    rejects and this reads toward the heavier prompt. Reading only the full spelling
+    meant the abbreviation reached a different check, or none: a denial became an ask,
+    and an ask became a prompt naming the wrong consequence.
+    """
+    short = guard.evaluate(payload(tool_input={"command": abbreviated}))
+    spelled = guard.evaluate(payload(tool_input={"command": full}))
+    assert spelled is not None, "the control must itself be recognized"
+    assert short == spelled
+
+
+def test_a_suppressing_option_is_still_read_only_in_its_full_spelling():
+    # The opt-in is the whole design. `--dry-run` *suppresses* the clean ask, so
+    # reading a prefix as it would wave a destructive clean through on a spelling
+    # nobody checked; unrecognized, the abbreviation fails toward the ask instead.
+    abbreviated = guard.evaluate(payload(tool_input={"command": "git clean --dry-ru -fd"}))
+    assert abbreviated and abbreviated[0] == "ask"
+    assert guard.evaluate(payload(tool_input={"command": "git clean --dry-run -fd"})) is None
 
 
 @pytest.mark.parametrize(
@@ -1305,13 +1753,13 @@ def worktree_of(tmp_path):
 
 
 def test_an_agent_may_write_hooks_in_its_own_worktree(tmp_path, monkeypatch):
-    """CLAUDE.md: "Code is not on that list and stays open."
+    """CLAUDE.md keeps code open (Hard rules), and hooks are code.
 
-    Denying this made `infra-worker` — whose stated unit of work is "hooks, CI, seals,
-    accounting, money paths" — unable to do the only thing it exists for, and a
+    Denying this made `infra-worker` — whose unit of work is hooks, CI, seals,
+    accounting and money paths — unable to do the only thing it exists for, and a
     reviewer pointed out the guard file itself could not have been written by the
-    agent meant to write it. CLAUDE.md had already warned that a rule shaped as a
-    wall cost this project a day once.
+    agent meant to write it. A rule shaped as a wall has cost this project a day
+    before now.
     """
     project, tree = worktree_of(tmp_path)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
@@ -1545,3 +1993,39 @@ def test_the_heredoc_gate_no_longer_advertises_a_shell_only_rule():
     source = SCRIPT.read_text(encoding="utf-8")
     assert "SHELL_VERB = re.compile" not in source, "the orphaned constant is back"
     assert "unless a shell receives it" not in source
+
+
+def test_no_comment_quotes_wording_claude_md_no_longer_contains():
+    """A quotation is a claim about another file, and CLAUDE.md keeps being rewritten.
+
+    The blocklist below is the older half of this check: two retired sentences that
+    said something true and still do — code stays open, and a rule shaped as a wall
+    has cost this project real time — but are no longer that document's words. They
+    are kept because a regression guard that has already caught something is not
+    worth dropping, and they are assembled from halves so that this file does not
+    contain the literals it forbids, which would make the check pass on itself.
+
+    The blocklist alone was not enough, and three reviewers found the same stale
+    quotation on the same day: `RULE_THREE` still carried a middle sentence the
+    branch had deleted from hard rule 3, and no test could see it because a
+    blocklist only knows the wordings somebody thought to forbid. So the check that
+    matters now is the positive one — every span the guard presents inside quotation
+    marks as CLAUDE.md's words is read back out of the real CLAUDE.md. A rewrite
+    that moves the sentence fails the suite instead of shipping a quotation of a file
+    that does not say it.
+    """
+    retired = ("Code is not on that list" + " and stays open", "a rule shaped as a wall" + " cost")
+    for path in (SCRIPT, Path(__file__)):
+        source = path.read_text(encoding="utf-8")
+        for phrase in retired:
+            assert phrase not in source, f"{path.name} quotes wording CLAUDE.md no longer carries"
+
+    document = PROJECT / "CLAUDE.md"
+    # Unknown is not a pass: a missing document means the quotation cannot be
+    # checked, which is a failure of this test rather than a clean run.
+    assert document.is_file(), f"no CLAUDE.md at {document} — the quotation cannot be checked"
+    text = document.read_text(encoding="utf-8")
+    quoted = re.findall(r'"([^"]+)"', guard.RULE_THREE)
+    assert quoted, "RULE_THREE presents no quotation, so this check would prove nothing"
+    for span in quoted:
+        assert span in text, f"the guard quotes CLAUDE.md as saying {span!r}, and it does not"

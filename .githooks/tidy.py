@@ -30,10 +30,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 WORKBENCH = REPO / "workbench"
 ACTIVE = WORKBENCH / "active"
+STANDING = WORKBENCH / "standing"
 DESIGN = WORKBENCH / "design"
 ARCHIVE = WORKBENCH / "archive"
 SCRATCH = WORKBENCH / "scratch"
 RAW = WORKBENCH / "raw"
+
+# The one ledger in standing/ whose absence is itself a finding: CLAUDE.md records a
+# dated suspension there and reads it back until it is resolved.
+SUSPENSIONS = "SUSPENSIONS.md"
 
 # active/ is meant to be readable in one sitting. Past this, something finished
 # and nobody filed it. The number is a smell test, not a rule.
@@ -56,7 +61,14 @@ STALE_DAYS = 3
 # match the old — leaves active/HANDOFF.md identical to the archived copy. That is
 # the procedure working, not a note somebody forgot to file, and reporting the live
 # handoff as redundant invites exactly the one deletion that cannot be recovered.
-NEVER_FILED = {"HANDOFF.md"}
+#
+# NEXT_SESSION_BRIEF.md is archived by the same step, in the same order, and one
+# sentence of the session-end skill covers both: "Copy the outgoing
+# workbench/active/HANDOFF.md and NEXT_SESSION_BRIEF.md there before overwriting
+# either." Only the handoff was listed here, so an interrupted close left the live
+# brief reported as already archived — the file the next session opens with, offered
+# for deletion by the report that is supposed to protect it.
+NEVER_FILED = {"HANDOFF.md", "NEXT_SESSION_BRIEF.md"}
 
 # Claude Code derives this directory name from the repository's absolute path,
 # with both separators and underscores flattened to hyphens. Deriving it rather
@@ -235,6 +247,43 @@ def main(argv=None):
             f"({len(files)}/{ACTIVE_FILE_BUDGET} files, "
             f"{total_bytes // 1024}/{ACTIVE_BYTE_BUDGET // 1024} KB)."
         )
+
+    # standing/ holds the ledgers that outlive sessions — suspensions, alpha
+    # shortcuts, the adopted plan. Never filed, never aged, never counted against
+    # active/'s budget: a drawer for what must persist is not a drawer over budget.
+    #
+    # Its absence is reported as loudly as a missing active/, and for a harder
+    # reason. CLAUDE.md carries a suspension in workbench/standing/SUSPENSIONS.md and
+    # has it read back at every open and close until it is resolved; a hook or a check
+    # switched off temporarily is exactly what that file is for. A drawer that is not
+    # there prints nothing, which reads identically to a drawer with nothing in it —
+    # so a safety measure would go quietly on being off, which is the failure this
+    # project exists to notice. Unknown is not zero: only a ledger somebody wrote can
+    # say that nothing is suspended.
+    if not STANDING.is_dir():
+        wants_attention = True
+        print(f"\nstanding/ MISSING at {rel_or_abs(STANDING)} — {SUSPENSIONS} cannot be read.")
+        print("  -> unknown is not 'none in force'. Only a written ledger says that.")
+    else:
+        standing = sorted(p for p in STANDING.rglob("*") if p.is_file())
+        if standing:
+            print(f"\nstanding/ {len(standing)} ledgers — read at open and close, never filed:")
+            for path in standing:
+                print(f"  {rel_or_abs(path)}")
+        # Read it, not stat it: is_file() is true for a ledger this process cannot
+        # open, and a report that exits clean over an unreadable safety ledger has
+        # measured nothing (GOVERNANCE 10). The two failures get different words
+        # because their fixes differ.
+        try:
+            (STANDING / SUSPENSIONS).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            wants_attention = True
+            print(f"\nstanding/ has no {SUSPENSIONS} — the dated suspensions cannot be read back.")
+            print("  -> unknown is not 'none in force'. Only a written ledger says that.")
+        except OSError as error:
+            wants_attention = True
+            print(f"\nstanding/ {SUSPENSIONS} exists but cannot be read: {error}")
+            print("  -> unknown is not 'none in force'. Only a readable ledger says that.")
 
     # design/ is never aged, never filed, never counted against the budget. A
     # proposal waiting for the stage it concerns is not stale, however long it
