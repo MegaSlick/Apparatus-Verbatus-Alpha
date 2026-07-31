@@ -78,7 +78,20 @@ def page_census(context) -> dict[int, dict]:
             "reason": record["payload"].get("reason", ""),
         }
 
-    declared = {page["ordinal"] for page in context.run["source_manifest"]}
+    # Counted, then compared as a set. `RunTree.create` refuses a manifest that
+    # repeats an ordinal, so this should be unreachable — but the census is the
+    # last boundary in the pipeline and it reads a `run.json` written earlier,
+    # possibly by an older writer. A set comparison alone cannot see the
+    # difference between two pages sharing an ordinal and one page, which is
+    # exactly the arithmetic that lets a lost page reconcile.
+    declared_ordinals = [page["ordinal"] for page in context.run["source_manifest"]]
+    declared = set(declared_ordinals)
+    if len(declared) != len(declared_ordinals):
+        raise FatalAccounting(
+            f"the run declared {len(declared_ordinals)} source pages under only "
+            f"{len(declared)} distinct ordinals; the run's own record cannot say "
+            "how many pages arrived, so nothing downstream can balance against it"
+        )
     if set(census) != declared:
         raise FatalAccounting(
             f"the run declared source pages {sorted(declared)} but the Exemplar "

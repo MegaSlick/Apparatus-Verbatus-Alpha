@@ -101,6 +101,29 @@ class RunTree:
         leaves the tree exactly as it found it.
         """
         tree = cls(root, run_id)
+        # An ordinal names one page. Two rows carrying the same one do not describe
+        # a duplicate page — they make the run's page count ambiguous before
+        # anything has been read. That matters because the Armarium's page census
+        # reconciles itself against these ordinals *as a set*: a repeat silently
+        # reduces two declared pages to one, so a run that lost one of them still
+        # balances and still reports `complete`. Four reviewers filed the
+        # lost-page defect this check's absence recreates one level down.
+        #
+        # Refused here, at the one place a manifest enters a run, rather than
+        # defended at each of the places it is later read.
+        ordinals = [page.get("ordinal") for page in source_manifest]
+        if any(not isinstance(ordinal, int) or isinstance(ordinal, bool) for ordinal in ordinals):
+            raise SchemaRefusal(
+                "every source page must declare an integer ordinal: a run cannot "
+                "account for pages it cannot count"
+            )
+        repeated = sorted({ordinal for ordinal in ordinals if ordinals.count(ordinal) > 1})
+        if repeated:
+            raise SchemaRefusal(
+                f"source pages declare ordinal(s) {repeated} more than once; an "
+                "ordinal names one page, so a repeat leaves the run unable to say "
+                "how many pages it was given"
+            )
         authority = {
             "schema": SCHEMA_LABEL,
             "run_id": tree.run_id,

@@ -245,6 +245,27 @@ def test_a_fully_delivered_well_witnessed_run_is_complete():
     assert aggregate["by_category"] == {"delivered": 1, "confirmed-blank": 1}
 
 
+def test_a_run_that_accounted_for_nothing_is_not_complete():
+    """GOVERNANCE 2 — "complete" is refused unless everything reconciles. Over an
+    empty population every loop runs zero times and `reasons` stays empty, so the
+    aggregate used to fall through to a green verdict asserting that nothing had
+    gone wrong with nothing. An empty population reconciles vacuously, not actually."""
+    aggregate = run_aggregate({})
+    assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == [
+        "the run accounted for no acts and no pages, so nothing was reconciled"
+    ]
+
+
+def test_a_sealed_page_carrying_no_acts_is_still_complete():
+    """The other direction, and the reason the check above is not simply
+    "no acts": a blank page is a real and correct outcome, and a run over one
+    must not be forced partial for having found nothing on it."""
+    aggregate = run_aggregate({}, None, {1: {"outcome": "sealed"}})
+    assert aggregate["status"] == "complete"
+    assert aggregate["reasons"] == []
+
+
 def test_a_held_act_forces_partial_and_names_itself():
     """GOVERNANCE 2 — a partial result is visibly partial; "complete" is refused
     unless everything reconciles."""

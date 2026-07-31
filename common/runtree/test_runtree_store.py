@@ -90,6 +90,41 @@ def test_reusing_a_run_id_with_changed_source_is_refused(tmp_path):
     assert "source_manifest" in str(caught.value)
 
 
+def test_a_source_manifest_repeating_an_ordinal_is_refused(tmp_path):
+    """An ordinal names one page. Two rows sharing one leave the run unable to say
+    how many pages arrived — and the Armarium's page census compares itself against
+    these ordinals as a set, so the repeat would silently reduce two declared pages
+    to one and let a run that lost one of them still reconcile as `complete`. That
+    is the lost-page defect four reviewers filed, one level down."""
+    twice = [
+        {"relative_path": "proof/page-1.png", "sha256": "a" * 64, "ordinal": 1},
+        {"relative_path": "proof/page-1-again.png", "sha256": "b" * 64, "ordinal": 1},
+    ]
+    with pytest.raises(SchemaRefusal) as caught:
+        make_run(tmp_path, source_manifest=twice)
+    assert "[1]" in str(caught.value)
+    assert not (tmp_path / "r1" / RUN_FILE).exists(), "refused before anything was written"
+
+
+def test_a_source_page_without_an_integer_ordinal_is_refused(tmp_path):
+    """The other direction of the same rule: a run cannot account for pages it
+    cannot count. `True` is excluded explicitly because `isinstance(True, int)`."""
+    for bad in ({"relative_path": "p.png", "sha256": "a" * 64}, {"ordinal": "1"}, {"ordinal": True}):
+        with pytest.raises(SchemaRefusal):
+            make_run(tmp_path, source_manifest=[{"relative_path": "p.png", **bad}])
+
+
+def test_a_well_formed_manifest_of_several_pages_is_still_accepted(tmp_path):
+    """Invariant #14: the refusals above must not have bought their strictness by
+    refusing good input too."""
+    fine = [
+        {"relative_path": "proof/page-1.png", "sha256": "a" * 64, "ordinal": 1},
+        {"relative_path": "proof/page-2.png", "sha256": "b" * 64, "ordinal": 2},
+    ]
+    tree = make_run(tmp_path, source_manifest=fine)
+    assert [page["ordinal"] for page in tree.read_run()["source_manifest"]] == [1, 2]
+
+
 def test_reusing_a_run_id_with_changed_config_is_refused(tmp_path):
     make_run(tmp_path)
     with pytest.raises(IncompatibleReuse):

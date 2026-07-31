@@ -329,6 +329,20 @@ def run_aggregate(
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
+
+    # A run that examined nothing is not a run in which everything reconciled.
+    # `reasons` starts empty and the loops below can each execute zero times, so
+    # an aggregate over no acts and no pages fell straight through to `complete`
+    # — a green verdict asserting that nothing had gone wrong with nothing.
+    # GOVERNANCE 2 refuses "complete" unless everything reconciles, and an empty
+    # population reconciles vacuously rather than actually.
+    #
+    # Acts alone being empty is deliberately *not* the trigger: a sealed page
+    # carrying no acts is a blank page, which is a real and correct outcome.
+    if not act_categories and not (page_census or {}):
+        reasons.append("the run accounted for no acts and no pages, so nothing was reconciled")
+
+
     for act, category in act_categories.items():
         if not isinstance(category, ArmariumCategory):
             raise FatalAccounting(f"act {act} carries {category!r}, not a category")
