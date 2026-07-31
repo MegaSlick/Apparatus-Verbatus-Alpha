@@ -693,6 +693,15 @@ def test_a_pathspec_checkout_from_main_keeps_its_work_discarding_treatment():
         ("git push --mir origin", "git push --mirror origin"),
         ("git branch --del work/topic", "git branch --delete work/topic"),
         ("git worktree remove --forc /tmp/wt", "git worktree remove --force /tmp/wt"),
+        # Found by the fix-verification seat: `--worktree` triggers the restore ask
+        # (while `--staged` suppresses it and stays exact), and `--amend` triggers
+        # the history-rewrite ask; both were exact-spelling only, so the abbreviation
+        # bought silence. Git runs both abbreviations.
+        (
+            "git restore --staged --worktr pipeline/stage.py",
+            "git restore --staged --worktree pipeline/stage.py",
+        ),
+        ('git commit --amen -m "message"', 'git commit --amend -m "message"'),
     ],
 )
 def test_an_abbreviated_triggering_option_answers_as_its_full_spelling_does(abbreviated, full):

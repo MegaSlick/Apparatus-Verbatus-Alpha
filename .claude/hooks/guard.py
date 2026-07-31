@@ -914,13 +914,17 @@ def long_option_matches(token_name: str, names, *, prefixes: bool, decoys=()) ->
     else.
 
     **A decoy is where that simplification was wrong in the other direction.** It is a
-    real option of the same subcommand that this check never matches *as*, named here
-    only so it can contend for an abbreviation. `--force` is a real option of
-    `checkout` and `switch`; unnamed, it was the one unique prefix of `--force-create`,
-    so `git checkout --force main -- <path>` — which moves no HEAD and discards work
+    real option that this check never matches *as*, named here only so it can contend
+    for an abbreviation. `--force` is a real option of `checkout` and `switch`;
+    unnamed, it was the one unique prefix of `--force-create`, so
+    `git checkout --force main -- <path>` — which moves no HEAD and discards work
     in place — was denied under hard rule 3, a refusal naming the wrong act. Counted
     as a decoy, `--force` and `--forc` name nothing here and the command falls back to
     the ask that describes what it really does, while `--force-c` still resolves.
+    The branch-creating name list is shared between `checkout` and `switch` although
+    `--create`/`--force-create` are `switch`-only in git (`checkout` spells them
+    `-b`/`-B`) — deliberate over-recognition: a `switch`-only spelling read on
+    `checkout` errs toward the refusal, never away from it.
 
     An abbreviation is a prefix, not an elision: `--forc` abbreviates `--force-create`
     and `--for-cre` does not. An ambiguous prefix matches nothing, so the check falls
@@ -1373,8 +1377,13 @@ def discards_work(action: str, arguments: list[str]) -> bool:
     if action == "reset":
         return long_option(arguments, "--hard", prefixes=True)
     if action == "restore":
+        # `--staged` suppresses the ask and stays exact; `--worktree` triggers it and
+        # is read by prefix — git runs `--worktr`, and reading only the full spelling
+        # let the abbreviation overwrite working-tree files in silence.
         staged = long_option(arguments, "--staged") or short_option(arguments, "S", action)
-        worktree = long_option(arguments, "--worktree") or short_option(arguments, "W", action)
+        worktree = long_option(arguments, "--worktree", prefixes=True) or short_option(
+            arguments, "W", action
+        )
         return worktree or not staged
     if action == "checkout":
         return True
@@ -1444,7 +1453,9 @@ def risky_git(command: str, payload: dict[str, Any]) -> Decision:
             return deny_or_ask(payload, "publish commits or refs to a remote repository")
         if action == "merge":
             return deny_or_ask(payload, "merge histories, which Tyrel reserves to himself")
-        if action == "rebase" or (action == "commit" and long_option(arguments, "--amend")):
+        if action == "rebase" or (
+            action == "commit" and long_option(arguments, "--amend", prefixes=True)
+        ):
             return deny_or_ask(payload, "rewrite local commit history")
         if discards_work(action, arguments):
             return deny_or_ask(payload, "discard or make work difficult to recover")
