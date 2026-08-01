@@ -109,15 +109,32 @@ terms this directory has the better claim — an autoclave is the chamber, and a
 tray goes inside one — but renaming the tray touches governed documents and is
 Tyrel's. Until he rules, both names stand and this note is the warning.
 
-## What has not been proven
+## What has been proven
 
-Nothing below has been run. Each is cheap to settle and each changes something
-downstream if it fails.
+Measured on the machine this was built for — Intel i9-9980HK, 32 GB — with Colima
+at 6 CPUs and 12 GB.
 
-1. Colima on this Intel host, and what it costs at idle.
-2. Whether three or four chambers run at once without the machine labouring.
-3. Claude Code running inside without prompting for something the chamber
-   cannot give it — the failure that has cost two unattended nights.
-4. Codex CLI running unattended inside a chamber.
-5. Image build time and size.
-6. The credential question above.
+| Claim | Result |
+|---|---|
+| The image builds | 1.88 GB. Python 3.13.5, pytest 9.1.1, ruff 0.15.4, git 2.47.3, Node 22, ripgrep 14.1.1 |
+| Both vendors' CLIs are present | Claude Code 2.1.220 and Codex CLI 0.146.0 |
+| `/src` is genuinely read-only | a write to it returns `Read-only file system`; the host tree stayed clean |
+| Both briefs land without collision | the chamber's limits at `/CLAUDE.md`, the project's rules at `/work/CLAUDE.md` |
+| The repository's own suite runs inside | **953 passed** — the same count as the host, in 15s |
+| Work returns | a commit made inside came back as `agent/<task>`; a reader's `/out/report.md` was collected |
+| Nothing merges by itself | `collect` fetches a branch and prints the two commands to read it |
+| Several chambers at once | four ran together; idle cost 1–3 MB each |
+| Parallel work is real | three full suites concurrently, all 953 passing, **17s wall clock** — the same as one alone |
+| VM headroom | 679 MB used of 11 GB with three suites running. Far more than four would fit |
+
+## What has still not been proven
+
+1. **Claude Code running unattended inside**, without prompting for something the
+   chamber cannot give it. The CLI is installed and reports its version; it has not
+   been driven through a task. This is the failure that has cost two nights and it
+   is the next thing to test.
+2. **Codex CLI likewise** — installed and versioned, not yet driven.
+3. **The credential question above.** Both of the above are blocked on it: neither
+   CLI can reach a model without one, and how the secret gets in is Tyrel's to choose.
+4. **A long task.** Everything measured here finishes in seconds. Nothing has run
+   for an hour, filled a disk, or been interrupted halfway.

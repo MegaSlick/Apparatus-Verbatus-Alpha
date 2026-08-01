@@ -80,7 +80,10 @@ cmd_doctor() {
     if docker info >/dev/null 2>&1; then echo "responding"; else echo "not responding"; fi
     printf 'image:       '
     if docker image inspect "$IMAGE" >/dev/null 2>&1; then
-        docker image inspect -f '{{.Id}} ({{.Size}} bytes)' "$IMAGE"
+        # `image ls` rather than `inspect .Size`: the two disagree — inspect
+        # reported 480 MB for an image `ls` calls 1.88 GB — and the number an
+        # operator can check against `docker image ls` is the one to print.
+        docker image ls "$IMAGE" --format '{{.Size}} (built {{.CreatedSince}})'
     else
         echo "not built — run: $0 build"
     fi
