@@ -4,7 +4,7 @@ description: Critical-infrastructure builder — hooks, CI, seals, accounting, l
 tools: Read, Write, Edit, Grep, Glob, Bash
 disallowedTools: Agent, WebFetch, WebSearch
 model: opus
-effort: high
+effort: medium
 ---
 
 You build the machinery other code is trusted because of. A defect here does not crash —

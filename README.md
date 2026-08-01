@@ -24,6 +24,23 @@ This line is the only place status lives.
 | how the pipeline is shaped and why | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | what a word means | [GLOSSARY.md](GLOSSARY.md) |
 
+## Controls
+
+Every local protection can be switched off, and how is written here — a guard the
+owner cannot unwire is a defect, whatever it prevents (CLAUDE.md hard rule 11).
+
+**The tool-call guard is currently switched OFF.** It asked 503 times in three days
+and approval became reflexive, which is worse than no guard. Suspended 2026-08-01,
+deadline 2026-08-15; the full record and the exact JSON to restore it are in
+`workbench/standing/SUSPENSIONS.md`. To restore it, put the `PreToolUse` block back
+into `.claude/settings.json`.
+
+Still in force and not suspended: the git hooks refuse a commit on `main`, a push at
+`main`, and a credential or oversized payload in outgoing history — `sh
+.githooks/install.sh` arms them in a clone, and unsetting `core.hooksPath` removes
+them. GitHub's own rules on `main`, listed above, are outside this repository's reach
+and no local change affects them.
+
 ## Scope
 
 Source images in, established readings out. Import to export.

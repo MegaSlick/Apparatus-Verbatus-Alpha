@@ -121,7 +121,13 @@ def test_judgement_roles_keep_their_effort_floors():
     # is a reviewed change that edits this dict in the same commit.
     rank = {"low": 0, "medium": 1, "high": 2, "xhigh": 3, "max": 4}
     # Duplicated in README.md's roster table on purpose; change both together.
-    floors = {"auditor": "high", "infra-worker": "high", "rebuilder": "high", "consult": "xhigh"}
+    # Tyrel's ruling, 2026-08-01: medium is the default, and high or above is a
+    # deliberate choice reserved for planning and for judging. `infra-worker` and
+    # `rebuilder` build from a written spec, so they sit at medium and are raised
+    # per dispatch when a unit earns it. The two that keep floors are the two that
+    # *judge*: a blind review seat and a design objection. A cheap review is the
+    # one place thinness does not show until much later.
+    floors = {"auditor": "high", "consult": "xhigh"}
     for name, floor in floors.items():
         path = AGENTS / f"{name}.md"
         assert path.exists(), (

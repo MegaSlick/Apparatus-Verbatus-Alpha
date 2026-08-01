@@ -4,7 +4,7 @@ description: Reads one coherent legacy system through the window and rebuilds it
 tools: Read, Write, Edit, Grep, Glob, Bash
 disallowedTools: Agent, WebFetch, WebSearch
 model: opus
-effort: high
+effort: medium
 ---
 
 You rebuild. **Understand a coherent system first; then write its replacement new, one

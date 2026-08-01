@@ -8,10 +8,19 @@ conversation.
 |---|---|---|---|
 | `scout` | Haiku | `low` default; `low`–`high` sanctioned | locate files and references; extractive digests |
 | `worker` | Sonnet | `medium` default; `low`–`high` sanctioned | implement one written, non-critical specification |
-| `infra-worker` | Opus | `high` — floor | hooks, CI, accounting, seals, money paths |
+| `infra-worker` | Opus | `medium` default; `high`–`xhigh` sanctioned | hooks, CI, accounting, seals, money paths |
 | `auditor` | Opus pinned, set per seat in a reviewer pass | `high` — floor | read-only review |
 | `consult` | inherited model | `xhigh` — floor; `max` sanctioned | read-only design objection |
-| `rebuilder` | Opus | `high` — floor | rebuild one coherent legacy system in the autoclave |
+| `rebuilder` | Opus | `medium` default; `high` sanctioned | rebuild one coherent legacy system in the autoclave |
+
+**Medium is the default** (Tyrel, 2026-08-01). High or above is a deliberate choice,
+not a resting state, and it is reserved for **planning and judging**. Building from a
+written spec is medium work; raise it per dispatch when a unit earns it and say why.
+
+Two roles keep floors, and only two: `auditor`, which reads blind in a review pass, and
+`consult`, which objects to a design. Both *judge* rather than build, and a cheap
+judgement does not look wrong until much later — which is the whole reason a floor
+exists. `infra-worker` and `rebuilder` lost theirs in the same ruling.
 
 ## The models, in one breath
 

@@ -1542,7 +1542,36 @@ def test_the_two_routes_read_the_same_table_rather_than_two_copies():
 SETTINGS = Path(__file__).resolve().parents[1] / "settings.json"
 
 
+README = Path(__file__).resolve().parents[2] / "README.md"
+
+# The guard may be switched off — hard rule 11 requires that it can be, in one
+# documented step. What it may not be is switched off *silently*, so these tests
+# skip only when the removal is declared in `README.md`, which is the tracked
+# document hard rule 11 names and the only record that travels to another clone.
+# Unwired and undeclared is a failure, and deliberately so: that is the state
+# where a session reads itself as guarded and is not.
+GUARD_OFF_MARKER = "The tool-call guard is currently switched OFF"
+
+
+def guard_is_declared_off() -> bool:
+    return README.is_file() and GUARD_OFF_MARKER in README.read_text(encoding="utf-8")
+
+
+def skip_if_guard_suspended() -> None:
+    hooks = json.loads(SETTINGS.read_text(encoding="utf-8"))["hooks"]
+    if "PreToolUse" in hooks:
+        return
+    if guard_is_declared_off():
+        pytest.skip("the guard is switched off and README.md declares it — hard rule 11")
+    raise AssertionError(
+        "no PreToolUse hook invokes guard.py, and README.md does not declare it off. "
+        "Hard rule 11: machinery is removable in one documented step, and README.md "
+        "records the step. Unwired and undeclared reads as guarded and is not."
+    )
+
+
 def pretooluse_block() -> dict:
+    skip_if_guard_suspended()
     blocks = json.loads(SETTINGS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
     guarding = [b for b in blocks if any("guard.py" in h["command"] for h in b["hooks"])]
     assert guarding, "no PreToolUse hook invokes guard.py"
