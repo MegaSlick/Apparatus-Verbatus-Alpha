@@ -551,7 +551,7 @@ def test_a_write_in_a_checkout_standing_on_main_is_refused(tmp_path, tool, key, 
     assert "standing on main" in reason
     if agent:
         # The way out differs by audience, and the agent's is not to switch the
-        # branch: the checkout is shared, and CLAUDE.md's Concurrency section puts
+        # branch: the checkout is shared, and CLAUDE.md's Branches section puts
         # an agent on its own worktree and its own branch. Telling it to move the
         # shared checkout is telling it to do the one thing it must not.
         assert "main session" in reason

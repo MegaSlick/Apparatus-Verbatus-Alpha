@@ -182,7 +182,7 @@ def worktree_belongs_to_project(directory: Path, project: Path) -> bool:
 # quoted span in this constant — this constant only, not every quote in the file —
 # back out of the real CLAUDE.md, so the next rewrite fails the suite rather than
 # shipping a stale quotation.
-RULE_THREE = '3: "Never commit, push, or work on `main`." (CLAUDE.md, Hard rules and Branches)'
+RULE_THREE = '3: "A session never works from `main`." (CLAUDE.md, Hard rules and Branches)'
 OFF_MAIN = "Move off it first with `git switch -c work/<topic>`; staged changes come along"
 # The remedy for a *rename*, which is a different act and needs a different sentence.
 # "Move off it first" describes nothing somebody spelling `branch -m main` is doing:
@@ -301,7 +301,7 @@ def writing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
     **Both audiences are refused, and each is told a different way out** — the shape
     `deny_agent_or_ask` exists for, except that neither branch here is an ask. The
     session owns the checkout and moves it off main in one command. An agent does
-    not: the checkout is shared, CLAUDE.md's Concurrency section puts it on its own
+    not: the checkout is shared, CLAUDE.md's Branches section puts it on its own
     worktree and its own branch, and switching the branch under a session and its
     other agents is the one repair it must never make. So it is told to stop and
     report, and the message that names `git switch -c` is not the one it reads.
