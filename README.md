@@ -29,11 +29,13 @@ This line is the only place status lives.
 Every local protection can be switched off, and how is written here — a guard the
 owner cannot unwire is a defect, whatever it prevents (CLAUDE.md hard rule 11).
 
-**The tool-call guard is currently switched OFF.** It asked 503 times in three days
-and approval became reflexive, which is worse than no guard. Suspended 2026-08-01,
-deadline 2026-08-15; the full record and the exact JSON to restore it are in
-`workbench/standing/SUSPENSIONS.md`. To restore it, put the `PreToolUse` block back
-into `.claude/settings.json`.
+**The tool-call guard refuses six things and is silent otherwise.** Landing work on
+`main`, deleting recursively outside the drawers that exist to be emptied, rewriting
+published history, deleting a remote ref, putting a credential into git, and switching
+the git hooks off. It cannot ask — a refusal is final within a session, and the way
+past one is Tyrel. The predecessor asked 503 times in three days and approval became
+reflexive, which is worse than no guard. **To switch it off, delete the `PreToolUse`
+block from `.claude/settings.json`** — one step, no other file needs touching.
 
 Still in force and not suspended: the git hooks refuse a commit on `main`, a push at
 `main`, and a credential or oversized payload in outgoing history — `sh
