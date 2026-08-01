@@ -1,41 +1,65 @@
-# Claude agent roster
+# The agent roster
 
-The main session is the accountable lead. Agents receive bounded work and return evidence,
-proposals, or an isolated diff; they do not own scope, integration, decisions, or the user
-conversation.
+The main session is the accountable lead. Agents receive bounded work and return
+evidence, proposals, or an isolated diff; they do not own scope, integration, decisions,
+or the user conversation.
 
-**Every role here is read-only.** A role that writes is dispatched into a chamber and
-never spawned on this machine: `operations/autoclave/README.md` says how, and the
-standing briefs live in `operations/autoclave/briefs/`. `worker`, `infra-worker` and
-`rebuilder` were host roles until 2026-08-01 and are now briefs — what a role file held
-is what a brief holds, and the chamber is a better boundary than a prompt.
+**There are five jobs, and where an agent runs decides what it can do.** On this
+machine, read-only, no exceptions. In a chamber, everything — its own clone, its own
+branch, a full shell, its own tests, and no way back out except a branch the session
+reads. `operations/autoclave/README.md` is that route.
 
-| Role | Model | Effort | Unit of work |
-|---|---|---|---|
-| `scout` | Haiku | `low` default; `low`–`high` sanctioned | locate files and references; extractive digests |
-| `auditor` | Opus pinned, set per seat in a reviewer pass | `high` — floor | read-only review |
-| `consult` | inherited model | `xhigh` — floor; `max` sanctioned | read-only design objection |
+| Job | Where | Default seat | Effort | What it is for |
+|---|---|---|---|---|
+| `scout` | host | Haiku 4.5 | `low`; up to `high` | where is X, what mentions Y — paths and line numbers, never a judgement |
+| `auditor` | host | set per seat, below | `high` — floor | blind review of a diff or a tree |
+| `consult` | host | Fable 5 or Sol | `xhigh` — floor; `max` sanctioned | object to a design before it is built |
+| `builder` | chamber | Sonnet 5, or Opus 5 when a defect would be quiet | `medium`; `high` when the unit earns it | build what a written spec says |
+| `rebuilder` | chamber | Opus 5 | `medium`; `high` sanctioned | read the old system through the window and write its replacement new |
 
-**Medium is the default** (Tyrel, 2026-08-01). High or above is a deliberate choice,
-not a resting state, and it is reserved for **planning and judging**. Building from a
-written spec is medium work; raise it per dispatch when a unit earns it and say why.
+That is three host seats and two briefs, down from six role files. `worker` and
+`infra-worker` were one job at two stakes and are now `builder`, which carries the
+infrastructure rules always — test-first, fail closed, no shortcut through the gate you
+are editing — because those are good rules for ordinary code too. What used to be the
+difference between them is now what it always really was: **which model, at what
+effort**, decided on the dispatch. `rebuilder` stays separate because it is a different
+*method*, not a different stake — never copying a byte is the whole job.
 
-Both remaining floors sit on roles that *judge* rather than build — a blind review seat
-and a design objection. A cheap judgement does not look wrong until much later, which is
-the whole reason a floor exists. `scout` has none because a scout that reads shallowly
-is visibly wrong on the spot.
+**Medium is the default** (Tyrel, 2026-08-01). High or above is a deliberate choice, not
+a resting state, and it is reserved for **planning and judging**. Both floors sit on the
+seats that judge; a cheap judgement does not look wrong until much later, which is the
+whole reason a floor exists. `scout` has none because a shallow scout is visibly wrong on
+the spot.
 
-## The models, in one breath
+## Choosing a model, across both vendors
 
-Haiku is the cheap fast reader — about a fifth of Opus's burn, fine for finding things,
-never for judging them. Sonnet 5 is near-Opus on coding, follows a spec to the letter,
-at roughly half Opus's burn — the workhorse. Opus 5 is the default brain — the strongest
-agentic judgement for the money; prompt its report shape and length explicitly (below).
-Fable 5 is the ceiling at twice Opus's burn — always thinking, minutes-long turns —
-spent only where being wrong is expensive and the question sits above what Opus reliably
-clears. Across the aisle, GPT Sol is OpenAI's flagship at Opus-class cost, notably
-strong on security-shaped reading, and it spends Tyrel's *other* budget; Terra is its
-half-price sibling for bulk mechanical drafting when Sol's budget tightens.
+Both suites are available and both are paid for. The standing duty is the best tool for
+the job, and the second is not to be wasteful — a Fable seat finding a filename is as
+much a defect as a Haiku seat judging a design.
+
+| The work is… | Reach for | Because |
+|---|---|---|
+| finding, listing, counting | **Haiku 4.5**, or **GPT-5.3 Codex Spark** | a fifth of Opus's burn; fine for locating, never for judging |
+| bulk mechanical drafting, a tight spec | **Sonnet 5**, or **GPT-5.6 Terra** | near-Opus on code at half the burn; follows a spec to the letter |
+| building where a defect would be quiet | **Opus 5** | hooks, CI, seals, accounting — the strongest agentic judgement for the money |
+| reading old code for contamination | **Opus 5** | the judgement is what crosses the boundary, and it does not run shallow |
+| security-shaped reading | **GPT-5.6 Sol** | notably stronger there than its price suggests |
+| a design that is expensive to get wrong | **Fable 5**, or **Sol at `max`** | twice Opus's burn, minutes-long turns; spent only above what Opus reliably clears |
+
+**Spend the OpenAI budget first where the two are close.** Sol's ceiling is higher than
+Claude's here, so a check or a draft that either vendor would do well goes to Sol or
+Terra and leaves Claude's headroom for the work only Claude is doing. That is a budget
+fact, not a quality claim.
+
+**A review pass is the one place vendor mix is a rule rather than a preference.** Three
+seats, two vendors minimum, blind, identical prompts — CLAUDE.md's Pushing and merging
+section, and the reviewer-pass skill holds the procedure. Agreement between seats from
+one vendor is the weakest kind of agreement.
+
+**A brief does not name a vendor.** The chamber signs both in and takes the same brief
+either way, so `dispatch <task> claude|codex <brief>` is where the choice is made and
+`operations/codex/seats.conf` governs only the read-only Codex seats that run on the
+host.
 
 ## Effort semantics
 

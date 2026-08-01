@@ -11,11 +11,18 @@ they do not overlap:
 | `/work/CLAUDE.md` and the governed documents | the clone | what binds the code you write |
 | the brief you are dispatched with | this directory, plus the task | what you are for |
 
-These files replaced `.claude/agents/worker.md`, `infra-worker.md` and `rebuilder.md`.
-Those were host roles holding `Write`, `Edit` and `Bash` on Tyrel's machine — the same
-reach the session has, granted to something running unattended. No agent writes on the
-host now, so the roles moved to where the writing happens. What a role file held —
-model, effort, standing instructions — is exactly what a brief holds.
+These replaced `.claude/agents/worker.md`, `infra-worker.md` and `rebuilder.md`. Those
+were host roles holding `Write`, `Edit` and `Bash` on Tyrel's machine — the same reach
+the session has, granted to something running unattended. No agent writes on the host
+now, so the roles moved to where the writing happens.
+
+**Three became two.** `worker` and `infra-worker` were one job at two stakes, and
+`builder` carries the infrastructure rules always: test-first, fail closed, no shortcut
+through the gate you are editing. Those are good rules for ordinary code as well, and a
+brief that only *sometimes* demands them teaches an agent to decide for itself which day
+it is. What separated the two roles is now what it always really was — which model, at
+what effort, chosen on the dispatch. `rebuilder` stays its own brief because it is a
+different method rather than a different stake: never copying a byte is the whole job.
 
 ## Dispatching one
 
@@ -24,10 +31,14 @@ reconstructable afterwards from a transcript:
 
 ```sh
 sh operations/autoclave/autoclave.sh new refactor-designator
-cat operations/autoclave/briefs/worker.md task.md > /tmp/brief.md
+cat operations/autoclave/briefs/builder.md task.md > /tmp/brief.md
 sh operations/autoclave/autoclave.sh dispatch refactor-designator claude /tmp/brief.md
 sh operations/autoclave/autoclave.sh collect refactor-designator
 ```
+
+The vendor is the third argument, and a brief never names one — the same file is given
+to `claude` or to `codex`. Which vendor and which model the job wants is the table in
+[.claude/agents/README.md](../../../.claude/agents/README.md).
 
 The standing brief goes first and the task second. The task names the objective, the
 deliverable, the checks that must pass, and the stop conditions — the standing brief
