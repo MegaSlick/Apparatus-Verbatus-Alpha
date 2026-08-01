@@ -117,11 +117,17 @@ referenced by identity and digest like any vendor model — never vendored here,
 left loose beside a run. They arrive as a candidate, tried and measured as ARCHITECTURE
 requires.
 
-`autoclave/` is the cleanroom bench: the rebuilding model reads the reference through
-the window and writes a fresh expression into the tray — never a paste. The tray is
-tracked so reviewers read the raw draft. Code leaves the tray only through the
-sterilizing review, which reads the fresh expression for anything carried over from the
-reference. A line nobody can justify does not enter, whoever typed it.
+`cleanroom/` is the bench: the rebuilding model reads the reference through the window
+and writes a fresh expression into the tray — never a paste. The tray is tracked so
+reviewers read the raw draft. Code leaves the tray only through the sterilizing review,
+which reads the fresh expression for anything carried over from the reference. A line
+nobody can justify does not enter, whoever typed it.
+
+**The bench and the chamber are different things.** The tray is `cleanroom/`, tracked,
+in this repository, where a draft waits to be read. An *autoclave* is a container an
+agent works inside — `operations/autoclave/` — and nothing in it is in this repository
+at all until a branch is collected and read. One word for two boundaries made every
+sentence about either of them ambiguous, so they no longer share one.
 
 ## Where notes go
 

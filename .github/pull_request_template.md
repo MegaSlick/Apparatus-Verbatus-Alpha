@@ -33,5 +33,5 @@
 - [ ] Checked against GOALS.md and GOVERNANCE.md
 - [ ] If this adds stage code, it includes an executable import-boundary test
 - [ ] No status, dates, pod IDs or hashes added to a rules document
-- [ ] The autoclave is empty — or this PR is still under review and says why it is loaded
+- [ ] The cleanroom is empty — or this PR is still under review and says why it is loaded
 - [ ] CI green

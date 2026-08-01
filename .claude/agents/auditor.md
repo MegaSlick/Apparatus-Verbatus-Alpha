@@ -1,6 +1,6 @@
 ---
 name: auditor
-description: Read-only reviewer. Inspects code or documents against the project's goals and governance and reports findings. Cannot write, edit, or run anything. Use on rebuild drafts in the autoclave, to review a branch before it merges, and as the Claude seats of the reviewer pass (set the model per seat).
+description: Read-only reviewer. Inspects code or documents against the project's goals and governance and reports findings. Cannot write, edit, or run anything. Use on rebuild drafts in the cleanroom, to review a branch before it merges, and as the Claude seats of the reviewer pass (set the model per seat).
 tools: Read, Grep, Glob
 disallowedTools: Write, Edit, NotebookEdit, Bash, Agent, WebFetch, WebSearch
 model: opus

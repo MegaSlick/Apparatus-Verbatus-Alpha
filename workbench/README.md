@@ -72,7 +72,7 @@ that should trigger a re-read. Without that it is a daydream, not a plan.
 ## Why most of it is gitignored
 
 So the repository stays the thing you can trust. The canonical documents bind; dated
-`history/` is evidence, and the autoclave holds material still under review — everything
+`history/` is evidence, and the cleanroom holds material still under review — everything
 speculative, dated, or half-finished beyond those lives here and dies here. The
 `pre-commit` hook refuses stray notes in what you are about to commit, where the hooks
 are installed; CI refuses them across the whole tree at the door.

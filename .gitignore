@@ -23,7 +23,7 @@ dist/
 # other agent's working copy into the tree.
 .claude/worktrees/
 
-# Machine-local permissions and the quarantine paths. `autoclave/README.md` says
+# Machine-local permissions and the quarantine paths. `cleanroom/README.md` says
 # this file "is gitignored and machine-local, which is the right home for a path" —
 # and a review found that nothing in this repository made that true. The only thing
 # ignoring it was `~/.config/git/ignore`, a user-level file no clone carries, so on
@@ -53,6 +53,6 @@ private/*
 scriptorium/*
 !scriptorium/README.md
 
-# autoclave/ is deliberately NOT ignored: drafts commit there on work branches
+# cleanroom/ is deliberately NOT ignored: drafts commit there on work branches
 # so the reviewers can read them raw. CI refuses to merge until it is empty,
-# which is what keeps main sterile — see autoclave/README.md.
+# which is what keeps main sterile — see cleanroom/README.md.
