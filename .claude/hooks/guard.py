@@ -25,11 +25,16 @@ guard he cannot unwire is a defect.
 4. Deleting a remote ref, or the repository itself.
 5. Putting a credential into git.
 6. Switching the git hooks off, which are the backstop for all of the above.
+7. **A spawned agent** editing a governed path — the one rule that is not the same for
+   both audiences, and the reason built-in agent types can be used here at all.
 
 Tyrel named the first five. The sixth is one past that and says so where it is defined;
 CLAUDE.md requires it, and without it one flag stands between a session and every hook
-at once. Every one of the six is unrecoverable, or close enough that the difference is
-a bad night. Everything else passes in silence, including things the old guard asked about:
+at once. The seventh is the balance struck when Claude Code's own agent types were let
+back in: they hold `Bash`, they carry no project instruction, and hard rule 10 needs a
+mechanical half exactly where the reader of the rule is absent. Six of the seven are
+unrecoverable, or close enough that the difference is a bad night; the seventh is
+recoverable and is there because the actor cannot be reasoned with. Everything else passes in silence, including things the old guard asked about:
 ordinary pushes, `gh` calls, RunPod commands, edits to governed documents. Those are
 now governed by CLAUDE.md and by the session having read it — which is the trade this
 project made when it moved agents into containers. A rule a session has read is a
@@ -664,6 +669,73 @@ def switching_the_hooks_off(tool: str, tool_input: Any, payload: dict[str, Any])
     return None
 
 
+# The seven documents that bind later sessions, plus `.claude/` entire — the skills, the
+# roster, this file's own policy. CLAUDE.md's Where notes go is the list.
+GOVERNED_NAMES = frozenset(
+    {
+        "claude.md",
+        "goals.md",
+        "governance.md",
+        "architecture.md",
+        "glossary.md",
+        "readme.md",
+        "data_contract.md",
+    }
+)
+_GOVERNED_ALTERNATION = "|".join(sorted(re.escape(name) for name in GOVERNED_NAMES))
+# A redirect or an in-place editor naming a governed document. Coarse on purpose: it only
+# ever judges an agent, where a false alarm costs one retry and a report, not a prompt.
+GOVERNED_SHELL_WRITE = re.compile(
+    rf"(?:(?:^|[^0-9<>&])>{{1,2}}\s*(?:\./)?(?:{_GOVERNED_ALTERNATION})\b)"
+    rf"|(?:\b(?:tee|sed\s+-i|perl\s+-pi?|patch|truncate)\b[^\n;&|]*"
+    rf"(?:{_GOVERNED_ALTERNATION}|/\.claude/))",
+    flags=re.IGNORECASE,
+)
+
+
+def subagent_name(payload: dict[str, Any]) -> str | None:
+    """The runtime-supplied agent identity, absent on the main thread."""
+    for key in ("agent_type", "agent_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            named = payload.get("agent_type")
+            return named.strip() if isinstance(named, str) and named.strip() else "subagent"
+    return None
+
+
+def agent_editing_governance(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
+    """7. A *spawned agent* writing a governed path. Silent for the main session.
+
+    This is the one asymmetry in the file, and it is the whole of the balance struck
+    when built-in agent types were allowed back in. The session may edit these — it has
+    read CLAUDE.md, it is the accountable lead, and prompting it on every governed edit
+    is what retired the last guard. An agent has read none of that: `general-purpose`
+    and `Explore` are Claude Code's own roles, they carry no project instruction, and
+    they hold `Bash` on this machine.
+
+    Hard rule 10 is the rule; this is its mechanical half, applied only where the reader
+    of the rule is absent. An agent proposes exact wording in its report instead.
+    """
+    agent = subagent_name(payload)
+    if not agent:
+        return None
+    refusal = (
+        f"Hard rule 10 bars subagent {agent} from editing a governed path — the "
+        "documents and `.claude/`, which bind every later session. Propose exact "
+        "wording in your report and let the main session make the change."
+    )
+    if tool in WRITING_TOOLS:
+        target = written_path(tool_input, payload)
+        if target is None:
+            return None
+        if target.name.strip().lower() in GOVERNED_NAMES or "/.claude/" in f"{target}/":
+            return "deny", refusal
+        return None
+    if tool == "Bash" and GOVERNED_SHELL_WRITE.search(normalize(bash_command(tool_input))):
+        return "deny", refusal
+    return None
+
+
 CHECKS = (
     landing_on_main,
     recursive_delete,
@@ -671,6 +743,7 @@ CHECKS = (
     deleting_a_remote,
     credential_into_git,
     switching_the_hooks_off,
+    agent_editing_governance,
 )
 
 

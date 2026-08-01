@@ -242,11 +242,36 @@ class TestDispatch:
         preceding = "\n".join(lines[:index])
         assert "docker exec" in preceding, "the flag is not inside a docker exec"
 
+    def test_the_model_is_optional_and_reaches_both_vendors(self):
+        """Naming a model is how a cheap seat gets used for a cheap job — a bounded
+        "build this, check it works, stop" unit on Luna costs a fraction of the same
+        unit on Sol. Optional because omitting it means something correct: run the
+        vendor's own default.
+        """
+        joined = " ".join(code_lines())
+        assert joined.count("${AC_MODEL:+--model") == 2, "both vendors must honour it"
+        # `:+` and not `:-`: an unset model must expand to no argument at all, rather
+        # than to an empty `--model ''` that the CLI would reject.
+        assert "${AC_MODEL:-" not in joined
+
+    def test_the_model_travels_as_an_environment_variable(self):
+        """Same reasoning as the brief travelling as a file: a value interpolated into
+        a quoted command line brings its punctuation with it."""
+        joined = " ".join(code_lines())
+        assert joined.count('docker exec -e AC_MODEL="$model"') == 2
+
     def test_codex_stdin_is_closed(self):
         """`codex exec` waits forever on an open stdin when nothing is attached,
         which inside a detached container is a dispatch that never returns and
-        never says why. A known trap, recorded in this project's own notes."""
-        carrying = [ln for ln in code_lines() if "codex exec" in ln]
+        never says why. A known trap, recorded in this project's own notes.
+
+        Continuations are joined before looking, because the invariant is that the
+        *invocation* closes stdin and not that it fits on one physical line. Written
+        the other way, this failed the moment a `--model` argument was added and the
+        command wrapped — a test reporting a formatting change as a safety defect.
+        """
+        joined = " ".join(code_lines()).replace("\\ ", " ")
+        carrying = [part for part in joined.split(";") if "codex exec" in part]
         assert len(carrying) == 1, f"expected one runnable use, found {len(carrying)}"
         assert "< /dev/null" in carrying[0]
 

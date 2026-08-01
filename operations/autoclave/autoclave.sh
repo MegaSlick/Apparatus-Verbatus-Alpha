@@ -13,7 +13,7 @@
 #   autoclave.sh build                   build the image
 #   autoclave.sh login <claude|codex>    sign a vendor in, once, into its volume
 #   autoclave.sh new <task> [<base>]     start a chamber on a branch from <base>
-#   autoclave.sh dispatch <task> <claude|codex> <brief-file>
+#   autoclave.sh dispatch <task> <claude|codex> <brief-file> [model]
 #                                        run an agent inside, against a written brief
 #   autoclave.sh shell <task>            open a shell in a running chamber
 #   autoclave.sh exec <task> <cmd>...    run one command in a chamber
@@ -255,9 +255,16 @@ cmd_dispatch() {
     task="${1:-}"; check_task "$task"
     vendor="${2:-}"
     brief="${3:-}"
+    # The fourth argument is the model, and it is optional because leaving it out has
+    # a correct meaning: run whatever that vendor's CLI defaults to. Naming one is how
+    # a cheap seat gets used for a cheap job — a Luna chamber for a bounded "build this,
+    # check it works, stop" unit costs a fraction of a Sol one, and without this
+    # argument there was no way to ask for it. Passed straight through to the CLI, so
+    # the vendor validates the name rather than this script keeping a list that rots.
+    model="${4:-}"
     need_docker
     running "$task" || die "chamber '$task' is not running — start it with: $0 new $task"
-    [ -n "$brief" ] || die "usage: $0 dispatch <task> <claude|codex> <brief-file>"
+    [ -n "$brief" ] || die "usage: $0 dispatch <task> <claude|codex> <brief-file> [model]"
     [ -f "$brief" ] || die "no brief at '$brief'"
 
     case "$vendor" in
@@ -275,25 +282,34 @@ cmd_dispatch() {
     note "dispatching ${vendor} into '${task}'"
     note "  brief:  $(outdir_of "$task")/brief.md"
     note "  report: $(outdir_of "$task")/report.md"
+    note "  model:  ${model:-the vendor default}"
     note ""
 
+    # The model reaches the container as an environment variable rather than inside
+    # the quoted script, for the same reason the brief travels as a file: a value
+    # interpolated into a command line brings its punctuation with it. Empty means
+    # unset, and the shell inside expands it to no argument at all.
     case "$vendor" in
         claude)
             # --dangerously-skip-permissions is correct *here* and nowhere else:
             # the container is the boundary, so there is no host left to protect
             # by prompting, and a prompt inside a detached container is a hang.
             # This flag is the reason the chamber exists.
-            docker exec "$(container_of "$task")" sh -c '
+            docker exec -e AC_MODEL="$model" "$(container_of "$task")" sh -c '
                 cd /work
-                claude --dangerously-skip-permissions -p "$(cat /out/brief.md)"
+                claude --dangerously-skip-permissions \
+                    ${AC_MODEL:+--model "$AC_MODEL"} \
+                    -p "$(cat /out/brief.md)"
             ' ;;
         codex)
             # stdin is closed deliberately. `codex exec` waits forever on an open
             # stdin when nothing is attached, which in a detached container means
             # a dispatch that never returns and never says why.
-            docker exec "$(container_of "$task")" sh -c '
+            docker exec -e AC_MODEL="$model" "$(container_of "$task")" sh -c '
                 cd /work
-                codex exec --skip-git-repo-check "$(cat /out/brief.md)" < /dev/null
+                codex exec --skip-git-repo-check \
+                    ${AC_MODEL:+--model "$AC_MODEL"} \
+                    "$(cat /out/brief.md)" < /dev/null
             ' ;;
     esac
 

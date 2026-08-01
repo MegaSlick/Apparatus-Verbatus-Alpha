@@ -36,9 +36,44 @@ sh operations/autoclave/autoclave.sh dispatch refactor-designator claude /tmp/br
 sh operations/autoclave/autoclave.sh collect refactor-designator
 ```
 
-The vendor is the third argument, and a brief never names one — the same file is given
-to `claude` or to `codex`. Which vendor and which model the job wants is the table in
+The vendor is the third argument and the model is an optional fourth. A brief names
+neither — the same file is given to `claude` or to `codex`, at whatever model the job
+deserves. Which one that is lives in the table in
 [.claude/agents/README.md](../../../.claude/agents/README.md).
+
+```sh
+sh operations/autoclave/autoclave.sh dispatch check-exporter codex /tmp/brief.md gpt-5.6-luna
+```
+
+Omitting the model runs the vendor's own default, which is the right thing when the
+work is ordinary. Naming one is how a cheap seat gets a cheap job.
+
+## Mass-spawning bounded units
+
+A chamber is a container, and several run at once — three finished a full test suite
+in seventeen seconds of wall clock on a 2019 laptop. That makes a particular shape of
+work cheap: **many small, self-contained units, each fully described in its own brief**
+— build this one thing, run this check, confirm it works, stop.
+
+That shape is what a volume seat is for. Give each unit its own task name, its own
+chamber and its own brief, and let them run together:
+
+```sh
+for unit in exporter-guard seal-count page-order; do
+  sh operations/autoclave/autoclave.sh new "$unit"
+  cat operations/autoclave/briefs/builder.md "tasks/$unit.md" > "/tmp/$unit.md"
+  sh operations/autoclave/autoclave.sh dispatch "$unit" codex "/tmp/$unit.md" gpt-5.6-luna &
+done
+wait
+```
+
+**The unit has to genuinely fit.** A volume seat is chosen because each brief is short
+and self-contained, and the moment a unit needs to hold a whole subsystem in mind it
+belongs on Terra, Sol or Opus instead — see the long-context note in the roster. Split
+the work until each piece fits the seat, or use a bigger seat. Do not give a small seat
+a big job and hope.
+
+Each chamber is collected and read separately. Nothing merges on its own.
 
 The standing brief goes first and the task second. The task names the objective, the
 deliverable, the checks that must pass, and the stop conditions — the standing brief

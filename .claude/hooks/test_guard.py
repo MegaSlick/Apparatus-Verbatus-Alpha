@@ -304,6 +304,60 @@ class TestHookBypass:
         assert decide("git config core.hooksPath") is None
 
 
+# ------------------------------- 7. an agent reaching for a governed path
+
+
+def decide_as_agent(tool: str, tool_input: dict, agent: str = "general-purpose"):
+    return guard.evaluate(
+        {
+            "tool_name": tool,
+            "tool_input": tool_input,
+            "cwd": str(ROOT),
+            "agent_type": agent,
+            "agent_id": "agent-123",
+        }
+    )
+
+
+class TestAgentGovernance:
+    """The one asymmetry in the file, and the reason built-ins can be used at all.
+
+    The session may edit these — it has read CLAUDE.md and prompting it on every
+    governed edit is what retired the last guard. `general-purpose` and `Explore` are
+    Claude Code's own roles: they carry no project instruction and they hold `Bash`.
+    """
+
+    def test_an_agent_may_not_write_a_governing_document(self):
+        assert denied(decide_as_agent("Write", {"file_path": str(ROOT / "CLAUDE.md")}))
+        assert denied(decide_as_agent("Edit", {"file_path": str(ROOT / "GOVERNANCE.md")}))
+
+    def test_an_agent_may_not_write_under_dot_claude(self):
+        for path in ("settings.json", "hooks/guard.py", "agents/scout.md"):
+            assert denied(decide_as_agent("Write", {"file_path": str(ROOT / ".claude" / path)})), (
+                path
+            )
+
+    def test_an_agent_may_not_reach_them_through_a_shell_either(self):
+        # Explore and Plan hold Bash. Withholding Edit does not make a role read-only.
+        assert denied(decide_as_agent("Bash", {"command": "echo x > CLAUDE.md"}, "Explore"))
+        assert denied(decide_as_agent("Bash", {"command": "sed -i '' s/a/b/ GOVERNANCE.md"}))
+
+    def test_an_agent_may_write_anything_else(self):
+        # The point is a bound, not a cage. Ordinary work is untouched.
+        assert decide_as_agent("Write", {"file_path": str(ROOT / "operations" / "x.py")}) is None
+        assert decide_as_agent("Bash", {"command": "pytest -q"}) is None
+        assert decide_as_agent("Bash", {"command": "grep -rn TODO CLAUDE.md"}) is None
+
+    def test_the_main_session_is_not_touched_by_this(self):
+        # Named explicitly: the asymmetry is the design, not a leak.
+        assert decide_write(ROOT / "CLAUDE.md") is None
+        assert decide("echo x > CLAUDE.md") is None
+
+    def test_the_refusal_tells_the_agent_what_to_do_instead(self):
+        decision = decide_as_agent("Write", {"file_path": str(ROOT / "CLAUDE.md")})
+        assert "propose exact wording" in decision[1].lower()
+
+
 # ------------------------------------------------------------------- Silence
 
 
@@ -370,10 +424,11 @@ class TestShape:
         assert '"ask"' not in code and "'ask'" not in code
 
     def test_evaluate_runs_every_refusal(self):
-        # Six, not the five Tyrel named: the hook-bypass check is one past the spec
-        # and is flagged as such in `switching_the_hooks_off`. A seventh arriving
-        # without that conversation fails here.
-        assert len(guard.CHECKS) == 6
+        # Seven, not the five Tyrel named. Six is the hook-bypass check, flagged as
+        # one past the spec in `switching_the_hooks_off`. Seven is the agent-only
+        # governed-path check, added when built-in agent types were allowed back in.
+        # An eighth arriving without that conversation fails here.
+        assert len(guard.CHECKS) == 7
 
     def test_an_unreadable_payload_fails_closed(self):
         result = subprocess.run(

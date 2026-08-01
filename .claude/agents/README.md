@@ -5,9 +5,14 @@ evidence, proposals, or an isolated diff; they do not own scope, integration, de
 or the user conversation.
 
 **There are five jobs, and where an agent runs decides what it can do.** On this
-machine, read-only, no exceptions. In a chamber, everything — its own clone, its own
-branch, a full shell, its own tests, and no way back out except a branch the session
-reads. `operations/autoclave/README.md` is that route.
+machine, read-only by default and never near a governed path. In a chamber, everything
+— its own clone, its own branch, a full shell, its own tests, and no way back out
+except a branch the session reads. `operations/autoclave/README.md` is that route.
+
+The line is drawn by how much a mistake costs, not by how much a role is trusted. Host
+work is read-only because the host holds the only copy of things; chamber work is
+unrestricted because nothing in a chamber reaches anything that matters until a human
+has read the diff.
 
 | Job | Where | Default seat | Effort | What it is for |
 |---|---|---|---|---|
@@ -145,25 +150,42 @@ host.
 - No role has a write or shell tool. That is the bound, not a property of the current
   roster: a role added here with `Write`, `Edit`, `NotebookEdit` or `Bash` fails
   `test_roster.py`, because writing work belongs in a chamber.
-- **Spawn only the three roles named in this file.** Claude Code ships built-in agent
-  types that this repository does not define and `test_roster.py` cannot see, and
-  **not one of them is read-only**:
+- **The built-in agent types may be used, and none of them is read-only.** Claude Code
+  ships roles this repository does not define and `test_roster.py` cannot see:
 
-  | Built-in | What it holds | Why it is not used here |
-  |---|---|---|
-  | `general-purpose`, `claude` | every tool | unbounded write and shell on this machine |
-  | `Explore`, `Plan` | everything except `Write`, `Edit`, `NotebookEdit` — **so `Bash`** | a shell writes files; withholding `Edit` does not make a role read-only |
-  | `claude-code-guide` | `Bash`, `Read`, `WebFetch`, `WebSearch` | same, plus it reaches the network |
-  | `statusline-setup` | `Read`, `Edit` | writes, and configures the harness |
+  | Built-in | What it holds |
+  |---|---|
+  | `general-purpose`, `claude` | every tool |
+  | `Explore`, `Plan` | everything except `Write`, `Edit`, `NotebookEdit` — **so `Bash`** |
+  | `claude-code-guide` | `Bash`, `Read`, `WebFetch`, `WebSearch` |
+  | `statusline-setup` | `Read`, `Edit` |
 
-  `Explore` and `Plan` are the tempting ones — they look read-only and are not. A role
-  holding `Bash` can write anything a shell can write, which is why `test_roster.py`
-  counts `Bash` as a write tool and always has.
+  `Explore` and `Plan` are the tempting ones because they *look* read-only. A role
+  holding `Bash` writes whatever a shell writes, which is why `test_roster.py` counts
+  `Bash` as a write tool and always has.
 
-  Nothing mechanical stops a session reaching for one of these, so "every host agent is
-  read-only" is true of this roster and **not** true of the runtime. The rule is what
-  closes that, which is the ordinary state of things here (hard rule 11). Anything that
-  needs to write is dispatched into a chamber.
+  They are allowed anyway, and what makes that affordable is that **the guard judges a
+  subagent's tool calls exactly as it judges the session's** — the six refusals reach
+  them already — **plus one that applies to agents alone: no spawned agent writes a
+  governed path**, by tool or by shell. The rule the session obeys because it has read
+  CLAUDE.md is enforced mechanically against something that has not.
+
+  What is left uncovered is an agent writing ordinary code badly, which is what review
+  is for, and what the chamber is for when the work is large enough to want isolating.
+  The balance is deliberate: mitigated risk, not a cage.
+
+- **Every spawned agent gets the standing preamble**, prepended to its prompt, because
+  a built-in carries no project instruction at all:
+
+  > You are working in Apparatus Verbatus. Read `CLAUDE.md`, `GOVERNANCE.md` and
+  > `GLOSSARY.md` before concluding anything, and use the glossary's words rather than
+  > synonyms. Never edit a governed path — the root documents or anything under
+  > `.claude/` — propose exact wording instead. Never push, merge, or open a pull
+  > request. Report what you did **not** do as plainly as what you did; unsure is a
+  > legitimate answer. If a rule and your task pull apart, stop and say so.
+
+  Six lines, and they are the difference between a generic agent and one that knows
+  where it is. A project role file states them itself and does not need the preamble.
 - A spawned agent never edits a governed path. It proposes exact wording.
 - Memory stays off: reviews remain blind and legacy knowledge does not cross sessions unseen.
 - Model and effort fields are requests, not proof of what answered. Record the resolved
