@@ -403,6 +403,29 @@ class TestSilence:
         command = "cat > notes.md <<'EOF'\ngit push --force origin main\nrm -rf workbench\nEOF"
         assert decide(command, checkout_on(tmp_path, "work/topic")) is None
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Found the hard way: the guard refused its own author's test fixture,
+            # within an hour of the file being written. Quoted text is data.
+            "printf 'build it; rm -rf /; then check'",
+            'git commit -m "x; git push --force origin main"',
+            "echo 'to clean up: rm -rf workbench'",
+            'rg "rm -rf" operations/',
+            "git commit -m 'document the rm -rf workbench hazard'",
+            'gh pr comment 14 --body "do not run gh repo delete"',
+        ],
+    )
+    def test_a_command_named_inside_a_string_is_not_a_command(self, command):
+        assert decide(command) is None, command
+
+    def test_a_quoted_operand_still_refuses_rather_than_disappearing(self, project):
+        # The other direction, and the one that must not be got wrong: blanking a
+        # quoted target must not turn a real deletion into an argument-less one that
+        # reads as harmless. An empty target list is not "all disposable".
+        assert denied(decide('rm -rf "$HOME"', project))
+        assert denied(decide("rm -rf 'workbench'", project))
+
     def test_a_later_line_is_still_read(self, tmp_path):
         # The counterpart: a harmless first line must not hide what follows it.
         command = "echo starting\ngit push --force origin work/topic"

@@ -15,6 +15,8 @@ daemon, and until that has happened `README.md` says so in as many words.
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "operations" / "autoclave" / "autoclave.sh"
 
@@ -215,11 +217,13 @@ class TestDispatch:
         assert "required" in result.stderr
 
     def test_an_unknown_vendor_is_refused(self):
-        result = run("dispatch", "nosuchtask", "gemini", "/dev/null")
+        # Arguments are now checked left to right and all of them before Docker is
+        # touched, so this names the vendor rather than stopping at the chamber. The
+        # previous ordering reported "chamber not running" for a command that was
+        # never going to run whatever the chamber's state — true, and unhelpful.
+        result = run("dispatch", "nosuchtask", "gemini", str(SCRIPT), "gpt-5.6-luna")
         assert result.returncode != 0
-        # It stops at the chamber check first, which is correct ordering: there is
-        # no point validating a vendor for a chamber that does not exist.
-        assert "not running" in result.stderr or "claude" in result.stderr
+        assert "claude" in result.stderr and "codex" in result.stderr
 
     def test_the_brief_travels_as_a_file_never_as_an_argument(self):
         """A brief is prose a session wrote. Interpolated into a command line its
@@ -242,23 +246,60 @@ class TestDispatch:
         preceding = "\n".join(lines[:index])
         assert "docker exec" in preceding, "the flag is not inside a docker exec"
 
-    def test_the_model_is_optional_and_reaches_both_vendors(self):
-        """Naming a model is how a cheap seat gets used for a cheap job — a bounded
-        "build this, check it works, stop" unit on Luna costs a fraction of the same
-        unit on Sol. Optional because omitting it means something correct: run the
-        vendor's own default.
-        """
+    def test_a_model_is_required(self):
+        """An omitted model runs the vendor's default, and `codex doctor` reports that
+        default is `gpt-5.6-sol` — the most expensive seat OpenAI sells. Every chamber
+        would silently have been a flagship chamber and the tier table in
+        `.claude/agents/README.md` would describe a choice nothing ever made."""
+        result = run("dispatch", "task-x", "claude", str(ROOT / "README.md"))
+        assert result.returncode != 0
+        assert "needs a model" in result.stderr
+
+    @pytest.mark.parametrize(
+        ("model", "effort", "expected"),
+        [
+            ("-evil", "medium", "not a plain model name"),
+            ("gpt-5.6-luna; touch PWNED", "medium", "not a plain model name"),
+            ("gpt-5.6-luna", "bogus", "not an allowed effort"),
+        ],
+    )
+    def test_the_model_and_effort_are_validated(self, model, effort, expected):
+        """Validated rather than trusted, exactly as `operations/codex/seat.sh`
+        validates the same fields. Both reach the container as environment variables
+        and never as interpolated text, but a value beginning with `-` would still
+        arrive at the CLI as a flag."""
+        result = run("dispatch", "task-x", "claude", str(ROOT / "README.md"), model, effort)
+        assert result.returncode != 0
+        assert expected in result.stderr
+
+    def test_validation_precedes_any_docker_call(self):
+        """A typo in a model name should cost a line of output, not a container's
+        startup and a confusing failure from a vendor CLI two layers down."""
+        result = run("dispatch", "task-x", "claude", str(ROOT / "README.md"), "-evil")
+        assert "docker" not in result.stderr.lower()
+
+    def test_both_vendors_receive_model_and_effort_in_their_own_spelling(self):
+        """The two CLIs spell effort differently and neither spelling is guessable.
+        `claude` takes `--effort <level>`; `codex exec` has no effort flag at all and
+        needs the config override `-c model_reasoning_effort=`, which is how
+        `operations/codex/seat.sh` has always done it. Checked against `--help` on
+        both rather than assumed."""
         joined = " ".join(code_lines())
-        assert joined.count("${AC_MODEL:+--model") == 2, "both vendors must honour it"
-        # `:+` and not `:-`: an unset model must expand to no argument at all, rather
-        # than to an empty `--model ''` that the CLI would reject.
-        assert "${AC_MODEL:-" not in joined
+        assert '--model "$AC_MODEL"' in joined and '--effort "$AC_EFFORT"' in joined
+        assert '-m "$AC_MODEL"' in joined
+        assert '-c "model_reasoning_effort=$AC_EFFORT"' in joined
 
     def test_the_model_travels_as_an_environment_variable(self):
         """Same reasoning as the brief travelling as a file: a value interpolated into
         a quoted command line brings its punctuation with it."""
         joined = " ".join(code_lines())
-        assert joined.count('docker exec -e AC_MODEL="$model"') == 2
+        assert joined.count('-e AC_MODEL="$model" -e AC_EFFORT="$effort"') == 2
+
+    def test_the_codex_prompt_is_behind_an_end_of_options_marker(self):
+        """A brief beginning with a dash must be read as the prompt, not as an
+        unknown option. `seat.sh` does the same."""
+        joined = " ".join(code_lines())
+        assert '-- "$(cat /out/brief.md)"' in joined
 
     def test_codex_stdin_is_closed(self):
         """`codex exec` waits forever on an open stdin when nothing is attached,

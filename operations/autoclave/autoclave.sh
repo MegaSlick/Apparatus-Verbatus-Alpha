@@ -13,7 +13,7 @@
 #   autoclave.sh build                   build the image
 #   autoclave.sh login <claude|codex>    sign a vendor in, once, into its volume
 #   autoclave.sh new <task> [<base>]     start a chamber on a branch from <base>
-#   autoclave.sh dispatch <task> <claude|codex> <brief-file> [model]
+#   autoclave.sh dispatch <task> <claude|codex> <brief-file> <model> [effort]
 #                                        run an agent inside, against a written brief
 #   autoclave.sh shell <task>            open a shell in a running chamber
 #   autoclave.sh exec <task> <cmd>...    run one command in a chamber
@@ -255,22 +255,47 @@ cmd_dispatch() {
     task="${1:-}"; check_task "$task"
     vendor="${2:-}"
     brief="${3:-}"
-    # The fourth argument is the model, and it is optional because leaving it out has
-    # a correct meaning: run whatever that vendor's CLI defaults to. Naming one is how
-    # a cheap seat gets used for a cheap job — a Luna chamber for a bounded "build this,
-    # check it works, stop" unit costs a fraction of a Sol one, and without this
-    # argument there was no way to ask for it. Passed straight through to the CLI, so
-    # the vendor validates the name rather than this script keeping a list that rots.
+    # **The model is required, and that is the point.** An omitted model runs whatever
+    # the vendor's CLI happens to default to — here, `codex doctor` reports that is
+    # `gpt-5.6-sol`, the most expensive seat OpenAI sells. Every chamber would have
+    # silently been a flagship chamber, and the whole tier structure in
+    # `.claude/agents/README.md` would have described a choice nothing ever made.
+    # Naming it is how a bounded unit gets a bounded seat.
     model="${4:-}"
+    # Effort defaults to medium, which is Tyrel's ruling (2026-08-01) and is enforced
+    # here rather than left to whoever writes the dispatch line.
+    effort="${5:-medium}"
+
+    # **Every argument is judged before anything is touched.** A typo in a model name
+    # should cost a line of output, not a container's startup and a confusing failure
+    # from a vendor CLI two layers down. The same ordering is already pinned for `new`.
+    # Checked left to right, in the order the arguments are written, so the first
+    # complaint names the first thing wrong rather than the first thing this function
+    # happened to look at.
+    [ -n "$brief" ] ||
+        die "usage: $0 dispatch <task> <claude|codex> <brief-file> <model> [effort]"
+    case "$vendor" in
+        claude|codex) : ;;
+        *) die "dispatch takes 'claude' or 'codex'" ;;
+    esac
+    [ -f "$brief" ] || die "no brief at '$brief'"
+    [ -n "$model" ] || die "dispatch needs a model — see .claude/agents/README.md for which"
+    # Validated rather than trusted, exactly as `operations/codex/seat.sh` validates the
+    # same field. It reaches the container as an environment variable and never as
+    # interpolated text, but a value beginning with `-` would still arrive as a flag.
+    case "$model" in
+        -*|*[!A-Za-z0-9._-]*) die "'$model' is not a plain model name" ;;
+    esac
+    case "$effort" in
+        none|minimal|low|medium|high|xhigh|max) : ;;
+        *) die "'$effort' is not an allowed effort" ;;
+    esac
+
     need_docker
     running "$task" || die "chamber '$task' is not running — start it with: $0 new $task"
-    [ -n "$brief" ] || die "usage: $0 dispatch <task> <claude|codex> <brief-file> [model]"
-    [ -f "$brief" ] || die "no brief at '$brief'"
-
     case "$vendor" in
         claude) volume="$AUTH_VOL_CLAUDE" ;;
         codex)  volume="$AUTH_VOL_CODEX" ;;
-        *) die "dispatch takes 'claude' or 'codex'" ;;
     esac
     has_volume "$volume" || die "'$vendor' is not signed in — run: $0 login $vendor"
 
@@ -282,34 +307,46 @@ cmd_dispatch() {
     note "dispatching ${vendor} into '${task}'"
     note "  brief:  $(outdir_of "$task")/brief.md"
     note "  report: $(outdir_of "$task")/report.md"
-    note "  model:  ${model:-the vendor default}"
+    note "  model:  ${model}, effort ${effort}"
     note ""
 
-    # The model reaches the container as an environment variable rather than inside
-    # the quoted script, for the same reason the brief travels as a file: a value
-    # interpolated into a command line brings its punctuation with it. Empty means
-    # unset, and the shell inside expands it to no argument at all.
+    # Model and effort reach the container as environment variables, for the same
+    # reason the brief travels as a file: a value interpolated into a quoted command
+    # line brings its punctuation with it.
+    #
+    # The two vendors spell effort differently and neither spelling is guessable.
+    # `claude` takes `--effort <level>`. `codex exec` has no effort flag at all — it
+    # is a config override, `-c model_reasoning_effort=<level>`, which is how
+    # `operations/codex/seat.sh` has always done it. Verified against `--help` on
+    # both CLIs rather than assumed.
     case "$vendor" in
         claude)
             # --dangerously-skip-permissions is correct *here* and nowhere else:
             # the container is the boundary, so there is no host left to protect
             # by prompting, and a prompt inside a detached container is a hang.
             # This flag is the reason the chamber exists.
-            docker exec -e AC_MODEL="$model" "$(container_of "$task")" sh -c '
+            docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
+                "$(container_of "$task")" sh -c '
                 cd /work
                 claude --dangerously-skip-permissions \
-                    ${AC_MODEL:+--model "$AC_MODEL"} \
+                    --model "$AC_MODEL" \
+                    --effort "$AC_EFFORT" \
                     -p "$(cat /out/brief.md)"
             ' ;;
         codex)
             # stdin is closed deliberately. `codex exec` waits forever on an open
             # stdin when nothing is attached, which in a detached container means
             # a dispatch that never returns and never says why.
-            docker exec -e AC_MODEL="$model" "$(container_of "$task")" sh -c '
+            #
+            # `--` before the prompt so a brief beginning with a dash is read as the
+            # prompt rather than as an unknown option.
+            docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
+                "$(container_of "$task")" sh -c '
                 cd /work
                 codex exec --skip-git-repo-check \
-                    ${AC_MODEL:+--model "$AC_MODEL"} \
-                    "$(cat /out/brief.md)" < /dev/null
+                    -m "$AC_MODEL" \
+                    -c "model_reasoning_effort=$AC_EFFORT" \
+                    -- "$(cat /out/brief.md)" < /dev/null
             ' ;;
     esac
 

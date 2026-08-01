@@ -315,6 +315,61 @@ RM = invocation("rm")
 GH = invocation("gh")
 
 
+def without_quoted_text(command: str) -> str:
+    """The command with quoted spans blanked, the same length throughout.
+
+    **Quoted text is data.** `printf 'first; rm -rf /; then'` names no deletion and
+    `git commit -m "x; git push --force"` names no push, but every pattern here reads
+    raw text and both looked like the real thing. This was found by the guard refusing
+    a test fixture of its own author's — within an hour of the file being written, and
+    exactly the class of unappealable false alarm its docstring warns about.
+
+    Not shell parsing and not pretending to be: single quotes, double quotes, and a
+    backslash escape. Enough to stop prose being read as structure.
+
+    **Length is preserved so an offset into the result still maps to the original**,
+    which is what lets `invocations` find a command in the blanked text and then read
+    its arguments out of the real one. Blanking a quoted *operand* is safe in the
+    direction that matters: `rm -rf "$HOME"` loses its target, an empty target list is
+    not "all disposable", and the deletion is refused rather than waved through.
+    """
+    out: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if quote is None and char == "\\" and index + 1 < len(command):
+            out.append(char)
+            out.append(command[index + 1])
+            index += 2
+            continue
+        if quote is None and char in "'\"":
+            quote = char
+            out.append(" ")
+        elif quote is not None and char == quote:
+            quote = None
+            out.append(" ")
+        elif quote is not None:
+            out.append(" " if not char.isspace() else char)
+        else:
+            out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def invocations(pattern: re.Pattern[str], command: str) -> list[str]:
+    """The argument tails of every real invocation of `pattern` in `command`.
+
+    Found in the quote-blanked text so that a command named inside a string is not one,
+    and sliced out of the original so its arguments are read as written.
+    """
+    tails = []
+    for match in pattern.finditer(without_quoted_text(command)):
+        start, end = match.span("tail")
+        tails.append(command[start:end])
+    return tails
+
+
 def tokenize(tail: str) -> list[str]:
     """Split a command tail, falling back to a permissive split rather than giving up.
 
@@ -332,8 +387,8 @@ def tokenize(tail: str) -> list[str]:
 def git_calls(command: str) -> list[tuple[str, list[str]]]:
     """Recognizable git calls as (subcommand, arguments), skipping global options."""
     calls: list[tuple[str, list[str]]] = []
-    for match in GIT.finditer(command):
-        tokens = tokenize(match.group("tail"))
+    for tail in invocations(GIT, command):
+        tokens = tokenize(tail)
         index = 0
         while index < len(tokens):
             token = tokens[index]
@@ -456,11 +511,11 @@ def recursive_delete(tool: str, tool_input: Any, payload: dict[str, Any]) -> Dec
     if tool != "Bash":
         return None
     command = normalize(bash_command(tool_input))
-    for match in RM.finditer(command):
+    for tail in invocations(RM, command):
         flags: list[str] = []
         targets: list[str] = []
         ended = False
-        for token in tokenize(match.group("tail")):
+        for token in tokenize(tail):
             if not ended and token == "--":
                 ended = True  # `rm -- -rf` deletes a file named `-rf`
             elif not ended and token.startswith("-") and len(token) > 1:
@@ -538,8 +593,8 @@ def deleting_a_remote(tool: str, tool_input: Any, payload: dict[str, Any]) -> De
                 "That deletes a ref on the remote. Nothing on this machine restores a "
                 "branch someone else has already fetched away from. Ask Tyrel."
             )
-    for match in GH.finditer(command):
-        tokens = [token.lower() for token in operands(tokenize(match.group("tail")))]
+    for tail in invocations(GH, command):
+        tokens = [token.lower() for token in operands(tokenize(tail))]
         if tokens[:2] == ["repo", "delete"]:
             return "deny", "Deleting the repository is Tyrel's, and only from the web interface."
     return None
@@ -648,8 +703,8 @@ def switching_the_hooks_off(tool: str, tool_input: Any, payload: dict[str, Any])
     if tool != "Bash":
         return None
     command = normalize(bash_command(tool_input))
-    for match in GIT.finditer(command):
-        tokens = [token.lower() for token in tokenize(match.group("tail"))]
+    for tail in invocations(GIT, command):
+        tokens = [token.lower() for token in tokenize(tail)]
         if hooks_path_is_being_set(tokens):
             return "deny", (
                 "`core.hooksPath` is the one setting that makes any hook run at all. "

@@ -36,17 +36,27 @@ sh operations/autoclave/autoclave.sh dispatch refactor-designator claude /tmp/br
 sh operations/autoclave/autoclave.sh collect refactor-designator
 ```
 
-The vendor is the third argument and the model is an optional fourth. A brief names
-neither — the same file is given to `claude` or to `codex`, at whatever model the job
-deserves. Which one that is lives in the table in
+A brief names no vendor and no model — the same file is given to `claude` or to
+`codex`, at whatever seat the job deserves. Which seat that is lives in the table in
 [.claude/agents/README.md](../../../.claude/agents/README.md).
 
 ```sh
-sh operations/autoclave/autoclave.sh dispatch check-exporter codex /tmp/brief.md gpt-5.6-luna
+sh operations/autoclave/autoclave.sh dispatch check-exporter codex /tmp/brief.md gpt-5.6-luna low
 ```
 
-Omitting the model runs the vendor's own default, which is the right thing when the
-work is ordinary. Naming one is how a cheap seat gets a cheap job.
+**The model is required and the effort defaults to `medium`.** Required because
+omitting it runs the vendor's own default, and `codex doctor` reports that default is
+`gpt-5.6-sol` — the most expensive seat OpenAI sells. Left optional, every chamber
+would quietly have been a flagship chamber and the tier table would have described a
+choice nothing ever made.
+
+Known-good model names, checked against Codex's own model list rather than guessed:
+`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.3-codex-spark`. For a Claude
+chamber the aliases `opus`, `sonnet`, `haiku` and `fable` work. Effort is one of
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+
+Both are validated before anything is started, so a typo costs a line of output rather
+than a container.
 
 ## Mass-spawning bounded units
 
@@ -62,7 +72,7 @@ chamber and its own brief, and let them run together:
 for unit in exporter-guard seal-count page-order; do
   sh operations/autoclave/autoclave.sh new "$unit"
   cat operations/autoclave/briefs/builder.md "tasks/$unit.md" > "/tmp/$unit.md"
-  sh operations/autoclave/autoclave.sh dispatch "$unit" codex "/tmp/$unit.md" gpt-5.6-luna &
+  sh operations/autoclave/autoclave.sh dispatch "$unit" codex "/tmp/$unit.md" gpt-5.6-luna low &
 done
 wait
 ```

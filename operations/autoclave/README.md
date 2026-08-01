@@ -89,11 +89,30 @@ is the only surviving evidence that a dispatch happened.
 
 ## Dispatching an agent into one
 
+```sh
+sh operations/autoclave/autoclave.sh dispatch <task> <claude|codex> <brief> <model> [effort]
+```
+
+**The model is required.** Omitting it would run the vendor's default, and `codex
+doctor` reports that default is `gpt-5.6-sol` — the most expensive seat OpenAI sells.
+Effort defaults to `medium`, which is Tyrel's standing ruling. Both are validated
+before Docker is touched, so a typo costs a line of output rather than a container.
+
+The two vendors spell effort differently and neither spelling is guessable: `claude`
+takes `--effort <level>`, while `codex exec` has no effort flag at all and needs the
+config override `-c model_reasoning_effort=<level>`, exactly as
+`operations/codex/seat.sh` has always done it. Both were checked against `--help`.
+
+Which model a job wants is the table in
+[.claude/agents/README.md](../../.claude/agents/README.md); the standing briefs are in
+[briefs/](briefs/README.md), which also covers mass-spawning many small units at once.
+
 The shape of a dispatch:
 
 1. `new <task>` — the chamber, pinned to a base commit.
-2. Give the agent its brief. It reads `/work/AUTOCLAVE.md` for the chamber's
-   limits and `/work/CLAUDE.md` for the project's rules; both are already there.
+2. `dispatch <task> <vendor> <brief> <model>` — the brief travels as a file, never as
+   a shell argument, and the model and effort as environment variables. A brief
+   containing `; rm -rf /` arrives as one inert argument; that is tested.
 3. The agent works, runs its own tests, and commits to `agent/<task>`.
 4. A reader writes `/out/report.md` instead of committing.
 5. `collect <task>` — the branch arrives locally. Nothing is merged.
