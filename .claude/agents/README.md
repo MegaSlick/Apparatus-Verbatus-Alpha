@@ -11,10 +11,10 @@ reads. `operations/autoclave/README.md` is that route.
 
 | Job | Where | Default seat | Effort | What it is for |
 |---|---|---|---|---|
-| `scout` | host | Haiku 4.5 | `low`; up to `high` | where is X, what mentions Y — paths and line numbers, never a judgement |
+| `scout` | host | Haiku 4.5, or Codex Spark | `low`; up to `high` | where is X, what mentions Y — paths and line numbers, never a judgement |
 | `auditor` | host | set per seat, below | `high` — floor | blind review of a diff or a tree |
 | `consult` | host | Fable 5 or Sol | `xhigh` — floor; `max` sanctioned | object to a design before it is built |
-| `builder` | chamber | Sonnet 5, or Opus 5 when a defect would be quiet | `medium`; `high` when the unit earns it | build what a written spec says |
+| `builder` | chamber | Terra or Sonnet 5; **Opus 5 when a defect would be quiet** | `medium`; `high` when the unit earns it | build what a written spec says |
 | `rebuilder` | chamber | Opus 5 | `medium`; `high` sanctioned | read the old system through the window and write its replacement new |
 
 That is three host seats and two briefs, down from six role files. `worker` and
@@ -33,23 +33,35 @@ the spot.
 
 ## Choosing a model, across both vendors
 
-Both suites are available and both are paid for. The standing duty is the best tool for
-the job, and the second is not to be wasteful — a Fable seat finding a filename is as
-much a defect as a Haiku seat judging a design.
+**The GPT seats carry the token-heavy work** (Tyrel, 2026-08-01). Luna, Terra and Sol
+are to be treated as **free until the usage cap is reached** — not cheap, free — so
+anything bulky goes to them by default and Claude's budget is spent on what only Claude
+is doing. This is the first question to ask about a unit of work, before which model is
+marginally better at it: *is this heavy? then it is theirs.*
+
+That is a budget ruling, not a quality claim. It is also not a licence to be wasteful —
+free until the cap means the cap is the thing being spent, and a seat left running on a
+question nobody needed answered still costs the next one.
 
 | The work is… | Reach for | Because |
 |---|---|---|
-| finding, listing, counting | **Haiku 4.5**, or **GPT-5.3 Codex Spark** | a fifth of Opus's burn; fine for locating, never for judging |
-| bulk mechanical drafting, a tight spec | **Sonnet 5**, or **GPT-5.6 Terra** | near-Opus on code at half the burn; follows a spec to the letter |
-| building where a defect would be quiet | **Opus 5** | hooks, CI, seals, accounting — the strongest agentic judgement for the money |
-| reading old code for contamination | **Opus 5** | the judgement is what crosses the boundary, and it does not run shallow |
-| security-shaped reading | **GPT-5.6 Sol** | notably stronger there than its price suggests |
-| a design that is expensive to get wrong | **Fable 5**, or **Sol at `max`** | twice Opus's burn, minutes-long turns; spent only above what Opus reliably clears |
+| **anything long, bulky or repetitive** | **Luna, Terra or Sol** | free until the cap; this is where the volume belongs |
+| finding, listing, counting | **GPT-5.3 Codex Spark**, or **Haiku 4.5** | trivial burn either way; fine for locating, never for judging |
+| bulk drafting from a tight spec | **Terra**, then **Sonnet 5** | follows a spec to the letter; Sonnet when the chamber wants a Claude seat |
+| security-shaped reading | **Sol** | notably stronger there than its price suggests |
+| a whole-system design question | **Sol at `max`**, or **Fable 5** | the design seats already exist in `seats.conf` at max and the full hour |
+| building where a defect would be **quiet** | **Opus 5** | hooks, CI, seals, accounting, money paths — where being subtly wrong is invisible until it matters |
+| reading old code for contamination | **Opus 5** | the judgement *is* what crosses the boundary, and it does not run shallow |
+| a blind review seat | **mixed, always** | see below — this is the one place vendor mix is a rule |
 
-**Spend the OpenAI budget first where the two are close.** Sol's ceiling is higher than
-Claude's here, so a check or a draft that either vendor would do well goes to Sol or
-Terra and leaves Claude's headroom for the work only Claude is doing. That is a budget
-fact, not a quality claim.
+The two Claude-only rows are Claude-only for a reason and not by habit: both are
+judgement about what is *allowed* to enter the repository, made against governing
+documents, and that is the thing this project has watched Opus do well. Everything above
+them is volume, and volume is the GPT suite's.
+
+**Luna has no line in `operations/codex/seats.conf` yet** and therefore cannot be
+dispatched by name. It needs its model id, effort and timeout added there before it is
+reachable — a one-line reviewed change to that file.
 
 **A review pass is the one place vendor mix is a rule rather than a preference.** Three
 seats, two vendors minimum, blind, identical prompts — CLAUDE.md's Pushing and merging
@@ -114,6 +126,14 @@ host.
 - No role has a write or shell tool. That is the bound, not a property of the current
   roster: a role added here with `Write`, `Edit`, `NotebookEdit` or `Bash` fails
   `test_roster.py`, because writing work belongs in a chamber.
+- **Spawn only the roles named in this file.** Claude Code ships built-in agent types
+  that this repository does not define and `test_roster.py` cannot see —
+  `general-purpose` and `claude` hold *every* tool, including `Write`, `Edit` and
+  `Bash` on this machine. Nothing mechanical stops the session reaching for one, and so
+  "every host agent is read-only" is true of the roster and **not** true of the runtime.
+  The rule is what closes that, which is the ordinary state of things here (hard rule
+  11): `scout`, `auditor`, `consult`, and the read-only built-ins `Explore` and `Plan`.
+  Anything that needs to write is dispatched into a chamber.
 - A spawned agent never edits a governed path. It proposes exact wording.
 - Memory stays off: reviews remain blind and legacy knowledge does not cross sessions unseen.
 - Model and effort fields are requests, not proof of what answered. Record the resolved
