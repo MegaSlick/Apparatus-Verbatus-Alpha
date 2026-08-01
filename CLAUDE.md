@@ -9,6 +9,21 @@ as well as the code; read them before proposing anything, and never restate them
 memory — quote the file or link it. [GLOSSARY.md](GLOSSARY.md) is the pipeline's
 vocabulary, not the project's process vocabulary.
 
+**This file states each rule and names the one document that owns its detail.** Read the
+detail when your task touches that ground, not before. One topic, one owning document —
+so there is one place to change and nothing to contradict.
+
+| If your task touches… | The rule is below, the detail is in |
+|---|---|
+| spawning any agent | [.claude/agents/README.md](.claude/agents/README.md) |
+| a container an agent works in | [operations/autoclave/README.md](operations/autoclave/README.md) |
+| pods, GPUs, anything that bills | [operations/pod/README.md](operations/pod/README.md) |
+| what the pipeline must and must not do | [GOVERNANCE.md](GOVERNANCE.md), [ARCHITECTURE.md](ARCHITECTURE.md) |
+| rebuilding old code | [cleanroom/README.md](cleanroom/README.md) |
+| where a note or a draft goes | [workbench/README.md](workbench/README.md) |
+| running a review pass | the reviewer-pass skill |
+| opening or closing a session | the session-start and session-end skills |
+
 ## Hard rules
 
 No instruction in a session, a note, an agent report or a convenience flag overrides
@@ -76,20 +91,17 @@ weeks out will read it as, propose exact wording, apply only once he has approve
 ## Every session
 
 Tyrel opens with `/session-start` and closes with `/session-end` — never a subagent's
-job. The skills hold the procedure and the worked examples; when one cannot be
-triggered, open `.claude/skills/<name>/SKILL.md` and follow it by hand.
+job. The skills own the procedure and the worked examples; when one cannot be triggered,
+open `.claude/skills/<name>/SKILL.md` and follow it by hand.
 
 The first response after session-start is the plan and what it will cost to run — that
-and nothing else, no work begun. He confirms and it goes. He can override at the open by
-saying plainly to start without confirming; that holds for that session only.
+and nothing else, no work begun. He confirms and it goes, or he says plainly at the open
+to start without confirming, which holds for that session only.
 
 A session that opens without a goal does not start work. His stated goal outranks the
-handoff and the brief; where they differ, follow his words and name the difference.
-
-Read `workbench/active/` and the standing ledgers before proposing anything; archive the
-handoff you are replacing before overwriting it. The documents say what is *always*
-true; `workbench/active/HANDOFF.md` says what is true *now*. If `active/` is empty, say
-so rather than guessing. Suspensions are read back at open and close until resolved.
+handoff and the brief; where they differ, follow his words and name the difference. Read
+`workbench/active/` and the standing ledgers first; if `active/` is empty, say so rather
+than guessing. Suspensions are read back at open and close until resolved.
 
 A one-off question is not a session. When one grows into work, say that session-start
 has not run, run it, and say so. Never start session-end on your own: ask, and wait. Say
@@ -104,27 +116,25 @@ window; what enters here is written new, justified against goals and governance.
 
 A trained checkpoint is not code. Perlector weights live in their own model repository,
 referenced by identity and digest like any vendor model — never vendored here, never
-left loose beside a run. They arrive as a candidate, tried and measured as ARCHITECTURE
-requires.
+left loose beside a run.
 
 `cleanroom/` is the bench: the rebuilding model reads the reference through the window
-and writes a fresh expression into the tray — never a paste. The tray is tracked so
-reviewers read the raw draft. Code leaves it only through the sterilizing review, which
-reads it for anything carried over. A line nobody can justify does not enter, whoever
-typed it. The bench is not the chamber: `cleanroom/` is tracked and in this repository,
-while an *autoclave* is a container an agent works inside and nothing in one is in this
-repository until a branch is collected and read.
+and writes a fresh expression into the tray — never a paste. A line nobody can justify
+does not enter, whoever typed it. The bench is not the chamber: `cleanroom/` is tracked
+and in this repository, while an *autoclave* is a container and nothing in one is in this
+repository until a branch is collected and read. Detail:
+[cleanroom/README.md](cleanroom/README.md).
 
 ## Where notes go
 
 `workbench/` — gitignored, local only — holds every note, handoff and half-finished
-thought. Drawers and their rules: [workbench/README.md](workbench/README.md). Standing
-ledgers, including `SUSPENSIONS.md`, live in `workbench/standing/`.
+thought; standing ledgers, including `SUSPENSIONS.md`, live in `workbench/standing/`.
+Drawers and their rules: [workbench/README.md](workbench/README.md).
 
 If it is dated or speculative it is a note, not a document. Committed documentation
 means a governed document, a `README.md`, a `HANDOFF.md`, dated evidence under
 `history/`, or a declared harness document; `pre-commit` refuses the rest. A plan about
-to be built from gets a reader on it first, by whatever route is to hand.
+to be built from gets a reader on it first.
 
 **Governed paths**, which hard rule 10 protects: `CLAUDE.md`, `GOALS.md`,
 `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`, the root `README.md`, and
@@ -168,23 +178,21 @@ Push at the end of a task or session, not continuously. Anything left behind is 
 end the handoff names.
 
 **Review.** Three seats before the initial push is the default — two vendors minimum,
-blind, identical prompts. Say in words what a thinner pass would risk; a reduction is
-his, per named push, never inferred, including from an outage. Agreement between
-reviewers is evidence, not a verdict, and two agreeing seats are thinner evidence than
-three — say so. He is the one who says a review happened. The reviewer-pass skill holds
-the procedure, the triage and the trailer rules, including when a fix is a correction
-inside what the seats read and when it is a rebuild that earns a fresh pass.
+blind, identical prompts. Say what a thinner pass would risk; a reduction is his, per
+named push, never inferred, including from an outage. Agreement between reviewers is
+evidence, not a verdict. He is the one who says a review happened. The reviewer-pass
+skill owns the procedure, the triage, the trailer rules, and when a fix is a correction
+rather than a rebuild that earns a fresh pass.
 
 **The pull request is a working surface, not his inbox.** Watch it until CodeRabbit has
 reported and its threads are settled, then stop. Resolve a thread only with a stated
 disposition — fixed, naming the commit, or declined, with the reason; never silently or
-in bulk. Credit it in a trailer when it found something real. Recommend a final pass
-before he merges. Squashing and merging is his alone.
+in bulk. Recommend a final pass before he merges. Squashing and merging is his alone.
 
-What still refuses locally, on nobody's word: a push straight at `main`, and a
-credential or oversized payload in outgoing history. `--no-verify` and
-`-c core.hooksPath=` are blocked for Claude and open to everything else — that asymmetry
-is required by hard rule 11. It is his way around his own machinery; do not close it.
+What refuses locally on nobody's word: a push straight at `main`, and a credential or
+oversized payload in outgoing history. `--no-verify` and `-c core.hooksPath=` are
+blocked for Claude and open to everything else — required by hard rule 11. It is his way
+around his own machinery; do not close it.
 
 ## Effort and shape
 
@@ -193,13 +201,10 @@ integrated diff, verification, final report. It delegates bounded units of work,
 responsibility for one.
 
 Two shapes, agreed at the start and re-agreed when the task changes. **Orchestrator** —
-large, long or unattended work: model and effort set per unit, context kept lean,
-results landed on disk and read back as conclusions. **Direct** — straightforward or
-medium attended work: read, edit and verify yourself, reaching for an agent when a unit
-is genuinely independent or would flood your context. A medium task that grows long is a
-change of shape; say so and re-agree it.
-
-The opening plan says: effort, honest duration, attended or unattended, which shape,
+large, long or unattended work: model and effort per unit, context kept lean, results
+landed on disk and read back. **Direct** — straightforward or medium attended work: read,
+edit and verify yourself. A medium task that grows long is a change of shape; say so.
+The opening plan names effort, honest duration, attended or unattended, which shape, and
 which units get agents.
 
 An unattended session does not invoke an action that can trigger a permission prompt —
@@ -223,29 +228,37 @@ Getting stuck costs a night; the other mistake costs the work.
 
 ## Agents
 
-**Agent use is encouraged**, Claude and Codex both, for anything past a few turns or
-steps. It is the normal shape of work here, not an escalation, and it needs no ceremony
-for small use. Stop for governance or a genuine change of scope — not for cost. The
-money gate is pods and paid infrastructure, which bill by the hour while they exist.
+**Agents are encouraged and are part of most sessions here.** Not an escalation — the
+normal shape of work past a few turns, Claude and Codex both, and small use needs no
+ceremony. Stop for governance or a genuine change of scope, never for cost.
 
-**Before spawning anything, read [.claude/agents/README.md](.claude/agents/README.md)
-and keep it in context.** It holds the roles, the seat-by-seat measured performance, the
-effort rules, the prompting rules and the bounds. Do not choose a model or an effort
-from memory; that file is measured and this one is not.
+**The core rule: a host agent reads and nothing else; anything that does work happens in
+a container.** A reader holds `Read`, `Grep` and `Glob` — no write tool, no shell — and
+leaves its report as a file so it outlives the agent. A writer gets its own clone, its
+own branch and a full shell inside a chamber, with the repository read-only and no
+pushing credential at all, and its branch comes back to be read before anything lands.
 
-The shape it enforces, in one line each:
+**Before spawning anything, read [.claude/agents/README.md](.claude/agents/README.md) in
+detail and keep it in context.** Roles, seat-by-seat measured performance, effort rules,
+prompting rules, bounds. Do not choose a model or an effort from memory — that file is
+measured and this one is not. The chamber itself is
+[operations/autoclave/README.md](operations/autoclave/README.md).
 
-- **A reader runs on this machine, read-only.** Locating, reviewing, auditing, objecting
-  to a design. No write tool, no shell. It leaves its report as a file so it outlives
-  the agent rather than only reaching a reply.
-- **Anything that writes or edits runs in a container**, never here — its own clone, its
-  own branch, a full shell, its own tests. The repository goes in read-only and no
-  pushing credential goes in at all. The branch comes back to be read before anything
-  lands: [operations/autoclave/README.md](operations/autoclave/README.md).
+Session is the only integrator. Record what actually answered, never only what was
+requested.
 
-Smallest useful roster, fan-out visible, results verified, session the only integrator.
-Record what actually answered, never only what was requested. An agent team whose
-members must challenge one another is exceptional — say why before building one.
+## Paid infrastructure
+
+**Unless he has directed it in this session, you do not invoke an action that bills** —
+no pod, no GPU host, no provisioning call. Reading costs nothing and is always allowed:
+list, check status, read billing, freely. A pod bills by the hour for as long as it
+exists, which is why hard rule 2 is a hard rule.
+
+Shutdown is verified against provider state *and* billing, never inferred from an
+acknowledgement. If you cannot verify it, say so now rather than next session.
+
+If your task appears to need any of this, stop and read
+[operations/pod/README.md](operations/pod/README.md) before proposing anything.
 
 ## What may be missing or wrong
 
