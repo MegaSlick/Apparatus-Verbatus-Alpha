@@ -43,11 +43,25 @@ That is a budget ruling, not a quality claim. It is also not a licence to be was
 free until the cap means the cap is the thing being spent, and a seat left running on a
 question nobody needed answered still costs the next one.
 
+**The three GPT tiers are not three sizes of the same thing.** Sol is the flagship for
+genuinely hard reasoning. Terra is the balanced default and matches the previous
+flagship's class at half its price. Luna is the fast, high-volume tier — and it carries
+one sharp, specific weakness that decides where it may be used here.
+
+**Luna cannot hold a long context.** Published long-context recall is about 41%, against
+roughly 90% for Terra and Sol, while on agentic benchmarks it sits level with Terra. It
+is not a weaker Terra; it is a Terra that forgets. Almost everything this project
+dispatches is long-context by nature — read the governing documents, then a tree, then
+report — so **Luna is the wrong seat for the work this repository does most**, however
+cheap it is. Give it short, bounded, mechanical passes: counting, listing, classifying
+one file at a time, a sweep whose whole input fits in a page. Never a review, never an
+audit, never a rebuild, never anything that must recall what it read an hour ago.
+
 | The work is… | Reach for | Because |
 |---|---|---|
-| **anything long, bulky or repetitive** | **Luna, Terra or Sol** | free until the cap; this is where the volume belongs |
-| finding, listing, counting | **GPT-5.3 Codex Spark**, or **Haiku 4.5** | trivial burn either way; fine for locating, never for judging |
-| bulk drafting from a tight spec | **Terra**, then **Sonnet 5** | follows a spec to the letter; Sonnet when the chamber wants a Claude seat |
+| **long and bulky — a whole tree, a long document** | **Terra**, then **Sol** | free until the cap, and both hold a long context. This is where the volume belongs |
+| short, mechanical, repetitive — count, list, classify | **Luna**, or **Codex Spark**, or **Haiku 4.5** | near-free at volume; Luna only while each pass stays small |
+| drafting from a tight spec | **Terra**, then **Sonnet 5** | matches the previous flagship's class at half its price; Sonnet when the chamber wants a Claude seat |
 | security-shaped reading | **Sol** | notably stronger there than its price suggests |
 | a whole-system design question | **Sol at `max`**, or **Fable 5** | the design seats already exist in `seats.conf` at max and the full hour |
 | building where a defect would be **quiet** | **Opus 5** | hooks, CI, seals, accounting, money paths — where being subtly wrong is invisible until it matters |
@@ -58,6 +72,11 @@ The two Claude-only rows are Claude-only for a reason and not by habit: both are
 judgement about what is *allowed* to enter the repository, made against governing
 documents, and that is the thing this project has watched Opus do well. Everything above
 them is volume, and volume is the GPT suite's.
+
+**These tier facts have a shelf life.** Prices and capabilities moved twice in the three
+weeks before this was written. Treat the *shape* as durable — a flagship, a balanced
+default, a volume tier that cannot hold a long context — and re-check the numbers before
+leaning on one, rather than trusting this paragraph a year from now.
 
 **Luna has no line in `operations/codex/seats.conf` yet** and therefore cannot be
 dispatched by name. It needs its model id, effort and timeout added there before it is
@@ -126,14 +145,25 @@ host.
 - No role has a write or shell tool. That is the bound, not a property of the current
   roster: a role added here with `Write`, `Edit`, `NotebookEdit` or `Bash` fails
   `test_roster.py`, because writing work belongs in a chamber.
-- **Spawn only the roles named in this file.** Claude Code ships built-in agent types
-  that this repository does not define and `test_roster.py` cannot see —
-  `general-purpose` and `claude` hold *every* tool, including `Write`, `Edit` and
-  `Bash` on this machine. Nothing mechanical stops the session reaching for one, and so
-  "every host agent is read-only" is true of the roster and **not** true of the runtime.
-  The rule is what closes that, which is the ordinary state of things here (hard rule
-  11): `scout`, `auditor`, `consult`, and the read-only built-ins `Explore` and `Plan`.
-  Anything that needs to write is dispatched into a chamber.
+- **Spawn only the three roles named in this file.** Claude Code ships built-in agent
+  types that this repository does not define and `test_roster.py` cannot see, and
+  **not one of them is read-only**:
+
+  | Built-in | What it holds | Why it is not used here |
+  |---|---|---|
+  | `general-purpose`, `claude` | every tool | unbounded write and shell on this machine |
+  | `Explore`, `Plan` | everything except `Write`, `Edit`, `NotebookEdit` — **so `Bash`** | a shell writes files; withholding `Edit` does not make a role read-only |
+  | `claude-code-guide` | `Bash`, `Read`, `WebFetch`, `WebSearch` | same, plus it reaches the network |
+  | `statusline-setup` | `Read`, `Edit` | writes, and configures the harness |
+
+  `Explore` and `Plan` are the tempting ones — they look read-only and are not. A role
+  holding `Bash` can write anything a shell can write, which is why `test_roster.py`
+  counts `Bash` as a write tool and always has.
+
+  Nothing mechanical stops a session reaching for one of these, so "every host agent is
+  read-only" is true of this roster and **not** true of the runtime. The rule is what
+  closes that, which is the ordinary state of things here (hard rule 11). Anything that
+  needs to write is dispatched into a chamber.
 - A spawned agent never edits a governed path. It proposes exact wording.
 - Memory stays off: reviews remain blind and legacy knowledge does not cross sessions unseen.
 - Model and effort fields are requests, not proof of what answered. Record the resolved

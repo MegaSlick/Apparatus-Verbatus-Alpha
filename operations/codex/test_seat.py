@@ -73,6 +73,7 @@ def test_roster_is_small_read_only_evidence_surface():
         "audit-terra",
         "design-sol",
         "design-terra",
+        "bulk-luna",
     }
     assert "orchestrate" not in seats
     assert all(len(fields) == 3 for fields in seats.values())
