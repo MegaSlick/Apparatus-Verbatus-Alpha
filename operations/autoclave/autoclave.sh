@@ -11,6 +11,7 @@
 # Usage:
 #   autoclave.sh doctor                  what is installed, running, and built
 #   autoclave.sh build                   build the image
+#   autoclave.sh login <claude|codex>    sign a vendor in, once, into its volume
 #   autoclave.sh new <task> [<base>]     start a chamber on a branch from <base>
 #   autoclave.sh shell <task>            open a shell in a running chamber
 #   autoclave.sh exec <task> <cmd>...    run one command in a chamber
@@ -38,6 +39,23 @@ REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 # must never appear in `git status`. One drawer per task, kept after the chamber
 # is destroyed — the bundle is the evidence that a dispatch happened.
 OUT_ROOT="${REPO_ROOT}/workbench/autoclave"
+
+# Credentials live in named volumes, one per vendor, and never in the image, the
+# repository or a bind mount from the host.
+#
+# Why not reuse the host's own sign-in. Claude Code keeps its credentials in the
+# macOS Keychain, which a Linux container cannot read, and lifting the token out
+# of the Keychain to inject it would mean handling Tyrel's credential in plain
+# text. Codex keeps a real file, but bind-mounting it would put his live host
+# credential inside a chamber that has network egress.
+#
+# So the chamber gets its own sign-in, done once by him through `login`, held in
+# a volume that no agent can reach except as the file its own CLI reads. The
+# secret never passes through a session, a script, a commit or a transcript.
+AUTH_VOL_CLAUDE="verbatus-ac-auth-claude"
+AUTH_VOL_CODEX="verbatus-ac-auth-codex"
+AUTH_DIR_CLAUDE="/home/agent/.claude"
+AUTH_DIR_CODEX="/home/agent/.codex"
 
 die() { printf 'autoclave: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -87,6 +105,18 @@ cmd_doctor() {
     else
         echo "not built — run: $0 build"
     fi
+    # Reported as present or absent only. This never opens the volume: whether a
+    # sign-in exists is an operational fact; what it contains is not this
+    # script's business and never appears in its output.
+    for pair in "claude:${AUTH_VOL_CLAUDE}" "codex:${AUTH_VOL_CODEX}"; do
+        vendor=${pair%%:*}; volume=${pair#*:}
+        printf 'auth %-7s ' "$vendor"
+        if has_volume "$volume"; then
+            echo "signed in (${volume})"
+        else
+            echo "not signed in — run: $0 login ${vendor}"
+        fi
+    done
 }
 
 cmd_build() {
@@ -102,6 +132,41 @@ cmd_build() {
         "${REPO_ROOT}"
     note ""
     note "built ${IMAGE}"
+}
+
+has_volume() { docker volume inspect "$1" >/dev/null 2>&1; }
+
+cmd_login() {
+    vendor="${1:-}"
+    need_docker
+    docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
+    case "$vendor" in
+        claude) volume="$AUTH_VOL_CLAUDE"; mount="$AUTH_DIR_CLAUDE"; tool="claude" ;;
+        codex)  volume="$AUTH_VOL_CODEX";  mount="$AUTH_DIR_CODEX";  tool="codex login" ;;
+        *) die "login takes 'claude' or 'codex'" ;;
+    esac
+
+    has_volume "$volume" || docker volume create "$volume" >/dev/null
+
+    note "Signing '${vendor}' into ${volume}."
+    note "This is interactive and it is yours to complete — the sign-in happens"
+    note "between you and the vendor, and nothing about it is read or stored by"
+    note "this script. Follow whatever the CLI asks, then exit."
+    note ""
+    # --rm: the container is a booth for the sign-in. What persists is the volume.
+    docker run --rm --interactive --tty \
+        --volume "${volume}:${mount}" \
+        "$IMAGE" \
+        sh -c "$tool" || true
+
+    note ""
+    if docker run --rm --volume "${volume}:${mount}" "$IMAGE" \
+        sh -c "test -n \"\$(ls -A ${mount} 2>/dev/null)\""; then
+        note "${volume} now holds configuration. Chambers started from here will use it."
+    else
+        note "${volume} is still empty — the sign-in did not complete."
+        note "Nothing is broken; run this again when you are ready."
+    fi
 }
 
 cmd_new() {
@@ -123,12 +188,26 @@ cmd_new() {
     # reach their model provider. Egress is therefore open and that is a stated
     # limit, not an oversight: see the README. What is *not* open is any route
     # to the host — /src is read-only and no credentials are mounted.
+    # Auth volumes are mounted when they exist, and their absence is not an error:
+    # a chamber is useful for running tests and reading code before any vendor has
+    # been signed in. Read-write, because both CLIs refresh their own tokens and a
+    # read-only mount would turn a one-time sign-in into a recurring one.
+    auth_mounts=""
+    has_volume "$AUTH_VOL_CLAUDE" && \
+        auth_mounts="${auth_mounts} --volume ${AUTH_VOL_CLAUDE}:${AUTH_DIR_CLAUDE}"
+    has_volume "$AUTH_VOL_CODEX" && \
+        auth_mounts="${auth_mounts} --volume ${AUTH_VOL_CODEX}:${AUTH_DIR_CODEX}"
+
+    # Word splitting on $auth_mounts is the point: it is a flag list this script
+    # built from two fixed constants, never from user input.
+    # shellcheck disable=SC2086
     docker run --detach \
         --name "$(container_of "$task")" \
         --label "verbatus.autoclave=1" \
         --label "verbatus.task=${task}" \
         --volume "${REPO_ROOT}:/src:ro" \
         --volume "${outdir}:/out" \
+        $auth_mounts \
         --workdir /work \
         "$IMAGE" \
         sleep infinity >/dev/null
@@ -232,6 +311,7 @@ usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; }
 case "${1:-}" in
     doctor)  shift; cmd_doctor "$@" ;;
     build)   shift; cmd_build "$@" ;;
+    login)   shift; cmd_login "$@" ;;
     new)     shift; cmd_new "$@" ;;
     shell)   shift; cmd_shell "$@" ;;
     exec)    shift; cmd_exec "$@" ;;

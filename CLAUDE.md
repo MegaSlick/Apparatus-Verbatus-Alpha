@@ -274,6 +274,16 @@ Stop for governance or a genuine change of scope. Not for cost — the subscript
 agent work, and the money gate is pods and paid infrastructure, which bill by the hour
 while they exist.
 
+**A writing agent works in a container, never on this machine.** How to build one, sign
+the vendors in, dispatch into one and collect what it produces is
+[operations/autoclave/README.md](operations/autoclave/README.md) — read it before
+summoning an agent that writes. The shape it enforces: the repository goes in read-only,
+the agent works in its own clone on its own branch with a full shell and runs its own
+tests, and the branch comes back to be read before anything lands. No credentials for
+pushing go in, so nothing can be pushed from inside. Readers may run on this machine
+because they change nothing; they leave their report as a file rather than only in a
+reply, so it outlives them.
+
 The roster, effort floors and ranges, prompting rules and bounds live in
 [.claude/agents/README.md](.claude/agents/README.md). Judgement floors never drop without
 his per-instance override. Smallest useful roster, fan-out visible, results verified,

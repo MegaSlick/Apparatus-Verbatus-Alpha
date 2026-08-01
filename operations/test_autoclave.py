@@ -144,6 +144,59 @@ class TestTaskNames:
         assert "docker" not in result.stderr.lower()
 
 
+class TestLogin:
+    """Signing a vendor in is a one-time act, and it must stay one-time.
+
+    The sign-in lands in a Docker named volume rather than the image or a bind
+    mount, which is what makes it survive every container and every restart. It
+    is also what keeps a live host credential out of a chamber that has network
+    egress.
+    """
+
+    def test_a_missing_vendor_is_refused(self):
+        result = run("login")
+        assert result.returncode != 0
+        assert "claude" in result.stderr and "codex" in result.stderr
+
+    def test_an_unknown_vendor_is_refused(self):
+        result = run("login", "gemini")
+        assert result.returncode != 0
+        assert "claude" in result.stderr and "codex" in result.stderr
+
+    def test_the_script_names_no_credential_path_on_the_host(self):
+        """The whole point is that no host credential is read or mounted.
+
+        Asserted against the source, because the failure would be someone later
+        'helpfully' bind-mounting `~/.codex` or reaching into the Keychain to
+        save Tyrel a step. Both would put a live credential inside a chamber
+        with network egress.
+        """
+        source = SCRIPT.read_text()
+        for forbidden in (
+            "~/.codex",
+            "~/.claude",
+            "$HOME/.codex",
+            "$HOME/.claude",
+            "security find-",
+        ):
+            assert forbidden not in source, f"launcher reaches for a host credential: {forbidden}"
+
+    def test_auth_is_mounted_read_write(self):
+        """Read-only would turn a one-time sign-in into a recurring one, because
+        both CLIs refresh their own tokens and would have nowhere to write."""
+        source = SCRIPT.read_text()
+        for volume in ("AUTH_VOL_CLAUDE", "AUTH_VOL_CODEX"):
+            assert f"${{{volume}}}:" in source
+            assert f"${{{volume}}}:ro" not in source, f"{volume} is mounted read-only"
+
+
+def test_doctor_reports_sign_in_state_for_both_vendors():
+    result = run("doctor")
+    assert result.returncode == 0
+    assert "auth claude" in result.stdout
+    assert "auth codex" in result.stdout
+
+
 def test_report_names_the_path_it_looked_for():
     """A missing report says where it looked, so the operator can go and see."""
     result = run("report", "no-such-task")

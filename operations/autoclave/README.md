@@ -31,22 +31,78 @@ The agent commits to `agent/<task>` inside its clone. `collect` turns that into
 a git bundle, brings it through `/out`, and fetches it into this repository as a
 local branch. Nothing merges. Nothing is pushed.
 
-## Use
+## Setting it up — three commands, once
 
 ```sh
-sh operations/autoclave/autoclave.sh doctor          # what is installed and running
-sh operations/autoclave/autoclave.sh build           # build the image
-sh operations/autoclave/autoclave.sh new my-task     # chamber on a branch from HEAD
-sh operations/autoclave/autoclave.sh shell my-task   # look inside
-sh operations/autoclave/autoclave.sh collect my-task # bring the branch back
-sh operations/autoclave/autoclave.sh rm my-task      # destroy the chamber
+brew install colima docker
+colima start --cpu 6 --memory 12 --disk 60
+sh operations/autoclave/autoclave.sh build
 ```
 
-`new` takes an optional second argument: the base commit. It is resolved to a
-SHA on the host, so a chamber is pinned to an exact tree.
+Then sign each vendor in, **once ever**:
 
-`rm` destroys the container and **keeps** the output drawer. The bundle is the
-only surviving evidence that a dispatch happened.
+```sh
+sh operations/autoclave/autoclave.sh login claude
+sh operations/autoclave/autoclave.sh login codex
+```
+
+That is interactive and it is Tyrel's to do — the exchange is between him and
+the vendor and nothing about it is read, stored or logged by this tool.
+
+It is once, not once per agent. The sign-in lands in a Docker named volume that
+outlives every container and survives a Colima restart, and chambers mount it
+read-write so the CLIs can refresh their own tokens. It only has to be redone if
+the volume is deleted or a vendor forces a re-auth.
+
+**Why not reuse the sign-in already on this Mac.** Claude Code keeps its
+credentials in the macOS Keychain, which a Linux container cannot read, and
+lifting the token out to inject it would mean handling a live credential in
+plain text. Codex keeps a real file, but bind-mounting it would put the host
+credential inside a chamber that has network egress. The chamber gets its own.
+
+`doctor` reports whether each vendor is signed in. It never opens the volume:
+whether a sign-in exists is an operational fact, what it contains is not.
+
+## Running a task
+
+```sh
+sh operations/autoclave/autoclave.sh doctor            # state of everything
+sh operations/autoclave/autoclave.sh new my-task       # chamber on a branch from HEAD
+sh operations/autoclave/autoclave.sh new my-task <sha> # ...or from an exact commit
+sh operations/autoclave/autoclave.sh shell my-task     # look inside
+sh operations/autoclave/autoclave.sh exec my-task <cmd>  # run one command inside
+sh operations/autoclave/autoclave.sh list              # every chamber
+sh operations/autoclave/autoclave.sh collect my-task   # bring the branch back
+sh operations/autoclave/autoclave.sh report my-task    # print what a reader left
+sh operations/autoclave/autoclave.sh rm my-task        # destroy the chamber
+```
+
+A base given to `new` is resolved to a SHA on the host, so a chamber is pinned to
+an exact tree rather than to whatever a branch name meant at clone time.
+
+`collect` requires a clean tree inside: uncommitted work is refused rather than
+silently dropped, and the refusal names the files. It fetches the branch and
+prints the two commands to read it. **It never merges.**
+
+`rm` destroys the container and **keeps** the output drawer, because the bundle
+is the only surviving evidence that a dispatch happened.
+
+## Dispatching an agent into one
+
+The shape of a dispatch:
+
+1. `new <task>` — the chamber, pinned to a base commit.
+2. Give the agent its brief. It reads `/work/AUTOCLAVE.md` for the chamber's
+   limits and `/work/CLAUDE.md` for the project's rules; both are already there.
+3. The agent works, runs its own tests, and commits to `agent/<task>`.
+4. A reader writes `/out/report.md` instead of committing.
+5. `collect <task>` — the branch arrives locally. Nothing is merged.
+6. The session reads every line of the diff, then decides.
+7. `rm <task>`.
+
+A branch collected from a chamber is merged locally on Tyrel's judgement. The
+review ladder and the merge rules in `CLAUDE.md` govern what reaches GitHub;
+they do not govern moving work out of a clone into the working repository.
 
 ## Requirements
 
