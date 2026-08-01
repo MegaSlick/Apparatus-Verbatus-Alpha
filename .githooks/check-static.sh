@@ -23,6 +23,7 @@ scripts=".githooks/applypatch-msg
 .githooks/pre-commit
 .githooks/pre-merge-commit
 .githooks/pre-push
+operations/autoclave/autoclave.sh
 operations/codex/capture-seat-report.sh
 operations/codex/seat.sh
 operations/notify/notify.sh"

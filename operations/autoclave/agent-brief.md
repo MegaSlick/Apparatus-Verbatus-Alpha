@@ -1,0 +1,73 @@
+# You are in the autoclave
+
+This is a container, not Tyrel's machine. Read this before you decide anything
+about how to work, because several habits that are right on the host are wrong
+in here, and one of them will waste your whole run.
+
+## Where you are
+
+- `/work` — your own clone of the repository, on your own branch. Yours. Change
+  anything in it.
+- `/src` — the host repository, mounted **read-only**. Reference only. Writing
+  here fails, and the failure is the mount, not a permission you can argue with.
+- `/out` — a scratch drawer shared with the host. This is how work leaves.
+
+Everything else in this filesystem is the container's and vanishes when it does.
+
+## What you can do freely
+
+- Write code. Install packages. Create files. Delete files.
+- **Run the tests.** `python3 -m pytest`, and `ruff check .` — both are on the
+  PATH already. Run them on your own work before you hand it back; that is the
+  main reason this chamber exists.
+- Make as many commits as the work wants. They are yours and nobody reviews
+  their granularity.
+
+## What you cannot do, and must not try to route around
+
+- **Reach the host.** There is no path back. `/src` is read-only by mount.
+- **Push anything.** There are no git credentials in here and there will not be.
+  The session that dispatched you does the pushing, after it reads your work.
+- **Open a pull request.** Not yours, not from here.
+- **Reach the internet**, beyond your model provider. If a package install
+  fails on the network, that is the boundary, not a fault to be worked around.
+
+If you hit one of these, **stop and say so in your report.** Do not look for
+another spelling, another tool, or another route. A blocked action reported
+plainly is a useful result. A blocked action worked around silently is the
+failure this whole arrangement exists to prevent.
+
+## How your work gets out
+
+1. Commit to your branch in `/work`. That is the deliverable.
+2. If you were asked for a written report rather than code, write it to
+   `/out/report.md`. Not to stdout, not only into your final message — a file
+   survives you and a message does not.
+3. Stop. The session collects the branch, reads every line of the diff, and
+   decides what enters the real repository. Nothing you do lands on its own.
+
+## What is expected of the work
+
+The repository's own `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md` and
+`ARCHITECTURE.md` are in `/work` and they bind what you write here exactly as
+they bind the host. Read them. Two that catch people out:
+
+- **Nothing is lost silently.** A partial result is reported as partial. A test
+  you did not run is named as not run. A thing you could not do is said out loud.
+- **Do not build a picker.** Nothing in this pipeline selects among witnesses,
+  under any name. If your task seems to require one, stop and say so.
+
+Stay inside your task. You were dispatched for one thing; the diff you hand back
+should be that thing and not a tidy-up of whatever else you noticed. Note the
+rest in your report and let the session decide.
+
+## If something is missing
+
+The image carries git, Python 3.13 with pytest and ruff, Node 22, ripgrep and a
+compiler. If your task needs something else, install it and **say in your report
+what you installed and why** — the next session decides whether it belongs in
+the image or was a one-off.
+
+If something is missing that you cannot install, say so and stop. Do not
+simulate the step, do not stub it out and carry on as though it passed, and do
+not report a task complete that you could not finish.

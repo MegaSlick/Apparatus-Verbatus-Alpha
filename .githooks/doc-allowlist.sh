@@ -86,6 +86,14 @@ while IFS= read -r f; do
       case "${f#.github/}" in */*) printf '%s\n' "$f"; stray=1 ;; esac ;;
     .claude/agents/*.md)
       case "${f#.claude/agents/}" in */*) printf '%s\n' "$f"; stray=1 ;; esac ;;
+    # The standing brief a dispatched agent reads inside the autoclave container.
+    # A harness document by the same logic as the agent files above — it instructs
+    # an agent — and admitted by exact path rather than a glob so the directory
+    # does not become a notes drawer. It is deliberately NOT named `CLAUDE.md`:
+    # under that name a session working in this directory *on the host* would read
+    # it and believe it was inside a container. The Dockerfile renames it on the
+    # way into the image, which is the only place it is true.
+    operations/autoclave/agent-brief.md) ;;
     # The session skills. Instructions to a session, so they are harness
     # documents like the agents beside them. Exactly `.claude/skills/<name>/SKILL.md`
     # and nothing else under it: a skill may bundle reference files, but each one
