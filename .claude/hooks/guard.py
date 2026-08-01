@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The repository guard: five silent refusals, and quiet the rest of the time.
+"""The repository guard: six silent refusals, and quiet the rest of the time.
 
 This file replaced a 2,294-line predecessor that had three verdicts — deny, ask,
 silence — and spent most of its life asking. Over three days it made 639 decisions,
@@ -24,9 +24,12 @@ guard he cannot unwire is a defect.
    `reset --hard` that discards the working tree.
 4. Deleting a remote ref, or the repository itself.
 5. Putting a credential into git.
+6. Switching the git hooks off, which are the backstop for all of the above.
 
-Every one of those is unrecoverable, or close enough that the difference is a bad
-night. Everything else passes in silence, including things the old guard asked about:
+Tyrel named the first five. The sixth is one past that and says so where it is defined;
+CLAUDE.md requires it, and without it one flag stands between a session and every hook
+at once. Every one of the six is unrecoverable, or close enough that the difference is
+a bad night. Everything else passes in silence, including things the old guard asked about:
 ordinary pushes, `gh` calls, RunPod commands, edits to governed documents. Those are
 now governed by CLAUDE.md and by the session having read it — which is the trade this
 project made when it moved agents into containers. A rule a session has read is a
@@ -69,6 +72,7 @@ OFF_MAIN = "Move off it with `git switch -c work/<topic>`; staged changes come a
 
 
 # ---------------------------------------------------------------- reading the tree
+
 
 def project_root() -> Path:
     return Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
@@ -155,6 +159,7 @@ def written_text(tool_input: Any) -> str:
 
 
 # ------------------------------------------------------------ reading a command
+
 
 def strip_heredocs(text: str) -> str:
     """Remove heredoc bodies, which are data rather than commands.
@@ -362,6 +367,7 @@ def operands(arguments: list[str]) -> list[str]:
 
 # ---------------------------------------------------------------- the five refusals
 
+
 def landing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
     """1. Committing on `main`, pushing to `main`, or writing in a checkout on `main`.
 
@@ -386,9 +392,7 @@ def landing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
     calls = git_calls(command)
     for action, arguments in calls:
         if action == "commit" and checkout_branch(working_directory(payload)) == MAIN_REF:
-            return "deny", (
-                f"This checkout stands on main, and hard rule {RULE_THREE} {OFF_MAIN}"
-            )
+            return "deny", (f"This checkout stands on main, and hard rule {RULE_THREE} {OFF_MAIN}")
         if action == "push" and any(
             token.lstrip("+").split(":", 1)[-1] in MAIN_NAMES
             for token in arguments

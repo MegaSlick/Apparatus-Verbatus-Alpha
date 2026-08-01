@@ -4,23 +4,26 @@ The main session is the accountable lead. Agents receive bounded work and return
 proposals, or an isolated diff; they do not own scope, integration, decisions, or the user
 conversation.
 
+**Every role here is read-only.** A role that writes is dispatched into a chamber and
+never spawned on this machine: `operations/autoclave/README.md` says how, and the
+standing briefs live in `operations/autoclave/briefs/`. `worker`, `infra-worker` and
+`rebuilder` were host roles until 2026-08-01 and are now briefs — what a role file held
+is what a brief holds, and the chamber is a better boundary than a prompt.
+
 | Role | Model | Effort | Unit of work |
 |---|---|---|---|
 | `scout` | Haiku | `low` default; `low`–`high` sanctioned | locate files and references; extractive digests |
-| `worker` | Sonnet | `medium` default; `low`–`high` sanctioned | implement one written, non-critical specification |
-| `infra-worker` | Opus | `medium` default; `high`–`xhigh` sanctioned | hooks, CI, accounting, seals, money paths |
 | `auditor` | Opus pinned, set per seat in a reviewer pass | `high` — floor | read-only review |
 | `consult` | inherited model | `xhigh` — floor; `max` sanctioned | read-only design objection |
-| `rebuilder` | Opus | `medium` default; `high` sanctioned | rebuild one coherent legacy system in the autoclave |
 
 **Medium is the default** (Tyrel, 2026-08-01). High or above is a deliberate choice,
 not a resting state, and it is reserved for **planning and judging**. Building from a
 written spec is medium work; raise it per dispatch when a unit earns it and say why.
 
-Two roles keep floors, and only two: `auditor`, which reads blind in a review pass, and
-`consult`, which objects to a design. Both *judge* rather than build, and a cheap
-judgement does not look wrong until much later — which is the whole reason a floor
-exists. `infra-worker` and `rebuilder` lost theirs in the same ruling.
+Both remaining floors sit on roles that *judge* rather than build — a blind review seat
+and a design objection. A cheap judgement does not look wrong until much later, which is
+the whole reason a floor exists. `scout` has none because a scout that reads shallowly
+is visibly wrong on the spot.
 
 ## The models, in one breath
 
@@ -74,9 +77,9 @@ half-price sibling for bulk mechanical drafting when Sol's budget tightens.
   explicit that changing effort does not reliably shorten responses. Prompt for length
   and shape directly, and for files on disk say what the document needs and no more.
 - Cross-vendor seats live in `operations/codex/seats.conf` — read-only evidence seats
-  today. If a cross-vendor writing seat is ever restored, it arrives only through its
-  own reviewed change to that file, and what it drafts lands in the autoclave. That routing is about that future seat, not the Claude writing roles,
-  whose worktree and autoclave rules are their own files'.
+  today. A cross-vendor writing seat is now the same thing as any other writing agent:
+  it is dispatched into a chamber, which signs both vendors in and takes a brief either
+  way. `operations/autoclave/README.md` is the whole of that route.
 
 ## Bounds
 
@@ -84,9 +87,10 @@ half-price sibling for bulk mechanical drafting when Sol's budget tightens.
   stop conditions. Long work writes results incrementally.
 - `Agent` is denied to every role. Project settings also cap spawn depth at one, covering
   built-ins. Fan-out stays visible to the main session.
-- Read-only roles have no write or shell tools. Writing roles need a caller-prepared,
-  correct-base worktree and never push or merge.
-- A spawned agent never edits the six governing documents. It proposes exact wording.
+- No role has a write or shell tool. That is the bound, not a property of the current
+  roster: a role added here with `Write`, `Edit`, `NotebookEdit` or `Bash` fails
+  `test_roster.py`, because writing work belongs in a chamber.
+- A spawned agent never edits a governed path. It proposes exact wording.
 - Memory stays off: reviews remain blind and legacy knowledge does not cross sessions unseen.
 - Model and effort fields are requests, not proof of what answered. Record the resolved
   release and effort when the runtime exposes them, and say when they are not exposed.
@@ -96,6 +100,8 @@ Agent teams are experimental, higher-cost, and self-coordinate. Do not enable th
 default. Use a bounded read-only team only when teammates genuinely need to challenge one
 another; otherwise use subagents that report to the lead.
 
-`isolation: worktree` is not set because Claude Code creates that worktree from the default
-branch rather than the parent session's current commit. Writing roles therefore require the
-main session to prepare the correct base explicitly.
+`isolation: worktree` is not set on any role, and no longer could matter: Claude Code
+creates that worktree from the default branch rather than from the parent session's
+current commit, which is why writing roles used to need a caller-prepared base. A
+chamber is pinned to a named commit by `autoclave.sh new`, which is the same problem
+solved where it can actually be solved.

@@ -33,6 +33,7 @@ SPEC.loader.exec_module(guard)
 
 # ------------------------------------------------------------------- test helpers
 
+
 def decide(command: str, cwd: Path | str = ROOT):
     return guard.evaluate(
         {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
@@ -69,6 +70,7 @@ def project(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------- 1. landing work on `main`
+
 
 class TestMain:
     def test_a_commit_on_main_is_refused(self, tmp_path):
@@ -116,6 +118,7 @@ class TestMain:
 
 
 # ----------------------------------------------- 2. deleting outside the drawers
+
 
 class TestDeletes:
     def test_a_recursive_delete_of_the_workbench_is_refused(self, project):
@@ -175,6 +178,7 @@ class TestDeletes:
 
 # ----------------------------------------------------- 3. rewriting history
 
+
 class TestHistory:
     def test_a_force_push_is_refused_in_every_spelling(self):
         assert denied(decide("git push --force origin work/topic"))
@@ -204,6 +208,7 @@ class TestHistory:
 
 
 # --------------------------------------------------- 4. deleting a remote ref
+
 
 class TestRemotes:
     def test_deleting_a_remote_branch_is_refused(self):
@@ -271,6 +276,7 @@ class TestCredentials:
 
 # --------------------------------------------- 6. switching the git hooks off
 
+
 class TestHookBypass:
     def test_no_verify_is_refused(self):
         assert denied(decide("git commit --no-verify -m 'x'"))
@@ -299,6 +305,7 @@ class TestHookBypass:
 
 
 # ------------------------------------------------------------------- Silence
+
 
 class TestSilence:
     """Commands that must pass without a word.
@@ -349,6 +356,7 @@ class TestSilence:
 
 
 # ------------------------------------------------------- shape and wiring
+
 
 class TestShape:
     def test_the_guard_never_asks(self):

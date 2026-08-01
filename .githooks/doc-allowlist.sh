@@ -94,6 +94,12 @@ while IFS= read -r f; do
     # it and believe it was inside a container. The Dockerfile renames it on the
     # way into the image, which is the only place it is true.
     operations/autoclave/agent-brief.md) ;;
+    # The standing briefs a dispatched agent is given for its role — what
+    # `.claude/agents/worker.md` and its two siblings held before writing work
+    # moved off this machine. Harness documents by the same logic as the agent
+    # files above, and one level deep only, so the drawer cannot grow notes.
+    operations/autoclave/briefs/*.md)
+      case "${f#operations/autoclave/briefs/}" in */*) printf '%s\n' "$f"; stray=1 ;; esac ;;
     # The session skills. Instructions to a session, so they are harness
     # documents like the agents beside them. Exactly `.claude/skills/<name>/SKILL.md`
     # and nothing else under it: a skill may bundle reference files, but each one

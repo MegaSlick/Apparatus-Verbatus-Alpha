@@ -6,7 +6,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 AGENTS = Path(__file__).parent
 ROLE_FILES = sorted(path for path in AGENTS.glob("*.md") if path.name != "README.md")
-READ_ONLY = {"scout", "auditor", "consult"}
 
 
 def frontmatter(path: Path) -> dict[str, str]:
@@ -23,10 +22,6 @@ def frontmatter(path: Path) -> dict[str, str]:
 
 def listed(value: str) -> set[str]:
     return {item.strip() for item in value.split(",") if item.strip()}
-
-
-def body(path: Path) -> str:
-    return path.read_text(encoding="utf-8").split("---\n", 2)[2]
 
 
 def writes(path: Path) -> bool:
@@ -60,14 +55,6 @@ def test_agents_cannot_spawn_more_agents():
         assert "Agent" in listed(data["disallowedTools"])
 
 
-def test_read_only_roles_have_no_write_or_shell_tools():
-    for path in ROLE_FILES:
-        if path.stem not in READ_ONLY:
-            continue
-        tools = listed(frontmatter(path)["tools"])
-        assert not tools & {"Write", "Edit", "NotebookEdit", "Bash"}
-
-
 def test_turn_caps_and_memory_are_not_enabled():
     for path in ROLE_FILES:
         data = frontmatter(path)
@@ -80,37 +67,41 @@ def test_project_disables_nested_subagent_fanout():
     assert settings["env"]["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] == "1"
 
 
-def test_a_role_that_can_write_is_told_not_to_touch_the_governed_paths():
-    # The role file's prohibition is an independent, necessary layer: the guard
-    # denies what it can parse, but the prompt is the layer that reaches every
-    # spelling. A tripwire against deletion, not proof of compliance — it checks
-    # the exact normative phrase, so a denial cannot satisfy it by accident.
-    # Restored after an earlier revision dropped it.
+def test_no_host_role_can_write_or_run_a_shell():
+    # The bound that replaced three separate ones. `worker`, `infra-worker` and
+    # `rebuilder` held `Write`, `Edit` and `Bash` on Tyrel's machine — the session's
+    # own reach, granted to something running unattended against a prompt nobody
+    # reads twice — and each carried its own prohibitions in prose to compensate.
+    # They are briefs now (`operations/autoclave/briefs/`), dispatched into a
+    # container where the boundary is the mount rather than the wording.
     #
-    # "Governed path" rather than "governing document": CLAUDE.md's Where notes go
-    # widened the set to `.claude/` and `DATA_CONTRACT.md`, and a role file that
-    # still named only the six documents would leave an agent free to rewrite the
-    # skill that runs the session while obeying its own file to the letter.
+    # Stated as a bound on the roster rather than as a fact about today's roles:
+    # this is what fails if a writing role is ever added back here instead.
     for path in ROLE_FILES:
-        if not writes(path):
-            continue
-        text = body(path).lower()
+        assert not writes(path), (
+            f"{path.name} holds a write or shell tool. Writing work is dispatched into a "
+            "chamber — see operations/autoclave/README.md — not spawned on this machine."
+        )
+
+
+def test_the_briefs_that_replaced_the_writing_roles_still_bind_them():
+    # The prohibition did not disappear with the role files; it moved. A brief is
+    # what a dispatched agent is actually given, so it is where the rule has to be —
+    # nothing in the container enforces it, which is exactly why the wording matters.
+    briefs = sorted((ROOT / "operations" / "autoclave" / "briefs").glob("*.md"))
+    roles = [path for path in briefs if path.name != "README.md"]
+    assert roles, "no role briefs found; the writing roles have nowhere to be dispatched from"
+    for path in roles:
+        text = path.read_text(encoding="utf-8").lower()
         assert "never edit a governed path" in text, (
-            f"{path.name} can write but never states the governed-path prohibition"
+            f"{path.name} never states the governed-path prohibition"
         )
         assert ".claude/" in text, (
             f"{path.name} states the prohibition without naming `.claude/`, which is the "
             "half of it an agent is most likely to reach"
         )
-
-
-def test_a_writing_role_says_to_propose_rather_than_amend():
-    for path in ROLE_FILES:
-        if not writes(path):
-            continue
-        text = body(path).lower()
         assert "propose" in text and "exact wording" in text, (
-            f"{path.name} can write but never routes document changes through a proposal"
+            f"{path.name} never routes document changes through a proposal"
         )
 
 
