@@ -1,181 +1,162 @@
-# The agent roster
+# Agents — read this before spawning one
 
-The main session is the accountable lead. Agents receive bounded work and return
-evidence, proposals, or an isolated diff; they do not own scope, integration, decisions,
-or the user conversation.
+Agent use is encouraged here. It is the normal shape of work past a few turns, not an
+escalation, and small use needs no ceremony. What follows is the whole of what a session
+needs to choose one well: the two kinds, the roles, what each seat actually costs
+measured on this machine, and the bounds.
 
-**There are five jobs, and where an agent runs decides what it can do.** On this
-machine, read-only by default and never near a governed path. In a chamber, everything
-— its own clone, its own branch, a full shell, its own tests, and no way back out
-except a branch the session reads. `operations/autoclave/README.md` is that route.
+**Do not choose a model or an effort from memory.** The table below was measured; your
+recollection was not.
 
-The line is drawn by how much a mistake costs, not by how much a role is trusted. Host
-work is read-only because the host holds the only copy of things; chamber work is
-unrestricted because nothing in a chamber reaches anything that matters until a human
-has read the diff.
+## The two kinds, and the only line that matters
 
-| Job | Where | Default seat | Effort | What it is for |
+Capability is a property of **where** an agent runs, not of what it is called.
+
+**A reader runs on this machine and is read-only.** Locating, reviewing, auditing,
+objecting to a design. `Read`, `Grep`, `Glob` and nothing else — no write tool, no
+shell. It leaves its report as a file rather than only in a reply, so the work outlives
+the agent and does not fill the session's context.
+
+**Anything that writes or edits runs in a container.** Its own clone, its own branch, a
+full shell, its own tests. The repository goes in read-only, no pushing credential goes
+in at all, and the branch comes back to be read before anything lands. How to build,
+sign in, dispatch and collect: [operations/autoclave/README.md](../../operations/autoclave/README.md).
+The standing briefs are in `operations/autoclave/briefs/`.
+
+That is the whole boundary. A reader cannot damage anything because it holds no tool
+that writes; a writer cannot damage anything because nothing it touches is real until a
+human reads the diff.
+
+## The roles
+
+| Role | Where | Seat | Effort | For |
 |---|---|---|---|---|
-| `scout` | host | Haiku 4.5, or Codex Spark | `low`; up to `high` | where is X, what mentions Y — paths and line numbers, never a judgement |
-| `auditor` | host | set per seat, below | `high` — floor | blind review of a diff or a tree |
+| `scout` | host | Haiku 4.5, or Codex Spark | `low` | where is X, what mentions Y — paths and line numbers, never a judgement |
+| `auditor` | host | set per seat, mixed vendors | `high` — floor | blind review of a diff or a tree |
 | `consult` | host | Fable 5 or Sol | `xhigh` — floor; `max` sanctioned | object to a design before it is built |
-| `builder` | chamber | Terra or Sonnet 5; **Opus 5 when a defect would be quiet** | `medium`; `high` when the unit earns it | build what a written spec says |
-| `rebuilder` | chamber | Opus 5 | `medium`; `high` sanctioned | read the old system through the window and write its replacement new |
+| `builder` | chamber | Sonnet 5 or Terra; **Opus 5 where a defect would be quiet** | `medium` | build what a written spec says |
+| `rebuilder` | chamber | Opus 5 | `medium` | read the old system through the window and write its replacement new |
 
-That is three host seats and two briefs, down from six role files. `worker` and
-`infra-worker` were one job at two stakes and are now `builder`, which carries the
-infrastructure rules always — test-first, fail closed, no shortcut through the gate you
-are editing — because those are good rules for ordinary code too. What used to be the
-difference between them is now what it always really was: **which model, at what
-effort**, decided on the dispatch. `rebuilder` stays separate because it is a different
-*method*, not a different stake — never copying a byte is the whole job.
+Three host seats, two chamber briefs. `worker` and `infra-worker` were one job at two
+stakes and are now `builder`, which carries the infrastructure rules always — test
+first, fail closed, never shortcut the gate you are editing. `rebuilder` is separate
+because it is a different *method*: never copying a byte is the whole job.
 
-**Medium is the default** (Tyrel, 2026-08-01). High or above is a deliberate choice, not
-a resting state, and it is reserved for **planning and judging**. Both floors sit on the
-seats that judge; a cheap judgement does not look wrong until much later, which is the
-whole reason a floor exists. `scout` has none because a shallow scout is visibly wrong on
-the spot.
+## What the seats actually cost
 
-## Choosing a model, across both vendors
+Measured 2026-08-01, forty-eight cells, one chamber each, scored by a held-out suite.
+Full data and method: [history/2026-08-01_model-matrix.md](../../history/2026-08-01_model-matrix.md).
+
+**Forty-two of forty-eight cells scored full marks and none scored in between.** So this
+is a speed and reachability ranking, not a capability one. It says which seat to reach
+for on ordinary bounded work. It says nothing about hard work, because nothing in the
+matrix was hard enough to separate the seats.
+
+**Fastest seats for a bounded unit**, all scoring identically:
+
+| Seat | Effort | Time |
+|---|---|---|
+| `gpt-5.3-codex-spark` | `low` | **14s** |
+| `sonnet` | `low` / `medium` | **15s** |
+| `sonnet` | `high` | 19s |
+| `fable` | `medium` | 23s |
+| `opus` | `low` | 25s |
+| `gpt-5.6-terra` | `none` | 31s |
+| `haiku` | any | 43–53s |
+| `gpt-5.6-luna` | `low` | 71s |
+| `opus` | `max` | 228s |
+
+Three things follow, and each contradicts something obvious:
+
+- **Effort buys time, not correctness.** `opus` at `max` spent nine times the wall clock
+  of `opus` at `low` for the identical score. Raising effort on well-specified work is
+  spending for nothing. Raise it when the *question* is hard — a design, a review — not
+  when the work is merely long.
+- **Sonnet is the fastest Claude seat and Haiku is not.** Sonnet finished in 15s; Haiku
+  never beat 43s. The cheap seat was three times slower for the same result, so reach
+  for Sonnet by default and Haiku only when a sweep is genuinely enormous.
+- **Luna is slower than its price suggests**, and this task played to its strengths — one
+  page of context. Its published long-context weakness is real and untested here.
+
+**Reachability, which is not negotiable:** `minimal` is rejected by every Codex model.
+`gpt-5.3-codex-spark` also rejects `none` and `max`; its usable range is `low`–`xhigh`.
+Claude accepts `low`, `medium`, `high`, `xhigh`, `max` and nothing else.
+
+## Choosing between the vendors
 
 **The GPT seats carry the token-heavy work** (Tyrel, 2026-08-01). Luna, Terra and Sol
-are to be treated as **free until the usage cap is reached** — not cheap, free — so
-anything bulky goes to them by default and Claude's budget is spent on what only Claude
-is doing. This is the first question to ask about a unit of work, before which model is
-marginally better at it: *is this heavy? then it is theirs.*
+are free until the usage cap, so anything bulky is theirs by default and Claude's budget
+goes to what only Claude is doing. This is the first question about a unit of work,
+before which model is marginally better at it: *is this heavy? then it is theirs.*
 
-That is a budget ruling, not a quality claim. It is also not a licence to be wasteful —
-free until the cap means the cap is the thing being spent, and a seat left running on a
+Free until the cap still means the cap is what is being spent. A seat left running on a
 question nobody needed answered still costs the next one.
 
-**The three GPT tiers are not three sizes of the same thing.** Sol is the flagship for
-genuinely hard reasoning. Terra is the balanced default and matches the previous
-flagship's class at half its price. Luna is the fast, high-volume tier — and it carries
-one sharp, specific weakness that decides where it may be used here.
+| The work is… | Reach for |
+|---|---|
+| long and bulky — a whole tree, a long document | **Terra**, then **Sol** — both hold a long context |
+| short, mechanical, repetitive | **Spark** or **Sonnet** at `low` — the two fastest seats measured |
+| drafting from a tight spec | **Terra**, then **Sonnet** |
+| security-shaped reading | **Sol** |
+| a whole-system design question | **Sol at `max`**, or **Fable 5** |
+| building where a defect would be **quiet** | **Opus 5** — hooks, CI, seals, accounting, money paths |
+| reading old code for contamination | **Opus 5** — the judgement *is* what crosses the boundary |
+| a blind review seat | **mixed vendors, always** |
 
-**Luna cannot hold a long context.** Published long-context recall is about 41%, against
-roughly 90% for Terra and Sol, while on agentic benchmarks it sits level with Terra. It
-is not a weaker Terra; it is a Terra that forgets. Almost everything this project
-dispatches is long-context by nature — read the governing documents, then a tree, then
-report — so **Luna is the wrong seat for the work this repository does most**, however
-cheap it is. Give it short, bounded, mechanical passes: counting, listing, classifying
-one file at a time, a sweep whose whole input fits in a page. Never a review, never an
-audit, never a rebuild, never anything that must recall what it read an hour ago.
+The two Opus rows are Opus for a reason rather than by habit: both are judgement about
+what is *allowed* to enter the repository, made against the governing documents.
 
-| The work is… | Reach for | Because |
-|---|---|---|
-| **long and bulky — a whole tree, a long document** | **Terra**, then **Sol** | free until the cap, and both hold a long context. This is where the volume belongs |
-| short, mechanical, repetitive — count, list, classify | **Luna**, or **Codex Spark**, or **Haiku 4.5** | near-free at volume; Luna only while each pass stays small |
-| drafting from a tight spec | **Terra**, then **Sonnet 5** | matches the previous flagship's class at half its price; Sonnet when the chamber wants a Claude seat |
-| security-shaped reading | **Sol** | notably stronger there than its price suggests |
-| a whole-system design question | **Sol at `max`**, or **Fable 5** | the design seats already exist in `seats.conf` at max and the full hour |
-| building where a defect would be **quiet** | **Opus 5** | hooks, CI, seals, accounting, money paths — where being subtly wrong is invisible until it matters |
-| reading old code for contamination | **Opus 5** | the judgement *is* what crosses the boundary, and it does not run shallow |
-| a blind review seat | **mixed, always** | see below — this is the one place vendor mix is a rule |
+**A review pass is the one place vendor mix is a rule.** Three seats, two vendors
+minimum, blind, identical prompts. Agreement between seats from one vendor is the
+weakest kind of agreement.
 
-The two Claude-only rows are Claude-only for a reason and not by habit: both are
-judgement about what is *allowed* to enter the repository, made against governing
-documents, and that is the thing this project has watched Opus do well. Everything above
-them is volume, and volume is the GPT suite's.
+**These facts have a shelf life.** Prices and tiers moved twice in the three weeks
+before this was written. Treat the shape as durable and re-check the numbers before
+leaning on one.
 
-**These tier facts have a shelf life.** Prices and capabilities moved twice in the three
-weeks before this was written. Treat the *shape* as durable — a flagship, a balanced
-default, a volume tier that cannot hold a long context — and re-check the numbers before
-leaning on one, rather than trusting this paragraph a year from now.
+## Effort rules
 
-**Luna has no line in `operations/codex/seats.conf` yet** and therefore cannot be
-dispatched by name. It needs its model id, effort and timeout added there before it is
-reachable — a one-line reviewed change to that file.
+- A **floor** never moves down without Tyrel's per-instance override: a review must not
+  quietly run at a cheap session's depth. The floor values are duplicated in
+  `test_roster.py`, which enforces them; change both together.
+- **Medium is the default.** High or above is a deliberate choice reserved for planning
+  and judging — and the matrix says why: on building work it buys nothing.
+- Effort is set on the dispatch, never written into a brief, because a value in prose is
+  a value nothing enforces. `dispatch` requires a model and defaults effort to `medium`.
+- Record what was **requested** and what **answered**. A request is not proof. A review
+  seat whose resolved effort is under its floor is non-qualifying coverage — redispatch,
+  or take his override, never a trailer. When the runtime does not expose the resolved
+  value, say it was not exposed rather than assuming it qualified.
 
-**A review pass is the one place vendor mix is a rule rather than a preference.** Three
-seats, two vendors minimum, blind, identical prompts — CLAUDE.md's Pushing and merging
-section, and the reviewer-pass skill holds the procedure. Agreement between seats from
-one vendor is the weakest kind of agreement.
-
-**A brief does not name a vendor.** The chamber signs both in and takes the same brief
-either way, so `dispatch <task> claude|codex <brief>` is where the choice is made and
-`operations/codex/seats.conf` governs only the read-only Codex seats that run on the
-host.
-
-## Effort semantics
-
-- A **floor** never moves down without Tyrel's override, given per instance: a review must
-  not quietly run at a cheap session's depth. Raising above a floor needs no override —
-  it is still a cost event, declared like any other (CLAUDE.md, "Effort and shape"). The
-  floor values are duplicated in `test_roster.py`, which enforces them; change both
-  together.
-- A **default** is what the file requests; the caller chooses within the role's sanctioned
-  range per unit of work, where the dispatch mechanism can set it — a `worker` at `high`
-  for a spec hiding a tricky adapter. A cross-vendor seat's tier is not a dispatch-time
-  choice: it lives in `operations/codex/seats.conf`, and changing it is a reviewed change.
-- The ranges around defaults are **guides, not walls** — inside the effort and cost
-  envelope Tyrel agreed for the session. A departure staying inside that envelope is
-  asked of him when he is present and is the session's recorded judgement call when he is
-  not. **A judgement floor is never in that class**: no session judgement lowers one,
-  attended or unattended, and no budget, deadline or outage does either — only Tyrel's
-  per-instance override. A departure that changes cost beyond the agreed envelope follows
-  CLAUDE.md's permission rules; unattended, hold the work rather than self-authorize.
-- Every dispatch records what was **requested** — model and effort — and preserves the
-  **resolved** values when the runtime exposes them; when it does not, the record says
-  so. A request is never proof of what answered. The record lives with the session and
-  lands in its handoff at close. A review seat whose resolved effort is under its floor
-  is non-qualifying coverage — redispatch or Tyrel's per-instance override, never a
-  trailer (the reviewer-pass skill states the same rule). When the resolved value is
-  not exposed, record that it was not exposed: the request stands and the pass is
-  reported as unverified on that point, never silently assumed to qualify.
-
-## Prompting the roster
+## Prompting
 
 - Ask Opus 5 for the work and the honest report — no added verification ceremony. It
-  verifies its own work unprompted; told to verify, it over-verifies and gains nothing.
-  Named, concrete checks — run this suite, paste this output — are not ceremony and
-  always stay.
-- A review prompt sets no severity floor and never says "only serious issues" — ask for
-  everything and filter afterwards. The instrument may not constrain what it measures
+  verifies unprompted; told to verify, it over-verifies and gains nothing. Named checks
+  — run this suite, paste this output — are not ceremony and always stay.
+- A review prompt sets no severity floor and never says "only serious issues". Ask for
+  everything and filter afterwards; the instrument may not constrain what it measures
   (GOVERNANCE 10).
-- Effort controls thinking volume, never visible response length — official guidance is
-  explicit that changing effort does not reliably shorten responses. Prompt for length
-  and shape directly, and for files on disk say what the document needs and no more.
-- Cross-vendor seats live in `operations/codex/seats.conf` — read-only evidence seats
-  today. A cross-vendor writing seat is now the same thing as any other writing agent:
-  it is dispatched into a chamber, which signs both vendors in and takes a brief either
-  way. `operations/autoclave/README.md` is the whole of that route.
+- Effort controls thinking volume, never visible response length. Prompt for length and
+  shape directly.
+- Every prompt names the objective, the allowed paths and actions, the deadline, the
+  deliverable, the checks, and the stop conditions. Long work writes results
+  incrementally.
 
 ## Bounds
 
-- Every prompt names the objective, allowed paths/actions, deadline, deliverable, checks, and
-  stop conditions. Long work writes results incrementally.
-- `Agent` is denied to every role. Project settings also cap spawn depth at one, covering
-  built-ins. Fan-out stays visible to the main session.
-- No role has a write or shell tool. That is the bound, not a property of the current
-  roster: a role added here with `Write`, `Edit`, `NotebookEdit` or `Bash` fails
-  `test_roster.py`, because writing work belongs in a chamber.
-- **The built-in agent types may be used, and none of them is read-only.** Claude Code
-  ships roles this repository does not define and `test_roster.py` cannot see:
-
-  | Built-in | What it holds |
-  |---|---|
-  | `general-purpose`, `claude` | every tool |
-  | `Explore`, `Plan` | everything except `Write`, `Edit`, `NotebookEdit` — **so `Bash`** |
-  | `claude-code-guide` | `Bash`, `Read`, `WebFetch`, `WebSearch` |
-  | `statusline-setup` | `Read`, `Edit` |
-
-  `Explore` and `Plan` are the tempting ones because they *look* read-only. A role
-  holding `Bash` writes whatever a shell writes, which is why `test_roster.py` counts
-  `Bash` as a write tool and always has.
-
-  They are allowed anyway, and what makes that affordable is that **the guard judges a
-  subagent's tool calls exactly as it judges the session's** — the six refusals reach
-  them already — **plus one that applies to agents alone: no spawned agent writes a
-  governed path**, by tool or by shell. The rule the session obeys because it has read
-  CLAUDE.md is enforced mechanically against something that has not.
-
-  What is left uncovered is an agent writing ordinary code badly, which is what review
-  is for, and what the chamber is for when the work is large enough to want isolating.
-  The balance is deliberate: mitigated risk, not a cage.
-
-- **Every spawned agent gets the standing preamble**, prepended to its prompt, because
-  a built-in carries no project instruction at all:
+- `Agent` is denied to every role, and project settings cap spawn depth at one. Fan-out
+  stays visible to the main session.
+- No role in this directory has a write or shell tool. That is a bound on the roster,
+  not a fact about today's entries: a role added here with `Write`, `Edit`,
+  `NotebookEdit` or `Bash` fails `test_roster.py`.
+- **The built-in agent types may be used, and none of them is read-only.**
+  `general-purpose` and `claude` hold every tool; `Explore` and `Plan` hold everything
+  except `Write`/`Edit`/`NotebookEdit`, which still leaves `Bash`, and a shell writes
+  whatever a shell writes. What makes them affordable is that the guard judges a
+  subagent's tool calls as it judges the session's, plus one refusal that applies to
+  agents alone: **no spawned agent writes a governed path**, by tool or by shell.
+- Every spawned agent gets this preamble, because a built-in carries no project
+  instruction at all:
 
   > You are working in Apparatus Verbatus. Read `CLAUDE.md`, `GOVERNANCE.md` and
   > `GLOSSARY.md` before concluding anything, and use the glossary's words rather than
@@ -184,20 +165,8 @@ host.
   > request. Report what you did **not** do as plainly as what you did; unsure is a
   > legitimate answer. If a rule and your task pull apart, stop and say so.
 
-  Six lines, and they are the difference between a generic agent and one that knows
-  where it is. A project role file states them itself and does not need the preamble.
-- A spawned agent never edits a governed path. It proposes exact wording.
-- Memory stays off: reviews remain blind and legacy knowledge does not cross sessions unseen.
-- Model and effort fields are requests, not proof of what answered. Record the resolved
-  release and effort when the runtime exposes them, and say when they are not exposed.
-- `maxTurns` stays off. Give an agent a deadline it can plan against instead.
-
-Agent teams are experimental, higher-cost, and self-coordinate. Do not enable them as a
-default. Use a bounded read-only team only when teammates genuinely need to challenge one
-another; otherwise use subagents that report to the lead.
-
-`isolation: worktree` is not set on any role, and no longer could matter: Claude Code
-creates that worktree from the default branch rather than from the parent session's
-current commit, which is why writing roles used to need a caller-prepared base. A
-chamber is pinned to a named commit by `autoclave.sh new`, which is the same problem
-solved where it can actually be solved.
+- Memory stays off: reviews remain blind and legacy knowledge does not cross sessions
+  unseen. `maxTurns` stays off — give an agent a deadline it can plan against instead.
+- Smallest useful roster, fan-out visible, results verified, session the only
+  integrator. An agent team whose members must challenge one another is exceptional —
+  say why before building one.
