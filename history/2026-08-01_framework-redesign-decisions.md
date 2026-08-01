@@ -41,6 +41,43 @@ correctly implemented. Fable and Sol were reading it right. The lockout is inten
 Under R1 it cannot write the guard, so either that work is the session's own from now on, or
 the role's purpose narrows to `operations/` and the pipeline. Named in the open list as O5.
 
+### R2 — Agents work inside a container, and readers hand back files
+
+Writing agents get an isolated environment with full capability — a shell, the
+ability to install what a task needs, and the ability to run their own tests. Work
+returns as a change set that is inspected before it becomes a pull request. More than
+one at a time, on separate branches. Both Claude and Codex must run in it.
+
+Readers must be able to leave output somewhere that does not fill the main session's
+context and that outlives the agent. Answered by the same chamber: a reader writes to
+`/out/report.md` and the file is collected. No change to any governed path is needed
+for it, which is why it was done this way rather than by granting readers a write tool.
+
+*Consequence for O1.* The question "does a writing agent lose the shell" was the wrong
+shape. On the host it loses every write tool as well, so there is nothing left to police
+by guessing at command spellings. Inside the chamber it loses nothing. Both halves are
+stricter and more useful than the permit the corpus drafted.
+
+*Consequence for S3.* The permit survives but shrinks. It stops being an advance list of
+paths checked on every write, and becomes a declared scope checked once against a diff
+that actually exists.
+
+*Local merges are not GitHub merges.* A branch collected from a chamber is merged
+locally on his judgement. The review ladder and the merge rules govern what reaches
+GitHub; they do not govern moving work from a clone into the working repository.
+
+### R3 — `dagger/container-use` is not ruled out
+
+Hard rule 11 was cited against it and the citation was wrong: that rule is about
+enforcement he cannot undo, not about tooling. container-use is a working tool.
+
+Vetted: 3,924 stars, 199 forks, Apache 2.0, not archived. Last code push seven weeks
+before this was written, 84 open issues, and still self-badged Experimental.
+
+Not adopted first, on those last three facts alone — not on the rule. It needs a
+container engine underneath exactly as the hand-built chamber does, so installing that
+engine serves both routes and nothing is wasted by starting simple.
+
 ---
 
 ## Session decisions
@@ -175,6 +212,27 @@ restored. A governing document, so his wording.
 **O5 — What the infrastructure role is for, under R1.** It cannot write the guard, the hooks
 or the skills. Either the session writes every line of its own machinery from now on, or the
 role narrows to `operations/` and the pipeline and is renamed to say so.
+
+**O6 — The word "autoclave" now names two things.** `autoclave/` at the repository root is
+the cleanroom tray; `operations/autoclave/` is the container. `GLOSSARY.md` says one concept
+per word and that if two words mean the same thing, one of them is wrong — this is the
+inverse, one word for two concepts, and it is the same defect.
+
+In lab terms the container has the better claim: an autoclave is the sterilising chamber, and
+a tray goes inside one. So the honest fix is to rename the *tray*, not the chamber. That
+touches `CLAUDE.md`, `GLOSSARY.md` and `ARCHITECTURE.md`, which makes it his.
+
+There is a live mechanical consequence in the meantime. `pyproject.toml` puts `autoclave` in
+pytest's skip list — deliberately, because the tray holds presumed-contaminated drafts and
+pytest imports what it collects. That pattern matches a directory of that name anywhere, so
+any test file placed inside `operations/autoclave/` is skipped in silence. The chamber's own
+tests are therefore at `operations/test_autoclave.py`, outside the trap, and both the README
+and the test file say why.
+
+**O7 — Model credentials inside the chamber.** Deliberately not wired up, because the choices
+differ in what they expose and he was not present. An environment variable passed at start, a
+named volume authenticated once, or a mount of the host's tool configuration — and the third
+puts real credentials somewhere an agent can read them. Nothing is mounted until he picks.
 
 ---
 
