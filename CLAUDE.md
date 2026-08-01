@@ -315,8 +315,13 @@ else.
 
 Say what you actually did — a failed test shown, a skipped step named. Never report a
 task complete unless it is complete and verified. Say what comes next: one recommendation
-with reasoning short enough to argue with, not a menu. Tyrel is not a programmer. Plain
-language, and never make him read code to decide.
+with reasoning short enough to argue with, not a menu.
+
+Tyrel is not a programmer and does not read or write code. He is this project's manager
+and engineer. Keep prose simple and to the point. Several paragraphs hide the key details.
+Use point form where you can, and write a paragraph when it is important enough to need
+one — if everything is a paragraph, details get skimmed and lost silently. Ask questions
+in the session, in plain words: never in a file he has to open, never as a poll.
 
 Most of what he needs to know stays in the session, not on his phone — pushes, roster
 changes, progress. Four moments reach the phone, via
