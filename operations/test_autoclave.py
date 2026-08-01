@@ -211,6 +211,13 @@ class TestLogin:
 class TestDispatch:
     """Running an agent inside a chamber, against a brief written to a file."""
 
+    def test_every_allowed_effort_gets_past_effort_validation(self):
+        for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            result = run(
+                "dispatch", "task-x", "claude", str(ROOT / "README.md"), "gpt-5.6-luna", effort
+            )
+            assert "not an allowed effort" not in result.stderr
+
     def test_a_missing_task_is_refused(self):
         result = run("dispatch")
         assert result.returncode != 0

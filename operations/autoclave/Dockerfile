@@ -56,6 +56,16 @@ RUN if ! getent group "${GID}" >/dev/null; then groupadd -g "${GID}" agent; fi \
 # /out  — the scratch drawer, the one writable host path. Bundles land here.
 RUN mkdir -p /src /work /out && chown -R "${UID}:${GID}" /work /out
 
+# The two auth directories, created here and owned by the agent, because Docker
+# decides a named volume's ownership from what it finds at the mount point. Absent
+# from the image, the mount point is created by the daemon owned by root, and the
+# container — which runs as ${UID} — cannot write it. That is not a theory: the
+# first headless `codex login` in this image printed "failed to create login log
+# directory /home/agent/.codex/log: Permission denied" and would have failed the
+# same way in front of whoever ran the sign-in.
+RUN mkdir -p /home/agent/.claude /home/agent/.codex \
+ && chown -R "${UID}:${GID}" /home/agent
+
 # The standing brief for any session that starts in here. Copied to /work by the
 # launcher after the clone, so an agent reads it as the project's own CLAUDE.md
 # would be read. Kept at a fixed path so the launcher never guesses.
@@ -78,6 +88,15 @@ COPY requirements-dev.txt /opt/autoclave/requirements-dev.txt
 RUN python3 -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-cache-dir -r /opt/autoclave/requirements-dev.txt
 ENV PATH="/opt/venv/bin:${PATH}"
+# And again for login shells, which is not redundant. `ENV` sets the environment of
+# the process the daemon starts; a **login** shell rebuilds PATH from `/etc/profile`
+# and throws that away. Codex runs every model-generated command through
+# `bash -lc`, so the first real dispatch into this image reported
+# "No module named pytest" and "ruff: command not found" while both sat on the
+# non-login PATH — the chamber's whole selling point, an agent running its own tests
+# before handing work back, was silently off. Found by dispatching, not by reading.
+RUN printf 'PATH="/opt/venv/bin:$PATH"\nexport PATH\n' \
+      > /etc/profile.d/10-autoclave-venv.sh
 
 # Git refuses to operate in a directory owned by another uid. The clone is made
 # by this user, but /src arrives owned by the host's, so mark both safe.

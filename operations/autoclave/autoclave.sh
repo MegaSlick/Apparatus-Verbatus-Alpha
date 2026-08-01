@@ -13,6 +13,7 @@
 #   autoclave.sh build                   build the image
 #   autoclave.sh login <claude|codex>    sign a vendor in, once, into its volume
 #   autoclave.sh new <task> [<base>]     start a chamber on a branch from <base>
+#   autoclave.sh login <claude|codex> [browser|device]
 #   autoclave.sh dispatch <task> <claude|codex> <brief-file> <model> [effort]
 #                                        run an agent inside, against a written brief
 #   autoclave.sh shell <task>            open a shell in a running chamber
@@ -140,12 +141,28 @@ has_volume() { docker volume inspect "$1" >/dev/null 2>&1; }
 
 cmd_login() {
     vendor="${1:-}"
+    # `--device` asks the vendor for a code to type on another device instead of
+    # standing up a callback server on localhost *inside the container*. That
+    # callback is the reason the ordinary flow needs a browser on this machine: the
+    # URL it prints points at `http://localhost:1455`, which resolves to the
+    # container and is unreachable from a phone. Device auth has no callback, so the
+    # sign-in can be finished from anywhere — which is the difference between "run
+    # this when you are next at a keyboard" and "run this now".
+    mode="${2:-browser}"
     need_docker
     docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
     case "$vendor" in
-        claude) volume="$AUTH_VOL_CLAUDE"; mount="$AUTH_DIR_CLAUDE"; tool="claude" ;;
+        claude) volume="$AUTH_VOL_CLAUDE"; mount="$AUTH_DIR_CLAUDE"; tool="claude /login" ;;
         codex)  volume="$AUTH_VOL_CODEX";  mount="$AUTH_DIR_CODEX";  tool="codex login" ;;
         *) die "login takes 'claude' or 'codex'" ;;
+    esac
+    case "$mode" in
+        browser) : ;;
+        device)
+            [ "$vendor" = codex ] ||
+                die "only codex offers device auth; run '$0 login claude' at a keyboard"
+            tool="codex login --device-auth" ;;
+        *) die "login mode is 'browser' or 'device'" ;;
     esac
 
     has_volume "$volume" || docker volume create "$volume" >/dev/null
@@ -156,10 +173,23 @@ cmd_login() {
     note "this script. Follow whatever the CLI asks, then exit."
     note ""
     # --rm: the container is a booth for the sign-in. What persists is the volume.
-    docker run --rm --interactive --tty \
-        --volume "${volume}:${mount}" \
-        "$IMAGE" \
-        sh -c "$tool" || true
+    #
+    # A tty is requested only when one exists. `docker run --tty` without one fails
+    # outright, and the sign-in is exactly the command somebody may drive from a
+    # script, a pipe, or an agent session that has no terminal.
+    if [ -t 0 ]; then
+        docker run --rm --interactive --tty \
+            --volume "${volume}:${mount}" \
+            "$IMAGE" \
+            sh -c "$tool" || true
+    else
+        note "(no terminal here — running without one; follow the URL or code below)"
+        note ""
+        docker run --rm --interactive \
+            --volume "${volume}:${mount}" \
+            "$IMAGE" \
+            sh -c "$tool" || true
+    fi
 
     note ""
     if docker run --rm --volume "${volume}:${mount}" "$IMAGE" \
@@ -338,12 +368,25 @@ cmd_dispatch() {
             # stdin when nothing is attached, which in a detached container means
             # a dispatch that never returns and never says why.
             #
+            # `--dangerously-bypass-approvals-and-sandbox` is the exact counterpart of
+            # the Claude flag above, and its own help text says where it belongs:
+            # "intended solely for running in environments that are externally
+            # sandboxed". A chamber is that environment. Without it Codex tries to
+            # build its own `bwrap` sandbox inside the container, which needs
+            # unprivileged user namespaces Docker does not grant, and **every**
+            # command the agent runs fails before it starts — including reading a
+            # file. The first real dispatch produced exactly that and reported itself
+            # blocked rather than pretending; the alternative fix, granting the
+            # container the privileges bwrap wants, would weaken the one boundary
+            # this whole arrangement rests on to restore a second one inside it.
+            #
             # `--` before the prompt so a brief beginning with a dash is read as the
             # prompt rather than as an unknown option.
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
                 "$(container_of "$task")" sh -c '
                 cd /work
                 codex exec --skip-git-repo-check \
+                    --dangerously-bypass-approvals-and-sandbox \
                     -m "$AC_MODEL" \
                     -c "model_reasoning_effort=$AC_EFFORT" \
                     -- "$(cat /out/brief.md)" < /dev/null
