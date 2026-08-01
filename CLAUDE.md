@@ -157,10 +157,10 @@ deleted on merge.
 Naming the branch and moving onto it is the session's first act — before anything is
 read closely or planned in detail, not merely before the first edit. Reading and
 ref-only syncing may happen from wherever the checkout stands. The hooks refuse a commit
-on main and a push at main, and the Claude-side guard refuses tool-route edits and the
-switch onto it. None of them can see a session sitting on main reading and planning.
-That is a gap in the enforcement, not a permission: hard rule 3 covers it and nothing
-else does.
+on main and a push at main; the Claude-side guard refuses the same two and a tool-route
+write into a checkout standing there. **Nothing refuses the switch onto main, and
+nothing sees a session sitting on it reading and planning.** Both are gaps in the
+enforcement, not permissions: hard rule 3 covers them and nothing else does.
 
 More than one AI may be working here at once. Work in your own worktree on your own
 branch. Never `git add -A` — stage only what you touched. If a file changed under you,
@@ -305,6 +305,11 @@ say a lot says little, re-run it unfiltered: `rtk proxy <cmd>`.
 
 A summary is never verification. Neither is a guard you have not confirmed is armed.
 This binds subagents too.
+
+The Claude-side guard refuses six things and is silent otherwise — README.md's Controls
+section lists them and says how to switch it off. **Its silence is not approval.** It
+says nothing about most of what you do because most of what you do is governed by this
+file, not by it, and a guard tuned to speak often is one nobody hears.
 
 ## Attribution
 
