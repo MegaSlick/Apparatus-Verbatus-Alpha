@@ -34,6 +34,22 @@ def run(*args, cwd=None):
     )
 
 
+def code_lines():
+    """The launcher's runnable lines, with comments and blanks dropped.
+
+    Several tests below assert that a dangerous flag or a known-trap invocation
+    appears exactly once. Matching raw source counts the explanatory comment
+    beside the code as a second occurrence, which made two of these tests fail on
+    the very comments written to justify them. Shell has no block comments, so
+    dropping `#` lines is sufficient and honest here.
+    """
+    return [
+        line
+        for line in SCRIPT.read_text().splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
 def test_script_exists_and_is_executable():
     assert SCRIPT.is_file()
     assert SCRIPT.stat().st_mode & 0o111, "launcher is not executable"
@@ -188,6 +204,51 @@ class TestLogin:
         for volume in ("AUTH_VOL_CLAUDE", "AUTH_VOL_CODEX"):
             assert f"${{{volume}}}:" in source
             assert f"${{{volume}}}:ro" not in source, f"{volume} is mounted read-only"
+
+
+class TestDispatch:
+    """Running an agent inside a chamber, against a brief written to a file."""
+
+    def test_a_missing_task_is_refused(self):
+        result = run("dispatch")
+        assert result.returncode != 0
+        assert "required" in result.stderr
+
+    def test_an_unknown_vendor_is_refused(self):
+        result = run("dispatch", "nosuchtask", "gemini", "/dev/null")
+        assert result.returncode != 0
+        # It stops at the chamber check first, which is correct ordering: there is
+        # no point validating a vendor for a chamber that does not exist.
+        assert "not running" in result.stderr or "claude" in result.stderr
+
+    def test_the_brief_travels_as_a_file_never_as_an_argument(self):
+        """A brief is prose a session wrote. Interpolated into a command line its
+        punctuation becomes executable, so it is copied into the chamber's drawer
+        and read there with `cat`."""
+        source = SCRIPT.read_text()
+        assert "cat /out/brief.md" in source
+        assert "brief.md" in source
+
+    def test_permission_skipping_is_confined_to_the_chamber(self):
+        """`--dangerously-skip-permissions` is correct inside a container and
+        nowhere else, because the container is the boundary and a prompt inside a
+        detached one is a hang. This asserts it appears in exactly one runnable
+        line, so it cannot drift into something that executes on the host.
+        """
+        lines = code_lines()
+        carrying = [ln for ln in lines if "--dangerously-skip-permissions" in ln]
+        assert len(carrying) == 1, f"expected one runnable use, found {len(carrying)}"
+        index = lines.index(carrying[0])
+        preceding = "\n".join(lines[:index])
+        assert "docker exec" in preceding, "the flag is not inside a docker exec"
+
+    def test_codex_stdin_is_closed(self):
+        """`codex exec` waits forever on an open stdin when nothing is attached,
+        which inside a detached container is a dispatch that never returns and
+        never says why. A known trap, recorded in this project's own notes."""
+        carrying = [ln for ln in code_lines() if "codex exec" in ln]
+        assert len(carrying) == 1, f"expected one runnable use, found {len(carrying)}"
+        assert "< /dev/null" in carrying[0]
 
 
 def test_doctor_reports_sign_in_state_for_both_vendors():

@@ -13,6 +13,8 @@
 #   autoclave.sh build                   build the image
 #   autoclave.sh login <claude|codex>    sign a vendor in, once, into its volume
 #   autoclave.sh new <task> [<base>]     start a chamber on a branch from <base>
+#   autoclave.sh dispatch <task> <claude|codex> <brief-file>
+#                                        run an agent inside, against a written brief
 #   autoclave.sh shell <task>            open a shell in a running chamber
 #   autoclave.sh exec <task> <cmd>...    run one command in a chamber
 #   autoclave.sh collect <task>          bring the branch back as agent/<task>
@@ -249,6 +251,58 @@ cmd_exec() {
     docker exec "$(container_of "$task")" "$@"
 }
 
+cmd_dispatch() {
+    task="${1:-}"; check_task "$task"
+    vendor="${2:-}"
+    brief="${3:-}"
+    need_docker
+    running "$task" || die "chamber '$task' is not running — start it with: $0 new $task"
+    [ -n "$brief" ] || die "usage: $0 dispatch <task> <claude|codex> <brief-file>"
+    [ -f "$brief" ] || die "no brief at '$brief'"
+
+    case "$vendor" in
+        claude) volume="$AUTH_VOL_CLAUDE" ;;
+        codex)  volume="$AUTH_VOL_CODEX" ;;
+        *) die "dispatch takes 'claude' or 'codex'" ;;
+    esac
+    has_volume "$volume" || die "'$vendor' is not signed in — run: $0 login $vendor"
+
+    # The brief travels as a file through the scratch drawer, never as a shell
+    # argument. A brief is prose written by a session; interpolating it into a
+    # command line makes its punctuation executable.
+    cp "$brief" "$(outdir_of "$task")/brief.md"
+
+    note "dispatching ${vendor} into '${task}'"
+    note "  brief:  $(outdir_of "$task")/brief.md"
+    note "  report: $(outdir_of "$task")/report.md"
+    note ""
+
+    case "$vendor" in
+        claude)
+            # --dangerously-skip-permissions is correct *here* and nowhere else:
+            # the container is the boundary, so there is no host left to protect
+            # by prompting, and a prompt inside a detached container is a hang.
+            # This flag is the reason the chamber exists.
+            docker exec "$(container_of "$task")" sh -c '
+                cd /work
+                claude --dangerously-skip-permissions -p "$(cat /out/brief.md)"
+            ' ;;
+        codex)
+            # stdin is closed deliberately. `codex exec` waits forever on an open
+            # stdin when nothing is attached, which in a detached container means
+            # a dispatch that never returns and never says why.
+            docker exec "$(container_of "$task")" sh -c '
+                cd /work
+                codex exec --skip-git-repo-check "$(cat /out/brief.md)" < /dev/null
+            ' ;;
+    esac
+
+    note ""
+    note "dispatch returned. Nothing has been collected and nothing merged."
+    note "  what it wrote:  $0 collect ${task}"
+    note "  what it said:   $0 report ${task}"
+}
+
 cmd_collect() {
     task="${1:-}"; check_task "$task"; need_docker
     running "$task" || die "chamber '$task' is not running"
@@ -313,6 +367,7 @@ case "${1:-}" in
     build)   shift; cmd_build "$@" ;;
     login)   shift; cmd_login "$@" ;;
     new)     shift; cmd_new "$@" ;;
+    dispatch) shift; cmd_dispatch "$@" ;;
     shell)   shift; cmd_shell "$@" ;;
     exec)    shift; cmd_exec "$@" ;;
     collect) shift; cmd_collect "$@" ;;
