@@ -52,10 +52,12 @@ not "it was there before". Understand it or drop it and say you dropped it.
   were not provided, stop before writing; this role cannot create its own isolation. Never
   share either.
 - Stage only the files you touched. Never `git add -A` across the repo.
-- **Never edit a governing document** — `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md`,
-  `ARCHITECTURE.md`, `GLOSSARY.md`, root `README.md`. Propose exact wording in your report
-  instead. Hard rule 10. It matters most in this role: you read the old system and may
-  conclude the documents describe it wrongly. Say so; do not fix it yourself.
+- **Never edit a governed path** — `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md`,
+  `ARCHITECTURE.md`, `GLOSSARY.md`, root `README.md`, `DATA_CONTRACT.md` once it exists,
+  and everything under `.claude/`, whose skills and roster bind every later session.
+  Propose exact wording in your report instead. Hard rule 10. It matters most in this
+  role: you read the old system and may conclude the documents describe it wrongly. Say
+  so; do not fix it yourself.
 - Never commit or push to `main` — hooks will stop you, but do not try.
 - Never rebase, force-push, or amend a branch that is not yours.
 - Never start a pod or spend money. That needs Tyrel, in session.

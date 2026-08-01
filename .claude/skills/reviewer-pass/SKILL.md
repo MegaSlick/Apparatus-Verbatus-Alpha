@@ -1,26 +1,28 @@
 ---
 name: reviewer-pass
-description: Review one settled commit with independent model seats and name the reviewers in the commit's Reviewed-by trailers. Use only after Tyrel authorizes review.
+description: Review one settled commit with independent model seats and name the reviewers in the commit's Reviewed-by trailers. Runs by default before an initial push; Tyrel reduces the roster in words.
 disable-model-invocation: true
 ---
 
 # Reviewer pass
 
-This procedure prepares evidence for Tyrel's push decision. It never pushes,
-merges, edits the reviewed commit, or treats reviewer agreement as authority.
+This procedure prepares evidence for Tyrel's pull-request decision. It never
+pushes, merges, edits the reviewed commit, or treats reviewer agreement as
+authority.
 
-## 1. Ask and freeze
+## 1. Triage and freeze
 
-Ask Tyrel before starting a paid or time-consuming review pass. Review and push
-are separate permissions.
+Review is a standard, not a gate: it happens by default before an initial push,
+and Tyrel reduces it in words. Do not ask permission to start one. Tell him the
+triage and the roster you are running, and if he wants it thinner he will say so.
 
 Record `reviewed_sha=$(git rev-parse HEAD)` and require a clean tracked and
 untracked tree. Materialize that commit into a fresh read-only snapshot with
 `git archive`; every reviewer reads that snapshot, not a changing checkout.
 
 Triage the change in one paragraph: behavior changed, likely cost of a defect,
-and recommended coverage. The standing default is two independent readers across
-two vendors, with fresh eyes on the change:
+and the coverage you are running. The standing default is three independent
+readers, two vendors minimum, with fresh eyes on the change:
 
 - Claude Opus, high effort
 - the `audit-sol` seat — GPT Sol, dispatched and captured only through
@@ -33,22 +35,17 @@ two vendors, with fresh eyes on the change:
   minutes, and the seat kills it there, so a truncated review would arrive
   looking like a complete one. Use `audit-sol` for a full-diff or high-risk
   pass and `judge` only for a genuinely bounded one.
+- Claude Fable, high effort — the third seat, and part of the default rather than
+  an offer made pass by pass. It is the most expensive reader here, so it is the
+  one a reduction usually reaches for first. Say in the triage what the third seat
+  is covering, and resist the reduction hardest where the question is hard, a
+  defect is expensive, or the change touches money, launch, shutdown or a
+  governance rule.
 
-**Recommend the third seat when the change earns it, and let it go otherwise:**
-
-- Claude Fable, high effort — recommend it, in `CLAUDE.md`'s words, "when the
-  question is hard, a defect is expensive, or the change touches money, launch,
-  shutdown or a governance rule." Say in the triage which of those applies. Outside
-  those classes, do not offer it — an offer made every pass and declined most of
-  them trains the reader to skim the offer, and an offer he skims is worth less
-  than no offer at all. It is also the most expensive reader here, so cost is a
-  legitimate reason for him to decline one you do recommend.
-
-Tyrel decides the roster for this pass. Object once with the coverage at stake
-and your recommendation, ask about the exact roster, then follow his clear
-confirmation. Never infer a reduction or carry one into the next pass. Report the
-real coverage, and say plainly that two agreeing seats are thinner evidence than
-three.
+A reduction is Tyrel's, per named push, and is never inferred — not from silence,
+not from an outage, not from the last pass. Object once with the coverage at
+stake, then follow his clear answer. Report the real coverage, and say plainly
+that two agreeing seats are thinner evidence than three.
 
 ## 2. Dispatch bounded, blind reviews
 
@@ -124,7 +121,7 @@ though the review happened before the amend.
 
 **Write a trailer only for a seat that actually returned.** Not the roster you
 planned, not the seat that errored, not the one Tyrel declined. The standing
-roster is Opus and Sol, so most passes name both — but a trailer written from
+roster is three seats, so most passes name three — but a trailer written from
 the plan rather than the outcome asserts a review on exactly the commit where
 none happened, and that is the commit somebody will one day be reading it on.
 
@@ -133,4 +130,5 @@ prints them as a checklist before pushing; it never refuses, because nothing
 here turns on anything but Tyrel's word.
 
 Report the evidence paths, coverage, agreements, disagreements, and unresolved
-findings to Tyrel. Stop before push; ask for that exact action separately.
+findings to Tyrel. Stop before pushing. The first push of a branch and the pull
+request it becomes are one gate, and it is asked for separately from this pass.

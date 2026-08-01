@@ -1802,6 +1802,95 @@ def test_the_session_is_still_asked_about_the_live_checkout(tmp_path, monkeypatc
     assert decision == "ask"
 
 
+# --- `.claude/` is governed in every tree ----------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".claude/agents/README.md",
+        ".claude/agents/worker.md",
+        ".claude/skills/session-start/SKILL.md",
+    ],
+)
+def test_a_subagent_may_not_edit_the_roster_or_the_skills(path, tmp_path):
+    """The hole the narrower tails left open.
+
+    `SELF_PROTECTING_TAILS` named `.claude/hooks/` and the two settings files, so
+    a role holding `Write` could rewrite the skill that runs the session or the
+    roster that bounds itself, and nothing said a word. CLAUDE.md's Where notes go
+    makes the whole directory governed for exactly that reason.
+
+    `.claude/agents/README.md` is the case a name-based check misses twice over: it
+    is not at the repository root, so `governing_write` correctly leaves it alone.
+    """
+    target = tmp_path / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    decision, reason = guard.evaluate(
+        payload("Write", {"file_path": str(target)}, agent="worker", cwd=tmp_path)
+    )
+    assert decision == "deny"
+    assert "allowed to do" in reason
+
+
+def test_an_agents_own_worktree_does_not_open_the_governed_tree(tmp_path, monkeypatch):
+    """The exemption stops at `.claude/`, and this is the test that says so.
+
+    An agent writes `.githooks/` in its own worktree — that stays open, and the
+    test above it proves it. `.claude/` is not code on that list: hard rule 10 puts
+    it beyond every agent in every tree, and the worktree was the one route left.
+    """
+    project, tree = worktree_of(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
+    decision, reason = guard.evaluate(
+        payload(
+            "Write",
+            {"file_path": str(tree / ".claude" / "hooks" / "guard.py")},
+            agent="infra-worker",
+            cwd=tree,
+        )
+    )
+    assert decision == "deny"
+    assert "Hard rule 10" in reason
+
+
+def test_hooks_in_a_worktree_are_still_open_to_an_agent(tmp_path, monkeypatch):
+    # The regression the test above could cause: narrowing `.claude/` must not take
+    # `.githooks/` with it, or `infra-worker` loses the ground it exists for again.
+    project, tree = worktree_of(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
+    assert (
+        guard.evaluate(
+            payload(
+                "Write",
+                {"file_path": str(tree / ".githooks" / "check-all.sh")},
+                agent="infra-worker",
+                cwd=tree,
+            )
+        )
+        is None
+    )
+
+
+def test_the_data_contract_is_governed_before_it_exists(tmp_path, monkeypatch):
+    # `doc-allowlist.sh` has always admitted it and two reviewers found the prose
+    # omitting it. A document that arrives ungoverned is governed by whoever writes
+    # it first. Only a document at the repository root governs anything, so this is
+    # written where the real one will live.
+    project, _ = worktree_of(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
+    decision, reason = guard.evaluate(
+        payload(
+            "Write",
+            {"file_path": str(project / "DATA_CONTRACT.md")},
+            agent="worker",
+            cwd=project,
+        )
+    )
+    assert decision == "deny"
+    assert "DATA_CONTRACT.md" in reason
+
+
 # --- the pre-push audit of 17433a6 ----------------------------------------
 
 

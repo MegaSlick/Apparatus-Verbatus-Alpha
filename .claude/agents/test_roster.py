@@ -80,17 +80,27 @@ def test_project_disables_nested_subagent_fanout():
     assert settings["env"]["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] == "1"
 
 
-def test_a_role_that_can_write_is_told_not_to_touch_the_governing_documents():
+def test_a_role_that_can_write_is_told_not_to_touch_the_governed_paths():
     # The role file's prohibition is an independent, necessary layer: the guard
     # denies what it can parse, but the prompt is the layer that reaches every
     # spelling. A tripwire against deletion, not proof of compliance — it checks
     # the exact normative phrase, so a denial cannot satisfy it by accident.
     # Restored after an earlier revision dropped it.
+    #
+    # "Governed path" rather than "governing document": CLAUDE.md's Where notes go
+    # widened the set to `.claude/` and `DATA_CONTRACT.md`, and a role file that
+    # still named only the six documents would leave an agent free to rewrite the
+    # skill that runs the session while obeying its own file to the letter.
     for path in ROLE_FILES:
         if not writes(path):
             continue
-        assert "never edit a governing document" in body(path).lower(), (
-            f"{path.name} can write but never states the governing-document prohibition"
+        text = body(path).lower()
+        assert "never edit a governed path" in text, (
+            f"{path.name} can write but never states the governed-path prohibition"
+        )
+        assert ".claude/" in text, (
+            f"{path.name} states the prohibition without naming `.claude/`, which is the "
+            "half of it an agent is most likely to reach"
         )
 
 

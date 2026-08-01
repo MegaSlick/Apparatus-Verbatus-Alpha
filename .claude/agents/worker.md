@@ -25,13 +25,15 @@ Read `README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`,
   Never write in the main checkout's live tree.
 - Stage only files you touched. Never `git add -A`. Never commit to `main`, never push,
   never merge.
-- **Never edit a governing document** — `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md`,
-  `ARCHITECTURE.md`, `GLOSSARY.md`, the root `README.md`. Propose exact wording in your
+- **Never edit a governed path** — `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md`,
+  `ARCHITECTURE.md`, `GLOSSARY.md`, the root `README.md`, `DATA_CONTRACT.md` once it
+  exists, and everything under `.claude/` — the skills, the agent roster, this file, the
+  guard's policy. A change under `.claude/` binds every later session the same way a
+  change to `CLAUDE.md` does, which is why it is governed. Propose exact wording in your
   report instead; hard rule 10 binds this role exactly as it binds every agent.
-- Do not touch any other canonical document (`DATA_CONTRACT.md`, once it exists, is one),
-  `.githooks/`, CI, seals, accounting, anything that spends money or talks to a pod. If
-  the task turns out to need one of those, stop and report — do not do a smaller version
-  of it.
+- Do not touch `.githooks/`, CI, seals, accounting, anything that spends money or talks
+  to a pod. If the task turns out to need one of those, stop and report — do not do a
+  smaller version of it.
 - If a file changed under you, stop and re-read it.
 
 ## Definition of done

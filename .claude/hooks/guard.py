@@ -56,7 +56,18 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 GOVERNING_DOCUMENTS = frozenset(
-    {"claude.md", "goals.md", "governance.md", "architecture.md", "glossary.md", "readme.md"}
+    {
+        "claude.md",
+        "goals.md",
+        "governance.md",
+        "architecture.md",
+        "glossary.md",
+        "readme.md",
+        # Named before it exists. `.githooks/doc-allowlist.sh` has always admitted it
+        # and CLAUDE.md's Where notes go now names it, so the file that arrives is
+        # governed from its first line rather than from whenever somebody remembers.
+        "data_contract.md",
+    }
 )
 WRITING_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 PATH_KEYS = ("file_path", "notebook_path", "path")
@@ -374,13 +385,24 @@ def governing_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
 # credential scan, the document policy, the branch rule and the attribution check
 # together, in a file that is untracked by design so no diff would ever show it.
 SELF_PROTECTING_TAILS = (
-    "/.claude/hooks/",
-    "/.claude/settings.json",
-    "/.claude/settings.local.json",
+    # `/.claude/` entire, not the three spellings under it this list carried before.
+    # CLAUDE.md's Where notes go makes the whole directory a governed path — the
+    # skills, the agent roster and the guard's policy alike — because a change there
+    # binds every later session the same way a change to CLAUDE.md does. The narrower
+    # tails left `.claude/skills/` and `.claude/agents/` reachable by any role holding
+    # `Write`, which is the hole this widening closes.
+    "/.claude/",
     "/.githooks/",
     "/.git/config",
     "/.git/hooks/",
 )
+
+# The part of that list the worktree exemption below does not reach. `.githooks/` and
+# `.git/config` are code and configuration: an agent writes them in its own worktree
+# and they arrive through review, which is what keeps hard rule 12's "everything else
+# is open" true. `.claude/` is not code — hard rule 10 puts it beyond every agent in
+# every tree, so the exemption has to stop here or the rule is prose only.
+GOVERNED_TAILS = ("/.claude/",)
 
 
 def protects_the_guard(target: Path) -> bool:
@@ -391,6 +413,11 @@ def protects_the_guard(target: Path) -> bool:
     # directory case the `endswith` was there for. Two conditions doing one job.
     text = str(target) + "/"
     return any(tail in text for tail in SELF_PROTECTING_TAILS)
+
+
+def governs_later_sessions(target: Path) -> bool:
+    text = str(target) + "/"
+    return any(tail in text for tail in GOVERNED_TAILS)
 
 
 def inside_project_worktree(target: Path, project: Path) -> bool:
@@ -415,10 +442,27 @@ def harness_write(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decisi
     if target is None or not protects_the_guard(target):
         return None
 
+    # `.claude/` first, because for it the exemption does not apply at all: it is a
+    # governed path in every tree, and an agent's proposal reaches it as wording in a
+    # report rather than as a diff. The message names both things that are true of it —
+    # it governs later sessions, and where it is the guard's own policy the next tool
+    # call is judged by what was just written.
+    if governs_later_sessions(target):
+        return deny_agent_or_ask(
+            payload,
+            "Hard rule 10 bars subagent {agent} from editing "
+            + target.name
+            + " under `.claude/`, which governs what every later session is allowed to "
+            "do; propose exact wording to the main session.",
+            f"{target.name} is under `.claude/` and governs later sessions as CLAUDE.md "
+            "does, and the next tool call is judged by what you are about to write. "
+            "Confirm this is the change Tyrel directed.",
+        )
+
     # A worktree is where an agent is *supposed* to write this code, and refusing it
-    # there was a rule written as a wall. CLAUDE.md's Hard rules section keeps code
-    # open — hooks, CI, agent and skill files, `operations/`, tests and the pipeline
-    # are agent-written and land through review — and the agent roster gives
+    # there was a rule written as a wall. CLAUDE.md's hard rule 12 keeps code open —
+    # hooks, CI, `operations/`, tests and the pipeline are agent-written and land
+    # through review — and the agent roster gives
     # `infra-worker` exactly this ground. Denying it here left that role unable to do
     # the only work it exists for, and this file could not have been written by the
     # agent meant to write it. A reviewer caught the contradiction. Paraphrased rather

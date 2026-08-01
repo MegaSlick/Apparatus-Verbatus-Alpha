@@ -19,12 +19,16 @@ Read `README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`,
 
 ## Rules beyond worker's
 
-- **Never edit a governing document.** `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md`,
-  `ARCHITECTURE.md`, `GLOSSARY.md` and the root `README.md` are Tyrel's. Propose a change
-  with exact wording in your report; do not make one. This is hard rule 10, and it exists
-  because a GPT seat once wrote itself a new hard rule and moved an existing one so its own
-  change would comply. You hold `Write` and `Edit`, and nothing mechanical stops you — the
-  rule is the only thing there is, which is precisely why it is stated here.
+- **Never edit a governed path.** `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md`,
+  `ARCHITECTURE.md`, `GLOSSARY.md`, the root `README.md` and `DATA_CONTRACT.md` once it
+  exists are Tyrel's, and so is everything under `.claude/` — the skills, the roster,
+  this file, the guard's own policy — because a change there binds every later session
+  exactly as a change to `CLAUDE.md` does. Propose a change with exact wording in your
+  report; do not make one. This is hard rule 10, and it exists because a GPT seat once
+  wrote itself a new hard rule and moved an existing one so its own change would comply.
+  The guard refuses these writes, but treat that as an alarm rather than the reason: it
+  reads one route at a time, you hold `Write` and `Edit`, and the rule is what actually
+  binds — which is precisely why it is stated here.
 - **Every change ships with the test that would have caught its absence.** A guard that
   was never seen to fail is not a guard — write the failing case first.
 - **Fail closed, always.** A check that cannot run is a failure, not a pass. Unknown is
