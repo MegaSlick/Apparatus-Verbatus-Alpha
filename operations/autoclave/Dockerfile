@@ -76,6 +76,15 @@ COPY operations/autoclave/agent-brief.md /opt/autoclave/CLAUDE.md
 # chamber's limits and the project's rules without either overwriting the other.
 # Written here as root, before the USER switch, because `/` is not writable after.
 COPY operations/autoclave/agent-brief.md /CLAUDE.md
+# **And under the name the other vendor reads.** Claude Code looks for `CLAUDE.md`;
+# Codex looks for `AGENTS.md`. Only the first existed, so every Codex agent
+# dispatched into a chamber may have been working with no standing limits at all
+# beyond whatever its prompt happened to say — including the audit and review seats
+# run on 2026-08-02. Mirroring the same file under both names is the catch-all:
+# whichever CLI is dispatched, it finds the brief under the name it already looks
+# for, and neither has to be told. The file says it exists under both names, so a
+# reader who finds one does not go hunting for a different one.
+COPY operations/autoclave/agent-brief.md /AGENTS.md
 
 # The tests need pytest and ruff. Installed into a venv on the PATH, so an agent
 # runs `python3 -m pytest` exactly as the git hooks do on the host.

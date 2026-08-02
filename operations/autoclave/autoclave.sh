@@ -310,6 +310,18 @@ cmd_new() {
         git checkout --quiet ${base_sha}
         git switch --quiet -c 'agent/${task}'
         cp /opt/autoclave/CLAUDE.md /work/AUTOCLAVE.md
+        # /work/AGENTS.md is the one Codex actually reads. A copy at the filesystem
+        # root is not enough: probed on 2026-08-02, a Codex seat reported that no
+        # instruction file had been loaded automatically at all, and that /AGENTS.md
+        # existed but was not in its context. Discovery starts at the working
+        # directory, which is /work. Every Codex agent dispatched into a chamber
+        # before this — including that day's audit and review seats — ran with no
+        # standing limits beyond whatever its prompt carried.
+        #
+        # No backticks in this block: it is double-quoted so the base commit can be
+        # interpolated, which means a backtick runs on the host. One in this comment
+        # did exactly that before it was caught.
+        cp /opt/autoclave/CLAUDE.md /work/AGENTS.md
         # The brief is scaffolding, not the agent's work, and it must not read as
         # either. Untracked at the repository root it is 'stray documentation' to
         # \`.githooks/doc-allowlist.sh\`, so \`check-static.sh\` failed inside every
@@ -317,7 +329,7 @@ cmd_new() {
         # told to run the gate before handing work back either reports itself blocked
         # or deletes its own brief to make the gate pass. Excluded in the clone rather
         # than added to the tracked \`.gitignore\`, because this file exists only here.
-        printf '/AUTOCLAVE.md\n' >> /work/.git/info/exclude
+        printf '/AUTOCLAVE.md\n/AGENTS.md\n' >> /work/.git/info/exclude
         git config user.name  'autoclave'
         git config user.email 'autoclave@localhost'
     " || die "chamber started but setup failed — inspect with: docker logs $(container_of "$task")"

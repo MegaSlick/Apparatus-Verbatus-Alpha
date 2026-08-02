@@ -4,6 +4,12 @@ This is a container, not Tyrel's machine. Read this before you decide anything
 about how to work, because several habits that are right on the host are wrong
 in here, and one of them will waste your whole run.
 
+**This file exists at `/work/AGENTS.md`, `/CLAUDE.md`, `/AGENTS.md` and
+`/work/AUTOCLAVE.md`, and all four are byte-identical copies of one another.**
+Whichever your CLI looks for, you have found it; there is no fifth file with different
+rules and no need to hunt for one. The repository's own rules are separate and live at
+`/work/CLAUDE.md` — read those too.
+
 ## Where you are
 
 - `/work` — your own clone of the repository, on your own branch. Yours. Change
