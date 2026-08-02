@@ -413,6 +413,48 @@ class TestAgentGovernance:
         assert "propose exact wording" in decision[1].lower()
 
 
+# --------------------------------------------------- seeing through `rtk proxy`
+
+
+class TestRtkProxyIsTransparent:
+    """Every refusal must survive the wrapper this project tells sessions to use.
+
+    `rtk` was listed as a wrapper, which looked like coverage. `rtk proxy` is two
+    tokens: `proxy` landed where a command name was expected, nothing matched, and
+    the guard returned no decision at all for whatever followed. `RTK.md` tells a
+    session to reach for `rtk proxy <cmd>` whenever a summary cannot be trusted, so
+    the blind spot sat exactly on the documented habit rather than on an odd spelling
+    nobody uses. A previous branch fixed this against the 2,294-line guard; the
+    rewrite did not carry it across, and nobody had checked which.
+    """
+
+    def test_a_push_at_main_is_refused_behind_the_proxy(self):
+        assert denied(decide("rtk proxy git push origin main"))
+        assert denied(decide("rtk git push origin main"))
+
+    def test_a_recursive_delete_is_refused_behind_the_proxy(self, project):
+        assert denied(decide("rtk proxy rm -rf workbench", project))
+
+    def test_a_force_push_is_refused_behind_the_proxy(self):
+        assert denied(decide("rtk proxy git push --force origin work/topic"))
+
+    def test_a_hook_bypass_is_refused_behind_the_proxy(self):
+        assert denied(decide("rtk proxy git commit --no-verify -m x"))
+        assert denied(decide("rtk proxy git config core.hooksPath /dev/null"))
+
+    def test_the_proxy_over_ordinary_work_stays_silent(self, project):
+        # The point of the wrapper is that it is used constantly. Reading through it
+        # must not turn every proxied command into a refusal.
+        for command in ("rtk proxy git status", "rtk proxy pytest -q", "rtk proxy ls"):
+            assert decide(command, project) is None, command
+
+    def test_rtks_own_subcommands_are_not_wrappers(self, project):
+        # `gain` and `discover` run nothing after them; treating them as wrappers
+        # would be reading a report as the thing it reports on.
+        for command in ("rtk gain", "rtk gain --history", "rtk discover"):
+            assert decide(command, project) is None, command
+
+
 # ------------------------------------------------------------------- Silence
 
 

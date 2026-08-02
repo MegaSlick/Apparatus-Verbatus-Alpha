@@ -297,8 +297,16 @@ def normalize(command: str) -> str:
 # behind it: this list fails open, which is the right direction for an accident guard.
 _PATH = r"(?:[^\s;&|]*/)?"
 _ASSIGNMENT = r"[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*"
+# `rtk proxy` is spelled separately because it is **two** tokens. Listing `rtk` alone
+# looked like coverage and was not: `proxy` landed where a command name was expected,
+# nothing matched, and every refusal below returned no decision for anything behind it
+# — a push at `main`, a recursive delete, `--no-verify`, all of it. The blind spot sat
+# on the documented habit, because `RTK.md` tells a session to reach for `rtk proxy`
+# whenever a summary cannot be trusted, which a careful session does constantly.
+# `rtk gain` and `rtk discover` are not wrappers; they run no command after them.
 _WRAPPER = (
-    rf"(?:{_ASSIGNMENT}\s+|{_PATH}(?:command|exec|rtk|nohup|setsid|sudo)\s+"
+    rf"(?:{_ASSIGNMENT}\s+|{_PATH}rtk(?:\s+proxy)?\s+"
+    rf"|{_PATH}(?:command|exec|nohup|setsid|sudo)\s+"
     rf"|{_PATH}(?:nice|timeout|stdbuf|time)(?:\s+-\S+|\s+\d+\S*)*\s+)*"
 )
 
