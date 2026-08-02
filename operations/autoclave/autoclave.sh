@@ -375,6 +375,26 @@ cmd_new() {
         git config user.email 'autoclave@localhost'
     " || die "chamber started but setup failed — inspect with: docker logs $(container_of "$task")"
 
+    # **The subagent spawn-depth cap is lifted in here**, in its own single-quoted
+    # command so the JSON's quotes are not fighting the interpolation above.
+    #
+    # The clone carries this repository's agent settings, and the cap among them
+    # exists so fan-out on Tyrel's machine stays visible to the session running it.
+    # That reason does not exist in a chamber: nothing an agent spawns can reach the
+    # host, and the container is already the bound. Inheriting it meant a chamber
+    # agent asked to orchestrate was limited by a number chosen for somewhere else.
+    #
+    # `settings.local.json` takes precedence and is gitignored, so the tracked tree
+    # stays clean and `collect` still sees an untouched checkout.
+    docker exec "$(container_of "$task")" sh -c '
+        printf "%s\n" \
+            "{" \
+            "  \"env\": {" \
+            "    \"CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH\": \"64\"" \
+            "  }" \
+            "}" > /work/.claude/settings.local.json
+    ' || die "chamber started but the spawn-depth override could not be written"
+
     note "chamber '${task}' is up"
     note "  base:   ${base_sha}"
     note "  branch: agent/${task}"

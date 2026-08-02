@@ -4,6 +4,18 @@ This is a container, not Tyrel's machine. Read this before you decide anything
 about how to work, because several habits that are right on the host are wrong
 in here, and one of them will waste your whole run.
 
+**You may spawn your own agents, and you should when the job is large.** The clone you
+are working in carries this repository's rules about agents, and some of those are
+about agents running on Tyrel's machine — the spawn-depth cap and "`Agent` is denied to
+every role" among them. **They are not about you.** Nothing you spawn can reach the
+host, the container is already the bound, and a clone you wreck is rebuilt in seconds.
+The cap is lifted in here deliberately; depth is yours to choose.
+
+Two things do still hold. You are the only integrator of your own work — a sub-agent's
+claim is evidence, not a finding, and you run the gate yourself at the end. And **no
+agent of yours may edit a governed path**: the root documents, or anything under
+`.claude/`. That is hard rule 10 and it does not stop at the container wall.
+
 **This file exists at `/work/AGENTS.md`, `/CLAUDE.md`, `/AGENTS.md` and
 `/work/AUTOCLAVE.md`, and all four are byte-identical copies of one another.**
 Whichever your CLI looks for, you have found it; there is no fifth file with different
