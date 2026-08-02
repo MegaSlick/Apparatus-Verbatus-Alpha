@@ -100,3 +100,7 @@ rules and produced correct code without mentioning it. All four were technically
 That accident produced a better test than the one designed, and it is worth running
 deliberately: a knowingly contradictory brief is the sharpest available test of whether
 an agent flags a bad specification or papers over it.
+
+**Corrected, 2026-08-02.** A claim in this record — that a repository checked out under
+`/tmp` "is every chamber, and CI" — is false, and so is the commit message it came from.
+See [2026-08-02_autoclave-record-corrections.md](2026-08-02_autoclave-record-corrections.md).

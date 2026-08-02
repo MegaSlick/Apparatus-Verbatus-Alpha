@@ -113,3 +113,7 @@ signed in yet and neither can reach a model without it. The first real dispatch
 is the test, and the thing to watch is whether an agent inside the chamber
 prompts for something the chamber cannot give it — the failure that has cost two
 unattended nights.
+
+**Corrected, 2026-08-02.** This record lists `Explore` and `Plan` among the roles that
+are already read-only. They are not, and never were.
+See [2026-08-02_autoclave-record-corrections.md](2026-08-02_autoclave-record-corrections.md).
