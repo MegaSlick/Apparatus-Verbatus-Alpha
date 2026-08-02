@@ -207,6 +207,19 @@ class TestLogin:
             assert f"${{{volume}}}:" in source
             assert f"${{{volume}}}:ro" not in source, f"{volume} is mounted read-only"
 
+    def test_the_private_drawer_is_masked_inside_a_chamber(self):
+        """`/src` read-only stops an agent changing this machine, not reading it.
+
+        `private/` holds the notification bearer topic, and a chamber has open
+        network egress, so a readable secret is a sendable one. The mount must be
+        an empty tmpfs over that one path — not an exclusion from the bind, which
+        Docker cannot express, and not deletion of the directory, which `/src`
+        being read-only forbids anyway.
+        """
+        source = SCRIPT.read_text()
+        assert "--tmpfs /src/private" in source, "the private drawer is exposed to every chamber"
+        assert "/src/private:ro" in source, "the masking tmpfs is writable"
+
 
 class TestDispatch:
     """Running an agent inside a chamber, against a brief written to a file."""

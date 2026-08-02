@@ -239,6 +239,14 @@ cmd_new() {
     has_volume "$AUTH_VOL_CODEX" && \
         auth_mounts="${auth_mounts} --volume ${AUTH_VOL_CODEX}:${AUTH_DIR_CODEX}"
 
+    # `/src` is read-only, which stops an agent *changing* this machine and does
+    # nothing about it *reading* this machine. `private/` holds the notification
+    # bearer topic, and egress is open, so a readable secret is a sendable one. An
+    # empty read-only tmpfs is mounted over it: the directory still exists, so
+    # nothing that walks the tree trips, and it contains nothing. The clone is
+    # unaffected because `private/` is gitignored and was never in the objects
+    # `git clone` reads.
+    #
     # Word splitting on $auth_mounts is the point: it is a flag list this script
     # built from two fixed constants, never from user input.
     # shellcheck disable=SC2086
@@ -247,6 +255,7 @@ cmd_new() {
         --label "verbatus.autoclave=1" \
         --label "verbatus.task=${task}" \
         --volume "${REPO_ROOT}:/src:ro" \
+        --tmpfs /src/private:ro,size=4k \
         --volume "${outdir}:/out" \
         $auth_mounts \
         --workdir /work \
