@@ -290,6 +290,7 @@ cmd_new() {
         --label "verbatus.autoclave=1" \
         --label "verbatus.task=${task}" \
         --label "verbatus.vendor=${vendor}" \
+        --label "verbatus.base=${base_sha}" \
         --volume "${REPO_ROOT}:/src:ro" \
         --tmpfs /src/private:ro,size=4k \
         --tmpfs /src/workbench:ro,size=4k \
@@ -417,7 +418,11 @@ cmd_dispatch() {
     # The brief travels as a file through the scratch drawer, never as a shell
     # argument. A brief is prose written by a session; interpolating it into a
     # command line makes its punctuation executable.
-    cp "$brief" "$(outdir_of "$task")/brief.md"
+    # Same reason as `report`: an agent that replaces brief.md with a symlink turns
+    # this `cp` into a write through it, onto any file this user can write.
+    brief_in="$(outdir_of "$task")/brief.md"
+    [ -L "$brief_in" ] && die "brief slot ${brief_in} is a symlink — refusing to write through it"
+    cp "$brief" "$brief_in"
 
     note "dispatching ${vendor} into '${task}'"
     note "  brief:  $(outdir_of "$task")/brief.md"
@@ -509,7 +514,19 @@ cmd_collect() {
     git -C "$REPO_ROOT" fetch --quiet "$bundle_out" "${branch}:${branch}" \
         || die "bundle fetched no ref — inspect it with: git bundle list-heads ${bundle_out}"
 
-    note "collected '${task}' into local branch ${branch}"
+    # An agent that committed nothing leaves its branch pointing at the base, and the
+    # bundle for that branch builds and fetches perfectly. Saying "collected" over it
+    # reports success on nothing, which is the one thing this tool must not do.
+    chamber_base=$(docker inspect --format '{{index .Config.Labels "verbatus.base"}}' \
+        "$(container_of "$task")" 2>/dev/null) || chamber_base=""
+    landed=$(git -C "$REPO_ROOT" rev-list --count "${chamber_base}..${branch}" 2>/dev/null || echo "?")
+    if [ "$landed" = "0" ]; then
+        note "collected '${task}' — and it carries NO COMMITS."
+        note "The agent made no commit. Read its report before assuming it did work:"
+        note "  $0 report ${task}"
+    else
+        note "collected '${task}' into local branch ${branch} — ${landed} commit(s)"
+    fi
     note ""
     note "nothing has been merged. Read it before anything else:"
     note "  git log --oneline HEAD..${branch}"
@@ -519,6 +536,12 @@ cmd_collect() {
 cmd_report() {
     task="${1:-}"; check_task "$task"
     report="$(outdir_of "$task")/report.md"
+    # /out is the one host path the agent can write, so everything read back from it
+    # is untrusted input. A symlink left there points `cat` at any file this user can
+    # read — an SSH key, `private/` — and prints it straight into the session. `[ -e ]`
+    # follows links, so `[ -L ]` is tested first and separately; the same guard
+    # `capture-seat-report.sh` already carries, which is where this was found missing.
+    [ -L "$report" ] && die "report at ${report} is a symlink — refusing to read through it"
     [ -f "$report" ] || die "no report at ${report}"
     cat "$report"
 }

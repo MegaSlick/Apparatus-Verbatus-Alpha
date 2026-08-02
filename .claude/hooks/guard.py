@@ -317,7 +317,15 @@ _WRAPPER = (
 
 def invocation(name: str) -> re.Pattern[str]:
     return re.compile(
-        rf"(?:^|[;&|]\s*)\s*{_WRAPPER}{_PATH}{name}\b(?P<tail>[^\n;&|]*)",
+        # `(`, `{` and `!` open a command position exactly as `;` does. Without them
+        # `(git push origin main)` and `{ rm -rf /; }` matched nothing and every
+        # refusal returned silence — and subshells are not among the limits this
+        # file's docstring declares, so that was a gap rather than a decision.
+        # The tail stops at `)` and `}` as well, or `(git push origin main)` yields the
+        # operand `main)` and matches no branch name. Quoted spans are blanked before
+        # the search, so a bracket inside an argument is already a space here and only
+        # shell syntax is excluded.
+        rf"(?:^|[;&|({{!]\s*)\s*{_WRAPPER}{_PATH}{name}\b(?P<tail>[^\n;&|)}}]*)",
         flags=re.IGNORECASE,
     )
 
@@ -437,7 +445,7 @@ def operands(arguments: list[str]) -> list[str]:
     return [token for token in arguments if not token.startswith("-")]
 
 
-# ---------------------------------------------------------------- the five refusals
+# -------------------------------------------- the six refusals, and a seventh for agents
 
 
 def landing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Decision:
@@ -548,7 +556,13 @@ def disposable(operand: str, payload: dict[str, Any]) -> bool:
 
     # Judged by basename, so a cache directory anywhere is disposable — including
     # outside the project. Deliberate, and stated so nobody reads it as an oversight.
-    if os.path.basename(os.path.normpath(cleaned)) in DISPOSABLE_NAMES:
+    # **Every spelling must have a disposable basename**, for the same reason the
+    # prefix test below requires it: `node_modules` as a symlink to a real directory
+    # elsewhere was waved through on the name alone, which is the one branch of this
+    # function that still judged the literal text by itself.
+    if all(
+        os.path.basename(os.path.normpath(spelling)) in DISPOSABLE_NAMES for spelling in spellings
+    ):
         return True
 
     if any(within(spelling, root) for spelling in spellings):
@@ -621,8 +635,12 @@ def rewriting_history(tool: str, tool_input: Any, payload: dict[str, Any]) -> De
     if tool != "Bash":
         return None
     for action, arguments in git_calls(normalize(bash_command(tool_input))):
+        # `+` in front of a refspec is a force-push and takes no flag at all —
+        # `git push origin +main` and `git push origin +refs/heads/x:y` both rewrite
+        # the remote while matching none of the options above. Found by a review seat.
         if action == "push" and (
             flag(arguments, "--force", "--force-with-lease", "--force-if-includes", short="f")
+            or any(token.startswith("+") and len(token) > 1 for token in operands(arguments))
         ):
             return "deny", (
                 "A force-push rewrites history other people and other agents may hold. "
@@ -750,8 +768,23 @@ def hooks_path_is_being_set(tokens: list[str]) -> bool:
         token.startswith("core.hookspath") for token in arguments
     ):
         return True
-    # `git config core.hooksPath <value>` sets it; the same call without a value reads it.
-    values = [token for token in arguments if not token.startswith("-")]
+    # `git config core.hooksPath <value>` sets it; the same call without a value reads
+    # it. **Options that take a value are skipped first**, because `--file .git/config
+    # core.hooksPath /dev/null` put the path where the setting name was expected and
+    # walked straight past this check — the same spelling family the check exists to
+    # close, found by a review seat.
+    _TAKES_A_VALUE = {"-f", "--file", "--blob", "--type", "-t", "--default"}
+    values = []
+    skip = False
+    for token in arguments:
+        if skip:
+            skip = False
+            continue
+        if token in _TAKES_A_VALUE:
+            skip = True
+            continue
+        if not token.startswith("-"):
+            values.append(token)
     return len(values) > 1 and values[0].startswith("core.hookspath")
 
 
@@ -760,8 +793,8 @@ def switching_the_hooks_off(tool: str, tool_input: Any, payload: dict[str, Any])
 
     One past the five Tyrel named, and named here rather than folded in quietly. It is
     here because CLAUDE.md says it is: "`--no-verify` and `-c core.hooksPath=` are
-    blocked for Claude and open to everything else — that asymmetry is deliberate and
-    required by hard rule 11. It is his way around his own machinery; do not close it."
+    blocked for Claude and open to everything else — hard rule 11. That is his way
+    around his own machinery; do not close it."
     Dropping the check would have left that sentence false, and would have left one
     flag between a session and the credential scan, the branch refusal and the
     attribution check together.

@@ -112,8 +112,11 @@ speculative, dated, or half-finished beyond those lives here and dies here. The
 `pre-commit` hook refuses stray notes in what you are about to commit, where the hooks
 are installed; CI refuses them across the whole tree at the door.
 
-`active/` is the one declared exception, and it is bounded rather than open: two levels
-deep at most, files plus one dated subdirectory. Deeper is a notes tree, which is precisely
-what this rule exists to refuse — being inside the live drawer is not a licence to grow one.
-The other drawers stay out because they are where volume collects: `raw/` alone is 35MB of
+**No drawer is an exception, `active/` included.** It briefly was one, and this file
+described that exception for longer than it existed; `.githooks/doc-allowlist.sh` is
+the authority and it says plainly that `workbench/` has none. Its own bound survives as
+a habit worth keeping — two levels deep at most, files plus one dated subdirectory,
+because deeper is a notes tree and that is what these rules exist to refuse.
+
+The drawers stay out because they are where volume collects: `raw/` alone is 35MB of
 engine logs. Tracking those is how a repository ends up with 320 markdown files again.

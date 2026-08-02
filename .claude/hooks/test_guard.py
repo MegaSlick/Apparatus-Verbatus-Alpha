@@ -72,8 +72,12 @@ def project(tmp_path, monkeypatch):
 
 @pytest.fixture
 def project_under_tmp(monkeypatch):
-    """A project root that genuinely lives under `/tmp`, which is where every chamber
-    and CI actually checks this repository out.
+    """A project root that genuinely lives under `/tmp`.
+
+    What actually sits under `/tmp` in a chamber is pytest's own fixture root — a
+    chamber clones to `/work` and GitHub checks out under `/home/runner/work`. But a
+    checkout *can* land there, in a scratch clone or a sandbox, and treating the
+    prefix as disposable wherever it appeared judged that whole tree disposable.
 
     `tmp_path` cannot stand in for it. On Linux that fixture already lands under
     `/tmp`, so these cases pass there for the wrong reason; on macOS it lands under
@@ -203,7 +207,9 @@ class TestDeletesInsideATemporaryCheckout:
     """The refusals must not evaporate because the checkout sits in a temporary
     directory.
 
-    Every autoclave chamber and every CI run clones this repository under `/tmp`.
+    A checkout can land under `/tmp` — a scratch clone, a sandbox, or the throwaway
+    project root these tests build. It is pytest's fixture root that put one there on
+    Linux, not a chamber: a chamber clones to `/work`.
     Treating that prefix as disposable wherever it appeared meant the whole checkout
     was judged disposable, and `rm -rf` on the repository itself was waved straight
     through — the one thing this refusal exists to stop. macOS hid it by accident,
@@ -472,6 +478,36 @@ class TestRtkProxyIsTransparent:
         # must not turn every proxied command into a refusal.
         for command in ("rtk proxy git status", "rtk proxy pytest -q", "rtk proxy ls"):
             assert decide(command, project) is None, command
+
+    def test_a_command_inside_a_subshell_or_brace_group_is_seen(self, project):
+        # `(` and `{` open a command position exactly as `;` does. Without them every
+        # refusal returned silence behind one bracket, and subshells are not among
+        # the limits this guard's docstring declares.
+        assert denied(decide("(git push origin main)", project))
+        assert denied(decide("{ rm -rf workbench; }", project))
+
+    def test_a_plus_refspec_is_a_force_push(self):
+        # `+` forces without any flag at all.
+        assert denied(decide("git push origin +main"))
+        assert denied(decide("git push origin +refs/heads/x:refs/heads/y"))
+
+    def test_hookspath_cannot_be_set_through_a_config_file_option(self):
+        # `--file <path>` put the path where the setting name was expected and walked
+        # straight past the check that exists to close this exact family.
+        assert denied(decide("git config --file .git/config core.hooksPath /dev/null"))
+        assert denied(decide("git config -f .git/config core.hooksPath /dev/null"))
+
+    def test_reading_config_through_a_file_option_still_passes(self):
+        assert decide("git config --file .git/config core.hooksPath") is None
+
+    def test_a_symlinked_cache_directory_is_not_disposable(self, project_under_tmp):
+        # Judged on the name alone, `node_modules` pointing somewhere real elsewhere
+        # was waved through — the one branch still reading the literal text by itself.
+        target = project_under_tmp / "operations"
+        target.mkdir()
+        link = Path(tempfile.mkdtemp(dir="/tmp")) / "node_modules"
+        link.symlink_to(target, target_is_directory=True)
+        assert denied(decide(f"rm -rf {link}", project_under_tmp))
 
     @pytest.mark.parametrize(
         "prefix",

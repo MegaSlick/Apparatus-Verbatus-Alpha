@@ -30,9 +30,9 @@ A brief is passed as a file, so it is readable before the work starts rather tha
 reconstructable afterwards from a transcript:
 
 ```sh
-sh operations/autoclave/autoclave.sh new refactor-designator
+sh operations/autoclave/autoclave.sh new refactor-designator HEAD claude
 cat operations/autoclave/briefs/builder.md task.md > /tmp/brief.md
-sh operations/autoclave/autoclave.sh dispatch refactor-designator claude /tmp/brief.md
+sh operations/autoclave/autoclave.sh dispatch refactor-designator claude /tmp/brief.md sonnet medium
 sh operations/autoclave/autoclave.sh collect refactor-designator
 ```
 
@@ -70,7 +70,7 @@ chamber and its own brief, and let them run together:
 
 ```sh
 for unit in exporter-guard seal-count page-order; do
-  sh operations/autoclave/autoclave.sh new "$unit"
+  sh operations/autoclave/autoclave.sh new "$unit" HEAD codex
   cat operations/autoclave/briefs/builder.md "tasks/$unit.md" > "/tmp/$unit.md"
   sh operations/autoclave/autoclave.sh dispatch "$unit" codex "/tmp/$unit.md" gpt-5.6-luna low &
 done

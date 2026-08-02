@@ -199,6 +199,7 @@ at 6 CPUs and 12 GB.
 | Both vendors' CLIs are present | Claude Code 2.1.220 and Codex CLI 0.146.0 |
 | `/src` is genuinely read-only | a write to it returns `Read-only file system`; the host tree stayed clean |
 | Both briefs land without collision | the chamber's limits at `/CLAUDE.md`, the project's rules at `/work/CLAUDE.md` |
+| The brief reaches a Codex agent | **probed, 2026-08-02.** Asked what it had loaded before reading its prompt, a Codex seat answered "nothing" — twice, including with the brief at `/AGENTS.md`. With it at `/work/AGENTS.md` the same probe quotes the chamber's rules back. Evidence: `workbench/raw/2026-08-02_codex-brief-probe/` |
 | The repository's own suite runs inside | passed, and the count matched the host's on the day — 953 on 2026-08-01, 584 on 2026-08-02. **The measurement is the match, not the number**; a bare count here goes stale the next time a test lands |
 | Work returns | a commit made inside came back as `agent/<task>`; a reader's `/out/report.md` was collected |
 | Nothing merges by itself | `collect` fetches a branch and prints the two commands to read it |
@@ -213,11 +214,9 @@ at 6 CPUs and 12 GB.
    only ever reported its version here.
 2. **A long task.** The longest measured run is about twenty minutes. Nothing has
    run for an hour, filled a disk, or been interrupted halfway.
-3. **That the chamber's standing brief reaches a Codex agent.** The Dockerfile
-   places it at `/CLAUDE.md`, which Claude Code reads; Codex looks for `AGENTS.md`.
-   `new` also copies it to `/work/AUTOCLAVE.md`, which nothing is known to parse.
-   Until someone confirms which of the three a Codex agent actually reads, assume
-   its limits may not have reached it.
+3. **That the brief reaches a *Claude* agent.** The Codex half is settled — see the
+   proven table — but no probe has confirmed which file a Claude agent in a chamber
+   loads automatically. Assume its limits may not have reached it until one has.
 4. **The masks and the vendor split under an adversarial agent.** Both are verified
    by inspection from inside a chamber and by tests over the launcher's source. No
    agent has been asked to try to defeat them.

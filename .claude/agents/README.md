@@ -46,7 +46,7 @@ checkout. One review seat filed two false findings from its stale copy on 2026-0
 
 | Role | Where | Seat | Effort | For |
 |---|---|---|---|---|
-| `scout` | host | Haiku 4.5, or Codex Spark | `low` | where is X, what mentions Y — paths and line numbers, never a judgement |
+| `scout` | host | Codex Spark or Sonnet 5; Haiku only for a genuinely enormous sweep | `low` | where is X, what mentions Y — paths and line numbers, never a judgement |
 | `auditor` | host | set per seat, mixed vendors | `high` — floor | blind review of a diff or a tree |
 | `consult` | host | Fable 5 or Sol | `xhigh` — floor; `max` sanctioned | object to a design before it is built |
 | `builder` | chamber | Sonnet 5 or Terra; **Opus 5 where a defect would be quiet** | `medium` | build what a written spec says |

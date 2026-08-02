@@ -32,7 +32,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Both vendors, because a task may be given to either and the image must not
-# decide that. Pinned: an unpinned agent CLI changes behaviour under a session
+# decide that. **These default to `latest` and `build` passes no override, so every
+# build takes whatever is newest that day.** The mechanism to pin exists and is not
+# used; saying so is the point, because the comment here previously claimed pinning
+# that was not happening and the README's version table is a snapshot of one build.
+# An unpinned agent CLI changes behaviour under a session
 # that did not ask it to.
 ARG CLAUDE_CODE_VERSION=latest
 ARG CODEX_VERSION=latest
