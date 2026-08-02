@@ -15,7 +15,7 @@ scribbles and half-finished thinking live. The old repository had no such place,
 all of that went into `docs/` — 320 markdown files, 32 of them written in a single
 two-month stretch, until nobody could tell which document was true.
 
-## Seven drawers
+## Eight drawers
 
 | Drawer | What goes in it | Lifespan |
 |---|---|---|
@@ -25,7 +25,15 @@ two-month stretch, until nobody could tell which document was true.
 | `archive/` | finished work, filed under a dated folder | kept, out of the way |
 | `raw/` | verbatim engine output — Codex transcripts, reviewer logs | until the work that cites it closes |
 | `scratch/` | greps, dumps, fragments, one-off output | **delete without asking, ever** |
+| `quarantine/` | material a session believes is dead, staged for Tyrel | **he deletes it; a session never does** |
 | `tools/` | scripts a session built that later sessions run | until superseded — one line at the top says what each is for |
+
+`quarantine/` is the one drawer whose direction is one-way. A session moves things in;
+only Tyrel takes them out. The asymmetry is the point: a session being wrong about "this
+is dead" costs work that cannot be recovered, and a session being slow costs nothing.
+`tidy.py` reports anything that has sat over seven days, by name, at session start — a
+staging drawer nobody empties is just a slower kind of clutter. Its own README carries
+the rule and the quarantine-or-archive test.
 
 `raw/` is the drawer for what a machine actually said, kept verbatim, one dated folder
 per run. It exists because raw output is **evidence and not a note**, and the other two

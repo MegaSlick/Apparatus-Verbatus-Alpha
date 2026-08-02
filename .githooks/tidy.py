@@ -35,6 +35,12 @@ DESIGN = WORKBENCH / "design"
 ARCHIVE = WORKBENCH / "archive"
 SCRATCH = WORKBENCH / "scratch"
 RAW = WORKBENCH / "raw"
+QUARANTINE = WORKBENCH / "quarantine"
+
+# A session never deletes from quarantine/; it stages material there and Tyrel
+# deletes it. This is how long something may sit before the session says so
+# unprompted — his instruction, 2026-08-02, when the drawer was created.
+QUARANTINE_RIPE_DAYS = 7
 
 # The one ledger in standing/ whose absence is itself a finding: CLAUDE.md records a
 # dated suspension there and reads it back until it is resolved.
@@ -297,6 +303,32 @@ def main(argv=None):
     scratch_count = len([p for p in SCRATCH.rglob("*") if p.is_file()]) if SCRATCH.is_dir() else 0
     if scratch_count:
         print(f"\nscratch/  {scratch_count} files — disposable, delete whenever.")
+
+    # quarantine/ is the staging drawer for material a session believes is dead.
+    # Nothing is deleted here by a session: it is moved in, and Tyrel deletes it.
+    # The report exists because a staging drawer nobody empties is just a slower
+    # kind of clutter — after a week, the session says so rather than waiting to
+    # be asked. Ages are mtime, which a move resets, so the clock starts when the
+    # material was quarantined rather than when it was written. That is the age
+    # this drawer is actually about.
+    quarantine = [p for p in QUARANTINE.rglob("*") if p.is_file()] if QUARANTINE.is_dir() else []
+    if quarantine:
+        q_bytes = sum(p.stat().st_size for p in quarantine)
+        print(
+            f"\nquarantine/ {len(quarantine)} files, {q_bytes // 1024} KB — staged for HIS deletion."
+        )
+        cutoff = time.time() - QUARANTINE_RIPE_DAYS * 86400
+        top = sorted(
+            {p.relative_to(QUARANTINE).parts[0] for p in quarantine if p.stat().st_mtime < cutoff}
+        )
+        if top:
+            wants_attention = True
+            print(
+                f"  -> {len(top)} item(s) have sat over {QUARANTINE_RIPE_DAYS} days. "
+                f"Tell him; he decides whether they go:"
+            )
+            for name in top:
+                print(f"     {name}")
 
     # raw/ holds verbatim engine output: Codex transcripts, reviewer logs, the
     # things a finding must be able to point at. It is evidence, so unlike
