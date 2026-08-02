@@ -138,6 +138,20 @@ leaning on one.
   and judging — and the matrix says why: on building work it buys nothing.
 - Effort is set on the dispatch, never written into a brief, because a value in prose is
   a value nothing enforces. `dispatch` requires a model and defaults effort to `medium`.
+- **An orchestrating seat gets no time limit.** Tyrel's ruling, 2026-08-02: a seat sent
+  in as ultracode or at `max` to fan out across a large job is being asked for depth,
+  and a stated deadline is an instruction to attempt less. Give it the objective and
+  the stop conditions and let it run. Ordinary bounded units keep their deadline —
+  a unit that runs forever is a different failure, and a seat blind to a real kill
+  cannot triage before one.
+
+  There is no mechanical kill on a chamber dispatch: `docker exec` runs until the CLI
+  exits. So a deadline in a brief shapes what the agent chooses to attempt and nothing
+  else, which is exactly why naming one for an orchestrator is a mistake.
+- **A Claude chamber cannot be watched.** The CLI buffers its output until it exits, so
+  the dispatch log stays empty for the whole run; the only live progress signal is
+  `git log` inside the chamber. Codex streams as it goes. Plan an unattended run around
+  that rather than discovering it at three in the morning.
 - Record what was **requested** and what **answered**. A request is not proof. A review
   seat whose resolved effort is under its floor is non-qualifying coverage — redispatch,
   or take his override, never a trailer. When the runtime does not expose the resolved
