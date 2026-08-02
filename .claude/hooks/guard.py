@@ -304,9 +304,13 @@ _ASSIGNMENT = r"[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*"
 # on the documented habit, because `RTK.md` tells a session to reach for `rtk proxy`
 # whenever a summary cannot be trusted, which a careful session does constantly.
 # `rtk gain` and `rtk discover` are not wrappers; they run no command after them.
+# Flags are matched generically rather than by name. `rtk -v proxy git push` and
+# `rtk proxy --skip-env git push` both hid a refusal from the first version of this
+# fix, and naming today's four options would only work until rtk gains a fifth.
+_RTK = rf"{_PATH}rtk(?:\s+-\S+)*\s+(?:proxy(?:\s+-\S+)*\s+)?"
 _WRAPPER = (
-    rf"(?:{_ASSIGNMENT}\s+|{_PATH}rtk(?:\s+proxy)?\s+"
-    rf"|{_PATH}(?:command|exec|nohup|setsid|sudo)\s+"
+    rf"(?:{_ASSIGNMENT}\s+|{_RTK}"
+    rf"|{_PATH}(?:command|env|exec|nohup|setsid|sudo)\s+"
     rf"|{_PATH}(?:nice|timeout|stdbuf|time)(?:\s+-\S+|\s+\d+\S*)*\s+)*"
 )
 
@@ -480,12 +484,21 @@ def landing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
 # checking", and that refusal is most of what taught the reflex.
 DISPOSABLE_ROOTS = ("workbench/scratch",)
 # **A temporary directory is disposable only when it is outside the project root.**
-# Read as a bare prefix, this list said the opposite of what it meant: every autoclave
-# chamber and every CI run clones this repository under `/tmp`, so the whole checkout
-# matched and `rm -rf` on the repository itself was waved through. macOS hid it —
-# `project_root()` resolves, and `/var/folders/…` becomes `/private/var/folders/…`,
-# which matches nothing here — so the suite passed on the host and failed in a chamber.
-DISPOSABLE_PREFIXES = ("/tmp/", "/private/tmp/", "/var/folders/")
+# Read as a bare prefix, this list said the opposite of what it meant: a checkout under
+# `/tmp` — a scratch clone, a sandbox, or the throwaway project root this file's own
+# tests build — matched in its entirety, so `rm -rf` on that whole tree was waved
+# through. macOS hid it, because `project_root()` resolves and `/var/folders/…` becomes
+# `/private/var/folders/…`, so the suite passed on the host and failed in a chamber.
+#
+# An earlier version of this comment said "every chamber and every CI run clones this
+# repository under `/tmp`". That is false and a review seat caught it: a chamber clones
+# to `/work` and GitHub checks out under `/home/runner/work`. What actually sat under
+# `/tmp` in the chamber was pytest's own fixture root. The defect was real; the reason
+# given for it was not, and a wrong reason in a comment is what the next reader inherits.
+#
+# Both resolved and unresolved spellings are listed, because `disposable()` requires
+# every spelling of an operand to match before it exempts one.
+DISPOSABLE_PREFIXES = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
 DISPOSABLE_NAMES = frozenset({"__pycache__", ".pytest_cache", ".ruff_cache", "node_modules"})
 
 # What a literal path may contain, stated as what IS allowed. This gates an exemption,
@@ -496,16 +509,23 @@ LITERAL_PATH = re.compile(r"[A-Za-z0-9._/-]+")
 
 
 def within(path: str, directory: str) -> bool:
-    """True when `path` is `directory` itself or lies inside it."""
-    return path == directory or path.startswith(f"{directory}{os.sep}")
+    """True when `path` is `directory` itself or lies inside it.
+
+    The separator is appended only when the directory does not already end in one,
+    because the root directory is spelled `/` and `//` matches nothing. That case is
+    not hypothetical here: `rm -rf /` contains the project, and the containment test
+    below is what refuses it.
+    """
+    if path == directory:
+        return True
+    prefix = directory if directory.endswith(os.sep) else f"{directory}{os.sep}"
+    return path.startswith(prefix)
 
 
 def disposable(operand: str, payload: dict[str, Any]) -> bool:
     cleaned = operand.strip()
     if not LITERAL_PATH.fullmatch(cleaned):
         return False
-    if os.path.basename(os.path.normpath(cleaned)) in DISPOSABLE_NAMES:
-        return True
     absolute = os.path.normpath(
         cleaned if os.path.isabs(cleaned) else str(working_directory(payload) / cleaned)
     )
@@ -513,19 +533,37 @@ def disposable(operand: str, payload: dict[str, Any]) -> bool:
     # Both spellings are judged, because `project_root()` resolves symlinks and a
     # literal operand does not. On macOS a checkout at `/tmp/x` is rooted at
     # `/private/tmp/x`, so comparing only the text as written would call the
-    # repository a temporary directory again by a different route. Requiring both to
-    # be outside before the exemption applies fails toward refusing.
+    # repository a temporary directory by a different route.
     spellings = {absolute, os.path.realpath(absolute)}
+
+    # **A target that contains the project is never disposable**, whatever it is
+    # named and whatever prefix it carries. This is the direction the first version
+    # of this fix did not reason in: it asked whether the target was inside the
+    # project and, finding it was not, fell through to the temporary-directory
+    # exemption. With a checkout at `/tmp/ci/repo`, `rm -rf /tmp/ci` matched `/tmp/`
+    # and was allowed — the same repository-destroying accident the anchoring was
+    # written to stop, one directory up. Found by all three review seats.
+    if any(within(root, spelling) for spelling in spellings):
+        return False
+
+    # Judged by basename, so a cache directory anywhere is disposable — including
+    # outside the project. Deliberate, and stated so nobody reads it as an oversight.
+    if os.path.basename(os.path.normpath(cleaned)) in DISPOSABLE_NAMES:
+        return True
+
     if any(within(spelling, root) for spelling in spellings):
         # Inside the project, only the named drawers are disposable. The temporary
         # prefixes below never apply here, whatever the checkout is sitting in.
-        return any(
-            within(spelling, f"{root}/{drawer}")
+        return all(
+            any(within(spelling, f"{root}/{drawer}") for drawer in DISPOSABLE_ROOTS)
             for spelling in spellings
-            for drawer in DISPOSABLE_ROOTS
         )
-    return any(
-        spelling.startswith(prefix) for spelling in spellings for prefix in DISPOSABLE_PREFIXES
+
+    # **Every** spelling must be disposable, not any one of them. `any` failed open
+    # through a symlink: `rm -rf /tmp/link` where the link points at a real directory
+    # matched on the literal text alone, and `rm` with a trailing slash follows it.
+    return all(
+        any(spelling.startswith(prefix) for prefix in DISPOSABLE_PREFIXES) for spelling in spellings
     )
 
 
@@ -576,7 +614,7 @@ def rewriting_history(tool: str, tool_input: Any, payload: dict[str, Any]) -> De
     """3. A force-push, a history filter, or a `reset --hard`.
 
     A local rebase and `commit --amend` are deliberately *not* here. Both are routine —
-    CLAUDE.md has `Reviewed-by:` trailers amended in after a review pass returns — and
+    the reviewer-pass skill has `Reviewed-by:` trailers amended in after a pass returns — and
     both are recoverable from the reflog. What is not recoverable is a rewrite that has
     reached the remote, or a `reset --hard` that discards a working tree git never saw.
     """

@@ -82,9 +82,13 @@ def project_under_tmp(monkeypatch):
     case mean the same thing on both.
     """
     with tempfile.TemporaryDirectory(dir="/tmp") as directory:
-        root = Path(directory)
-        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(root))
+        # One level down, deliberately. A root placed directly under `/tmp` has no
+        # intermediate parent, and the first version of these tests could not see the
+        # hole all three review seats found: `rm -rf /tmp/<dir>` destroys a checkout
+        # at `/tmp/<dir>/repo` without ever being inside it.
+        root = Path(directory) / "repo"
         (root / "workbench" / "scratch").mkdir(parents=True)
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(root))
         yield root
 
 
@@ -230,6 +234,27 @@ class TestDeletesInsideATemporaryCheckout:
         assert denied(decide("rm -rf /tmp", project_under_tmp))
         assert denied(decide(f"rm -rf {project_under_tmp}/..", project_under_tmp))
 
+    def test_an_intermediate_parent_is_not_disposable(self, project_under_tmp):
+        # The case the first fix missed and all three review seats found. This path
+        # is under `/tmp/`, is not inside the project, and contains it.
+        assert denied(decide(f"rm -rf {project_under_tmp.parent}", project_under_tmp))
+
+    def test_a_temporary_sibling_of_the_checkout_is_still_disposable(self, project_under_tmp):
+        # The containment rule must not swallow the exemption it guards.
+        assert decide(f"rm -rf {project_under_tmp.parent}/build", project_under_tmp) is None
+
+    def test_a_symlink_from_a_temporary_directory_into_the_project_is_refused(
+        self, project_under_tmp
+    ):
+        # `rm -rf /tmp/link/` follows the link, so the literal spelling describes
+        # nothing about what would actually be deleted. Judging it alone exempted
+        # this; requiring every spelling to be disposable refuses it.
+        target = project_under_tmp / "operations"
+        target.mkdir()
+        link = Path(tempfile.mkdtemp(dir="/tmp")) / "escape"
+        link.symlink_to(target, target_is_directory=True)
+        assert denied(decide(f"rm -rf {link}", project_under_tmp))
+
 
 # ----------------------------------------------------- 3. rewriting history
 
@@ -256,8 +281,8 @@ class TestHistory:
         assert decide("git reset HEAD file.py") is None
 
     def test_amend_and_local_rebase_pass(self):
-        # Both are routine here — CLAUDE.md amends `Reviewed-by:` trailers in after a
-        # review returns — and both are recoverable from the reflog.
+        # Both are routine here — the reviewer-pass skill amends `Reviewed-by:`
+        # trailers in after a review returns — and both are recoverable from the reflog.
         assert decide("git commit --amend --no-edit") is None
         assert decide("git rebase origin/main") is None
 
@@ -447,6 +472,25 @@ class TestRtkProxyIsTransparent:
         # must not turn every proxied command into a refusal.
         for command in ("rtk proxy git status", "rtk proxy pytest -q", "rtk proxy ls"):
             assert decide(command, project) is None, command
+
+    @pytest.mark.parametrize(
+        "prefix",
+        (
+            "rtk proxy",
+            "rtk proxy --",
+            "rtk proxy --skip-env",
+            "rtk proxy --ultra-compact",
+            "rtk --skip-env proxy",
+            "rtk -v proxy",
+            "env",
+        ),
+    )
+    def test_no_option_or_wrapper_spelling_hides_a_refusal(self, prefix):
+        # Every one of these passed unseen after the first fix. `rtk` takes global
+        # flags before its subcommand and `proxy` takes its own; naming today's four
+        # would work until rtk gains a fifth, so flags are matched generically. `env`
+        # is as ordinary as `nohup` and was simply missing from the list.
+        assert denied(decide(f"{prefix} git push origin main")), prefix
 
     def test_rtks_own_subcommands_are_not_wrappers(self, project):
         # `gain` and `discover` run nothing after them; treating them as wrappers
