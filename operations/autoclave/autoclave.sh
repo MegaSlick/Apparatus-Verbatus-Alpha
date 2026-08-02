@@ -111,16 +111,31 @@ cmd_doctor() {
     else
         echo "not built — run: $0 build"
     fi
-    # Reported as present or absent only. This never opens the volume: whether a
-    # sign-in exists is an operational fact; what it contains is not this
-    # script's business and never appears in its output.
+    # **A volume is where a sign-in lands, not evidence that one finished.** This used
+    # to print "signed in" on the strength of `has_volume` alone — a claim about a
+    # vendor's authentication state that nothing here had measured (GOVERNANCE 10), and
+    # wrong in the case that matters: `login` creates the volume before the sign-in
+    # runs, so an abandoned or failed attempt left one behind and `doctor` called it a
+    # sign-in from then on. It now asks the vendor CLI, in a throwaway container, and
+    # reads only the exit status; the CLI's output is discarded, so nothing the volume
+    # holds can reach this script's output.
+    #
+    # `doctor` is the first thing anyone runs, so it still answers on a machine with
+    # nothing installed: with no engine or no image there is no way to ask, and it says
+    # "unknown" rather than guessing in either direction.
     for pair in "claude:${AUTH_VOL_CLAUDE}" "codex:${AUTH_VOL_CODEX}"; do
         vendor=${pair%%:*}; volume=${pair#*:}
         printf 'auth %-7s ' "$vendor"
-        if has_volume "$volume"; then
+        if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+            echo "unknown — no engine is responding, so nothing here can ask"
+        elif ! has_volume "$volume"; then
+            echo "not signed in — run: $0 login ${vendor}"
+        elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "unknown — a volume exists, but asking needs the image: $0 build"
+        elif authenticated "$vendor" "$volume"; then
             echo "signed in (${volume})"
         else
-            echo "not signed in — run: $0 login ${vendor}"
+            echo "not signed in — the volume exists but ${vendor} says no; run: $0 login ${vendor}"
         fi
     done
 }
@@ -142,6 +157,41 @@ cmd_build() {
 
 has_volume() { docker volume inspect "$1" >/dev/null 2>&1; }
 
+auth_dir() {
+    case "$1" in
+        claude) printf '%s' "$AUTH_DIR_CLAUDE" ;;
+        codex)  printf '%s' "$AUTH_DIR_CODEX" ;;
+        *) return 1 ;;
+    esac
+}
+
+# The command that asks a vendor whether it is signed in, checked against `--help`
+# on both CLIs rather than guessed: `claude auth status` exits 0 when signed in and
+# 1 when not; `codex login status` does the same. Both print, and neither is allowed
+# to print here — the caller discards their output and keeps only the status.
+auth_check() {
+    case "$1" in
+        claude) printf '%s' "claude auth status" ;;
+        codex)  printf '%s' "codex login status" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Ask the vendor, in a throwaway container holding nothing but the volume. Verified
+# inside a chamber: the Claude sign-in that `auth status` reads lives at
+# `.credentials.json` *inside* the mounted directory, so a container that has the
+# volume and nothing else answers correctly. Output goes nowhere; only the exit
+# status leaves this function, so no credential byte can reach a log or a transcript.
+authenticated() {
+    vendor_asked="$1"
+    volume_asked="$2"
+    mount_asked=$(auth_dir "$vendor_asked") || return 1
+    check_asked=$(auth_check "$vendor_asked") || return 1
+    has_volume "$volume_asked" || return 1
+    docker run --rm --volume "${volume_asked}:${mount_asked}" "$IMAGE" \
+        sh -c "$check_asked" >/dev/null 2>&1
+}
+
 cmd_login() {
     vendor="${1:-}"
     # `--device` asks the vendor for a code to type on another device instead of
@@ -159,7 +209,11 @@ cmd_login() {
     # install something they did not need. Two tests assert the vendor error and fail
     # anywhere Docker is absent, which is every chamber and CI.
     case "$vendor" in
-        claude) volume="$AUTH_VOL_CLAUDE"; mount="$AUTH_DIR_CLAUDE"; tool="claude /login" ;;
+        # `claude auth login`, not the `/login` slash command: the slash form is a
+        # prompt typed into an interactive session, so it needs a terminal, and the
+        # branch below exists precisely for when there is not one. `claude auth --help`
+        # names `login`, `logout` and `status` as real subcommands.
+        claude) volume="$AUTH_VOL_CLAUDE"; mount="$AUTH_DIR_CLAUDE"; tool="claude auth login" ;;
         codex)  volume="$AUTH_VOL_CODEX";  mount="$AUTH_DIR_CODEX";  tool="codex login" ;;
         *) die "login takes 'claude' or 'codex'" ;;
     esac
@@ -174,7 +228,27 @@ cmd_login() {
     need_docker
     docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
 
-    has_volume "$volume" || docker volume create "$volume" >/dev/null
+    # **Whether this call created the volume decides whether this call may take it
+    # away.** An empty volume that was already here is somebody else's business.
+    #
+    # It is removed through a trap rather than on the way out, because the way this
+    # actually happens is a sign-in abandoned halfway — Ctrl-C at the vendor's prompt,
+    # or a closed terminal — and neither of those reaches a line further down. An empty
+    # volume left standing is what made `doctor` report a sign-in that never happened
+    # and what let `new <task> <vendor>` believe a credential existed.
+    created_now=no
+    if ! has_volume "$volume"; then
+        docker volume create "$volume" >/dev/null
+        created_now=yes
+        discard_empty_volume() {
+            leaving="$1"
+            trap - 0 1 2 15
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+            exit "$leaving"
+        }
+        trap 'discard_empty_volume $?' 0
+        trap 'discard_empty_volume 1' 1 2 15
+    fi
 
     note "Signing '${vendor}' into ${volume}."
     note "This is interactive and it is yours to complete — the sign-in happens"
@@ -186,28 +260,39 @@ cmd_login() {
     # A tty is requested only when one exists. `docker run --tty` without one fails
     # outright, and the sign-in is exactly the command somebody may drive from a
     # script, a pipe, or an agent session that has no terminal.
+    # The CLI's own exit status is kept rather than thrown away with `|| true`. It was
+    # discarded so the report below could always run; the report has to say what
+    # happened either way, and a vendor CLI that failed is the clearest evidence there
+    # is of what happened.
+    login_status=0
     if [ -t 0 ]; then
         docker run --rm --interactive --tty \
             --volume "${volume}:${mount}" \
             "$IMAGE" \
-            sh -c "$tool" || true
+            sh -c "$tool" || login_status=$?
     else
         note "(no terminal here — running without one; follow the URL or code below)"
         note ""
         docker run --rm --interactive \
             --volume "${volume}:${mount}" \
             "$IMAGE" \
-            sh -c "$tool" || true
+            sh -c "$tool" || login_status=$?
     fi
 
     note ""
-    if docker run --rm --volume "${volume}:${mount}" "$IMAGE" \
-        sh -c "test -n \"\$(ls -A ${mount} 2>/dev/null)\""; then
-        note "${volume} now holds configuration. Chambers started from here will use it."
-    else
-        note "${volume} is still empty — the sign-in did not complete."
+    # **Whether files appeared is not whether a sign-in worked.** The old test was
+    # `ls -A` on the mount, and both CLIs write configuration into that directory
+    # before, during and after any sign-in — so it reported success for an attempt
+    # that was cancelled at the vendor's own page. Ask the vendor instead.
+    if [ "$login_status" -ne 0 ] || ! authenticated "$vendor" "$volume"; then
+        note "${vendor} does not report itself signed in — the sign-in did not complete."
         note "Nothing is broken; run this again when you are ready."
+        die "${vendor} sign-in did not complete (its CLI exited ${login_status})"
     fi
+    if [ "$created_now" = yes ]; then
+        trap - 0 1 2 15
+    fi
+    note "${vendor} reports itself signed in. Chambers created from here will use ${volume}."
 }
 
 cmd_new() {
@@ -233,6 +318,41 @@ cmd_new() {
     # a mistyped base should say the base is wrong, not that Docker is missing.
     base_sha=$(git -C "$REPO_ROOT" rev-parse --verify "${base}^{commit}") \
         || die "cannot resolve base '$base'"
+
+    # **Every prerequisite that only reads is checked before anything is written.**
+    # These four used to sit below the snapshot, which is the first thing `new` writes
+    # to the host repository, so a `new` that failed for a missing engine, an unbuilt
+    # image or a name already in use left `refs/heads/autoclave/snapshot-<task>` and its
+    # commit standing — and `rm` refuses a task with no container, so the one command
+    # that deletes that ref could not be reached to do it.
+    need_docker
+    docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
+    exists "$task" && die "chamber '$task' already exists — use 'rm $task' first"
+
+    # **A named vendor whose sign-in is not real is refused here.** It used to be
+    # tolerated: the mount was skipped and the chamber was still labelled for that
+    # vendor, so `new x claude` before `login claude` built a chamber that *said* it
+    # held the Claude credential and did not. Signing in afterwards made the label true
+    # and the mount no more real — mounts are fixed when the container is created — and
+    # the only symptom was an authentication failure from inside the CLI at dispatch,
+    # two layers down from the mistake. The vendor is asked rather than the volume
+    # counted, for the reason `doctor` gives.
+    #
+    # Read-write, because both CLIs refresh their own tokens and a read-only mount
+    # would turn a one-time sign-in into a recurring one. `none` is still the default
+    # and still needs nothing: a chamber for running the suite or reading the tree
+    # wants no credential at all, and that is most of them.
+    auth_mounts=""
+    case "$vendor" in
+        claude)
+            authenticated claude "$AUTH_VOL_CLAUDE" ||
+                die "'claude' is not signed in — run: $0 login claude"
+            auth_mounts="--volume ${AUTH_VOL_CLAUDE}:${AUTH_DIR_CLAUDE}" ;;
+        codex)
+            authenticated codex "$AUTH_VOL_CODEX" ||
+                die "'codex' is not signed in — run: $0 login codex"
+            auth_mounts="--volume ${AUTH_VOL_CODEX}:${AUTH_DIR_CODEX}" ;;
+    esac
 
     # **The chamber gets what was on this machine when it was created, not what was
     # last committed.** A clone carries commits only, so uncommitted work was invisible
@@ -274,10 +394,6 @@ cmd_new() {
         fi
     fi
 
-    need_docker
-    docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
-    exists "$task" && die "chamber '$task' already exists — use 'rm $task' first"
-
     outdir=$(outdir_of "$task")
     mkdir -p "$outdir"
 
@@ -285,21 +401,9 @@ cmd_new() {
     # reach their model provider. Egress is therefore open and that is a stated
     # limit, not an oversight: see the README. What is *not* open is any route
     # to write the host — /src is read-only. It is readable, though, except for the
-    # three masked drawers below.
-    # The vendor's auth volume is mounted when it exists, and its absence is not an
-    # error: a chamber is useful for running tests and reading code before any vendor has
-    # been signed in. Read-write, because both CLIs refresh their own tokens and a
-    # read-only mount would turn a one-time sign-in into a recurring one.
-    auth_mounts=""
-    case "$vendor" in
-        claude)
-            has_volume "$AUTH_VOL_CLAUDE" && \
-                auth_mounts="--volume ${AUTH_VOL_CLAUDE}:${AUTH_DIR_CLAUDE}" ;;
-        codex)
-            has_volume "$AUTH_VOL_CODEX" && \
-                auth_mounts="--volume ${AUTH_VOL_CODEX}:${AUTH_DIR_CODEX}" ;;
-    esac
-
+    # three masked drawers below. The vendor's auth volume, when there is one, was
+    # settled above.
+    #
     # `/src` is read-only, which stops an agent *changing* this machine and does
     # nothing about it *reading* this machine. Egress is open, so a readable secret
     # is a sendable one. Empty read-only tmpfs mounts cover the three drawers that
@@ -460,11 +564,6 @@ cmd_dispatch() {
 
     need_docker
     running "$task" || die "chamber '$task' is not running — start it with: $0 new $task"
-    case "$vendor" in
-        claude) volume="$AUTH_VOL_CLAUDE" ;;
-        codex)  volume="$AUTH_VOL_CODEX" ;;
-    esac
-    has_volume "$volume" || die "'$vendor' is not signed in — run: $0 login $vendor"
 
     # A chamber holds one vendor's credential, chosen when it was created, because a
     # mount cannot be added to a running container. Refusing here is what makes that
@@ -474,6 +573,17 @@ cmd_dispatch() {
         "$(container_of "$task")" 2>/dev/null) || chamber_vendor=""
     [ "$chamber_vendor" = "$vendor" ] || die \
         "chamber '$task' holds no ${vendor} credential (it was created for '${chamber_vendor:-none}'). Create one with: $0 new <task> <base> ${vendor}"
+
+    # **The label says which credential was mounted; this asks whether it still
+    # works.** `new` checked the sign-in when the chamber was built, and a chamber can
+    # outlive it — a token expires, a vendor forces a re-auth, an earlier agent
+    # rewrote the configuration directory it shares with every later chamber of the
+    # same vendor. Asking inside the chamber, through the mount the CLI will actually
+    # read, is the only test that covers all three. It costs one `docker exec` against
+    # a container that is already running.
+    check=$(auth_check "$vendor")
+    docker exec "$(container_of "$task")" sh -c "$check" >/dev/null 2>&1 || die \
+        "'$vendor' is not signed in inside chamber '$task' — sign in with '$0 login $vendor', then rebuild the chamber ('$0 rm $task' and '$0 new $task <base> $vendor'), because a mount cannot be added to a running container"
 
     # The brief travels as a file through the scratch drawer, never as a shell
     # argument. A brief is prose written by a session; interpolating it into a

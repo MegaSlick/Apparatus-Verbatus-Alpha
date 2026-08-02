@@ -8,12 +8,18 @@ beside the script would have been skipped in silence. The tray is `cleanroom/` n
 and the skip entry moved with it, so a test placed beside the script **would** be
 collected today. Nothing prevents moving this file back; nothing requires it either.
 
-What is covered here is argument handling, path resolution and honest reporting:
-everything that runs before a container engine is needed. The parts that need an
-engine — build, new, collect — are covered by using the tool, not by faking a
-daemon, and until that has happened `README.md` says so in as many words.
+What is covered here is argument handling, path resolution and honest reporting.
+Beyond that, a **recording stand-in for the `docker` CLI** drives the launcher's
+engine-facing branches against real, disposable git repositories: what argv reached
+the engine, what the chamber's own shell was handed, which host refs and files
+survived a failure. Those are outcome tests of the launcher, not claims that an image
+built or that a mount behaved — the stub is not a daemon and does not pretend to be
+one. What still needs a real engine is named in `operations/autoclave/README.md`.
 """
 
+import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -21,9 +27,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "operations" / "autoclave" / "autoclave.sh"
+SAFE_FILE = ROOT / "operations" / "autoclave" / "safe_file.py"
 
 
-def run(*args, cwd=None):
+def run(*args, cwd=None, env=None, script=SCRIPT):
     """Invoke the launcher and return the completed process.
 
     `sh` explicitly rather than relying on the executable bit: the script
@@ -31,11 +38,164 @@ def run(*args, cwd=None):
     under whatever the caller's login shell happens to be.
     """
     return subprocess.run(
-        ["sh", str(SCRIPT), *args],
+        ["sh", str(script), *args],
         capture_output=True,
         text=True,
         cwd=cwd or ROOT,
+        env={**os.environ, **(env or {})},
     )
+
+
+def git(repo, *args):
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def elsewhere(tmp_path):
+    """A copy of the launcher in a throwaway repository of its own.
+
+    The launcher resolves its repository from `$0`, so a copy at
+    `<tmp>/operations/autoclave/autoclave.sh` treats `<tmp>` as the repository and
+    `<tmp>/workbench/autoclave` as its output root. That is what lets the tests below
+    exercise commands that *write* — a snapshot ref, an output drawer, a fetched
+    branch — without touching this repository or this machine's chambers.
+    """
+    directory = tmp_path / "operations" / "autoclave"
+    directory.mkdir(parents=True)
+    copy = directory / SCRIPT.name
+    shutil.copy2(SCRIPT, copy)
+    if SAFE_FILE.is_file():
+        shutil.copy2(SAFE_FILE, directory / SAFE_FILE.name)
+    subprocess.run(["git", "init", "--quiet", "-b", "work/test", str(tmp_path)], check=True)
+    # An identity in the repository's own config rather than on a command line: `new`
+    # writes its snapshot with `git commit-tree`, which needs one and is not this
+    # test's to pass flags to. Without it the snapshot fails for the wrong reason and
+    # the test passes without proving anything.
+    git(tmp_path, "config", "user.name", "Test")
+    git(tmp_path, "config", "user.email", "test@example.invalid")
+    # A base commit, so `HEAD` resolves and `new` can reach the work that follows it.
+    # Staged by name rather than with `add -A`: CLAUDE.md's Branches section forbids
+    # the bulk form, and a test is not exempt from a rule it would teach.
+    #
+    # No `--no-verify`: a fresh `git init` has no `core.hooksPath` so there is nothing
+    # to skip, and the trailer is here so this still commits on a machine where one is
+    # set globally. A test reaching for that flag to make itself work is a test
+    # teaching the flag.
+    git(tmp_path, "add", "operations")
+    git(
+        tmp_path,
+        "commit",
+        "--quiet",
+        "-m",
+        "base\n\nCo-Authored-By: autoclave <autoclave@localhost>",
+    )
+    return copy
+
+
+# A stand-in for `docker`, recording every call as one JSON line and answering from
+# the environment. It is not a daemon: it proves what the launcher *asked for* and
+# what it did with the answer, which is the half of this script that no amount of
+# reading the source can pin down.
+#
+# Two behaviours earn their keep beyond recording. `docker exec ... sh -c '<script>'`
+# against a chamber runs that script for real, with `cd /work` rewritten to a real
+# throwaway clone — so `collect` and `rm` are tested against actual git states rather
+# than against a mock's opinion of one. And `docker exec ... sh -s` writes the script
+# it was handed to a file, so a test can read exactly what crossed into the chamber.
+DOCKER_STUB = """#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+with open(os.environ["FAKE_DOCKER_LOG"], "a") as stream:
+    stream.write(json.dumps(args) + "\\n")
+
+
+def setting(name, default=""):
+    return os.environ.get(name, default)
+
+
+def vendor_status(command):
+    return "auth status" in command or "login status" in command
+
+
+if args[:1] == ["info"] or args[:2] == ["image", "inspect"]:
+    raise SystemExit(0)
+if args[:2] == ["volume", "inspect"]:
+    raise SystemExit(0 if args[-1] in setting("FAKE_VOLUMES").split() else 1)
+if args[:2] in (["volume", "create"], ["volume", "rm"]):
+    raise SystemExit(0)
+if args[:2] == ["container", "inspect"]:
+    present = setting("FAKE_CONTAINER_EXISTS") == "1"
+    if "-f" in args:
+        print("true" if present else "false")
+        raise SystemExit(0)
+    raise SystemExit(0 if present else 1)
+if args[:1] == ["inspect"]:
+    template = " ".join(args)
+    if "verbatus.base" in template:
+        print(setting("FAKE_CHAMBER_BASE"))
+    elif "verbatus.vendor" in template:
+        print(setting("FAKE_CHAMBER_VENDOR", "codex"))
+    raise SystemExit(0)
+if args[:1] == ["run"]:
+    if vendor_status(args[-1]):
+        raise SystemExit(0 if setting("FAKE_AUTH_VALID") == "1" else 1)
+    raise SystemExit(int(setting("FAKE_LOGIN_STATUS", "0")))
+if args[:1] == ["exec"]:
+    if args[-2:] == ["sh", "-s"]:
+        with open(setting("FAKE_SETUP_SCRIPT", os.devnull), "w") as recorded:
+            recorded.write(sys.stdin.read())
+        raise SystemExit(int(setting("FAKE_SETUP_STATUS", "1")))
+    command = args[-1]
+    if vendor_status(command):
+        raise SystemExit(0 if setting("FAKE_AUTH_VALID") == "1" else 1)
+    chamber = setting("FAKE_CHAMBER_WORK")
+    if chamber and "cd /work" in command:
+        command = command.replace("cd /work", "cd " + chamber)
+        outdir = setting("FAKE_OUT_DIR")
+        if outdir:
+            command = command.replace("/out/", outdir + "/")
+        raise SystemExit(subprocess.run(["sh", "-c", command]).returncode)
+    raise SystemExit(int(setting("FAKE_EXEC_STATUS", "1")))
+if args[:1] == ["rm"]:
+    raise SystemExit(0)
+raise SystemExit(0)
+"""
+
+
+def fake_docker(tmp_path):
+    """Install the stub on PATH and return the environment that drives it.
+
+    Failing stubs for `claude` and `codex` go on the same PATH. If any invocation
+    drifts out of the container and onto the host, the dispatch fails and the
+    attempt is recorded — which is a stronger statement than reading the source and
+    concluding that it cannot.
+    """
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    docker = bindir / "docker"
+    docker.write_text(DOCKER_STUB)
+    docker.chmod(0o755)
+    host_vendor_log = tmp_path / "host-vendor-was-called"
+    for vendor in ("claude", "codex"):
+        stub = bindir / vendor
+        stub.write_text(f"#!/bin/sh\nprintf '%s\\n' {vendor} >> '{host_vendor_log}'\nexit 99\n")
+        stub.chmod(0o755)
+    log = tmp_path / "docker.jsonl"
+    return {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "FAKE_DOCKER_LOG": str(log),
+        "FAKE_HOST_VENDOR_LOG": str(host_vendor_log),
+        "FAKE_SETUP_SCRIPT": str(tmp_path / "setup.sh"),
+    }, log
+
+
+def docker_calls(log):
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
 
 def code_lines():
@@ -373,6 +533,133 @@ def test_doctor_reports_sign_in_state_for_both_vendors():
     assert result.returncode == 0
     assert "auth claude" in result.stdout
     assert "auth codex" in result.stdout
+
+
+class TestSignInIsAsked:
+    """A volume is where a sign-in lands. It is not evidence that one finished.
+
+    `login` creates the volume before the sign-in runs, so an abandoned or failed
+    attempt left one behind — and everything downstream read that empty volume as a
+    credential: `doctor` said "signed in", `new <task> <vendor>` labelled a chamber
+    for a credential it never mounted, and the only symptom was an authentication
+    failure from inside a vendor CLI two layers down.
+
+    The vendor is asked instead. `claude auth status` and `codex login status` both
+    exit 0 signed in and non-zero signed out — checked against `--help` on both CLIs,
+    and against `claude auth status` run with and without a sign-in present.
+    """
+
+    def test_a_present_volume_is_not_called_a_sign_in(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, _log = fake_docker(tmp_path)
+        env["FAKE_VOLUMES"] = "verbatus-ac-auth-claude verbatus-ac-auth-codex"
+        result = run("doctor", env=env, script=script)
+        assert result.returncode == 0
+        assert "signed in (" not in result.stdout, "a volume alone was reported as a sign-in"
+        assert result.stdout.count("not signed in") == 2
+
+    def test_a_vendor_that_answers_yes_is_reported_signed_in(self, tmp_path):
+        """The positive control: without it the test above passes for a `doctor`
+        that can never say anything but no."""
+        script = elsewhere(tmp_path)
+        env, _log = fake_docker(tmp_path)
+        env["FAKE_VOLUMES"] = "verbatus-ac-auth-claude verbatus-ac-auth-codex"
+        env["FAKE_AUTH_VALID"] = "1"
+        result = run("doctor", env=env, script=script)
+        assert result.returncode == 0
+        assert result.stdout.count("signed in (") == 2
+        assert "not signed in" not in result.stdout
+
+    def test_doctor_says_unknown_rather_than_guessing_without_an_engine(self):
+        """`doctor` is the first thing anyone runs and must answer on a bare machine.
+
+        With nothing to ask, the honest answer is neither yes nor no.
+        """
+        result = run("doctor")
+        assert result.returncode == 0
+        assert result.stdout.count("unknown") == 2, result.stdout
+
+    def test_an_incomplete_login_is_reported_and_takes_its_volume_with_it(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        result = run("login", "codex", env=env, script=script)
+        assert result.returncode != 0
+        assert "did not complete" in result.stderr
+        assert ["volume", "rm", "verbatus-ac-auth-codex"] in docker_calls(log), (
+            "an empty volume this call created was left behind to be read as a sign-in"
+        )
+
+    def test_a_login_leaves_a_volume_it_did_not_create_alone(self, tmp_path):
+        """Whether this call created the volume decides whether it may remove it."""
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_VOLUMES"] = "verbatus-ac-auth-codex"
+        result = run("login", "codex", env=env, script=script)
+        assert result.returncode != 0
+        assert not any(call[:2] == ["volume", "rm"] for call in docker_calls(log))
+
+    def test_a_completed_login_keeps_its_volume(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_AUTH_VALID"] = "1"
+        env["FAKE_VOLUMES"] = "verbatus-ac-auth-codex"
+        result = run("login", "codex", env=env, script=script)
+        assert result.returncode == 0, result.stderr
+        assert "reports itself signed in" in result.stdout
+        assert not any(call[:2] == ["volume", "rm"] for call in docker_calls(log))
+
+    def test_new_refuses_a_vendor_that_is_not_signed_in(self, tmp_path):
+        """And refuses before it writes anything: the chamber label would otherwise
+        claim a credential the container never received."""
+        script = elsewhere(tmp_path)
+        (tmp_path / "loose.txt").write_text("uncommitted work\n")
+        env, log = fake_docker(tmp_path)
+        env["FAKE_VOLUMES"] = "verbatus-ac-auth-claude"
+        result = run("new", "some-task", "HEAD", "claude", env=env, script=script, cwd=tmp_path)
+        assert result.returncode != 0
+        assert "not signed in" in result.stderr
+        # `authenticated` legitimately runs a throwaway container to ask the CLI, so
+        # the assertion is about the *chamber*: nothing was detached, and nothing was
+        # labelled for a vendor whose credential is not there.
+        assert not any("--detach" in call for call in docker_calls(log)), (
+            "a chamber was started for a vendor that is not signed in"
+        )
+        assert not any("verbatus.vendor=claude" in call for call in docker_calls(log))
+
+    def test_dispatch_asks_inside_the_chamber_not_of_the_label(self, tmp_path):
+        """A chamber outlives the check `new` made: a token expires, a vendor forces
+        a re-auth, an earlier agent rewrites the shared configuration directory. The
+        label says which credential was mounted, not whether it still works."""
+        script = elsewhere(tmp_path)
+        brief = tmp_path / "brief.md"
+        brief.write_text("bounded task\n")
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_CONTAINER_EXISTS": "1",
+                "FAKE_CHAMBER_VENDOR": "codex",
+                "FAKE_VOLUMES": "verbatus-ac-auth-codex",
+            }
+        )
+        result = run(
+            "dispatch",
+            "task-x",
+            "codex",
+            str(brief),
+            "gpt-5.6-luna",
+            "low",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+        assert result.returncode != 0
+        assert "not signed in inside chamber" in result.stderr
+        asked = [
+            call
+            for call in docker_calls(log)
+            if call[:1] == ["exec"] and "login status" in " ".join(call)
+        ]
+        assert asked, "dispatch never asked the CLI inside the chamber"
 
 
 def test_report_names_the_path_it_looked_for():
