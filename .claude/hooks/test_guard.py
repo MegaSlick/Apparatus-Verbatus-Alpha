@@ -17,6 +17,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,24 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     (tmp_path / "workbench" / "scratch").mkdir(parents=True)
     return tmp_path
+
+
+@pytest.fixture
+def project_under_tmp(monkeypatch):
+    """A project root that genuinely lives under `/tmp`, which is where every chamber
+    and CI actually checks this repository out.
+
+    `tmp_path` cannot stand in for it. On Linux that fixture already lands under
+    `/tmp`, so these cases pass there for the wrong reason; on macOS it lands under
+    `/var/folders/…`, which resolves to `/private/var/folders/…` and matches no
+    disposable prefix at all. Naming the directory explicitly is what makes the same
+    case mean the same thing on both.
+    """
+    with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+        root = Path(directory)
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(root))
+        (root / "workbench" / "scratch").mkdir(parents=True)
+        yield root
 
 
 # --------------------------------------------------- 1. landing work on `main`
@@ -174,6 +193,44 @@ class TestDeletes:
 
     def test_a_dry_run_clean_passes(self, project):
         assert decide("git clean -nd", project) is None
+
+
+class TestDeletesInsideATemporaryCheckout:
+    """The refusals must not evaporate because the checkout sits in a temporary
+    directory.
+
+    Every autoclave chamber and every CI run clones this repository under `/tmp`.
+    Treating that prefix as disposable wherever it appeared meant the whole checkout
+    was judged disposable, and `rm -rf` on the repository itself was waved straight
+    through — the one thing this refusal exists to stop. macOS hid it by accident,
+    which is why the suite passed on the host and failed in a chamber.
+
+    The rule these pin: a temporary directory is disposable **only when it is outside
+    the project root**. Inside it, only the named drawers are.
+    """
+
+    def test_the_project_itself_is_not_disposable_for_sitting_in_tmp(self, project_under_tmp):
+        assert denied(decide(f"rm -rf {project_under_tmp}", project_under_tmp))
+
+    def test_the_drawers_inside_a_tmp_checkout_are_still_refused(self, project_under_tmp):
+        assert denied(decide("rm -rf workbench", project_under_tmp))
+        assert denied(decide("rm -rf workbench/active", project_under_tmp))
+        assert denied(decide("rm -rf operations", project_under_tmp))
+
+    def test_scratch_inside_a_tmp_checkout_is_still_disposable(self, project_under_tmp):
+        assert decide("rm -rf workbench/scratch", project_under_tmp) is None
+        assert decide("rm -rf workbench/scratch/old-run", project_under_tmp) is None
+
+    def test_a_temporary_directory_outside_the_project_is_still_disposable(
+        self, project_under_tmp
+    ):
+        assert decide("rm -rf /tmp/some-other-build", project_under_tmp) is None
+
+    def test_the_parent_of_a_tmp_checkout_is_not_disposable(self, project_under_tmp):
+        # `/tmp` itself contains the checkout, so deleting it destroys the repository
+        # by a shorter path than naming it.
+        assert denied(decide("rm -rf /tmp", project_under_tmp))
+        assert denied(decide(f"rm -rf {project_under_tmp}/..", project_under_tmp))
 
 
 # ----------------------------------------------------- 3. rewriting history

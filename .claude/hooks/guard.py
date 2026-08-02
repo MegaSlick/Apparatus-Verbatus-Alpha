@@ -471,6 +471,12 @@ def landing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
 # `rm -rf` on the scratch drawer whose own rule is "disposable, delete without
 # checking", and that refusal is most of what taught the reflex.
 DISPOSABLE_ROOTS = ("workbench/scratch",)
+# **A temporary directory is disposable only when it is outside the project root.**
+# Read as a bare prefix, this list said the opposite of what it meant: every autoclave
+# chamber and every CI run clones this repository under `/tmp`, so the whole checkout
+# matched and `rm -rf` on the repository itself was waved through. macOS hid it —
+# `project_root()` resolves, and `/var/folders/…` becomes `/private/var/folders/…`,
+# which matches nothing here — so the suite passed on the host and failed in a chamber.
 DISPOSABLE_PREFIXES = ("/tmp/", "/private/tmp/", "/var/folders/")
 DISPOSABLE_NAMES = frozenset({"__pycache__", ".pytest_cache", ".ruff_cache", "node_modules"})
 
@@ -479,6 +485,11 @@ DISPOSABLE_NAMES = frozenset({"__pycache__", ".pytest_cache", ".ruff_cache", "no
 # but nothing resolves `$p`, and `p=../../..` with `rm -rf workbench/scratch/$p` leaves
 # the drawer entirely.
 LITERAL_PATH = re.compile(r"[A-Za-z0-9._/-]+")
+
+
+def within(path: str, directory: str) -> bool:
+    """True when `path` is `directory` itself or lies inside it."""
+    return path == directory or path.startswith(f"{directory}{os.sep}")
 
 
 def disposable(operand: str, payload: dict[str, Any]) -> bool:
@@ -490,12 +501,25 @@ def disposable(operand: str, payload: dict[str, Any]) -> bool:
     absolute = os.path.normpath(
         cleaned if os.path.isabs(cleaned) else str(working_directory(payload) / cleaned)
     )
-    if any(absolute.startswith(prefix) for prefix in DISPOSABLE_PREFIXES):
-        return True
     root = str(project_root())
+    # Both spellings are judged, because `project_root()` resolves symlinks and a
+    # literal operand does not. On macOS a checkout at `/tmp/x` is rooted at
+    # `/private/tmp/x`, so comparing only the text as written would call the
+    # repository a temporary directory again by a different route. Requiring both to
+    # be outside before the exemption applies fails toward refusing.
+    spellings = {absolute, os.path.realpath(absolute)}
+    if any(within(spelling, root) for spelling in spellings):
+        # Inside the project, only the named drawers are disposable. The temporary
+        # prefixes below never apply here, whatever the checkout is sitting in.
+        return any(
+            within(spelling, f"{root}/{drawer}")
+            for spelling in spellings
+            for drawer in DISPOSABLE_ROOTS
+        )
     return any(
-        absolute == f"{root}/{drawer}" or absolute.startswith(f"{root}/{drawer}/")
-        for drawer in DISPOSABLE_ROOTS
+        spelling.startswith(prefix)
+        for spelling in spellings
+        for prefix in DISPOSABLE_PREFIXES
     )
 
 
