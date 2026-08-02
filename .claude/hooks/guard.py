@@ -325,7 +325,13 @@ def invocation(name: str) -> re.Pattern[str]:
         # operand `main)` and matches no branch name. Quoted spans are blanked before
         # the search, so a bracket inside an argument is already a space here and only
         # shell syntax is excluded.
-        rf"(?:^|[;&|({{!]\s*)\s*{_WRAPPER}{_PATH}{name}\b(?P<tail>[^\n;&|)}}]*)",
+        # `then`, `do`, `else` and `elif` open a command position too, and only when
+        # they themselves follow a separator — so `if true; then git push origin main`
+        # is seen while `echo do git push` is not. Without this, every refusal in the
+        # file was bypassed by wrapping the command in `if`, `for` or `while`. Two
+        # review seats demonstrated it independently.
+        rf"(?:^|[;&|({{!]\s*)\s*(?:(?:then|do|else|elif)\s+)*"
+        rf"{_WRAPPER}{_PATH}{name}\b(?P<tail>[^\n;&|)}}]*)",
         flags=re.IGNORECASE,
     )
 
@@ -766,6 +772,8 @@ SAFE_COMMIT_BUNDLE = re.compile(r"-[aenqsvz]*n[aenqsvz]*")
 # inline config attached to one command, and a `git config` write.
 _HOOKS_PATH_WRITE = {"--unset", "--unset-all", "--replace-all", "--remove-section", "--add"}
 
+GIT_CONFIG_ENV_HOOKSPATH = re.compile(r"GIT_CONFIG_KEY_\d+\s*=\s*['\"]?core\.hookspath", re.I)
+
 
 def hooks_path_is_being_set(tokens: list[str]) -> bool:
     for index, token in enumerate(tokens):
@@ -817,6 +825,17 @@ def switching_the_hooks_off(tool: str, tool_input: Any, payload: dict[str, Any])
     if tool != "Bash":
         return None
     command = normalize(bash_command(tool_input))
+    # Git reads `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` from the environment, so
+    # an assignment in front of the command sets `core.hooksPath` without ever writing
+    # a config file or passing `-c`. The wrapper pattern already lets assignments
+    # precede a command, which is what made this invisible.
+    if GIT_CONFIG_ENV_HOOKSPATH.search(command):
+        return "deny", (
+            "`GIT_CONFIG_KEY_*` sets `core.hooksPath` from the environment, which "
+            "switches off the credential scan, the branch refusal and the attribution "
+            "check together. That spelling is Tyrel's, not a session's "
+            "(CLAUDE.md, Pushing and merging)."
+        )
     for tail in invocations(GIT, command):
         tokens = [token.lower() for token in tokenize(tail)]
         if hooks_path_is_being_set(tokens):
@@ -826,7 +845,12 @@ def switching_the_hooks_off(tool: str, tool_input: Any, payload: dict[str, Any])
                 "refusal and the attribution check together. This spelling is Tyrel's, "
                 "not a session's (CLAUDE.md, Pushing and merging)."
             )
-        if "--no-verify" in tokens or (
+        # Git accepts any unambiguous abbreviation, so `--no-ver` skips the hooks
+        # exactly as `--no-verify` does. Matching the prefix is broad on purpose: this
+        # refusal costs a session nothing it has a legitimate use for.
+        if any(
+            token.startswith("--no-v") and "--no-verify".startswith(token) for token in tokens
+        ) or (
             tokens[:1] == ["commit"] and any(SAFE_COMMIT_BUNDLE.fullmatch(t) for t in tokens[1:])
         ):
             return "deny", (

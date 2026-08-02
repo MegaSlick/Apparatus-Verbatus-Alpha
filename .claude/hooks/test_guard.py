@@ -526,6 +526,40 @@ class TestRtkProxyIsTransparent:
         assert denied(decide("(git push origin main)", project))
         assert denied(decide("{ rm -rf workbench; }", project))
 
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "if true; then git push origin main; fi",
+            "for x in 1; do rm -rf workbench; done",
+            "while true; do git push --force origin x; done",
+            "if false; then :; else git push origin main; fi",
+        ),
+    )
+    def test_a_shell_keyword_does_not_hide_a_refusal(self, project, command):
+        # `then`, `do` and `else` open a command position. Without them every refusal
+        # in the file was bypassed by wrapping the command in `if`, `for` or `while`.
+        # Two chamber seats demonstrated it independently.
+        assert denied(decide(command, project)), command
+
+    def test_a_keyword_word_that_is_not_a_command_position_stays_silent(self, project):
+        # The keyword only counts right after a separator, so prose does not trip it.
+        assert decide("echo do git push", project) is None
+        assert decide("for f in *.py; do ruff check $f; done", project) is None
+
+    def test_an_abbreviated_no_verify_is_still_a_bypass(self):
+        # Git accepts any unambiguous abbreviation.
+        assert denied(decide("git commit --no-ver -m x"))
+        assert denied(decide("git commit --no-verif -m x"))
+
+    def test_hookspath_cannot_be_set_from_the_environment(self):
+        # Git reads GIT_CONFIG_KEY_<n> without any config file or `-c`.
+        assert denied(
+            decide(
+                "GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null "
+                "GIT_CONFIG_COUNT=1 git commit -m x"
+            )
+        )
+
     def test_a_plus_refspec_is_a_force_push(self):
         # `+` forces without any flag at all.
         assert denied(decide("git push origin +main"))
