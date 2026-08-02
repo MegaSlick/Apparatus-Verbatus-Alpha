@@ -12,20 +12,35 @@ recollection was not.
 
 Capability is a property of **where** an agent runs, not of what it is called.
 
-**A reader runs on this machine and is read-only.** Locating, reviewing, auditing,
-objecting to a design. `Read`, `Grep`, `Glob` and nothing else — no write tool, no
-shell. It leaves its report as a file rather than only in a reply, so the work outlives
-the agent and does not fill the session's context.
-
-**Anything that writes or edits runs in a container.** Its own clone, its own branch, a
-full shell, its own tests. The repository goes in read-only, no pushing credential goes
-in at all, and the branch comes back to be read before anything lands. How to build,
-sign in, dispatch and collect: [operations/autoclave/README.md](../../operations/autoclave/README.md).
+**A container is where an agent works, and it is the default** (Tyrel, 2026-08-02).
+Anything whose subject is this repository goes into one: building, rebuilding, auditing
+a tree, reviewing a branch. It gets its own clone, its own branch, a full shell and its
+own tests. `/src` is a read-only mount with `private/`, `workbench/` and `scriptorium/`
+masked; no pushing credential goes in; at most one vendor's model credential does. Work
+returns as a branch and is read before anything lands. How to build, sign in, dispatch
+and collect: [operations/autoclave/README.md](../../operations/autoclave/README.md).
 The standing briefs are in `operations/autoclave/briefs/`.
 
-That is the whole boundary. A reader cannot damage anything because it holds no tool
-that writes; a writer cannot damage anything because nothing it touches is real until a
-human reads the diff.
+**It is also the more capable seat, which is why it is the default rather than the
+cautious choice.** A chamber agent has git, so it can read commit messages, diff two
+revisions and run the suite. A host reader cannot: on 2026-08-02 two host review seats
+reported that the question "is any claim in a commit message false?" was unanswerable
+by them, and one of the two mistook the stale copy of `CLAUDE.md` in its own context for
+the file on disk. Both failures are shell-shaped.
+
+**A host reader is the exception, and it is read-only.** `Read`, `Grep`, `Glob` and
+nothing else — no write tool, no shell. Reach for it when the question is *not* about
+this repository's tree: a design argument, a second opinion, a consult, or reading
+something outside the folder. Short results come back in its reply; a report that must
+outlive the agent belongs in a chamber, which can write one to `/out`.
+
+That is the boundary. A host reader cannot damage anything because it holds no tool that
+writes. A chamber agent cannot damage anything because nothing it touches is real until
+a human reads the diff.
+
+**Whichever seat, tell it to read the governing documents from disk.** Every agent boots
+with a copy of `CLAUDE.md` injected by the harness, and that copy can be older than the
+checkout. One review seat filed two false findings from its stale copy on 2026-08-02.
 
 ## The roles
 

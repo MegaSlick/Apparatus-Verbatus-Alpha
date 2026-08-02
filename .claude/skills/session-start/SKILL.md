@@ -39,6 +39,8 @@ recommend rebasing this branch onto `origin/main`, or ask Tyrel, before proceedi
 
 Read, in order:
 
+0. `.claude/skills/reporting/SKILL.md` — **first, because it governs every message from
+   here on**, including the plan this session is about to write. It is short.
 1. `README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`, `CLAUDE.md`
 2. `workbench/active/HANDOFF.md`
 3. only the other active files or specific archive evidence the handoff points to

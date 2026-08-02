@@ -218,14 +218,14 @@ task complete unless it is complete and verified.** Say what comes next: one
 recommendation with reasoning short enough to argue with, not a menu.
 
 Tyrel is not a programmer and does not read or write code. He is this project's manager
-and engineer, and he often works from his phone. **Point form is the default, not the
-fallback.** A paragraph is for the one thing that genuinely needs arguing, and there is
-rarely more than one in a report. **Bold the fact he has to act on**, not the topic
-sentence.
-
-**Questions go at the end, numbered, one line each, never inside a paragraph.** If he
-has to hunt for the question, it is written wrong. Ask them in the session, in plain
+and engineer, he often works from his phone, and he has ADHD. **Point form is the
+default, not the fallback**, and **questions go at the end, numbered, one batch, three
+at most.** A question he has to hunt for is written wrong. Ask in the session, in plain
 words: never in a file he has to open, never as a poll.
+
+The shape of a bullet, how long a list may be, and what to do with a question he did not
+answer: [.claude/skills/reporting/SKILL.md](.claude/skills/reporting/SKILL.md), read at
+session start and kept in context. It governs every message, not the final report.
 
 Most of what he needs stays in the session, not on his phone. **Four moments reach the
 phone, and only these four:** `start`, automatic and never sent by hand; `milestone`, a
