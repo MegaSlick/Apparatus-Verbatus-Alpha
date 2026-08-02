@@ -32,8 +32,22 @@ two-month stretch, until nobody could tell which document was true.
 only Tyrel takes them out. The asymmetry is the point: a session being wrong about "this
 is dead" costs work that cannot be recovered, and a session being slow costs nothing.
 `tidy.py` reports anything that has sat over seven days, by name, at session start — a
-staging drawer nobody empties is just a slower kind of clutter. Its own README carries
-the rule and the quarantine-or-archive test.
+staging drawer nobody empties is just a slower kind of clutter.
+
+Its rules, in full, because this is the only file in the drawer that reaches another
+clone: material is **moved, never copied**, so it exists here or in its old drawer and
+not both; each batch is one directory named `<date>_<what-and-why>`, so the name still
+says why a week later; and evidence a live finding still cites does not come here at all
+— that goes to `archive/`.
+
+**The test between the two:** if you would be annoyed to lose it, it is `archive/`. If
+you are only keeping it because deleting felt presumptuous, it is `quarantine/`.
+
+The drawer holds its own `README.md` repeating this, which `.gitignore` deliberately does
+**not** track. Tracking it would mean letting git descend into a directory whose whole
+purpose is holding material nobody has vetted, and personal material never enters git is
+the one rule that does not bend. So this paragraph is the durable copy; that one is a
+convenience for whoever opens the drawer.
 
 `raw/` is the drawer for what a machine actually said, kept verbatim, one dated folder
 per run. It exists because raw output is **evidence and not a note**, and the other two
