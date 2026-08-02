@@ -218,8 +218,14 @@ task complete unless it is complete and verified.** Say what comes next: one
 recommendation with reasoning short enough to argue with, not a menu.
 
 Tyrel is not a programmer and does not read or write code. He is this project's manager
-and engineer. Keep prose simple and use point form where you can. Ask questions in the
-session, in plain words: never in a file he has to open, never as a poll.
+and engineer, and he often works from his phone. **Point form is the default, not the
+fallback.** A paragraph is for the one thing that genuinely needs arguing, and there is
+rarely more than one in a report. **Bold the fact he has to act on**, not the topic
+sentence.
+
+**Questions go at the end, numbered, one line each, never inside a paragraph.** If he
+has to hunt for the question, it is written wrong. Ask them in the session, in plain
+words: never in a file he has to open, never as a poll.
 
 Most of what he needs stays in the session, not on his phone. **Four moments reach the
 phone, and only these four:** `start`, automatic and never sent by hand; `milestone`, a

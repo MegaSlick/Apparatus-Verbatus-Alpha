@@ -41,15 +41,20 @@ time:
 - **Section names.** `.claude/hooks/guard.py` quotes CLAUDE.md section names back at a
   session in its refusal text, and `.claude/skills/session-start/SKILL.md` cites them
   too. Rename or move a section and a refusal at three in the morning points at a section
-  that does not exist. `.githooks/pre-push` already cites a CLAUDE.md heading, "The commit
-  is the record", that is not there.
+  that does not exist. `.githooks/pre-push` once cited a CLAUDE.md heading, "The commit
+  is the record", that was not there. That one has since been repaired, which is the
+  reason to keep sweeping rather than the reason to stop: the example is gone, the
+  failure it demonstrates is not.
 - **Hard-rule numbers.** They are cited by number in the guard, its tests, two git hooks,
   the chamber briefs and a pipeline test. A number is never reused and never inserted —
   a new rule is appended.
 - **Counts and inventories.** A number stated in two documents is a number that will
-  disagree. `README.md` says the guard refuses six things; CLAUDE.md and the guard's own
-  `CHECKS` say seven. Prefer making the inventory one checked fact over correcting the
-  second copy.
+  disagree. `README.md` said the guard refuses six things while its `CHECKS` held seven,
+  and the guard's own title said six above a list of seven — three copies, two of them
+  wrong, and the honest answer was neither number: six apply to the session and a seventh
+  only to a spawned agent. **Qualify a count by its audience, and prefer making the
+  inventory one checked fact over correcting the second copy.** Nothing mechanical
+  catches a document drifting from the code here.
 
 ## 3. What the machinery does and does not cover
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The repository guard: six silent refusals, and quiet the rest of the time.
+"""The repository guard: six refusals for the session, a seventh for an agent, quiet otherwise.
 
 This file replaced a 2,294-line predecessor that had three verdicts — deny, ask,
 silence — and spent most of its life asking. Over three days it made 639 decisions,

@@ -5,8 +5,9 @@ civil registers, using imperfect witnesses. Several vision models report on each
 second hand; a trained reader, the **Perlector**, reads the ink itself and establishes
 the text.
 
-**Status — 2026-07-26:** alpha. Governance and architectural *direction* settled;
-workspace not yet built. Implementation is discovered during alpha. **GitHub enforces
+**Status — 2026-08-02:** alpha. Governance and architectural *direction* settled; the
+Spec 01 walking skeleton is landed and is not yet proven. Implementation is discovered
+during alpha. **GitHub enforces
 four things on `main`**, and only these four: a change arrives by pull request, the
 automated checks must pass before it can be merged, `main` cannot be force-pushed or
 deleted, and these apply to the owner as well. Everything else in this repository is a
@@ -29,10 +30,12 @@ This line is the only place status lives.
 Every local protection can be switched off, and how is written here — a guard the
 owner cannot unwire is a defect, whatever it prevents (CLAUDE.md hard rule 11).
 
-**The tool-call guard refuses six things and is silent otherwise.** Landing work on
-`main`, deleting recursively outside the drawers that exist to be emptied, rewriting
-published history, deleting a remote ref, putting a credential into git, and switching
-the git hooks off. It cannot ask — a refusal is final within a session, and the way
+**The tool-call guard refuses six things for this session, and a seventh only for a
+spawned agent.** Landing work on `main`, deleting recursively outside the drawers that
+exist to be emptied, rewriting published history, deleting a remote ref, putting a
+credential into git, and switching the git hooks off. The seventh is a spawned agent
+editing a governed path — the one refusal that is not the same for both audiences, and
+the reason built-in agent types can be used here at all. It cannot ask — a refusal is final within a session, and the way
 past one is Tyrel. The predecessor asked 503 times in three days and approval became
 reflexive, which is worse than no guard. **To switch it off, delete the `PreToolUse`
 block from `.claude/settings.json`** — one step, no other file needs touching.
