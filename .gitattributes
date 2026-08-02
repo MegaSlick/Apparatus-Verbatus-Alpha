@@ -2,4 +2,4 @@
 
 *.sh text eol=lf
 .githooks/* text eol=lf
-proof/fixtures/* -text
+proof/fixtures/** -text
