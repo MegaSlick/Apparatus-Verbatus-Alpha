@@ -112,6 +112,21 @@ class TestMain:
         assert denied(decide("git push origin HEAD:main", directory))
         assert denied(decide("git push origin HEAD:refs/heads/main", directory))
 
+    def test_a_bare_push_from_a_checkout_on_main_is_refused(self, tmp_path):
+        # The ordinary, undecorated form. It names no refspec, so the arm that reads
+        # refspecs saw nothing and let it through — while the docstring claimed this
+        # refusal covered pushing to main. Found by a Sonnet seat running the guard
+        # against real payloads inside a chamber.
+        directory = checkout_on(tmp_path, "main")
+        assert denied(decide("git push", directory))
+        assert denied(decide("git push origin", directory))
+        assert denied(decide("git push --tags", directory))
+
+    def test_a_bare_push_from_a_work_branch_still_passes(self, tmp_path):
+        directory = checkout_on(tmp_path, "work/topic")
+        assert decide("git push", directory) is None
+        assert decide("git push origin work/topic", directory) is None
+
     def test_a_write_into_a_checkout_on_main_is_refused(self, tmp_path):
         directory = checkout_on(tmp_path, "main")
         assert denied(decide_write(directory / "notes.md"))
@@ -433,6 +448,31 @@ class TestAgentGovernance:
         assert decide_as_agent("Write", {"file_path": str(ROOT / "operations" / "x.py")}) is None
         assert decide_as_agent("Bash", {"command": "pytest -q"}) is None
         assert decide_as_agent("Bash", {"command": "grep -rn TODO CLAUDE.md"}) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "printf x > .claude/settings.json",
+            "printf x > /abs/path/.claude/hooks/guard.py",
+            "tee .claude/settings.json",
+            "cp /dev/null .claude/settings.json",
+            "mv evil.py .claude/hooks/guard.py",
+        ),
+    )
+    def test_an_agent_cannot_reach_dot_claude_through_a_shell_path(self, command):
+        # The redirect branch matched governed *basenames* only, and `guard.py` is not
+        # one — so an agent could overwrite this file itself. The `.claude/` alternative
+        # required a leading slash, so the bare relative spelling passed too. Found by a
+        # Terra seat running the guard inside a chamber; DEFERRED_ACTIONS row 0.
+        assert denied(decide_as_agent("Bash", {"command": command})), command
+
+    @pytest.mark.parametrize(
+        "command",
+        ("grep -r foo .claude/", "cat .claude/settings.json", "ls .claude/"),
+    )
+    def test_an_agent_may_still_read_dot_claude(self, command):
+        # Reading is the whole job of a reader seat. A refusal here would be noise.
+        assert decide_as_agent("Bash", {"command": command}) is None, command
 
     def test_the_main_session_is_not_touched_by_this(self):
         # Named explicitly: the asymmetry is the design, not a leak.

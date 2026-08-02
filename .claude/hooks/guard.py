@@ -473,6 +473,19 @@ def landing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
     for action, arguments in calls:
         if action == "commit" and checkout_branch(working_directory(payload)) == MAIN_REF:
             return "deny", (f"This checkout stands on main, and hard rule {RULE_THREE} {OFF_MAIN}")
+        # **A push from a checkout standing on main is refused in every spelling.**
+        # The arm below reads explicit refspecs, so a bare `git push` — the ordinary,
+        # undecorated form, which sends the current branch to its upstream — named no
+        # token and passed, while this function's own docstring claimed it covered
+        # pushing to main. `pre-push` catches it, but only where `install.sh` has run,
+        # and CLAUDE.md says that setting never travels. Hard rule 3 does not care
+        # which spelling was used.
+        if action == "push" and checkout_branch(working_directory(payload)) == MAIN_REF:
+            return "deny", (
+                f"This checkout stands on main, and hard rule {RULE_THREE} A push from "
+                "here reaches main whatever refspec it names, or names none. "
+                f"{OFF_MAIN}"
+            )
         if action == "push" and any(
             token.lstrip("+").split(":", 1)[-1] in MAIN_NAMES
             for token in arguments
@@ -841,10 +854,17 @@ GOVERNED_NAMES = frozenset(
 _GOVERNED_ALTERNATION = "|".join(sorted(re.escape(name) for name in GOVERNED_NAMES))
 # A redirect or an in-place editor naming a governed document. Coarse on purpose: it only
 # ever judges an agent, where a false alarm costs one retry and a report, not a prompt.
+# `.claude/` at a path boundary, so the bare relative spelling counts as well as an
+# absolute one. Requiring a leading slash meant `> .claude/settings.json` passed, and
+# so did `> /abs/path/.claude/hooks/guard.py` — the redirect branch only ever matched
+# governed *basenames*, and `guard.py` is not one. A spawned agent could overwrite this
+# file. The lookbehind keeps `mine.claude/` and `..claude/` out.
+_DOT_CLAUDE = r"(?<![\w.])\.claude/"
 GOVERNED_SHELL_WRITE = re.compile(
     rf"(?:(?:^|[^0-9<>&])>{{1,2}}\s*(?:\./)?(?:{_GOVERNED_ALTERNATION})\b)"
-    rf"|(?:\b(?:tee|sed\s+-i|perl\s+-pi?|patch|truncate)\b[^\n;&|]*"
-    rf"(?:{_GOVERNED_ALTERNATION}|/\.claude/))",
+    rf"|(?:(?:^|[^0-9<>&])>{{1,2}}[^\n;&|]*{_DOT_CLAUDE})"
+    rf"|(?:\b(?:tee|sed\s+-i|perl\s+-pi?|patch|truncate|cp|mv|install|dd)\b[^\n;&|]*"
+    rf"(?:{_GOVERNED_ALTERNATION}|{_DOT_CLAUDE}))",
     flags=re.IGNORECASE,
 )
 
