@@ -146,7 +146,32 @@ Write `workbench/active/NEXT_SESSION_BRIEF.md`:
 
 The prompt points at the handoff and brief; it does not duplicate them.
 
-## 6. Report and notify
+## 6. Leave the machine as you found it
+
+The container engine is a virtual machine, and it keeps running after the session that
+started it has closed. Stopping it is the counterpart of session-start bringing it up.
+
+**Chambers first, and this is the part that loses work.** A container does not survive
+the engine stopping — that is measured, not feared. So before anything is stopped:
+
+```sh
+sh operations/autoclave/autoclave.sh list
+```
+
+Nothing running: stop the engine. Something running: **do not stop it.** Collect what
+the chamber holds, or leave the engine up and say in the handoff which chambers are
+live and what they were for. A chamber destroyed with uncollected work in it is exactly
+the silent loss hard rule 7 exists to prevent, and the engine costs nothing to leave
+running overnight.
+
+```sh
+colima stop
+```
+
+Say which of the two happened. If the engine was already down, say that rather than
+reporting a stop that did not occur.
+
+## 7. Report and notify
 
 Report:
 

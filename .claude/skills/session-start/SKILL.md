@@ -107,6 +107,22 @@ is a maintenance task, not a tax on every session. Run it when output looks stal
 tool fails in an unfamiliar way, or the handoff requests it. If Homebrew cannot refresh,
 report installed versions rather than claiming currentness.
 
+**Bring the container engine up, because agents are the normal shape of work here.** It
+is a virtual machine and it does not survive a reboot, so a session that does not check
+discovers it only when a dispatch fails — which is usually the moment it least wants a
+detour. Tyrel's instruction, 2026-08-02: if a session is working, the engine is live.
+
+```sh
+colima status || colima start
+```
+
+Starting takes a few seconds and it is not free — say that it was down and that you
+started it, so the state of his machine is never changed silently. If Colima is not
+installed at all, say so and carry on: it is only needed when something is dispatched,
+and `operations/autoclave/README.md` says how to install it.
+
+`/session-end` stops it again, and stops it only when no chamber is running.
+
 ## 6. Agree the goal before anything moves
 
 **Tyrel's stated goal outranks the handoff and the brief.** Both are the previous
