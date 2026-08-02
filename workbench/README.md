@@ -15,7 +15,7 @@ scribbles and half-finished thinking live. The old repository had no such place,
 all of that went into `docs/` — 320 markdown files, 32 of them written in a single
 two-month stretch, until nobody could tell which document was true.
 
-## Eight drawers
+## Nine drawers
 
 | Drawer | What goes in it | Lifespan |
 |---|---|---|
@@ -27,6 +27,15 @@ two-month stretch, until nobody could tell which document was true.
 | `scratch/` | greps, dumps, fragments, one-off output | **delete without asking, ever** |
 | `quarantine/` | material a session believes is dead, staged for Tyrel | **he deletes it; a session never does** |
 | `tools/` | scripts a session built that later sessions run | until superseded — one line at the top says what each is for |
+| `autoclave/` | one drawer per dispatched chamber — the brief, the report, the collected bundle | kept when the chamber is destroyed; archived with the work that cites it |
+
+`autoclave/` is the one drawer nothing here fills and nothing empties.
+`operations/autoclave/autoclave.sh` writes `workbench/autoclave/<task>/` when a chamber
+starts, and `autoclave.sh rm` keeps it deliberately — the bundle is the only surviving
+evidence that a dispatch happened. Like `raw/` it is counted rather than budgeted, and
+archived with the work that cites it rather than on a clock of its own. `tidy.py` names
+the chamber drawers it finds at session start, so they are pruned deliberately rather
+than when they become a nuisance.
 
 `quarantine/` is the one drawer whose direction is one-way. A session moves things in;
 only Tyrel takes them out. The asymmetry is the point: a session being wrong about "this

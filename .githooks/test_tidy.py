@@ -38,8 +38,21 @@ def load_tidy(tmp_path):
     mod.ARCHIVE = wb / "archive"
     mod.SCRATCH = wb / "scratch"
     mod.RAW = wb / "raw"
+    # Repointed like every other drawer, and for a reason worth naming: a constant
+    # left pointing at the real `workbench/autoclave` would make these tests read this
+    # machine's chamber drawers, so their output would depend on whoever last ran a
+    # dispatch here.
+    mod.AUTOCLAVE = wb / "autoclave"
     mod.MEMORY = tmp_path / "memory"
-    for d in (mod.ACTIVE, mod.STANDING, mod.DESIGN, mod.ARCHIVE, mod.SCRATCH, mod.RAW):
+    for d in (
+        mod.ACTIVE,
+        mod.STANDING,
+        mod.DESIGN,
+        mod.ARCHIVE,
+        mod.SCRATCH,
+        mod.RAW,
+        mod.AUTOCLAVE,
+    ):
         d.mkdir(parents=True)
     return mod
 
@@ -131,6 +144,29 @@ def test_a_clean_drawer_reports_nothing_and_exits_zero(tmp_path, capsys):
     (tidy.STANDING / "SUSPENSIONS.md").write_text("none in force\n")
     assert tidy.main([]) == 0
     assert "nothing wants attention" in capsys.readouterr().out
+
+
+def test_chamber_drawers_are_named_without_being_offered_for_deletion(tmp_path, capsys):
+    """`workbench/autoclave/` survives the chamber that made it, and nothing empties it.
+
+    So a session read a clean workbench while chamber bundles accumulated beside it,
+    unnamed and uncounted. It is reported and the drawers are named — but reporting is
+    not a request to delete, so this must not push the run into the attention arm.
+    """
+    tidy = load_tidy(tmp_path)
+    (tidy.ACTIVE / "HANDOFF.md").write_text("live\n")
+    (tidy.STANDING / "SUSPENSIONS.md").write_text("none in force\n")
+    drawer = tidy.AUTOCLAVE / "refactor-designator"
+    drawer.mkdir()
+    (drawer / "report.md").write_bytes(b"r" * 1024)
+    (drawer / "refactor-designator.bundle").write_bytes(b"b" * 2048)
+
+    assert tidy.main([]) == 0, "counting a surviving drawer must not demand attention"
+    out = capsys.readouterr().out
+    assert "autoclave/ 1 chamber drawers, 3 KB" in out, out
+    assert "refactor-designator" in out, "the report must name the drawers it found"
+    assert "nothing wants attention" in out
+    assert (drawer / "report.md").is_file(), "the report changes nothing"
 
 
 def test_a_missing_workbench_is_a_failure_not_a_pass(tmp_path, capsys):

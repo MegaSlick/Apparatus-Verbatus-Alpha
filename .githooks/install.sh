@@ -64,6 +64,7 @@ fi
 # fresh clone needs; their tracked README files explain what belongs in each.
 mkdir -p workbench/active workbench/standing workbench/archive \
          workbench/scratch workbench/design workbench/tools workbench/raw \
+         workbench/autoclave \
          workbench/quarantine
 
 # Configure Git only after every filesystem prerequisite succeeds. If either

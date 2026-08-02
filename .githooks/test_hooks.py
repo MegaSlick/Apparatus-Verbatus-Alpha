@@ -662,10 +662,36 @@ def test_install_creates_every_drawer_the_contract_declares(tmp_path):
         "design",
         "tools",
         "raw",
+        "autoclave",
         "quarantine",
     )
     missing = [name for name in declared if not (repo / "workbench" / name).is_dir()]
     assert not missing, f"install.sh did not create: {missing}"
+
+
+def test_tidy_names_the_chamber_drawers_no_installer_fills(tmp_path):
+    """`autoclave.sh` writes `workbench/autoclave/<task>/` and `rm` keeps it.
+
+    Nothing ages it, nothing empties it, and until now nothing counted it: a session
+    read a clean workbench while chamber bundles accumulated beside it. The `scratch/`
+    line is the positive control, because an assertion that `autoclave/` was reported
+    is worth nothing beside a run that never looked at the workbench at all.
+    """
+    repo = init_repo(tmp_path / "repo")
+    copy_hooks(repo, "tidy.py")
+    chamber = repo / "workbench" / "autoclave" / "refactor-designator"
+    chamber.mkdir(parents=True)
+    (chamber / "report.md").write_text("what the chamber did\n")
+    scratch = repo / "workbench" / "scratch"
+    scratch.mkdir(parents=True)
+    (scratch / "grep.txt").write_text("a dump\n")
+
+    result = command(["python3", ".githooks/tidy.py"], cwd=repo)
+
+    assert "scratch/" in result.stdout, "the report never ran"
+    assert "autoclave/ 1 chamber drawers" in result.stdout, result.stdout
+    assert "refactor-designator" in result.stdout, "the report must name the drawers it found"
+    assert (chamber / "report.md").is_file(), "the report changes nothing"
 
 
 def test_fixture_images_are_binary_at_any_depth(tmp_path):
