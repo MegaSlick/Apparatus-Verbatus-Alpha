@@ -149,8 +149,12 @@ cmd_login() {
     # sign-in can be finished from anywhere — which is the difference between "run
     # this when you are next at a keyboard" and "run this now".
     mode="${2:-browser}"
-    need_docker
-    docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
+    # **Arguments are judged before infrastructure is touched**, the same ordering
+    # `dispatch` and `new` already keep. Asking Docker first meant `login gemini`
+    # answered "docker CLI not found" instead of naming the two vendors that exist —
+    # a true statement about the wrong thing, and one that sends the reader off to
+    # install something they did not need. Two tests assert the vendor error and fail
+    # anywhere Docker is absent, which is every chamber and CI.
     case "$vendor" in
         claude) volume="$AUTH_VOL_CLAUDE"; mount="$AUTH_DIR_CLAUDE"; tool="claude /login" ;;
         codex)  volume="$AUTH_VOL_CODEX";  mount="$AUTH_DIR_CODEX";  tool="codex login" ;;
@@ -164,6 +168,8 @@ cmd_login() {
             tool="codex login --device-auth" ;;
         *) die "login mode is 'browser' or 'device'" ;;
     esac
+    need_docker
+    docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
 
     has_volume "$volume" || docker volume create "$volume" >/dev/null
 
@@ -204,14 +210,17 @@ cmd_login() {
 cmd_new() {
     task="${1:-}"; check_task "$task"
     base="${2:-HEAD}"
+
+    # Resolve the base to a commit on the host, so the chamber is pinned to an exact
+    # tree rather than to whatever a name meant at clone time. It is git-only, so it
+    # belongs above the Docker check for the same reason `login`'s vendor check does:
+    # a mistyped base should say the base is wrong, not that Docker is missing.
+    base_sha=$(git -C "$REPO_ROOT" rev-parse --verify "${base}^{commit}") \
+        || die "cannot resolve base '$base'"
+
     need_docker
     docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
     exists "$task" && die "chamber '$task' already exists — use 'rm $task' first"
-
-    # Resolve the base to a commit on the host, so the chamber is pinned to an
-    # exact tree rather than to whatever a name meant at clone time.
-    base_sha=$(git -C "$REPO_ROOT" rev-parse --verify "${base}^{commit}") \
-        || die "cannot resolve base '$base'"
 
     outdir=$(outdir_of "$task")
     mkdir -p "$outdir"
