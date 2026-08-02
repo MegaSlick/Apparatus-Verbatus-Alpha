@@ -125,6 +125,12 @@ roster is three seats, so most passes name three — but a trailer written from
 the plan rather than the outcome asserts a review on exactly the commit where
 none happened, and that is the commit somebody will one day be reading it on.
 
+**Name a seat by its release, whichever vendor** — "Claude Opus 5", "GPT-5.6 Sol
+(OpenAI)". `Codex (OpenAI)` is the fallback *only* when the serving release genuinely
+cannot be resolved, and the handoff records that it could not. "An AI reviewed it" ages
+badly; "GPT-5.6 Sol reviewed it" does not. This governs `Co-Authored-By:` at commit
+exactly as it governs `Reviewed-by:` here.
+
 There is no separate receipt file. `pre-push` reads these trailers back and
 prints them as a checklist before pushing; it never refuses, because nothing
 here turns on anything but Tyrel's word.
@@ -132,3 +138,27 @@ here turns on anything but Tyrel's word.
 Report the evidence paths, coverage, agreements, disagreements, and unresolved
 findings to Tyrel. Stop before pushing. The first push of a branch and the pull
 request it becomes are one gate, and it is asked for separately from this pass.
+
+## 5. After the pull request is open
+
+CLAUDE.md, Pushing and merging, states the rule: **the pull request is a working
+surface, not his inbox.** This is how it is worked.
+
+**Watch it until CodeRabbit has reported and its threads are settled, then stop.**
+Watching past that point is noise; stopping before it leaves a review nobody read.
+A push to an open pull request restarts CodeRabbit, so a fix means one more wait.
+
+**Resolve a thread only with a stated disposition** — never silently, never in bulk.
+One of two:
+
+- **Fixed**, naming the commit that did it.
+- **Declined**, with the reason. A finding you disagree with is declined on the
+  record, not left open and not quietly resolved.
+
+**A disposition may correct the reviewer.** Where a finding's conclusion is right but
+its stated mechanism is wrong, take the fix and say so — accepting faulty reasoning
+because the conclusion suited you puts a false claim in the permanent record of the
+pull request. Verify the mechanism against the tree before you either accept or
+dispute it.
+
+**Recommend a final pass before he merges.** Squashing and merging is his alone.

@@ -68,6 +68,19 @@ that should trigger a re-read. Without that it is a daydream, not a plan.
    budget. It exists so `active/` can genuinely empty each sitting and its over-budget
    alarm means something. A note that merely *might* matter later is not standing; it
    is `design/` or it is finished.
+8. **A plan about to be built from gets a reader on it first.** A note nobody has read
+   is a draft; a plan a session is about to execute is a decision wearing a draft's
+   clothes, and rule 5 is what makes the difference matter.
+
+## What may be committed instead
+
+A note lives here because it is *not* committable. Committed documentation means a
+governed document, a `README.md`, a `HANDOFF.md`, dated evidence under `history/`, or a
+declared harness document — `.githooks/doc-allowlist.sh` is the one list, and
+`pre-commit` and CI refuse everything else.
+
+So the choice is not "note or document" by feel: if what you are writing is not one of
+those five things, it is a note, and it belongs in a drawer above.
 
 ## Why most of it is gitignored
 

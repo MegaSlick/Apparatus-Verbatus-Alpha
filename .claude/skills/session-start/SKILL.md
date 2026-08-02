@@ -144,6 +144,10 @@ With the goal settled, tell him briefly:
 
 Recommend one shape rather than offering a menu, then wait for his answer.
 
+**The one way that wait is skipped:** he may say plainly, at the open, to start without
+confirming. That holds **for that session only** — it is never inferred from a previous
+session, from impatience, or from the work looking obvious, and it lapses at the close.
+
 Worked examples, the length his answer needs:
 
 > Ten-file text repair from a verified findings list: **direct**, attended, roughly two
