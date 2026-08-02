@@ -108,11 +108,16 @@ def test_a_source_manifest_repeating_an_ordinal_is_refused(tmp_path):
 
 def test_a_source_page_without_an_integer_ordinal_is_refused(tmp_path):
     """The other direction of the same rule: a run cannot account for pages it
-    cannot count. `True` is excluded explicitly because `isinstance(True, int)`."""
+    cannot count. `True` is excluded explicitly because `isinstance(True, int)`.
+
+    Every case but the first carries a well-formed `sha256`, so the ordinal is the
+    only thing wrong with it. Nothing validates a source page's digest today, so
+    the refusals below can only be the ordinal check — but a digest check added
+    ahead of it would otherwise leave this test passing for the wrong reason."""
     for bad in (
         {"relative_path": "p.png", "sha256": "a" * 64},
-        {"ordinal": "1"},
-        {"ordinal": True},
+        {"sha256": "a" * 64, "ordinal": "1"},
+        {"sha256": "a" * 64, "ordinal": True},
     ):
         with pytest.raises(SchemaRefusal):
             make_run(tmp_path, source_manifest=[{"relative_path": "p.png", **bad}])
