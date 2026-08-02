@@ -156,6 +156,13 @@ build daemon.
 
 ## Limits, stated rather than discovered
 
+**An agent in here may orchestrate, and should be told to when the job is large.** It
+can spawn its own agents and fan out across its clone; `.claude/agents/README.md`'s
+spawn-depth bound is about host agents and does not reach in here. That is what the
+chamber is *for* — the expensive, wide, wreck-the-tree kind of work belongs where
+wrecking the tree costs a rebuild. Hard rule 10 still holds inside: no agent of its may
+edit a governed path.
+
 **Network egress is open.** The agent CLIs must reach their model provider, so
 the container is not run with `--network none`. An agent inside can therefore
 reach the internet.

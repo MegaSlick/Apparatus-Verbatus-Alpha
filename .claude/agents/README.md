@@ -160,7 +160,21 @@ leaning on one.
 ## Bounds
 
 - `Agent` is denied to every role, and project settings cap spawn depth at one. Fan-out
-  stays visible to the main session.
+  stays visible to the main session. **Both of those are bounds on *host* agents and
+  neither applies inside a chamber.**
+- **A chamber agent may orchestrate freely, and that is the point of the boundary
+  rather than a hole in it.** It can spawn its own agents, fan out across its clone,
+  and spend as much as the job takes — because nothing it touches is real until a human
+  reads the diff, and a clone it wrecks is destroyed and rebuilt in seconds. A session
+  that hesitates to let a chamber agent orchestrate has misread what the container is
+  for: the bounds above exist because a host agent runs on Tyrel's machine, and a
+  chamber agent does not.
+
+  Two things still hold in there, and neither is about caution. The chamber agent is
+  the only integrator of its own work — a sub-agent's claim is evidence, not a finding.
+  And **hard rule 10 does not stop at the container wall**: no agent of its may edit a
+  governed path either, because the wording that binds later sessions is Tyrel's to
+  approve wherever it was written.
 - No role in this directory has a write or shell tool. That is a bound on the roster,
   not a fact about today's entries: a role added here with `Write`, `Edit`,
   `NotebookEdit` or `Bash` fails `test_roster.py`.
