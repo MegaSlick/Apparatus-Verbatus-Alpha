@@ -9,8 +9,8 @@ boundary: dynamic imports and path manipulation can still cross it. The reposito
 rule is that stages communicate only through the files declared in their
 `HANDOFF.md`. Boundary tests must accompany the first implementation of each stage.
 
-The path `pipeline/run.py` is reserved for the future whole-flow runner and bounded
-recovery loop. Before that runner is accepted, a tracked recovery configuration must
-declare the finite budget: the Recensor will write a recorded coverage-recovery request,
-and the runner will honour it only within that budget. A stage's own `run.py` is reserved
-for executing only that stage.
+The whole-flow runner and its bounded recovery loop live in `pipeline/orchestrator/`,
+not at `pipeline/run.py` as this file once reserved. The budget it honours is declared
+in a tracked recovery configuration, the Recensor writes a recorded coverage-recovery
+request, and the runner acts only within that budget. A stage's own `run.py` is
+reserved for executing only that stage.

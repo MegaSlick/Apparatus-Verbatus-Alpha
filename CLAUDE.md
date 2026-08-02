@@ -186,6 +186,34 @@ that grows long is a change of shape — say so and re-agree it.**
 attended or unattended, which shape, which units deserve agents. One paragraph, then
 wait. `/session-start` holds the worked examples.
 
+**An unattended session does not invoke an action that can trigger a permission
+prompt.** Not "does not wait on one" — does not invoke one. Before unattended work
+begins, name every action in it that could prompt — a `git worktree` add or remove, a
+deletion, anything outside the allowlist — and plan a route that does not need it. **If
+you are unsure whether something prompts, treat it as though it does.**
+
+When one turns out to be necessary anyway: **ping him the moment you discover it, not
+the moment you stop**; record it in `workbench/active/DEFERRED_ACTIONS.md`; and carry on
+with every piece of work that does not depend on it. A session sitting on a prompt is
+doing no work and cannot tell you that it is stuck.
+
+**Whether you may then ask turns on one thing: has he said he is available?**
+
+- **He has not** — the default overnight. Keep working *without* it, on everything that
+  does not depend on it. **Working without it is not working around it**: do not look
+  for another route to the same action, a spelling that dodges the prompt, or a
+  wrapper that hides it. The action is deferred, not to be achieved by other means.
+  Reach it only when everything else is genuinely finished, so waiting costs nothing,
+  or when you are stuck and no further progress is possible without it. Being stuck is
+  a reason to stop and ping, not a reason to invoke it and hope.
+- **He has said he is available for prompts** — ask freely, as in an attended session.
+  Availability is his to declare and it does not carry: it lapses when the session
+  closes, and a later session assumes he is asleep.
+
+**Prefer stuck to sorry.** Where a route that avoids a prompt would risk losing work —
+deleting, moving, or overwriting something to dodge a confirmation — take the prompt and
+wait. Getting stuck costs a night; the other mistake costs the work.
+
 ## Agents
 
 The roster, effort floors and ranges, prompting rules and bounds live in

@@ -1,0 +1,377 @@
+"""The outcome algebra: two layers, and a total mapping between them.
+
+Harvest invariant #10 is the spine — *total partition, proven, every stage*: every
+unit entering a stage is accounted for at the boundary as exactly one of completed
+/ unresolved-with-evidence / failed, and a unit in none of those sets is a FATAL
+accounting imbalance, never a warning. That is the CLASS layer, and it is the same
+three words at every boundary in the pipeline.
+
+Each stage also has its own closed OUTCOME vocabulary, because "failed" is not
+informative enough to act on: the Recensor needs to tell a held act from a blank
+one, and a witness seat that died from one that was never asked. Every outcome maps
+to exactly one class, and every outcome maps either to a terminal Armarium category
+or explicitly to None meaning "flows onward". Both mappings are total, and
+`check_algebra_is_total` proves it rather than trusting it — an outcome added later
+without a class or without a terminal decision fails that check loudly, which is
+what "no stage invents a state" has to mean if it is to mean anything.
+
+**Why the witness column is all None.** Witness outcomes are the one vocabulary in
+this file that terminates nothing. They aggregate into a coverage record and never
+into a category or a character of text. An act every one of whose seats is `failed`
+or `dead` still reaches the Perlector, which reads the ink; it may be delivered,
+carrying `under_witnessed`. Any rule that let seat outcomes promote or demote an
+act's text would be a picker wearing an accounting name, and GOVERNANCE 3 forbids
+it under every name.
+
+`failed` in the witness vocabulary is Sol's blocker 4 (finding B-2), repaired: spec
+07 required a failed re-read to derive `current=FAILED` while the stated vocabulary
+had no such member, so the supposedly closed algebra had a hole exactly where the
+retention ruling bites.
+"""
+
+from collections.abc import Mapping
+from enum import Enum
+from typing import Any, Final
+
+from .errors import ApprovalRefusal, FatalAccounting
+from .stages import (
+    ARCHETYPUS,
+    ARMARIUM,
+    ATTESTATORES,
+    DESIGNATOR,
+    DOOR,
+    EXEMPLAR,
+    PERLECTOR,
+    RECENSOR,
+)
+
+
+class OutcomeClass(str, Enum):
+    """Invariant #10's three sets. Every unit is in exactly one."""
+
+    COMPLETED = "completed"
+    UNRESOLVED = "unresolved"
+    FAILED = "failed"
+
+
+class ArmariumCategory(str, Enum):
+    """The five terminal categories an act can end in, and nothing else."""
+
+    DELIVERED = "delivered"
+    HELD_FOR_REVIEW = "held-for-review"
+    EXCLUDED_WITH_APPROVAL = "excluded-with-approval"
+    CONFIRMED_BLANK = "confirmed-blank"
+    REFUSED_WITH_REASON = "refused-with-reason"
+
+
+_C = OutcomeClass
+_A = ArmariumCategory
+
+# --- The vocabularies: outcome -> class, one closed set per stage ---------------
+
+VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
+    DOOR: {
+        "admitted": _C.COMPLETED,
+        "refused": _C.FAILED,
+    },
+    EXEMPLAR: {
+        "sealed": _C.COMPLETED,
+        "refused": _C.FAILED,
+    },
+    DESIGNATOR: {
+        "proposed": _C.COMPLETED,
+        # Completed only because an approval record says so; `require_approval`
+        # below is what stops the word from being enough on its own.
+        "excluded": _C.COMPLETED,
+        "held": _C.UNRESOLVED,
+        "failed": _C.FAILED,
+    },
+    ATTESTATORES: {
+        "read": _C.COMPLETED,
+        # The seat read the region and there was genuinely nothing to report.
+        # That is a reading, not an absence — the old stage could not tell the
+        # difference, and collapsed both into one empty file.
+        "genuinely-empty": _C.COMPLETED,
+        # An attempt was made and produced no usable Testimonium. The failed
+        # attempt artifact is the evidence. This is blocker 4's member.
+        "failed": _C.FAILED,
+        # Configured but unavailable; no attempt reached the region.
+        "dead": _C.FAILED,
+        # Configured, never attempted, nothing went wrong yet.
+        "not-run": _C.UNRESOLVED,
+        "excluded": _C.COMPLETED,
+    },
+    PERLECTOR: {
+        "read": _C.COMPLETED,
+        # An explicit status, never an empty string standing in for one. What the
+        # canonical `text` value is for this case is Spec 10's to settle (Sol N-3
+        # / blocker 7); the status exists here so the algebra is closed regardless.
+        "no-readable-text": _C.COMPLETED,
+        # ARCHITECTURE: it reads through to the end — truncation is a failure,
+        # not an output.
+        "truncated": _C.FAILED,
+        "failed": _C.FAILED,
+        "not-run": _C.UNRESOLVED,
+    },
+    RECENSOR: {
+        "accepted": _C.COMPLETED,
+        "recovery-requested": _C.UNRESOLVED,
+        "confirmed-blank": _C.COMPLETED,
+        "held-for-review": _C.UNRESOLVED,
+        "failed": _C.FAILED,
+    },
+    ARCHETYPUS: {
+        "established": _C.COMPLETED,
+        "refused": _C.FAILED,
+    },
+    ARMARIUM: {
+        category.value: klass
+        for category, klass in (
+            (_A.DELIVERED, _C.COMPLETED),
+            (_A.HELD_FOR_REVIEW, _C.UNRESOLVED),
+            (_A.EXCLUDED_WITH_APPROVAL, _C.COMPLETED),
+            (_A.CONFIRMED_BLANK, _C.COMPLETED),
+            (_A.REFUSED_WITH_REASON, _C.FAILED),
+        )
+    },
+}
+
+# --- The transition table: (stage, outcome) -> terminal category, or None -------
+#
+# None means "this unit flows onward and some later stage decides its category".
+# A missing entry means nobody decided, which `check_algebra_is_total` treats as
+# the defect it is.
+
+TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
+    (DOOR, "admitted"): None,
+    (DOOR, "refused"): _A.REFUSED_WITH_REASON,
+    (EXEMPLAR, "sealed"): None,
+    (EXEMPLAR, "refused"): _A.REFUSED_WITH_REASON,
+    (DESIGNATOR, "proposed"): None,
+    (DESIGNATOR, "excluded"): _A.EXCLUDED_WITH_APPROVAL,
+    (DESIGNATOR, "held"): _A.HELD_FOR_REVIEW,
+    (DESIGNATOR, "failed"): _A.REFUSED_WITH_REASON,
+    # Every witness outcome is transitive. See the module docstring: this column
+    # is where a picker would be born if any entry here were a category.
+    (ATTESTATORES, "read"): None,
+    (ATTESTATORES, "genuinely-empty"): None,
+    (ATTESTATORES, "failed"): None,
+    (ATTESTATORES, "dead"): None,
+    (ATTESTATORES, "not-run"): None,
+    (ATTESTATORES, "excluded"): None,
+    (PERLECTOR, "read"): None,
+    (PERLECTOR, "no-readable-text"): None,
+    (PERLECTOR, "truncated"): None,
+    (PERLECTOR, "failed"): None,
+    (PERLECTOR, "not-run"): None,
+    (RECENSOR, "accepted"): None,
+    (RECENSOR, "recovery-requested"): None,
+    (RECENSOR, "confirmed-blank"): _A.CONFIRMED_BLANK,
+    (RECENSOR, "held-for-review"): _A.HELD_FOR_REVIEW,
+    (RECENSOR, "failed"): _A.REFUSED_WITH_REASON,
+    (ARCHETYPUS, "established"): _A.DELIVERED,
+    (ARCHETYPUS, "refused"): _A.REFUSED_WITH_REASON,
+    (ARMARIUM, _A.DELIVERED.value): _A.DELIVERED,
+    (ARMARIUM, _A.HELD_FOR_REVIEW.value): _A.HELD_FOR_REVIEW,
+    (ARMARIUM, _A.EXCLUDED_WITH_APPROVAL.value): _A.EXCLUDED_WITH_APPROVAL,
+    (ARMARIUM, _A.CONFIRMED_BLANK.value): _A.CONFIRMED_BLANK,
+    (ARMARIUM, _A.REFUSED_WITH_REASON.value): _A.REFUSED_WITH_REASON,
+}
+
+# The Perlector's failures are transitive on purpose: a truncated or failed reading
+# is the Recensor's to act on — it may request bounded recovery — and only the
+# Recensor's own outcome terminates the act. A Perlector failure that terminated
+# the act here would take the recovery loop out of the architecture by accident.
+
+
+def classify(stage: str, outcome: Any) -> OutcomeClass:
+    """The class of one stage outcome. An unknown outcome is fatal, not a warning."""
+    vocabulary = VOCABULARIES.get(stage)
+    if vocabulary is None:
+        raise FatalAccounting(f"stage {stage!r} has no outcome vocabulary")
+    try:
+        return vocabulary[outcome]
+    except (KeyError, TypeError):
+        raise FatalAccounting(
+            f"{stage} produced outcome {outcome!r}, which is in no terminal set; "
+            f"its closed vocabulary is {sorted(vocabulary)}. Invariant #10: a unit "
+            "in no set is a fatal accounting imbalance, never a warning"
+        ) from None
+
+
+def terminal_category(stage: str, outcome: Any) -> ArmariumCategory | None:
+    """The category this outcome ends in, or None when it flows onward."""
+    classify(stage, outcome)
+    try:
+        return TERMINAL_CATEGORY[(stage, outcome)]
+    except KeyError:
+        raise FatalAccounting(
+            f"({stage}, {outcome!r}) has a class but no entry in the transition "
+            "table: nobody decided whether it terminates the act or flows onward"
+        ) from None
+
+
+def require_approval(stage: str, outcome: Any, approval_ref: Any) -> None:
+    """Refuse an approval-bound outcome that carries no approval-record reference.
+
+    Only two outcomes in the whole algebra are approval-bound, and both mean a unit
+    left the pipeline as `completed` without anyone reading its text. A claimed
+    approval with no artifact is no approval.
+    """
+    # Both spellings, because they are the same fact at two stages. A stage says
+    # `excluded`; the Armarium's terminal category for it is
+    # `excluded-with-approval`. Matching only the first left the category that
+    # *names* approval as the one place the check did not reach, so an export
+    # entry could carry it with no approval reference at all.
+    if outcome not in ("excluded", ArmariumCategory.EXCLUDED_WITH_APPROVAL.value):
+        return
+    if not isinstance(approval_ref, str) or not approval_ref:
+        raise ApprovalRefusal(
+            f"{stage} outcome {outcome!r} carries no approval-record reference; "
+            "only Tyrel approves an exclusion, and the artifact is the approval"
+        )
+
+
+def check_algebra_is_total() -> None:
+    """Prove both mappings total, and prove the two layers agree.
+
+    Called by the contract tests and by the orchestrator at startup, so a stage
+    added later without a class or a terminal decision fails at the first run
+    rather than at the first unusual page.
+    """
+    for stage, vocabulary in VOCABULARIES.items():
+        if not vocabulary:
+            raise FatalAccounting(f"stage {stage!r} has an empty vocabulary")
+        for outcome, klass in vocabulary.items():
+            if not isinstance(klass, OutcomeClass):
+                raise FatalAccounting(f"({stage}, {outcome!r}) has no class")
+            if (stage, outcome) not in TERMINAL_CATEGORY:
+                raise FatalAccounting(
+                    f"({stage}, {outcome!r}) is missing from the transition table"
+                )
+            category = TERMINAL_CATEGORY[(stage, outcome)]
+            if category is not None and VOCABULARIES[ARMARIUM][category.value] is not klass:
+                raise FatalAccounting(
+                    f"({stage}, {outcome!r}) is class {klass.value} but terminates "
+                    f"in {category.value}, which is class "
+                    f"{VOCABULARIES[ARMARIUM][category.value].value}: a unit would "
+                    "change class by crossing a boundary"
+                )
+    for stage, outcome in TERMINAL_CATEGORY:
+        if outcome not in VOCABULARIES.get(stage, {}):
+            raise FatalAccounting(
+                f"transition table has ({stage}, {outcome!r}), which is in no "
+                "stage vocabulary — a state invented by the table itself"
+            )
+
+
+# --- Witness coverage: outcomes aggregate into counts, never into text ----------
+
+
+def witness_coverage(seat_outcomes: Mapping[str, str], configured_floor: int) -> dict[str, Any]:
+    """Aggregate one act's seat outcomes into the coverage record.
+
+    Returns counts and two flags, and deliberately returns no category and no
+    text. The caller may record this beside an act; nothing may branch the act's
+    reading on it.
+
+    `under_witnessed` is seats reaching a completed-class outcome below the
+    configured floor. Spec 07: three seats is the floor, the machinery tolerates
+    fewer so one dead witness never kills a run, and a run below the floor is
+    recorded as under-witnessed in the Recensor receipt and the export manifest,
+    visibly, every time.
+    """
+    if configured_floor < 0:
+        raise FatalAccounting(f"configured witness floor {configured_floor} is negative")
+    by_outcome: dict[str, int] = {}
+    by_class: dict[str, int] = {klass.value: 0 for klass in OutcomeClass}
+    for seat, outcome in seat_outcomes.items():
+        if not seat:
+            raise FatalAccounting("a seat outcome was recorded against an unnamed seat")
+        klass = classify(ATTESTATORES, outcome)
+        by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
+        by_class[klass.value] += 1
+    completed = by_class[OutcomeClass.COMPLETED.value]
+    return {
+        "configured": len(seat_outcomes),
+        "floor": configured_floor,
+        "by_outcome": by_outcome,
+        "by_class": by_class,
+        "under_witnessed": completed < configured_floor,
+        # An unresolved seat is a question nobody answered; it is not evidence of
+        # anything, so it cannot sit inside a run that calls itself complete.
+        "unresolved_seats": by_class[OutcomeClass.UNRESOLVED.value],
+    }
+
+
+def run_aggregate(
+    act_categories: Mapping[str, ArmariumCategory],
+    coverage_records: Mapping[str, Mapping[str, Any]] | None = None,
+    page_census: Mapping[int, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """The run's own terminal state, and every reason it is not `complete`.
+
+    GOVERNANCE 2, read literally: a partial result is visibly partial, and
+    "complete" is refused unless everything reconciles. So `complete` here means
+    every act reached a completed-class category, every configured seat
+    reconciled against the configuration it was run under, AND every page in the
+    census was sealed. Every reason is named in `reasons`; a run is never partial
+    without saying why.
+
+    The page census exists because acts are discovered but pages are given: the
+    proposal seal only ever names acts that were marked out, so a page the door
+    refused left no hole in the act-level conservation check at all. A run that
+    lost a whole page could report `status: complete, reasons: []` — the census,
+    keyed by ordinal with the Exemplar's own outcome for each page, is where that
+    loss becomes visible. A page outcome outside the Exemplar's vocabulary is
+    fatal, never routed around, and a refusal with no recorded reason still
+    forces `partial` — absent evidence never reads cleaner than damaged evidence.
+    """
+    reasons: list[str] = []
+    by_category: dict[str, int] = {}
+
+    # A run that examined nothing is not a run in which everything reconciled.
+    # `reasons` starts empty and the loops below can each execute zero times, so
+    # an aggregate over no acts and no pages fell straight through to `complete`
+    # — a green verdict asserting that nothing had gone wrong with nothing.
+    # GOVERNANCE 2 refuses "complete" unless everything reconciles, and an empty
+    # population reconciles vacuously rather than actually.
+    #
+    # Acts alone being empty is deliberately *not* the trigger: a sealed page
+    # carrying no acts is a blank page, which is a real and correct outcome.
+    if not act_categories and not (page_census or {}):
+        reasons.append("the run accounted for no acts and no pages, so nothing was reconciled")
+
+    for act, category in act_categories.items():
+        if not isinstance(category, ArmariumCategory):
+            raise FatalAccounting(f"act {act} carries {category!r}, not a category")
+        by_category[category.value] = by_category.get(category.value, 0) + 1
+        if VOCABULARIES[ARMARIUM][category.value] is not OutcomeClass.COMPLETED:
+            reasons.append(f"act {act} is {category.value}")
+
+    for act, coverage in (coverage_records or {}).items():
+        if coverage.get("under_witnessed"):
+            reasons.append(
+                f"act {act} is under-witnessed "
+                f"({coverage['by_class']['completed']} of a floor of {coverage['floor']})"
+            )
+        if coverage.get("unresolved_seats"):
+            reasons.append(
+                f"act {act} has {coverage['unresolved_seats']} seat(s) with no outcome yet"
+            )
+
+    by_page_outcome: dict[str, int] = {}
+    for ordinal in sorted(page_census or {}):
+        outcome = page_census[ordinal].get("outcome")
+        classify(EXEMPLAR, outcome)
+        by_page_outcome[outcome] = by_page_outcome.get(outcome, 0) + 1
+        if outcome != "sealed":
+            reason = page_census[ordinal].get("reason") or "no reason was recorded"
+            reasons.append(f"page {ordinal} was {outcome}: {reason}")
+
+    return {
+        "status": "complete" if not reasons else "partial",
+        "by_category": by_category,
+        "by_page_outcome": by_page_outcome,
+        "reasons": reasons,
+    }
