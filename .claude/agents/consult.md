@@ -1,6 +1,6 @@
 ---
 name: consult
-description: A second opinion at full depth — on a design, a plan, a session breakdown, or an architecture question, before it runs. Read-only; returns a recommendation with reasoning, never an edit. Use before any large commitment, and whenever CLAUDE.md says to put a design past an Opus 5 or Fable 5 agent. Set the model per question.
+description: A second opinion at full depth — on a design, a plan, a session breakdown, or an architecture question, before it runs. Read-only; returns a recommendation with reasoning, never an edit. Use before any large commitment, and whenever a design should be read by a second seat before it runs. Set the model per question, from the measured table in .claude/agents/README.md.
 tools: Read, Grep, Glob
 disallowedTools: Write, Edit, NotebookEdit, Bash, Agent, WebFetch, WebSearch
 model: inherit

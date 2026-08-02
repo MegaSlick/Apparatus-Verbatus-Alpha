@@ -158,31 +158,35 @@ build daemon.
 
 **Network egress is open.** The agent CLIs must reach their model provider, so
 the container is not run with `--network none`. An agent inside can therefore
-reach the internet. What it cannot reach is this machine: `/src` is a read-only
-mount and no credentials are passed in.
+reach the internet.
 
-**Model credentials are not wired up yet.** This is deliberate and it is the
-next thing to settle. The options are an environment variable at `docker run`,
-a named volume authenticated once, or a mount of the host's tool config — and
-the third puts real credentials somewhere an agent can read them. Nothing is
-mounted until that is decided.
+**`/src` cannot be written, and most of it can be read.** Read-only stops an
+agent changing this machine and does nothing about it reading this machine, and
+with egress open a readable secret is a sendable one. Three drawers are masked
+with empty read-only tmpfs mounts — `private/`, which holds the notification
+bearer topic; `workbench/`, which holds every handoff, note and reviewer
+transcript, and which the guard's own `SECRET_DRAWERS` names as a place secrets
+may live; and `scriptorium/`. Everything else in the repository is readable,
+including `.claude/settings.local.json`. Say so rather than assuming otherwise.
+
+**One vendor's credential enters a chamber, or none.** `new <task> <base>
+<vendor>` decides it, because a mount cannot be added to a running container,
+and `dispatch` refuses a vendor the chamber was not built for. A chamber created
+without a vendor — the default, and most of them — holds no credential at all
+and is fine for running the suite or reading the tree. Before this, every
+chamber received every sign-in that existed, read-write, so a Codex agent held
+the Claude credential and the reverse.
 
 **No push, by construction.** There are no git credentials in the image. An
 agent cannot push and cannot open a pull request. The session does both, after
 reading the diff.
 
-**`autoclave` is in pytest's skip list.** `pyproject.toml` sets
-`norecursedirs` to include `autoclave`, because the cleanroom tray holds
-presumed-contaminated drafts and pytest imports what it collects. That pattern
-matches any directory of that name, so a `test_*.py` placed in *this* directory
-would be silently skipped. Tests for this tool belong outside it — put them at
-`operations/test_autoclave.py`.
-
-**The name is overloaded.** `autoclave/` at the repository root is the cleanroom
-tray, and this is a container. `GLOSSARY.md` says one concept per word. In lab
-terms this directory has the better claim — an autoclave is the chamber, and a
-tray goes inside one — but renaming the tray touches governed documents and is
-Tyrel's. Until he rules, both names stand and this note is the warning.
+**Tests for this tool live at `operations/test_autoclave.py`.** They used to have
+to: `pyproject.toml` listed `autoclave` in pytest's `norecursedirs` for the
+cleanroom tray, which carried that name until 2026-08-01, and the pattern matched
+a directory of that name anywhere. The tray is `cleanroom/` now and the skip entry
+moved with it, so a test beside this script would be collected today. The file
+stays where it is by convention, not by necessity.
 
 ## What has been proven
 
@@ -195,7 +199,7 @@ at 6 CPUs and 12 GB.
 | Both vendors' CLIs are present | Claude Code 2.1.220 and Codex CLI 0.146.0 |
 | `/src` is genuinely read-only | a write to it returns `Read-only file system`; the host tree stayed clean |
 | Both briefs land without collision | the chamber's limits at `/CLAUDE.md`, the project's rules at `/work/CLAUDE.md` |
-| The repository's own suite runs inside | **953 passed** — the same count as the host, in 15s |
+| The repository's own suite runs inside | passed, and the count matched the host's on the day — 953 on 2026-08-01, 584 on 2026-08-02. **The measurement is the match, not the number**; a bare count here goes stale the next time a test lands |
 | Work returns | a commit made inside came back as `agent/<task>`; a reader's `/out/report.md` was collected |
 | Nothing merges by itself | `collect` fetches a branch and prints the two commands to read it |
 | Several chambers at once | four ran together; idle cost 1–3 MB each |
@@ -204,12 +208,16 @@ at 6 CPUs and 12 GB.
 
 ## What has still not been proven
 
-1. **Claude Code running unattended inside**, without prompting for something the
-   chamber cannot give it. The CLI is installed and reports its version; it has not
-   been driven through a task. This is the failure that has cost two nights and it
-   is the next thing to test.
-2. **Codex CLI likewise** — installed and versioned, not yet driven.
-3. **The credential question above.** Both of the above are blocked on it: neither
-   CLI can reach a model without one, and how the secret gets in is Tyrel's to choose.
-4. **A long task.** Everything measured here finishes in seconds. Nothing has run
-   for an hour, filled a disk, or been interrupted halfway.
+1. **Claude Code running unattended inside.** Codex has now been driven through
+   real tasks — audits and reviews, returning reports — but the Claude CLI has
+   only ever reported its version here.
+2. **A long task.** The longest measured run is about twenty minutes. Nothing has
+   run for an hour, filled a disk, or been interrupted halfway.
+3. **That the chamber's standing brief reaches a Codex agent.** The Dockerfile
+   places it at `/CLAUDE.md`, which Claude Code reads; Codex looks for `AGENTS.md`.
+   `new` also copies it to `/work/AUTOCLAVE.md`, which nothing is known to parse.
+   Until someone confirms which of the three a Codex agent actually reads, assume
+   its limits may not have reached it.
+4. **The masks and the vendor split under an adversarial agent.** Both are verified
+   by inspection from inside a chamber and by tests over the launcher's source. No
+   agent has been asked to try to defeat them.

@@ -643,6 +643,48 @@ def test_install_configures_local_hooks_after_prerequisites(tmp_path):
     assert git(repo, "config", "--get", "core.hooksPath").stdout.strip() == ".githooks"
 
 
+def test_install_creates_every_drawer_the_contract_declares(tmp_path):
+    """The test above pre-creates six drawers and asserts only `core.hooksPath`, so
+    it cannot see the installer dropping one. `quarantine/` was added on 2026-08-02
+    without the installer following, and a fresh clone silently lacked the one-way
+    staging drawer while `tidy.py` read its absence as empty. Nothing here is
+    pre-created: the installer is the only thing that can make these appear.
+    """
+    repo = init_repo(tmp_path / "repo")
+    shutil.copytree(HOOKS, repo / ".githooks")
+    result = run_hook(repo, "install.sh")
+    assert result.returncode == 0, result.stderr
+    declared = (
+        "active",
+        "standing",
+        "archive",
+        "scratch",
+        "design",
+        "tools",
+        "raw",
+        "quarantine",
+    )
+    missing = [name for name in declared if not (repo / "workbench" / name).is_dir()]
+    assert not missing, f"install.sh did not create: {missing}"
+
+
+def test_fixture_images_are_binary_at_any_depth(tmp_path):
+    """`proof/fixtures/*` matched one path level while the fixtures live a directory
+    deeper, so `git check-attr` reported `text=auto` on them and the explicit binary
+    policy was not the thing applying. Asserted by asking git, not by reading the
+    pattern — the pattern looked right before, too.
+    """
+    repo = init_repo(tmp_path / "repo")
+    shutil.copy(ROOT / ".gitattributes", repo / ".gitattributes")
+    nested = repo / "proof" / "fixtures" / "synthetic-two-page-v0"
+    nested.mkdir(parents=True)
+    (nested / "page-1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    reported = git(
+        repo, "check-attr", "text", "--", "proof/fixtures/synthetic-two-page-v0/page-1.png"
+    )
+    assert reported.stdout.strip().endswith("text: unset"), reported.stdout
+
+
 def failing_command_env(path, name):
     """A PATH whose first entry is one command that only ever fails."""
     stubs = path / f"stub-{name}"

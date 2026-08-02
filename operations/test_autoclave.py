@@ -1,10 +1,12 @@
 """The autoclave launcher, tested where it can be tested without an engine.
 
-This file is deliberately NOT in `operations/autoclave/`. `pyproject.toml` puts
-`autoclave` in pytest's `norecursedirs`, because the cleanroom tray holds
-presumed-contaminated drafts and pytest imports what it collects. That pattern
-matches a directory of that name anywhere, so a test placed beside the script
-would be skipped in silence — which is the failure GOVERNANCE 2 exists to stop.
+This file sits here by convention rather than by necessity, and the difference used
+to be the other way round. `pyproject.toml` once put `autoclave` in pytest's
+`norecursedirs` — for the cleanroom tray, which was called `autoclave/` until
+2026-08-01 — and the pattern matched a directory of that name anywhere, so a test
+beside the script would have been skipped in silence. The tray is `cleanroom/` now
+and the skip entry moved with it, so a test placed beside the script **would** be
+collected today. Nothing prevents moving this file back; nothing requires it either.
 
 What is covered here is argument handling, path resolution and honest reporting:
 everything that runs before a container engine is needed. The parts that need an
@@ -207,6 +209,30 @@ class TestLogin:
             assert f"${{{volume}}}:" in source
             assert f"${{{volume}}}:ro" not in source, f"{volume} is mounted read-only"
 
+    def test_a_chamber_holds_one_vendor_credential_or_none(self):
+        """It used to hold every sign-in that existed, whichever vendor was later
+        dispatched — so a Codex agent held the Claude credential and the reverse,
+        read-write, with open egress. The vendor is chosen at `new`, because a mount
+        cannot be added to a running container, and `dispatch` refuses a mismatch.
+        """
+        source = SCRIPT.read_text()
+        assert 'vendor="${3:-none}"' in source, "new no longer takes a vendor"
+        assert "verbatus.vendor" in source, "the chamber does not record its vendor"
+        assert "holds no ${vendor} credential" in source, "dispatch does not check the vendor"
+        # Both volumes reachable from one code path is the shape of the old defect.
+        both = f"{source.count('AUTH_VOL_CLAUDE:-')}{source.count('AUTH_VOL_CODEX:-')}"
+        assert both == "00", "a single branch still mounts both vendors"
+
+    def test_the_mountpoints_are_created_before_the_bind(self):
+        """All three masked drawers are gitignored, so a fresh clone has none of
+        them. Docker builds a missing mountpoint inside the bind, `/src` is
+        read-only, and `docker run` exits 125 — `new` fails outright on any machine
+        but this one. Verified before this line existed.
+        """
+        source = SCRIPT.read_text()
+        created = source.index('mkdir -p "${REPO_ROOT}/private"')
+        assert created < source.index("--tmpfs /src/private"), "mountpoints made too late"
+
     def test_the_private_drawer_is_masked_inside_a_chamber(self):
         """`/src` read-only stops an agent changing this machine, not reading it.
 
@@ -219,6 +245,11 @@ class TestLogin:
         source = SCRIPT.read_text()
         assert "--tmpfs /src/private" in source, "the private drawer is exposed to every chamber"
         assert "/src/private:ro" in source, "the masking tmpfs is writable"
+        # `workbench/` is the other drawer the guard's own SECRET_DRAWERS names, and
+        # it holds every handoff, note and reviewer transcript. Masking `private/`
+        # alone left half the rule unenforced.
+        for drawer in ("workbench", "scriptorium"):
+            assert f"--tmpfs /src/{drawer}:ro" in source, f"{drawer} is exposed to every chamber"
 
 
 class TestDispatch:

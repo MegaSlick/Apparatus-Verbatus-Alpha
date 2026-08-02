@@ -25,12 +25,18 @@ Everything else in this filesystem is the container's and vanishes when it does.
 
 ## What you cannot do, and must not try to route around
 
-- **Reach the host.** There is no path back. `/src` is read-only by mount.
+- **Write the host.** `/src` is read-only by mount. You can read most of it; you
+  cannot change any of it. `private/`, `workbench/` and `scriptorium/` are masked
+  and will look empty — that is deliberate, not a broken checkout.
 - **Push anything.** There are no git credentials in here and there will not be.
   The session that dispatched you does the pushing, after it reads your work.
 - **Open a pull request.** Not yours, not from here.
-- **Reach the internet**, beyond your model provider. If a package install
-  fails on the network, that is the boundary, not a fault to be worked around.
+- **Read another vendor's credential.** A chamber carries at most one, and only
+  when it was created for that vendor.
+
+Network egress **is** open — the CLI you are running needs its provider. Do not
+read that as permission to fetch whatever you like: it is a limit stated honestly
+rather than a door held open.
 
 If you hit one of these, **stop and say so in your report.** Do not look for
 another spelling, another tool, or another route. A blocked action reported

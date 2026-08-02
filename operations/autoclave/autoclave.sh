@@ -5,15 +5,18 @@
 # /src. The container clones it to /work and cuts a branch. The agent works
 # there with a full shell and runs its own tests. When it is done the branch
 # comes back as a git bundle through /out, the one writable host path, and the
-# session reads the diff before anything enters the real repository. No
-# credentials go in, so nothing can be pushed from inside.
+# session reads the diff before anything enters the real repository. No *git*
+# credentials go in, so nothing can be pushed from inside; one vendor's model
+# credential does, when the chamber is created for that vendor.
 #
 # Usage:
 #   autoclave.sh doctor                  what is installed, running, and built
 #   autoclave.sh build                   build the image
-#   autoclave.sh login <claude|codex>    sign a vendor in, once, into its volume
-#   autoclave.sh new <task> [<base>]     start a chamber on a branch from <base>
 #   autoclave.sh login <claude|codex> [browser|device]
+#                                        sign a vendor in, once, into its volume
+#   autoclave.sh new <task> [<base>] [<claude|codex>]
+#                                        start a chamber on a branch from <base>,
+#                                        holding one vendor's credential or none
 #   autoclave.sh dispatch <task> <claude|codex> <brief-file> <model> [effort]
 #                                        run an agent inside, against a written brief
 #   autoclave.sh shell <task>            open a shell in a running chamber
@@ -210,6 +213,19 @@ cmd_login() {
 cmd_new() {
     task="${1:-}"; check_task "$task"
     base="${2:-HEAD}"
+    # **A chamber gets one vendor's credential, or none.** It used to get every
+    # sign-in that existed, read-write, whichever vendor was later dispatched — so a
+    # Codex agent held the Claude credential and the reverse, with open egress. The
+    # vendor has to be named here rather than at `dispatch`, because mounts are fixed
+    # when the container is created and cannot be added to a running one.
+    #
+    # None is the default on purpose: a chamber for running the suite or reading the
+    # tree needs no credential at all, and that is most of them.
+    vendor="${3:-none}"
+    case "$vendor" in
+        claude|codex|none) : ;;
+        *) die "new takes 'claude', 'codex' or nothing as its vendor" ;;
+    esac
 
     # Resolve the base to a commit on the host, so the chamber is pinned to an exact
     # tree rather than to whatever a name meant at clone time. It is git-only, so it
@@ -228,24 +244,43 @@ cmd_new() {
     # --network none would be the honest default, but the agent CLIs need to
     # reach their model provider. Egress is therefore open and that is a stated
     # limit, not an oversight: see the README. What is *not* open is any route
-    # to the host — /src is read-only and no credentials are mounted.
-    # Auth volumes are mounted when they exist, and their absence is not an error:
-    # a chamber is useful for running tests and reading code before any vendor has
+    # to write the host — /src is read-only. It is readable, though, except for the
+    # three masked drawers below.
+    # The vendor's auth volume is mounted when it exists, and its absence is not an
+    # error: a chamber is useful for running tests and reading code before any vendor has
     # been signed in. Read-write, because both CLIs refresh their own tokens and a
     # read-only mount would turn a one-time sign-in into a recurring one.
     auth_mounts=""
-    has_volume "$AUTH_VOL_CLAUDE" && \
-        auth_mounts="${auth_mounts} --volume ${AUTH_VOL_CLAUDE}:${AUTH_DIR_CLAUDE}"
-    has_volume "$AUTH_VOL_CODEX" && \
-        auth_mounts="${auth_mounts} --volume ${AUTH_VOL_CODEX}:${AUTH_DIR_CODEX}"
+    case "$vendor" in
+        claude)
+            has_volume "$AUTH_VOL_CLAUDE" && \
+                auth_mounts="--volume ${AUTH_VOL_CLAUDE}:${AUTH_DIR_CLAUDE}" ;;
+        codex)
+            has_volume "$AUTH_VOL_CODEX" && \
+                auth_mounts="--volume ${AUTH_VOL_CODEX}:${AUTH_DIR_CODEX}" ;;
+    esac
 
     # `/src` is read-only, which stops an agent *changing* this machine and does
-    # nothing about it *reading* this machine. `private/` holds the notification
-    # bearer topic, and egress is open, so a readable secret is a sendable one. An
-    # empty read-only tmpfs is mounted over it: the directory still exists, so
-    # nothing that walks the tree trips, and it contains nothing. The clone is
-    # unaffected because `private/` is gitignored and was never in the objects
-    # `git clone` reads.
+    # nothing about it *reading* this machine. Egress is open, so a readable secret
+    # is a sendable one. Empty read-only tmpfs mounts cover the three drawers that
+    # hold things a chamber has no business reading:
+    #
+    #   private/     the notification bearer topic
+    #   workbench/   every handoff, note, ledger and reviewer transcript — and the
+    #                guard's own `SECRET_DRAWERS` names it a place secrets may live,
+    #                so masking `private/` alone left half the rule unenforced
+    #   scriptorium/ run trees
+    #
+    # The directories still exist and are empty, so anything walking the tree finds
+    # what it expects. None of the three is in the objects `git clone` reads — all
+    # are gitignored — so `/work` is unaffected. `workbench/autoclave/<task>` reaches
+    # the agent separately as `/out`, which is a different mount and still writable.
+    #
+    # The mountpoints are created first. Docker builds a missing mountpoint inside
+    # the bind, and `/src` is read-only, so a clone without these directories failed
+    # at `docker run` with "read-only file system" — which is every fresh clone,
+    # since all three are gitignored. Verified: exit 125 before this line existed.
+    mkdir -p "${REPO_ROOT}/private" "${REPO_ROOT}/workbench" "${REPO_ROOT}/scriptorium"
     #
     # Word splitting on $auth_mounts is the point: it is a flag list this script
     # built from two fixed constants, never from user input.
@@ -254,8 +289,11 @@ cmd_new() {
         --name "$(container_of "$task")" \
         --label "verbatus.autoclave=1" \
         --label "verbatus.task=${task}" \
+        --label "verbatus.vendor=${vendor}" \
         --volume "${REPO_ROOT}:/src:ro" \
         --tmpfs /src/private:ro,size=4k \
+        --tmpfs /src/workbench:ro,size=4k \
+        --tmpfs /src/scriptorium:ro,size=4k \
         --volume "${outdir}:/out" \
         $auth_mounts \
         --workdir /work \
@@ -354,6 +392,15 @@ cmd_dispatch() {
         codex)  volume="$AUTH_VOL_CODEX" ;;
     esac
     has_volume "$volume" || die "'$vendor' is not signed in — run: $0 login $vendor"
+
+    # A chamber holds one vendor's credential, chosen when it was created, because a
+    # mount cannot be added to a running container. Refusing here is what makes that
+    # choice mean something: without it a chamber built for one vendor would be
+    # dispatched to the other and fail deep inside the CLI with an auth error.
+    chamber_vendor=$(docker inspect --format '{{index .Config.Labels "verbatus.vendor"}}' \
+        "$(container_of "$task")" 2>/dev/null) || chamber_vendor=""
+    [ "$chamber_vendor" = "$vendor" ] || die \
+        "chamber '$task' holds no ${vendor} credential (it was created for '${chamber_vendor:-none}'). Create one with: $0 new <task> <base> ${vendor}"
 
     # The brief travels as a file through the scratch drawer, never as a shell
     # argument. A brief is prose written by a session; interpolating it into a
