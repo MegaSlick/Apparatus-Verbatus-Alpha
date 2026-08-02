@@ -221,9 +221,7 @@ class TestDeletesInsideATemporaryCheckout:
         assert decide("rm -rf workbench/scratch", project_under_tmp) is None
         assert decide("rm -rf workbench/scratch/old-run", project_under_tmp) is None
 
-    def test_a_temporary_directory_outside_the_project_is_still_disposable(
-        self, project_under_tmp
-    ):
+    def test_a_temporary_directory_outside_the_project_is_still_disposable(self, project_under_tmp):
         assert decide("rm -rf /tmp/some-other-build", project_under_tmp) is None
 
     def test_the_parent_of_a_tmp_checkout_is_not_disposable(self, project_under_tmp):

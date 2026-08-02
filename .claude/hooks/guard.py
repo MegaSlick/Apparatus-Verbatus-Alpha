@@ -517,9 +517,7 @@ def disposable(operand: str, payload: dict[str, Any]) -> bool:
             for drawer in DISPOSABLE_ROOTS
         )
     return any(
-        spelling.startswith(prefix)
-        for spelling in spellings
-        for prefix in DISPOSABLE_PREFIXES
+        spelling.startswith(prefix) for spelling in spellings for prefix in DISPOSABLE_PREFIXES
     )
 
 

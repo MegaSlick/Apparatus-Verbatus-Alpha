@@ -263,6 +263,14 @@ cmd_new() {
         git checkout --quiet ${base_sha}
         git switch --quiet -c 'agent/${task}'
         cp /opt/autoclave/CLAUDE.md /work/AUTOCLAVE.md
+        # The brief is scaffolding, not the agent's work, and it must not read as
+        # either. Untracked at the repository root it is 'stray documentation' to
+        # \`.githooks/doc-allowlist.sh\`, so \`check-static.sh\` failed inside every
+        # chamber — on a file the agent did not write and cannot correct. An agent
+        # told to run the gate before handing work back either reports itself blocked
+        # or deletes its own brief to make the gate pass. Excluded in the clone rather
+        # than added to the tracked \`.gitignore\`, because this file exists only here.
+        printf '/AUTOCLAVE.md\n' >> /work/.git/info/exclude
         git config user.name  'autoclave'
         git config user.email 'autoclave@localhost'
     " || die "chamber started but setup failed — inspect with: docker logs $(container_of "$task")"
