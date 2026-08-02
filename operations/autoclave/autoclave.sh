@@ -234,6 +234,46 @@ cmd_new() {
     base_sha=$(git -C "$REPO_ROOT" rev-parse --verify "${base}^{commit}") \
         || die "cannot resolve base '$base'"
 
+    # **The chamber gets what was on this machine when it was created, not what was
+    # last committed.** A clone carries commits only, so uncommitted work was invisible
+    # inside — an agent asked to check a change could not see the change, and this
+    # session hit that twice in one day before understanding why.
+    #
+    # Not a live mount: a snapshot, frozen at `new` (Tyrel, 2026-08-02). The agent must
+    # see one unchanging tree, and a bind mount of a directory being edited underneath
+    # it is a different and much worse thing.
+    #
+    # Built through a temporary index so the real one is never touched — no staging is
+    # disturbed, nothing is added to any commit the operator is preparing. `add -A`
+    # against that index honours `.gitignore`, so `workbench/`, `private/` and
+    # `scriptorium/` stay out exactly as they do everywhere else. Only when the base is
+    # the default: an explicitly named base means that exact commit and nothing else.
+    snapshot_ref=""
+    if [ "$base" = "HEAD" ]; then
+        snap_index=$(mktemp) || die "cannot create a temporary index"
+        if GIT_INDEX_FILE="$snap_index" git -C "$REPO_ROOT" read-tree "$base_sha" 2>/dev/null &&
+           GIT_INDEX_FILE="$snap_index" git -C "$REPO_ROOT" add -A 2>/dev/null; then
+            snap_tree=$(GIT_INDEX_FILE="$snap_index" git -C "$REPO_ROOT" write-tree 2>/dev/null)
+        else
+            snap_tree=""
+        fi
+        rm -f "$snap_index"
+        base_tree=$(git -C "$REPO_ROOT" rev-parse "${base_sha}^{tree}")
+        if [ -n "$snap_tree" ] && [ "$snap_tree" != "$base_tree" ]; then
+            snap=$(git -C "$REPO_ROOT" commit-tree "$snap_tree" -p "$base_sha" \
+                -m "autoclave snapshot for ${task}: the working tree at chamber creation") \
+                || die "could not record the working-tree snapshot"
+            # A ref, because `git clone` fetches refs and not dangling commits.
+            snapshot_ref="refs/heads/autoclave/snapshot-${task}"
+            git -C "$REPO_ROOT" update-ref "$snapshot_ref" "$snap" \
+                || die "could not point ${snapshot_ref} at the snapshot"
+            base_sha="$snap"
+            dirty=$(git -C "$REPO_ROOT" status --porcelain | wc -l | tr -d ' ')
+            note "working tree is not clean — the chamber gets a snapshot of it"
+            note "  ${dirty} path(s) beyond ${base}, captured now and frozen"
+        fi
+    fi
+
     need_docker
     docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
     exists "$task" && die "chamber '$task' already exists — use 'rm $task' first"
@@ -556,6 +596,16 @@ cmd_rm() {
     task="${1:-}"; check_task "$task"; need_docker
     exists "$task" || die "no chamber '$task'"
     docker rm --force "$(container_of "$task")" >/dev/null
+    # The snapshot ref exists only to get the working tree into the clone. Once the
+    # chamber is gone nothing reads it, and leaving one branch per chamber behind is
+    # the clutter the one-branch-per-task rule exists to prevent. The commit itself
+    # stays reachable from the reflog, so a collected branch built on it is not
+    # orphaned by this.
+    if git -C "$REPO_ROOT" rev-parse --verify --quiet \
+        "refs/heads/autoclave/snapshot-${task}" >/dev/null; then
+        git -C "$REPO_ROOT" update-ref -d "refs/heads/autoclave/snapshot-${task}"
+        note "snapshot ref for '${task}' removed"
+    fi
     # The output drawer is deliberately kept. Nothing is lost silently, and the
     # bundle is the only surviving evidence that the dispatch happened.
     note "chamber '${task}' destroyed. Output kept at $(outdir_of "$task")"
