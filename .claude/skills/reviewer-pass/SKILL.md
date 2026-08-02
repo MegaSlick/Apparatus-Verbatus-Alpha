@@ -24,17 +24,28 @@ Triage the change in one paragraph: behavior changed, likely cost of a defect,
 and the coverage you are running. The standing default is three independent
 readers, two vendors minimum, with fresh eyes on the change:
 
-- Claude Opus, high effort
-- the `audit-sol` seat — GPT Sol, dispatched and captured only through
-  `capture-seat-report.sh` per step 3; never a bare `seat.sh` invocation, because
-  the capture script's guards are load-bearing and a bare dispatch has none of them
+**Review seats run in chambers.** One chamber each, `new <task> HEAD <vendor>` then
+`dispatch`, with the branch under review already in the clone. A chamber seat has git
+and a shell, so it can read the commit messages, diff two revisions, run the suite and
+drive the code under review against real inputs. **A host reader can do none of that**,
+and it showed: on 2026-08-02 two host seats returned "is any claim in a commit message
+false?" unanswered because they could not run `git log`, while the four chamber seats
+that replaced them found four total guard bypasses by executing the thing rather than
+reading it. There is no deadline on a chamber dispatch — see step 2.
 
-  **Pick the seat by the size of the pass.** `audit-sol` and `judge` are the same
-  model at the same effort; they differ only in deadline — 2700 seconds against
-  600. A full-diff or whole-branch audit can still be writing its report at ten
-  minutes, and the seat kills it there, so a truncated review would arrive
-  looking like a complete one. Use `audit-sol` for a full-diff or high-risk
-  pass and `judge` only for a genuinely bounded one.
+- Claude Opus, high effort
+- GPT Sol, high effort
+- a third seat, per the paragraph below
+
+**The host Codex seats are not for this any more.** `seats.conf` and
+`capture-seat-report.sh` remain the only way to run Codex on *this machine*, and they
+keep their place for reading something a chamber cannot see — the quarantined old code
+through the window, anything outside this repository, a design question that touches no
+tree. When you do dispatch one, it goes through `capture-seat-report.sh` and never a
+bare `seat.sh`, because that script's five guards are load-bearing. What no longer
+applies is choosing between `audit-sol` and `judge` by the size of the pass: their
+600-and-2700-second deadlines exist because a host seat runs on Tyrel's machine, and a
+review no longer does.
 - Claude Fable, high effort — the third seat, and part of the default rather than
   an offer made pass by pass. It is the most expensive reader here, so it is the
   one a reduction usually reaches for first. Say in the triage what the third seat
@@ -57,6 +68,16 @@ Write one neutral prompt and give its exact bytes to every reviewer. Include:
 - a request for every finding, its evidence, consequence, and proposed remedy;
 - a ban on edits, pushes, merges, external effects, and reproducing secrets.
 
+**Tell every seat to read the governing documents from disk.** An agent boots with a
+copy of `CLAUDE.md` injected by its harness, and that copy can be older than the
+checkout: on 2026-08-02 one review seat filed two false headline findings from its
+stale copy, and a second noticed the same staleness and said so. One line in the prompt
+is the whole fix.
+
+**No deadline on a chamber seat.** There is none mechanically — `autoclave.sh` sets no
+timeout and `docker exec` runs until the CLI exits — so a deadline written into a prompt
+only tells the seat to attempt less. Give it the objective and the stop conditions.
+
 Reviewers remain blind to one another. Preserve resolved model/effort metadata
 when available. A model substitution counts only if Tyrel explicitly accepts
 it for this pass. Every evidence seat in a reviewer pass carries a `high` floor —
@@ -75,9 +96,15 @@ complete nonempty reports beneath one new
 `workbench/raw/<date>_<short-sha>_reviewer-pass/` directory without overwriting
 existing evidence. Scan those exact files again with `--file`.
 
-Create that directory before dispatch, then capture each shell-dispatched seat
-with `operations/codex/capture-seat-report.sh` rather than relying on the chat
-transcript:
+Create that directory before dispatch.
+
+**A chamber seat writes its own report** to `/out/report.md`, which is a host path, so
+it survives the chamber and needs no capture script. Tell it to write there in the
+prompt; copy the file into the evidence directory when the pass is done, and ingress-scan
+it there like any other. Keep the chamber's dispatch log beside it — that is where the
+seat's reasoning is, and a Codex chamber streams it while a Claude chamber does not.
+
+**A host seat still goes through `capture-seat-report.sh`**, never a bare `seat.sh`:
 
 ```sh
 sh operations/codex/capture-seat-report.sh audit-sol "$prompt_path" "$report_dir/gpt-sol.log"
