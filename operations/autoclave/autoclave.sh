@@ -24,7 +24,8 @@
 #   autoclave.sh collect <task>          bring the branch back as agent/<task>
 #   autoclave.sh report <task>           print the report the agent left, if any
 #   autoclave.sh list                    every chamber, running or stopped
-#   autoclave.sh rm <task>               destroy a chamber (never its output)
+#   autoclave.sh rm <task> [force]       destroy a chamber (never its output);
+#                                        `force` destroys uncollected work with it
 #
 # POSIX sh: this runs on the host, and the host's shell is not guaranteed.
 set -eu
@@ -621,9 +622,33 @@ cmd_dispatch() {
     case "$model" in
         -*|*[!A-Za-z0-9._-]*) die "'$model' is not a plain model name" ;;
     esac
-    case "$effort" in
-        none|minimal|low|medium|high|xhigh|max) : ;;
-        *) die "'$effort' is not an allowed effort" ;;
+    # **Effort is judged against the vendor and the model, not against a vocabulary.**
+    # `none minimal low medium high xhigh max` is the union of what the two vendors
+    # accept, and no vendor accepts all seven. `.claude/agents/README.md` measured
+    # which, under "Reachability, which is not negotiable": `minimal` is rejected by
+    # every Codex model; `gpt-5.3-codex-spark` also rejects `none` and `max`, leaving it
+    # `low`–`xhigh`; Claude accepts `low`, `medium`, `high`, `xhigh`, `max` and nothing
+    # else. Checking the union let a value that file records as unreachable through the
+    # validation whose entire purpose is that a bad argument costs a line of output —
+    # and it failed instead inside a vendor CLI, after a chamber and a model process
+    # had been touched, in a message naming neither the argument nor this script.
+    #
+    # An unmeasured Codex model gets the general Codex range rather than a refusal.
+    # That is the honest answer for a model this table has not measured, and it is why
+    # the model name is not checked against a list of its own: a launcher that refuses
+    # every seat added after it was written is a launcher somebody edits under time
+    # pressure to get a dispatch out.
+    case "$vendor" in
+        claude) reachable="low medium high xhigh max" ;;
+        codex)
+            case "$model" in
+                gpt-5.3-codex-spark) reachable="low medium high xhigh" ;;
+                *) reachable="none low medium high xhigh max" ;;
+            esac ;;
+    esac
+    case " ${reachable} " in
+        *" ${effort} "*) : ;;
+        *) die "'$effort' is not an allowed effort for ${vendor} '${model}' — it takes: ${reachable}" ;;
     esac
 
     need_docker
@@ -756,18 +781,41 @@ cmd_collect() {
     bundle_in="/out/${task}.bundle"
     bundle_out="$(outdir_of "$task")/${task}.bundle"
 
-    # Refuse an empty hand-back rather than reporting success on nothing.
+    chamber_base=$(docker inspect --format '{{index .Config.Labels "verbatus.base"}}' \
+        "$(container_of "$task")" 2>/dev/null) || chamber_base=""
+    [ -n "$chamber_base" ] || die "chamber '$task' records no base, so nothing here can say what it added"
+
+    # **Work that was never added counts as uncommitted.** A bundle carries commits, so
+    # anything still loose in the chamber's tree is left behind — and `rm` then destroys
+    # the only copy of it. `git diff` and `git diff --cached` between them see modified
+    # files and staged files and say nothing whatsoever about an untracked one, which is
+    # the shape most of a chamber's output takes: a new module, a new test, a report
+    # written into the tree. So the refusal read as a guarantee of a clean tree and was
+    # not one. `status --porcelain` sees all three in one listing, and that listing is
+    # what the refusal prints, so the operator is told which paths are at risk rather
+    # than that something somewhere is dirty.
+    #
+    # The two brief copies the launcher writes into the clone are in
+    # `.git/info/exclude`, so they are not untracked work and do not trip this.
     docker exec "$(container_of "$task")" sh -c "
         set -eu
         cd /work
-        git diff --quiet && git diff --cached --quiet || {
-            echo 'autoclave: uncommitted changes in the chamber' >&2
-            git status --short >&2
+        loose=\$(git status --porcelain)
+        if [ -n \"\$loose\" ]; then
+            echo 'autoclave: uncommitted or untracked work in the chamber' >&2
+            printf '%s\n' \"\$loose\" >&2
             exit 1
-        }
+        fi
         git bundle create ${bundle_in} '${branch}' >/dev/null 2>&1
-    " || die "nothing to collect from '$task' — the agent left work uncommitted, or made no commit"
+    " || die "nothing collected from '$task' — the tree is not clean, or the bundle could not be written; its own message is above. A branch carrying no commits is not this failure: that collects, and says so."
 
+    # Not guarded with `[ -L ]` like `brief.md` and `report.md`, and the reason is not
+    # the one it looks like. A symlink here *does* resolve on this side of the mount —
+    # `/out` is a bind, so a link the agent leaves points at a host path. What makes it
+    # harmless is `git fetch`: it only reads, it neither writes through the path nor
+    # prints its bytes, and a file that is not a bundle fails with "does not look like
+    # a bundle". The worst an agent achieves is importing refs it could have put in its
+    # own bundle anyway.
     [ -f "$bundle_out" ] || die "bundle did not appear at ${bundle_out}"
 
     git -C "$REPO_ROOT" fetch --quiet "$bundle_out" "${branch}:${branch}" \
@@ -776,15 +824,38 @@ cmd_collect() {
     # An agent that committed nothing leaves its branch pointing at the base, and the
     # bundle for that branch builds and fetches perfectly. Saying "collected" over it
     # reports success on nothing, which is the one thing this tool must not do.
-    chamber_base=$(docker inspect --format '{{index .Config.Labels "verbatus.base"}}' \
-        "$(container_of "$task")" 2>/dev/null) || chamber_base=""
-    landed=$(git -C "$REPO_ROOT" rev-list --count "${chamber_base}..${branch}" 2>/dev/null || echo "?")
+    landed=$(git -C "$REPO_ROOT" rev-list --count "${chamber_base}..${branch}")
     if [ "$landed" = "0" ]; then
         note "collected '${task}' — and it carries NO COMMITS."
         note "The agent made no commit. Read its report before assuming it did work:"
         note "  $0 report ${task}"
     else
         note "collected '${task}' into local branch ${branch} — ${landed} commit(s)"
+    fi
+
+    # **Nothing that came out of a chamber is attributed until somebody attributes
+    # it.** The clone commits as `autoclave <autoclave@localhost>`, and `commit-msg`
+    # — the hook that refuses a commit carrying no `Co-Authored-By` line — is switched
+    # on there now, so ordinarily every returned commit already names its model.
+    # Ordinarily is not always: the hook can be skipped, and a chamber created before
+    # `new` set `core.hooksPath` never had it. `pre-push` reads `Reviewed-by:` trailers
+    # and scans for credentials; it does not look at authorship at all. So this is the
+    # last place anything checks, and it checks rather than assuming the hook ran.
+    #
+    # It says so rather than fixing it. Only the session knows which model actually
+    # answered, and inventing a trailer here would be a worse lie than a missing one.
+    # It also does not refuse: a branch is not made safer by being stranded in a
+    # container, and `rm` already refuses to destroy work that was never collected.
+    if [ "$landed" != "0" ]; then
+        unattributed=$(git -C "$REPO_ROOT" log --format='  %h %s' \
+            --invert-grep -i --grep='Co-Authored-By:' "${chamber_base}..${branch}")
+        if [ -n "$unattributed" ]; then
+            note ""
+            note "UNATTRIBUTED — these commits carry no Co-Authored-By trailer:"
+            printf '%s\n' "$unattributed"
+            note "Nothing merges until each one names the model that wrote it: squash,"
+            note "or amend the trailers in. See operations/autoclave/README.md."
+        fi
     fi
     note ""
     note "nothing has been merged. Read it before anything else:"
@@ -819,8 +890,60 @@ cmd_list() {
 }
 
 cmd_rm() {
-    task="${1:-}"; check_task "$task"; need_docker
+    task="${1:-}"; check_task "$task"
+    force="${2:-}"
+    case "$force" in
+        ''|force) : ;;
+        *) die "rm takes a task and, at most, the word 'force'" ;;
+    esac
+    need_docker
     exists "$task" || die "no chamber '$task'"
+
+    # **The chamber's tree is the only copy of what is in it.** `docker rm --force`
+    # takes the container's filesystem with it, and the output drawer that survives
+    # holds a bundle only if `collect` was run — so an uncommitted file, or a commit
+    # nobody fetched, is gone at this line and nowhere else. That is losing work
+    # silently, which hard rule 7 and GOVERNANCE 2 both name as the thing not to do,
+    # and the way it actually happens is a tidy-up at the end of a session rather than
+    # a decision. So the tree is read before it is destroyed, and `force` is the word
+    # that says the loss is intended.
+    #
+    # A stopped chamber cannot be read at all, so it is refused rather than destroyed
+    # on the strength of a warning nobody has to answer. `force` is still there for the
+    # chamber that will not start, which is the one case where refusing outright would
+    # leave a container this tool could no longer remove.
+    if [ "$force" != force ]; then
+        running "$task" ||
+            die "chamber '$task' is stopped, so nothing here can read what is in it. Start it with 'docker start $(container_of "$task")' and try again, or destroy it unread with: $0 rm $task force"
+        # A check that cannot run is a failure, not a pass — `.githooks/commit-msg`
+        # says it in those words. Swallowing the exit status here read an unreachable
+        # chamber, a broken clone or a docker error as a clean tree, and then destroyed
+        # it on the strength of that.
+        if ! loose=$(docker exec "$(container_of "$task")" \
+            sh -c 'cd /work && git status --porcelain' 2>&1); then
+            printf '%s\n' "$loose" >&2
+            die "cannot read the tree in '$task' (above), so nothing here can call it safe to destroy. Look with '$0 shell $task', or destroy it unread with: $0 rm $task force"
+        fi
+        if [ -n "$loose" ]; then
+            printf '%s\n' "$loose" >&2
+            die "chamber '$task' has uncommitted or untracked work (above). Commit and '$0 collect $task', or destroy it with: $0 rm $task force"
+        fi
+        # `absent` rather than an empty string, which a failed read also produces. A
+        # SHA is never the literal word.
+        chamber_tip=$(docker exec "$(container_of "$task")" \
+            sh -c "cd /work && git rev-parse --verify --quiet 'agent/${task}' || echo absent") ||
+            die "cannot read agent/${task} inside '$task', so nothing here can say whether it holds work. Destroy it unread with: $0 rm $task force"
+        chamber_base=$(docker inspect \
+            --format '{{index .Config.Labels "verbatus.base"}}' \
+            "$(container_of "$task")" 2>/dev/null) || chamber_base=""
+        host_tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet \
+            "refs/heads/agent/${task}") || host_tip=""
+        if [ "$chamber_tip" != absent ] && [ "$chamber_tip" != "$chamber_base" ] &&
+           [ "$chamber_tip" != "$host_tip" ]; then
+            die "chamber '$task' holds commits this repository does not have (agent/${task} is at ${chamber_tip}; here it is ${host_tip:-absent}). Run '$0 collect $task', or destroy them with: $0 rm $task force"
+        fi
+    fi
+
     docker rm --force "$(container_of "$task")" >/dev/null
     # The snapshot ref exists only to get the working tree into the clone. Once the
     # chamber is gone nothing reads it, and leaving one branch per chamber behind is

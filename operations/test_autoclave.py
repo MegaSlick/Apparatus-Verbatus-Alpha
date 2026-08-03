@@ -131,7 +131,9 @@ if args[:2] in (["volume", "create"], ["volume", "rm"]):
 if args[:2] == ["container", "inspect"]:
     present = setting("FAKE_CONTAINER_EXISTS") == "1"
     if "-f" in args:
-        print("true" if present else "false")
+        # `running()`, which is a separate question from `exists()`: a stopped
+        # chamber is there to be removed and cannot be read.
+        print("true" if present and setting("FAKE_CONTAINER_RUNNING", "1") == "1" else "false")
         raise SystemExit(0)
     raise SystemExit(0 if present else 1)
 if args[:1] == ["inspect"]:
@@ -417,12 +419,74 @@ class TestLogin:
 class TestDispatch:
     """Running an agent inside a chamber, against a brief written to a file."""
 
-    def test_every_allowed_effort_gets_past_effort_validation(self):
-        for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
-            result = run(
-                "dispatch", "task-x", "claude", str(ROOT / "README.md"), "gpt-5.6-luna", effort
-            )
-            assert "not an allowed effort" not in result.stderr
+    # `.claude/agents/README.md`, "Reachability, which is not negotiable": `minimal` is
+    # rejected by every Codex model; `gpt-5.3-codex-spark` also rejects `none` and
+    # `max`; Claude accepts `low`, `medium`, `high`, `xhigh`, `max` and nothing else.
+    # The launcher used to accept the union of all three for every vendor, and the test
+    # that covered it asserted only that a refusal string was *absent* — which it was
+    # for all seven, including the four no vendor would run, and which stayed true when
+    # the whole `case` block was deleted.
+    REACHABLE = {
+        ("claude", "opus"): ("low", "medium", "high", "xhigh", "max"),
+        ("codex", "gpt-5.6-luna"): ("none", "low", "medium", "high", "xhigh", "max"),
+        ("codex", "gpt-5.3-codex-spark"): ("low", "medium", "high", "xhigh"),
+    }
+
+    def test_a_reachable_effort_gets_past_effort_validation(self):
+        """A level the vendor accepts must fail for the *next* reason, not the effort.
+
+        Both halves are asserted: the effort complaint is absent, and the run still
+        stopped further along. Written with the absence alone, this passed for every
+        string that never reached the check at all, which is how it passed for
+        `minimal` on Claude.
+        """
+        for (vendor, model), levels in self.REACHABLE.items():
+            for effort in levels:
+                result = run("dispatch", "task-x", vendor, str(ROOT / "README.md"), model, effort)
+                assert "not an allowed effort" not in result.stderr, (
+                    f"{vendor} {model} refused the reachable effort {effort!r}"
+                )
+                assert result.returncode != 0
+                stopped_at = result.stderr.lower()
+                assert "docker" in stopped_at or "chamber" in stopped_at, (
+                    f"{vendor} {model} {effort} stopped for an unexpected reason: {stopped_at!r}"
+                )
+
+    def test_an_unreachable_effort_is_refused_before_the_engine(self):
+        """A level the vendor is measured to reject must cost a line of output.
+
+        It used to cost a chamber and a model process: the launcher accepted the union
+        of both vendors' vocabularies, so a documented-as-unreachable value passed
+        validation and failed inside the vendor CLI two layers down, in a message
+        naming neither the argument nor this script.
+        """
+        unreachable = [
+            ("claude", "opus", "none"),
+            ("claude", "opus", "minimal"),
+            ("codex", "gpt-5.6-luna", "minimal"),
+            ("codex", "gpt-5.3-codex-spark", "none"),
+            ("codex", "gpt-5.3-codex-spark", "max"),
+            ("codex", "gpt-5.3-codex-spark", "minimal"),
+        ]
+        for vendor, model, effort in unreachable:
+            result = run("dispatch", "task-x", vendor, str(ROOT / "README.md"), model, effort)
+            assert result.returncode != 0, f"{vendor} {model} accepted {effort!r}"
+            assert "not an allowed effort" in result.stderr
+            assert vendor in result.stderr, "the refusal does not say which vendor"
+            assert "docker" not in result.stderr.lower(), "the engine was reached first"
+
+    def test_an_unmeasured_codex_model_gets_the_general_codex_range(self):
+        """Not a refusal: a launcher that rejects every seat added after it was
+        written is a launcher somebody edits under time pressure to get a dispatch
+        out. `minimal`, which no Codex model accepts, is still refused."""
+        allowed = run(
+            "dispatch", "task-x", "codex", str(ROOT / "README.md"), "gpt-9-unmeasured", "max"
+        )
+        assert "not an allowed effort" not in allowed.stderr
+        refused = run(
+            "dispatch", "task-x", "codex", str(ROOT / "README.md"), "gpt-9-unmeasured", "minimal"
+        )
+        assert "not an allowed effort" in refused.stderr
 
     def test_a_missing_task_is_refused(self):
         result = run("dispatch")
@@ -479,7 +543,7 @@ class TestDispatch:
         [
             ("-evil", "medium", "not a plain model name"),
             ("gpt-5.6-luna; touch PWNED", "medium", "not a plain model name"),
-            ("gpt-5.6-luna", "bogus", "not an allowed effort"),
+            ("opus", "bogus", "not an allowed effort"),
         ],
     )
     def test_the_model_and_effort_are_validated(self, model, effort, expected):
@@ -543,6 +607,177 @@ def test_doctor_reports_sign_in_state_for_both_vendors():
     assert result.returncode == 0
     assert "auth claude" in result.stdout
     assert "auth codex" in result.stdout
+
+
+class TestWhatComesBackAndWhatIsDestroyed:
+    """`collect` and `rm`, against a real clone standing in for the chamber's tree.
+
+    The stub rewrites `cd /work` to that clone and runs the launcher's own shell for
+    real, so these are outcome tests: what the refusal actually saw, which ref actually
+    arrived, whether the container was actually removed.
+    """
+
+    def chamber(self, tmp_path, *, commits=1, attributed=True):
+        script = elsewhere(tmp_path)
+        (tmp_path / ".gitignore").write_text("workbench/\n")
+        (tmp_path / "tracked.txt").write_text("base\n")
+        git(tmp_path, "add", ".gitignore", "tracked.txt")
+        git(tmp_path, "commit", "--quiet", "-m", "files\n\nCo-Authored-By: a <a@b>")
+        base = git(tmp_path, "rev-parse", "HEAD")
+
+        clone = tmp_path / "chamber"
+        subprocess.run(["git", "clone", "--quiet", str(tmp_path), str(clone)], check=True)
+        git(clone, "switch", "--quiet", "-c", "agent/task-x")
+        git(clone, "config", "user.name", "autoclave")
+        git(clone, "config", "user.email", "autoclave@localhost")
+        for index in range(commits):
+            (clone / "tracked.txt").write_text(f"changed {index}\n")
+            git(clone, "add", "tracked.txt")
+            message = f"work {index}"
+            if attributed:
+                message += "\n\nCo-Authored-By: Test Model <model@example.invalid>"
+            git(clone, "commit", "--quiet", "-m", message)
+
+        drawer = tmp_path / "workbench" / "autoclave" / "task-x"
+        drawer.mkdir(parents=True)
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_CONTAINER_EXISTS": "1",
+                "FAKE_CHAMBER_WORK": str(clone),
+                "FAKE_CHAMBER_BASE": base,
+                "FAKE_OUT_DIR": str(drawer),
+            }
+        )
+        return script, clone, drawer, env, log
+
+    def test_collect_refuses_work_that_was_never_added_and_names_it(self, tmp_path):
+        """A bundle carries commits, so untracked work is left behind — and `rm` then
+        destroys the only copy. `git diff` and `git diff --cached` between them see
+        modified and staged files and say nothing at all about an untracked one, which
+        is the shape most of a chamber's output takes."""
+        script, clone, drawer, env, _log = self.chamber(tmp_path)
+        (clone / "new-module.py").write_text("# work an agent did\n")
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "new-module.py" in result.stderr, "the refusal did not name the path at risk"
+        assert not (drawer / "task-x.bundle").exists()
+        arrived = subprocess.run(
+            ["git", "-C", str(tmp_path), "rev-parse", "--verify", "--quiet", "agent/task-x"],
+            capture_output=True,
+        )
+        assert arrived.returncode != 0, "a branch arrived from a tree that was not clean"
+
+    def test_the_premise_that_git_diff_is_blind_to_untracked_work(self, tmp_path):
+        """Pinned against real git, so the change above rests on a fact rather than on
+        a comment. If git ever starts reporting untracked paths from `diff`, this says
+        so instead of the fix quietly becoming pointless."""
+        subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+        (tmp_path / "new-file.py").write_text("# work an agent did\n")
+        diff = subprocess.run(["git", "-C", str(tmp_path), "diff", "--quiet"])
+        cached = subprocess.run(["git", "-C", str(tmp_path), "diff", "--cached", "--quiet"])
+        porcelain = subprocess.run(
+            ["git", "-C", str(tmp_path), "status", "--porcelain"], capture_output=True, text=True
+        )
+        assert diff.returncode == 0 and cached.returncode == 0
+        assert "new-file.py" in porcelain.stdout
+
+    def test_a_clean_chamber_is_collected(self, tmp_path):
+        """The positive control. Without it the refusals above pass for a `collect`
+        that can no longer collect anything."""
+        script, clone, drawer, env, _log = self.chamber(tmp_path)
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        assert (drawer / "task-x.bundle").is_file()
+        assert git(tmp_path, "rev-parse", "agent/task-x") == git(clone, "rev-parse", "agent/task-x")
+        assert "1 commit(s)" in result.stdout
+        assert "UNATTRIBUTED" not in result.stdout
+
+    def test_an_empty_branch_collects_and_says_it_is_empty(self, tmp_path):
+        """The report is worth keeping, so this succeeds — loudly. Reporting success
+        on nothing is the one thing this tool must not do."""
+        script, _clone, drawer, env, _log = self.chamber(tmp_path, commits=0)
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert "NO COMMITS" in result.stdout
+        assert (drawer / "task-x.bundle").is_file()
+
+    def test_collect_names_commits_that_carry_no_attribution(self, tmp_path):
+        """`commit-msg` is switched on inside a chamber now, so ordinarily every
+        returned commit already names its model. Ordinarily is not always — the hook
+        can be skipped, and a chamber created before that change never had it — and
+        `pre-push` looks at reviewers and credentials, never at authorship. This is
+        the last place anything checks, so it checks rather than assuming.
+
+        It names them and does not refuse: a branch is not made safer by being
+        stranded inside a container, and `rm` already refuses to destroy work nobody
+        collected.
+        """
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path, attributed=False)
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        assert "UNATTRIBUTED" in result.stdout
+        assert "work 0" in result.stdout, "the warning does not name the commits"
+
+    def test_rm_refuses_a_chamber_holding_work_nobody_collected(self, tmp_path):
+        script, _clone, _drawer, env, log = self.chamber(tmp_path)
+        result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+        assert result.returncode != 0
+        assert "holds commits this repository does not have" in result.stderr
+        assert "collect task-x" in result.stderr, "the way out is not named"
+        assert not any(call[:2] == ["rm", "--force"] for call in docker_calls(log)), (
+            "the container was destroyed with commits this repository does not have"
+        )
+
+    def test_rm_refuses_a_chamber_with_a_dirty_tree(self, tmp_path):
+        script, clone, _drawer, env, log = self.chamber(tmp_path, commits=0)
+        (clone / "not-collected.txt").write_text("an hour of work\n")
+        result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+        assert result.returncode != 0
+        assert "not-collected.txt" in result.stderr
+        assert not any(call[:2] == ["rm", "--force"] for call in docker_calls(log))
+
+    def test_rm_refuses_a_stopped_chamber_rather_than_destroying_it_unread(self, tmp_path):
+        """A stopped chamber cannot be read, so nothing here can call it safe. Warning
+        and destroying it anyway is the same loss with a sentence in front of it."""
+        script, _clone, _drawer, env, log = self.chamber(tmp_path, commits=0)
+        env["FAKE_CONTAINER_RUNNING"] = "0"
+        result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+        assert result.returncode != 0
+        assert "stopped" in result.stderr
+        assert "rm task-x force" in result.stderr, "the way out is not named"
+        assert not any(call[:2] == ["rm", "--force"] for call in docker_calls(log))
+
+    def test_force_destroys_a_stopped_chamber_without_reading_it(self, tmp_path):
+        """The escape hatch the refusal names. Without it a chamber that will not
+        start could never be removed by this tool at all."""
+        script, _clone, _drawer, env, log = self.chamber(tmp_path)
+        env["FAKE_CONTAINER_RUNNING"] = "0"
+        result = run("rm", "task-x", "force", env=env, script=script, cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert ["rm", "--force", "verbatus-ac-task-x"] in docker_calls(log)
+
+    def test_rm_destroys_a_chamber_whose_work_was_collected(self, tmp_path):
+        script, clone, _drawer, env, log = self.chamber(tmp_path)
+        git(tmp_path, "fetch", "--quiet", str(clone), "agent/task-x:agent/task-x")
+        result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert ["rm", "--force", "verbatus-ac-task-x"] in docker_calls(log)
+
+    def test_rm_takes_only_the_word_force(self, tmp_path):
+        """A typo that reaches `docker rm --force` because it was not the word we
+        expected is exactly the failure this refuses."""
+        script = elsewhere(tmp_path)
+        result = run("rm", "some-task", "--force", script=script, cwd=tmp_path)
+        assert result.returncode != 0
+        assert "force" in result.stderr
+        assert "docker" not in result.stderr.lower(), "the engine was reached first"
 
 
 class TestTheUntrustedDrawer:
