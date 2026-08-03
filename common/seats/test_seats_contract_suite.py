@@ -20,17 +20,17 @@ and nothing whatever about model churn.
 
 import pytest
 
-from common.seats.errors import ProtocolClauseRefusal, UnresolvedSeatRefusal
-from common.seats.models import AbsentSeat, SeatIdentity, VerifiedSnapshot
-from common.seats.protocol import SeatProtocol, exercise_contract
+from common.seats.errors import ProtocolClauseRefusal, UnresolvedChairRefusal
+from common.seats.models import AbsentChair, ChairIdentity, VerifiedSnapshot
+from common.seats.protocol import ChairProtocol, exercise_contract
 from common.seats.receipts import build_receipt
 
 from .conftest import (
-    DeterministicSeatRegistry,
+    DeterministicChairRegistry,
     RecordingFetcher,
-    absent_seat,
-    hf_seat,
-    local_seat,
+    absent_chair,
+    hf_chair,
+    local_chair,
     pin_snapshot,
     registry_for,
     serving_details,
@@ -53,7 +53,7 @@ def implementation(request, tmp_path):
     )
     config_path = write_models_toml(
         tmp_path,
-        {CONFIGURED: local_seat(CONFIGURED, pin), ABSENT: absent_seat("fixture absence")},
+        {CONFIGURED: local_chair(CONFIGURED, pin), ABSENT: absent_chair("fixture absence")},
         witness_floor=2,
         model_root="model-fixtures",
     )
@@ -61,7 +61,7 @@ def implementation(request, tmp_path):
         from common.seats.config import load_models_toml
 
         return registry_for(load_models_toml(config_path), tmp_path, RecordingFetcher({}))
-    return DeterministicSeatRegistry(config_path, tmp_path / "deterministic-snapshot")
+    return DeterministicChairRegistry(config_path, tmp_path / "deterministic-snapshot")
 
 
 # --- The shape itself --------------------------------------------------------------
@@ -70,7 +70,7 @@ def implementation(request, tmp_path):
 def test_both_implementations_satisfy_the_protocol_without_inheriting_it(implementation):
     """`SeatProtocol` is structural: neither implementation subclasses it, and
     neither could, because one of them must be able to exist without the other."""
-    assert isinstance(implementation, SeatProtocol)
+    assert isinstance(implementation, ChairProtocol)
 
 
 def test_neither_implementation_imports_or_delegates_to_the_other():
@@ -81,12 +81,12 @@ def test_neither_implementation_imports_or_delegates_to_the_other():
 
     import common.seats.registry as registry_module
 
-    body = inspect.getsource(DeterministicSeatRegistry)
+    body = inspect.getsource(DeterministicChairRegistry)
     body = body[body.index('"""', body.index('"""') + 3) + 3 :]  # past the class docstring
 
     assert "common.seats.registry" not in body
     assert "SeatRegistry(" not in body
-    assert not issubclass(DeterministicSeatRegistry, registry_module.SeatRegistry)
+    assert not issubclass(DeterministicChairRegistry, registry_module.ChairRegistry)
     assert "conftest" not in inspect.getsource(registry_module)
     assert "Deterministic" not in inspect.getsource(registry_module)
 
@@ -97,7 +97,7 @@ def test_neither_implementation_imports_or_delegates_to_the_other():
 def test_resolve_returns_the_same_exact_identity_from_both(implementation):
     identity = implementation.resolve(CONFIGURED)
 
-    assert isinstance(identity, SeatIdentity)
+    assert isinstance(identity, ChairIdentity)
     assert identity.role == CONFIGURED
     assert identity.source == "local-repository"
     assert identity.revision is None
@@ -107,13 +107,13 @@ def test_resolve_returns_the_same_exact_identity_from_both(implementation):
 def test_resolve_returns_the_same_explicit_absence_from_both(implementation):
     absence = implementation.resolve(ABSENT)
 
-    assert absence == AbsentSeat(role=ABSENT, reason="fixture absence")
+    assert absence == AbsentChair(role=ABSENT, reason="fixture absence")
 
 
 def test_resolve_of_an_unconfigured_role_refuses_the_same_way_in_both(implementation):
-    with pytest.raises(UnresolvedSeatRefusal) as caught:
+    with pytest.raises(UnresolvedChairRefusal) as caught:
         implementation.resolve(UNCONFIGURED)
-    assert caught.value.seat == UNCONFIGURED
+    assert caught.value.chair == UNCONFIGURED
 
 
 # --- ensure ------------------------------------------------------------------------
@@ -132,18 +132,18 @@ def test_ensure_refuses_a_neighbouring_revision_in_both(implementation):
     """Handing over an identity that is not the configured pin is the one way a
     caller can ask either implementation to serve something else. Both refuse."""
     identity = implementation.resolve(CONFIGURED)
-    neighbouring = SeatIdentity(**{**identity.to_record(), "digest_manifest": "0" * 64})
+    neighbouring = ChairIdentity(**{**identity.to_record(), "digest_manifest": "0" * 64})
 
-    with pytest.raises(UnresolvedSeatRefusal) as caught:
+    with pytest.raises(UnresolvedChairRefusal) as caught:
         implementation.ensure(neighbouring)
-    assert caught.value.seat == CONFIGURED
+    assert caught.value.chair == CONFIGURED
 
 
-def test_ensure_refuses_an_absent_seat_in_both(implementation):
+def test_ensure_refuses_an_absent_chair_in_both(implementation):
     identity = implementation.resolve(CONFIGURED)
-    stolen = SeatIdentity(**{**identity.to_record(), "role": ABSENT})
+    stolen = ChairIdentity(**{**identity.to_record(), "role": ABSENT})
 
-    with pytest.raises(UnresolvedSeatRefusal, match="absent"):
+    with pytest.raises(UnresolvedChairRefusal, match="absent"):
         implementation.ensure(stolen)
 
 
@@ -161,9 +161,9 @@ def test_receipt_names_the_resolved_identity_in_both(implementation):
 
 def test_receipt_refuses_an_identity_that_is_not_the_configured_pin_in_both(implementation):
     identity = implementation.resolve(CONFIGURED)
-    neighbouring = SeatIdentity(**{**identity.to_record(), "serving_recipe": "something-else"})
+    neighbouring = ChairIdentity(**{**identity.to_record(), "serving_recipe": "something-else"})
 
-    with pytest.raises(UnresolvedSeatRefusal):
+    with pytest.raises(UnresolvedChairRefusal):
         implementation.receipt(neighbouring, serving_details())
 
 
@@ -188,11 +188,11 @@ class _MissingEnsure:
         raise AssertionError("never reached")
 
 
-class _WrongSeat:
+class _WrongChair:
     """Answers every request with one seat's identity — a picker with one option."""
 
-    def __init__(self, identity: SeatIdentity):
-        self._identity = SeatIdentity(**{**identity.to_record(), "role": "a_different_role"})
+    def __init__(self, identity: ChairIdentity):
+        self._identity = ChairIdentity(**{**identity.to_record(), "role": "a_different_role"})
 
     def resolve(self, role):
         return self._identity
@@ -207,9 +207,9 @@ class _WrongSeat:
 class _WrongSnapshot:
     """Resolves correctly, then verifies something else and says it is fine."""
 
-    def __init__(self, identity: SeatIdentity):
+    def __init__(self, identity: ChairIdentity):
         self._identity = identity
-        self._other = SeatIdentity(**{**identity.to_record(), "digest_manifest": "0" * 64})
+        self._other = ChairIdentity(**{**identity.to_record(), "digest_manifest": "0" * 64})
 
     def resolve(self, role):
         return self._identity
@@ -227,7 +227,7 @@ class _WrongSnapshot:
     ("broken", "clause"),
     [
         (_MissingEnsure, "protocol shape"),
-        (_WrongSeat, "resolve clause"),
+        (_WrongChair, "resolve clause"),
         (_WrongSnapshot, "ensure clause"),
     ],
 )
@@ -245,7 +245,7 @@ def test_a_deliberately_incompatible_third_fails_naming_the_clause_it_broke(
             subject, role=CONFIGURED, expected_identity=identity, serving=serving_details()
         )
     assert clause in str(caught.value)
-    assert caught.value.seat == CONFIGURED
+    assert caught.value.chair == CONFIGURED
 
 
 def test_the_two_implementations_agree_on_a_huggingface_pin_they_cannot_both_fetch(tmp_path):
@@ -253,11 +253,11 @@ def test_the_two_implementations_agree_on_a_huggingface_pin_they_cannot_both_fet
     disagree about what a `huggingface` pin resolves to, even though only one of
     them could ever fetch it."""
     config_path = write_models_toml(
-        tmp_path, {CONFIGURED: hf_seat(CONFIGURED, "d" * 64)}, witness_floor=1
+        tmp_path, {CONFIGURED: hf_chair(CONFIGURED, "d" * 64)}, witness_floor=1
     )
     from common.seats.config import load_models_toml
 
     real = registry_for(load_models_toml(config_path), tmp_path, RecordingFetcher({}))
-    deterministic = DeterministicSeatRegistry(config_path, tmp_path / "snapshot")
+    deterministic = DeterministicChairRegistry(config_path, tmp_path / "snapshot")
 
     assert real.resolve(CONFIGURED) == deterministic.resolve(CONFIGURED)

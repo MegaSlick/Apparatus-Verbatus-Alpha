@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 
 from .errors import DigestMismatchRefusal
-from .models import DigestManifest, ManifestRow, SeatIdentity, VerifiedSnapshot, is_sha256
+from .models import ChairIdentity, DigestManifest, ManifestRow, VerifiedSnapshot, is_sha256
 
 
 def manifest_digest(manifest: DigestManifest) -> str:
@@ -27,7 +27,7 @@ def build_manifest(snapshot_root: str | Path) -> DigestManifest:
         raise DigestMismatchRefusal("manifest", f"snapshot root {root} is not a directory")
     rows = tuple(
         ManifestRow(path=relative, sha256=digest_bytes(path.read_bytes()), size=path.stat().st_size)
-        for relative, path in _regular_files(root, seat="manifest")
+        for relative, path in _regular_files(root, chair="manifest")
     )
     return DigestManifest(rows=rows)
 
@@ -42,7 +42,7 @@ def write_manifest(manifest: DigestManifest, path: str | Path) -> str:
     return manifest_digest(manifest)
 
 
-def read_manifest(path: str | Path, *, expected_digest: str, seat: str) -> DigestManifest:
+def read_manifest(path: str | Path, *, expected_digest: str, chair: str) -> DigestManifest:
     """Read a manifest artifact and prove its canonical bytes match the pin.
 
     The pin names the artifact, not merely a JSON value that happens to parse to
@@ -57,25 +57,25 @@ def read_manifest(path: str | Path, *, expected_digest: str, seat: str) -> Diges
         data = source.read_bytes()
         raw = json.loads(data)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise DigestMismatchRefusal(seat, f"cannot read manifest {source}: {error}") from error
-    manifest = _manifest_from_record(raw, seat)
+        raise DigestMismatchRefusal(chair, f"cannot read manifest {source}: {error}") from error
+    manifest = _manifest_from_record(raw, chair)
     canonical = canonical_bytes(manifest.to_record())
     if data != canonical:
         raise DigestMismatchRefusal(
-            seat,
+            chair,
             f"manifest {source} is not serialized as the canonical artifact bytes",
         )
     actual = digest_bytes(data)
     if actual != expected_digest:
         raise DigestMismatchRefusal(
-            seat,
+            chair,
             f"manifest differs: expected digest {expected_digest}, got {actual}",
         )
     return manifest
 
 
 def verify_snapshot(
-    identity: SeatIdentity,
+    identity: ChairIdentity,
     snapshot_root: str | Path,
     manifest: DigestManifest,
     *,
@@ -91,7 +91,7 @@ def verify_snapshot(
     expected = {row.path: row for row in manifest.rows}
     actual = {
         relative: path
-        for relative, path in _regular_files(root, seat=identity.role)
+        for relative, path in _regular_files(root, chair=identity.role)
         if relative not in ignored
     }
     for relative in sorted(set(expected) | set(actual)):
@@ -122,44 +122,44 @@ def verify_snapshot(
     )
 
 
-def _manifest_from_record(raw: Any, seat: str) -> DigestManifest:
+def _manifest_from_record(raw: Any, chair: str) -> DigestManifest:
     if not isinstance(raw, list):
-        raise DigestMismatchRefusal(seat, "manifest artifact is not the required bare row list")
+        raise DigestMismatchRefusal(chair, "manifest artifact is not the required bare row list")
     rows: list[ManifestRow] = []
     for index, value in enumerate(raw):
         if not isinstance(value, dict) or set(value) != {"path", "sha256", "size"}:
             raise DigestMismatchRefusal(
-                seat, f"manifest row {index} does not have exactly path, sha256, size"
+                chair, f"manifest row {index} does not have exactly path, sha256, size"
             )
         path = value["path"]
         sha = value["sha256"]
         size = value["size"]
         if not _safe_relative(path):
-            raise DigestMismatchRefusal(seat, f"manifest row {index} has unsafe path {path!r}")
+            raise DigestMismatchRefusal(chair, f"manifest row {index} has unsafe path {path!r}")
         if not is_sha256(sha):
-            raise DigestMismatchRefusal(seat, f"manifest row {index} has no lowercase sha256")
+            raise DigestMismatchRefusal(chair, f"manifest row {index} has no lowercase sha256")
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
-            raise DigestMismatchRefusal(seat, f"manifest row {index} has invalid size {size!r}")
+            raise DigestMismatchRefusal(chair, f"manifest row {index} has invalid size {size!r}")
         rows.append(ManifestRow(path=path, sha256=sha, size=size))
     manifest = DigestManifest(tuple(rows))
-    _validate_manifest(manifest, seat)
+    _validate_manifest(manifest, chair)
     return manifest
 
 
-def _validate_manifest(manifest: DigestManifest, seat: str) -> None:
+def _validate_manifest(manifest: DigestManifest, chair: str) -> None:
     paths = [row.path for row in manifest.rows]
     if paths != sorted(paths) or len(paths) != len(set(paths)):
-        raise DigestMismatchRefusal(seat, "manifest rows are not strictly sorted by unique path")
+        raise DigestMismatchRefusal(chair, "manifest rows are not strictly sorted by unique path")
     for row in manifest.rows:
         if not _safe_relative(row.path):
-            raise DigestMismatchRefusal(seat, f"manifest has unsafe path {row.path!r}")
+            raise DigestMismatchRefusal(chair, f"manifest has unsafe path {row.path!r}")
         if not is_sha256(row.sha256):
-            raise DigestMismatchRefusal(seat, f"manifest row {row.path} has no lowercase sha256")
+            raise DigestMismatchRefusal(chair, f"manifest row {row.path} has no lowercase sha256")
         if not isinstance(row.size, int) or isinstance(row.size, bool) or row.size < 0:
-            raise DigestMismatchRefusal(seat, f"manifest row {row.path} has invalid size")
+            raise DigestMismatchRefusal(chair, f"manifest row {row.path} has invalid size")
 
 
-def _regular_files(root: Path, *, seat: str) -> list[tuple[str, Path]]:
+def _regular_files(root: Path, *, chair: str) -> list[tuple[str, Path]]:
     """Return sorted regular files, refusing a symlink instead of following it."""
 
     root = root.resolve()
@@ -173,14 +173,14 @@ def _regular_files(root: Path, *, seat: str) -> list[tuple[str, Path]]:
             if candidate.is_symlink():
                 relative = candidate.relative_to(root).as_posix()
                 raise DigestMismatchRefusal(
-                    seat, f"snapshot differs at {relative}: symlink directory"
+                    chair, f"snapshot differs at {relative}: symlink directory"
                 )
         for name in filenames:
             candidate = directory_path / name
             relative = candidate.relative_to(root).as_posix()
             if candidate.is_symlink() or not candidate.is_file():
                 raise DigestMismatchRefusal(
-                    seat, f"snapshot differs at {relative}: not a regular file"
+                    chair, f"snapshot differs at {relative}: not a regular file"
                 )
             found.append((relative, candidate))
     return sorted(found, key=lambda item: item[0])

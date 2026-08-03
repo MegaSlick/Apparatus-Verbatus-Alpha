@@ -18,18 +18,18 @@ from .config import load_models_toml
 from .errors import (
     AdapterFetchRefusal,
     CacheRevisionRefusal,
+    ChairRefusal,
     DigestMismatchRefusal,
     LocalPathRefusal,
-    SeatRefusal,
     ServingRecipeRefusal,
-    UnresolvedSeatRefusal,
+    UnresolvedChairRefusal,
 )
 from .manifests import read_manifest, verify_snapshot
 from .models import (
-    AbsentSeat,
+    AbsentChair,
+    ChairIdentity,
     DigestManifest,
     ModelsConfig,
-    SeatIdentity,
     ServingDetails,
     ServingReceipt,
     VerifiedSnapshot,
@@ -42,7 +42,7 @@ CACHE_DESCRIPTOR = ".seat-identity.json"
 class SnapshotFetcher(Protocol):
     """The one deliberately small seam for network fetches; tests provide a fake."""
 
-    def fetch(self, identity: SeatIdentity, destination: Path, paths: tuple[str, ...]) -> None:
+    def fetch(self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]) -> None:
         """Materialize exactly `paths` beneath `destination`, or raise."""
 
 
@@ -73,14 +73,14 @@ class HuggingFaceFetcher:
 
             client = import_module("huggingface_hub")
         except ImportError as error:
-            raise UnresolvedSeatRefusal(
+            raise UnresolvedChairRefusal(
                 "huggingface", "huggingface_hub is not installed for the production fetcher"
             ) from error
         return cls(client)  # type: ignore[arg-type]
 
-    def fetch(self, identity: SeatIdentity, destination: Path, paths: tuple[str, ...]) -> None:
+    def fetch(self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]) -> None:
         if identity.source != "huggingface" or not identity.repo or not identity.revision:
-            raise UnresolvedSeatRefusal(
+            raise UnresolvedChairRefusal(
                 identity.role, "Hugging Face fetch requested for a non-Hugging Face pin"
             )
         downloaded = self.client.snapshot_download(
@@ -92,7 +92,7 @@ class HuggingFaceFetcher:
         for relative in paths:
             origin = source / relative
             if not origin.is_file():
-                raise UnresolvedSeatRefusal(
+                raise UnresolvedChairRefusal(
                     identity.role,
                     f"Hugging Face fetch returned no requested file {relative!r} for the pinned revision",
                 )
@@ -101,7 +101,7 @@ class HuggingFaceFetcher:
             shutil.copyfile(origin, target)
 
 
-class SeatRegistry:
+class ChairRegistry:
     """Resolve only the requested role, then verify only its pinned artifact.
 
     GOVERNANCE 6 applies to the values returned here as well as their consumers.
@@ -129,18 +129,18 @@ class SeatRegistry:
         *,
         cache_root: str | Path | None = None,
         fetcher: SnapshotFetcher | None = None,
-    ) -> "SeatRegistry":
+    ) -> "ChairRegistry":
         return cls(load_models_toml(path), cache_root=cache_root, fetcher=fetcher)
 
-    def resolve(self, role: str) -> SeatIdentity | AbsentSeat:
+    def resolve(self, role: str) -> ChairIdentity | AbsentChair:
         """Return that role's exact identity or explicit absence, never another role."""
 
-        value = self.config.seats.get(role)
+        value = self.config.chairs.get(role)
         if value is None:
-            raise UnresolvedSeatRefusal(role, "role is not present in models.toml")
+            raise UnresolvedChairRefusal(role, "role is not present in models.toml")
         return value
 
-    def ensure(self, identity: SeatIdentity) -> VerifiedSnapshot:
+    def ensure(self, identity: ChairIdentity) -> VerifiedSnapshot:
         """Fetch missing pinned files only, then verify the complete exact snapshot."""
 
         self._require_current_identity(identity)
@@ -149,37 +149,37 @@ class SeatRegistry:
             return verify_snapshot(identity, self._resolve_local_path(identity), manifest)
         return self._ensure_huggingface(identity, manifest)
 
-    def receipt(self, identity: SeatIdentity, serving: ServingDetails) -> ServingReceipt:
+    def receipt(self, identity: ChairIdentity, serving: ServingDetails) -> ServingReceipt:
         """Validate a run-receipt value; writing it belongs to the run receipt writer."""
 
         self._require_current_identity(identity)
         return build_receipt(identity, serving)
 
-    def refuse_recipe_start(self, identity: SeatIdentity, difference: str) -> None:
+    def refuse_recipe_start(self, identity: ChairIdentity, difference: str) -> None:
         """Represent a serving-manager start failure without offering another recipe."""
 
         self._require_current_identity(identity)
         raise ServingRecipeRefusal(identity.role, difference)
 
-    def _require_current_identity(self, identity: SeatIdentity) -> None:
+    def _require_current_identity(self, identity: ChairIdentity) -> None:
         configured = self.resolve(identity.role)
-        if isinstance(configured, AbsentSeat):
-            raise UnresolvedSeatRefusal(
+        if isinstance(configured, AbsentChair):
+            raise UnresolvedChairRefusal(
                 identity.role, f"seat is explicitly absent: {configured.reason}"
             )
         if configured != identity:
-            raise UnresolvedSeatRefusal(
+            raise UnresolvedChairRefusal(
                 identity.role,
                 "identity differs from the configured pin; ensure and receipt never accept a neighbouring revision",
             )
 
-    def _manifest(self, identity: SeatIdentity) -> DigestManifest:
+    def _manifest(self, identity: ChairIdentity) -> DigestManifest:
         if self.manifest_root is None:
-            raise UnresolvedSeatRefusal(identity.role, "no manifest root was supplied")
+            raise UnresolvedChairRefusal(identity.role, "no manifest root was supplied")
         path = _under_root(self.manifest_root, identity.manifest, identity.role, "manifest")
-        return read_manifest(path, expected_digest=identity.digest_manifest, seat=identity.role)
+        return read_manifest(path, expected_digest=identity.digest_manifest, chair=identity.role)
 
-    def _resolve_local_path(self, identity: SeatIdentity) -> Path:
+    def _resolve_local_path(self, identity: ChairIdentity) -> Path:
         if self.config.model_root is None:
             raise LocalPathRefusal(
                 identity.role, "no model_root is configured for local-repository seat"
@@ -197,10 +197,10 @@ class SeatRegistry:
         return resolve_local_path(identity, model_root)
 
     def _ensure_huggingface(
-        self, identity: SeatIdentity, manifest: DigestManifest
+        self, identity: ChairIdentity, manifest: DigestManifest
     ) -> VerifiedSnapshot:
         if self.cache_root is None:
-            raise UnresolvedSeatRefusal(
+            raise UnresolvedChairRefusal(
                 identity.role, "no cache_root was supplied for Hugging Face seat"
             )
         if "/" in identity.role or "\\" in identity.role or identity.role in ("", ".", ".."):
@@ -220,7 +220,7 @@ class SeatRegistry:
             missing = tuple(row.path for row in manifest.rows)
 
         if self.fetcher is None:
-            raise UnresolvedSeatRefusal(
+            raise UnresolvedChairRefusal(
                 identity.role, "no fetcher is configured for a missing pinned snapshot"
             )
         candidate = Path(
@@ -231,10 +231,10 @@ class SeatRegistry:
                 _copy_existing_files(target, candidate, manifest)
             try:
                 self.fetcher.fetch(identity, candidate, missing)
-            except SeatRefusal:
+            except ChairRefusal:
                 raise
             except Exception as error:
-                refusal = AdapterFetchRefusal if identity.adapter_of else UnresolvedSeatRefusal
+                refusal = AdapterFetchRefusal if identity.adapter_of else UnresolvedChairRefusal
                 raise refusal(identity.role, f"pinned fetch failed: {error}") from error
             verified = verify_snapshot(identity, candidate, manifest)
             _write_cache_descriptor(candidate, descriptor)
@@ -249,7 +249,7 @@ class SeatRegistry:
                 shutil.rmtree(candidate, ignore_errors=True)
             raise
 
-    def _cache_descriptor(self, identity: SeatIdentity) -> dict[str, object]:
+    def _cache_descriptor(self, identity: ChairIdentity) -> dict[str, object]:
         """Bind an adapter cache to its configured base identity as well.
 
         An adapter's own pin is insufficient when its ``adapter_of`` role is
@@ -261,7 +261,7 @@ class SeatRegistry:
         if identity.adapter_of is None:
             return descriptor
         base = self.resolve(identity.adapter_of)
-        if isinstance(base, AbsentSeat):
+        if isinstance(base, AbsentChair):
             raise CacheRevisionRefusal(
                 identity.role,
                 f"adapter base {identity.adapter_of!r} is explicitly absent",
@@ -270,7 +270,7 @@ class SeatRegistry:
         return descriptor
 
 
-def resolve_local_path(identity: SeatIdentity, model_root: str | Path) -> Path:
+def resolve_local_path(identity: ChairIdentity, model_root: str | Path) -> Path:
     """Resolve a local seat under model_root and refuse traversal or symlink escape."""
 
     if identity.source != "local-repository" or not identity.path:
@@ -294,24 +294,24 @@ def resolve_local_path(identity: SeatIdentity, model_root: str | Path) -> Path:
     return resolved
 
 
-def _under_root(root: Path, relative: str, seat: str, label: str) -> Path:
+def _under_root(root: Path, relative: str, chair: str, label: str) -> Path:
     candidate = (root / relative).resolve()
     if not candidate.is_relative_to(root.resolve()):
-        raise LocalPathRefusal(seat, f"{label} {relative!r} escapes its configured root")
+        raise LocalPathRefusal(chair, f"{label} {relative!r} escapes its configured root")
     return candidate
 
 
-def _verify_cache_descriptor(target: Path, seat: str, expected: dict[str, object]) -> None:
+def _verify_cache_descriptor(target: Path, chair: str, expected: dict[str, object]) -> None:
     descriptor = target / CACHE_DESCRIPTOR
     try:
         actual = json.loads(descriptor.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CacheRevisionRefusal(
-            seat, f"cache has no readable identity descriptor: {error}"
+            chair, f"cache has no readable identity descriptor: {error}"
         ) from error
     if actual != expected:
         raise CacheRevisionRefusal(
-            seat,
+            chair,
             "cache descriptor differs from the configured pin; a cache never supplies a revision",
         )
 
@@ -321,7 +321,7 @@ def _write_cache_descriptor(target: Path, descriptor: dict[str, object]) -> None
 
 
 def _missing_files(
-    identity: SeatIdentity, target: Path, manifest: DigestManifest
+    identity: ChairIdentity, target: Path, manifest: DigestManifest
 ) -> tuple[str, ...]:
     expected = {row.path: row for row in manifest.rows}
     actual: dict[str, Path] = {}

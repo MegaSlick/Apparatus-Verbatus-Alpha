@@ -42,8 +42,8 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import attempt_id, region_id  # noqa: E402
 from common.contracts.stages import DESIGNATOR, EXEMPLAR  # noqa: E402
 from common.imaging import crop_png  # noqa: E402
-from common.seats.models import AbsentSeat, SeatIdentity  # noqa: E402
-from common.seats.registry import SeatRegistry  # noqa: E402
+from common.seats.models import AbsentChair, ChairIdentity  # noqa: E402
+from common.seats.registry import ChairRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     act_bounds,
@@ -56,7 +56,7 @@ from common.stage import (  # noqa: E402
     stage_parser,
 )
 
-DESIGNATOR_SEAT = "designator_structure"
+DESIGNATOR_CHAIR = "designator_structure"
 
 
 def structure_provenance(context) -> dict:
@@ -66,13 +66,13 @@ def structure_provenance(context) -> dict:
     structure-seat seam. An absent or unverifiable Designator is a refusal, never
     a cue to synthesize structure through a different role.
     """
-    resolved = context.registry.resolve(DESIGNATOR_SEAT)
-    if isinstance(resolved, AbsentSeat):
+    resolved = context.registry.resolve(DESIGNATOR_CHAIR)
+    if isinstance(resolved, AbsentChair):
         raise ContractError(
             f"the Designator seat is explicitly absent: {resolved.reason}; "
             "no other seat may mark out structure"
         )
-    if not isinstance(resolved, SeatIdentity):
+    if not isinstance(resolved, ChairIdentity):
         raise ContractError("Designator resolution returned neither an identity nor an absence")
     receipt_ref = context.write_serving_receipt(resolved, fixture_serving_details(resolved))
     return {
@@ -342,7 +342,7 @@ def _regions_of(context, act_id: str) -> list[dict]:
     return records
 
 
-def main(registry_factory=SeatRegistry.from_toml) -> int:
+def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run through the explicitly supplied structure-seat implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, DESIGNATOR, registry_factory=registry_factory)

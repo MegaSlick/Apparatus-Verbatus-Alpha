@@ -25,9 +25,9 @@ from common.contracts.identities import artifact_id
 from common.contracts.outcomes import classify
 from common.contracts.stages import DESIGNATOR
 from common.runtree.store import PublishResult, RunTree
-from common.seats.models import AbsentSeat, ModelsConfig, SeatIdentity, ServingDetails
-from common.seats.protocol import SeatProtocol
-from common.seats.registry import SeatRegistry
+from common.seats.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails
+from common.seats.protocol import ChairProtocol
+from common.seats.registry import ChairRegistry
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
 # keeping: 0 = complete, 2 = structural or fatal, 3 = accounted but holdable.
@@ -75,7 +75,7 @@ _PROVENANCE_FIELDS = frozenset(
 _WITNESS_REGIMES = frozenset({"named", "blinded"})
 
 
-class StageSeatProtocol(SeatProtocol, Protocol):
+class StageChairProtocol(ChairProtocol, Protocol):
     """The small additional config surface a calling stage needs.
 
     A stage receives this explicitly rather than knowing which registry
@@ -156,7 +156,7 @@ class StageContext:
         return self.tree.publish_artifact(envelope)
 
     def write_serving_receipt(
-        self, identity: SeatIdentity, serving: ServingDetails
+        self, identity: ChairIdentity, serving: ServingDetails
     ) -> dict[str, str]:
         """Reverify one identity, then write this serving moment's receipt.
 
@@ -267,7 +267,7 @@ def adapter_recipe_for(run: dict[str, Any], stage: str) -> str:
     return recipe
 
 
-def fixture_serving_details(identity: SeatIdentity) -> ServingDetails:
+def fixture_serving_details(identity: ChairIdentity) -> ServingDetails:
     """The declared serving details of the walking skeleton's offline seam.
 
     Declared, not observed: nothing here served anything, so these are fixture
@@ -305,7 +305,7 @@ def validate_serving_provenance(
     *,
     producer_stage: str,
     require_receipt: bool,
-) -> SeatIdentity | None:
+) -> ChairIdentity | None:
     """Validate the identity/receipt projection a downstream stage consumes.
 
     The receipt holds serving-time facts, so endpoint and timestamp must never be
@@ -344,54 +344,58 @@ def validate_serving_provenance(
         )
 
     state = provenance.get("seat_state")
-    seat = provenance.get("seat")
-    if not isinstance(seat, str) or not seat:
+    chair = provenance.get("seat")
+    if not isinstance(chair, str) or not chair:
         raise SchemaRefusal("model provenance has no seat name")
     if state == "absent":
-        configured = context.registry.resolve(seat)
-        if not isinstance(configured, AbsentSeat):
-            raise SchemaRefusal(f"model provenance calls configured seat {seat!r} absent")
+        configured = context.registry.resolve(chair)
+        if not isinstance(configured, AbsentChair):
+            raise SchemaRefusal(f"model provenance calls configured seat {chair!r} absent")
         if provenance.get("absence") != configured.to_record():
-            raise SchemaRefusal(f"model provenance absence for {seat!r} differs from models config")
+            raise SchemaRefusal(
+                f"model provenance absence for {chair!r} differs from models config"
+            )
         if any(
             provenance.get(field) is not None
             for field in ("resolved_identity", "resolved_revision", "receipt_ref")
         ):
-            raise SchemaRefusal(f"absent seat {seat!r} carries a model identity or receipt")
+            raise SchemaRefusal(f"absent seat {chair!r} carries a model identity or receipt")
         if require_receipt:
-            raise SchemaRefusal(f"absent seat {seat!r} cannot have produced a reading")
+            raise SchemaRefusal(f"absent seat {chair!r} cannot have produced a reading")
         return None
 
     if state != "configured":
         raise SchemaRefusal(f"model provenance has unknown seat state {state!r}")
     record = provenance.get("resolved_identity")
     if not isinstance(record, dict):
-        raise SchemaRefusal(f"configured seat {seat!r} has no resolved identity")
+        raise SchemaRefusal(f"configured seat {chair!r} has no resolved identity")
     try:
-        identity = SeatIdentity(**record)
+        identity = ChairIdentity(**record)
     except TypeError as error:
         raise SchemaRefusal(
-            f"resolved identity for {seat!r} has the wrong schema: {error}"
+            f"resolved identity for {chair!r} has the wrong schema: {error}"
         ) from error
-    if seat != identity.role or record != identity.to_record():
-        raise SchemaRefusal(f"resolved identity for {seat!r} is malformed")
+    if chair != identity.role or record != identity.to_record():
+        raise SchemaRefusal(f"resolved identity for {chair!r} is malformed")
     configured = context.registry.resolve(identity.role)
-    if not isinstance(configured, SeatIdentity) or configured != identity:
-        raise SchemaRefusal(f"resolved identity for {seat!r} differs from the sealed models config")
+    if not isinstance(configured, ChairIdentity) or configured != identity:
+        raise SchemaRefusal(
+            f"resolved identity for {chair!r} differs from the sealed models config"
+        )
     revision = provenance.get("resolved_revision")
     if revision != {
         "kind": identity.receipt_revision_kind,
         "value": identity.receipt_revision,
     }:
-        raise SchemaRefusal(f"resolved revision for {seat!r} differs from its immutable identity")
+        raise SchemaRefusal(f"resolved revision for {chair!r} differs from its immutable identity")
 
     reference = provenance.get("receipt_ref")
     if not require_receipt:
         if reference is not None:
-            raise SchemaRefusal(f"seat {seat!r} was not run but carries a serving receipt")
+            raise SchemaRefusal(f"seat {chair!r} was not run but carries a serving receipt")
         return identity
     if not isinstance(reference, dict):
-        raise SchemaRefusal(f"reading from seat {seat!r} has no serving receipt reference")
+        raise SchemaRefusal(f"reading from seat {chair!r} has no serving receipt reference")
     receipt = context.tree.read_run_receipt(reference)
     expected = {
         "seat": identity.role,
@@ -404,7 +408,7 @@ def validate_serving_provenance(
     differing = [field for field, value in expected.items() if receipt.get(field) != value]
     if differing:
         raise SchemaRefusal(
-            f"serving receipt for {seat!r} differs from the resolved identity at {differing}"
+            f"serving receipt for {chair!r} differs from the resolved identity at {differing}"
         )
     return identity
 
@@ -447,7 +451,7 @@ def open_context(
     args,
     stage: str,
     *,
-    registry_factory: Callable[[str], StageSeatProtocol] = SeatRegistry.from_toml,
+    registry_factory: Callable[[str], StageChairProtocol] = ChairRegistry.from_toml,
 ) -> StageContext:
     """Open an existing run for a stage that is not the first to write."""
     fixture = load_fixture(args.fixture_root)

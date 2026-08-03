@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from .errors import ReceiptRefusal
-from .models import SeatIdentity, ServingDetails, ServingReceipt, is_hf_revision, is_sha256
+from .models import ChairIdentity, ServingDetails, ServingReceipt, is_hf_revision, is_sha256
 
 RECEIPT_SCHEMA = "seat-serving-receipt.v1"
 _REQUIRED = {
@@ -34,7 +34,7 @@ _REQUIRED = {
 }
 
 
-def build_receipt(identity: SeatIdentity, details: ServingDetails) -> ServingReceipt:
+def build_receipt(identity: ChairIdentity, details: ServingDetails) -> ServingReceipt:
     """Build a receipt only when every provenance field is present and coherent."""
 
     _validate_identity(identity)
@@ -58,18 +58,20 @@ def validate_receipt(record: Any) -> dict[str, Any]:
 
     if not isinstance(record, dict):
         raise ReceiptRefusal("receipt", "receipt is not an object")
-    seat = record.get("seat") if isinstance(record.get("seat"), str) else "receipt"
+    chair = record.get("seat") if isinstance(record.get("seat"), str) else "receipt"
     missing = sorted(_REQUIRED - set(record))
     extra = sorted(set(record) - _REQUIRED)
     if missing:
-        raise ReceiptRefusal(seat, f"receipt is missing field(s) {missing}")
+        raise ReceiptRefusal(chair, f"receipt is missing field(s) {missing}")
     if extra:
-        raise ReceiptRefusal(seat, f"receipt has unknown field(s) {extra}")
+        raise ReceiptRefusal(chair, f"receipt has unknown field(s) {extra}")
     if record["schema"] != RECEIPT_SCHEMA:
-        raise ReceiptRefusal(seat, f"receipt schema {record['schema']!r} is not {RECEIPT_SCHEMA!r}")
+        raise ReceiptRefusal(
+            chair, f"receipt schema {record['schema']!r} is not {RECEIPT_SCHEMA!r}"
+        )
     _nonblank_fields(
         record,
-        seat,
+        chair,
         (
             "seat",
             "resolved",
@@ -83,31 +85,31 @@ def validate_receipt(record: Any) -> dict[str, Any]:
     )
     source = record["source"]
     if source not in ("huggingface", "local-repository"):
-        raise ReceiptRefusal(seat, "source must be 'huggingface' or 'local-repository'")
+        raise ReceiptRefusal(chair, "source must be 'huggingface' or 'local-repository'")
     if not is_sha256(record["digest_manifest"]):
-        raise ReceiptRefusal(seat, "digest_manifest must be a lowercase sha256")
+        raise ReceiptRefusal(chair, "digest_manifest must be a lowercase sha256")
     kind = record["revision_kind"]
     if source == "huggingface":
         if kind != "git-commit" or not is_hf_revision(record["revision"]):
             raise ReceiptRefusal(
-                seat, "huggingface receipt revision must be its exact 40-hex git commit"
+                chair, "huggingface receipt revision must be its exact 40-hex git commit"
             )
     elif kind != "digest-manifest" or record["revision"] != record["digest_manifest"]:
         raise ReceiptRefusal(
-            seat,
+            chair,
             "local-repository receipt revision must be its verified digest-manifest hash",
         )
     for field in ("seed", "context_cap", "pixel_cap"):
         value = record[field]
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise ReceiptRefusal(seat, f"{field} must be a non-negative integer")
+            raise ReceiptRefusal(chair, f"{field} must be a non-negative integer")
     adapter = record["adapter_identity"]
     if adapter is not None:
-        _validate_identity_record(adapter, seat)
+        _validate_identity_record(adapter, chair)
     return record
 
 
-def _validate_identity(identity: SeatIdentity) -> None:
+def _validate_identity(identity: ChairIdentity) -> None:
     if not isinstance(identity.role, str) or not identity.role:
         raise ReceiptRefusal("receipt", "identity has no seat role")
     if identity.source == "huggingface":
@@ -126,7 +128,7 @@ def _validate_identity(identity: SeatIdentity) -> None:
         raise ReceiptRefusal(identity.role, "identity has no valid digest-manifest hash")
 
 
-def _validate_details(seat: str, details: ServingDetails) -> None:
+def _validate_details(chair: str, details: ServingDetails) -> None:
     """Check the serving half directly, against the value's own attributes.
 
     Deliberately not by building a throwaway `SeatIdentity` and reading the
@@ -135,7 +137,7 @@ def _validate_details(seat: str, details: ServingDetails) -> None:
     and it also made the refusal name a seat whose fields were invented here.
     """
     if not isinstance(details, ServingDetails):
-        raise ReceiptRefusal(seat, "serving details are not a ServingDetails value")
+        raise ReceiptRefusal(chair, "serving details are not a ServingDetails value")
     for field in (
         "tokenizer_revision",
         "engine",
@@ -146,18 +148,18 @@ def _validate_details(seat: str, details: ServingDetails) -> None:
     ):
         value = getattr(details, field)
         if not isinstance(value, str) or not value.strip():
-            raise ReceiptRefusal(seat, f"receipt field {field!r} must be a non-blank string")
+            raise ReceiptRefusal(chair, f"receipt field {field!r} must be a non-blank string")
     for field in ("seed", "context_cap", "pixel_cap"):
         value = getattr(details, field)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise ReceiptRefusal(seat, f"{field} must be a non-negative integer")
+            raise ReceiptRefusal(chair, f"{field} must be a non-negative integer")
     if details.adapter_identity is not None:
         _validate_identity(details.adapter_identity)
 
 
-def _validate_identity_record(value: Any, seat: str) -> None:
+def _validate_identity_record(value: Any, chair: str) -> None:
     if not isinstance(value, dict):
-        raise ReceiptRefusal(seat, "adapter_identity is not an identity object")
+        raise ReceiptRefusal(chair, "adapter_identity is not an identity object")
     required = {
         "role",
         "source",
@@ -171,12 +173,12 @@ def _validate_identity_record(value: Any, seat: str) -> None:
         "license_note",
     }
     if set(value) != required:
-        raise ReceiptRefusal(seat, "adapter_identity does not carry a complete resolved identity")
-    identity = SeatIdentity(**value)
+        raise ReceiptRefusal(chair, "adapter_identity does not carry a complete resolved identity")
+    identity = ChairIdentity(**value)
     _validate_identity(identity)
 
 
-def _nonblank_fields(record: dict[str, Any], seat: str, fields: tuple[str, ...]) -> None:
+def _nonblank_fields(record: dict[str, Any], chair: str, fields: tuple[str, ...]) -> None:
     for field in fields:
         if not isinstance(record[field], str) or not record[field].strip():
-            raise ReceiptRefusal(seat, f"receipt field {field!r} must be a non-blank string")
+            raise ReceiptRefusal(chair, f"receipt field {field!r} must be a non-blank string")

@@ -32,7 +32,7 @@ from common.contracts.canonical import self_hash  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category  # noqa: E402
 from common.contracts.stages import ARCHETYPUS, DESIGNATOR, PERLECTOR, RECENSOR  # noqa: E402
-from common.seats.registry import SeatRegistry  # noqa: E402
+from common.seats.registry import ChairRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     expected_acts,
@@ -63,7 +63,7 @@ def latest_reading(context, act_id: str) -> dict:
     )
 
 
-def main(registry_factory=SeatRegistry.from_toml) -> int:
+def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied seat/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, ARCHETYPUS, registry_factory=registry_factory)

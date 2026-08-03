@@ -5,38 +5,38 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from .errors import ProtocolClauseRefusal
-from .models import AbsentSeat, SeatIdentity, ServingDetails, ServingReceipt, VerifiedSnapshot
+from .models import AbsentChair, ChairIdentity, ServingDetails, ServingReceipt, VerifiedSnapshot
 
 
 @runtime_checkable
-class SeatProtocol(Protocol):
+class ChairProtocol(Protocol):
     """The caller-visible seat interface; lifecycle is intentionally absent."""
 
-    def resolve(self, role: str) -> SeatIdentity | AbsentSeat:
+    def resolve(self, role: str) -> ChairIdentity | AbsentChair:
         """Resolve only the role asked for."""
 
-    def ensure(self, identity: SeatIdentity) -> VerifiedSnapshot:
+    def ensure(self, identity: ChairIdentity) -> VerifiedSnapshot:
         """Verify only that exact resolved identity."""
 
-    def receipt(self, identity: SeatIdentity, serving: ServingDetails) -> ServingReceipt:
+    def receipt(self, identity: ChairIdentity, serving: ServingDetails) -> ServingReceipt:
         """Return a receipt for that identity and serving observation."""
 
 
 def exercise_contract(
-    implementation: SeatProtocol,
+    implementation: ChairProtocol,
     *,
     role: str,
-    expected_identity: SeatIdentity,
+    expected_identity: ChairIdentity,
     serving: ServingDetails,
 ) -> VerifiedSnapshot:
     """Exercise all three clauses and name the clause an incompatible implementation breaks."""
 
-    if not isinstance(implementation, SeatProtocol):
+    if not isinstance(implementation, ChairProtocol):
         raise ProtocolClauseRefusal(
             role, "protocol shape: implementation lacks resolve, ensure, or receipt"
         )
     resolved = implementation.resolve(role)
-    if not isinstance(resolved, SeatIdentity):
+    if not isinstance(resolved, ChairIdentity):
         raise ProtocolClauseRefusal(
             role, "resolve clause: configured role did not return its identity"
         )

@@ -36,21 +36,21 @@ import pytest
 from common.seats.errors import (
     AdapterFetchRefusal,
     CacheRevisionRefusal,
+    ChairRefusal,
     DigestMismatchRefusal,
     LocalPathRefusal,
-    SeatRefusal,
     ServingRecipeRefusal,
-    UnresolvedSeatRefusal,
+    UnresolvedChairRefusal,
 )
-from common.seats.models import SeatIdentity
-from common.seats.registry import CACHE_DESCRIPTOR, SeatRegistry
+from common.seats.models import ChairIdentity
+from common.seats.registry import CACHE_DESCRIPTOR, ChairRegistry
 
 from .conftest import (
     RecordingFetcher,
-    absent_seat,
+    absent_chair,
     config_of,
-    hf_seat,
-    local_seat,
+    hf_chair,
+    local_chair,
     pin_snapshot,
     registry_for,
     write_snapshot,
@@ -68,7 +68,7 @@ class Traced:
     would look identical. This is what makes the difference visible.
     """
 
-    def __init__(self, registry: SeatRegistry):
+    def __init__(self, registry: ChairRegistry):
         self._registry = registry
         self.calls: list[tuple[str, str]] = []
 
@@ -96,26 +96,26 @@ def world(tmp_path):
     """One seat under test, one bystander that must never be reached for."""
     write_snapshot(tmp_path / "remote", dict(FILES))
     pin = pin_snapshot(tmp_path / "remote", tmp_path / "manifests" / "seat.json")
-    seats = {
-        "attestator_1": hf_seat("attestator_1", pin, manifest="manifests/seat.json"),
-        BYSTANDER: hf_seat(BYSTANDER, pin, manifest="manifests/seat.json"),
+    chairs = {
+        "attestator_1": hf_chair("attestator_1", pin, manifest="manifests/seat.json"),
+        BYSTANDER: hf_chair(BYSTANDER, pin, manifest="manifests/seat.json"),
     }
     fetcher = RecordingFetcher(dict(FILES))
-    registry = registry_for(config_of(tmp_path, seats, witness_floor=2), tmp_path, fetcher)
+    registry = registry_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher)
     return Traced(registry), fetcher
 
 
-def _assert_no_other_seat_was_reached_for(traced: Traced, fetcher: RecordingFetcher, seat: str):
+def _assert_no_other_chair_was_reached_for(traced: Traced, fetcher: RecordingFetcher, chair: str):
     """The whole of "no other configured seat is invoked", in three assertions."""
-    assert traced.roles("ensure") <= {seat}
-    assert traced.roles("receipt") <= {seat}
-    assert set(fetcher.roles) <= {seat}
+    assert traced.roles("ensure") <= {chair}
+    assert traced.roles("receipt") <= {chair}
+    assert set(fetcher.roles) <= {chair}
 
 
 # --- 1. A seat whose digest does not verify -----------------------------------------
 
 
-def test_a_digest_that_does_not_verify_refuses_without_reaching_for_another_seat(world):
+def test_a_digest_that_does_not_verify_refuses_without_reaching_for_another_chair(world):
     traced, fetcher = world
     fetcher.files["weights.bin"] = b"something else entirely\n"
     identity = traced.resolve("attestator_1")
@@ -123,49 +123,49 @@ def test_a_digest_that_does_not_verify_refuses_without_reaching_for_another_seat
     with pytest.raises(DigestMismatchRefusal) as caught:
         traced.ensure(identity)
 
-    assert caught.value.seat == "attestator_1"
+    assert caught.value.chair == "attestator_1"
     assert "weights.bin" in str(caught.value)
-    _assert_no_other_seat_was_reached_for(traced, fetcher, "attestator_1")
+    _assert_no_other_chair_was_reached_for(traced, fetcher, "attestator_1")
     assert BYSTANDER not in traced.roles("resolve")
 
 
 # --- 2. A seat that will not resolve --------------------------------------------------
 
 
-def test_an_unconfigured_role_refuses_rather_than_returning_a_neighbouring_seat(world):
+def test_an_unconfigured_role_refuses_rather_than_returning_a_neighbouring_chair(world):
     traced, fetcher = world
 
-    with pytest.raises(UnresolvedSeatRefusal) as caught:
+    with pytest.raises(UnresolvedChairRefusal) as caught:
         traced.resolve("perlector")
 
-    assert caught.value.seat == "perlector"
-    _assert_no_other_seat_was_reached_for(traced, fetcher, "perlector")
+    assert caught.value.chair == "perlector"
+    _assert_no_other_chair_was_reached_for(traced, fetcher, "perlector")
     assert traced.roles("resolve") == {"perlector"}
 
 
-def test_a_neighbouring_revision_of_the_right_seat_is_still_refused(world):
+def test_a_neighbouring_revision_of_the_right_chair_is_still_refused(world):
     """The subtler shape of the same door: the role is right and the pin is not.
     Nothing may treat "close to the pin" as "the pin"."""
     traced, fetcher = world
     identity = traced.resolve("attestator_1")
-    neighbouring = SeatIdentity(**{**identity.to_record(), "revision": "b" * 40})
+    neighbouring = ChairIdentity(**{**identity.to_record(), "revision": "b" * 40})
 
-    with pytest.raises(UnresolvedSeatRefusal, match="neighbouring revision"):
+    with pytest.raises(UnresolvedChairRefusal, match="neighbouring revision"):
         traced.ensure(neighbouring)
 
-    _assert_no_other_seat_was_reached_for(traced, fetcher, "attestator_1")
+    _assert_no_other_chair_was_reached_for(traced, fetcher, "attestator_1")
 
 
-def test_a_seat_whose_snapshot_cannot_be_fetched_at_all_refuses(world):
+def test_a_chair_whose_snapshot_cannot_be_fetched_at_all_refuses(world):
     traced, fetcher = world
     fetcher.fail = RuntimeError("the pinned snapshot is not there")
     identity = traced.resolve("attestator_1")
 
-    with pytest.raises(UnresolvedSeatRefusal) as caught:
+    with pytest.raises(UnresolvedChairRefusal) as caught:
         traced.ensure(identity)
 
-    assert caught.value.seat == "attestator_1"
-    _assert_no_other_seat_was_reached_for(traced, fetcher, "attestator_1")
+    assert caught.value.chair == "attestator_1"
+    _assert_no_other_chair_was_reached_for(traced, fetcher, "attestator_1")
 
 
 # --- 3. A cache holding a different revision than the pin ----------------------------
@@ -186,9 +186,9 @@ def test_a_cache_describing_a_different_pin_refuses_and_fetches_nothing(world):
     with pytest.raises(CacheRevisionRefusal) as caught:
         traced.ensure(identity)
 
-    assert caught.value.seat == "attestator_1"
+    assert caught.value.chair == "attestator_1"
     assert fetcher.calls == [], "a mismatched cache is refused, never re-fetched over"
-    _assert_no_other_seat_was_reached_for(traced, fetcher, "attestator_1")
+    _assert_no_other_chair_was_reached_for(traced, fetcher, "attestator_1")
 
 
 def test_a_cache_with_no_readable_descriptor_at_all_is_refused(world):
@@ -209,15 +209,15 @@ def adapter_world(tmp_path):
     """An adapter seat, its configured base, and a bystander witness."""
     write_snapshot(tmp_path / "remote", dict(FILES))
     pin = pin_snapshot(tmp_path / "remote", tmp_path / "manifests" / "seat.json")
-    seats = {
-        "attestator_1": hf_seat(
+    chairs = {
+        "attestator_1": hf_chair(
             "attestator_1", pin, manifest="manifests/seat.json", adapter_of="base"
         ),
-        "base": hf_seat("base", pin, manifest="manifests/seat.json", revision="b" * 40),
-        BYSTANDER: hf_seat(BYSTANDER, pin, manifest="manifests/seat.json"),
+        "base": hf_chair("base", pin, manifest="manifests/seat.json", revision="b" * 40),
+        BYSTANDER: hf_chair(BYSTANDER, pin, manifest="manifests/seat.json"),
     }
     fetcher = RecordingFetcher(dict(FILES))
-    registry = registry_for(config_of(tmp_path, seats, witness_floor=2), tmp_path, fetcher)
+    registry = registry_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher)
     return Traced(registry), fetcher
 
 
@@ -231,7 +231,7 @@ def test_an_adapter_that_will_not_fetch_is_never_served_as_its_bare_base(adapter
     with pytest.raises(AdapterFetchRefusal) as caught:
         traced.ensure(adapter)
 
-    assert caught.value.seat == "attestator_1"
+    assert caught.value.chair == "attestator_1"
     assert fetcher.roles == ["attestator_1"], "the base's weights were never fetched instead"
     assert traced.roles("ensure") == {"attestator_1"}
     assert traced.roles("receipt") == set()
@@ -254,20 +254,22 @@ def test_an_adapter_cache_is_bound_to_its_base_pin_and_refuses_when_the_base_mov
     fetched_once = list(fetcher.calls)
 
     base = traced.resolve("base")
-    repinned = SeatRegistry(
+    repinned = ChairRegistry(
         config_of(
             tmp_path,
             {
-                "attestator_1": hf_seat(
+                "attestator_1": hf_chair(
                     "attestator_1",
                     adapter.digest_manifest,
                     manifest="manifests/seat.json",
                     adapter_of="base",
                 ),
-                "base": hf_seat(
+                "base": hf_chair(
                     "base", base.digest_manifest, manifest="manifests/seat.json", revision="c" * 40
                 ),
-                BYSTANDER: hf_seat(BYSTANDER, base.digest_manifest, manifest="manifests/seat.json"),
+                BYSTANDER: hf_chair(
+                    BYSTANDER, base.digest_manifest, manifest="manifests/seat.json"
+                ),
             },
             witness_floor=2,
         ),
@@ -279,7 +281,7 @@ def test_an_adapter_cache_is_bound_to_its_base_pin_and_refuses_when_the_base_mov
     with pytest.raises(CacheRevisionRefusal) as caught:
         repinned.ensure(repinned.resolve("attestator_1"))
 
-    assert caught.value.seat == "attestator_1"
+    assert caught.value.chair == "attestator_1"
     assert fetcher.calls == fetched_once, "nothing was fetched for the base or anyone else"
 
 
@@ -290,18 +292,18 @@ def test_an_adapter_whose_base_became_absent_is_refused(adapter_world, tmp_path)
 
     # Built directly rather than through the parser, which refuses this pairing
     # outright: the question here is what `ensure` does if it ever sees one.
-    from common.seats.models import AbsentSeat, ModelsConfig
+    from common.seats.models import AbsentChair, ModelsConfig
 
     hobbled = ModelsConfig(
         witness_floor=2,
-        seats={
+        chairs={
             "attestator_1": adapter,
-            "base": AbsentSeat("base", "withdrawn between runs"),
+            "base": AbsentChair("base", "withdrawn between runs"),
             BYSTANDER: traced.resolve(BYSTANDER),
         },
         source_path=tmp_path / "models.toml",
     )
-    registry = SeatRegistry(
+    registry = ChairRegistry(
         hobbled, manifest_root=tmp_path, cache_root=traced.cache_root, fetcher=fetcher
     )
 
@@ -322,17 +324,17 @@ def test_a_recipe_that_will_not_start_refuses_without_trying_a_second_route(worl
     with pytest.raises(ServingRecipeRefusal) as caught:
         traced.refuse_recipe_start(identity, "the engine process exited before it listened")
 
-    assert caught.value.seat == "attestator_1"
+    assert caught.value.chair == "attestator_1"
     assert "exited before it listened" in str(caught.value)
-    _assert_no_other_seat_was_reached_for(traced, fetcher, "attestator_1")
+    _assert_no_other_chair_was_reached_for(traced, fetcher, "attestator_1")
 
 
-def test_a_recipe_failure_for_a_seat_that_is_no_longer_the_configured_pin_is_refused(world):
+def test_a_recipe_failure_for_a_chair_that_is_no_longer_the_configured_pin_is_refused(world):
     traced, fetcher = world
     identity = traced.resolve("attestator_1")
-    neighbouring = SeatIdentity(**{**identity.to_record(), "serving_recipe": "some-other-recipe"})
+    neighbouring = ChairIdentity(**{**identity.to_record(), "serving_recipe": "some-other-recipe"})
 
-    with pytest.raises(UnresolvedSeatRefusal):
+    with pytest.raises(UnresolvedChairRefusal):
         traced.refuse_recipe_start(neighbouring, "irrelevant")
 
 
@@ -340,12 +342,12 @@ def test_a_recipe_failure_for_a_seat_that_is_no_longer_the_configured_pin_is_ref
 
 
 def test_an_explicit_absence_is_never_filled_by_a_configured_neighbour(tmp_path):
-    seats = {
-        "attestator_1": hf_seat("attestator_1", "d" * 64),
-        BYSTANDER: absent_seat("withdrawn for alpha"),
+    chairs = {
+        "attestator_1": hf_chair("attestator_1", "d" * 64),
+        BYSTANDER: absent_chair("withdrawn for alpha"),
     }
     fetcher = RecordingFetcher(dict(FILES))
-    registry = registry_for(config_of(tmp_path, seats, witness_floor=2), tmp_path, fetcher)
+    registry = registry_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher)
     traced = Traced(registry)
 
     absence = traced.resolve(BYSTANDER)
@@ -366,13 +368,13 @@ def test_a_local_path_escaping_the_model_root_refuses_without_touching_the_netwo
     write_snapshot(model_root / BYSTANDER, dict(FILES))
     pin = pin_snapshot(outside, tmp_path / "manifests" / "seat.json")
 
-    seats = {
-        "perlector": local_seat("perlector", pin, path="escape", manifest="manifests/seat.json"),
-        BYSTANDER: local_seat(BYSTANDER, pin, manifest="manifests/seat.json"),
+    chairs = {
+        "perlector": local_chair("perlector", pin, path="escape", manifest="manifests/seat.json"),
+        BYSTANDER: local_chair(BYSTANDER, pin, manifest="manifests/seat.json"),
     }
     fetcher = RecordingFetcher(dict(FILES))
-    registry = SeatRegistry(
-        config_of(tmp_path, seats, witness_floor=1, model_root="model-fixtures"),
+    registry = ChairRegistry(
+        config_of(tmp_path, chairs, witness_floor=1, model_root="model-fixtures"),
         manifest_root=tmp_path,
         fetcher=fetcher,
     )
@@ -381,8 +383,8 @@ def test_a_local_path_escaping_the_model_root_refuses_without_touching_the_netwo
     with pytest.raises(LocalPathRefusal) as caught:
         traced.ensure(traced.resolve("perlector"))
 
-    assert caught.value.seat == "perlector"
-    _assert_no_other_seat_was_reached_for(traced, fetcher, "perlector")
+    assert caught.value.chair == "perlector"
+    _assert_no_other_chair_was_reached_for(traced, fetcher, "perlector")
 
 
 # --- The taxonomy is closed --------------------------------------------------------------
@@ -396,7 +398,7 @@ def test_every_refusal_this_package_raises_is_a_member_of_the_closed_taxonomy():
     for refusal in ALL_REFUSAL_TYPES:
         error = refusal("attestator_1", "a concrete difference")
         assert is_closed_refusal(error)
-        assert error.seat == "attestator_1"
+        assert error.chair == "attestator_1"
         assert "attestator_1" in str(error)
         # Every one is a ContractError, so a stage that hits one exits with the
         # honest fatal code rather than an unclassified traceback.
@@ -404,17 +406,17 @@ def test_every_refusal_this_package_raises_is_a_member_of_the_closed_taxonomy():
 
         assert isinstance(error, ContractError)
 
-    assert not is_closed_refusal(SeatRefusal("attestator_1", "the base class is not a member"))
+    assert not is_closed_refusal(ChairRefusal("attestator_1", "the base class is not a member"))
     assert not is_closed_refusal(ValueError("not a seat refusal at all"))
 
 
-def test_a_refusal_carries_the_concrete_difference_and_not_only_the_seat(world):
+def test_a_refusal_carries_the_concrete_difference_and_not_only_the_chair(world):
     """ "seat 'attestator_1': it did not work" would satisfy "names the seat" and
     tell an operator nothing about what to change."""
     traced, fetcher = world
     fetcher.files["weights.bin"] = b"drifted\n"
 
-    with pytest.raises(SeatRefusal) as caught:
+    with pytest.raises(ChairRefusal) as caught:
         traced.ensure(traced.resolve("attestator_1"))
 
     difference = caught.value.difference

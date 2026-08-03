@@ -212,13 +212,13 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"h = {bounds['h']}",
         ]
 
-    for act_key, seats in TESTIMONY.items():
-        for seat, reported in seats.items():
+    for act_key, chairs in TESTIMONY.items():
+        for chair, reported in chairs.items():
             lines += [
                 "",
                 "[[testimony]]",
                 f"act_key = {toml_string(act_key)}",
-                f"seat = {toml_string(seat)}",
+                f"seat = {toml_string(chair)}",
                 f"reported = {toml_string(reported)}",
             ]
 

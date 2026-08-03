@@ -35,7 +35,7 @@ MANIFEST_ROOT = CONFIG_ROOT / "manifests"
 # One directory per configured fixture seat. Distinct content per seat, so their
 # digest manifests actually differ rather than several seats sharing one fixture
 # by accident — which would make a mismatch between two seats invisible.
-FIXTURE_SEATS = (
+FIXTURE_CHAIRS = (
     "attestator_1",
     "attestator_2",
     "attestator_3",
@@ -44,33 +44,33 @@ FIXTURE_SEATS = (
 )
 
 
-def fixture_files(seat: str) -> dict[str, bytes]:
+def fixture_files(chair: str) -> dict[str, bytes]:
     """The bytes one fixture seat's snapshot holds, derived from its own name."""
-    return {"identity.txt": f"fixture seat: {seat}\n".encode()}
+    return {"identity.txt": f"fixture seat: {chair}\n".encode()}
 
 
 def build(model_root: Path, manifest_root: Path) -> dict[str, str]:
     """Write every fixture snapshot and manifest; return each seat's pin."""
     pins: dict[str, str] = {}
-    for seat in FIXTURE_SEATS:
-        directory = model_root / seat
+    for chair in FIXTURE_CHAIRS:
+        directory = model_root / chair
         directory.mkdir(parents=True, exist_ok=True)
-        for name, data in sorted(fixture_files(seat).items()):
+        for name, data in sorted(fixture_files(chair).items()):
             (directory / name).write_bytes(data)
         manifest = build_manifest(directory)
-        path = manifest_root / f"{seat}.json"
+        path = manifest_root / f"{chair}.json"
         pin = write_manifest(manifest, path)
         # The pin is the digest of the artifact's exact canonical bytes, which is
         # what `read_manifest` checks; asserting it here keeps the two spellings
         # of "the pin" from drifting inside the generator itself.
         assert pin == manifest_digest(manifest) == digest_bytes(path.read_bytes())
-        pins[seat] = pin
+        pins[chair] = pin
     return pins
 
 
 def main() -> int:
-    for seat, pin in sorted(build(MODEL_ROOT, MANIFEST_ROOT).items()):
-        print(f"{seat}: digest_manifest = {pin}")
+    for chair, pin in sorted(build(MODEL_ROOT, MANIFEST_ROOT).items()):
+        print(f"{chair}: digest_manifest = {pin}")
     return 0
 
 

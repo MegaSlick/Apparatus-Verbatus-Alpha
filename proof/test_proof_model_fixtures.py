@@ -15,47 +15,47 @@ temporary directory and compares, byte for byte, against what is committed.
 from pathlib import Path
 
 from common.seats.config import load_models_toml
-from common.seats.models import SeatIdentity
-from proof.build_model_fixtures import FIXTURE_SEATS, build, fixture_files
+from common.seats.models import ChairIdentity
+from proof.build_model_fixtures import FIXTURE_CHAIRS, build, fixture_files
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = ROOT / "config"
 MODELS_CONFIG = CONFIG_ROOT / "models.toml"
 
 
-def test_every_configured_fixture_seat_has_a_generator_entry():
+def test_every_configured_fixture_chair_has_a_generator_entry():
     """A seat configured in models.toml but absent from the generator would be a
     fixture nothing can rebuild, and therefore nothing can check."""
     config = load_models_toml(MODELS_CONFIG)
-    configured = {role for role, seat in config.seats.items() if isinstance(seat, SeatIdentity)}
-    assert configured == set(FIXTURE_SEATS)
+    configured = {role for role, chair in config.chairs.items() if isinstance(chair, ChairIdentity)}
+    assert configured == set(FIXTURE_CHAIRS)
 
 
 def test_the_checked_in_snapshots_manifests_and_pins_all_agree(tmp_path):
     rebuilt_pins = build(tmp_path / "model-fixtures", tmp_path / "manifests")
     config = load_models_toml(MODELS_CONFIG)
 
-    assert set(rebuilt_pins) == set(FIXTURE_SEATS)
-    for seat in FIXTURE_SEATS:
-        for name, data in fixture_files(seat).items():
-            committed = (CONFIG_ROOT / "model-fixtures" / seat / name).read_bytes()
-            assert committed == data, f"{seat}/{name} on disk is not what the generator writes"
-        committed_manifest = (CONFIG_ROOT / "manifests" / f"{seat}.json").read_bytes()
-        rebuilt_manifest = (tmp_path / "manifests" / f"{seat}.json").read_bytes()
-        assert committed_manifest == rebuilt_manifest, f"{seat}'s manifest artifact has drifted"
+    assert set(rebuilt_pins) == set(FIXTURE_CHAIRS)
+    for chair in FIXTURE_CHAIRS:
+        for name, data in fixture_files(chair).items():
+            committed = (CONFIG_ROOT / "model-fixtures" / chair / name).read_bytes()
+            assert committed == data, f"{chair}/{name} on disk is not what the generator writes"
+        committed_manifest = (CONFIG_ROOT / "manifests" / f"{chair}.json").read_bytes()
+        rebuilt_manifest = (tmp_path / "manifests" / f"{chair}.json").read_bytes()
+        assert committed_manifest == rebuilt_manifest, f"{chair}'s manifest artifact has drifted"
 
-        identity = config.seats[seat]
-        assert isinstance(identity, SeatIdentity)
-        assert identity.digest_manifest == rebuilt_pins[seat], (
-            f"{seat}'s digest_manifest pin does not name its own manifest artifact"
+        identity = config.chairs[chair]
+        assert isinstance(identity, ChairIdentity)
+        assert identity.digest_manifest == rebuilt_pins[chair], (
+            f"{chair}'s digest_manifest pin does not name its own manifest artifact"
         )
 
 
-def test_no_two_fixture_seats_share_a_snapshot():
+def test_no_two_fixture_chairs_share_a_snapshot():
     """Distinct bytes per seat, so a manifest crossed between two seats fails."""
     pins = {
-        role: seat.digest_manifest
-        for role, seat in load_models_toml(MODELS_CONFIG).seats.items()
-        if isinstance(seat, SeatIdentity)
+        role: chair.digest_manifest
+        for role, chair in load_models_toml(MODELS_CONFIG).chairs.items()
+        if isinstance(chair, ChairIdentity)
     }
-    assert len(set(pins.values())) == len(pins) == len(FIXTURE_SEATS)
+    assert len(set(pins.values())) == len(pins) == len(FIXTURE_CHAIRS)

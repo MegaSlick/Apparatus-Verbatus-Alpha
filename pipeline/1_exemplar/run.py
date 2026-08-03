@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.stages import DOOR, EXEMPLAR  # noqa: E402
-from common.seats.registry import SeatRegistry  # noqa: E402
+from common.seats.registry import ChairRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     open_context,
@@ -31,7 +31,7 @@ from common.stage import (  # noqa: E402
 )
 
 
-def main(registry_factory=SeatRegistry.from_toml) -> int:
+def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied seat/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, EXEMPLAR, registry_factory=registry_factory)

@@ -35,8 +35,8 @@ from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
-from common.seats.models import AbsentSeat, SeatIdentity  # noqa: E402
-from common.seats.registry import SeatRegistry  # noqa: E402
+from common.seats.models import AbsentChair, ChairIdentity  # noqa: E402
+from common.seats.registry import ChairRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -114,12 +114,12 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     """
     rows = []
     for record in testimonia:
-        seat = record["payload"]["seat"]
+        chair = record["payload"]["seat"]
         if record["outcome"] != "read":
-            rows.append({"seat": seat, "compared": False, "reason": record["outcome"]})
+            rows.append({"seat": chair, "compared": False, "reason": record["outcome"]})
             continue
         reported = record["payload"]["reported"]
-        rows.append({"seat": seat, "compared": True, "departed": reported != reading})
+        rows.append({"seat": chair, "compared": True, "departed": reported != reading})
     return rows
 
 
@@ -137,15 +137,15 @@ def declared_reading_failure(context, act_key: str) -> str | None:
     return None
 
 
-def perlector_seat(context) -> SeatIdentity | AbsentSeat:
+def perlector_chair(context) -> ChairIdentity | AbsentChair:
     """The Perlector seat, resolved by name. Never another seat, never a base."""
     resolved = context.registry.resolve(PERLECTOR)
-    if not isinstance(resolved, (SeatIdentity, AbsentSeat)):
+    if not isinstance(resolved, (ChairIdentity, AbsentChair)):
         raise ContractError("Perlector resolution returned neither an identity nor an absence")
     return resolved
 
 
-def provenance_for(context, resolved: SeatIdentity | AbsentSeat, *, attempted: bool) -> dict:
+def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted: bool) -> dict:
     """Project one Perlector outcome's immutable provenance.
 
     A record for a reading that never happened — a held act, or an absent seat —
@@ -164,7 +164,7 @@ def provenance_for(context, resolved: SeatIdentity | AbsentSeat, *, attempted: b
         "witness_regime": "named",
         "adapter_revision": context.adapter_revision,
     }
-    if isinstance(resolved, AbsentSeat):
+    if isinstance(resolved, AbsentChair):
         return {
             "seat": resolved.role,
             "seat_state": "absent",
@@ -191,7 +191,7 @@ def provenance_for(context, resolved: SeatIdentity | AbsentSeat, *, attempted: b
     }
 
 
-def main(registry_factory=SeatRegistry.from_toml) -> int:
+def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run through the explicitly supplied seat implementation.
 
     Production passes the default registry. The test-only injection is a
@@ -210,7 +210,7 @@ def main(registry_factory=SeatRegistry.from_toml) -> int:
 
     read = 0
     acknowledged = 0
-    seat = perlector_seat(context)
+    chair = perlector_chair(context)
     for act in wanted:
         act_id = act["act_id"]
         if act["outcome"] == "held":
@@ -233,14 +233,14 @@ def main(registry_factory=SeatRegistry.from_toml) -> int:
                         "not read, because a reading of part of an act would be a "
                         "truncation delivered as an output"
                     ),
-                    "provenance": provenance_for(context, seat, attempted=False),
+                    "provenance": provenance_for(context, chair, attempted=False),
                 },
             )
             acknowledged += 1
             continue
 
         ordinal = _next_attempt(context, act_id)
-        if isinstance(seat, AbsentSeat):
+        if isinstance(chair, AbsentChair):
             # No seat to read with. Every act still gets an explicit record
             # naming the absence: a stage that simply produced nothing would
             # leave the Recensor to infer a gap it cannot see.
@@ -252,10 +252,10 @@ def main(registry_factory=SeatRegistry.from_toml) -> int:
                 payload={
                     "act_key": act["act_key"],
                     "attempt_ordinal": ordinal,
-                    "reason": f"the Perlector seat is explicitly absent: {seat.reason}",
+                    "reason": f"the Perlector seat is explicitly absent: {chair.reason}",
                     "basis": {"regions": [], "testimonia": []},
                     "dissent": [],
-                    "provenance": provenance_for(context, seat, attempted=False),
+                    "provenance": provenance_for(context, chair, attempted=False),
                 },
             )
             acknowledged += 1
@@ -287,7 +287,7 @@ def main(registry_factory=SeatRegistry.from_toml) -> int:
 
         # A real reading attempt, so the pinned snapshot is re-verified here, at
         # the moment this reading is produced, and its receipt written.
-        provenance = provenance_for(context, seat, attempted=True)
+        provenance = provenance_for(context, chair, attempted=True)
         context.publish(
             kind="perlectio",
             subject_id=act_id,

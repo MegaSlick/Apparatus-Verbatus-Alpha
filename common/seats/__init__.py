@@ -5,14 +5,14 @@ from .errors import (
     ALL_REFUSAL_TYPES,
     AdapterFetchRefusal,
     CacheRevisionRefusal,
+    ChairRefusal,
     ConfigurationRefusal,
     DigestMismatchRefusal,
     LocalPathRefusal,
     ProtocolClauseRefusal,
     ReceiptRefusal,
-    SeatRefusal,
     ServingRecipeRefusal,
-    UnresolvedSeatRefusal,
+    UnresolvedChairRefusal,
     is_closed_refusal,
 )
 from .manifests import (
@@ -23,11 +23,11 @@ from .manifests import (
     write_manifest,
 )
 from .models import (
-    AbsentSeat,
+    AbsentChair,
+    ChairIdentity,
     DigestManifest,
     ManifestRow,
     ModelsConfig,
-    SeatIdentity,
     ServingDetails,
     ServingReceipt,
     VerifiedSnapshot,
@@ -35,12 +35,12 @@ from .models import (
     is_hf_revision,
     is_sha256,
 )
-from .protocol import SeatProtocol, exercise_contract
+from .protocol import ChairProtocol, exercise_contract
 from .receipts import RECEIPT_SCHEMA, build_receipt, receipt_record, validate_receipt
 from .registry import (
     CACHE_DESCRIPTOR,
+    ChairRegistry,
     HuggingFaceFetcher,
-    SeatRegistry,
     SnapshotFetcher,
     resolve_local_path,
 )
@@ -48,7 +48,7 @@ from .registry import (
 __all__ = [
     "ALL_REFUSAL_TYPES",
     "CACHE_DESCRIPTOR",
-    "AbsentSeat",
+    "AbsentChair",
     "AdapterFetchRefusal",
     "CacheRevisionRefusal",
     "ConfigurationRefusal",
@@ -61,15 +61,15 @@ __all__ = [
     "ProtocolClauseRefusal",
     "RECEIPT_SCHEMA",
     "ReceiptRefusal",
-    "SeatIdentity",
-    "SeatProtocol",
-    "SeatRefusal",
-    "SeatRegistry",
+    "ChairIdentity",
+    "ChairProtocol",
+    "ChairRefusal",
+    "ChairRegistry",
     "ServingDetails",
     "ServingReceipt",
     "ServingRecipeRefusal",
     "SnapshotFetcher",
-    "UnresolvedSeatRefusal",
+    "UnresolvedChairRefusal",
     "VerifiedSnapshot",
     "WitnessFloorStatus",
     "build_manifest",

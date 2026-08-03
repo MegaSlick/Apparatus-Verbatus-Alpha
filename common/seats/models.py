@@ -31,7 +31,7 @@ def is_hf_revision(value: object) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class SeatIdentity:
+class ChairIdentity:
     """The exact configured artifact for one role, never an inferred replacement."""
 
     role: str
@@ -91,7 +91,7 @@ class SeatIdentity:
 
 
 @dataclass(frozen=True, slots=True)
-class AbsentSeat:
+class AbsentChair:
     """An explicit, roster-visible absence rather than an exception or skipped role."""
 
     role: str
@@ -129,7 +129,7 @@ class DigestManifest:
 class VerifiedSnapshot:
     """A snapshot that has matched every row of its pinned manifest."""
 
-    identity: SeatIdentity
+    identity: ChairIdentity
     root: Path
     manifest_digest: str
 
@@ -152,7 +152,7 @@ class ServingDetails:
     engine: str
     engine_version: str
     dtype: str
-    adapter_identity: SeatIdentity | None
+    adapter_identity: ChairIdentity | None
     endpoint: str
     started_at: str
 
@@ -161,7 +161,7 @@ class ServingDetails:
 class ServingReceipt:
     """A non-deterministic run receipt, never a stage artifact."""
 
-    identity: SeatIdentity
+    identity: ChairIdentity
     details: ServingDetails
 
     def to_record(self) -> dict[str, object]:
@@ -213,24 +213,24 @@ class ModelsConfig:
     """Validated `models.toml`, including the run bindings it owns."""
 
     witness_floor: int
-    seats: Mapping[str, SeatIdentity | AbsentSeat]
+    chairs: Mapping[str, ChairIdentity | AbsentChair]
     adapter_recipes: Mapping[str, str] = field(default_factory=dict)
     model_root: str | None = None
     source_path: Path | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "seats", MappingProxyType(dict(self.seats)))
+        object.__setattr__(self, "chairs", MappingProxyType(dict(self.chairs)))
         object.__setattr__(self, "adapter_recipes", MappingProxyType(dict(self.adapter_recipes)))
 
     def to_record(self) -> dict[str, object]:
-        seats: dict[str, object] = {}
-        for role, value in sorted(self.seats.items()):
-            seats[role] = value.to_record()
+        chairs: dict[str, object] = {}
+        for role, value in sorted(self.chairs.items()):
+            chairs[role] = value.to_record()
         return {
             "witness_floor": self.witness_floor,
             "model_root": self.model_root,
             "adapter_recipes": dict(sorted(self.adapter_recipes.items())),
-            "seats": seats,
+            "seats": chairs,
         }
 
     @property
@@ -249,17 +249,17 @@ class ModelsConfig:
     def witness_seats(self) -> tuple[str, ...]:
         """All Attestator roles, including explicit absences that stay in the roster."""
 
-        return tuple(sorted(role for role in self.seats if role.startswith("attestator_")))
+        return tuple(sorted(role for role in self.chairs if role.startswith("attestator_")))
 
     def witness_floor_status(self) -> WitnessFloorStatus:
         """Count configured Attestator seats; explicit absences create a deficit."""
 
         configured: list[str] = []
         absent: list[str] = []
-        for role, value in self.seats.items():
+        for role, value in self.chairs.items():
             if not role.startswith("attestator_"):
                 continue
-            if isinstance(value, AbsentSeat):
+            if isinstance(value, AbsentChair):
                 absent.append(role)
             else:
                 configured.append(role)

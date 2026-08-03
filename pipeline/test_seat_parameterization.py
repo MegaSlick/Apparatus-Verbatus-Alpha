@@ -30,12 +30,12 @@ from pathlib import Path
 import pytest
 
 from common.seats import (
-    SeatIdentity,
-    SeatRegistry,
+    ChairIdentity,
+    ChairRegistry,
     ServingDetails,
     exercise_contract,
 )
-from common.seats.conftest import DeterministicSeatRegistry
+from common.seats.conftest import DeterministicChairRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_CONFIG = ROOT / "config" / "models.toml"
@@ -54,7 +54,7 @@ STAGE_PATHS = {
 # they resolve identities while validating the provenance their producers wrote,
 # so the whole skeleton has to receive the same implementation rather than
 # quietly switching back to the production registry halfway down.
-SEATS_THE_SKELETON_CALLS = {
+CHAIRS_THE_SKELETON_CALLS = {
     "designator_structure",
     "attestator_1",
     "attestator_2",
@@ -79,11 +79,11 @@ def _invoke(module, monkeypatch, arguments: list[str], registry_factory) -> int:
 
 
 @pytest.mark.parametrize("implementation", ("registry", "deterministic"))
-def test_the_full_skeleton_runs_over_both_seat_implementations(
+def test_the_full_skeleton_runs_over_both_chair_implementations(
     tmp_path, monkeypatch, implementation
 ):
-    fake = DeterministicSeatRegistry(MODELS_CONFIG, tmp_path / "fake-snapshot")
-    registry_factory = SeatRegistry.from_toml if implementation == "registry" else lambda _: fake
+    fake = DeterministicChairRegistry(MODELS_CONFIG, tmp_path / "fake-snapshot")
+    registry_factory = ChairRegistry.from_toml if implementation == "registry" else lambda _: fake
     arguments = [
         "--run-root",
         str(tmp_path / "runs"),
@@ -103,9 +103,9 @@ def test_the_full_skeleton_runs_over_both_seat_implementations(
             f"{name} did not complete over the {implementation} implementation"
         )
 
-    tested = fake if implementation == "deterministic" else SeatRegistry.from_toml(MODELS_CONFIG)
+    tested = fake if implementation == "deterministic" else ChairRegistry.from_toml(MODELS_CONFIG)
     identity = tested.resolve("attestator_1")
-    assert isinstance(identity, SeatIdentity)
+    assert isinstance(identity, ChairIdentity)
     assert (
         exercise_contract(
             tested,
@@ -117,14 +117,14 @@ def test_the_full_skeleton_runs_over_both_seat_implementations(
     )
 
 
-def test_the_deterministic_implementation_really_answered_for_every_seat_the_stages_call(
+def test_the_deterministic_implementation_really_answered_for_every_chair_the_stages_call(
     tmp_path, monkeypatch
 ):
     """The parameterization above would still pass if the stages quietly fell
     back to the production registry, because both implementations agree. This is
     the assertion that says they did not: the fake's own call log has to carry
     every seat the skeleton calls, through all three protocol methods."""
-    fake = DeterministicSeatRegistry(MODELS_CONFIG, tmp_path / "fake-snapshot")
+    fake = DeterministicChairRegistry(MODELS_CONFIG, tmp_path / "fake-snapshot")
     arguments = [
         "--run-root",
         str(tmp_path / "runs"),
@@ -142,11 +142,11 @@ def test_the_deterministic_implementation_really_answered_for_every_seat_the_sta
         _invoke(_load_stage(name), monkeypatch, arguments, lambda _: fake)
 
     called = {role for _, role in fake.calls}
-    assert SEATS_THE_SKELETON_CALLS <= called
+    assert CHAIRS_THE_SKELETON_CALLS <= called
     assert {method for method, _ in fake.calls} == {"resolve", "ensure", "receipt"}
 
 
-def _details(identity: SeatIdentity) -> ServingDetails:
+def _details(identity: ChairIdentity) -> ServingDetails:
     return ServingDetails(
         tokenizer_revision=identity.receipt_revision,
         seed=0,

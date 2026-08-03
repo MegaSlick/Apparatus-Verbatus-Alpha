@@ -14,12 +14,12 @@ and holding no revision at all, because it has no git commit to name.
 import pytest
 
 from common.seats.errors import ConfigurationRefusal, DigestMismatchRefusal, LocalPathRefusal
-from common.seats.registry import SeatRegistry, resolve_local_path
+from common.seats.registry import ChairRegistry, resolve_local_path
 
 from .conftest import (
     RecordingFetcher,
     config_of,
-    local_seat,
+    local_chair,
     pin_snapshot,
     write_snapshot,
 )
@@ -34,11 +34,11 @@ def _world(tmp_path, *, path: str = "perlector", files: dict[str, bytes] | None 
     pin = pin_snapshot(snapshot, tmp_path / "manifests" / "perlector.json")
     config = config_of(
         tmp_path,
-        {"perlector": local_seat("perlector", pin, path=path)},
+        {"perlector": local_chair("perlector", pin, path=path)},
         model_root="model-fixtures",
     )
     fetcher = RecordingFetcher({})
-    registry = SeatRegistry(config, manifest_root=tmp_path, fetcher=fetcher)
+    registry = ChairRegistry(config, manifest_root=tmp_path, fetcher=fetcher)
     return registry, snapshot, fetcher
 
 
@@ -113,7 +113,7 @@ def test_an_absolute_or_traversing_path_is_refused_when_the_config_is_read(tmp_p
     with pytest.raises(ConfigurationRefusal):
         config_of(
             tmp_path,
-            {"perlector": local_seat("perlector", "d" * 64, path=path)},
+            {"perlector": local_chair("perlector", "d" * 64, path=path)},
             model_root="model-fixtures",
         )
 
@@ -130,10 +130,10 @@ def test_a_symlink_escape_is_refused_against_the_real_filesystem(tmp_path):
 
     config = config_of(
         tmp_path,
-        {"perlector": local_seat("perlector", pin, path="escape-link")},
+        {"perlector": local_chair("perlector", pin, path="escape-link")},
         model_root="model-fixtures",
     )
-    registry = SeatRegistry(config, manifest_root=tmp_path)
+    registry = ChairRegistry(config, manifest_root=tmp_path)
 
     with pytest.raises(LocalPathRefusal, match="escapes model_root"):
         registry.ensure(registry.resolve("perlector"))
@@ -149,9 +149,9 @@ def test_a_symlinked_subdirectory_inside_the_snapshot_is_refused(tmp_path):
     pin = pin_snapshot(tmp_path / "outside", tmp_path / "manifests" / "perlector.json")
 
     config = config_of(
-        tmp_path, {"perlector": local_seat("perlector", pin)}, model_root="model-fixtures"
+        tmp_path, {"perlector": local_chair("perlector", pin)}, model_root="model-fixtures"
     )
-    registry = SeatRegistry(config, manifest_root=tmp_path)
+    registry = ChairRegistry(config, manifest_root=tmp_path)
 
     with pytest.raises(DigestMismatchRefusal, match="symlink directory"):
         registry.ensure(registry.resolve("perlector"))
@@ -163,15 +163,15 @@ def test_a_manifest_path_that_escapes_its_own_root_is_refused(tmp_path):
     with pytest.raises(ConfigurationRefusal, match="safe relative POSIX path"):
         config_of(
             tmp_path,
-            {"perlector": local_seat("perlector", "d" * 64, manifest="../elsewhere.json")},
+            {"perlector": local_chair("perlector", "d" * 64, manifest="../elsewhere.json")},
             model_root="model-fixtures",
         )
 
 
-def test_resolve_local_path_refuses_an_identity_that_is_not_a_local_seat(tmp_path):
-    from .conftest import hf_seat
+def test_resolve_local_path_refuses_an_identity_that_is_not_a_local_chair(tmp_path):
+    from .conftest import hf_chair
 
-    identity = config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", "d" * 64)}).seats[
+    identity = config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", "d" * 64)}).chairs[
         "attestator_1"
     ]
     with pytest.raises(LocalPathRefusal, match="non-local identity"):

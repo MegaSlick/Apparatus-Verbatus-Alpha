@@ -268,7 +268,7 @@ def check_algebra_is_total() -> None:
 # --- Witness coverage: outcomes aggregate into counts, never into text ----------
 
 
-def witness_coverage(seat_outcomes: Mapping[str, str], configured_floor: int) -> dict[str, Any]:
+def witness_coverage(chair_outcomes: Mapping[str, str], configured_floor: int) -> dict[str, Any]:
     """Aggregate one act's seat outcomes into the coverage record.
 
     Returns counts and two flags, and deliberately returns no category and no
@@ -285,15 +285,15 @@ def witness_coverage(seat_outcomes: Mapping[str, str], configured_floor: int) ->
         raise FatalAccounting(f"configured witness floor {configured_floor} is negative")
     by_outcome: dict[str, int] = {}
     by_class: dict[str, int] = {klass.value: 0 for klass in OutcomeClass}
-    for seat, outcome in seat_outcomes.items():
-        if not seat:
+    for chair, outcome in chair_outcomes.items():
+        if not chair:
             raise FatalAccounting("a seat outcome was recorded against an unnamed seat")
         klass = classify(ATTESTATORES, outcome)
         by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
         by_class[klass.value] += 1
     completed = by_class[OutcomeClass.COMPLETED.value]
     return {
-        "configured": len(seat_outcomes),
+        "configured": len(chair_outcomes),
         "floor": configured_floor,
         "by_outcome": by_outcome,
         "by_class": by_class,

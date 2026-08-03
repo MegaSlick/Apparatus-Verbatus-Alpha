@@ -38,7 +38,7 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
-from common.seats.registry import SeatRegistry  # noqa: E402
+from common.seats.registry import ChairRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -136,7 +136,7 @@ def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | Non
     return terminal_category(ARCHETYPUS, record["outcome"]), review, record
 
 
-def main(registry_factory=SeatRegistry.from_toml) -> int:
+def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied seat/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, ARMARIUM, registry_factory=registry_factory)

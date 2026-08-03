@@ -33,7 +33,7 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
-from common.seats.registry import SeatRegistry  # noqa: E402
+from common.seats.registry import ChairRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -90,7 +90,7 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     return records
 
 
-def seat_outcomes(context, act_id: str) -> dict[str, str]:
+def chair_outcomes(context, act_id: str) -> dict[str, str]:
     """The current outcome per seat: the latest attempt, with its honest status.
 
     Derived, never stored as a pointer. A failed attempt 2 over a successful
@@ -98,11 +98,11 @@ def seat_outcomes(context, act_id: str) -> dict[str, str]:
     """
     latest: dict[str, dict] = {}
     for record in artifacts_for(context, ATTESTATORES, "testimonium", act_id):
-        seat = record["payload"]["seat"]
+        chair = record["payload"]["seat"]
         ordinal = record["payload"]["attempt_ordinal"]
-        if seat not in latest or ordinal > latest[seat]["payload"]["attempt_ordinal"]:
-            latest[seat] = record
-    return {seat: record["outcome"] for seat, record in latest.items()}
+        if chair not in latest or ordinal > latest[chair]["payload"]["attempt_ordinal"]:
+            latest[chair] = record
+    return {chair: record["outcome"] for chair, record in latest.items()}
 
 
 def recoveries_so_far(context, act_id: str) -> int:
@@ -110,7 +110,7 @@ def recoveries_so_far(context, act_id: str) -> int:
     return len(artifacts_for(context, RECENSOR, "recovery-request", act_id))
 
 
-def main(registry_factory=SeatRegistry.from_toml) -> int:
+def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied seat/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, RECENSOR, registry_factory=registry_factory)
@@ -123,7 +123,7 @@ def main(registry_factory=SeatRegistry.from_toml) -> int:
     for act in expected_acts(context):
         act_id, act_key = act["act_id"], act["act_key"]
 
-        outcomes = seat_outcomes(context, act_id)
+        outcomes = chair_outcomes(context, act_id)
         missing = set(context.witness_seats) - set(outcomes)
         if missing:
             raise FatalAccounting(

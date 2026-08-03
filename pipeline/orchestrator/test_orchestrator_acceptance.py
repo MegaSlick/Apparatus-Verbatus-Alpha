@@ -34,7 +34,7 @@ from common.contracts.stages import (
     RECENSOR,
 )
 from common.runtree.store import RunTree
-from common.seats import SeatIdentity, load_models_toml
+from common.seats import ChairIdentity, load_models_toml
 from common.stage import load_fixture, run_config_bindings
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -186,12 +186,12 @@ def test_the_run_used_no_network_and_no_model(happy_run):
     assert all(revision.startswith("fake-") for revision in recipes.values())
     # Every configured seat is a local-repository fixture: nothing here can have
     # reached Hugging Face, because no live seat names a repo at all.
-    assert {seat.source for seat in config.seats.values() if isinstance(seat, SeatIdentity)} == {
-        "local-repository"
-    }
+    assert {
+        chair.source for chair in config.chairs.values() if isinstance(chair, ChairIdentity)
+    } == {"local-repository"}
 
 
-def test_the_config_digest_still_binds_the_scenario_as_well_as_the_seats(happy_run):
+def test_the_config_digest_still_binds_the_scenario_as_well_as_the_chairs(happy_run):
     """Spec 02 moved the roster into `config/models.toml`; it did not move the
     scenario out of the run's configuration digest. The two are distinct runs,
     and the digest has to say so before spec 01's third test below can refuse
@@ -515,7 +515,7 @@ def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
     assert len(disagreeing) == 2, "the fixture must keep dissent exercisable"
 
 
-def test_the_failed_seat_is_visible_in_the_export(review_run):
+def test_the_failed_chair_is_visible_in_the_export(review_run):
     """Sol B-2 / blocker 4, driven end to end: `failed` is a real member of the
     closed vocabulary and reaches the export as a named shortfall."""
     _, tree = review_run

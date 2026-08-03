@@ -11,66 +11,66 @@ from __future__ import annotations
 from common.contracts.errors import ContractError
 
 
-class SeatRefusal(ContractError):
+class ChairRefusal(ContractError):
     """Base refusal with the requested seat and the concrete mismatch."""
 
     code = "seat-refusal"
 
-    def __init__(self, seat: str, difference: str):
-        self.seat = seat
+    def __init__(self, chair: str, difference: str):
+        self.chair = chair
         self.difference = difference
-        super().__init__(f"seat {seat!r}: {difference}")
+        super().__init__(f"seat {chair!r}: {difference}")
 
 
-class ConfigurationRefusal(SeatRefusal):
+class ConfigurationRefusal(ChairRefusal):
     """The named seat does not conform to the models.toml schema."""
 
     code = "configuration"
 
 
-class UnresolvedSeatRefusal(SeatRefusal):
+class UnresolvedChairRefusal(ChairRefusal):
     """The requested role cannot resolve to its own configured identity."""
 
     code = "unresolved-seat"
 
 
-class DigestMismatchRefusal(SeatRefusal):
+class DigestMismatchRefusal(ChairRefusal):
     """A manifest or snapshot differs from the identity's pinned digest."""
 
     code = "digest-mismatch"
 
 
-class CacheRevisionRefusal(SeatRefusal):
+class CacheRevisionRefusal(ChairRefusal):
     """A cache describes a different pin than the requested identity."""
 
     code = "cache-revision"
 
 
-class AdapterFetchRefusal(SeatRefusal):
+class AdapterFetchRefusal(ChairRefusal):
     """An adapter could not be fetched; its base is never substituted."""
 
     code = "adapter-fetch"
 
 
-class ServingRecipeRefusal(SeatRefusal):
+class ServingRecipeRefusal(ChairRefusal):
     """The named serving recipe did not start; no second route is considered."""
 
     code = "serving-recipe"
 
 
-class LocalPathRefusal(SeatRefusal):
+class LocalPathRefusal(ChairRefusal):
     """A local-repository path is unsafe, absent, or resolves outside model_root."""
 
     code = "local-path"
 
 
-class ReceiptRefusal(SeatRefusal):
+class ReceiptRefusal(ChairRefusal):
     """A serving receipt is incomplete or disagrees with its resolved identity."""
 
     code = "receipt"
 
 
-class ProtocolClauseRefusal(SeatRefusal):
+class ProtocolClauseRefusal(ChairRefusal):
     """An implementation breaks one named clause of the seat protocol."""
 
     code = "protocol-clause"
@@ -78,7 +78,7 @@ class ProtocolClauseRefusal(SeatRefusal):
 
 ALL_REFUSAL_TYPES = (
     ConfigurationRefusal,
-    UnresolvedSeatRefusal,
+    UnresolvedChairRefusal,
     DigestMismatchRefusal,
     CacheRevisionRefusal,
     AdapterFetchRefusal,

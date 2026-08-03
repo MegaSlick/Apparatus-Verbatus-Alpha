@@ -16,15 +16,15 @@ way an incomplete one is refused.
 
 import pytest
 
-from common.seats.errors import ReceiptRefusal, UnresolvedSeatRefusal
-from common.seats.models import SeatIdentity
+from common.seats.errors import ReceiptRefusal, UnresolvedChairRefusal
+from common.seats.models import ChairIdentity
 from common.seats.receipts import RECEIPT_SCHEMA, build_receipt, receipt_record, validate_receipt
 
 from .conftest import (
-    absent_seat,
+    absent_chair,
     config_of,
-    hf_seat,
-    local_seat,
+    hf_chair,
+    local_chair,
     registry_for,
     serving_details,
 )
@@ -56,8 +56,8 @@ REQUIRED_FIELDS = (
 
 
 @pytest.fixture
-def identity(tmp_path) -> SeatIdentity:
-    return config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", DIGEST)}).seats[
+def identity(tmp_path) -> ChairIdentity:
+    return config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", DIGEST)}).chairs[
         "attestator_1"
     ]
 
@@ -86,8 +86,8 @@ def test_a_local_repository_receipt_records_its_revision_equivalent_and_says_whi
     """A local seat has no git revision, so the verified manifest hash stands in
     — and `revision_kind` keeps that from being read as a commit id."""
     identity = config_of(
-        tmp_path, {"perlector": local_seat("perlector", DIGEST)}, model_root="model-fixtures"
-    ).seats["perlector"]
+        tmp_path, {"perlector": local_chair("perlector", DIGEST)}, model_root="model-fixtures"
+    ).chairs["perlector"]
 
     record = receipt_record(build_receipt(identity, serving_details()))
 
@@ -97,12 +97,12 @@ def test_a_local_repository_receipt_records_its_revision_equivalent_and_says_whi
 
 
 def test_an_adapter_identity_travels_in_full_or_not_at_all(tmp_path):
-    seats = {
-        "attestator_1": hf_seat("attestator_1", DIGEST, adapter_of="base"),
-        "base": hf_seat("base", DIGEST),
+    chairs = {
+        "attestator_1": hf_chair("attestator_1", DIGEST, adapter_of="base"),
+        "base": hf_chair("base", DIGEST),
     }
-    config = config_of(tmp_path, seats)
-    adapter, base = config.seats["attestator_1"], config.seats["base"]
+    config = config_of(tmp_path, chairs)
+    adapter, base = config.chairs["attestator_1"], config.chairs["base"]
 
     record = receipt_record(build_receipt(adapter, serving_details(adapter_identity=base)))
     assert record["adapter_identity"] == base.to_record()
@@ -166,8 +166,8 @@ def test_a_huggingface_receipt_whose_revision_is_not_its_commit_id_is_refused(id
 
 def test_a_local_receipt_whose_revision_is_not_its_digest_manifest_is_refused(tmp_path):
     identity = config_of(
-        tmp_path, {"perlector": local_seat("perlector", DIGEST)}, model_root="model-fixtures"
-    ).seats["perlector"]
+        tmp_path, {"perlector": local_chair("perlector", DIGEST)}, model_root="model-fixtures"
+    ).chairs["perlector"]
     record = receipt_record(build_receipt(identity, serving_details()))
     record["revision"] = "e" * 64
     with pytest.raises(ReceiptRefusal, match="verified digest-manifest hash"):
@@ -183,7 +183,7 @@ def test_a_receipt_that_is_not_an_object_at_all_is_refused(identity):
 def test_a_receipt_is_refused_for_an_identity_that_is_not_exactly_pinned(tmp_path):
     """The seat's own pin has to be complete before there is anything to
     receipt: an identity carrying a branch name never reaches a receipt."""
-    broken = SeatIdentity(
+    broken = ChairIdentity(
         role="attestator_1",
         source="huggingface",
         repo="fixture-org/attestator_1",
@@ -203,25 +203,25 @@ def test_a_receipt_is_refused_for_an_identity_that_is_not_exactly_pinned(tmp_pat
 
 
 def test_the_registry_refuses_a_receipt_for_an_identity_that_is_not_the_configured_pin(tmp_path):
-    config = config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", DIGEST)})
+    config = config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", DIGEST)})
     registry = registry_for(config, tmp_path)
     identity = registry.resolve("attestator_1")
-    neighbouring = SeatIdentity(**{**identity.to_record(), "revision": "b" * 40})
+    neighbouring = ChairIdentity(**{**identity.to_record(), "revision": "b" * 40})
 
-    with pytest.raises(UnresolvedSeatRefusal, match="neighbouring revision"):
+    with pytest.raises(UnresolvedChairRefusal, match="neighbouring revision"):
         registry.receipt(neighbouring, serving_details())
 
 
-def test_the_registry_refuses_a_receipt_for_an_explicitly_absent_seat(tmp_path):
+def test_the_registry_refuses_a_receipt_for_an_explicitly_absent_chair(tmp_path):
     config = config_of(
         tmp_path,
-        {"attestator_1": hf_seat("attestator_1", DIGEST), "attestator_2": absent_seat()},
+        {"attestator_1": hf_chair("attestator_1", DIGEST), "attestator_2": absent_chair()},
         witness_floor=2,
     )
     registry = registry_for(config, tmp_path)
-    stolen = SeatIdentity(
+    stolen = ChairIdentity(
         **{**registry.resolve("attestator_1").to_record(), "role": "attestator_2"}
     )
 
-    with pytest.raises(UnresolvedSeatRefusal, match="explicitly absent"):
+    with pytest.raises(UnresolvedChairRefusal, match="explicitly absent"):
         registry.receipt(stolen, serving_details())

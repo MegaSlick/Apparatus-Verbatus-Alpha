@@ -222,12 +222,12 @@ def test_a_genuinely_empty_reading_counts_as_a_reading():
     assert never_looked["under_witnessed"] is True
 
 
-def test_an_unnamed_seat_is_fatal():
+def test_an_unnamed_chair_is_fatal():
     with pytest.raises(FatalAccounting):
         witness_coverage({"": "read"}, configured_floor=1)
 
 
-def test_an_unknown_seat_outcome_is_fatal():
+def test_an_unknown_chair_outcome_is_fatal():
     with pytest.raises(FatalAccounting):
         witness_coverage({"attestator_1": "probably-read"}, configured_floor=1)
 
@@ -290,7 +290,7 @@ def test_under_witnessed_coverage_forces_partial_even_when_every_act_delivered()
     assert aggregate["reasons"] == ["act act_a is under-witnessed (1 of a floor of 3)"]
 
 
-def test_a_seat_with_no_outcome_yet_forces_partial():
+def test_a_chair_with_no_outcome_yet_forces_partial():
     aggregate = run_aggregate(
         {"act_a": ArmariumCategory.DELIVERED},
         {"act_a": witness_coverage({"s1": "read", "s2": "read", "s3": "not-run"}, 3)},

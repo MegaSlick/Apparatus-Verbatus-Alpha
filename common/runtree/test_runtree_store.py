@@ -21,14 +21,14 @@ from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
 from common.runtree.store import RECEIPTS_DIR, RUN_FILE, RunTree
-from common.seats.models import SeatIdentity, ServingDetails
+from common.seats.models import ChairIdentity, ServingDetails
 from common.seats.receipts import build_receipt
 
 PAGE_BYTES = b"synthetic page one"
 SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTES), "ordinal": 1}]
 CONFIG_DIGEST = "c" * 64
 RECIPES = {"designator": "fake-designator-v0"}
-SEATS = ["attestator_1", "attestator_2", "attestator_3"]
+CHAIRS = ["attestator_1", "attestator_2", "attestator_3"]
 
 
 def make_run(tmp_path, run_id="r1", **overrides):
@@ -36,7 +36,7 @@ def make_run(tmp_path, run_id="r1", **overrides):
         "source_manifest": SOURCE,
         "config_digest": CONFIG_DIGEST,
         "adapter_recipes": RECIPES,
-        "witness_seats": SEATS,
+        "witness_seats": CHAIRS,
     }
     kwargs.update(overrides)
     return RunTree.create(tmp_path, run_id, **kwargs)
@@ -58,7 +58,7 @@ def make_envelope(run_id="r1", subject="pg_0123456789abcdef", outcome="proposed"
 
 
 def make_receipt(*, endpoint="http://fixture.invalid/seat", started_at="2026-08-03T00:00:00Z"):
-    identity = SeatIdentity(
+    identity = ChairIdentity(
         role="attestator_1",
         source="local-repository",
         repo=None,
@@ -92,7 +92,7 @@ def test_creating_a_run_writes_a_self_hashed_authority(tmp_path):
     tree = make_run(tmp_path)
     record = tree.read_run()
     assert record["run_id"] == "r1"
-    assert record["witness_seats"] == SEATS
+    assert record["witness_seats"] == CHAIRS
     assert record["source_manifest"] == SOURCE
     assert (tmp_path / "r1" / RUN_FILE).exists()
 
@@ -176,7 +176,7 @@ def test_reusing_a_run_id_with_changed_adapter_recipes_is_refused(tmp_path):
         make_run(tmp_path, adapter_recipes={"designator": "fake-designator-v1"})
 
 
-def test_reusing_a_run_id_with_a_changed_seat_roster_is_refused(tmp_path):
+def test_reusing_a_run_id_with_a_changed_chair_roster_is_refused(tmp_path):
     """A run that silently dropped a configured seat would under-witness every act
     in it while looking like the run that was authorized."""
     make_run(tmp_path)

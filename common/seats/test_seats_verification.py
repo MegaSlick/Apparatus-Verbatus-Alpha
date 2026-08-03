@@ -19,14 +19,14 @@ import json
 import pytest
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
-from common.seats.errors import DigestMismatchRefusal, UnresolvedSeatRefusal
+from common.seats.errors import DigestMismatchRefusal, UnresolvedChairRefusal
 from common.seats.manifests import build_manifest, manifest_digest, read_manifest, write_manifest
 from common.seats.registry import CACHE_DESCRIPTOR
 
 from .conftest import (
     RecordingFetcher,
     config_of,
-    hf_seat,
+    hf_chair,
     pin_snapshot,
     registry_for,
     write_snapshot,
@@ -73,7 +73,7 @@ def test_one_flipped_byte_fails_naming_that_file(hf_world):
     with pytest.raises(DigestMismatchRefusal) as caught:
         hf_world.registry.ensure(identity)
     assert "nested/weights.bin" in str(caught.value)
-    assert caught.value.seat == "attestator_1"
+    assert caught.value.chair == "attestator_1"
 
 
 def test_a_file_the_fetch_never_produced_fails_naming_it(hf_world):
@@ -119,7 +119,7 @@ def test_a_file_of_the_right_digest_but_the_wrong_size_is_refused(tmp_path):
     manifest_path.write_bytes(canonical_bytes(tampered))
     pin = digest_bytes(manifest_path.read_bytes())
 
-    config = config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", pin)})
+    config = config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", pin)})
     fetcher = RecordingFetcher(files)
     registry = registry_for(config, tmp_path, fetcher)
 
@@ -196,7 +196,7 @@ def test_a_failed_fetch_leaves_the_previously_verified_snapshot_untouched(hf_wor
 
     (verified.root / "config.json").unlink()
     hf_world.fetcher.fail = RuntimeError("the connection went away mid-download")
-    with pytest.raises(UnresolvedSeatRefusal):
+    with pytest.raises(UnresolvedChairRefusal):
         hf_world.registry.ensure(identity)
 
     hf_world.fetcher.fail = None
@@ -216,11 +216,11 @@ def test_the_pin_names_the_manifest_artifact_s_exact_canonical_bytes(tmp_path):
     pin = pin_snapshot(tmp_path / "snapshot", manifest_path)
 
     assert digest_bytes(manifest_path.read_bytes()) == pin
-    assert read_manifest(manifest_path, expected_digest=pin, seat="attestator_1").rows
+    assert read_manifest(manifest_path, expected_digest=pin, chair="attestator_1").rows
 
     manifest_path.write_bytes(manifest_path.read_bytes() + b"\n")
     with pytest.raises(DigestMismatchRefusal, match="canonical artifact bytes"):
-        read_manifest(manifest_path, expected_digest=pin, seat="attestator_1")
+        read_manifest(manifest_path, expected_digest=pin, chair="attestator_1")
 
 
 def test_a_manifest_whose_digest_is_not_the_pin_is_refused(tmp_path):
@@ -229,7 +229,7 @@ def test_a_manifest_whose_digest_is_not_the_pin_is_refused(tmp_path):
     pin_snapshot(tmp_path / "snapshot", manifest_path)
 
     with pytest.raises(DigestMismatchRefusal, match="expected digest"):
-        read_manifest(manifest_path, expected_digest="0" * 64, seat="attestator_1")
+        read_manifest(manifest_path, expected_digest="0" * 64, chair="attestator_1")
 
 
 @pytest.mark.parametrize(
@@ -255,15 +255,15 @@ def test_a_malformed_manifest_artifact_is_refused(tmp_path, rows):
     path = tmp_path / "manifest.json"
     path.write_bytes(canonical_bytes(rows))
     with pytest.raises(DigestMismatchRefusal):
-        read_manifest(path, expected_digest=digest_bytes(path.read_bytes()), seat="attestator_1")
+        read_manifest(path, expected_digest=digest_bytes(path.read_bytes()), chair="attestator_1")
 
 
-def test_a_manifest_that_cannot_be_read_at_all_is_refused_naming_the_seat(tmp_path):
+def test_a_manifest_that_cannot_be_read_at_all_is_refused_naming_the_chair(tmp_path):
     path = tmp_path / "manifest.json"
     path.write_bytes(b"{not json at all")
     with pytest.raises(DigestMismatchRefusal) as caught:
-        read_manifest(path, expected_digest="0" * 64, seat="attestator_1")
-    assert caught.value.seat == "attestator_1"
+        read_manifest(path, expected_digest="0" * 64, chair="attestator_1")
+    assert caught.value.chair == "attestator_1"
 
 
 def test_a_symlinked_file_inside_a_snapshot_is_refused_rather_than_followed(tmp_path):
@@ -297,8 +297,8 @@ def test_the_huggingface_adapter_passes_the_pin_through_to_the_official_client(t
             return source
 
     client = OfficialClientFake()
-    config = config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", "d" * 64)})
-    identity = config.seats["attestator_1"]
+    config = config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", "d" * 64)})
+    identity = config.chairs["attestator_1"]
     destination = tmp_path / "candidate"
 
     HuggingFaceFetcher(client).fetch(identity, destination, ("nested/model.bin",))
@@ -320,10 +320,10 @@ def test_the_huggingface_adapter_refuses_a_pinned_file_the_client_did_not_return
         def snapshot_download(self, **kwargs):
             return source
 
-    config = config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", "d" * 64)})
-    with pytest.raises(UnresolvedSeatRefusal, match="no requested file"):
+    config = config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", "d" * 64)})
+    with pytest.raises(UnresolvedChairRefusal, match="no requested file"):
         HuggingFaceFetcher(OfficialClientFake()).fetch(
-            config.seats["attestator_1"], tmp_path / "candidate", ("nested/model.bin",)
+            config.chairs["attestator_1"], tmp_path / "candidate", ("nested/model.bin",)
         )
 
 
@@ -337,4 +337,4 @@ def test_the_written_manifest_round_trips_through_its_own_reader(tmp_path):
 
     assert json.loads(path.read_text(encoding="utf-8")) == manifest.to_record()
     assert manifest_digest(manifest) == pin
-    assert read_manifest(path, expected_digest=pin, seat="attestator_1") == manifest
+    assert read_manifest(path, expected_digest=pin, chair="attestator_1") == manifest

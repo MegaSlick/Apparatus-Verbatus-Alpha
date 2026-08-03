@@ -26,7 +26,7 @@ from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
-from common.seats.registry import SeatRegistry  # noqa: E402
+from common.seats.registry import ChairRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     StageContext,
@@ -61,7 +61,7 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     return declared
 
 
-def main(registry_factory=SeatRegistry.from_toml) -> int:
+def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Create the run with an explicitly supplied seat implementation.
 
     The command-line default is the production registry. Tests supply an

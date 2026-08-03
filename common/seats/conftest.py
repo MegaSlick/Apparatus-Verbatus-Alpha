@@ -19,14 +19,14 @@ import pytest
 from common.seats.config import parse_models_config
 from common.seats.manifests import build_manifest, manifest_digest, write_manifest
 from common.seats.models import ModelsConfig, ServingDetails
-from common.seats.registry import SeatRegistry
+from common.seats.registry import ChairRegistry
 
 HF_REVISION = "a" * 40
 LICENSE_NOTE = "fixture placeholder; not a real model, so no model license applies"
 SERVING_RECIPE = "fixture-recipe-v0"
 
 
-def hf_seat(role: str, digest_manifest: str, **overrides: Any) -> dict[str, Any]:
+def hf_chair(role: str, digest_manifest: str, **overrides: Any) -> dict[str, Any]:
     """A well-formed `huggingface` seat table, before any deliberate damage."""
     table = {
         "state": "configured",
@@ -42,7 +42,7 @@ def hf_seat(role: str, digest_manifest: str, **overrides: Any) -> dict[str, Any]
     return table
 
 
-def local_seat(role: str, digest_manifest: str, **overrides: Any) -> dict[str, Any]:
+def local_chair(role: str, digest_manifest: str, **overrides: Any) -> dict[str, Any]:
     """A well-formed `local-repository` seat table: a path, and no revision."""
     table = {
         "state": "configured",
@@ -57,7 +57,7 @@ def local_seat(role: str, digest_manifest: str, **overrides: Any) -> dict[str, A
     return table
 
 
-def absent_seat(reason: str = "no such witness is configured for alpha") -> dict[str, Any]:
+def absent_chair(reason: str = "no such witness is configured for alpha") -> dict[str, Any]:
     return {"state": "absent", "reason": reason}
 
 
@@ -79,16 +79,16 @@ def pin_snapshot(snapshot_root: Path, manifest_path: Path) -> str:
 
 
 def config_of(
-    tmp_path: Path, seats: dict[str, dict[str, Any]], *, witness_floor: int = 1, **top: Any
+    tmp_path: Path, chairs: dict[str, dict[str, Any]], *, witness_floor: int = 1, **top: Any
 ) -> ModelsConfig:
     """Parse a `models.toml`-shaped mapping, rooted at `tmp_path/models.toml`."""
-    raw: dict[str, Any] = {"witness_floor": witness_floor, "seats": seats}
+    raw: dict[str, Any] = {"witness_floor": witness_floor, "seats": chairs}
     raw.update(top)
     return parse_models_config(raw, source_path=tmp_path / "models.toml")
 
 
 def write_models_toml(
-    tmp_path: Path, seats: dict[str, dict[str, Any]], *, witness_floor: int = 1, **top: Any
+    tmp_path: Path, chairs: dict[str, dict[str, Any]], *, witness_floor: int = 1, **top: Any
 ) -> Path:
     """The same shape, but through a real TOML file on disk.
 
@@ -98,7 +98,7 @@ def write_models_toml(
     lines: list[str] = [f"witness_floor = {witness_floor}"]
     for key, value in top.items():
         lines.append(f"{key} = {_toml_value(value)}")
-    for role, fields in seats.items():
+    for role, fields in chairs.items():
         lines.append("")
         lines.append(f"[seats.{role}]")
         for key, value in fields.items():
@@ -148,8 +148,8 @@ class RecordingFetcher:
 
 def registry_for(
     config: ModelsConfig, tmp_path: Path, fetcher: RecordingFetcher | None = None
-) -> SeatRegistry:
-    return SeatRegistry(
+) -> ChairRegistry:
+    return ChairRegistry(
         config, manifest_root=tmp_path, cache_root=tmp_path / "cache", fetcher=fetcher
     )
 
@@ -183,12 +183,12 @@ def hf_world(tmp_path):
     files = {"config.json": b'{"fixture": true}\n', "nested/weights.bin": b"fixture weights\n"}
     write_snapshot(tmp_path / "remote", files)
     pin = pin_snapshot(tmp_path / "remote", tmp_path / "manifests" / "attestator_1.json")
-    seats = {
-        "attestator_1": hf_seat("attestator_1", pin),
-        "attestator_2": hf_seat("attestator_2", pin, manifest="manifests/attestator_1.json"),
-        "attestator_3": absent_seat(),
+    chairs = {
+        "attestator_1": hf_chair("attestator_1", pin),
+        "attestator_2": hf_chair("attestator_2", pin, manifest="manifests/attestator_1.json"),
+        "attestator_3": absent_chair(),
     }
-    config = config_of(tmp_path, seats, witness_floor=3)
+    config = config_of(tmp_path, chairs, witness_floor=3)
     fetcher = RecordingFetcher(files)
     return HuggingFaceWorld(
         registry=registry_for(config, tmp_path, fetcher),
@@ -213,7 +213,7 @@ class HuggingFaceWorld:
         return self.registry.resolve(role)
 
 
-class DeterministicSeatRegistry:
+class DeterministicChairRegistry:
     """The seat protocol's second implementation: in-memory, offline, no fetch.
 
     Spec 02 asks for "a deterministic fake honoring the same protocol, for the
@@ -244,12 +244,12 @@ class DeterministicSeatRegistry:
         self.calls: list[tuple[str, str]] = []
 
     def resolve(self, role: str):
-        from common.seats.errors import UnresolvedSeatRefusal
+        from common.seats.errors import UnresolvedChairRefusal
 
         self.calls.append(("resolve", role))
-        configured = self.config.seats.get(role)
+        configured = self.config.chairs.get(role)
         if configured is None:
-            raise UnresolvedSeatRefusal(role, "role is not present in this deterministic seat")
+            raise UnresolvedChairRefusal(role, "role is not present in this deterministic seat")
         return configured
 
     def ensure(self, identity):
@@ -276,16 +276,16 @@ class DeterministicSeatRegistry:
         all, and the suite would then be proving only that both have the right
         method names.
         """
-        from common.seats.errors import UnresolvedSeatRefusal
-        from common.seats.models import AbsentSeat, SeatIdentity
+        from common.seats.errors import UnresolvedChairRefusal
+        from common.seats.models import AbsentChair, ChairIdentity
 
         configured = self.resolve(identity.role)
-        if isinstance(configured, AbsentSeat):
-            raise UnresolvedSeatRefusal(
+        if isinstance(configured, AbsentChair):
+            raise UnresolvedChairRefusal(
                 identity.role, f"seat is explicitly absent: {configured.reason}"
             )
-        if not isinstance(configured, SeatIdentity) or configured != identity:
-            raise UnresolvedSeatRefusal(
+        if not isinstance(configured, ChairIdentity) or configured != identity:
+            raise UnresolvedChairRefusal(
                 identity.role,
                 "identity differs from the configured pin; ensure and receipt never "
                 "accept a neighbouring revision",

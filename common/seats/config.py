@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .errors import ConfigurationRefusal
-from .models import AbsentSeat, ModelsConfig, SeatIdentity, is_hf_revision, is_sha256
+from .models import AbsentChair, ChairIdentity, ModelsConfig, is_hf_revision, is_sha256
 
 _TOP_LEVEL = {"witness_floor", "seats", "adapter_recipes", "model_root"}
 _CONFIGURED_COMMON = {
@@ -59,19 +59,19 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
         model_root = _relative_posix("models.toml", "model_root", raw_model_root)
 
     adapter_recipes = _parse_adapter_recipes(raw.get("adapter_recipes", {}))
-    raw_seats = raw.get("seats")
-    if not isinstance(raw_seats, dict) or not raw_seats:
+    raw_chairs = raw.get("seats")
+    if not isinstance(raw_chairs, dict) or not raw_chairs:
         raise ConfigurationRefusal("models.toml", "seats must be a non-empty table")
 
-    seats: dict[str, SeatIdentity | AbsentSeat] = {}
-    for role, values in raw_seats.items():
+    chairs: dict[str, ChairIdentity | AbsentChair] = {}
+    for role, values in raw_chairs.items():
         _role(role)
-        seats[role] = _parse_seat(role, values)
+        chairs[role] = _parse_chair(role, values)
 
     if (
         any(
-            isinstance(value, SeatIdentity) and value.source == "local-repository"
-            for value in seats.values()
+            isinstance(value, ChairIdentity) and value.source == "local-repository"
+            for value in chairs.values()
         )
         and model_root is None
     ):
@@ -79,15 +79,15 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
             "models.toml", "model_root is required when a local-repository seat is configured"
         )
 
-    for role, value in seats.items():
-        if not isinstance(value, SeatIdentity) or value.adapter_of is None:
+    for role, value in chairs.items():
+        if not isinstance(value, ChairIdentity) or value.adapter_of is None:
             continue
-        base = seats.get(value.adapter_of)
+        base = chairs.get(value.adapter_of)
         if base is None:
             raise ConfigurationRefusal(
                 role, f"adapter_of names no configured base seat {value.adapter_of!r}"
             )
-        if isinstance(base, AbsentSeat):
+        if isinstance(base, AbsentChair):
             raise ConfigurationRefusal(
                 role, f"adapter_of base {value.adapter_of!r} is explicitly absent"
             )
@@ -96,20 +96,20 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
 
     return ModelsConfig(
         witness_floor=witness_floor,
-        seats=seats,
+        chairs=chairs,
         adapter_recipes=adapter_recipes,
         model_root=model_root,
         source_path=Path(source_path) if source_path is not None else None,
     )
 
 
-def _parse_seat(role: str, values: Any) -> SeatIdentity | AbsentSeat:
+def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
     if not isinstance(values, dict):
         raise ConfigurationRefusal(role, "seat declaration is not a table")
     state = values.get("state")
     if state == "absent":
         _only_keys(role, values, {"state", "reason"})
-        return AbsentSeat(role=role, reason=_text(role, "reason", values.get("reason")))
+        return AbsentChair(role=role, reason=_text(role, "reason", values.get("reason")))
     if state != "configured":
         raise ConfigurationRefusal(role, "state must be exactly 'configured' or 'absent'")
 
@@ -151,7 +151,7 @@ def _parse_seat(role: str, values: Any) -> SeatIdentity | AbsentSeat:
         path = _relative_posix(role, "path", values["path"])
         revision = None
 
-    return SeatIdentity(
+    return ChairIdentity(
         role=role,
         source=source,
         repo=repo,

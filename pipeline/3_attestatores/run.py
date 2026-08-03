@@ -28,8 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
-from common.seats.models import AbsentSeat, SeatIdentity  # noqa: E402
-from common.seats.registry import SeatRegistry  # noqa: E402
+from common.seats.models import AbsentChair, ChairIdentity  # noqa: E402
+from common.seats.registry import ChairRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -85,9 +85,9 @@ def declared_failures(context) -> set[tuple[str, str]]:
     }
 
 
-def testimony_for(context, act_key: str, seat: str) -> str | None:
+def testimony_for(context, act_key: str, chair: str) -> str | None:
     for row in context.fixture["testimony"]:
-        if row["act_key"] == act_key and row["seat"] == seat:
+        if row["act_key"] == act_key and row["seat"] == chair:
             return row["reported"]
     return None
 
@@ -106,14 +106,14 @@ def content_health(reported: str | None) -> dict:
     }
 
 
-def provenance_for(context, resolved: SeatIdentity | AbsentSeat, *, attempted: bool) -> dict:
+def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted: bool) -> dict:
     """The exact configured identity for one witness outcome.
 
     An absent seat has no model identity and no serving moment. A configured seat
     gets a receipt only when it actually attempted a reading; `not-run` records
     retain the resolved pin but do not invent a serving event that never happened.
     """
-    if isinstance(resolved, AbsentSeat):
+    if isinstance(resolved, AbsentChair):
         return {
             "seat": resolved.role,
             "seat_state": "absent",
@@ -123,7 +123,7 @@ def provenance_for(context, resolved: SeatIdentity | AbsentSeat, *, attempted: b
             "receipt_ref": None,
             "adapter_revision": context.adapter_revision,
         }
-    if not isinstance(resolved, SeatIdentity):
+    if not isinstance(resolved, ChairIdentity):
         raise ContractError("witness resolution returned neither an identity nor an absence")
     receipt_ref = (
         context.write_serving_receipt(resolved, fixture_serving_details(resolved))
@@ -143,7 +143,7 @@ def provenance_for(context, resolved: SeatIdentity | AbsentSeat, *, attempted: b
     }
 
 
-def main(registry_factory=SeatRegistry.from_toml) -> int:
+def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run through the explicitly supplied seat implementation.
 
     Production passes the default registry. The test-only injection is a
@@ -162,15 +162,15 @@ def main(registry_factory=SeatRegistry.from_toml) -> int:
             # still gets an explicit outcome — `not-run`, an unresolved unit —
             # because a seat that simply never appears is a silent skip, and a
             # silent skip is the shape of the original defect.
-            for seat in context.witness_seats:
-                resolved = context.registry.resolve(seat)
+            for chair in context.witness_seats:
+                resolved = context.registry.resolve(chair)
                 context.publish(
                     kind="testimonium",
                     subject_id=act["act_id"],
                     outcome="not-run",
-                    attempt=attempt_id(act["act_id"], f"read:{seat}", 1),
+                    attempt=attempt_id(act["act_id"], f"read:{chair}", 1),
                     payload={
-                        "seat": seat,
+                        "seat": chair,
                         "act_key": act["act_key"],
                         "attempt_ordinal": 1,
                         "regions": [],
@@ -199,12 +199,12 @@ def main(registry_factory=SeatRegistry.from_toml) -> int:
             for record in regions
         ]
 
-        for seat in context.witness_seats:
-            resolved = context.registry.resolve(seat)
-            reported = testimony_for(context, act["act_key"], seat)
-            failed = (act["act_key"], seat) in failures
+        for chair in context.witness_seats:
+            resolved = context.registry.resolve(chair)
+            reported = testimony_for(context, act["act_key"], chair)
+            failed = (act["act_key"], chair) in failures
 
-            if isinstance(resolved, AbsentSeat):
+            if isinstance(resolved, AbsentChair):
                 # An explicitly absent witness remains in the run roster and
                 # therefore receives a visible outcome. Fixture testimony never
                 # turns an absent seat into a different configured model.
@@ -230,14 +230,14 @@ def main(registry_factory=SeatRegistry.from_toml) -> int:
                 kind="testimonium",
                 subject_id=act["act_id"],
                 outcome=outcome,
-                attempt=attempt_id(act["act_id"], f"read:{seat}", 1),
+                attempt=attempt_id(act["act_id"], f"read:{chair}", 1),
                 inputs=(
                     [context.input_ref(record["payload"]["image_path"]) for record in regions]
                     if attempted
                     else []
                 ),
                 payload={
-                    "seat": seat,
+                    "seat": chair,
                     "act_key": act["act_key"],
                     "attempt_ordinal": 1,
                     "regions": region_references if attempted else [],

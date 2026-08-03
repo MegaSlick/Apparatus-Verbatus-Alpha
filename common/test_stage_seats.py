@@ -10,7 +10,7 @@ import pytest
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
 from common.runtree.store import RunTree
-from common.seats import SeatIdentity, SeatRegistry
+from common.seats import ChairIdentity, ChairRegistry
 from common.stage import (
     StageContext,
     adapter_recipe_for,
@@ -23,8 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MODELS_CONFIG = ROOT / "config" / "models.toml"
 
 
-def _context(tmp_path) -> tuple[StageContext, SeatIdentity]:
-    registry = SeatRegistry.from_toml(MODELS_CONFIG)
+def _context(tmp_path) -> tuple[StageContext, ChairIdentity]:
+    registry = ChairRegistry.from_toml(MODELS_CONFIG)
     bindings = run_config_bindings(registry.config, {"fixture": "none"}, "test")
     tree = RunTree.create(
         tmp_path,
@@ -46,7 +46,7 @@ def _context(tmp_path) -> tuple[StageContext, SeatIdentity]:
         registry=registry,
     )
     identity = registry.resolve("attestator_1")
-    assert isinstance(identity, SeatIdentity)
+    assert isinstance(identity, ChairIdentity)
     return context, identity
 
 

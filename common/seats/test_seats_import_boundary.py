@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMON = ROOT / "common"
-SEATS = COMMON / "seats"
+CHAIRS = COMMON / "seats"
 
 # `huggingface_hub` is on this list for a reason of its own. The whole package
 # must import, parse and run offline with the dependency absent, so the one
@@ -53,14 +53,14 @@ def _modules() -> list[Path]:
     """Every shipped module of the package — the tests and their plumbing aside."""
     return sorted(
         path
-        for path in SEATS.glob("*.py")
+        for path in CHAIRS.glob("*.py")
         if not path.name.startswith("test_") and path.name != "conftest.py"
     )
 
 
-def test_the_seat_package_never_imports_a_stage_or_a_fixture_or_the_hub_at_module_level():
+def test_the_chair_package_never_imports_a_stage_or_a_fixture_or_the_hub_at_module_level():
     modules = _modules()
-    assert len(modules) >= 7, f"expected the whole seat package under {SEATS}, found {modules}"
+    assert len(modules) >= 7, f"expected the whole seat package under {CHAIRS}, found {modules}"
 
     violations = [
         f"{path.relative_to(ROOT)} imports {full!r}"
@@ -71,12 +71,12 @@ def test_the_seat_package_never_imports_a_stage_or_a_fixture_or_the_hub_at_modul
     assert not violations, "common/seats/ crossed its boundary:\n" + "\n".join(violations)
 
 
-def test_the_seat_tests_never_import_a_stage_either():
+def test_the_chair_tests_never_import_a_stage_either():
     """A test that reached into `pipeline/` would cross the very boundary it is
     here to guard — and would quietly make `common/` depend on stage code
     through the one file nobody thinks of as code."""
-    tests = sorted(SEATS.glob("test_*.py")) + [SEATS / "conftest.py"]
-    assert len(tests) >= 8, f"expected the seat test suite under {SEATS}, found {tests}"
+    tests = sorted(CHAIRS.glob("test_*.py")) + [CHAIRS / "conftest.py"]
+    assert len(tests) >= 8, f"expected the seat test suite under {CHAIRS}, found {tests}"
 
     violations = [
         f"{path.relative_to(ROOT)} imports {full!r}"
@@ -123,6 +123,6 @@ def test_the_hub_is_reachable_from_exactly_one_module_and_only_inside_a_function
     # The one door is still there, and it is `importlib` inside a function body:
     # importing this package therefore cannot pull the dependency in, which is
     # what lets every test above run with it absent.
-    assert 'import_module("huggingface_hub")' in (SEATS / "registry.py").read_text(
+    assert 'import_module("huggingface_hub")' in (CHAIRS / "registry.py").read_text(
         encoding="utf-8"
     ), "the production fetcher no longer names the one seam this test is about"

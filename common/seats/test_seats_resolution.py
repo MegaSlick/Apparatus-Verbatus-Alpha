@@ -12,17 +12,17 @@ beyond the one config file, and nothing here reaches a network.
 import pytest
 
 from common.seats.config import load_models_toml, parse_models_config
-from common.seats.errors import ConfigurationRefusal, UnresolvedSeatRefusal
-from common.seats.models import AbsentSeat, SeatIdentity
+from common.seats.errors import ConfigurationRefusal, UnresolvedChairRefusal
+from common.seats.models import AbsentChair, ChairIdentity
 
 from .conftest import (
     HF_REVISION,
     LICENSE_NOTE,
     SERVING_RECIPE,
-    absent_seat,
+    absent_chair,
     config_of,
-    hf_seat,
-    local_seat,
+    hf_chair,
+    local_chair,
     write_models_toml,
 )
 
@@ -32,11 +32,11 @@ DIGEST = "d" * 64
 # --- An exact identity, field for field -----------------------------------------
 
 
-def test_a_huggingface_seat_resolves_to_its_exact_pinned_identity(tmp_path):
-    config = config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", DIGEST)})
-    identity = config.seats["attestator_1"]
+def test_a_huggingface_chair_resolves_to_its_exact_pinned_identity(tmp_path):
+    config = config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", DIGEST)})
+    identity = config.chairs["attestator_1"]
 
-    assert identity == SeatIdentity(
+    assert identity == ChairIdentity(
         role="attestator_1",
         source="huggingface",
         repo="fixture-org/attestator_1",
@@ -52,15 +52,15 @@ def test_a_huggingface_seat_resolves_to_its_exact_pinned_identity(tmp_path):
     assert identity.receipt_revision_kind == "git-commit"
 
 
-def test_a_local_repository_seat_resolves_to_a_path_and_no_revision(tmp_path):
+def test_a_local_repository_chair_resolves_to_a_path_and_no_revision(tmp_path):
     """A local seat has no git revision by contract, so its verified manifest
     hash is the immutable revision-equivalent — and the receipt says which."""
     config = config_of(
-        tmp_path, {"perlector": local_seat("perlector", DIGEST)}, model_root="model-fixtures"
+        tmp_path, {"perlector": local_chair("perlector", DIGEST)}, model_root="model-fixtures"
     )
-    identity = config.seats["perlector"]
+    identity = config.chairs["perlector"]
 
-    assert isinstance(identity, SeatIdentity)
+    assert isinstance(identity, ChairIdentity)
     assert (identity.repo, identity.revision, identity.path) == (None, None, "perlector")
     assert identity.receipt_revision == DIGEST
     assert identity.receipt_revision_kind == "digest-manifest"
@@ -68,10 +68,10 @@ def test_a_local_repository_seat_resolves_to_a_path_and_no_revision(tmp_path):
 
 def test_resolution_reads_a_real_file_the_same_way_it_reads_a_mapping(tmp_path):
     """`load_models_toml` is what an operator's edit actually goes through."""
-    path = write_models_toml(tmp_path, {"attestator_1": hf_seat("attestator_1", DIGEST)})
+    path = write_models_toml(tmp_path, {"attestator_1": hf_chair("attestator_1", DIGEST)})
     assert (
-        load_models_toml(path).seats["attestator_1"]
-        == config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", DIGEST)}).seats[
+        load_models_toml(path).chairs["attestator_1"]
+        == config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", DIGEST)}).chairs[
             "attestator_1"
         ]
     )
@@ -84,8 +84,8 @@ def test_resolution_reads_a_real_file_the_same_way_it_reads_a_mapping(tmp_path):
     "field",
     ["source", "repo", "revision", "digest_manifest", "manifest", "serving_recipe", "license_note"],
 )
-def test_a_huggingface_seat_missing_any_required_field_is_refused_naming_it(tmp_path, field):
-    table = hf_seat("attestator_1", DIGEST)
+def test_a_huggingface_chair_missing_any_required_field_is_refused_naming_it(tmp_path, field):
+    table = hf_chair("attestator_1", DIGEST)
     del table[field]
     with pytest.raises(ConfigurationRefusal) as caught:
         config_of(tmp_path, {"attestator_1": table})
@@ -96,17 +96,17 @@ def test_a_huggingface_seat_missing_any_required_field_is_refused_naming_it(tmp_
 @pytest.mark.parametrize(
     "field", ["source", "path", "digest_manifest", "manifest", "serving_recipe", "license_note"]
 )
-def test_a_local_repository_seat_missing_any_required_field_is_refused_naming_it(tmp_path, field):
-    table = local_seat("perlector", DIGEST)
+def test_a_local_repository_chair_missing_any_required_field_is_refused_naming_it(tmp_path, field):
+    table = local_chair("perlector", DIGEST)
     del table[field]
     with pytest.raises(ConfigurationRefusal) as caught:
         config_of(tmp_path, {"perlector": table}, model_root="model-fixtures")
     assert field in str(caught.value)
 
 
-def test_a_seat_with_no_recognizable_state_is_refused(tmp_path):
+def test_a_chair_with_no_recognizable_state_is_refused(tmp_path):
     for state in ("", "enabled", "Configured", None):
-        table = hf_seat("attestator_1", DIGEST, state=state)
+        table = hf_chair("attestator_1", DIGEST, state=state)
         with pytest.raises(ConfigurationRefusal, match="configured.*absent"):
             config_of(tmp_path, {"attestator_1": table})
 
@@ -115,7 +115,7 @@ def test_a_blank_field_is_refused_rather_than_read_as_an_omission(tmp_path):
     """The schema has no blank-string sentinels: `adapter_of = ""` is gone, and
     a blanked required field is a malformed pin rather than a quiet default."""
     with pytest.raises(ConfigurationRefusal, match="non-blank"):
-        config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", DIGEST, serving_recipe="  ")})
+        config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", DIGEST, serving_recipe="  ")})
 
 
 # --- Revision syntax is per source -------------------------------------------------
@@ -136,67 +136,67 @@ def test_a_blank_field_is_refused_rather_than_read_as_an_omission(tmp_path):
 )
 def test_a_revision_that_is_not_exactly_forty_lowercase_hex_is_refused(tmp_path, revision):
     with pytest.raises(ConfigurationRefusal, match="40 lowercase"):
-        config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", DIGEST, revision=revision)})
+        config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", DIGEST, revision=revision)})
 
 
 def test_a_digest_manifest_that_is_not_a_lowercase_sha256_is_refused(tmp_path):
     with pytest.raises(ConfigurationRefusal, match="64 lowercase"):
-        config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", "d" * 63)})
+        config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", "d" * 63)})
 
 
-def test_a_huggingface_seat_may_not_carry_a_local_path(tmp_path):
+def test_a_huggingface_chair_may_not_carry_a_local_path(tmp_path):
     with pytest.raises(ConfigurationRefusal, match="forbidden"):
-        config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", DIGEST, path="somewhere")})
+        config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", DIGEST, path="somewhere")})
 
 
-def test_a_local_repository_seat_may_not_carry_a_repo_or_a_revision(tmp_path):
+def test_a_local_repository_chair_may_not_carry_a_repo_or_a_revision(tmp_path):
     for extra in ({"repo": "org/name"}, {"revision": HF_REVISION}):
         with pytest.raises(ConfigurationRefusal, match="forbidden"):
             config_of(
                 tmp_path,
-                {"perlector": local_seat("perlector", DIGEST, **extra)},
+                {"perlector": local_chair("perlector", DIGEST, **extra)},
                 model_root="model-fixtures",
             )
 
 
-def test_a_local_repository_seat_needs_a_configured_model_root(tmp_path):
+def test_a_local_repository_chair_needs_a_configured_model_root(tmp_path):
     """A path with no root to be relative to is not a pin, it is a guess."""
     with pytest.raises(ConfigurationRefusal, match="model_root is required"):
-        config_of(tmp_path, {"perlector": local_seat("perlector", DIGEST)})
+        config_of(tmp_path, {"perlector": local_chair("perlector", DIGEST)})
 
 
 # --- adapter_of names a base that exists -------------------------------------------
 
 
 def test_adapter_of_naming_a_base_outside_the_roster_is_refused(tmp_path):
-    seats = {"attestator_1": hf_seat("attestator_1", DIGEST, adapter_of="no_such_base")}
+    chairs = {"attestator_1": hf_chair("attestator_1", DIGEST, adapter_of="no_such_base")}
     with pytest.raises(ConfigurationRefusal, match="adapter_of"):
-        config_of(tmp_path, seats)
+        config_of(tmp_path, chairs)
 
 
 def test_adapter_of_naming_an_explicitly_absent_base_is_refused(tmp_path):
     """An adapter whose base is declared absent has nothing to ride on, and the
     one thing that must never happen is the bare base answering in its place."""
-    seats = {
-        "attestator_1": hf_seat("attestator_1", DIGEST, adapter_of="base"),
-        "base": absent_seat(),
+    chairs = {
+        "attestator_1": hf_chair("attestator_1", DIGEST, adapter_of="base"),
+        "base": absent_chair(),
     }
     with pytest.raises(ConfigurationRefusal, match="absent"):
-        config_of(tmp_path, seats)
+        config_of(tmp_path, chairs)
 
 
 def test_adapter_of_naming_itself_is_refused(tmp_path):
-    seats = {"attestator_1": hf_seat("attestator_1", DIGEST, adapter_of="attestator_1")}
+    chairs = {"attestator_1": hf_chair("attestator_1", DIGEST, adapter_of="attestator_1")}
     with pytest.raises(ConfigurationRefusal, match="itself"):
-        config_of(tmp_path, seats)
+        config_of(tmp_path, chairs)
 
 
-def test_adapter_of_naming_a_real_sibling_seat_resolves(tmp_path):
-    seats = {
-        "attestator_1": hf_seat("attestator_1", DIGEST, adapter_of="base"),
-        "base": hf_seat("base", DIGEST),
+def test_adapter_of_naming_a_real_sibling_chair_resolves(tmp_path):
+    chairs = {
+        "attestator_1": hf_chair("attestator_1", DIGEST, adapter_of="base"),
+        "base": hf_chair("base", DIGEST),
     }
-    assert config_of(tmp_path, seats).seats["attestator_1"].adapter_of == "base"
+    assert config_of(tmp_path, chairs).chairs["attestator_1"].adapter_of == "base"
 
 
 # --- A role the schema has never seen ----------------------------------------------
@@ -206,31 +206,31 @@ def test_a_role_the_schema_has_never_seen_resolves_without_a_schema_change(tmp_p
     """Spec 02: "The registry accepts a role added later without a schema
     change — that is test 1's real requirement." Nothing in `common/seats/`
     holds a list of role names to add to, which is what makes this pass."""
-    seats = {
-        "attestator_1": hf_seat("attestator_1", DIGEST),
-        "haruspex_of_the_marginalia": hf_seat("haruspex_of_the_marginalia", DIGEST),
+    chairs = {
+        "attestator_1": hf_chair("attestator_1", DIGEST),
+        "haruspex_of_the_marginalia": hf_chair("haruspex_of_the_marginalia", DIGEST),
     }
-    config = config_of(tmp_path, seats)
-    identity = config.seats["haruspex_of_the_marginalia"]
+    config = config_of(tmp_path, chairs)
+    identity = config.chairs["haruspex_of_the_marginalia"]
 
-    assert isinstance(identity, SeatIdentity)
+    assert isinstance(identity, ChairIdentity)
     assert identity.role == "haruspex_of_the_marginalia"
     # And it is not mistaken for a witness merely by being new.
     assert config.witness_seats == ("attestator_1",)
 
 
 def test_a_role_with_no_table_at_all_refuses_naming_the_role(tmp_path):
-    config = config_of(tmp_path, {"attestator_1": hf_seat("attestator_1", DIGEST)})
+    config = config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", DIGEST)})
     registry = _registry(config, tmp_path)
 
-    with pytest.raises(UnresolvedSeatRefusal) as caught:
+    with pytest.raises(UnresolvedChairRefusal) as caught:
         registry.resolve("perlector")
-    assert caught.value.seat == "perlector"
+    assert caught.value.chair == "perlector"
 
 
-def test_an_absent_seat_resolves_to_an_explicit_absence_rather_than_raising(tmp_path):
-    config = config_of(tmp_path, {"attestator_1": absent_seat("witness withdrawn")})
-    assert config.seats["attestator_1"] == AbsentSeat("attestator_1", "witness withdrawn")
+def test_an_absent_chair_resolves_to_an_explicit_absence_rather_than_raising(tmp_path):
+    config = config_of(tmp_path, {"attestator_1": absent_chair("witness withdrawn")})
+    assert config.chairs["attestator_1"] == AbsentChair("attestator_1", "witness withdrawn")
 
 
 # --- The file itself -----------------------------------------------------------------
@@ -240,11 +240,11 @@ def test_an_unknown_top_level_field_is_refused_rather_than_ignored(tmp_path):
     """A misspelt `witness_flor` silently ignored is a floor of zero nobody set."""
     with pytest.raises(ConfigurationRefusal, match="unknown top-level"):
         parse_models_config(
-            {"witness_floor": 1, "seats": {"a_1": hf_seat("a_1", DIGEST)}, "witness_flor": 3}
+            {"witness_floor": 1, "seats": {"a_1": hf_chair("a_1", DIGEST)}, "witness_flor": 3}
         )
 
 
-def test_a_config_with_no_seats_at_all_is_refused(tmp_path):
+def test_a_config_with_no_chairs_at_all_is_refused(tmp_path):
     with pytest.raises(ConfigurationRefusal, match="non-empty"):
         parse_models_config({"witness_floor": 1, "seats": {}})
 
@@ -252,10 +252,10 @@ def test_a_config_with_no_seats_at_all_is_refused(tmp_path):
 @pytest.mark.parametrize("floor", [-1, "3", True, None, 1.5])
 def test_a_witness_floor_that_is_not_a_non_negative_integer_is_refused(floor):
     with pytest.raises(ConfigurationRefusal, match="witness_floor"):
-        parse_models_config({"witness_floor": floor, "seats": {"a_1": hf_seat("a_1", DIGEST)}})
+        parse_models_config({"witness_floor": floor, "seats": {"a_1": hf_chair("a_1", DIGEST)}})
 
 
 def _registry(config, tmp_path):
-    from common.seats.registry import SeatRegistry
+    from common.seats.registry import ChairRegistry
 
-    return SeatRegistry(config, manifest_root=tmp_path)
+    return ChairRegistry(config, manifest_root=tmp_path)
