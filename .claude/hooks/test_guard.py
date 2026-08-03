@@ -404,6 +404,28 @@ class TestHookBypass:
         assert decide("git config --get core.hooksPath") is None
         assert decide("git config core.hooksPath") is None
 
+    def test_a_global_option_does_not_hide_a_bypass(self):
+        """One `-C` turned both of these refusals off.
+
+        Each read `tokens[:1]` off the raw tail, so `git -C . commit -n` presented as
+        `["-C"]` and never as `["commit"]`. The long `--no-verify` spelling was never
+        affected — that scan reads every token — which is what made the gap look
+        closed. Found by CodeRabbit on pull request 15 and reproduced before it was
+        believed. Every global option that takes a value shifts the subcommand the
+        same way, so the whole family is covered here rather than the one spelling.
+        """
+        assert denied(decide("git -C . commit -n -m x"))
+        assert denied(decide("git -C . config core.hooksPath /dev/null"))
+        assert denied(decide("git --git-dir .git commit -an -m x"))
+        assert denied(decide("git -c user.name=x -C . commit -n -m x"))
+        assert denied(decide("git --work-tree . config --unset core.hooksPath"))
+
+    def test_a_global_option_does_not_manufacture_one_either(self):
+        """The positive control: the same prefixes on innocent commands still pass."""
+        assert decide("git -C . commit -m x") is None
+        assert decide("git -C . config user.name Tyrel") is None
+        assert decide("git --git-dir .git config --get core.hooksPath") is None
+
 
 # ------------------------------- 7. an agent reaching for a governed path
 
@@ -442,6 +464,37 @@ class TestAgentGovernance:
         # Explore and Plan hold Bash. Withholding Edit does not make a role read-only.
         assert denied(decide_as_agent("Bash", {"command": "echo x > CLAUDE.md"}, "Explore"))
         assert denied(decide_as_agent("Bash", {"command": "sed -i '' s/a/b/ GOVERNANCE.md"}))
+
+    def test_only_the_root_readme_is_governed(self):
+        """`README.md` was matched by basename, so every README in the tree was refused.
+
+        CLAUDE.md governs "the root `README.md`" and nothing else, while hard rule 12
+        makes `operations/` agent-written. A spawned agent asked to update one of these
+        was denied with no route forward — a denial is final within a session — and
+        that is the likeliest account of the denials logged inside a chamber on
+        2026-08-02. `.claude/agents/README.md` stays refused, by the `.claude/` arm
+        rather than by its name. Found by CodeRabbit on pull request 15.
+        """
+        assert denied(decide_as_agent("Edit", {"file_path": str(ROOT / "README.md")}))
+        assert denied(decide_as_agent("Edit", {"file_path": "README.md"}))
+        assert denied(decide_as_agent("Edit", {"file_path": "./README.md"}))
+        assert denied(decide_as_agent("Edit", {"file_path": ".claude/agents/README.md"}))
+        for path in (
+            "operations/autoclave/README.md",
+            "cleanroom/README.md",
+            "workbench/README.md",
+            "operations/autoclave/briefs/README.md",
+        ):
+            assert decide_as_agent("Edit", {"file_path": path}) is None, path
+
+    def test_the_shell_arm_scopes_the_readme_the_same_way(self):
+        assert denied(decide_as_agent("Bash", {"command": "echo x > README.md"}))
+        assert denied(decide_as_agent("Bash", {"command": "echo x > ./README.md"}))
+        assert denied(decide_as_agent("Bash", {"command": "cp draft README.md"}))
+        assert decide_as_agent("Bash", {"command": "cp draft cleanroom/README.md"}) is None
+        assert (
+            decide_as_agent("Bash", {"command": "tee operations/autoclave/README.md < x"}) is None
+        )
 
     def test_an_agent_may_write_anything_else(self):
         # The point is a bound, not a cage. Ordinary work is untouched.

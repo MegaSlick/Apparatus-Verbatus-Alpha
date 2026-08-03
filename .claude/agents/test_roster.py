@@ -84,6 +84,30 @@ def test_no_host_role_can_write_or_run_a_shell():
         )
 
 
+def test_no_host_role_can_reach_a_write_through_another_agent():
+    """`Agent` is the indirect route, and the test above never looked at it.
+
+    A role holding `Agent` spawns a built-in, and no built-in is read-only —
+    `general-purpose` holds every tool, `Explore` and `Plan` hold `Bash`. So a role
+    could keep a clean `tools` line and regain full write reach one hop away while
+    every assertion above stayed green. Found by CodeRabbit on pull request 15.
+
+    The absent-`tools` case is checked too, and it is the sharper half: a role file
+    with no `tools` key inherits *every* tool, `Agent` included, so a deleted line
+    would grant more than a wrong one.
+    """
+    for path in ROLE_FILES:
+        data = frontmatter(path)
+        assert "tools" in data, (
+            f"{path.name} declares no `tools`, so it inherits every tool including "
+            "`Agent`, `Bash` and `Write`. State the tools explicitly."
+        )
+        assert "Agent" not in listed(data["tools"]), (
+            f"{path.name} holds `Agent`. No built-in agent type is read-only, so this "
+            "is a write and shell tool one hop away."
+        )
+
+
 def test_the_briefs_that_replaced_the_writing_roles_still_bind_them():
     # The prohibition did not disappear with the role files; it moved. A brief is
     # what a dispatched agent is actually given, so it is where the rule has to be —
@@ -96,6 +120,28 @@ def test_the_briefs_that_replaced_the_writing_roles_still_bind_them():
         assert "never edit a governed path" in text, (
             f"{path.name} never states the governed-path prohibition"
         )
+        # **The documents are named, not gestured at.** Checking `.claude/` and the
+        # phrase "governed path" as independent substrings let a brief pass while
+        # listing none of the root documents — and a brief that says "never edit a
+        # governed path" without saying which paths those are has told the agent
+        # nothing it can act on. Each name is asserted separately so the failure
+        # message says which one went missing. `data_contract.md` is here because
+        # CLAUDE.md governs it from the moment it exists, and a brief written before
+        # it exists is the one that will still be in use afterwards. Found by
+        # CodeRabbit on pull request 15.
+        for document in (
+            "claude.md",
+            "goals.md",
+            "governance.md",
+            "architecture.md",
+            "glossary.md",
+            "readme.md",
+            "data_contract.md",
+        ):
+            assert document in text, (
+                f"{path.name} states the prohibition without naming `{document}`, so an "
+                "agent reading it cannot tell which documents it covers"
+            )
         assert ".claude/" in text, (
             f"{path.name} states the prohibition without naming `.claude/`, which is the "
             "half of it an agent is most likely to reach"

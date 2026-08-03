@@ -218,9 +218,9 @@ task complete unless it is complete and verified.** Say what comes next: one
 recommendation with reasoning short enough to argue with, not a menu.
 
 Tyrel is not a programmer and does not read or write code. He is this project's manager
-and engineer, he often works from his phone, and he has ADHD. **Point form is the
-default, not the fallback**, and **questions go at the end, numbered, one batch, three
-at most.** A question he has to hunt for is written wrong. Ask in the session, in plain
+and engineer, and he often works from his phone. **Every reply must be easy to scan and
+act on.** So **point form is the default, not the fallback**, and **questions go at the
+end, numbered, one batch, three at most.** A question he has to hunt for is written wrong. Ask in the session, in plain
 words: never in a file he has to open, never as a poll.
 
 The shape of a bullet, how long a list may be, and what to do with a question he did not

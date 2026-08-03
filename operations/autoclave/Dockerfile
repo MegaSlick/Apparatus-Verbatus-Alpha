@@ -117,6 +117,17 @@ RUN git config --system --add safe.directory /src \
  && git config --system --add safe.directory /work
 
 USER ${UID}:${GID}
+# **`HOME` is pinned, not inherited from whichever account holds this UID.** The block
+# above skips `useradd` when the requested UID already exists, and in `node:22-trixie`
+# UID 1000 already does — the base image's own `node` account, whose home is
+# `/home/node`. On a host whose user is 1000, which is most Linux machines and most CI,
+# the container would then run with `HOME=/home/node` while every credential volume
+# mounts under `/home/agent`: both CLIs would look for their sign-in in the wrong place
+# and report themselves signed out. It does not reproduce on the machine this was built
+# for, whose UID is 501, which is exactly why it needed stating rather than testing.
+# Found by CodeRabbit on pull request 15. The directory is already created and chowned
+# to ${UID}:${GID} above, so pinning the variable is the whole of the fix.
+ENV HOME=/home/agent
 WORKDIR /work
 
 # No entrypoint that runs an agent. The launcher decides what starts, so the

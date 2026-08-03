@@ -251,3 +251,26 @@ fresh clone, which is the first branch a new machine takes and has no stated ans
 
 **Before any of it is built:** nothing on `work/claude-md-revision` has been pushed, and PR
 #14 is open. Merging #14 unblocks everything downstream of it.
+
+---
+
+**O1 is closed, and R2 is what closed it. Recorded 2026-08-03.** As written, this record
+carried two incompatible execution contracts: R2 above says a writing agent gets a
+container with full capability — a shell, installs, its own tests — while O1 below lists
+the shell as an open question and *recommends removing it*. A session reading this to
+govern a dispatch could take either.
+
+The container is what settled it, and it settled it the other way from O1's
+recommendation. The shell is granted, because the boundary moved instead: an agent has
+everything inside the chamber and nothing outside it, so "cannot run the tests for code
+it just wrote" was a cost nobody had to pay. O1's own framing —
+"a shell jail can buy the capability back later" — is what the autoclave turned out to
+be. The measured consequence, on 2026-08-02: two *host* review seats returned "is any
+claim in a commit message false?" unanswered because they could not run `git log`, while
+the chamber seats that replaced them found four guard bypasses by executing the thing
+rather than reading it.
+
+Nothing above is amended in place — this record is evidence, and O1 recommending the
+opposite of what was built is part of what it has to show. `ARCHITECTURE.md`,
+`.claude/agents/README.md` and `operations/autoclave/README.md` are the current
+authorities on where an agent runs.

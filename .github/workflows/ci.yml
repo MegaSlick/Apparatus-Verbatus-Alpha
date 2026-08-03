@@ -79,7 +79,20 @@ jobs:
           stray_count=0
           while IFS= read -r -d '' entry; do
             [ -z "$entry" ] && continue
-            [ "$entry" = "cleanroom/README.md" ] && continue
+            # **The exemption is by path, so it is checked against the file too.**
+            # A pull request can track `cleanroom/README.md` as a symlink: the loop
+            # then saw only the exempt name, counted nothing, and the merge gate
+            # reported an empty bench while a link stood there for a later reader to
+            # follow. `-h` before `-f`, because `-f` follows the link and would call
+            # it a regular file. Found by CodeRabbit on pull request 15.
+            if [ "$entry" = "cleanroom/README.md" ]; then
+              if [ -h "$entry" ] || [ ! -f "$entry" ]; then
+                echo "cleanroom/README.md is a symlink or not a regular file." >&2
+                echo "The exemption is for the bench's own README, not a link." >&2
+                exit 1
+              fi
+              continue
+            fi
             stray_count=$((stray_count + 1))
           done < "$list"
           if [ "$stray_count" -ne 0 ]; then

@@ -34,9 +34,12 @@ this repository's tree: a design argument, a second opinion, a consult, or readi
 something outside the folder. Short results come back in its reply; a report that must
 outlive the agent belongs in a chamber, which can write one to `/out`.
 
-That is the boundary. A host reader cannot damage anything because it holds no tool that
-writes. A chamber agent cannot damage anything because nothing it touches is real until
-a human reads the diff.
+That is the boundary, and it is narrower than "cannot damage anything". A host reader
+cannot write, because it holds no tool that does. **A chamber agent cannot modify this
+machine's checkout** — nothing it writes is real until a human reads the diff. It can
+still spend vendor quota, read whatever is mounted, and reach the network, and no
+later review undoes any of those. Keep what a chamber is given bounded, and read the
+diff before it lands.
 
 **Whichever seat, tell it to read the governing documents from disk.** Every agent boots
 with a copy of `CLAUDE.md` injected by the harness, and that copy can be older than the
@@ -178,11 +181,16 @@ leaning on one.
   neither applies inside a chamber.**
 - **A chamber agent may orchestrate freely, and that is the point of the boundary
   rather than a hole in it.** It can spawn its own agents, fan out across its clone,
-  and spend as much as the job takes — because nothing it touches is real until a human
+  and spend as much as the job takes — because nothing it *writes* is real until a human
   reads the diff, and a clone it wrecks is destroyed and rebuilt in seconds. A session
   that hesitates to let a chamber agent orchestrate has misread what the container is
   for: the bounds above exist because a host agent runs on Tyrel's machine, and a
   chamber agent does not.
+
+  **What the container does not bound is spend, reading and egress.** Fanning out wide
+  consumes vendor quota that no review returns, the chamber can read everything mounted
+  into it, and the network is open because the CLIs need their provider. "As much as the
+  job takes" is a statement about the tree, not about the bill.
 
   Two things still hold in there, and neither is about caution. The chamber agent is
   the only integrator of its own work — a sub-agent's claim is evidence, not a finding.

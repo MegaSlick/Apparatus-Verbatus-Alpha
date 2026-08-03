@@ -100,9 +100,22 @@ Create that directory before dispatch.
 
 **A chamber seat writes its own report** to `/out/report.md`, which is a host path, so
 it survives the chamber and needs no capture script. Tell it to write there in the
-prompt; copy the file into the evidence directory when the pass is done, and ingress-scan
-it there like any other. Keep the chamber's dispatch log beside it — that is where the
-seat's reasoning is, and a Codex chamber streams it while a Claude chamber does not.
+prompt. Keep the chamber's dispatch log beside it — that is where the seat's reasoning
+is, and a Codex chamber streams it while a Claude chamber does not.
+
+**Collect that report with `safe_file.py`, never a plain `cp`:**
+
+```sh
+python3 operations/autoclave/safe_file.py read "$out_dir/report.md" > "$report_dir/<seat>.md"
+```
+
+`/out` is the one host path a running agent can write, so the slot is a name the agent
+controls. A `cp` follows a symlink left there and copies whatever it points at — an SSH
+key, `private/` — into the evidence directory, under a reviewer's name, where the next
+step ingress-scans it and a later reader trusts it. Testing the path first does not close
+it: the agent is still running between the test and the copy. The helper opens the path
+once with `O_NOFOLLOW` and refuses anything that is not a regular file. Ingress-scan the
+result where it lands, as with any other evidence.
 
 **A host seat still goes through `capture-seat-report.sh`**, never a bare `seat.sh`:
 

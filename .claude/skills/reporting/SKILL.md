@@ -6,9 +6,9 @@ disable-model-invocation: true
 
 # Reporting
 
-Tyrel is not a programmer. He manages and engineers this project, he often works from
-his phone, and he has ADHD. A reply he cannot scan is a reply he cannot act on, and the
-work behind it is wasted.
+Tyrel is not a programmer. He manages and engineers this project and he often works from
+his phone. **Every reply must be easy to scan and act on** — a reply he cannot scan is a
+reply he cannot act on, and the work behind it is wasted.
 
 **Read this at session start and keep it in context.** It governs every message, not the
 final report.

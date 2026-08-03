@@ -410,26 +410,44 @@ def tokenize(tail: str) -> list[str]:
         return tail.replace("'", " ").replace('"', " ").split()
 
 
+GIT_GLOBAL_WITH_VALUE = ("-c", "-C", "--config-env", "--git-dir", "--work-tree", "--namespace")
+
+
+def after_global_options(tokens: list[str]) -> list[str]:
+    """The tail from the subcommand onward, with git's global options skipped.
+
+    **Every check that asks "which subcommand is this?" has to come through here.**
+    Two did not, and one global option turned both of them off: `git -C . commit -n`
+    left `tokens[:1]` reading `["-C"]`, so the short `--no-verify` arm never ran, and
+    `git -C . config core.hooksPath /dev/null` returned early for the same reason.
+    Those are the backstops for the branch refusal, the credential scan and the
+    attribution check, and `-C .` is a spelling somebody types by habit rather than to
+    evade anything. Found by CodeRabbit on pull request 15 and reproduced before it was
+    believed; its own account named `-c` where the token is `-C`, which changes nothing
+    about the hole.
+    """
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return tokens[index + 1 :]
+        if token in GIT_GLOBAL_WITH_VALUE:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    return tokens[index:]
+
+
 def git_calls(command: str) -> list[tuple[str, list[str]]]:
     """Recognizable git calls as (subcommand, arguments), skipping global options."""
     calls: list[tuple[str, list[str]]] = []
     for tail in invocations(GIT, command):
-        tokens = tokenize(tail)
-        index = 0
-        while index < len(tokens):
-            token = tokens[index]
-            if token == "--":
-                index += 1
-                break
-            if token in ("-c", "-C", "--config-env", "--git-dir", "--work-tree", "--namespace"):
-                index += 2
-                continue
-            if token.startswith("-"):
-                index += 1
-                continue
-            break
-        if index < len(tokens):
-            calls.append((tokens[index].lower(), tokens[index + 1 :]))
+        rest = after_global_options(tokenize(tail))
+        if rest:
+            calls.append((rest[0].lower(), rest[1:]))
     return calls
 
 
@@ -782,9 +800,13 @@ def hooks_path_is_being_set(tokens: list[str]) -> bool:
                 return True
         if token.startswith(("-ccore.hookspath", "--config-env=core.hookspath")):
             return True
-    if tokens[:1] != ["config"]:
+    # Resolved through `after_global_options`, not read off the raw tail: `git -C .
+    # config core.hooksPath /dev/null` returned False here, because `tokens[:1]` was
+    # `["-C"]` and never `["config"]`.
+    subcommand = after_global_options(tokens)
+    if subcommand[:1] != ["config"]:
         return False
-    arguments = tokens[1:]
+    arguments = subcommand[1:]
     if _HOOKS_PATH_WRITE & set(arguments) and any(
         token.startswith("core.hookspath") for token in arguments
     ):
@@ -848,10 +870,16 @@ def switching_the_hooks_off(tool: str, tool_input: Any, payload: dict[str, Any])
         # Git accepts any unambiguous abbreviation, so `--no-ver` skips the hooks
         # exactly as `--no-verify` does. Matching the prefix is broad on purpose: this
         # refusal costs a session nothing it has a legitimate use for.
+        # The short spelling is read off the resolved subcommand, not the raw tail.
+        # `git -C . commit -n -m x` left `tokens[:1]` as `["-C"]`, so this arm never
+        # ran and the bundled `-n` went through. The long-option scan above reads every
+        # token and was never affected, which is what made the gap look closed.
+        subcommand = after_global_options(tokens)
         if any(
             token.startswith("--no-v") and "--no-verify".startswith(token) for token in tokens
         ) or (
-            tokens[:1] == ["commit"] and any(SAFE_COMMIT_BUNDLE.fullmatch(t) for t in tokens[1:])
+            subcommand[:1] == ["commit"]
+            and any(SAFE_COMMIT_BUNDLE.fullmatch(token) for token in subcommand[1:])
         ):
             return "deny", (
                 "`--no-verify` skips the hooks that refuse a commit on main, an "
@@ -875,7 +903,26 @@ GOVERNED_NAMES = frozenset(
         "data_contract.md",
     }
 )
-_GOVERNED_ALTERNATION = "|".join(sorted(re.escape(name) for name in GOVERNED_NAMES))
+
+# **`README.md` is governed at the project root and nowhere else.** CLAUDE.md says so in
+# as many words — "the root `README.md`" — and matching it by basename refused a spawned
+# agent every `operations/`, `cleanroom/` and `workbench/` README in the tree. Hard rule
+# 12 makes `operations/` agent-written, so that refusal contradicted the rule it sits
+# beside, and a denial is final within a session: the agent had no route forward. It is
+# the likeliest explanation for the denials logged inside a chamber on 2026-08-02, where
+# sub-agents were asked to update exactly those files. Found by CodeRabbit on pull
+# request 15.
+#
+# The other six names are unique in this repository, so a basename match is still right
+# for them. `.claude/` keeps matching at any depth.
+ROOT_ONLY_NAMES = frozenset({"readme.md"})
+_GOVERNED_ALTERNATION = "|".join(
+    sorted(re.escape(name) for name in GOVERNED_NAMES - ROOT_ONLY_NAMES)
+)
+# The root README in shell text: bare or `./`-prefixed, never after a path separator.
+# `/` is in the lookbehind class precisely so `operations/autoclave/README.md` cannot
+# begin a match at its final component.
+_ROOT_README = r"(?<![\w.\-/])(?:\./)?readme\.md"
 # A redirect or an in-place editor naming a governed document. Coarse on purpose: it only
 # ever judges an agent, where a false alarm costs one retry and a report, not a prompt.
 # `.claude/` at a path boundary, so the bare relative spelling counts as well as an
@@ -886,9 +933,10 @@ _GOVERNED_ALTERNATION = "|".join(sorted(re.escape(name) for name in GOVERNED_NAM
 _DOT_CLAUDE = r"(?<![\w.])\.claude/"
 GOVERNED_SHELL_WRITE = re.compile(
     rf"(?:(?:^|[^0-9<>&])>{{1,2}}\s*(?:\./)?(?:{_GOVERNED_ALTERNATION})\b)"
+    rf"|(?:(?:^|[^0-9<>&])>{{1,2}}\s*{_ROOT_README}\b)"
     rf"|(?:(?:^|[^0-9<>&])>{{1,2}}[^\n;&|]*{_DOT_CLAUDE})"
     rf"|(?:\b(?:tee|sed\s+-i|perl\s+-pi?|patch|truncate|cp|mv|install|dd)\b[^\n;&|]*"
-    rf"(?:{_GOVERNED_ALTERNATION}|{_DOT_CLAUDE}))",
+    rf"(?:{_GOVERNED_ALTERNATION}|{_ROOT_README}|{_DOT_CLAUDE}))",
     flags=re.IGNORECASE,
 )
 
@@ -928,7 +976,17 @@ def agent_editing_governance(tool: str, tool_input: Any, payload: dict[str, Any]
         target = written_path(tool_input, payload)
         if target is None:
             return None
-        if target.name.strip().lower() in GOVERNED_NAMES or "/.claude/" in f"{target}/":
+        name = target.name.strip().lower()
+        if "/.claude/" in f"{target}/":
+            return "deny", refusal
+        if name in ROOT_ONLY_NAMES:
+            # Governed at the project root and nowhere else. Compared against the
+            # resolved root rather than by string, so `./README.md` and an absolute
+            # spelling of the same file are one answer.
+            if target.parent.resolve() == project_root().resolve():
+                return "deny", refusal
+            return None
+        if name in GOVERNED_NAMES:
             return "deny", refusal
         return None
     if tool == "Bash" and GOVERNED_SHELL_WRITE.search(normalize(bash_command(tool_input))):

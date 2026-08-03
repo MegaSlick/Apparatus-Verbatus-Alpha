@@ -66,6 +66,15 @@ while IFS= read -r f; do
     # The canonical documents. The binding project specification; the harness
     # instruction files admitted below govern how sessions and agents work.
     README.md|GOALS.md|GOVERNANCE.md|ARCHITECTURE.md|GLOSSARY.md|CLAUDE.md|DATA_CONTRACT.md) ;;
+    # **The bounded drawers come first, because `case` takes the first match.** The
+    # generic rule below accepts `*/README.md` at any depth — `*` matches `/` in a
+    # shell case pattern — so it admitted `operations/autoclave/briefs/nested/README.md`
+    # before the one-level-deep rules further down could refuse it, and the same for
+    # `HANDOFF.md`. Those drawers are bounded on purpose: an unbounded one becomes a
+    # notes folder by another name. Found by CodeRabbit on pull request 15.
+    operations/autoclave/briefs/*/*) printf '%s\n' "$f"; stray=1 ;;
+    .claude/agents/*/*) printf '%s\n' "$f"; stray=1 ;;
+    .github/*/*) printf '%s\n' "$f"; stray=1 ;;
     # Every directory may explain itself; every stage declares what it writes.
     # Including at the root, which CLAUDE.md allows and a bare */ pattern misses.
     HANDOFF.md|*/README.md|*/HANDOFF.md) ;;

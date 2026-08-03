@@ -215,6 +215,44 @@ def test_document_allowlist_has_one_clear_boundary():
         assert path in result.stdout
 
 
+def test_a_bounded_drawer_is_not_reopened_by_the_generic_readme_rule():
+    """`case` takes the first match, and the generic rule used to be first.
+
+    `HANDOFF.md|*/README.md|*/HANDOFF.md` accepts those two names at *any* depth — `*`
+    matches `/` in a shell case pattern — so it admitted
+    `operations/autoclave/briefs/nested/README.md` before the one-level-deep rules
+    further down could refuse it. Three drawers are bounded on purpose, and under those
+    two filenames all three were not. Found by CodeRabbit on pull request 15.
+
+    Both filenames are tested because only `README.md` was reported, and `HANDOFF.md`
+    sits in the same alternation with the same defect.
+    """
+    reopened = [
+        "operations/autoclave/briefs/nested/README.md",
+        "operations/autoclave/briefs/nested/HANDOFF.md",
+        ".claude/agents/nested/README.md",
+        ".claude/agents/nested/HANDOFF.md",
+        ".github/nested/README.md",
+        ".github/nested/HANDOFF.md",
+    ]
+    for path in reopened:
+        result = command(["sh", str(HOOKS / "doc-allowlist.sh")], stdin=f"{path}\n")
+        assert result.returncode == 1, f"{path} was admitted into a bounded drawer"
+        assert path in result.stdout, path
+    # The positive control. Tightening the order must not refuse the one-level files
+    # those drawers exist to hold, nor an ordinary README anywhere else in the tree.
+    for path in (
+        "operations/autoclave/briefs/README.md",
+        "operations/autoclave/README.md",
+        "workbench/README.md",
+        ".claude/agents/README.md",
+        "HANDOFF.md",
+        "README.md",
+    ):
+        result = command(["sh", str(HOOKS / "doc-allowlist.sh")], stdin=f"{path}\n")
+        assert result.returncode == 0, f"{path} was refused: {result.stdout}"
+
+
 def make_document_repo(path):
     repo = init_repo(path)
     copy_hooks(repo, "check-documents.sh", "doc-allowlist.sh", "check_ingress.py")

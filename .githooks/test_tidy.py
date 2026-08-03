@@ -43,6 +43,11 @@ def load_tidy(tmp_path):
     # machine's chamber drawers, so their output would depend on whoever last ran a
     # dispatch here.
     mod.AUTOCLAVE = wb / "autoclave"
+    # The same reason, and it was the one drawer left pointing at the real tree: with
+    # `main()` now called directly by several tests, `QUARANTINE` was read out of this
+    # machine's own `workbench/quarantine`, so a test's result depended on what the
+    # last session happened to stage there. Found by CodeRabbit on pull request 15.
+    mod.QUARANTINE = wb / "quarantine"
     mod.MEMORY = tmp_path / "memory"
     for d in (
         mod.ACTIVE,
@@ -52,6 +57,7 @@ def load_tidy(tmp_path):
         mod.SCRATCH,
         mod.RAW,
         mod.AUTOCLAVE,
+        mod.QUARANTINE,
     ):
         d.mkdir(parents=True)
     return mod
