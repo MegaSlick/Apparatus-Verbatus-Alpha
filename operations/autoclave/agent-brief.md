@@ -72,6 +72,20 @@ rules and no need to hunt for one. The repository's own rules are separate and l
 - `/src` — the host repository, mounted **read-only**. Reference only. Writing
   here fails, and the failure is the mount, not a permission you can argue with.
 - `/out` — a scratch drawer shared with the host. This is how work leaves.
+- `/specs` — the design specs, **read-only** and frozen when this chamber was
+  made. `spec_NN_*.md` is the written source for any system you are asked to
+  build; the master plan and the notes beside it are not here, and the brief you
+  were given carries whatever else you need. They live outside git on the host,
+  which is why they arrive by their own mount rather than inside `/work`.
+- `/window` — **present only when this chamber was given one**, and it is the old
+  repository, mounted read-only. It is *reference*, and the rule on it is
+  absolute: **no byte of it enters your branch.** Read it to understand what an
+  old system did, then write the replacement new and justify it against the
+  governing documents. Copying, adapting line by line, or reproducing a file from
+  it with the names changed are all the same act and all refused — CLAUDE.md,
+  Quarantine. If you cannot justify a line you wrote, delete it. Say in your
+  report what you read there and what you took from it in *understanding*, so the
+  operator reading your diff knows where to look hardest.
 
 Everything else in this filesystem is the container's and vanishes when it does,
 with one exception you should know about. If your vendor has been signed in,

@@ -539,6 +539,48 @@ cmd_new() {
     # at `docker run` with "read-only file system" — which is every fresh clone,
     # since all three are gitignored. Verified: exit 125 before this line existed.
     mkdir -p "${REPO_ROOT}/private" "${REPO_ROOT}/workbench" "${REPO_ROOT}/scriptorium"
+
+    # **A chamber could not read the spec it was being asked to build from.** The
+    # specs live in `workbench/design/`, inside the drawer masked immediately above,
+    # and they are gitignored — so they were absent from `/src` twice over and a brief
+    # had to carry a whole spec as prose. That is why `workbench/design` reaches the
+    # chamber here as its own mount rather than by unmasking the drawer: the masking
+    # rule's stated subject is handoffs, notes, ledgers and reviewer transcripts, and
+    # none of those moves. The specs are the one thing in there an agent is *supposed*
+    # to build from.
+    #
+    # A frozen copy, for the same reason `/src` is a snapshot: a session that repairs
+    # a spec while a chamber is reading it would otherwise change the tree underneath
+    # the agent. Copied at `new`, read-only inside, removed by `rm`.
+    specs_stage="${REPO_ROOT}/workbench/autoclave/.specs/${task}"
+    rm -rf "$specs_stage"
+    mkdir -p "$specs_stage"
+    if [ -d "${REPO_ROOT}/workbench/design" ]; then
+        cp -R "${REPO_ROOT}/workbench/design/." "${specs_stage}/" ||
+            die "could not stage workbench/design for the chamber"
+    fi
+
+    # **The window onto the old code, and it is deliberately opt-in.** CLAUDE.md's
+    # Quarantine section says the old repository is "read where it lies, through the
+    # window" — mounting it read-only is that window, and nothing else here provides
+    # one. It is off unless `AUTOCLAVE_WINDOW` names a directory, because a chamber
+    # that can read old code is a chamber that can copy old bytes into its branch, and
+    # the only control on that is the operator reading the diff. A default-on window
+    # would make that risk invisible; naming it per chamber keeps it a decision.
+    window_mount=""
+    if [ -n "${AUTOCLAVE_WINDOW:-}" ]; then
+        case "$AUTOCLAVE_WINDOW" in
+            /*) : ;;
+            *) die "AUTOCLAVE_WINDOW must be an absolute path, not '${AUTOCLAVE_WINDOW}'" ;;
+        esac
+        case "$AUTOCLAVE_WINDOW" in
+            *[[:space:]]*) die "AUTOCLAVE_WINDOW must not contain whitespace — this script splits the flag list on it" ;;
+        esac
+        [ -d "$AUTOCLAVE_WINDOW" ] ||
+            die "AUTOCLAVE_WINDOW names '${AUTOCLAVE_WINDOW}', which is not a directory"
+        window_mount="--volume ${AUTOCLAVE_WINDOW}:/window:ro"
+        note "window open: ${AUTOCLAVE_WINDOW} is readable at /window. No byte of it may enter a branch."
+    fi
     #
     # Word splitting on $auth_mounts is the point: it is a flag list this script
     # built from two fixed constants, never from user input.
@@ -554,7 +596,8 @@ cmd_new() {
         --tmpfs /src/workbench:ro,size=4k \
         --tmpfs /src/scriptorium:ro,size=4k \
         --volume "${outdir}:/out" \
-        $auth_mounts \
+        --volume "${specs_stage}:/specs:ro" \
+        $auth_mounts $window_mount \
         --workdir /work \
         "$IMAGE" \
         sleep infinity >/dev/null || {
@@ -562,6 +605,7 @@ cmd_new() {
         # refuses a task with no container, so nothing else would ever delete it.
         [ -n "$snapshot_ref" ] &&
             git -C "$REPO_ROOT" update-ref -d "$snapshot_ref" 2>/dev/null
+        rm -rf "$specs_stage"
         die "docker run failed — no chamber was created${snapshot_ref:+, and the snapshot ref was removed}"
     }
 
@@ -1140,6 +1184,9 @@ cmd_rm() {
         git -C "$REPO_ROOT" update-ref -d "refs/heads/autoclave/snapshot-${task}"
         note "snapshot ref for '${task}' removed"
     fi
+    # The staged specs are a copy of files that still exist on this machine, so
+    # removing them loses nothing — unlike the output drawer below.
+    rm -rf "${REPO_ROOT}/workbench/autoclave/.specs/${task}"
     # The output drawer is deliberately kept. Nothing is lost silently, and the
     # bundle is the only surviving evidence that the dispatch happened.
     note "chamber '${task}' destroyed. Output kept at $(outdir_of "$task")"
