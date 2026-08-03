@@ -438,13 +438,19 @@ class TestDispatch:
         assert result.returncode != 0
         assert "claude" in result.stderr and "codex" in result.stderr
 
-    def test_the_brief_travels_as_a_file_never_as_an_argument(self):
-        """A brief is prose a session wrote. Interpolated into a command line its
-        punctuation becomes executable, so it is copied into the chamber's drawer
-        and read there with `cat`."""
-        source = SCRIPT.read_text()
-        assert "cat /out/brief.md" in source
-        assert "brief.md" in source
+    def test_the_brief_is_the_cli_s_standard_input_never_an_argument(self):
+        """A brief is prose a session wrote, and it never becomes argv anywhere.
+
+        It used to be `"$(cat /out/brief.md)"` inside the container. Quoted, so its
+        punctuation was inert — which is what made that safe and is all it ever
+        established. Three things were still true: a brief past `MAX_ARG_STRLEN`
+        (128 KiB) fails the exec outright, command substitution eats every trailing
+        newline, and the whole brief sits in the container's process list. Both CLIs
+        document the file form and both were run to confirm it.
+        """
+        joined = " ".join(code_lines()).replace("\\ ", " ")
+        assert joined.count("< /out/brief.md") == 2, "one vendor is not reading the file"
+        assert "$(cat /out/brief.md)" not in joined, "the brief is expanded into an argument"
 
     def test_permission_skipping_is_confined_to_the_chamber(self):
         """`--dangerously-skip-permissions` is correct inside a container and
@@ -509,25 +515,27 @@ class TestDispatch:
         assert joined.count('-e AC_MODEL="$model" -e AC_EFFORT="$effort"') == 2
 
     def test_the_codex_prompt_is_behind_an_end_of_options_marker(self):
-        """A brief beginning with a dash must be read as the prompt, not as an
-        unknown option. `seat.sh` does the same."""
-        joined = " ".join(code_lines())
-        assert '-- "$(cat /out/brief.md)"' in joined
+        """`--` so a prompt beginning with a dash is a prompt, `-` because that is
+        how `codex exec` spells "read the instructions from stdin"."""
+        joined = " ".join(code_lines()).replace("\\ ", " ")
+        assert "-- - < /out/brief.md" in joined
 
-    def test_codex_stdin_is_closed(self):
+    def test_codex_gets_a_finite_stdin(self):
         """`codex exec` waits forever on an open stdin when nothing is attached,
         which inside a detached container is a dispatch that never returns and
-        never says why. A known trap, recorded in this project's own notes.
+        never says why. A known trap, recorded in this project's own notes. A
+        regular file gives the prompt and then an immediate EOF, which is the
+        property `< /dev/null` used to supply.
 
         Continuations are joined before looking, because the invariant is that the
-        *invocation* closes stdin and not that it fits on one physical line. Written
+        *invocation* bounds stdin and not that it fits on one physical line. Written
         the other way, this failed the moment a `--model` argument was added and the
         command wrapped — a test reporting a formatting change as a safety defect.
         """
         joined = " ".join(code_lines()).replace("\\ ", " ")
         carrying = [part for part in joined.split(";") if "codex exec" in part]
         assert len(carrying) == 1, f"expected one runnable use, found {len(carrying)}"
-        assert "< /dev/null" in carrying[0]
+        assert "< /out/brief.md" in carrying[0], "codex is handed an unbounded stdin"
 
 
 def test_doctor_reports_sign_in_state_for_both_vendors():
@@ -535,6 +543,128 @@ def test_doctor_reports_sign_in_state_for_both_vendors():
     assert result.returncode == 0
     assert "auth claude" in result.stdout
     assert "auth codex" in result.stdout
+
+
+class TestTheUntrustedDrawer:
+    """`/out` is the one host path a chamber agent can write, both ways.
+
+    What the launcher reads back from it is untrusted input; what it writes into it
+    goes to a name the agent controls. Testing a path and then acting on it leaves a
+    window the agent is running inside, so the acting has to be what checks.
+    """
+
+    def drawer(self, tmp_path, task="some-task"):
+        script = elsewhere(tmp_path)
+        slot = tmp_path / "workbench" / "autoclave" / task
+        slot.mkdir(parents=True)
+        return script, slot
+
+    def test_a_report_that_is_a_symlink_is_refused_and_never_printed(self, tmp_path):
+        """Asserting the exit status alone would pass for a command that printed the
+        file and then failed, which is the whole of the damage."""
+        script, slot = self.drawer(tmp_path)
+        secret = tmp_path / "not-for-you.txt"
+        secret.write_text("SENTINEL-CONTENTS\n")
+        (slot / "report.md").symlink_to(secret)
+
+        result = run("report", "some-task", script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "SENTINEL-CONTENTS" not in result.stdout
+        assert "SENTINEL-CONTENTS" not in result.stderr, "the refusal quoted what it withheld"
+
+    @pytest.mark.parametrize("shape", ["directory", "fifo"])
+    def test_a_report_that_is_not_a_regular_file_is_refused(self, tmp_path, shape):
+        """A FIFO is the interesting one: opened for reading it blocks until somebody
+        writes, so an agent could hang the session without pointing anywhere."""
+        script, slot = self.drawer(tmp_path)
+        if shape == "directory":
+            (slot / "report.md").mkdir()
+        else:
+            os.mkfifo(slot / "report.md")
+
+        result = subprocess.run(
+            ["sh", str(script), "report", "some-task"],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            timeout=20,
+        )
+        assert result.returncode != 0
+
+    def test_an_ordinary_report_is_still_printed(self, tmp_path):
+        """The refusals must not have cost the command its only job."""
+        script, slot = self.drawer(tmp_path)
+        (slot / "report.md").write_text("what the agent said\n")
+        result = run("report", "some-task", script=script, cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert "what the agent said" in result.stdout
+
+    def test_a_brief_is_not_written_through_a_link_left_in_the_slot(self, tmp_path):
+        script, slot = self.drawer(tmp_path, task="task-x")
+        victim = tmp_path / "keep-me.txt"
+        victim.write_text("ORIGINAL\n")
+        (slot / "brief.md").symlink_to(victim)
+        brief = tmp_path / "brief-source.md"
+        brief.write_text("bounded task\n")
+        env, _log = fake_docker(tmp_path)
+        env.update({"FAKE_CONTAINER_EXISTS": "1", "FAKE_AUTH_VALID": "1"})
+
+        result = run(
+            "dispatch",
+            "task-x",
+            "codex",
+            str(brief),
+            "gpt-5.6-luna",
+            "low",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+
+        assert result.returncode != 0
+        assert victim.read_text() == "ORIGINAL\n", "the brief was written through the link"
+
+    def test_the_helper_refuses_a_link_and_leaves_its_target_alone(self, tmp_path):
+        """Directly, because the launcher's own `[ -L ]` test would mask it.
+
+        That test says what is wrong in a sentence and is worth keeping; it is not
+        what makes this safe, and a test that only ever reaches it would not notice
+        the helper being removed.
+        """
+        source = tmp_path / "source"
+        source.write_text("new bytes")
+        victim = tmp_path / "victim"
+        victim.write_text("keep")
+        slot = tmp_path / "slot"
+        slot.symlink_to(victim)
+
+        write = subprocess.run(
+            ["python3", str(SAFE_FILE), "write", str(source), str(slot)],
+            capture_output=True,
+            text=True,
+        )
+        read = subprocess.run(
+            ["python3", str(SAFE_FILE), "read", str(slot)], capture_output=True, text=True
+        )
+
+        assert write.returncode != 0 and read.returncode != 0
+        assert read.stdout == ""
+        assert victim.read_text() == "keep"
+        assert "keep" not in write.stderr + read.stderr
+
+    def test_the_helper_moves_ordinary_bytes(self, tmp_path):
+        """The positive control for the two refusals above."""
+        source = tmp_path / "source"
+        source.write_text("bounded task\n")
+        destination = tmp_path / "destination"
+        write = subprocess.run(
+            ["python3", str(SAFE_FILE), "write", str(source), str(destination)],
+            capture_output=True,
+            text=True,
+        )
+        assert write.returncode == 0, write.stderr
+        assert destination.read_text() == "bounded task\n"
 
 
 class TestMakingAChamber:

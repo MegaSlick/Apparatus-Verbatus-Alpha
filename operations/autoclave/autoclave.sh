@@ -41,6 +41,10 @@ PREFIX="verbatus-ac"
 # so every command works from anywhere.
 REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 
+# The one thing in `/out` that a POSIX shell cannot do for itself: open a path once,
+# refusing to follow a symlink at the end of it. See the file's own header.
+SAFE_FILE="${REPO_ROOT}/operations/autoclave/safe_file.py"
+
 # Output lives in the gitignored workbench: it is a note, not a document, and it
 # must never appear in `git status`. One drawer per task, kept after the chamber
 # is destroyed — the bundle is the evidence that a dispatch happened.
@@ -648,11 +652,20 @@ cmd_dispatch() {
     # The brief travels as a file through the scratch drawer, never as a shell
     # argument. A brief is prose written by a session; interpolating it into a
     # command line makes its punctuation executable.
-    # Same reason as `report`: an agent that replaces brief.md with a symlink turns
-    # this `cp` into a write through it, onto any file this user can write.
+    #
+    # `/out` is a host directory the running agent can write, and an agent that
+    # replaces `brief.md` with a symlink turns a `cp` into a write through it, onto any
+    # file this user can write. Testing the slot and then copying into it does not fix
+    # that: the agent is running while both happen and can swap the path in between,
+    # so the test passes and the thing it tested is not what was written to. The helper
+    # opens the destination once with `O_NOFOLLOW` and writes through that descriptor,
+    # which closes the link and the race together, and refuses a directory or a FIFO on
+    # the way. The `[ -L ]` test stays in front of it because it says what is wrong in
+    # a sentence, where the helper says only that it refused.
     brief_in="$(outdir_of "$task")/brief.md"
     [ -L "$brief_in" ] && die "brief slot ${brief_in} is a symlink — refusing to write through it"
-    cp "$brief" "$brief_in"
+    python3 "$SAFE_FILE" write "$brief" "$brief_in" ||
+        die "brief slot ${brief_in} is not a safe regular file — refusing to write to it"
 
     note "dispatching ${vendor} into '${task}'"
     note "  brief:  $(outdir_of "$task")/brief.md"
@@ -663,6 +676,19 @@ cmd_dispatch() {
     # Model and effort reach the container as environment variables, for the same
     # reason the brief travels as a file: a value interpolated into a quoted command
     # line brings its punctuation with it.
+    #
+    # **The brief is each CLI's standard input, not an argument.** It used to be
+    # `"$(cat /out/brief.md)"` — quoted, so its punctuation was inert, which is what
+    # made the arrangement safe and is all the old claim ever established. Three things
+    # were still true of it: a brief over `MAX_ARG_STRLEN` (128 KiB on Linux) fails the
+    # exec outright, command substitution strips every trailing newline, and the whole
+    # brief is visible in the container's process list to anything else running there.
+    # Both CLIs document the file form and both were run to confirm it: `claude -p`
+    # with no prompt argument reads stdin ("Input must be provided either through stdin
+    # or as a prompt argument" is its own error when neither is given), and `codex
+    # exec`'s help says a prompt of `-` means the instructions are read from stdin.
+    # A regular file also gives an immediate EOF, which is what `< /dev/null` was for:
+    # `codex exec` waits forever on an open stdin with nothing attached.
     #
     # The two vendors spell effort differently and neither spelling is guessable.
     # `claude` takes `--effort <level>`. `codex exec` has no effort flag at all — it
@@ -681,12 +707,14 @@ cmd_dispatch() {
                 claude --dangerously-skip-permissions \
                     --model "$AC_MODEL" \
                     --effort "$AC_EFFORT" \
-                    -p "$(cat /out/brief.md)"
+                    -p < /out/brief.md
             ' ;;
         codex)
-            # stdin is closed deliberately. `codex exec` waits forever on an open
-            # stdin when nothing is attached, which in a detached container means
-            # a dispatch that never returns and never says why.
+            # stdin is a finite regular file, which is what the old `< /dev/null`
+            # protected against: `codex exec` waits forever on an open stdin when
+            # nothing is attached, and inside a detached container that is a dispatch
+            # that never returns and never says why. A file gives the prompt and then
+            # an immediate EOF.
             #
             # `--dangerously-bypass-approvals-and-sandbox` is the exact counterpart of
             # the Claude flag above, and its own help text says where it belongs:
@@ -701,7 +729,8 @@ cmd_dispatch() {
             # this whole arrangement rests on to restore a second one inside it.
             #
             # `--` before the prompt so a brief beginning with a dash is read as the
-            # prompt rather than as an unknown option.
+            # prompt rather than as an unknown option, and `-` as the prompt because
+            # that is how `codex exec` spells "read the instructions from stdin".
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
                 "$(container_of "$task")" sh -c '
                 cd /work
@@ -709,7 +738,7 @@ cmd_dispatch() {
                     --dangerously-bypass-approvals-and-sandbox \
                     -m "$AC_MODEL" \
                     -c "model_reasoning_effort=$AC_EFFORT" \
-                    -- "$(cat /out/brief.md)" < /dev/null
+                    -- - < /out/brief.md
             ' ;;
     esac
 
@@ -771,9 +800,16 @@ cmd_report() {
     # read — an SSH key, `private/` — and prints it straight into the session. `[ -e ]`
     # follows links, so `[ -L ]` is tested first and separately; the same guard
     # `capture-seat-report.sh` already carries, which is where this was found missing.
+    #
+    # The test above and a `cat` below are two operations on a path a running agent
+    # can change in between, and the agent is running: it can pass the test as a file
+    # and be read as a link. What closes that is opening the path once, with the kernel
+    # refusing to follow a final symlink, and reading through *that* descriptor. See
+    # `safe_file.py`. The shell tests stay because they say what is wrong; the helper
+    # says no whatever happens.
     [ -L "$report" ] && die "report at ${report} is a symlink — refusing to read through it"
     [ -f "$report" ] || die "no report at ${report}"
-    cat "$report"
+    python3 "$SAFE_FILE" read "$report" || die "no safe regular report at ${report}"
 }
 
 cmd_list() {
