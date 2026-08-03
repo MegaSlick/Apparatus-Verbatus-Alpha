@@ -37,6 +37,15 @@ EXIT_COMPLETE = 0
 EXIT_FATAL = 2
 EXIT_HELD = 3
 
+# The witness outcomes that mean a seat actually served, and therefore that a
+# serving receipt exists for the reading. Named once, here, because both halves
+# of the handoff need it and they must not drift: the Attestatores decides
+# whether to write a receipt, and the Perlector decides whether to demand one.
+# A producer and a consumer disagreeing about this set would refuse a record
+# that is in fact correct — `dead` and `not-run` are unresolved or unattempted,
+# and inventing a serving moment for either would be a receipt for nothing.
+ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
+
 
 class StageSeatProtocol(SeatProtocol, Protocol):
     """The small additional config surface a calling stage needs.

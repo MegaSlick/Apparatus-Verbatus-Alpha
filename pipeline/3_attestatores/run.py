@@ -31,6 +31,7 @@ from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
 from common.seats.models import AbsentSeat, SeatIdentity  # noqa: E402
 from common.seats.registry import SeatRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
+    ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     expected_acts,
     fixture_serving_details,
@@ -207,26 +208,23 @@ def main(registry_factory=SeatRegistry.from_toml) -> int:
                 # An explicitly absent witness remains in the run roster and
                 # therefore receives a visible outcome. Fixture testimony never
                 # turns an absent seat into a different configured model.
-                outcome, payload, attempted = (
-                    "not-run",
-                    {"reason": f"seat is explicitly absent: {resolved.reason}"},
-                    False,
-                )
+                outcome = "not-run"
+                payload = {"reason": f"seat is explicitly absent: {resolved.reason}"}
             elif failed:
                 outcome, payload = "failed", {"reason": "the seat returned no usable report"}
-                attempted = True
             elif reported is None:
                 # Configured, nothing declared for it: not-run, which is an
                 # unresolved unit and forces the run visibly partial. It is not
                 # an empty reading and must never be counted as one.
-                outcome, payload, attempted = (
-                    "not-run",
-                    {"reason": "no attempt was made for this seat"},
-                    False,
-                )
+                outcome, payload = "not-run", {"reason": "no attempt was made for this seat"}
             else:
                 outcome, payload = "read", {"reported": reported}
-                attempted = True
+
+            # Derived from the outcome, never set beside it: the Perlector reads
+            # the same set to decide whether a testimonium must carry a receipt,
+            # and a producer and a consumer disagreeing about which outcomes mean
+            # "a seat actually served" is a refusal nobody could act on.
+            attempted = outcome in ATTEMPTED_WITNESS_OUTCOMES
 
             context.publish(
                 kind="testimonium",

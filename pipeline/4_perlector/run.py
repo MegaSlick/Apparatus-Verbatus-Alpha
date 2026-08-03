@@ -38,6 +38,7 @@ from common.imaging import dimensions  # noqa: E402
 from common.seats.models import AbsentSeat, SeatIdentity  # noqa: E402
 from common.seats.registry import SeatRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
+    ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     expected_acts,
     fixture_serving_details,
@@ -65,7 +66,7 @@ def testimonia_of(context, act_id: str) -> list[dict]:
                 context,
                 record["payload"]["provenance"],
                 producer_stage=ATTESTATORES,
-                require_receipt=record["outcome"] in {"read", "genuinely-empty", "failed"},
+                require_receipt=record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES,
             )
             records.append(record)
     return sorted(records, key=lambda record: record["payload"]["seat"])

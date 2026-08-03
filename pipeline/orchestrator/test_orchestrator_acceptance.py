@@ -186,9 +186,9 @@ def test_the_run_used_no_network_and_no_model(happy_run):
     assert all(revision.startswith("fake-") for revision in recipes.values())
     # Every configured seat is a local-repository fixture: nothing here can have
     # reached Hugging Face, because no live seat names a repo at all.
-    assert {
-        seat.source for seat in config.seats.values() if isinstance(seat, SeatIdentity)
-    } == {"local-repository"}
+    assert {seat.source for seat in config.seats.values() if isinstance(seat, SeatIdentity)} == {
+        "local-repository"
+    }
 
 
 def test_the_config_digest_still_binds_the_scenario_as_well_as_the_seats(happy_run):
