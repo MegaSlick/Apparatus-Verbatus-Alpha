@@ -28,6 +28,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "operations" / "autoclave" / "autoclave.sh"
 SAFE_FILE = ROOT / "operations" / "autoclave" / "safe_file.py"
+BRIEF = ROOT / "operations" / "autoclave" / "agent-brief.md"
 
 
 def run(*args, cwd=None, env=None, script=SCRIPT):
@@ -67,6 +68,10 @@ def elsewhere(tmp_path):
     shutil.copy2(SCRIPT, copy)
     if SAFE_FILE.is_file():
         shutil.copy2(SAFE_FILE, directory / SAFE_FILE.name)
+    # `new` compares this file against what the image carries, so a throwaway
+    # repository without it would fail every chamber creation for the wrong reason.
+    if BRIEF.is_file():
+        shutil.copy2(BRIEF, directory / BRIEF.name)
     subprocess.run(["git", "init", "--quiet", "-b", "work/test", str(tmp_path)], check=True)
     # An identity in the repository's own config rather than on a command line: `new`
     # writes its snapshot with `git commit-tree`, which needs one and is not this
@@ -173,6 +178,14 @@ if args[:1] == ["inspect"]:
 if args[:1] == ["run"]:
     if "--detach" in args:
         raise SystemExit(int(setting("FAKE_RUN_STATUS", "0")))
+    if args[-2:] == ["cat", "/CLAUDE.md"]:
+        # `new` reads the brief back out of the image to check it is not older than
+        # the checkout. FAKE_IMAGE_BRIEF is what the image is pretending to carry.
+        baked = setting("FAKE_IMAGE_BRIEF")
+        if baked and os.path.exists(baked):
+            sys.stdout.write(open(baked).read())
+            raise SystemExit(0)
+        raise SystemExit(1)
     if vendor_status(args[-1]):
         answer_vendor_status()
     raise SystemExit(int(setting("FAKE_LOGIN_STATUS", "0")))
@@ -226,8 +239,13 @@ def fake_docker(tmp_path):
         stub.write_text(f"#!/bin/sh\nprintf '%s\\n' {vendor} >> '{host_vendor_log}'\nexit 99\n")
         stub.chmod(0o755)
     log = tmp_path / "docker.jsonl"
+    # What the stub says the image's baked brief is. Defaults to the same file the
+    # launcher will compare it against, so the staleness check passes everywhere
+    # except in the one test that deliberately makes them differ.
+    staged_brief = tmp_path / "operations" / "autoclave" / BRIEF.name
     return {
         "PATH": f"{bindir}:{os.environ['PATH']}",
+        "FAKE_IMAGE_BRIEF": str(staged_brief if staged_brief.is_file() else BRIEF),
         "FAKE_DOCKER_LOG": str(log),
         "FAKE_HOST_VENDOR_LOG": str(host_vendor_log),
         "FAKE_SETUP_SCRIPT": str(tmp_path / "setup.sh"),
@@ -1254,7 +1272,16 @@ class TestMakingAChamber:
         command that deletes that ref could not be reached to do it.
         """
         script = self.dirty_repo(tmp_path)
-        result = run("new", "some-task", script=script, cwd=tmp_path)
+        # The dead engine is staged rather than inherited. Written without this, the
+        # test asserted that the host running it had no Docker: it passed in CI and in
+        # a chamber and failed on the machine the autoclave was built for.
+        bindir = tmp_path / "no-engine"
+        bindir.mkdir()
+        dead = bindir / "docker"
+        dead.write_text("#!/bin/sh\nexit 1\n")
+        dead.chmod(0o755)
+        env = {"PATH": f"{bindir}:{os.environ['PATH']}"}
+        result = run("new", "some-task", env=env, script=script, cwd=tmp_path)
         assert result.returncode != 0, "new succeeded on a machine with no engine"
         assert "docker" in result.stderr.lower(), result.stderr
         ref = subprocess.run(
@@ -1294,6 +1321,36 @@ class TestMakingAChamber:
         )
         assert ref.returncode != 0
 
+    def test_a_stale_baked_brief_refuses_the_chamber(self, tmp_path):
+        """An edit to `agent-brief.md` does nothing at all until the image is rebuilt.
+
+        It happened on 2026-08-02: the brief was edited and a chamber created in the
+        same session ran the previous one, and the only symptom was an agent behaving
+        as though the new paragraph had never been written — indistinguishable from an
+        agent that read it and ignored it. Nothing can correct it at run time either,
+        because all three copies sit at root-owned paths and the container runs as a
+        non-root user.
+        """
+        script = self.dirty_repo(tmp_path)
+        env, _log = fake_docker(tmp_path)
+        older = tmp_path / "older-brief.md"
+        older.write_text("# You are in the autoclave\n\nAn earlier edition.\n")
+        env["FAKE_IMAGE_BRIEF"] = str(older)
+        result = run("new", "some-task", env=env, script=script, cwd=tmp_path)
+        assert result.returncode != 0, "a chamber was built on a stale brief"
+        assert "agent-brief.md" in result.stderr, result.stderr
+        assert "build" in result.stderr, result.stderr
+
+    def test_a_matching_baked_brief_lets_the_chamber_through(self, tmp_path):
+        """The positive control. Without it the test above passes on any failure."""
+        script = self.dirty_repo(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_SETUP_STATUS"] = "0"
+        env["FAKE_EXEC_STATUS"] = "0"
+        result = run("new", "some-task", env=env, script=script, cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert any("--detach" in call for call in docker_calls(log)), "no chamber created"
+
     def test_the_snapshot_carries_the_whole_working_tree_and_touches_no_index(self, tmp_path):
         """Staged, unstaged, deleted and untracked, and nothing that is ignored.
 
@@ -1331,6 +1388,29 @@ class TestMakingAChamber:
         assert not any("git add -A" in line for line in code_lines()), (
             "the bulk staging command CLAUDE.md forbids is back in the launcher"
         )
+
+    def test_the_captured_path_count_is_the_one_the_operator_reads(self, tmp_path):
+        """It said `0 path(s)` directly under "the working tree is not clean".
+
+        The count was taken after `base_sha` had already been moved onto the snapshot,
+        so it diffed the working tree against a commit of that same working tree and
+        found nothing every time. A number that is always zero beside a line saying
+        something was captured is worse than no number at all.
+
+        A floor rather than an exact figure: the stub's own scratch files land in this
+        throwaway repository untracked and are legitimately part of the count, so
+        pinning an exact number would pin the test to the stub's file list.
+        """
+        script = self.dirty_repo(tmp_path)
+        env, _log = fake_docker(tmp_path)
+
+        result = run("new", "counted-case", env=env, script=script, cwd=tmp_path)
+
+        assert "working tree is not clean" in result.stdout, result.stdout
+        counted = int(result.stdout.split("path(s) beyond")[0].rsplit(None, 1)[-1])
+        # Three tracked — staged, unstaged, deleted — and one untracked, at least.
+        assert counted >= 4, f"counted {counted} of the four paths this repository has"
+        assert result.returncode != 0, "the stubbed setup should have stopped new"
 
     def test_the_setup_script_is_not_expanded_on_the_host(self, tmp_path):
         """It crosses as stdin under a quoted here-document, values as environment.
@@ -1429,12 +1509,23 @@ class TestSignInIsAsked:
         assert result.stdout.count("signed in (") == 2
         assert "not signed in" not in result.stdout
 
-    def test_doctor_says_unknown_rather_than_guessing_without_an_engine(self):
+    def test_doctor_says_unknown_rather_than_guessing_without_an_engine(self, tmp_path):
         """`doctor` is the first thing anyone runs and must answer on a bare machine.
 
         With nothing to ask, the honest answer is neither yes nor no.
+
+        The absent engine is **staged**, not inherited from whatever machine this runs
+        on. Written as a bare `run("doctor")` it asserted that *this* host had no
+        engine, so it passed in CI and in a chamber and failed on the one machine the
+        autoclave exists for — the machine where Colima is up.
         """
-        result = run("doctor")
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        dead = bindir / "docker"
+        dead.write_text("#!/bin/sh\nexit 1\n")
+        dead.chmod(0o755)
+        env = {"PATH": f"{bindir}:{os.environ['PATH']}"}
+        result = run("doctor", env=env)
         assert result.returncode == 0
         assert result.stdout.count("unknown") == 2, result.stdout
 

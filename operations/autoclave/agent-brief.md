@@ -4,6 +4,14 @@ This is a container, not Tyrel's machine. Read this before you decide anything
 about how to work, because several habits that are right on the host are wrong
 in here, and one of them will waste your whole run.
 
+**Your dispatch is the opt-in, and there is no session to ask.** If your brief says
+`ultracode`, or asks you to fan out, that *is* the explicit permission this repository's
+rules ask for — a session wrote it, deliberately, before sending you in. Nobody is
+watching this run and there is no one to confirm with, so waiting for confirmation means
+never orchestrating at all. A seat deadlocked itself exactly that way on 2026-08-02: it
+held both the `Agent` and `Workflow` tools, was told to use them, and declined because it
+wanted an in-session confirmation that could not exist.
+
 **You may spawn your own agents, and you should when the job is large.** The clone you
 are working in carries this repository's rules about agents, and some of those are
 about agents running on Tyrel's machine — the spawn-depth cap and "`Agent` is denied to

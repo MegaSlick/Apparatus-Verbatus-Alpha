@@ -104,7 +104,14 @@ cmd_doctor() {
     printf 'colima:      '
     if command -v colima >/dev/null 2>&1; then colima version 2>&1 | head -1; else echo "not installed"; fi
     printf 'docker CLI:  '
-    if command -v docker >/dev/null 2>&1; then docker --version; else echo "not installed"; fi
+    # `|| echo` because `set -e` applies here too: a docker CLI that is installed but
+    # cannot report a version killed `doctor` at this line, on exactly the broken
+    # machine the command exists to describe. It answers about the rest instead.
+    if command -v docker >/dev/null 2>&1; then
+        docker --version 2>/dev/null || echo "installed, but it will not report a version"
+    else
+        echo "not installed"
+    fi
     printf 'engine:      '
     if docker info >/dev/null 2>&1; then echo "responding"; else echo "not responding"; fi
     printf 'image:       '
@@ -379,6 +386,23 @@ cmd_new() {
     docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
     exists "$task" && die "chamber '$task' already exists — use 'rm $task' first"
 
+    # **The brief is baked into the image, so editing it does nothing until a
+    # rebuild.** On 2026-08-02 `agent-brief.md` was edited and a chamber created in the
+    # same session ran the *old* brief; the only symptom was an agent behaving as
+    # though the new paragraph had never been written, which is indistinguishable from
+    # an agent ignoring it. Nothing can be corrected at run time either: all three
+    # copies sit at root-owned paths and the container runs as a non-root user.
+    #
+    # Refused rather than warned. A warning on a command whose next step is a dispatch
+    # that may run for an hour is a warning nobody reads in time, and the fix is one
+    # command. Compared by content, not by timestamp — a fresh checkout sets every
+    # mtime to now, so a time comparison would refuse every chamber on a new clone.
+    image_brief=$(docker run --rm "$IMAGE" cat /CLAUDE.md 2>/dev/null) ||
+        die "the image carries no chamber brief at /CLAUDE.md — rebuild it: $0 build"
+    if [ "$image_brief" != "$(cat "${REPO_ROOT}/operations/autoclave/agent-brief.md")" ]; then
+        die "the image's chamber brief is not this checkout's operations/autoclave/agent-brief.md. Any chamber made now would run the older one. Rebuild: $0 build"
+    fi
+
     # **A named vendor whose sign-in is not real is refused here.** It used to be
     # tolerated: the mount was skipped and the chamber was still labelled for that
     # vendor, so `new x claude` before `login claude` built a chamber that *said* it
@@ -464,15 +488,21 @@ cmd_new() {
             snapshot_ref="refs/heads/autoclave/snapshot-${task}"
             git -C "$REPO_ROOT" update-ref "$snapshot_ref" "$snap" "" \
                 || die "${snapshot_ref} already exists. Read it, then remove it with: git -C ${REPO_ROOT} update-ref -d ${snapshot_ref}"
-            base_sha="$snap"
             # Counted from the same two commands the snapshot was built from, so the
             # number describes exactly what was captured. `status --porcelain -z`
             # would have been simpler and wrong: it emits a rename as *two*
             # NUL-terminated fields, so counting NUL bytes counted every rename twice.
+            #
+            # **Counted before `base_sha` moves onto the snapshot**, which is the whole
+            # reason these two lines are in this order. Diffing the working tree against
+            # the snapshot compares it with itself, so the count was always `0` — and
+            # it printed `0 path(s)` directly underneath a line saying the tree was not
+            # clean, which is the shape of a number nobody trusts again.
             dirty=$(( $(git -C "$REPO_ROOT" diff --name-only -z "$base_sha" |
                             tr -cd '\000' | wc -c) +
                       $(git -C "$REPO_ROOT" ls-files --others --exclude-standard -z |
                             tr -cd '\000' | wc -c) ))
+            base_sha="$snap"
             note "working tree is not clean — the chamber gets a snapshot of it"
             note "  ${dirty} path(s) beyond ${base}, captured now and frozen"
         fi
@@ -618,7 +648,27 @@ AUTOCLAVE_SETUP
             "    \"CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH\": \"64\"" \
             "  }" \
             "}" > /work/.claude/settings.local.json
-    ' || die "chamber started but the spawn-depth override could not be written"
+
+        # **The workspace is trusted, because the chamber *is* the trust boundary.**
+        # Without this Claude Code prints "this workspace has not been trusted" and
+        # silently ignores every `permissions.allow` entry in the project settings —
+        # so a chamber discarded the very settings it was given, including the cap
+        # lifted immediately above. There is nobody in here to accept a trust dialog,
+        # and the file it wants did not exist at all; only a backup of it did. Codex
+        # has carried its own `trust_level = "trusted"` since sign-in, so this is the
+        # Claude half of a thing already true for the other vendor.
+        [ -f /home/agent/.claude.json ] || printf "%s\n" "{}" > /home/agent/.claude.json
+        python3 - <<"PY"
+import json, pathlib
+p = pathlib.Path("/home/agent/.claude.json")
+try:
+    config = json.loads(p.read_text() or "{}")
+except ValueError:
+    config = {}
+config.setdefault("projects", {}).setdefault("/work", {})["hasTrustDialogAccepted"] = True
+p.write_text(json.dumps(config, indent=2))
+PY
+    ' || die "chamber started but the agent configuration could not be written"
 
     note "chamber '${task}' is up"
     note "  base:   ${base_sha}"
@@ -782,10 +832,21 @@ cmd_dispatch() {
             # the container is the boundary, so there is no host left to protect
             # by prompting, and a prompt inside a detached container is a hang.
             # This flag is the reason the chamber exists.
+            #
+            # **`--append-system-prompt-file` is how the chamber's limits reach a
+            # Claude agent, and it is the only channel `/work/CLAUDE.md` cannot
+            # outrank.** The four in-tree copies of the brief are files the agent has
+            # to choose to read, and `/work/CLAUDE.md` — this repository's own rules,
+            # written for the host — loads automatically beside them. A seat that read
+            # both applied the host's rules to itself and refused to orchestrate.
+            # The system prompt is not a file it can rank; it is what it is.
+            # Codex has no equivalent flag, and does not need one: it reads
+            # `/work/AGENTS.md`, which is the same bytes, and it was probed doing so.
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
                 "$(container_of "$task")" sh -c '
                 cd /work
                 claude --dangerously-skip-permissions \
+                    --append-system-prompt-file /opt/autoclave/CLAUDE.md \
                     --model "$AC_MODEL" \
                     --effort "$AC_EFFORT" \
                     -p < /out/brief.md
