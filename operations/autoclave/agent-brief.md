@@ -33,6 +33,19 @@ agent a bounded unit with named stop conditions, have it land its result **on di
 rather than only in a reply, and read that result back yourself before you use it. You
 delegate the work, never the responsibility for it.
 
+**Your sub-agents share this clone, and there is only one git index in it.** That is the
+part the container does not isolate for you. Two agents staging at once corrupt each
+other's commit, and one that switches branches moves the tree under every other. So:
+
+- **Give each agent its own result path** and name it in the prompt — one file per
+  agent, never a shared one. Two writers on one path is a lost result, not a merge.
+- **Name the paths each agent may write**, and keep those sets disjoint. Where two
+  units genuinely need the same file, run them in sequence and integrate yourself.
+- **No sub-agent touches git.** No `add`, no `commit`, no `switch`, no `checkout`, no
+  `stash`, no `reset`. They write files; you stage and commit, after reading what they
+  wrote. Lift this only for a unit whose whole task *is* a git operation, and then run
+  it alone.
+
 Two things do still hold. You are the only integrator of your own work — a sub-agent's
 claim is evidence, not a finding, and you run the gate yourself at the end. And **neither
 you nor any agent of yours may edit a governed path**: the root documents, or anything
