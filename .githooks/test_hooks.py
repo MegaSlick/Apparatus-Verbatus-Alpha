@@ -215,6 +215,44 @@ def test_document_allowlist_has_one_clear_boundary():
         assert path in result.stdout
 
 
+def test_a_bounded_drawer_is_not_reopened_by_the_generic_readme_rule():
+    """`case` takes the first match, and the generic rule used to be first.
+
+    `HANDOFF.md|*/README.md|*/HANDOFF.md` accepts those two names at *any* depth — `*`
+    matches `/` in a shell case pattern — so it admitted
+    `operations/autoclave/briefs/nested/README.md` before the one-level-deep rules
+    further down could refuse it. Three drawers are bounded on purpose, and under those
+    two filenames all three were not. Found by CodeRabbit on pull request 15.
+
+    Both filenames are tested because only `README.md` was reported, and `HANDOFF.md`
+    sits in the same alternation with the same defect.
+    """
+    reopened = [
+        "operations/autoclave/briefs/nested/README.md",
+        "operations/autoclave/briefs/nested/HANDOFF.md",
+        ".claude/agents/nested/README.md",
+        ".claude/agents/nested/HANDOFF.md",
+        ".github/nested/README.md",
+        ".github/nested/HANDOFF.md",
+    ]
+    for path in reopened:
+        result = command(["sh", str(HOOKS / "doc-allowlist.sh")], stdin=f"{path}\n")
+        assert result.returncode == 1, f"{path} was admitted into a bounded drawer"
+        assert path in result.stdout, path
+    # The positive control. Tightening the order must not refuse the one-level files
+    # those drawers exist to hold, nor an ordinary README anywhere else in the tree.
+    for path in (
+        "operations/autoclave/briefs/README.md",
+        "operations/autoclave/README.md",
+        "workbench/README.md",
+        ".claude/agents/README.md",
+        "HANDOFF.md",
+        "README.md",
+    ):
+        result = command(["sh", str(HOOKS / "doc-allowlist.sh")], stdin=f"{path}\n")
+        assert result.returncode == 0, f"{path} was refused: {result.stdout}"
+
+
 def make_document_repo(path):
     repo = init_repo(path)
     copy_hooks(repo, "check-documents.sh", "doc-allowlist.sh", "check_ingress.py")
@@ -641,6 +679,74 @@ def test_install_configures_local_hooks_after_prerequisites(tmp_path):
     result = run_hook(repo, "install.sh")
     assert result.returncode == 0, result.stderr
     assert git(repo, "config", "--get", "core.hooksPath").stdout.strip() == ".githooks"
+
+
+def test_install_creates_every_drawer_the_contract_declares(tmp_path):
+    """The test above pre-creates six drawers and asserts only `core.hooksPath`, so
+    it cannot see the installer dropping one. `quarantine/` was added on 2026-08-02
+    without the installer following, and a fresh clone silently lacked the one-way
+    staging drawer while `tidy.py` read its absence as empty. Nothing here is
+    pre-created: the installer is the only thing that can make these appear.
+    """
+    repo = init_repo(tmp_path / "repo")
+    shutil.copytree(HOOKS, repo / ".githooks")
+    result = run_hook(repo, "install.sh")
+    assert result.returncode == 0, result.stderr
+    declared = (
+        "active",
+        "standing",
+        "archive",
+        "scratch",
+        "design",
+        "tools",
+        "raw",
+        "autoclave",
+        "quarantine",
+    )
+    missing = [name for name in declared if not (repo / "workbench" / name).is_dir()]
+    assert not missing, f"install.sh did not create: {missing}"
+
+
+def test_tidy_names_the_chamber_drawers_no_installer_fills(tmp_path):
+    """`autoclave.sh` writes `workbench/autoclave/<task>/` and `rm` keeps it.
+
+    Nothing ages it, nothing empties it, and until now nothing counted it: a session
+    read a clean workbench while chamber bundles accumulated beside it. The `scratch/`
+    line is the positive control, because an assertion that `autoclave/` was reported
+    is worth nothing beside a run that never looked at the workbench at all.
+    """
+    repo = init_repo(tmp_path / "repo")
+    copy_hooks(repo, "tidy.py")
+    chamber = repo / "workbench" / "autoclave" / "refactor-designator"
+    chamber.mkdir(parents=True)
+    (chamber / "report.md").write_text("what the chamber did\n")
+    scratch = repo / "workbench" / "scratch"
+    scratch.mkdir(parents=True)
+    (scratch / "grep.txt").write_text("a dump\n")
+
+    result = command(["python3", ".githooks/tidy.py"], cwd=repo)
+
+    assert "scratch/" in result.stdout, "the report never ran"
+    assert "autoclave/ 1 chamber drawers" in result.stdout, result.stdout
+    assert "refactor-designator" in result.stdout, "the report must name the drawers it found"
+    assert (chamber / "report.md").is_file(), "the report changes nothing"
+
+
+def test_fixture_images_are_binary_at_any_depth(tmp_path):
+    """`proof/fixtures/*` matched one path level while the fixtures live a directory
+    deeper, so `git check-attr` reported `text=auto` on them and the explicit binary
+    policy was not the thing applying. Asserted by asking git, not by reading the
+    pattern — the pattern looked right before, too.
+    """
+    repo = init_repo(tmp_path / "repo")
+    shutil.copy(ROOT / ".gitattributes", repo / ".gitattributes")
+    nested = repo / "proof" / "fixtures" / "synthetic-two-page-v0"
+    nested.mkdir(parents=True)
+    (nested / "page-1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    reported = git(
+        repo, "check-attr", "text", "--", "proof/fixtures/synthetic-two-page-v0/page-1.png"
+    )
+    assert reported.stdout.strip().endswith("text: unset"), reported.stdout
 
 
 def failing_command_env(path, name):

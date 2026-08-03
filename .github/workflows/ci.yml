@@ -49,10 +49,10 @@ jobs:
         run: sh .githooks/check-all.sh --ci
 
   # main never holds an unsterilized instrument: a pull request may carry
-  # autoclave/ drafts while under review, but it may not merge until the tray
+  # cleanroom/ drafts while under review, but it may not merge until the tray
   # is empty. Kept as its own job so a loaded tray is distinguishable from a
   # failing check. Make it a required check on main for it to actually gate.
-  autoclave-empty:
+  cleanroom-empty:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-      - name: The autoclave is empty
+      - name: The cleanroom is empty
         # git's own failure must not read as an empty tray: capture ls-files
         # separately and fail on it, then filter. A check that cannot run is
         # a failure, not a pass.
@@ -72,19 +72,32 @@ jobs:
           # rest of the tray. Converting back to newlines for grep would
           # reintroduce exactly that, so each entry is compared whole.
           # A tray check a filename can fool is not a check.
-          list="$RUNNER_TEMP/autoclave-list"
-          if ! git ls-files -z autoclave/ > "$list"; then
+          list="$RUNNER_TEMP/cleanroom-list"
+          if ! git ls-files -z cleanroom/ > "$list"; then
             echo "git ls-files failed" >&2; exit 2
           fi
           stray_count=0
           while IFS= read -r -d '' entry; do
             [ -z "$entry" ] && continue
-            [ "$entry" = "autoclave/README.md" ] && continue
+            # **The exemption is by path, so it is checked against the file too.**
+            # A pull request can track `cleanroom/README.md` as a symlink: the loop
+            # then saw only the exempt name, counted nothing, and the merge gate
+            # reported an empty bench while a link stood there for a later reader to
+            # follow. `-h` before `-f`, because `-f` follows the link and would call
+            # it a regular file. Found by CodeRabbit on pull request 15.
+            if [ "$entry" = "cleanroom/README.md" ]; then
+              if [ -h "$entry" ] || [ ! -f "$entry" ]; then
+                echo "cleanroom/README.md is a symlink or not a regular file." >&2
+                echo "The exemption is for the bench's own README, not a link." >&2
+                exit 1
+              fi
+              continue
+            fi
             stray_count=$((stray_count + 1))
           done < "$list"
           if [ "$stray_count" -ne 0 ]; then
-            echo "The autoclave still holds $stray_count unsterilized draft(s)." >&2
-            echo "Run 'git ls-files autoclave/' locally to inspect them." >&2
+            echo "The cleanroom still holds $stray_count unsterilized draft(s)." >&2
+            echo "Run 'git ls-files cleanroom/' locally to inspect them." >&2
             echo "Sterilize and place them, or remove them, before merging." >&2
             exit 1
           fi

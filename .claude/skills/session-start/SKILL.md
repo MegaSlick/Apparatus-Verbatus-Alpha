@@ -39,6 +39,8 @@ recommend rebasing this branch onto `origin/main`, or ask Tyrel, before proceedi
 
 Read, in order:
 
+0. `.claude/skills/reporting/SKILL.md` — **first, because it governs every message from
+   here on**, including the plan this session is about to write. It is short.
 1. `README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`, `CLAUDE.md`
 2. `workbench/active/HANDOFF.md`
 3. only the other active files or specific archive evidence the handoff points to
@@ -107,6 +109,22 @@ is a maintenance task, not a tax on every session. Run it when output looks stal
 tool fails in an unfamiliar way, or the handoff requests it. If Homebrew cannot refresh,
 report installed versions rather than claiming currentness.
 
+**Bring the container engine up, because agents are the normal shape of work here.** It
+is a virtual machine and it does not survive a reboot, so a session that does not check
+discovers it only when a dispatch fails — which is usually the moment it least wants a
+detour. Tyrel's instruction, 2026-08-02: if a session is working, the engine is live.
+
+```sh
+colima status || colima start
+```
+
+Starting takes a few seconds and it is not free — say that it was down and that you
+started it, so the state of his machine is never changed silently. If Colima is not
+installed at all, say so and carry on: it is only needed when something is dispatched,
+and `operations/autoclave/README.md` says how to install it.
+
+`/session-end` stops it again, and stops it only when no chamber is running.
+
 ## 6. Agree the goal before anything moves
 
 **Tyrel's stated goal outranks the handoff and the brief.** Both are the previous
@@ -143,6 +161,10 @@ With the goal settled, tell him briefly:
 - which bounded units, if any, deserve agents.
 
 Recommend one shape rather than offering a menu, then wait for his answer.
+
+**The one way that wait is skipped:** he may say plainly, at the open, to start without
+confirming. That holds **for that session only** — it is never inferred from a previous
+session, from impatience, or from the work looking obvious, and it lapses at the close.
 
 Worked examples, the length his answer needs:
 

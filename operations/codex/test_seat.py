@@ -66,9 +66,27 @@ def fake_executable(directory, name, body):
 
 def test_roster_is_small_read_only_evidence_surface():
     seats = parse_seats()
-    assert set(seats) == {"scout", "judge", "audit-sol", "audit-terra"}
+    assert set(seats) == {
+        "scout",
+        "judge",
+        "audit-sol",
+        "audit-terra",
+        "design-sol",
+        "design-terra",
+        "bulk-luna",
+    }
     assert "orchestrate" not in seats
     assert all(len(fields) == 3 for fields in seats.values())
+
+
+def test_paired_design_seats_differ_only_by_model():
+    # Same shape as the audit pair, and for the same reason: two vendors' models
+    # answering an identical question is the evidence; a difference in effort or
+    # deadline between them would make the comparison mean something else.
+    sol_model, *sol_policy = parse_seats()["design-sol"]
+    terra_model, *terra_policy = parse_seats()["design-terra"]
+    assert sol_model != terra_model
+    assert sol_policy == terra_policy
 
 
 def test_paired_audits_differ_only_by_model():

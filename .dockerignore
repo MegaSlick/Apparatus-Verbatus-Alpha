@@ -1,0 +1,13 @@
+# Deny everything, then re-admit exactly what the autoclave image needs.
+#
+# This form is deliberate. An exclusion list has to be updated every time a new
+# secret or bulky drawer appears, and the day it is forgotten the context
+# carries `private/` — which holds the notification topic — to the build daemon.
+# A deny-all list stays correct without maintenance: a new drawer is excluded
+# because everything is, and admitting a file is a visible edit here.
+#
+# See operations/autoclave/Dockerfile. Build context is this directory.
+*
+
+!requirements-dev.txt
+!operations/autoclave/agent-brief.md

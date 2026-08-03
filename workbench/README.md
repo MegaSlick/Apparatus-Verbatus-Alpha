@@ -15,7 +15,7 @@ scribbles and half-finished thinking live. The old repository had no such place,
 all of that went into `docs/` — 320 markdown files, 32 of them written in a single
 two-month stretch, until nobody could tell which document was true.
 
-## Seven drawers
+## Nine drawers
 
 | Drawer | What goes in it | Lifespan |
 |---|---|---|
@@ -25,7 +25,38 @@ two-month stretch, until nobody could tell which document was true.
 | `archive/` | finished work, filed under a dated folder | kept, out of the way |
 | `raw/` | verbatim engine output — Codex transcripts, reviewer logs | until the work that cites it closes |
 | `scratch/` | greps, dumps, fragments, one-off output | **delete without asking, ever** |
+| `quarantine/` | material a session believes is dead, staged for Tyrel | **he deletes it; a session never does** |
 | `tools/` | scripts a session built that later sessions run | until superseded — one line at the top says what each is for |
+| `autoclave/` | one drawer per dispatched chamber — the brief, the report, the collected bundle | kept when the chamber is destroyed; archived with the work that cites it |
+
+`autoclave/` is the one drawer nothing here fills and nothing empties.
+`operations/autoclave/autoclave.sh` writes `workbench/autoclave/<task>/` when a chamber
+starts, and `autoclave.sh rm` keeps it deliberately — the bundle is the only surviving
+evidence that a dispatch happened. Like `raw/` it is counted rather than budgeted, and
+archived with the work that cites it rather than on a clock of its own. `tidy.py` names
+the chamber drawers it finds at session start, so they are pruned deliberately rather
+than when they become a nuisance.
+
+`quarantine/` is the one drawer whose direction is one-way. A session moves things in;
+only Tyrel takes them out. The asymmetry is the point: a session being wrong about "this
+is dead" costs work that cannot be recovered, and a session being slow costs nothing.
+`tidy.py` reports anything that has sat over seven days, by name, at session start — a
+staging drawer nobody empties is just a slower kind of clutter.
+
+Its rules, in full, because this is the only file in the drawer that reaches another
+clone: material is **moved, never copied**, so it exists here or in its old drawer and
+not both; each batch is one directory named `<date>_<what-and-why>`, so the name still
+says why a week later; and evidence a live finding still cites does not come here at all
+— that goes to `archive/`.
+
+**The test between the two:** if you would be annoyed to lose it, it is `archive/`. If
+you are only keeping it because deleting felt presumptuous, it is `quarantine/`.
+
+The drawer holds its own `README.md` repeating this, which `.gitignore` deliberately does
+**not** track. Tracking it would mean letting git descend into a directory whose whole
+purpose is holding material nobody has vetted, and personal material never enters git is
+the one rule that does not bend. So this paragraph is the durable copy; that one is a
+convenience for whoever opens the drawer.
 
 `raw/` is the drawer for what a machine actually said, kept verbatim, one dated folder
 per run. It exists because raw output is **evidence and not a note**, and the other two
@@ -68,17 +99,33 @@ that should trigger a re-read. Without that it is a daydream, not a plan.
    budget. It exists so `active/` can genuinely empty each sitting and its over-budget
    alarm means something. A note that merely *might* matter later is not standing; it
    is `design/` or it is finished.
+8. **A plan about to be built from gets a reader on it first.** A note nobody has read
+   is a draft; a plan a session is about to execute is a decision wearing a draft's
+   clothes, and rule 5 is what makes the difference matter.
+
+## What may be committed instead
+
+A note lives here because it is *not* committable. Committed documentation means a
+governed document, a `README.md`, a `HANDOFF.md`, dated evidence under `history/`, or a
+declared harness document — `.githooks/doc-allowlist.sh` is the one list, and
+`pre-commit` and CI refuse everything else.
+
+So the choice is not "note or document" by feel: if what you are writing is not one of
+those five things, it is a note, and it belongs in a drawer above.
 
 ## Why most of it is gitignored
 
 So the repository stays the thing you can trust. The canonical documents bind; dated
-`history/` is evidence, and the autoclave holds material still under review — everything
+`history/` is evidence, and the cleanroom holds material still under review — everything
 speculative, dated, or half-finished beyond those lives here and dies here. The
 `pre-commit` hook refuses stray notes in what you are about to commit, where the hooks
 are installed; CI refuses them across the whole tree at the door.
 
-`active/` is the one declared exception, and it is bounded rather than open: two levels
-deep at most, files plus one dated subdirectory. Deeper is a notes tree, which is precisely
-what this rule exists to refuse — being inside the live drawer is not a licence to grow one.
-The other drawers stay out because they are where volume collects: `raw/` alone is 35MB of
+**No drawer is an exception, `active/` included.** It briefly was one, and this file
+described that exception for longer than it existed; `.githooks/doc-allowlist.sh` is
+the authority and it says plainly that `workbench/` has none. Its own bound survives as
+a habit worth keeping — two levels deep at most, files plus one dated subdirectory,
+because deeper is a notes tree and that is what these rules exist to refuse.
+
+The drawers stay out because they are where volume collects: `raw/` alone is 35MB of
 engine logs. Tracking those is how a repository ends up with 320 markdown files again.

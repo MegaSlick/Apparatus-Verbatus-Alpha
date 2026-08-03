@@ -156,14 +156,14 @@ def gate_env(tmp_path):
     return {"RUNNER_TEMP": str(runtime)}
 
 
-def test_autoclave_gate_distinguishes_empty_and_loaded_tray(tmp_path):
-    gate = step_run("The autoclave is empty")
-    empty = tray_repo(tmp_path / "empty", "autoclave/README.md")
+def test_cleanroom_gate_distinguishes_empty_and_loaded_tray(tmp_path):
+    gate = step_run("The cleanroom is empty")
+    empty = tray_repo(tmp_path / "empty", "cleanroom/README.md")
     loaded = tray_repo(
         tmp_path / "loaded",
-        "autoclave/README.md",
-        "autoclave/draft.py",
-        "autoclave/nested/other.py",
+        "cleanroom/README.md",
+        "cleanroom/draft.py",
+        "cleanroom/nested/other.py",
     )
     assert run_shell(gate, empty, gate_env(tmp_path)).returncode == 0
     result = run_shell(gate, loaded, gate_env(tmp_path))
@@ -171,9 +171,9 @@ def test_autoclave_gate_distinguishes_empty_and_loaded_tray(tmp_path):
     assert "2 unsterilized draft" in result.stderr
 
 
-def test_autoclave_gate_fails_when_git_cannot_list(tmp_path):
+def test_cleanroom_gate_fails_when_git_cannot_list(tmp_path):
     loose = tmp_path / "loose"
     loose.mkdir()
-    result = run_shell(step_run("The autoclave is empty"), loose, gate_env(tmp_path))
+    result = run_shell(step_run("The cleanroom is empty"), loose, gate_env(tmp_path))
     assert result.returncode == 2
     assert "git ls-files failed" in result.stderr

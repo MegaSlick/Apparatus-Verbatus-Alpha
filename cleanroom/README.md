@@ -1,6 +1,11 @@
-# autoclave
+# cleanroom
 
-**The cleanroom bench. Only code written new, inside this repository, ever sits here.**
+**The rebuild bench. Only code written new, inside this repository, ever sits here.**
+
+Called `autoclave/` until 2026-08-01. The containers agents work inside took that name
+instead — they are the thing that actually sterilizes — and one word for two boundaries
+made every sentence about either of them ambiguous. `operations/autoclave/` is the
+chamber; this is the tray a draft waits in, tracked, so reviewers read it raw.
 
 This project is a rebuild. Old code never crosses the boundary — not copied, not pasted,
 not "ported". A rebuilding model reads the reference where it lies — `Temp_Stage`, an
