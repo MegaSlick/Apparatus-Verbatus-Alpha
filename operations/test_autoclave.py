@@ -506,7 +506,7 @@ class TestLogin:
         runnable = "\n".join(code_lines())
         assert 'cp -R "${REPO_ROOT}/workbench/design/."' in runnable, "specs are not copied"
         copied = runnable.index('cp -R "${REPO_ROOT}/workbench/design/."')
-        assert copied < runnable.index('${specs_stage}:/specs:ro'), "staged after the bind"
+        assert copied < runnable.index("${specs_stage}:/specs:ro"), "staged after the bind"
 
     def test_the_window_onto_the_old_code_is_opt_in_and_read_only(self):
         """A chamber that can read the old repository can copy old bytes into its
@@ -517,7 +517,7 @@ class TestLogin:
         runnable = "\n".join(code_lines())
         assert 'window_mount=""' in runnable, "the window has no closed default"
         assert 'window_mount="--volume ${AUTOCLAVE_WINDOW}:/window:ro"' in runnable
-        assert ':/window:rw' not in runnable, "the window is writable"
+        assert ":/window:rw" not in runnable, "the window is writable"
 
     def test_an_unset_window_mounts_nothing(self):
         """The flag is empty unless the variable is set, and it word-splits into the
