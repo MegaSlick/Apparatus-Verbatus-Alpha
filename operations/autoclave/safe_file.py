@@ -47,15 +47,17 @@ def open_regular(path: Path, flags: int, mode: int = 0o600):
         raise
 
 
-def copy(source: Path, destination: Path) -> None:
-    with (
-        open_regular(source, os.O_RDONLY) as reading,
-        open_regular(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC) as writing,
-    ):
-        shutil.copyfileobj(reading, writing)
-
-
 def main() -> int:
+    """Two commands, and which end is untrusted differs between them.
+
+    `read SLOT` reads *out of* `/out`: the slot is the agent's and is opened with
+    `O_NOFOLLOW`.
+
+    `write SOURCE SLOT` writes *into* `/out`: the slot is the agent's and is opened
+    with `O_NOFOLLOW`; the source is a path the session chose and is opened normally.
+    Refusing to follow a link there would break the ordinary way of pointing at a
+    standing brief, and would refuse it with a message naming the wrong file.
+    """
     try:
         command = sys.argv[1]
         source = Path(sys.argv[2])
@@ -63,8 +65,12 @@ def main() -> int:
             with open_regular(source, os.O_RDONLY) as reading:
                 shutil.copyfileobj(reading, sys.stdout.buffer)
             return 0
-        if command in {"write", "copy"} and len(sys.argv) == 4:
-            copy(source, Path(sys.argv[3]))
+        if command == "write" and len(sys.argv) == 4:
+            with (
+                open(source, "rb") as reading,
+                open_regular(Path(sys.argv[3]), os.O_WRONLY | os.O_CREAT | os.O_TRUNC) as writing,
+            ):
+                shutil.copyfileobj(reading, writing)
             return 0
     except (IndexError, OSError) as failure:
         # The message names the path and the errno and nothing else. A refusal that
@@ -72,7 +78,7 @@ def main() -> int:
         # withhold.
         print(f"safe-file: {failure}", file=sys.stderr)
         return 1
-    print("usage: safe_file.py read SOURCE | write SOURCE DEST | copy SOURCE DEST", file=sys.stderr)
+    print("usage: safe_file.py read SLOT | write SOURCE SLOT", file=sys.stderr)
     return 2
 
 

@@ -122,11 +122,38 @@ def vendor_status(command):
     return "auth status" in command or "login status" in command
 
 
+def answer_vendor_status():
+    # `authenticated()` asks through a stdout sentinel so that "the vendor says no"
+    # and "the container never ran" are different answers. FAKE_AUTH_ASKABLE=0 is
+    # the second one: nothing printed, non-zero exit.
+    if setting("FAKE_AUTH_ASKABLE", "1") != "1":
+        raise SystemExit(125)
+    print("ac-auth:" + ("0" if setting("FAKE_AUTH_VALID") == "1" else "1"), end="")
+    raise SystemExit(0)
+
+
 if args[:1] == ["info"] or args[:2] == ["image", "inspect"]:
     raise SystemExit(0)
+def volumes():
+    # Preset volumes plus any this run has created and not removed. Without the
+    # second half, `login`'s first-time path could never be reached: it creates the
+    # volume and every later `has_volume` said it was still absent.
+    live = set(setting("FAKE_VOLUMES").split())
+    ledger = setting("FAKE_VOLUME_LEDGER")
+    if ledger and os.path.exists(ledger):
+        for line in open(ledger):
+            action, _, name = line.strip().partition(" ")
+            live.add(name) if action == "create" else live.discard(name)
+    return live
+
+
 if args[:2] == ["volume", "inspect"]:
-    raise SystemExit(0 if args[-1] in setting("FAKE_VOLUMES").split() else 1)
+    raise SystemExit(0 if args[-1] in volumes() else 1)
 if args[:2] in (["volume", "create"], ["volume", "rm"]):
+    ledger = setting("FAKE_VOLUME_LEDGER")
+    if ledger:
+        with open(ledger, "a") as book:
+            book.write(args[1] + " " + args[-1] + "\\n")
     raise SystemExit(0)
 if args[:2] == ["container", "inspect"]:
     present = setting("FAKE_CONTAINER_EXISTS") == "1"
@@ -147,7 +174,7 @@ if args[:1] == ["run"]:
     if "--detach" in args:
         raise SystemExit(int(setting("FAKE_RUN_STATUS", "0")))
     if vendor_status(args[-1]):
-        raise SystemExit(0 if setting("FAKE_AUTH_VALID") == "1" else 1)
+        answer_vendor_status()
     raise SystemExit(int(setting("FAKE_LOGIN_STATUS", "0")))
 if args[:1] == ["exec"]:
     if args[-2:] == ["sh", "-s"]:
@@ -163,7 +190,16 @@ if args[:1] == ["exec"]:
         outdir = setting("FAKE_OUT_DIR")
         if outdir:
             command = command.replace("/out/", outdir + "/")
-        raise SystemExit(subprocess.run(["sh", "-c", command]).returncode)
+        status = subprocess.run(["sh", "-c", command]).returncode
+        # A background process left running in the container, replacing a slot the
+        # host is about to read. That is the race `collect` has to survive, and it
+        # cannot be staged from outside the container any other way.
+        planted = setting("FAKE_PLANT_AFTER_EXEC")
+        if planted and "bundle create" in command:
+            target, _, content = planted.partition("=")
+            with open(target, "w") as slot:
+                slot.write(content)
+        raise SystemExit(status)
     raise SystemExit(int(setting("FAKE_EXEC_STATUS", "1")))
 if args[:1] == ["rm"]:
     raise SystemExit(0)
@@ -195,6 +231,7 @@ def fake_docker(tmp_path):
         "FAKE_DOCKER_LOG": str(log),
         "FAKE_HOST_VENDOR_LOG": str(host_vendor_log),
         "FAKE_SETUP_SCRIPT": str(tmp_path / "setup.sh"),
+        "FAKE_VOLUME_LEDGER": str(tmp_path / "volumes.log"),
     }, log
 
 
@@ -419,9 +456,12 @@ class TestLogin:
         Docker cannot express, and not deletion of the directory, which `/src`
         being read-only forbids anyway.
 
-        Read against the runnable lines and not the raw source. The comment beside
-        each mask explains it in the same words, so commenting all three out left this
-        green — a test that could not fail for the failure it names.
+        Read against the runnable lines and not the raw source, because the old
+        assertion searched the whole file: a commented-out `--tmpfs` line still
+        contains `--tmpfs /src/private:ro`, so the mask could be switched off in the
+        one spelling anybody would actually use and this stayed green. (Deleting the
+        three lines outright did fail it. Commenting them out did not, and that is the
+        edit a person makes.)
         """
         runnable = " ".join(code_lines())
         # `workbench/` is the other drawer the guard's own SECRET_DRAWERS names, and
@@ -805,7 +845,7 @@ class TestWhatComesBackAndWhatIsDestroyed:
         script, _clone, _drawer, env, log = self.chamber(tmp_path)
         result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
         assert result.returncode != 0
-        assert "holds commits this repository does not have" in result.stderr
+        assert "holds a commit this repository does not have" in result.stderr
         assert "collect task-x" in result.stderr, "the way out is not named"
         assert not any(call[:2] == ["rm", "--force"] for call in docker_calls(log)), (
             "the container was destroyed with commits this repository does not have"
@@ -845,6 +885,111 @@ class TestWhatComesBackAndWhatIsDestroyed:
         result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
         assert result.returncode == 0, result.stderr
         assert ["rm", "--force", "verbatus-ac-task-x"] in docker_calls(log)
+
+    def test_rm_sees_work_committed_on_any_branch_not_only_agent_task(self, tmp_path):
+        """Asking only about `agent/<task>` reads the wrong chamber as empty.
+
+        The tree is clean once an agent has committed, and `agent/<task>` still stands
+        at the base — so a chamber whose agent worked on `work/refactor`, or on a
+        detached HEAD, presented as holding nothing and went straight to `docker rm
+        --force`. `collect` bundles only `agent/<task>` too, so that work was never
+        collectable and nothing ever said so.
+        """
+        script, clone, _drawer, env, log = self.chamber(tmp_path, commits=0)
+        git(clone, "switch", "--quiet", "-c", "work/spike")
+        (clone / "RESULT.txt").write_text("the whole point of the dispatch\n")
+        git(clone, "add", "RESULT.txt")
+        git(clone, "commit", "--quiet", "-m", "spike\n\nCo-Authored-By: m <m@x>")
+        git(clone, "switch", "--quiet", "agent/task-x")
+
+        result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0, "a chamber holding an hour of work was destroyed"
+        assert "does not have" in result.stderr
+        assert not any(call[:2] == ["rm", "--force"] for call in docker_calls(log))
+
+    def test_rm_asks_whether_the_object_is_here_not_whether_the_tips_match(self, tmp_path):
+        """Equality deadlocked the moment the host branch moved — which is the very
+        next thing `collect` tells the operator to do, amend the trailers in. `rm`
+        then refused for ever, `collect` refused to re-fetch what is now a rewind, and
+        the only spelling left was the destructive one. Presence is the question that
+        was always meant."""
+        script, clone, _drawer, env, log = self.chamber(tmp_path)
+        git(tmp_path, "fetch", "--quiet", str(clone), "agent/task-x:agent/task-x")
+        # What collect recommends: re-author, which moves the host branch off the tip.
+        git(tmp_path, "switch", "--quiet", "agent/task-x")
+        git(
+            tmp_path, "commit", "--quiet", "--allow-empty", "-m", "after\n\nCo-Authored-By: m <m@x>"
+        )
+        git(tmp_path, "switch", "--quiet", "work/test")
+
+        result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        assert ["rm", "--force", "verbatus-ac-task-x"] in docker_calls(log)
+
+    def test_rm_refuses_a_chamber_it_cannot_read(self, tmp_path):
+        """ "A check that cannot run is a failure, not a pass" — `.githooks/commit-msg`
+        says it in those words, and the arm that says it here had no test. Swallowing
+        the exit status reads a broken clone or a docker error as a clean tree."""
+        script, _clone, _drawer, env, log = self.chamber(tmp_path, commits=0)
+        env["FAKE_CHAMBER_WORK"] = str(tmp_path / "no-such-clone")
+
+        result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "cannot read" in result.stderr
+        assert not any(call[:2] == ["rm", "--force"] for call in docker_calls(log))
+
+    def test_collect_refuses_a_bundle_slot_that_is_not_a_bundle(self, tmp_path):
+        """`/out` is the agent's, and `[ -f ]` is not enough.
+
+        `git fetch` only reads — and git reads a *gitfile*: a one-line `gitdir:
+        /some/other/repo/.git` is an ordinary regular file, and fetching it fetches
+        from that repository. Left in this slot it turns `collect` into "import any
+        repository on this machine and report it as the work I did". This builds a real
+        private repository and proves nothing from it arrives.
+        """
+        script, clone, drawer, env, _log = self.chamber(tmp_path)
+        private = tmp_path / "somebody-elses-repo"
+        subprocess.run(["git", "init", "--quiet", str(private)], check=True)
+        git(private, "config", "user.name", "v")
+        git(private, "config", "user.email", "v@v")
+        (private / "PRIVATE.txt").write_text("SENTINEL-PRIVATE\n")
+        git(private, "add", "PRIVATE.txt")
+        git(private, "commit", "--quiet", "-m", "private\n\nCo-Authored-By: m <m@x>")
+        git(private, "branch", "--move", "agent/task-x")
+
+        # A process the agent left running replaces the slot after `git bundle create`
+        # wrote it and before the host reads it.
+        env["FAKE_PLANT_AFTER_EXEC"] = f"{drawer / 'task-x.bundle'}=gitdir: {private}/.git\n"
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0, "collect fetched from a repository the agent chose"
+        assert "not a git bundle" in result.stderr
+        arrived = subprocess.run(
+            ["git", "-C", str(tmp_path), "rev-parse", "--verify", "--quiet", "agent/task-x"],
+            capture_output=True,
+        )
+        assert arrived.returncode != 0, "a ref arrived from somebody else's repository"
+
+    def test_collect_judges_attribution_the_way_the_hook_does(self, tmp_path):
+        """A substring search disagreed with `commit-msg` in the direction that
+        matters. `Co-Authored-By: nobody` in the middle of a body matches a grep, is
+        refused by the hook, and registers no co-author with git or GitHub — so the
+        loose test called such a commit attributed and said nothing."""
+        script, clone, _drawer, env, _log = self.chamber(tmp_path, commits=0)
+        (clone / "tracked.txt").write_text("changed\n")
+        git(clone, "add", "tracked.txt")
+        git(clone, "commit", "--quiet", "-m", "work\nCo-Authored-By: nobody\n\nreal body here")
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        assert "UNATTRIBUTED" in result.stdout, (
+            "a trailer git itself does not register was counted as attribution"
+        )
 
     def test_rm_takes_only_the_word_force(self, tmp_path):
         """A typo that reaches `docker rm --force` because it was not the word we
@@ -963,6 +1108,97 @@ class TestTheUntrustedDrawer:
         assert read.stdout == ""
         assert victim.read_text() == "keep"
         assert "keep" not in write.stderr + read.stderr
+
+    @pytest.mark.parametrize("shape", ["directory", "fifo"])
+    def test_the_brief_slot_is_refused_by_the_helper_alone(self, tmp_path, shape):
+        """The cases the shell layer does not cover, so the helper is load-bearing.
+
+        `[ -L ]` catches a link and nothing else, so a directory or a FIFO left in the
+        brief slot reaches `safe_file` and only its `S_ISREG` test refuses them. The
+        FIFO is the one with teeth: without `O_NONBLOCK` the open would wait for a
+        writer that never comes, and an agent could hang the launcher without pointing
+        anywhere at all. A timeout here is a failure, not a hang.
+        """
+        script, slot = self.drawer(tmp_path, task="task-x")
+        if shape == "directory":
+            (slot / "brief.md").mkdir()
+        else:
+            os.mkfifo(slot / "brief.md")
+        brief = tmp_path / "brief-source.md"
+        brief.write_text("bounded task\n")
+        env, _log = fake_docker(tmp_path)
+        env.update({"FAKE_CONTAINER_EXISTS": "1", "FAKE_AUTH_VALID": "1"})
+
+        result = subprocess.run(
+            ["sh", str(script), "dispatch", "task-x", "codex", str(brief), "gpt-5.6-luna", "low"],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env={**os.environ, **env},
+            timeout=20,
+        )
+        assert result.returncode != 0
+        assert "not a safe regular file" in result.stderr
+
+    def test_a_brief_reached_through_a_symlink_still_works(self, tmp_path):
+        """The source is a path the *session* chose, not the agent's, so it is not
+        the untrusted end. Opening it with `O_NOFOLLOW` too would break the ordinary
+        way of pointing at a standing brief — and would refuse it with a message
+        naming the destination, which is a perfectly good empty slot."""
+        script, _slot = self.drawer(tmp_path, task="task-x")
+        real = tmp_path / "standing-brief.md"
+        real.write_text("bounded task\n")
+        link = tmp_path / "brief.md"
+        link.symlink_to(real)
+        env, _log = fake_docker(tmp_path)
+        env.update({"FAKE_CONTAINER_EXISTS": "1", "FAKE_AUTH_VALID": "1", "FAKE_EXEC_STATUS": "0"})
+
+        result = run(
+            "dispatch",
+            "task-x",
+            "codex",
+            str(link),
+            "gpt-5.6-luna",
+            "low",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "workbench" / "autoclave" / "task-x" / "brief.md").read_text() == (
+            "bounded task\n"
+        )
+
+    @pytest.mark.parametrize("shape", ["directory", "fifo"])
+    def test_the_helper_refuses_anything_that_is_not_a_regular_file(self, tmp_path, shape):
+        """Directly, because `S_ISREG` and `O_NONBLOCK` are each removable on their
+        own. Without `S_ISREG` a FIFO opened non-blocking reads as an *empty file* and
+        the helper returns success; without `O_NONBLOCK` the same open never returns.
+        Both are failures and neither is caught by the link test."""
+        target = tmp_path / shape
+        if shape == "directory":
+            target.mkdir()
+        else:
+            os.mkfifo(target)
+        source = tmp_path / "source"
+        source.write_text("bounded task\n")
+
+        read = subprocess.run(
+            ["python3", str(SAFE_FILE), "read", str(target)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        write = subprocess.run(
+            ["python3", str(SAFE_FILE), "write", str(source), str(target)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert read.returncode != 0, f"reading a {shape} succeeded"
+        assert read.stdout == ""
+        assert write.returncode != 0, f"writing to a {shape} succeeded"
 
     def test_the_helper_moves_ordinary_bytes(self, tmp_path):
         """The positive control for the two refusals above."""
@@ -1119,6 +1355,21 @@ class TestMakingAChamber:
         # was finished: written `<<'X' ||` with a `die` on the next line, that `die`
         # becomes line one of what the container runs.
         assert crossed.strip().splitlines()[0].strip() == "set -eu", crossed[:200]
+        # **The canary, and it is what actually pins this.** The assertions above pin
+        # the two *values*; unquoting the delimiter and backslash-escaping those two
+        # variables leaves every one of them true while the host resumes expanding
+        # everything else in the block, comments included — which is verbatim the
+        # defect this test is named for. These two survive only under a quoted
+        # delimiter.
+        assert "$(printf host-expansion-canary)" in crossed, (
+            "a command substitution in the block was evaluated on the host"
+        )
+        assert "`printf host-expansion-canary`" in crossed, (
+            "a backtick in the block was evaluated on the host"
+        )
+        assert "<<'AUTOCLAVE_SETUP'" in SCRIPT.read_text(), (
+            "the here-document delimiter is unquoted"
+        )
         assert "git config core.hooksPath .githooks" in crossed, (
             "a fresh clone has every git-hook rule off, commit-msg among them"
         )
@@ -1215,6 +1466,59 @@ class TestSignInIsAsked:
         assert result.returncode == 0, result.stderr
         assert "reports itself signed in" in result.stdout
         assert not any(call[:2] == ["volume", "rm"] for call in docker_calls(log))
+
+    def test_a_first_time_login_keeps_the_volume_it_created(self, tmp_path):
+        """The path that matters, and the one nothing covered.
+
+        Every other login test presets the volume, so `created_now` is `no`, the trap
+        is never armed and the disarm is never reached. Deleting the disarm left the
+        whole suite green while `login` reported success and then removed the
+        credential volume it had just created — which is every genuine first sign-in.
+        """
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_AUTH_VALID"] = "1"
+
+        result = run("login", "codex", env=env, script=script)
+
+        assert result.returncode == 0, result.stderr
+        assert "reports itself signed in" in result.stdout
+        assert ["volume", "create", "verbatus-ac-auth-codex"] in docker_calls(log), (
+            "the fixture did not exercise the first-time path"
+        )
+        assert not any(call[:2] == ["volume", "rm"] for call in docker_calls(log)), (
+            "a completed first sign-in was deleted on the way out"
+        )
+
+    def test_a_check_that_could_not_run_never_costs_a_sign_in(self, tmp_path):
+        """ "The vendor says no" and "the container never started" are different
+        answers, and only one of them may be destructive.
+
+        Collapsed into one, a transient engine error during the one-second
+        verification run deleted the volume the interactive sign-in had just landed
+        in — after the vendor CLI itself exited 0.
+        """
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_AUTH_ASKABLE"] = "0"
+
+        result = run("login", "codex", env=env, script=script)
+
+        assert result.returncode != 0
+        assert "could not be verified" in result.stderr
+        assert "left as it is" in result.stderr
+        assert not any(call[:2] == ["volume", "rm"] for call in docker_calls(log)), (
+            "a sign-in was destroyed because the check could not run"
+        )
+
+    def test_doctor_says_unknown_when_the_vendor_cannot_be_asked(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, _log = fake_docker(tmp_path)
+        env["FAKE_VOLUMES"] = "verbatus-ac-auth-claude verbatus-ac-auth-codex"
+        env["FAKE_AUTH_ASKABLE"] = "0"
+        result = run("doctor", env=env, script=script)
+        assert result.returncode == 0
+        assert result.stdout.count("could not be asked") == 2, result.stdout
 
     def test_new_refuses_a_vendor_that_is_not_signed_in(self, tmp_path):
         """And refuses before it writes anything: the chamber label would otherwise

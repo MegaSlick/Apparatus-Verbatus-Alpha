@@ -14,13 +14,18 @@ commit left behind, not against a later summary of either.
   fixture root. The deletion defect those commits fixed was real and the fix stands —
   the account of how it was reached was wrong. `9c3d60a` and the guard's current
   comments record the corrected paths.
-- **`a811754`** says Claude's OAuth callback goes to `platform.claude.com` and that both
-  sign-ins can therefore be completed from a phone. The ordinary Claude flow used a
-  callback at `http://localhost:1455`, which resolves to the container and is
-  unreachable from a phone, so it still needed a browser at the keyboard; only Codex
-  offered the device-auth flow that message describes. The login comment added by that
-  same commit records the localhost callback, so the commit contradicts itself and the
-  code is the surviving authority.
+- **`a811754` is not in error, and a first draft of this record said it was.** That
+  commit says Claude's OAuth callback goes to `platform.claude.com` and that the
+  sign-in can therefore be completed from a phone. The correction drafted against it
+  said the flow used a callback at `http://localhost:1455` and needed a keyboard —
+  taken from a comment in `autoclave.sh` that asserted as much and had never been
+  measured. Measured on 2026-08-03 against the Claude CLI in the image: `claude auth
+  login` prints an authorize URL whose `redirect_uri` is
+  `https://platform.claude.com/oauth/code/callback`, stands up no local callback
+  server, and then waits at `Paste code here if prompted >`. The commit was right and
+  the comment was wrong; the comment now records the measurement. This bullet is kept
+  rather than deleted because a correction that turned out to be the error is exactly
+  the kind of thing this file exists to hold.
 - **`26711aa`** says `doctor` reports whether each vendor is signed in. At that revision
   it reported whether a named volume existed, which is not proof that an interrupted or
   failed sign-in ever completed: `cmd_doctor` called `has_volume` and nothing else.

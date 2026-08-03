@@ -137,10 +137,13 @@ cmd_doctor() {
             echo "not signed in — run: $0 login ${vendor}"
         elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
             echo "unknown — a volume exists, but asking needs the image: $0 build"
-        elif authenticated "$vendor" "$volume"; then
-            echo "signed in (${volume})"
         else
-            echo "not signed in — the volume exists but ${vendor} says no; run: $0 login ${vendor}"
+            asked=0; authenticated "$vendor" "$volume" || asked=$?
+            case "$asked" in
+                0) echo "signed in (${volume})" ;;
+                1) echo "not signed in — the volume exists but ${vendor} says no; run: $0 login ${vendor}" ;;
+                *) echo "unknown — the volume exists but ${vendor} could not be asked" ;;
+            esac
         fi
     done
 }
@@ -185,27 +188,51 @@ auth_check() {
 # Ask the vendor, in a throwaway container holding nothing but the volume. Verified
 # inside a chamber: the Claude sign-in that `auth status` reads lives at
 # `.credentials.json` *inside* the mounted directory, so a container that has the
-# volume and nothing else answers correctly. Output goes nowhere; only the exit
-# status leaves this function, so no credential byte can reach a log or a transcript.
+# volume and nothing else answers correctly. The CLI's own output goes nowhere, so no
+# credential byte can reach a log or a transcript.
+#
+# **Three answers, not two.** 0 signed in, 1 the vendor says no, 2 the question could
+# not be asked. Collapsing the last two into "no" is what `.githooks/commit-msg` calls
+# a check that cannot run reading as a failure — harmless where the consequence is a
+# refusal, and not harmless in `login`, where the consequence is deleting the volume
+# the sign-in just landed in. A transient engine error during a one-second verification
+# run must not cost a completed sign-in.
+#
+# The vendor's status is carried out on stdout as a sentinel rather than as this
+# container's exit status, because `docker run` reports its own failures with exit
+# codes a CLI could also produce. No sentinel means nothing ran.
 authenticated() {
     vendor_asked="$1"
     volume_asked="$2"
-    mount_asked=$(auth_dir "$vendor_asked") || return 1
-    check_asked=$(auth_check "$vendor_asked") || return 1
+    mount_asked=$(auth_dir "$vendor_asked") || return 2
+    check_asked=$(auth_check "$vendor_asked") || return 2
     has_volume "$volume_asked" || return 1
-    docker run --rm --volume "${volume_asked}:${mount_asked}" "$IMAGE" \
-        sh -c "$check_asked" >/dev/null 2>&1
+    answer=$(docker run --rm --volume "${volume_asked}:${mount_asked}" "$IMAGE" \
+        sh -c "${check_asked} >/dev/null 2>&1; printf 'ac-auth:%s' \$?" 2>/dev/null) || return 2
+    case "$answer" in
+        ac-auth:0) return 0 ;;
+        ac-auth:*) return 1 ;;
+        *) return 2 ;;
+    esac
 }
 
 cmd_login() {
     vendor="${1:-}"
     # `--device` asks the vendor for a code to type on another device instead of
-    # standing up a callback server on localhost *inside the container*. That
-    # callback is the reason the ordinary flow needs a browser on this machine: the
-    # URL it prints points at `http://localhost:1455`, which resolves to the
-    # container and is unreachable from a phone. Device auth has no callback, so the
-    # sign-in can be finished from anywhere — which is the difference between "run
-    # this when you are next at a keyboard" and "run this now".
+    # standing up a callback server on localhost *inside the container*. A callback at
+    # `http://localhost:1455` resolves to the container and is unreachable from a
+    # phone, so a flow that uses one has to be finished at this keyboard.
+    #
+    # **Which of the two flows Claude uses was asserted here and never measured.**
+    # This comment said Claude's ordinary flow used that localhost callback, and a
+    # dated record was written correcting an earlier commit on the strength of it.
+    # Measured on 2026-08-03 against the CLI in the image: `claude auth login` prints
+    # an authorize URL whose `redirect_uri` is
+    # `https://platform.claude.com/oauth/code/callback`, stands up no local server, and
+    # then waits at `Paste code here if prompted >`. So it can be completed from a
+    # phone after all, and the earlier commit this project corrected was right.
+    # `--device` remains Codex's alone because it is Codex's flag, not because Claude
+    # needs a keyboard.
     mode="${2:-browser}"
     # **Arguments are judged before infrastructure is touched**, the same ordering
     # `dispatch` and `new` already keep. Asking Docker first meant `login gemini`
@@ -226,7 +253,7 @@ cmd_login() {
         browser) : ;;
         device)
             [ "$vendor" = codex ] ||
-                die "only codex offers device auth; run '$0 login claude' at a keyboard"
+                die "only codex has a --device-auth flag. '$0 login claude' does not need one: it prints a URL and waits for a pasted code, so it can be finished from a phone"
             tool="codex login --device-auth" ;;
         *) die "login mode is 'browser' or 'device'" ;;
     esac
@@ -289,7 +316,14 @@ cmd_login() {
     # `ls -A` on the mount, and both CLIs write configuration into that directory
     # before, during and after any sign-in — so it reported success for an attempt
     # that was cancelled at the vendor's own page. Ask the vendor instead.
-    if [ "$login_status" -ne 0 ] || ! authenticated "$vendor" "$volume"; then
+    asked=0; authenticated "$vendor" "$volume" || asked=$?
+    if [ "$asked" -eq 2 ]; then
+        # The question could not be put. Whatever the volume now holds is not this
+        # script's to throw away on the strength of an answer nobody got.
+        [ "$created_now" = yes ] && trap - 0 1 2 15
+        die "${vendor}'s sign-in could not be verified — the check itself did not run. ${volume} is left as it is; try '$0 doctor' once the engine and image are healthy"
+    fi
+    if [ "$login_status" -ne 0 ] || [ "$asked" -ne 0 ]; then
         note "${vendor} does not report itself signed in — the sign-in did not complete."
         note "Nothing is broken; run this again when you are ready."
         die "${vendor} sign-in did not complete (its CLI exited ${login_status})"
@@ -298,6 +332,17 @@ cmd_login() {
         trap - 0 1 2 15
     fi
     note "${vendor} reports itself signed in. Chambers created from here will use ${volume}."
+}
+
+# Two arms below, one per vendor, and neither naming the other's constant: that
+# shape is what `test_a_chamber_holds_one_vendor_credential_or_none` reads, and it
+# is the shape of the defect it exists to catch. The tri-state handling that would
+# otherwise be duplicated into both lives here instead.
+require_signed_in() {
+    asked=0; authenticated "$1" "$2" || asked=$?
+    [ "$asked" -eq 1 ] && die "'$1' is not signed in — run: $0 login $1"
+    [ "$asked" -eq 0 ] ||
+        die "'$1' could not be asked whether it is signed in, so nothing here can say the chamber will hold a working credential. Check '$0 doctor'"
 }
 
 cmd_new() {
@@ -350,12 +395,10 @@ cmd_new() {
     auth_mounts=""
     case "$vendor" in
         claude)
-            authenticated claude "$AUTH_VOL_CLAUDE" ||
-                die "'claude' is not signed in — run: $0 login claude"
+            require_signed_in claude "$AUTH_VOL_CLAUDE"
             auth_mounts="--volume ${AUTH_VOL_CLAUDE}:${AUTH_DIR_CLAUDE}" ;;
         codex)
-            authenticated codex "$AUTH_VOL_CODEX" ||
-                die "'codex' is not signed in — run: $0 login codex"
+            require_signed_in codex "$AUTH_VOL_CODEX"
             auth_mounts="--volume ${AUTH_VOL_CODEX}:${AUTH_DIR_CODEX}" ;;
     esac
 
@@ -422,7 +465,14 @@ cmd_new() {
             git -C "$REPO_ROOT" update-ref "$snapshot_ref" "$snap" "" \
                 || die "${snapshot_ref} already exists. Read it, then remove it with: git -C ${REPO_ROOT} update-ref -d ${snapshot_ref}"
             base_sha="$snap"
-            dirty=$(git -C "$REPO_ROOT" status --porcelain -z | tr -cd '\000' | wc -c | tr -d ' ')
+            # Counted from the same two commands the snapshot was built from, so the
+            # number describes exactly what was captured. `status --porcelain -z`
+            # would have been simpler and wrong: it emits a rename as *two*
+            # NUL-terminated fields, so counting NUL bytes counted every rename twice.
+            dirty=$(( $(git -C "$REPO_ROOT" diff --name-only -z "$base_sha" |
+                            tr -cd '\000' | wc -c) +
+                      $(git -C "$REPO_ROOT" ls-files --others --exclude-standard -z |
+                            tr -cd '\000' | wc -c) ))
             note "working tree is not clean — the chamber gets a snapshot of it"
             note "  ${dirty} path(s) beyond ${base}, captured now and frozen"
         fi
@@ -506,6 +556,12 @@ cmd_new() {
     if ! docker exec -e AC_BASE_SHA="$base_sha" -e AC_TASK="$task" \
         --interactive "$(container_of "$task")" sh -s <<'AUTOCLAVE_SETUP'
         set -eu
+        # Nothing in this block is expanded on the host, and the line above proves it:
+        # $(printf host-expansion-canary) and `printf host-expansion-canary` reach the
+        # container as the characters written here. A test reads the recorded script
+        # back and refuses it if either has been evaluated — pinning the values alone
+        # would pass for an unquoted delimiter with the two variables escaped, which is
+        # exactly the "fix" that reopens this.
         git clone --no-local --quiet /src /work
         cd /work
         git checkout --quiet "$AC_BASE_SHA"
@@ -806,17 +862,26 @@ cmd_collect() {
             printf '%s\n' \"\$loose\" >&2
             exit 1
         fi
-        git bundle create ${bundle_in} '${branch}' >/dev/null 2>&1
+        git bundle create ${bundle_in} '${branch}' >/dev/null
     " || die "nothing collected from '$task' — the tree is not clean, or the bundle could not be written; its own message is above. A branch carrying no commits is not this failure: that collects, and says so."
 
-    # Not guarded with `[ -L ]` like `brief.md` and `report.md`, and the reason is not
-    # the one it looks like. A symlink here *does* resolve on this side of the mount —
-    # `/out` is a bind, so a link the agent leaves points at a host path. What makes it
-    # harmless is `git fetch`: it only reads, it neither writes through the path nor
-    # prints its bytes, and a file that is not a bundle fails with "does not look like
-    # a bundle". The worst an agent achieves is importing refs it could have put in its
-    # own bundle anyway.
+    # **This slot is the agent's too, and `[ -f ]` is not enough.** Three reviews
+    # called it harmless on the grounds that `git fetch` only reads. It does only
+    # read — and git will read a *gitfile*: a one-line `gitdir: /some/other/repo/.git`
+    # is a perfectly ordinary regular file, and `git fetch` on it fetches from that
+    # repository. An agent that leaves one here turns `collect` into "import any
+    # repository on this machine, and report it as the work I did". Reproduced: a
+    # private repository's branch arrived on `agent/<task>` and `collect` said
+    # `1 commit(s)`.
+    #
+    # `git bundle verify` reads the bundle header and refuses anything else, including
+    # that file, and it runs before `fetch` gets a path at all. A symlink is covered by
+    # the same call for the same reason: whatever it points at still has to be a
+    # bundle. The `[ -L ]` test in front says which of the two it was.
+    [ -L "$bundle_out" ] && die "bundle slot ${bundle_out} is a symlink — refusing to read through it"
     [ -f "$bundle_out" ] || die "bundle did not appear at ${bundle_out}"
+    git -C "$REPO_ROOT" bundle verify "$bundle_out" >/dev/null 2>&1 \
+        || die "what is at ${bundle_out} is not a git bundle. Nothing was fetched. Look at it before anything else — the chamber writes that path and this is what it left there"
 
     git -C "$REPO_ROOT" fetch --quiet "$bundle_out" "${branch}:${branch}" \
         || die "bundle fetched no ref — inspect it with: git bundle list-heads ${bundle_out}"
@@ -846,9 +911,22 @@ cmd_collect() {
     # answered, and inventing a trailer here would be a worse lie than a missing one.
     # It also does not refuse: a branch is not made safer by being stranded in a
     # container, and `rm` already refuses to destroy work that was never collected.
+    #
+    # Judged the way `.githooks/commit-msg` judges it — `interpret-trailers --parse`,
+    # and a real address — because that hook is the thing this is standing in for when
+    # it did not run. A substring search over the whole message disagreed with it in
+    # the direction that matters: `Co-Authored-By: nobody` in the middle of a body is
+    # a match for a grep, is refused by the hook, and registers no co-author with git
+    # or GitHub. The looser test called such a commit attributed and said nothing.
     if [ "$landed" != "0" ]; then
-        unattributed=$(git -C "$REPO_ROOT" log --format='  %h %s' \
-            --invert-grep -i --grep='Co-Authored-By:' "${chamber_base}..${branch}")
+        unattributed=""
+        for commit in $(git -C "$REPO_ROOT" rev-list "${chamber_base}..${branch}"); do
+            git -C "$REPO_ROOT" show -s --format=%B "$commit" |
+                git -C "$REPO_ROOT" interpret-trailers --parse |
+                grep -qiE '^Co-Authored-By:[[:space:]]*.+<[^@[:space:]]+@[^>[:space:]]+>[[:space:]]*$' ||
+                unattributed="${unattributed}$(git -C "$REPO_ROOT" log -1 --format='  %h %s' "$commit")
+"
+        done
         if [ -n "$unattributed" ]; then
             note ""
             note "UNATTRIBUTED — these commits carry no Co-Authored-By trailer:"
@@ -928,20 +1006,42 @@ cmd_rm() {
             printf '%s\n' "$loose" >&2
             die "chamber '$task' has uncommitted or untracked work (above). Commit and '$0 collect $task', or destroy it with: $0 rm $task force"
         fi
-        # `absent` rather than an empty string, which a failed read also produces. A
-        # SHA is never the literal word.
-        chamber_tip=$(docker exec "$(container_of "$task")" \
-            sh -c "cd /work && git rev-parse --verify --quiet 'agent/${task}' || echo absent") ||
-            die "cannot read agent/${task} inside '$task', so nothing here can say whether it holds work. Destroy it unread with: $0 rm $task force"
+        # **Every branch in there, not just `agent/<task>`.** Asking only about the
+        # branch the launcher cut reads a chamber whose agent committed onto
+        # `work/refactor`, or onto a detached HEAD, as holding nothing at all — its
+        # tree is clean and `agent/<task>` still stands at the base, so this walked
+        # straight past an hour of work into `docker rm --force`. `collect` bundles
+        # only `agent/<task>` too, so that work was never collectable and nothing
+        # ever said so. `for-each-ref` plus `HEAD` covers both shapes.
+        #
+        # The `|| :` on the HEAD read is for a chamber whose HEAD is unborn, which is
+        # not a failure; the surrounding `set -e` inside the container still makes a
+        # real failure a failure, and the `if !` here still makes that a refusal.
+        if ! chamber_tips=$(docker exec "$(container_of "$task")" sh -c '
+            set -eu
+            cd /work
+            git for-each-ref --format="%(objectname)" refs/heads
+            git rev-parse --verify --quiet HEAD || :
+        ' 2>&1); then
+            printf '%s\n' "$chamber_tips" >&2
+            die "cannot read the branches in '$task' (above), so nothing here can say whether it holds work. Destroy it unread with: $0 rm $task force"
+        fi
+        # **Does this repository have the object** — not "is the tip the same SHA".
+        # Equality deadlocked the moment the host branch moved, which is what
+        # `collect` itself tells the operator to do next: amend the trailers in, and
+        # `rm` then refused for ever while `collect` refused to re-fetch a rewind, so
+        # the only spelling left was the destructive one. Presence is the question
+        # that was always meant: a commit whose object is here was collected, however
+        # the branch has moved since.
         chamber_base=$(docker inspect \
             --format '{{index .Config.Labels "verbatus.base"}}' \
             "$(container_of "$task")" 2>/dev/null) || chamber_base=""
-        host_tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet \
-            "refs/heads/agent/${task}") || host_tip=""
-        if [ "$chamber_tip" != absent ] && [ "$chamber_tip" != "$chamber_base" ] &&
-           [ "$chamber_tip" != "$host_tip" ]; then
-            die "chamber '$task' holds commits this repository does not have (agent/${task} is at ${chamber_tip}; here it is ${host_tip:-absent}). Run '$0 collect $task', or destroy them with: $0 rm $task force"
-        fi
+        for tip in $chamber_tips; do
+            [ -n "$tip" ] || continue
+            [ "$tip" = "$chamber_base" ] && continue
+            git -C "$REPO_ROOT" cat-file -e "${tip}^{commit}" 2>/dev/null && continue
+            die "chamber '$task' holds a commit this repository does not have (${tip}). Run '$0 collect $task' — and if it is on a branch other than agent/${task}, move or merge it there first, because that is the only branch collection bundles. Or destroy it with: $0 rm $task force"
+        done
     fi
 
     docker rm --force "$(container_of "$task")" >/dev/null
