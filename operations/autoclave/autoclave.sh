@@ -364,31 +364,60 @@ cmd_new() {
     # it is a different and much worse thing.
     #
     # Built through a temporary index so the real one is never touched — no staging is
-    # disturbed, nothing is added to any commit the operator is preparing. `add -A`
-    # against that index honours `.gitignore`, so `workbench/`, `private/` and
-    # `scriptorium/` stay out exactly as they do everywhere else. Only when the base is
-    # the default: an explicitly named base means that exact commit and nothing else.
+    # disturbed, nothing is added to any commit the operator is preparing. Only when
+    # the base is the default: an explicitly named base means that exact commit and
+    # nothing else.
+    #
+    # **Built with plumbing rather than `git add -A`.** Pointing the bulk command at a
+    # temporary index does leave the real index byte-identical, which is what the rule
+    # is protecting — but CLAUDE.md's Branches section says "Never `git add -A`" with
+    # no exception, and a line that reads as a rule violation to every future reader is
+    # worth six lines to remove. `git diff --name-only` against the base gives every
+    # tracked path that moved, staged or not; `ls-files --others --exclude-standard`
+    # gives the untracked ones that are not ignored, so `workbench/`, `private/` and
+    # `scriptorium/` stay out exactly as they do everywhere else. NUL-delimited
+    # throughout, because a path may contain a newline and `-z` is the only spelling
+    # that survives one.
     snapshot_ref=""
     if [ "$base" = "HEAD" ]; then
         snap_index=$(mktemp) || die "cannot create a temporary index"
+        snap_paths=$(mktemp) || die "cannot create a temporary path list"
         if GIT_INDEX_FILE="$snap_index" git -C "$REPO_ROOT" read-tree "$base_sha" 2>/dev/null &&
-           GIT_INDEX_FILE="$snap_index" git -C "$REPO_ROOT" add -A 2>/dev/null; then
+           git -C "$REPO_ROOT" diff --name-only -z "$base_sha" >"$snap_paths" &&
+           GIT_INDEX_FILE="$snap_index" git -C "$REPO_ROOT" \
+               update-index --add --remove -z --stdin <"$snap_paths" 2>/dev/null &&
+           git -C "$REPO_ROOT" ls-files --others --exclude-standard -z >"$snap_paths" &&
+           GIT_INDEX_FILE="$snap_index" git -C "$REPO_ROOT" \
+               update-index --add --remove -z --stdin <"$snap_paths" 2>/dev/null; then
             snap_tree=$(GIT_INDEX_FILE="$snap_index" git -C "$REPO_ROOT" write-tree 2>/dev/null)
         else
             snap_tree=""
         fi
-        rm -f "$snap_index"
+        rm -f "$snap_index" "$snap_paths"
         base_tree=$(git -C "$REPO_ROOT" rev-parse "${base_sha}^{tree}")
         if [ -n "$snap_tree" ] && [ "$snap_tree" != "$base_tree" ]; then
+            # Two `-m` arguments, because the second is the attribution trailer.
+            # `commit-tree` runs no hooks at all, so `commit-msg` never sees this
+            # message and cannot ask it for the `Co-Authored-By` line every other
+            # commit in this repository carries. The agent's branch is built on top of
+            # this commit and comes back with it, so an unattributed snapshot is an
+            # unattributed commit in the collected history. No model wrote this tree —
+            # it is the operator's own working tree, frozen by this script — and the
+            # trailer says exactly that rather than naming one.
             snap=$(git -C "$REPO_ROOT" commit-tree "$snap_tree" -p "$base_sha" \
-                -m "autoclave snapshot for ${task}: the working tree at chamber creation") \
+                -m "autoclave snapshot for ${task}: the working tree at chamber creation" \
+                -m "Co-Authored-By: autoclave <autoclave@localhost>") \
                 || die "could not record the working-tree snapshot"
-            # A ref, because `git clone` fetches refs and not dangling commits.
+            # A ref, because `git clone` fetches refs and not dangling commits. The
+            # empty old-value is a compare-and-swap: create it, never overwrite it. A
+            # ref already standing here means an earlier `new` for this task left one
+            # behind, and silently pointing it somewhere else would lose whatever it
+            # held.
             snapshot_ref="refs/heads/autoclave/snapshot-${task}"
-            git -C "$REPO_ROOT" update-ref "$snapshot_ref" "$snap" \
-                || die "could not point ${snapshot_ref} at the snapshot"
+            git -C "$REPO_ROOT" update-ref "$snapshot_ref" "$snap" "" \
+                || die "${snapshot_ref} already exists. Read it, then remove it with: git -C ${REPO_ROOT} update-ref -d ${snapshot_ref}"
             base_sha="$snap"
-            dirty=$(git -C "$REPO_ROOT" status --porcelain | wc -l | tr -d ' ')
+            dirty=$(git -C "$REPO_ROOT" status --porcelain -z | tr -cd '\000' | wc -c | tr -d ' ')
             note "working tree is not clean — the chamber gets a snapshot of it"
             note "  ${dirty} path(s) beyond ${base}, captured now and frozen"
         fi
@@ -443,17 +472,39 @@ cmd_new() {
         $auth_mounts \
         --workdir /work \
         "$IMAGE" \
-        sleep infinity >/dev/null
+        sleep infinity >/dev/null || {
+        # The one failure past the snapshot that can leave a ref standing. `rm`
+        # refuses a task with no container, so nothing else would ever delete it.
+        [ -n "$snapshot_ref" ] &&
+            git -C "$REPO_ROOT" update-ref -d "$snapshot_ref" 2>/dev/null
+        die "docker run failed — no chamber was created${snapshot_ref:+, and the snapshot ref was removed}"
+    }
 
     # Clone from the read-only mount. `--no-local` is deliberate: a local clone
     # hardlinks into /src/.git, and hardlinks into a read-only mount are exactly
     # the kind of shared state this arrangement exists to avoid.
-    docker exec "$(container_of "$task")" sh -c "
+    #
+    # **The script crosses as stdin, under a quoted here-document, and the two values
+    # it needs cross as environment variables.** It used to be one double-quoted
+    # argument with the base commit interpolated into it, which meant the *host* shell
+    # expanded the whole block first — every `$(…)` and every backtick in it, comments
+    # included. A backtick in one of these comments ran on the host once already and
+    # the fix was a note telling the next editor not to write one. `<<'AUTOCLAVE_SETUP'`
+    # is quoted, so nothing in here is expanded here; `sh -s` reads it from stdin,
+    # which is what `docker exec -i` attaches.
+    #
+    # The `if !` matters and is not a style choice. A here-document's body begins at
+    # the next newline whatever else is unfinished on the line, so writing this as
+    # `docker exec … <<'X' ||` and a `die` on the following line puts that `die` inside
+    # the script sent to the container and hands the `||` to whatever follows the
+    # terminator — a failed setup would then run the line that says the chamber is up.
+    if ! docker exec -e AC_BASE_SHA="$base_sha" -e AC_TASK="$task" \
+        --interactive "$(container_of "$task")" sh -s <<'AUTOCLAVE_SETUP'
         set -eu
         git clone --no-local --quiet /src /work
         cd /work
-        git checkout --quiet ${base_sha}
-        git switch --quiet -c 'agent/${task}'
+        git checkout --quiet "$AC_BASE_SHA"
+        git switch --quiet -c "agent/$AC_TASK"
         cp /opt/autoclave/CLAUDE.md /work/AUTOCLAVE.md
         # /work/AGENTS.md is the one Codex actually reads. A copy at the filesystem
         # root is not enough: probed on 2026-08-02, a Codex seat reported that no
@@ -462,22 +513,31 @@ cmd_new() {
         # directory, which is /work. Every Codex agent dispatched into a chamber
         # before this — including that day's audit and review seats — ran with no
         # standing limits beyond whatever its prompt carried.
-        #
-        # No backticks in this block: it is double-quoted so the base commit can be
-        # interpolated, which means a backtick runs on the host. One in this comment
-        # did exactly that before it was caught.
         cp /opt/autoclave/CLAUDE.md /work/AGENTS.md
         # The brief is scaffolding, not the agent's work, and it must not read as
         # either. Untracked at the repository root it is 'stray documentation' to
-        # \`.githooks/doc-allowlist.sh\`, so \`check-static.sh\` failed inside every
+        # `.githooks/doc-allowlist.sh`, so `check-static.sh` failed inside every
         # chamber — on a file the agent did not write and cannot correct. An agent
         # told to run the gate before handing work back either reports itself blocked
         # or deletes its own brief to make the gate pass. Excluded in the clone rather
-        # than added to the tracked \`.gitignore\`, because this file exists only here.
+        # than added to the tracked `.gitignore`, because this file exists only here.
         printf '/AUTOCLAVE.md\n/AGENTS.md\n' >> /work/.git/info/exclude
         git config user.name  'autoclave'
         git config user.email 'autoclave@localhost'
-    " || die "chamber started but setup failed — inspect with: docker logs $(container_of "$task")"
+        # **The hooks are switched on in here.** `core.hooksPath` is local to a clone
+        # and never travels, so a fresh chamber had every git-hook rule off — silently,
+        # which is the state `CLAUDE.md`'s "What may be missing or wrong" warns about.
+        # The one that matters most here is `commit-msg`: without it nothing asked a
+        # chamber commit for the `Co-Authored-By` line naming the model that wrote it,
+        # and an agent could hand back forty unattributed commits before anyone looked.
+        # Set directly rather than through `install.sh`, which also chmods and creates
+        # drawers: the hooks are tracked executable, so the setting is the whole of what
+        # a clone needs.
+        git config core.hooksPath .githooks
+AUTOCLAVE_SETUP
+    then
+        die "chamber started but setup failed — inspect with: docker logs $(container_of "$task")"
+    fi
 
     # **The subagent spawn-depth cap is lifted in here**, in its own single-quoted
     # command so the JSON's quotes are not fighting the interpolation above.

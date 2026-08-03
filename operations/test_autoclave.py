@@ -142,6 +142,8 @@ if args[:1] == ["inspect"]:
         print(setting("FAKE_CHAMBER_VENDOR", "codex"))
     raise SystemExit(0)
 if args[:1] == ["run"]:
+    if "--detach" in args:
+        raise SystemExit(int(setting("FAKE_RUN_STATUS", "0")))
     if vendor_status(args[-1]):
         raise SystemExit(0 if setting("FAKE_AUTH_VALID") == "1" else 1)
     raise SystemExit(int(setting("FAKE_LOGIN_STATUS", "0")))
@@ -533,6 +535,171 @@ def test_doctor_reports_sign_in_state_for_both_vendors():
     assert result.returncode == 0
     assert "auth claude" in result.stdout
     assert "auth codex" in result.stdout
+
+
+class TestMakingAChamber:
+    """`new` writes to the host repository, and every write must be undoable."""
+
+    def dirty_repo(self, tmp_path):
+        """A repository with something in it that a snapshot would have to capture.
+
+        A clean tree takes no snapshot at all, so a test run against one passes
+        whatever the ordering and whatever the snapshot does.
+        """
+        script = elsewhere(tmp_path)
+        (tmp_path / ".gitignore").write_text("ignored-*\n")
+        for name in ("staged.txt", "unstaged.txt", "deleted.txt"):
+            (tmp_path / name).write_text("base\n")
+        git(tmp_path, "add", ".gitignore", "staged.txt", "unstaged.txt", "deleted.txt")
+        git(tmp_path, "commit", "--quiet", "-m", "files\n\nCo-Authored-By: a <a@b>")
+        (tmp_path / "staged.txt").write_text("staged\n")
+        git(tmp_path, "add", "staged.txt")
+        (tmp_path / "unstaged.txt").write_text("unstaged\n")
+        (tmp_path / "deleted.txt").unlink()
+        (tmp_path / "untracked\nname.txt").write_text("untracked\n")
+        (tmp_path / "ignored-secret").write_text("ignored\n")
+        return script
+
+    def snapshot_of(self, tmp_path, log):
+        """The commit the chamber was actually pinned to, read off the label."""
+        created = [call for call in docker_calls(log) if "--detach" in call]
+        assert len(created) == 1, "expected exactly one chamber to be created"
+        label = next(arg for arg in created[0] if arg.startswith("verbatus.base="))
+        return label.removeprefix("verbatus.base=")
+
+    def test_a_failed_new_leaves_no_snapshot_ref_behind(self, tmp_path):
+        """Nothing writes to the host repository until every prerequisite has passed.
+
+        The snapshot is the first thing `new` writes, and it used to be written before
+        the engine, the image and the chamber name had been checked. A `new` that
+        failed for any of those three left `refs/heads/autoclave/snapshot-<task>` and
+        its commit standing — and `rm` refuses a task with no container, so the one
+        command that deletes that ref could not be reached to do it.
+        """
+        script = self.dirty_repo(tmp_path)
+        result = run("new", "some-task", script=script, cwd=tmp_path)
+        assert result.returncode != 0, "new succeeded on a machine with no engine"
+        assert "docker" in result.stderr.lower(), result.stderr
+        ref = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(tmp_path),
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/heads/autoclave/snapshot-some-task",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert ref.returncode != 0, f"a failed new left {ref.stdout.strip()} behind"
+
+    def test_a_failed_docker_run_takes_the_snapshot_ref_with_it(self, tmp_path):
+        """The one failure past the checks that can still leave a ref standing."""
+        script = self.dirty_repo(tmp_path)
+        env, _log = fake_docker(tmp_path)
+        env["FAKE_RUN_STATUS"] = "1"
+        result = run("new", "some-task", env=env, script=script, cwd=tmp_path)
+        assert result.returncode != 0
+        assert "snapshot ref was removed" in result.stderr, result.stderr
+        ref = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(tmp_path),
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/heads/autoclave/snapshot-some-task",
+            ],
+            capture_output=True,
+        )
+        assert ref.returncode != 0
+
+    def test_the_snapshot_carries_the_whole_working_tree_and_touches_no_index(self, tmp_path):
+        """Staged, unstaged, deleted and untracked, and nothing that is ignored.
+
+        `git add -A` against a temporary index did this correctly, and CLAUDE.md's
+        Branches section still says "Never `git add -A`" with no exception. Plumbing
+        does the same job without a line that reads as a rule violation. The newline in
+        one filename is the reason every step here is NUL-delimited.
+        """
+        script = self.dirty_repo(tmp_path)
+        index_before = git(tmp_path, "write-tree")
+        env, log = fake_docker(tmp_path)
+
+        result = run("new", "snapshot-case", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0, "the stubbed setup should have stopped new"
+        snapshot = self.snapshot_of(tmp_path, log)
+        names = set(
+            subprocess.check_output(
+                ["git", "-C", str(tmp_path), "ls-tree", "-rz", "--name-only", snapshot]
+            ).split(b"\0")
+        )
+        assert b"staged.txt" in names
+        assert b"unstaged.txt" in names
+        assert "untracked\nname.txt".encode() in names, "an untracked path was left behind"
+        assert b"deleted.txt" not in names, "a deleted path survived into the snapshot"
+        assert b"ignored-secret" not in names, "an ignored path reached the chamber"
+        assert git(tmp_path, "show", f"{snapshot}:unstaged.txt") == "unstaged"
+        assert git(tmp_path, "write-tree") == index_before, "the real index was disturbed"
+        assert "Co-Authored-By: autoclave <autoclave@localhost>" in git(
+            tmp_path, "show", "-s", "--format=%B", snapshot
+        ), "commit-tree runs no hooks, so the trailer has to be written by hand"
+        # Against the runnable lines, not the raw source: the comment beside the
+        # plumbing quotes the rule it is obeying, and a substring search over the whole
+        # file counts that as the violation.
+        assert not any("git add -A" in line for line in code_lines()), (
+            "the bulk staging command CLAUDE.md forbids is back in the launcher"
+        )
+
+    def test_the_setup_script_is_not_expanded_on_the_host(self, tmp_path):
+        """It crosses as stdin under a quoted here-document, values as environment.
+
+        As one interpolated argument, the host shell expanded the whole block first —
+        comments included — and a backtick in one of those comments ran on this machine
+        once already. The recorded script is read back here: the variable must still be
+        a variable, and the commit it stands for must appear nowhere in the text.
+        """
+        script = self.dirty_repo(tmp_path)
+        env, log = fake_docker(tmp_path)
+        result = run("new", "setup-case", env=env, script=script, cwd=tmp_path)
+        assert result.returncode != 0
+        assert "setup failed" in result.stderr, result.stderr
+
+        crossed = Path(env["FAKE_SETUP_SCRIPT"]).read_text()
+        snapshot = self.snapshot_of(tmp_path, log)
+        assert '"$AC_BASE_SHA"' in crossed, "the base commit was interpolated on the host"
+        assert snapshot not in crossed, "the host expanded the value into the script"
+        assert '"agent/$AC_TASK"' in crossed
+        # The first line proves the here-document was not opened before the command
+        # was finished: written `<<'X' ||` with a `die` on the next line, that `die`
+        # becomes line one of what the container runs.
+        assert crossed.strip().splitlines()[0].strip() == "set -eu", crossed[:200]
+        assert "git config core.hooksPath .githooks" in crossed, (
+            "a fresh clone has every git-hook rule off, commit-msg among them"
+        )
+        assert subprocess.run(["sh", "-n"], input=crossed, text=True).returncode == 0, (
+            "the script handed to the chamber is not valid POSIX sh"
+        )
+
+    def test_a_failed_setup_stops_and_says_where_to_look(self, tmp_path):
+        """It must refuse, on its own account, and name the container to inspect.
+
+        Asserted against stderr rather than against the run merely stopping: with the
+        here-document written the other way the refusal is swallowed and what stops
+        `new` is the *next* command failing, which is not the same thing and would not
+        survive that command being fixed.
+        """
+        script = self.dirty_repo(tmp_path)
+        env, _log = fake_docker(tmp_path)
+        result = run("new", "setup-case", env=env, script=script, cwd=tmp_path)
+        assert result.returncode != 0
+        assert "setup failed" in result.stderr, result.stderr
+        assert "docker logs verbatus-ac-setup-case" in result.stderr
+        assert "is up" not in result.stdout, result.stdout
 
 
 class TestSignInIsAsked:
