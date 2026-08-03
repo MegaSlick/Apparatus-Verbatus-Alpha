@@ -1,15 +1,23 @@
 # Standing briefs for dispatched agents
 
 A brief is what a chamber agent is told about **its job**. It is not told about the
-chamber here — the image already carries that, as `/CLAUDE.md`, from
+chamber here — the image and the launcher already carry that, from
 [../agent-brief.md](../agent-brief.md). Three documents reach a dispatched agent, and
 they do not overlap:
 
 | Document | Where it comes from | What it says |
 |---|---|---|
-| `/CLAUDE.md` | baked into the image | where you are, what you cannot do, how work leaves |
+| the chamber brief — four byte-identical copies of one file: `/CLAUDE.md` and `/AGENTS.md` baked into the image, `/work/AGENTS.md` and `/work/AUTOCLAVE.md` written into the clone | image and launcher | where you are, what you cannot do, how work leaves |
 | `/work/CLAUDE.md` and the governed documents | the clone | what binds the code you write |
 | the brief you are dispatched with | this directory, plus the task | what you are for |
+
+**Four copies, because two CLIs look for two names in two places.** Claude Code reads
+`CLAUDE.md`, Codex reads `AGENTS.md`, and discovery starts at the working directory,
+which is `/work`. A copy at the filesystem root alone was not enough: probed on
+2026-08-02, a Codex seat reported that no instruction file had loaded automatically at
+all, and that `/AGENTS.md` existed but was not in its context. This table named only
+`/CLAUDE.md` until then, which is precisely the assumption that probe disproved. The
+count of *documents* is still three; what was wrong was the number of copies.
 
 These replaced `.claude/agents/worker.md`, `infra-worker.md` and `rebuilder.md`. Those
 were host roles holding `Write`, `Edit` and `Bash` on Tyrel's machine — the same reach
@@ -52,8 +60,14 @@ choice nothing ever made.
 
 Known-good model names, checked against Codex's own model list rather than guessed:
 `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.3-codex-spark`. For a Claude
-chamber the aliases `opus`, `sonnet`, `haiku` and `fable` work. Effort is one of
-`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+chamber the aliases `opus`, `sonnet`, `haiku` and `fable` work.
+
+**Effort depends on the seat**, and the seven levels are the union of two vendors'
+vocabularies rather than a list any one of them accepts. Claude takes `low`, `medium`,
+`high`, `xhigh` and `max`; the GPT-5.6 seats also take `none`; Spark's usable range is
+`low` through `xhigh`. No Codex seat accepts `minimal`. That is
+`.claude/agents/README.md`'s measured table, not a guess, and the launcher checks
+against it.
 
 Both are validated before anything is started, so a typo costs a line of output rather
 than a container.

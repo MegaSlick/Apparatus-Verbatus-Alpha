@@ -1,9 +1,11 @@
 # The autoclave — where agents work
 
 A sealed chamber a writing agent works inside. It has a full shell, installs
-what it needs, and runs its own tests. It cannot reach this machine, and it
-cannot push. Work comes back as a branch, and the session reads every line
-before anything enters the repository.
+what it needs, and runs its own tests. It cannot write this machine's repository
+and it cannot push. Work comes back as a branch, and the session reads every
+line before anything enters the repository. What it *can* touch on this machine
+— `/out`, its vendor's credential volume, the refs the launcher writes — is
+listed under Limits, and every one of them is untrusted until read.
 
 ## Why
 
@@ -52,7 +54,8 @@ the vendor and nothing about it is read, stored or logged by this tool.
 It is once, not once per agent. The sign-in lands in a Docker named volume that
 outlives every container and survives a Colima restart, and chambers mount it
 read-write so the CLIs can refresh their own tokens. It only has to be redone if
-the volume is deleted or a vendor forces a re-auth.
+the volume is deleted or a vendor forces a re-auth. Read-write and shared is a
+real limit, not a detail — see Limits.
 
 **Why not reuse the sign-in already on this Mac.** Claude Code keeps its
 credentials in the macOS Keychain, which a Linux container cannot read, and
@@ -60,8 +63,13 @@ lifting the token out to inject it would mean handling a live credential in
 plain text. Codex keeps a real file, but bind-mounting it would put the host
 credential inside a chamber that has network egress. The chamber gets its own.
 
-`doctor` reports whether each vendor is signed in. It never opens the volume:
-whether a sign-in exists is an operational fact, what it contains is not.
+`doctor` asks each vendor's CLI whether it is signed in, inside a throwaway
+container holding nothing but the volume. It keeps only the exit status, so
+nothing the volume contains reaches its output — and it does not call a volume a
+sign-in. `login` creates the volume before the sign-in runs, so an abandoned
+attempt used to leave one behind that everything downstream read as a
+credential. Where there is no engine or no image to ask with, `doctor` says
+`unknown` rather than guessing in either direction.
 
 ## Running a task
 
@@ -80,12 +88,19 @@ sh operations/autoclave/autoclave.sh rm my-task        # destroy the chamber
 A base given to `new` is resolved to a SHA on the host, so a chamber is pinned to
 an exact tree rather than to whatever a branch name meant at clone time.
 
-`collect` requires a clean tree inside: uncommitted work is refused rather than
-silently dropped, and the refusal names the files. It fetches the branch and
-prints the two commands to read it. **It never merges.**
+`collect` requires a clean tree inside — modified, staged **and untracked** —
+because a bundle carries commits and anything loose beside them is left behind.
+The refusal names the paths. A branch carrying no commits is not that failure:
+it collects, so the report survives, and says `NO COMMITS` loudly. It fetches
+the branch, names any commit that came back with no `Co-Authored-By` trailer,
+and prints the two commands to read it. **It never merges.**
 
-`rm` destroys the container and **keeps** the output drawer, because the bundle
-is the only surviving evidence that a dispatch happened.
+`rm` reads the chamber before destroying it: uncommitted work, or commits this
+repository does not have, are refused with the way out named. A stopped chamber
+cannot be read, so it is refused too. `rm <task> force` is the word that says
+the loss is intended, and it is also how to remove a chamber that will not
+start. Either way the output drawer is **kept**, because the bundle is the only
+surviving evidence that a dispatch happened.
 
 ## Dispatching an agent into one
 
@@ -110,12 +125,21 @@ Which model a job wants is the table in
 The shape of a dispatch:
 
 1. `new <task>` — the chamber, pinned to a base commit.
-2. `dispatch <task> <vendor> <brief> <model>` — the brief travels as a file, never as
-   a shell argument, and the model and effort as environment variables. A brief
-   containing `; rm -rf /` arrives as one inert argument; that is tested.
+2. `dispatch <task> <vendor> <brief> <model>` — the brief travels as a file and
+   becomes the CLI's standard input, so it is never an argument on either side of
+   the boundary and never appears in the container's process list. Model and
+   effort travel as environment variables. Effort is checked against the vendor
+   and model, not against a vocabulary: `.claude/agents/README.md` measured which
+   levels each seat can actually reach.
 3. The agent works, runs its own tests, and commits to `agent/<task>`.
 4. A reader writes `/out/report.md` instead of committing.
 5. `collect <task>` — the branch arrives locally. Nothing is merged.
+5a. **Re-author what came back.** A chamber commits as `autoclave
+   <autoclave@localhost>`. `commit-msg` runs in there now, so each commit should
+   already name the model that wrote it, and `collect` says so when one does not
+   — but the *author* is still the container. Nothing merges until each commit
+   names the model and belongs to Tyrel: squash, or re-author and keep the
+   trailers.
 6. The session reads every line of the diff, then decides.
 7. `rm <task>`.
 
@@ -176,13 +200,47 @@ transcript, and which the guard's own `SECRET_DRAWERS` names as a place secrets
 may live; and `scriptorium/`. Everything else in the repository is readable,
 including `.claude/settings.local.json`. Say so rather than assuming otherwise.
 
+**The masks cover the working tree, not `/src/.git`,** which the clone reads in
+full. They hold because all three drawers are gitignored and nothing secret is
+in reachable history; `pre-push`'s credential scan and the ingress check are
+what keep that true, not the masks.
+
+**`/out` is real, writable host state, and it has no quota.** The launcher opens
+the brief and report slots once each, refusing to follow a link and refusing
+anything that is not a regular file, so a chamber cannot redirect a host read or
+write through them. That is not the same as a chamber being unable to fill the
+disk with its own output drawer, which it can.
+
 **One vendor's credential enters a chamber, or none.** `new <task> <base>
-<vendor>` decides it, because a mount cannot be added to a running container,
-and `dispatch` refuses a vendor the chamber was not built for. A chamber created
+<vendor>` decides it, because a mount cannot be added to a running container.
+`new` refuses a vendor that is not signed in rather than labelling a chamber for
+a credential it never mounted, and `dispatch` refuses a vendor the chamber was
+not built for and then asks the CLI *inside* the chamber whether that credential
+still works. A chamber created
 without a vendor — the default, and most of them — holds no credential at all
 and is fine for running the suite or reading the tree. Before this, every
 chamber received every sign-in that existed, read-write, so a Codex agent held
 the Claude credential and the reverse.
+
+**That credential volume is shared between chambers and outlives them.** It is
+mounted read-write at the directory the CLI keeps its *whole* configuration in —
+read-write is not optional, because both CLIs refresh their own tokens — and
+every later chamber for the same vendor mounts the same volume. An agent has a
+full shell and can read and rewrite every file in it, including anything the
+next agent's CLI will read as instructions or hooks. So the isolation here is
+against the *other* vendor's credential and against the host, not between one
+chamber and the next, and this volume is the one thing `rm` does not destroy.
+Closing that means giving each chamber a private copy, which is a change nobody
+here can test: whether a token refreshed inside the copy invalidates the
+original is a question about the vendor, and the local `auth status` check
+cannot answer it. It is a stated limit until an engine and a real sign-in can
+settle it.
+
+**What comes back is the container's, not a person's.** The clone commits as
+`autoclave <autoclave@localhost>`; `commit-msg` runs in there now, so a returned
+commit should already name the model that wrote it, and `collect` says so when
+one does not. The *author* is still the chamber, and re-authoring before merge
+is step 5a above.
 
 **No push, by construction.** There are no git credentials in the image. An
 agent cannot push and cannot open a pull request. The session does both, after
@@ -193,7 +251,13 @@ to: `pyproject.toml` listed `autoclave` in pytest's `norecursedirs` for the
 cleanroom tray, which carried that name until 2026-08-01, and the pattern matched
 a directory of that name anywhere. The tray is `cleanroom/` now and the skip entry
 moved with it, so a test beside this script would be collected today. The file
-stays where it is by convention, not by necessity.
+stays where it is by convention, not by necessity. A recording stand-in for the
+`docker` CLI drives the engine-facing branches against real disposable
+repositories, so what argv reached the engine, what the chamber's shell was
+handed, and which refs and files survived a failure are all outcome-tested. It
+is not a daemon. **Nothing there says an image built, a mount behaved, a mask
+held against an adversary, or that a real agent ran.** Those still need an
+engine.
 
 **What has and has not been measured**, with the numbers and the dates, is in
 [history/2026-08-02_autoclave-measurements.md](../../history/2026-08-02_autoclave-measurements.md).

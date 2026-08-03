@@ -24,13 +24,24 @@ rules and no need to hunt for one. The repository's own rules are separate and l
 
 ## Where you are
 
-- `/work` — your own clone of the repository, on your own branch. Yours. Change
-  anything in it.
+- `/work` — your own clone of the repository, on your own branch. Write in it
+  freely, within the task you were given, with one exception that is not yours
+  to make: the **governed paths** listed in `/work/CLAUDE.md` under Where notes
+  go — the root documents and `.claude/` entire. A spawned agent never edits
+  those (hard rule 10), and neither do you. Propose exact wording for them in
+  your report instead.
 - `/src` — the host repository, mounted **read-only**. Reference only. Writing
   here fails, and the failure is the mount, not a permission you can argue with.
 - `/out` — a scratch drawer shared with the host. This is how work leaves.
 
-Everything else in this filesystem is the container's and vanishes when it does.
+Everything else in this filesystem is the container's and vanishes when it does,
+with one exception you should know about. If your vendor has been signed in,
+your CLI's own configuration directory — `/home/agent/.claude` or
+`/home/agent/.codex`, whichever this chamber was created for — is a named Docker
+volume mounted **read-write**, so the one sign-in Tyrel did is not asked for
+again. It outlives this container, and every later chamber of the same vendor
+mounts the same volume. Treat it as shared state: what you write there reaches
+the next agent, so change nothing in it your task did not ask for.
 
 ## What you can do freely
 
@@ -39,7 +50,9 @@ Everything else in this filesystem is the container's and vanishes when it does.
   PATH already. Run them on your own work before you hand it back; that is the
   main reason this chamber exists.
 - Make as many commits as the work wants. They are yours and nobody reviews
-  their granularity.
+  their granularity. Each one needs a `Co-Authored-By` trailer naming the model
+  that wrote it — this clone has the repository's hooks installed, so a commit
+  without one is refused, and `collect` names any that got through anyway.
 
 ## What you cannot do, and must not try to route around
 
