@@ -33,7 +33,7 @@ import json
 
 import pytest
 
-from common.seats.errors import (
+from common.chairs.errors import (
     AdapterFetchRefusal,
     CacheRevisionRefusal,
     ChairRefusal,
@@ -42,8 +42,8 @@ from common.seats.errors import (
     ServingRecipeRefusal,
     UnresolvedChairRefusal,
 )
-from common.seats.models import ChairIdentity
-from common.seats.registry import CACHE_DESCRIPTOR, ChairRegistry
+from common.chairs.models import ChairIdentity
+from common.chairs.registry import CACHE_DESCRIPTOR, ChairRegistry
 
 from .conftest import (
     RecordingFetcher,
@@ -292,7 +292,7 @@ def test_an_adapter_whose_base_became_absent_is_refused(adapter_world, tmp_path)
 
     # Built directly rather than through the parser, which refuses this pairing
     # outright: the question here is what `ensure` does if it ever sees one.
-    from common.seats.models import AbsentChair, ModelsConfig
+    from common.chairs.models import AbsentChair, ModelsConfig
 
     hobbled = ModelsConfig(
         witness_floor=2,
@@ -393,7 +393,7 @@ def test_a_local_path_escaping_the_model_root_refuses_without_touching_the_netwo
 def test_every_refusal_this_package_raises_is_a_member_of_the_closed_taxonomy():
     """A new failure mode has to be spelled as one of these, so a reader of the
     seven doors above can be sure the list is the whole list."""
-    from common.seats.errors import ALL_REFUSAL_TYPES, is_closed_refusal
+    from common.chairs.errors import ALL_REFUSAL_TYPES, is_closed_refusal
 
     for refusal in ALL_REFUSAL_TYPES:
         error = refusal("attestator_1", "a concrete difference")

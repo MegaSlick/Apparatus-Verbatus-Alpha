@@ -18,6 +18,9 @@ import tomllib
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails
+from common.chairs.protocol import ChairProtocol
+from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import digest_of
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
@@ -25,9 +28,6 @@ from common.contracts.identities import artifact_id
 from common.contracts.outcomes import classify
 from common.contracts.stages import DESIGNATOR
 from common.runtree.store import PublishResult, RunTree
-from common.seats.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails
-from common.seats.protocol import ChairProtocol
-from common.seats.registry import ChairRegistry
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
 # keeping: 0 = complete, 2 = structural or fatal, 3 = accounted but holdable.

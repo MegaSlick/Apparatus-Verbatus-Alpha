@@ -18,9 +18,9 @@ programs. This file covers the registry's half.
 
 import pytest
 
+from common.chairs.errors import ConfigurationRefusal, UnresolvedChairRefusal
+from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.outcomes import witness_coverage
-from common.seats.errors import ConfigurationRefusal, UnresolvedChairRefusal
-from common.seats.models import AbsentChair, ChairIdentity
 
 from .conftest import absent_chair, config_of, hf_chair, registry_for, serving_details
 

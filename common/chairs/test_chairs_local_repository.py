@@ -13,8 +13,8 @@ and holding no revision at all, because it has no git commit to name.
 
 import pytest
 
-from common.seats.errors import ConfigurationRefusal, DigestMismatchRefusal, LocalPathRefusal
-from common.seats.registry import ChairRegistry, resolve_local_path
+from common.chairs.errors import ConfigurationRefusal, DigestMismatchRefusal, LocalPathRefusal
+from common.chairs.registry import ChairRegistry, resolve_local_path
 
 from .conftest import (
     RecordingFetcher,

@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMON = ROOT / "common"
-CHAIRS = COMMON / "seats"
+CHAIRS = COMMON / "chairs"
 
 # `huggingface_hub` is on this list for a reason of its own. The whole package
 # must import, parse and run offline with the dependency absent, so the one

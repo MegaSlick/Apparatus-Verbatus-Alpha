@@ -6,7 +6,7 @@ naming the protocol clause."
 
 Two implementations are independent, in the spec's own words, "when neither
 imports the other and both are exercised by the same contract suite". Here that
-is `common.seats.registry.SeatRegistry` — real, filesystem- and Hugging
+is `common.chairs.registry.SeatRegistry` — real, filesystem- and Hugging
 Face-backed — and `DeterministicSeatRegistry` in this package's `conftest.py`,
 in-memory and network-free. Every test below runs once per implementation, from
 one body, so a claim that holds for one and not the other cannot pass.
@@ -20,10 +20,10 @@ and nothing whatever about model churn.
 
 import pytest
 
-from common.seats.errors import ProtocolClauseRefusal, UnresolvedChairRefusal
-from common.seats.models import AbsentChair, ChairIdentity, VerifiedSnapshot
-from common.seats.protocol import ChairProtocol, exercise_contract
-from common.seats.receipts import build_receipt
+from common.chairs.errors import ProtocolClauseRefusal, UnresolvedChairRefusal
+from common.chairs.models import AbsentChair, ChairIdentity, VerifiedSnapshot
+from common.chairs.protocol import ChairProtocol, exercise_contract
+from common.chairs.receipts import build_receipt
 
 from .conftest import (
     DeterministicChairRegistry,
@@ -58,7 +58,7 @@ def implementation(request, tmp_path):
         model_root="model-fixtures",
     )
     if request.param == "registry":
-        from common.seats.config import load_models_toml
+        from common.chairs.config import load_models_toml
 
         return registry_for(load_models_toml(config_path), tmp_path, RecordingFetcher({}))
     return DeterministicChairRegistry(config_path, tmp_path / "deterministic-snapshot")
@@ -79,12 +79,12 @@ def test_neither_implementation_imports_or_delegates_to_the_other():
     which says nothing about whether the deterministic seat leans on it."""
     import inspect
 
-    import common.seats.registry as registry_module
+    import common.chairs.registry as registry_module
 
     body = inspect.getsource(DeterministicChairRegistry)
     body = body[body.index('"""', body.index('"""') + 3) + 3 :]  # past the class docstring
 
-    assert "common.seats.registry" not in body
+    assert "common.chairs.registry" not in body
     assert "SeatRegistry(" not in body
     assert not issubclass(DeterministicChairRegistry, registry_module.ChairRegistry)
     assert "conftest" not in inspect.getsource(registry_module)
@@ -255,7 +255,7 @@ def test_the_two_implementations_agree_on_a_huggingface_pin_they_cannot_both_fet
     config_path = write_models_toml(
         tmp_path, {CONFIGURED: hf_chair(CONFIGURED, "d" * 64)}, witness_floor=1
     )
-    from common.seats.config import load_models_toml
+    from common.chairs.config import load_models_toml
 
     real = registry_for(load_models_toml(config_path), tmp_path, RecordingFetcher({}))
     deterministic = DeterministicChairRegistry(config_path, tmp_path / "snapshot")

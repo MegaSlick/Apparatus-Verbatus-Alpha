@@ -22,11 +22,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
-from common.seats.registry import ChairRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     StageContext,

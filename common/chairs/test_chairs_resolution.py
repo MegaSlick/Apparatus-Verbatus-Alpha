@@ -11,9 +11,9 @@ beyond the one config file, and nothing here reaches a network.
 
 import pytest
 
-from common.seats.config import load_models_toml, parse_models_config
-from common.seats.errors import ConfigurationRefusal, UnresolvedChairRefusal
-from common.seats.models import AbsentChair, ChairIdentity
+from common.chairs.config import load_models_toml, parse_models_config
+from common.chairs.errors import ConfigurationRefusal, UnresolvedChairRefusal
+from common.chairs.models import AbsentChair, ChairIdentity
 
 from .conftest import (
     HF_REVISION,
@@ -204,7 +204,7 @@ def test_adapter_of_naming_a_real_sibling_chair_resolves(tmp_path):
 
 def test_a_role_the_schema_has_never_seen_resolves_without_a_schema_change(tmp_path):
     """Spec 02: "The registry accepts a role added later without a schema
-    change — that is test 1's real requirement." Nothing in `common/seats/`
+    change — that is test 1's real requirement." Nothing in `common/chairs/`
     holds a list of role names to add to, which is what makes this pass."""
     chairs = {
         "attestator_1": hf_chair("attestator_1", DIGEST),
@@ -256,6 +256,6 @@ def test_a_witness_floor_that_is_not_a_non_negative_integer_is_refused(floor):
 
 
 def _registry(config, tmp_path):
-    from common.seats.registry import ChairRegistry
+    from common.chairs.registry import ChairRegistry
 
     return ChairRegistry(config, manifest_root=tmp_path)

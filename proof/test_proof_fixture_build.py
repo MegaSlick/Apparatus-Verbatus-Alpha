@@ -20,11 +20,11 @@ from pathlib import Path
 
 import pytest
 
+from common.chairs.config import load_models_toml
+from common.chairs.models import ChairIdentity
 from common.contracts.outcomes import OutcomeClass, classify
 from common.contracts.stages import PERLECTOR
 from common.imaging import decode_grayscale_png
-from common.seats.config import load_models_toml
-from common.seats.models import ChairIdentity
 from proof.build_fixture import (
     ACTS,
     RECOVERY_BOUNDS,

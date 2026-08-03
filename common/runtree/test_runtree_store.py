@@ -15,14 +15,14 @@ import json
 
 import pytest
 
+from common.chairs.models import ChairIdentity, ServingDetails
+from common.chairs.receipts import build_receipt
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
 from common.runtree.store import RECEIPTS_DIR, RUN_FILE, RunTree
-from common.seats.models import ChairIdentity, ServingDetails
-from common.seats.receipts import build_receipt
 
 PAGE_BYTES = b"synthetic page one"
 SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTES), "ordinal": 1}]

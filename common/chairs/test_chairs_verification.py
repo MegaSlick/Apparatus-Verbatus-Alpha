@@ -18,10 +18,10 @@ import json
 
 import pytest
 
+from common.chairs.errors import DigestMismatchRefusal, UnresolvedChairRefusal
+from common.chairs.manifests import build_manifest, manifest_digest, read_manifest, write_manifest
+from common.chairs.registry import CACHE_DESCRIPTOR
 from common.contracts.canonical import canonical_bytes, digest_bytes
-from common.seats.errors import DigestMismatchRefusal, UnresolvedChairRefusal
-from common.seats.manifests import build_manifest, manifest_digest, read_manifest, write_manifest
-from common.seats.registry import CACHE_DESCRIPTOR
 
 from .conftest import (
     RecordingFetcher,
@@ -284,7 +284,7 @@ def test_a_symlinked_file_inside_a_snapshot_is_refused_rather_than_followed(tmp_
 def test_the_huggingface_adapter_passes_the_pin_through_to_the_official_client(tmp_path):
     """What the adapter asks the real client for: this repo, this revision, and
     exactly these paths. Nothing about the service's own behaviour is claimed."""
-    from common.seats.registry import HuggingFaceFetcher
+    from common.chairs.registry import HuggingFaceFetcher
 
     source = write_snapshot(tmp_path / "official-cache", {"nested/model.bin": b"official\n"})
 
@@ -312,7 +312,7 @@ def test_the_huggingface_adapter_passes_the_pin_through_to_the_official_client(t
 
 
 def test_the_huggingface_adapter_refuses_a_pinned_file_the_client_did_not_return(tmp_path):
-    from common.seats.registry import HuggingFaceFetcher
+    from common.chairs.registry import HuggingFaceFetcher
 
     source = write_snapshot(tmp_path / "official-cache", {"other.bin": b"not what was asked\n"})
 

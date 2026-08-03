@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from common.chairs import ChairIdentity, ChairRegistry
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
 from common.runtree.store import RunTree
-from common.seats import ChairIdentity, ChairRegistry
 from common.stage import (
     StageContext,
     adapter_recipe_for,

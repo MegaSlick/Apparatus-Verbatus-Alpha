@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from common.chairs import ChairIdentity, load_models_toml
 from common.contracts.canonical import canonical_bytes, digest_of
 from common.contracts.envelope import validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
@@ -34,7 +35,6 @@ from common.contracts.stages import (
     RECENSOR,
 )
 from common.runtree.store import RunTree
-from common.seats import ChairIdentity, load_models_toml
 from common.stage import load_fixture, run_config_bindings
 
 ROOT = Path(__file__).resolve().parents[2]

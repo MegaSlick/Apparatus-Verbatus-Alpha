@@ -25,8 +25,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from common.chairs.manifests import build_manifest, manifest_digest, write_manifest  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
-from common.seats.manifests import build_manifest, manifest_digest, write_manifest  # noqa: E402
 
 CONFIG_ROOT = Path(__file__).resolve().parents[1] / "config"
 MODEL_ROOT = CONFIG_ROOT / "model-fixtures"

@@ -16,10 +16,10 @@ from typing import Any
 
 import pytest
 
-from common.seats.config import parse_models_config
-from common.seats.manifests import build_manifest, manifest_digest, write_manifest
-from common.seats.models import ModelsConfig, ServingDetails
-from common.seats.registry import ChairRegistry
+from common.chairs.config import parse_models_config
+from common.chairs.manifests import build_manifest, manifest_digest, write_manifest
+from common.chairs.models import ModelsConfig, ServingDetails
+from common.chairs.registry import ChairRegistry
 
 HF_REVISION = "a" * 40
 LICENSE_NOTE = "fixture placeholder; not a real model, so no model license applies"
@@ -236,7 +236,7 @@ class DeterministicChairRegistry:
     """
 
     def __init__(self, config_path: str | Path, snapshot_root: Path):
-        from common.seats.config import load_models_toml
+        from common.chairs.config import load_models_toml
 
         self.config = load_models_toml(config_path)
         self.snapshot_root = Path(snapshot_root)
@@ -244,7 +244,7 @@ class DeterministicChairRegistry:
         self.calls: list[tuple[str, str]] = []
 
     def resolve(self, role: str):
-        from common.seats.errors import UnresolvedChairRefusal
+        from common.chairs.errors import UnresolvedChairRefusal
 
         self.calls.append(("resolve", role))
         configured = self.config.chairs.get(role)
@@ -253,7 +253,7 @@ class DeterministicChairRegistry:
         return configured
 
     def ensure(self, identity):
-        from common.seats.models import VerifiedSnapshot
+        from common.chairs.models import VerifiedSnapshot
 
         self.calls.append(("ensure", identity.role))
         self._require_current(identity)
@@ -262,7 +262,7 @@ class DeterministicChairRegistry:
         )
 
     def receipt(self, identity, serving):
-        from common.seats.receipts import build_receipt
+        from common.chairs.receipts import build_receipt
 
         self.calls.append(("receipt", identity.role))
         self._require_current(identity)
@@ -276,8 +276,8 @@ class DeterministicChairRegistry:
         all, and the suite would then be proving only that both have the right
         method names.
         """
-        from common.seats.errors import UnresolvedChairRefusal
-        from common.seats.models import AbsentChair, ChairIdentity
+        from common.chairs.errors import UnresolvedChairRefusal
+        from common.chairs.models import AbsentChair, ChairIdentity
 
         configured = self.resolve(identity.role)
         if isinstance(configured, AbsentChair):

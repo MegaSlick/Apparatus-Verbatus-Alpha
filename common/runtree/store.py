@@ -39,6 +39,13 @@ import os
 from pathlib import Path
 from typing import Any, Final
 
+# At module level, not deferred inside the two receipt methods. The dependency is
+# real — the store is the one writer and the one reader of a run receipt, and it
+# refuses an invalid one at both ends — so it belongs where a reader of the
+# imports can see it. `common/seats/` imports nothing from here, so there is no
+# cycle to dodge, and a deferred import that exists only to hide a layer from the
+# eye is a layer nobody can check.
+from common.chairs.receipts import receipt_record, validate_receipt
 from common.contracts.canonical import (
     SCHEMA_LABEL,
     canonical_bytes,
@@ -50,14 +57,6 @@ from common.contracts.envelope import validate_envelope
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import writing_directory
-
-# At module level, not deferred inside the two receipt methods. The dependency is
-# real — the store is the one writer and the one reader of a run receipt, and it
-# refuses an invalid one at both ends — so it belongs where a reader of the
-# imports can see it. `common/seats/` imports nothing from here, so there is no
-# cycle to dodge, and a deferred import that exists only to hide a layer from the
-# eye is a layer nobody can check.
-from common.seats.receipts import receipt_record, validate_receipt
 
 RUN_FILE: Final = "run.json"
 MANIFEST_FILE: Final = "manifest.json"

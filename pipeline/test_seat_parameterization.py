@@ -29,13 +29,13 @@ from pathlib import Path
 
 import pytest
 
-from common.seats import (
+from common.chairs import (
     ChairIdentity,
     ChairRegistry,
     ServingDetails,
     exercise_contract,
 )
-from common.seats.conftest import DeterministicChairRegistry
+from common.chairs.conftest import DeterministicChairRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_CONFIG = ROOT / "config" / "models.toml"

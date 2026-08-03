@@ -14,8 +14,8 @@ temporary directory and compares, byte for byte, against what is committed.
 
 from pathlib import Path
 
-from common.seats.config import load_models_toml
-from common.seats.models import ChairIdentity
+from common.chairs.config import load_models_toml
+from common.chairs.models import ChairIdentity
 from proof.build_model_fixtures import FIXTURE_CHAIRS, build, fixture_files
 
 ROOT = Path(__file__).resolve().parents[1]

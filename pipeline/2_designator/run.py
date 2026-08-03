@@ -38,12 +38,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
+from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import attempt_id, region_id  # noqa: E402
 from common.contracts.stages import DESIGNATOR, EXEMPLAR  # noqa: E402
 from common.imaging import crop_png  # noqa: E402
-from common.seats.models import AbsentChair, ChairIdentity  # noqa: E402
-from common.seats.registry import ChairRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     act_bounds,

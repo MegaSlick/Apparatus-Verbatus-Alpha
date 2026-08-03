@@ -28,11 +28,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import self_hash  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category  # noqa: E402
 from common.contracts.stages import ARCHETYPUS, DESIGNATOR, PERLECTOR, RECENSOR  # noqa: E402
-from common.seats.registry import ChairRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     expected_acts,

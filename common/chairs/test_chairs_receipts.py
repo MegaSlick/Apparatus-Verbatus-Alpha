@@ -16,9 +16,9 @@ way an incomplete one is refused.
 
 import pytest
 
-from common.seats.errors import ReceiptRefusal, UnresolvedChairRefusal
-from common.seats.models import ChairIdentity
-from common.seats.receipts import RECEIPT_SCHEMA, build_receipt, receipt_record, validate_receipt
+from common.chairs.errors import ReceiptRefusal, UnresolvedChairRefusal
+from common.chairs.models import ChairIdentity
+from common.chairs.receipts import RECEIPT_SCHEMA, build_receipt, receipt_record, validate_receipt
 
 from .conftest import (
     absent_chair,
