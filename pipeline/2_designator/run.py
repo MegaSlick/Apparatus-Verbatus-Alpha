@@ -42,18 +42,50 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import attempt_id, region_id  # noqa: E402
 from common.contracts.stages import DESIGNATOR, EXEMPLAR  # noqa: E402
 from common.imaging import crop_png  # noqa: E402
+from common.seats.models import AbsentSeat, SeatIdentity  # noqa: E402
+from common.seats.registry import SeatRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     act_bounds,
     act_identity,
     continuation_for,
+    fixture_serving_details,
     open_context,
     page_identity,
     run_stage,
     stage_parser,
 )
 
-ADAPTER_REVISION = "fake-designator-v0"
+DESIGNATOR_SEAT = "designator_structure"
+
+
+def structure_provenance(context) -> dict:
+    """Verify and record the exact seat that produced structural proposals.
+
+    The walking skeleton derives deterministic crops, but it still exercises the
+    structure-seat seam. An absent or unverifiable Designator is a refusal, never
+    a cue to synthesize structure through a different role.
+    """
+    resolved = context.registry.resolve(DESIGNATOR_SEAT)
+    if isinstance(resolved, AbsentSeat):
+        raise ContractError(
+            f"the Designator seat is explicitly absent: {resolved.reason}; "
+            "no other seat may mark out structure"
+        )
+    if not isinstance(resolved, SeatIdentity):
+        raise ContractError("Designator resolution returned neither an identity nor an absence")
+    receipt_ref = context.write_serving_receipt(resolved, fixture_serving_details(resolved))
+    return {
+        "seat": resolved.role,
+        "seat_state": "configured",
+        "resolved_identity": resolved.to_record(),
+        "resolved_revision": {
+            "kind": resolved.receipt_revision_kind,
+            "value": resolved.receipt_revision,
+        },
+        "receipt_ref": receipt_ref,
+        "adapter_revision": context.adapter_revision,
+    }
 
 
 def page_records(context) -> dict[int, dict]:
@@ -97,6 +129,7 @@ def cut_region(context, act, page_record, bounds, ordinal, page_ordinal, origin)
     far side of a page break.
     """
     act_id = act_identity(context.fixture, act)
+    provenance = structure_provenance(context)
     image_path = page_record["payload"]["image_path"]
     page_bytes = context.tree.read_bytes(image_path)
 
@@ -123,6 +156,7 @@ def cut_region(context, act, page_record, bounds, ordinal, page_ordinal, origin)
             "transform": transform,
             "image_path": stored.relative_path,
             "image_sha256": digest,
+            "provenance": provenance,
         },
     )
     return act_id
@@ -249,7 +283,11 @@ def initial_pass(context) -> int:
         kind="proposal-seal",
         subject_id="proposal-seal",
         outcome="proposed",
-        payload={"expected_acts": expected, "count": len(expected)},
+        payload={
+            "expected_acts": expected,
+            "count": len(expected),
+            "provenance": structure_provenance(context),
+        },
     )
     return len(expected)
 
@@ -304,9 +342,10 @@ def _regions_of(context, act_id: str) -> list[dict]:
     return records
 
 
-def main() -> int:
+def main(registry_factory=SeatRegistry.from_toml) -> int:
+    """Run through the explicitly supplied structure-seat implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, DESIGNATOR, ADAPTER_REVISION)
+    context = open_context(args, DESIGNATOR, registry_factory=registry_factory)
 
     if args.operation == "recover":
         if not args.act:

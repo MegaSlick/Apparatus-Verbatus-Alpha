@@ -32,6 +32,7 @@ from common.contracts.canonical import self_hash  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category  # noqa: E402
 from common.contracts.stages import ARCHETYPUS, DESIGNATOR, PERLECTOR, RECENSOR  # noqa: E402
+from common.seats.registry import SeatRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     expected_acts,
@@ -39,9 +40,8 @@ from common.stage import (  # noqa: E402
     open_context,
     run_stage,
     stage_parser,
+    validate_serving_provenance,
 )
-
-ADAPTER_REVISION = "fake-archetypus-v0"
 
 
 def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
@@ -63,9 +63,10 @@ def latest_reading(context, act_id: str) -> dict:
     )
 
 
-def main() -> int:
+def main(registry_factory=SeatRegistry.from_toml) -> int:
+    """Run under the explicitly supplied seat/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, ARCHETYPUS, ADAPTER_REVISION)
+    context = open_context(args, ARCHETYPUS, registry_factory=registry_factory)
 
     for act in expected_acts(context):
         act_id = act["act_id"]
@@ -104,6 +105,12 @@ def main() -> int:
                 "from a reading that succeeded, and a failed one is held, never written"
             )
         payload = reading["payload"]
+        validate_serving_provenance(
+            context,
+            payload["provenance"],
+            producer_stage=PERLECTOR,
+            require_receipt=True,
+        )
         record = {
             "act_id": act_id,
             "act_key": act["act_key"],

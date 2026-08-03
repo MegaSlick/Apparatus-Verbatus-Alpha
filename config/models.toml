@@ -1,0 +1,195 @@
+# The only place a model is named (spec 02, master plan §2). Nothing in
+# `common/seats/` may rank, prefer, select, substitute or fall back among seats,
+# revisions, recipes or caches: resolution is by name, and the only outcomes are
+# the named artifact or a refusal (GOVERNANCE 3, read as ops rather than models).
+#
+# Roles are configuration keys, not concepts — `designator_structure`,
+# `attestator_1..n`, `perlector`, `secondary_proposer`, `annotator`. A role added
+# later resolves without a schema change; nothing in `common/seats/` hard-codes
+# this list.
+#
+# The live roster below is the offline walking skeleton's. Every configured entry
+# is a local fixture snapshot: a few deterministic bytes standing in for a model
+# repository, exactly as `proof/fixtures/synthetic-two-page-v0/*.png` stand in for
+# a scanned register. No model weights are vendored and nothing is downloaded.
+# `proof/build_model_fixtures.py` regenerates them and prints these pins.
+#
+# The real roster is at the bottom, commented out, pending Tyrel's S8 approval.
+# It does not participate in resolution, ranking, fallback, or the fixture run.
+
+# `path` and `manifest` are relative to this file's directory, and `..`,
+# absolute paths and symlink escapes are all refused. Off-pod the model root is
+# still an open question — spec 02's "Not owned here" flags it, and this file
+# does not settle it.
+model_root = "model-fixtures"
+
+# The minimum count of completed-class witness outcomes an act needs before it is
+# recorded `under_witnessed` (`common/contracts/outcomes.py::witness_coverage`).
+# A seat configured `state = "absent"` stays in the roster as an explicit absence
+# and counts against this floor: it is one fewer configured witness, and the floor
+# does not shrink to match.
+witness_floor = 3
+
+[adapter_recipes]
+door = "fake-door-v0"
+exemplar = "fake-exemplar-v0"
+designator = "fake-designator-v0"
+attestatores = "fake-attestatores-v0"
+perlector = "fake-perlector-v0"
+recensor = "fake-recensor-v0"
+archetypus = "fake-archetypus-v0"
+armarium = "fake-armarium-v0"
+
+[seats.designator_structure]
+state = "configured"
+source = "local-repository"
+path = "designator_structure"
+digest_manifest = "3dad6db1013dc4e983998ab081d76b4a3d52e9ed5c810c143e64e5555140462a"
+manifest = "manifests/designator_structure.json"
+serving_recipe = "fake-designator-v0"
+license_note = "fixture identity only; no model weights or model license apply"
+
+[seats.attestator_1]
+state = "configured"
+source = "local-repository"
+path = "attestator_1"
+digest_manifest = "c2364eff303df466f82856b47525813876d83de910bebaa9764c6569aa73f710"
+manifest = "manifests/attestator_1.json"
+serving_recipe = "fake-attestatores-v0"
+license_note = "fixture identity only; no model weights or model license apply"
+
+[seats.attestator_2]
+state = "configured"
+source = "local-repository"
+path = "attestator_2"
+digest_manifest = "c07a3e5a8111a2a4c01882428f23cce5d9ce4758e4b59f367ae1c535c9737f69"
+manifest = "manifests/attestator_2.json"
+serving_recipe = "fake-attestatores-v0"
+license_note = "fixture identity only; no model weights or model license apply"
+
+[seats.attestator_3]
+state = "configured"
+source = "local-repository"
+path = "attestator_3"
+digest_manifest = "170f41966db60a5e67fc437094d61122d6e7d557b2bd9fe64539f596d2ac6a1f"
+manifest = "manifests/attestator_3.json"
+serving_recipe = "fake-attestatores-v0"
+license_note = "fixture identity only; no model weights or model license apply"
+
+[seats.perlector]
+state = "configured"
+source = "local-repository"
+path = "perlector"
+digest_manifest = "a375edc9f2ce082e8865db87130b581cafdd30d1711709baba9e4ceff1869435"
+manifest = "manifests/perlector.json"
+serving_recipe = "fake-perlector-v0"
+license_note = "fixture identity only; no model weights or model license apply"
+
+[seats.secondary_proposer]
+state = "absent"
+reason = "no secondary proposer is configured for the offline walking skeleton"
+
+# Real roster, commented pending Tyrel's S8 approval. Resolving a revision is not
+# choosing a roster: roster membership is his decision at S8, and nothing below
+# was added, removed or ranked here. The seat-to-model mapping is WITNESS_BENCH's
+# own "Seat today" column, read across unchanged — three witnesses, of which
+# chandra-ocr-2 also fills the structure seat ("one model may serve more than one
+# role... configuration, not architecture", ARCHITECTURE).
+#
+# The abbreviated revisions the archived research file carries (`af93b47…`,
+# `ca2150e…`) are not pins and are deliberately not copied. These full pins were
+# resolved on 2026-08-03 UTC with the exact command
+# `git ls-remote --exit-code https://huggingface.co/<repo> refs/heads/main`.
+# This is a network read only; no model snapshot was downloaded, and each
+# abbreviated prefix in the archived memo matches the full id resolved here.
+#
+# `digest_manifest` and `manifest` are unfilled below on purpose: a manifest can
+# only be built from a verified fetch, and this build fetched nothing. They are
+# the first thing an approved roster needs before `ensure()` can verify it.
+#
+# datalab-to/chandra-ocr-2:
+# git ls-remote --exit-code https://huggingface.co/datalab-to/chandra-ocr-2 refs/heads/main
+# af93b47dba1b47b6640c86ccf487ed2260ab9a09	refs/heads/main
+# Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR:
+# git ls-remote --exit-code https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR refs/heads/main
+# e371095d4ffe585f31f4974462931ddbac61ff64	refs/heads/main
+# stanford-oval/churro-3B:
+# git ls-remote --exit-code https://huggingface.co/stanford-oval/churro-3B refs/heads/main
+# ca2150ea465d5a3d67818c50e234b9422619c75d	refs/heads/main
+# Teklia/YOLOv26-DAI-CReTDHI-Record-Detection:
+# git ls-remote --exit-code https://huggingface.co/Teklia/YOLOv26-DAI-CReTDHI-Record-Detection refs/heads/main
+# 0c57f057391113579e7af170b864542f049e67aa	refs/heads/main
+# Qwen/Qwen3.5-9B:
+# git ls-remote --exit-code https://huggingface.co/Qwen/Qwen3.5-9B refs/heads/main
+# c202236235762e1c871ad0ccb60c8ee5ba337b9a	refs/heads/main
+#
+# [seats.designator_structure]
+# state = "configured"
+# source = "huggingface"
+# repo = "datalab-to/chandra-ocr-2"
+# revision = "af93b47dba1b47b6640c86ccf487ed2260ab9a09"
+# digest_manifest = "<sha256-of-canonical-manifest>"
+# manifest = "manifests/designator_structure-af93b47dba1b47b6640c86ccf487ed2260ab9a09.json"
+# serving_recipe = "<serving-recipe>"
+# license_note = "Revenue-capped; competitive use barred"
+#
+# WITNESS_BENCH lists chandra-ocr-2 as "Designator structure + witness", so it
+# fills two roles and is pinned twice, at the same revision.
+#
+# [seats.attestator_1]
+# state = "configured"
+# source = "huggingface"
+# repo = "datalab-to/chandra-ocr-2"
+# revision = "af93b47dba1b47b6640c86ccf487ed2260ab9a09"
+# digest_manifest = "<sha256-of-canonical-manifest>"
+# manifest = "manifests/attestator_1-af93b47dba1b47b6640c86ccf487ed2260ab9a09.json"
+# serving_recipe = "<serving-recipe>"
+# license_note = "Revenue-capped (>$2M revenue/funding barred; competitive use barred)"
+#
+# [seats.attestator_2]
+# state = "configured"
+# source = "huggingface"
+# repo = "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR"
+# revision = "e371095d4ffe585f31f4974462931ddbac61ff64"
+# digest_manifest = "<sha256-of-canonical-manifest>"
+# manifest = "manifests/attestator_2-e371095d4ffe585f31f4974462931ddbac61ff64.json"
+# serving_recipe = "<serving-recipe>"
+# license_note = "No license declared at all; using it is Tyrel's explicit licensing decision, recorded when he approves the roster"
+#
+# [seats.attestator_3]
+# state = "configured"
+# source = "huggingface"
+# repo = "stanford-oval/churro-3B"
+# revision = "ca2150ea465d5a3d67818c50e234b9422619c75d"
+# digest_manifest = "<sha256-of-canonical-manifest>"
+# manifest = "manifests/attestator_3-ca2150ea465d5a3d67818c50e234b9422619c75d.json"
+# serving_recipe = "<serving-recipe>"
+# license_note = "Non-commercial research only"
+#
+# [seats.secondary_proposer]
+# state = "configured"
+# source = "huggingface"
+# repo = "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection"
+# revision = "0c57f057391113579e7af170b864542f049e67aa"
+# digest_manifest = "<sha256-of-canonical-manifest>"
+# manifest = "manifests/secondary_proposer-0c57f057391113579e7af170b864542f049e67aa.json"
+# serving_recipe = "<serving-recipe>"
+# license_note = "AGPL-3.0"
+#
+# [seats.perlector]
+# state = "configured"
+# source = "huggingface"
+# repo = "Qwen/Qwen3.5-9B"
+# revision = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+# digest_manifest = "<sha256-of-canonical-manifest>"
+# manifest = "manifests/perlector-c202236235762e1c871ad0ccb60c8ee5ba337b9a.json"
+# serving_recipe = "<serving-recipe>"
+# license_note = "Apache-2.0"
+#
+# The ledger item spec 02 carries: the ARCHITECTURE annotation-layer wording is
+# owed before Spec 11 builds, so the annotator role is listed and stays commented
+# out with the rest of the roster until that lands.
+#
+# [seats.annotator]
+# state = "absent"
+# reason = "the ARCHITECTURE annotation-layer wording is owed before Spec 11 builds"

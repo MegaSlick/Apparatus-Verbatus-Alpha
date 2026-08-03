@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.canonical import canonical_bytes
+from common.contracts.canonical import canonical_bytes, digest_of
 from common.contracts.envelope import validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -34,27 +34,43 @@ from common.contracts.stages import (
     RECENSOR,
 )
 from common.runtree.store import RunTree
+from common.seats import SeatIdentity, load_models_toml
+from common.stage import load_fixture, run_config_bindings
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
 
+# Re-pinned, in the same commit that changed the provenance block, per spec 02's
+# test 9 — never loosened. Each is the digest of the whole relative-path ->
+# file-digest inventory, so "nothing changed" cannot be satisfied by a run that
+# is internally consistent but no longer the run these tests describe. A change
+# here is legitimate exactly when a commit deliberately changes what a run
+# writes, and then the new value belongs in that commit and nowhere else.
+HAPPY_RUN_TREE_DIGEST = "c5fb7fcf83350bfc5a57301b7d1dc04c94ce5b33a42962f93eaea5eb1032fe38"
+REVIEW_RUN_TREE_DIGEST = "dc9d9e3409b5ecef5804c3ae51e0ac2c8dca3caf5e2757713ad02ef404323ad7"
 
-def orchestrate(run_root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+
+def orchestrate(
+    run_root: Path, run_id: str, scenario: str, *, models_config: Path | None = None
+) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
+    command = [
+        sys.executable,
+        str(ORCHESTRATOR),
+        "--fixture",
+        FIXTURE,
+        "--scenario",
+        scenario,
+        "--run-id",
+        run_id,
+        "--run-root",
+        str(run_root),
+    ]
+    if models_config is not None:
+        command.extend(("--models-config", str(models_config)))
     return subprocess.run(
-        [
-            sys.executable,
-            str(ORCHESTRATOR),
-            "--fixture",
-            FIXTURE,
-            "--scenario",
-            scenario,
-            "--run-id",
-            run_id,
-            "--run-root",
-            str(run_root),
-        ],
+        command,
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -67,6 +83,11 @@ def snapshot(root: Path) -> dict[str, str]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def snapshot_digest(root: Path) -> str:
+    """The canonical pin for the full relative run-tree inventory."""
+    return digest_of(snapshot(root))
 
 
 def export_of(tree: RunTree) -> dict:
@@ -153,9 +174,130 @@ def test_the_run_used_no_network_and_no_model(happy_run):
     """The adapters are all fakes, declared as such. A run that had reached a real
     model would carry a resolved identity that was not a `fake-*` recipe."""
     _, tree = happy_run
-    recipes = tree.read_run()["adapter_recipes"]
+    run = tree.read_run()
+    config = load_models_toml(ROOT / "config" / "models.toml")
+    fixture = load_fixture(str(ROOT / "proof"))
+    bindings = run_config_bindings(config, fixture, "happy")
+    assert run["config_digest"] == bindings["config_digest"]
+    assert run["witness_seats"] == list(config.witness_seats)
+    assert run["adapter_recipes"] == dict(config.adapter_recipes)
+    recipes = run["adapter_recipes"]
     assert len(recipes) == 8
     assert all(revision.startswith("fake-") for revision in recipes.values())
+    # Every configured seat is a local-repository fixture: nothing here can have
+    # reached Hugging Face, because no live seat names a repo at all.
+    assert {
+        seat.source for seat in config.seats.values() if isinstance(seat, SeatIdentity)
+    } == {"local-repository"}
+
+
+def test_the_config_digest_still_binds_the_scenario_as_well_as_the_seats(happy_run):
+    """Spec 02 moved the roster into `config/models.toml`; it did not move the
+    scenario out of the run's configuration digest. The two are distinct runs,
+    and the digest has to say so before spec 01's third test below can refuse
+    one under the other's run id *before any write*."""
+    _, tree = happy_run
+    config = load_models_toml(ROOT / "config" / "models.toml")
+    fixture = load_fixture(str(ROOT / "proof"))
+
+    happy = run_config_bindings(config, fixture, "happy")["config_digest"]
+    review = run_config_bindings(config, fixture, "review")["config_digest"]
+
+    assert tree.read_run()["config_digest"] == happy
+    assert happy != review
+    # And the fixture is in there too: same scenario, one changed act, new digest.
+    altered = json.loads(json.dumps(fixture))
+    altered["act"][0]["text"] = "SOMETHING ELSE ENTIRELY"
+    assert run_config_bindings(config, altered, "happy")["config_digest"] != happy
+
+
+def test_an_explicit_absent_witness_is_a_visible_not_run_and_counts_against_floor(tmp_path):
+    """Exercise absence through real stage programs, not only the config parser."""
+    config_root = tmp_path / "seat-config"
+    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
+    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
+    live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
+    configured = """[seats.attestator_3]
+state = \"configured\"
+source = \"local-repository\"
+path = \"attestator_3\"
+digest_manifest = \"170f41966db60a5e67fc437094d61122d6e7d557b2bd9fe64539f596d2ac6a1f\"
+manifest = \"manifests/attestator_3.json\"
+serving_recipe = \"fake-attestatores-v0\"
+license_note = \"fixture identity only; no model weights or model license apply\"
+"""
+    absent = """[seats.attestator_3]
+state = \"absent\"
+reason = \"fixture test removes this witness without replacing it\"
+"""
+    assert configured in live
+    models_config = config_root / "models.toml"
+    models_config.write_text(live.replace(configured, absent), encoding="utf-8")
+
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "happy", models_config=models_config)
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(root, "r")
+    testimonia = [
+        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium"
+    ]
+    absent_records = [
+        record for record in testimonia if record["payload"]["seat"] == "attestator_3"
+    ]
+    assert len(absent_records) == 2
+    assert all(record["outcome"] == "not-run" for record in absent_records)
+    for record in absent_records:
+        provenance = record["payload"]["provenance"]
+        assert provenance["seat_state"] == "absent"
+        assert provenance["absence"] == {
+            "role": "attestator_3",
+            "state": "absent",
+            "reason": "fixture test removes this witness without replacing it",
+        }
+    export = export_of(tree)
+    assert export["aggregate"]["status"] == "partial"
+    assert all(item["under_witnessed"] is True for item in export["review"])
+    assert tree.read_run()["witness_seats"] == ["attestator_1", "attestator_2", "attestator_3"]
+
+
+def test_perlector_refuses_a_tampered_testimonium_model_provenance(tmp_path):
+    """#42 at the handoff: a sealed-looking witness cannot change its model pin."""
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    entry = next(
+        entry
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium"
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"]["provenance"]["resolved_revision"] = {
+        "kind": "digest-manifest",
+        "value": "0" * 64,
+    }
+    path.write_bytes(canonical_bytes(record))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/4_perlector/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "SchemaRefusal" in result.stderr
+    assert "resolved revision" in result.stderr
 
 
 # --- 2. Repeating the identical command changes nothing ------------------------
@@ -166,11 +308,13 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
+    assert len(before) == 41
+    assert digest_of(before) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
 
-    assert len(before) > 20
     assert after == before
+    assert snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
 
 
 def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
@@ -181,8 +325,11 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
+    assert len(before) == 45
+    assert digest_of(before) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
+    assert snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
 
 
 # --- 3. An incompatible run id fails before writing ----------------------------
@@ -194,12 +341,22 @@ def test_reusing_a_run_id_with_a_changed_configuration_fails_before_writing(tmp_
     before = snapshot(root)
 
     # The scenario is part of the run's configuration digest, so the same run id
-    # under a different scenario is a different run wearing an old name.
+    # under a different scenario is a different run wearing an old name. Both
+    # scenarios declare the *same* two source pages, so the source manifest
+    # cannot be what catches this — only the config digest can, and this is the
+    # assertion that says so.
     result = orchestrate(root, "r", "review")
 
     assert result.returncode != 0
     assert "IncompatibleReuse" in result.stderr
+    assert "config_digest" in result.stderr, (
+        "the refusal must name the changed binding; catching this later, on "
+        "artifact immutability, is a refusal several stages after the first write"
+    )
     assert snapshot(root) == before, "a refused reuse must leave the tree untouched"
+    # And refused by the door — the stage that binds the run id — rather than by
+    # some later stage discovering it cannot overwrite an artifact.
+    assert "1_exemplar/door.py" in result.stderr
 
 
 # --- 4. Resume reuses valid artifacts without rewriting them -------------------

@@ -35,8 +35,10 @@ from common.contracts.stages import (  # noqa: E402
     ARMARIUM,
     DESIGNATOR,
     EXEMPLAR,
+    PERLECTOR,
     RECENSOR,
 )
+from common.seats.registry import SeatRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -45,9 +47,8 @@ from common.stage import (  # noqa: E402
     open_context,
     run_stage,
     stage_parser,
+    validate_serving_provenance,
 )
-
-ADAPTER_REVISION = "fake-armarium-v0"
 
 
 def page_census(context) -> dict[int, dict]:
@@ -135,9 +136,10 @@ def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | Non
     return terminal_category(ARCHETYPUS, record["outcome"]), review, record
 
 
-def main() -> int:
+def main(registry_factory=SeatRegistry.from_toml) -> int:
+    """Run under the explicitly supplied seat/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, ARMARIUM, ADAPTER_REVISION)
+    context = open_context(args, ARMARIUM, registry_factory=registry_factory)
 
     categories: dict[str, ArmariumCategory] = {}
     coverages: dict[str, dict] = {}
@@ -173,6 +175,12 @@ def main() -> int:
 
         if established is not None:
             payload = established["payload"]
+            validate_serving_provenance(
+                context,
+                payload["provenance"],
+                producer_stage=PERLECTOR,
+                require_receipt=True,
+            )
             entry.update(
                 {
                     # The established reading, and nothing else. No witness text
@@ -227,7 +235,7 @@ def main() -> int:
             # implied by an act count that came up short.
             "pages": [{"ordinal": ordinal, **census[ordinal]} for ordinal in sorted(census)],
             "witness_seats": context.witness_seats,
-            "witness_floor": context.fixture["witness_floor"],
+            "witness_floor": context.witness_floor,
         },
     )
 

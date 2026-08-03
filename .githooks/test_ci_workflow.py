@@ -88,6 +88,50 @@ def test_workflow_has_one_history_scan_and_immutable_dependencies():
     assert all(re.search(r"@[0-9a-f]{40}$", value) for value in uses)
 
 
+def test_ci_installs_the_project_before_running_a_gate_that_imports_it():
+    """The first runtime dependency turns the gate red unless CI installs the
+    project — or worse, leaves it green over tests that mocked the import away."""
+    text = workflow_text()
+    assert "python -m pip install ." in text
+    assert "python -m pip install -r requirements-dev.txt" in text
+    # The lock is checked for currency, not merely installed from.
+    assert "uv lock --check" in text
+    assert "uv sync --frozen" in text
+
+
+def test_every_runtime_dependency_is_inside_what_the_audit_reads():
+    """The audit reads requirements-dev.txt. A runtime dependency declared only
+    in pyproject.toml would therefore never be audited, and nothing else would
+    notice — the gate would stay green over an unexamined package.
+
+    Names only, deliberately: the version each file pins is checked by the lock,
+    and duplicating that comparison here would make one legitimate bump fail in
+    two places with two different messages.
+    """
+    import tomllib
+
+    declared = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
+    audited = (ROOT / "requirements-dev.txt").read_text().splitlines()
+
+    def name(requirement):
+        return re.split(r"[=<>!~\[]", requirement.strip(), maxsplit=1)[0].strip().lower()
+
+    missing = sorted({name(item) for item in declared} - {name(item) for item in audited if item})
+    assert not missing, (
+        f"runtime dependencies {missing} are not in requirements-dev.txt, so "
+        "`pip_audit --requirement requirements-dev.txt` never looks at them"
+    )
+
+
+def test_the_audit_runs_in_the_gate_and_fails_closed():
+    gate = (ROOT / ".githooks" / "check-all.sh").read_text()
+    assert "python3 -m pip_audit --strict --requirement requirements-dev.txt" in gate
+    # Not swallowed: `set -eu` is in force, and nothing rescues a non-zero exit.
+    assert "set -eu" in gate
+    for rescue in ("|| true", "|| :", "continue-on-error", "set +e"):
+        assert rescue not in gate, f"the audit's failure is swallowed by {rescue!r}"
+
+
 @pytest.fixture
 def recorded_ingress(tmp_path):
     hooks = tmp_path / ".githooks"

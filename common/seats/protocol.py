@@ -1,0 +1,57 @@
+"""Executable contract mechanics for independent seat implementations."""
+
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+from .errors import ProtocolClauseRefusal
+from .models import AbsentSeat, SeatIdentity, ServingDetails, ServingReceipt, VerifiedSnapshot
+
+
+@runtime_checkable
+class SeatProtocol(Protocol):
+    """The caller-visible seat interface; lifecycle is intentionally absent."""
+
+    def resolve(self, role: str) -> SeatIdentity | AbsentSeat:
+        """Resolve only the role asked for."""
+
+    def ensure(self, identity: SeatIdentity) -> VerifiedSnapshot:
+        """Verify only that exact resolved identity."""
+
+    def receipt(self, identity: SeatIdentity, serving: ServingDetails) -> ServingReceipt:
+        """Return a receipt for that identity and serving observation."""
+
+
+def exercise_contract(
+    implementation: SeatProtocol,
+    *,
+    role: str,
+    expected_identity: SeatIdentity,
+    serving: ServingDetails,
+) -> VerifiedSnapshot:
+    """Exercise all three clauses and name the clause an incompatible implementation breaks."""
+
+    if not isinstance(implementation, SeatProtocol):
+        raise ProtocolClauseRefusal(
+            role, "protocol shape: implementation lacks resolve, ensure, or receipt"
+        )
+    resolved = implementation.resolve(role)
+    if not isinstance(resolved, SeatIdentity):
+        raise ProtocolClauseRefusal(
+            role, "resolve clause: configured role did not return its identity"
+        )
+    if resolved.role != role or resolved != expected_identity:
+        raise ProtocolClauseRefusal(
+            role, "resolve clause: returned an identity other than the requested pin"
+        )
+    snapshot = implementation.ensure(resolved)
+    if not isinstance(snapshot, VerifiedSnapshot) or snapshot.identity != expected_identity:
+        raise ProtocolClauseRefusal(
+            role, "ensure clause: did not return a verified snapshot of the resolved pin"
+        )
+    receipt = implementation.receipt(resolved, serving)
+    if not isinstance(receipt, ServingReceipt) or receipt.identity != expected_identity:
+        raise ProtocolClauseRefusal(
+            role, "receipt clause: receipt does not name the resolved identity"
+        )
+    return snapshot

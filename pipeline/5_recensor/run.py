@@ -33,6 +33,7 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
+from common.seats.registry import SeatRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -43,8 +44,6 @@ from common.stage import (  # noqa: E402
     scenario_for,
     stage_parser,
 )
-
-ADAPTER_REVISION = "fake-recensor-v0"
 
 
 def recovery_budget(root: str = "config") -> dict:
@@ -111,13 +110,14 @@ def recoveries_so_far(context, act_id: str) -> int:
     return len(artifacts_for(context, RECENSOR, "recovery-request", act_id))
 
 
-def main() -> int:
+def main(registry_factory=SeatRegistry.from_toml) -> int:
+    """Run under the explicitly supplied seat/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, RECENSOR, ADAPTER_REVISION)
+    context = open_context(args, RECENSOR, registry_factory=registry_factory)
     budget = recovery_budget()
 
     scenario = scenario_for(context.fixture, context.scenario)
-    floor = context.fixture["witness_floor"]
+    floor = context.witness_floor
 
     held = 0
     for act in expected_acts(context):

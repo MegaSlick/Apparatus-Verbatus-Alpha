@@ -28,15 +28,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
+from common.seats.models import AbsentSeat, SeatIdentity  # noqa: E402
+from common.seats.registry import SeatRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     expected_acts,
+    fixture_serving_details,
     open_context,
     run_stage,
     stage_parser,
+    validate_serving_provenance,
 )
-
-ADAPTER_REVISION = "fake-attestatores-v0"
 
 
 def proposed_regions(context, act_id: str) -> list[dict]:
@@ -60,7 +62,14 @@ def proposed_regions(context, act_id: str) -> list[dict]:
     regions = []
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
         if entry["kind"] == "region" and entry["subject_id"] == act_id:
-            regions.append(context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"]))
+            record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+            validate_serving_provenance(
+                context,
+                record["payload"]["provenance"],
+                producer_stage=DESIGNATOR,
+                require_receipt=True,
+            )
+            regions.append(record)
     proposed = [record for record in regions if record["payload"]["origin"] == "proposal"]
     if not proposed:
         raise ContractError(f"act {act_id} has no proposed region for a witness to read")
@@ -96,9 +105,51 @@ def content_health(reported: str | None) -> dict:
     }
 
 
-def main() -> int:
+def provenance_for(context, resolved: SeatIdentity | AbsentSeat, *, attempted: bool) -> dict:
+    """The exact configured identity for one witness outcome.
+
+    An absent seat has no model identity and no serving moment. A configured seat
+    gets a receipt only when it actually attempted a reading; `not-run` records
+    retain the resolved pin but do not invent a serving event that never happened.
+    """
+    if isinstance(resolved, AbsentSeat):
+        return {
+            "seat": resolved.role,
+            "seat_state": "absent",
+            "absence": resolved.to_record(),
+            "resolved_identity": None,
+            "resolved_revision": None,
+            "receipt_ref": None,
+            "adapter_revision": context.adapter_revision,
+        }
+    if not isinstance(resolved, SeatIdentity):
+        raise ContractError("witness resolution returned neither an identity nor an absence")
+    receipt_ref = (
+        context.write_serving_receipt(resolved, fixture_serving_details(resolved))
+        if attempted
+        else None
+    )
+    return {
+        "seat": resolved.role,
+        "seat_state": "configured",
+        "resolved_identity": resolved.to_record(),
+        "resolved_revision": {
+            "kind": resolved.receipt_revision_kind,
+            "value": resolved.receipt_revision,
+        },
+        "receipt_ref": receipt_ref,
+        "adapter_revision": context.adapter_revision,
+    }
+
+
+def main(registry_factory=SeatRegistry.from_toml) -> int:
+    """Run through the explicitly supplied seat implementation.
+
+    Production passes the default registry. The test-only injection is a
+    dependency seam, not a runtime choice among models or seats.
+    """
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, ATTESTATORES, ADAPTER_REVISION)
+    context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
     failures = declared_failures(context)
 
     recorded = 0
@@ -111,6 +162,7 @@ def main() -> int:
             # because a seat that simply never appears is a silent skip, and a
             # silent skip is the shape of the original defect.
             for seat in context.witness_seats:
+                resolved = context.registry.resolve(seat)
                 context.publish(
                     kind="testimonium",
                     subject_id=act["act_id"],
@@ -121,11 +173,7 @@ def main() -> int:
                         "act_key": act["act_key"],
                         "attempt_ordinal": 1,
                         "regions": [],
-                        "provenance": {
-                            "seat": seat,
-                            "resolved_identity": f"{seat}@{ADAPTER_REVISION}",
-                            "adapter_revision": ADAPTER_REVISION,
-                        },
+                        "provenance": provenance_for(context, resolved, attempted=False),
                         "format_capabilities": {
                             "can_express_uncertainty": False,
                             "can_express_layout": False,
@@ -151,35 +199,51 @@ def main() -> int:
         ]
 
         for seat in context.witness_seats:
+            resolved = context.registry.resolve(seat)
             reported = testimony_for(context, act["act_key"], seat)
             failed = (act["act_key"], seat) in failures
 
-            if failed:
+            if isinstance(resolved, AbsentSeat):
+                # An explicitly absent witness remains in the run roster and
+                # therefore receives a visible outcome. Fixture testimony never
+                # turns an absent seat into a different configured model.
+                outcome, payload, attempted = (
+                    "not-run",
+                    {"reason": f"seat is explicitly absent: {resolved.reason}"},
+                    False,
+                )
+            elif failed:
                 outcome, payload = "failed", {"reason": "the seat returned no usable report"}
+                attempted = True
             elif reported is None:
                 # Configured, nothing declared for it: not-run, which is an
                 # unresolved unit and forces the run visibly partial. It is not
                 # an empty reading and must never be counted as one.
-                outcome, payload = "not-run", {"reason": "no attempt was made for this seat"}
+                outcome, payload, attempted = (
+                    "not-run",
+                    {"reason": "no attempt was made for this seat"},
+                    False,
+                )
             else:
                 outcome, payload = "read", {"reported": reported}
+                attempted = True
 
             context.publish(
                 kind="testimonium",
                 subject_id=act["act_id"],
                 outcome=outcome,
                 attempt=attempt_id(act["act_id"], f"read:{seat}", 1),
-                inputs=[context.input_ref(record["payload"]["image_path"]) for record in regions],
+                inputs=(
+                    [context.input_ref(record["payload"]["image_path"]) for record in regions]
+                    if attempted
+                    else []
+                ),
                 payload={
                     "seat": seat,
                     "act_key": act["act_key"],
                     "attempt_ordinal": 1,
-                    "regions": region_references,
-                    "provenance": {
-                        "seat": seat,
-                        "resolved_identity": f"{seat}@{ADAPTER_REVISION}",
-                        "adapter_revision": ADAPTER_REVISION,
-                    },
+                    "regions": region_references if attempted else [],
+                    "provenance": provenance_for(context, resolved, attempted=attempted),
                     # What this witness's output format can even express. A seat
                     # that cannot say "unsure" must not be read as confident.
                     "format_capabilities": {

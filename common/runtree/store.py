@@ -46,6 +46,7 @@ RUN_FILE: Final = "run.json"
 MANIFEST_FILE: Final = "manifest.json"
 ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
+RECEIPTS_DIR: Final = "receipts/sha256"
 
 # The facts a run id is bound to. Changing any of them means this is a different
 # run wearing an old name, and reuse is refused rather than resumed.
@@ -67,6 +68,27 @@ class PublishResult:
 
     def __repr__(self) -> str:
         return f"PublishResult({self.relative_path!r}, reused={self.reused})"
+
+
+class RunReceiptReference:
+    """A digest-checked reference to a non-deterministic receipt under one run.
+
+    The receipt itself includes a timestamp and endpoint and is therefore never a
+    stage artifact.  A stage carries only this reference plus the immutable model
+    identity/revision that produced its reading.
+    """
+
+    __slots__ = ("relative_path", "sha256")
+
+    def __init__(self, relative_path: str, sha256: str):
+        self.relative_path = relative_path
+        self.sha256 = sha256
+
+    def to_record(self) -> dict[str, str]:
+        return {"relative_path": self.relative_path, "sha256": self.sha256}
+
+    def __repr__(self) -> str:
+        return f"RunReceiptReference({self.relative_path!r}, sha256={self.sha256!r})"
 
 
 class RunTree:
@@ -198,6 +220,12 @@ class RunTree:
     def manifest_path(self, stage: str) -> str:
         return f"{writing_directory(stage)}/{MANIFEST_FILE}"
 
+    def receipt_path(self, digest: str) -> str:
+        """The one content-addressed location for a validated serving receipt."""
+        if not _is_sha256(digest):
+            raise SchemaRefusal(f"receipt digest {digest!r} is not a lowercase sha256")
+        return f"{RECEIPTS_DIR}/{digest}.json"
+
     def resolve(self, relative_path: str) -> Path:
         """A path inside this run tree, refusing anything that leaves it.
 
@@ -229,6 +257,42 @@ class RunTree:
         """Store bytes under their own digest. Content-addressed, so reuse is free."""
         digest = digest_bytes(data)
         return digest, self._publish_bytes(self.blob_path(stage, digest), data)
+
+    def write_run_receipt(self, receipt) -> tuple[RunReceiptReference, PublishResult]:
+        """Store one validated serving receipt outside stage artifacts.
+
+        Receipts are intentionally non-deterministic records of a serving moment,
+        so this writer never reaches ``publish_artifact`` or a stage manifest. The
+        record is canonical and content-addressed, making an identical write reuse
+        its bytes while a different receipt receives its own immutable reference.
+        """
+        from common.seats.receipts import receipt_record
+
+        record = receipt_record(receipt)
+        data = canonical_bytes(record)
+        digest = digest_bytes(data)
+        result = self._publish_bytes(self.receipt_path(digest), data)
+        return RunReceiptReference(result.relative_path, digest), result
+
+    def read_run_receipt(self, reference: RunReceiptReference | dict[str, str]) -> dict[str, Any]:
+        """Read a receipt only when both its reference and bytes still verify."""
+        from common.seats.receipts import validate_receipt
+
+        parsed = _receipt_reference(reference)
+        expected_path = self.receipt_path(parsed.sha256)
+        if parsed.relative_path != expected_path:
+            raise SchemaRefusal(
+                f"receipt reference {parsed.relative_path!r} is not its content-addressed path "
+                f"{expected_path!r}"
+            )
+        data = self.read_bytes(parsed.relative_path)
+        actual = digest_bytes(data)
+        if actual != parsed.sha256:
+            raise SchemaRefusal(
+                f"run receipt {parsed.relative_path} has digest {actual}, not the reference "
+                f"digest {parsed.sha256}"
+            )
+        return validate_receipt(_read_json(self.resolve(parsed.relative_path)))
 
     def _publish_bytes(self, relative: str, data: bytes) -> PublishResult:
         target = self.resolve(relative)
@@ -323,7 +387,7 @@ class RunTree:
         the scope fails a static drift test, loudly, naming the path. The test
         beside this module reads the writers from source and compares.
         """
-        prefixes = [RUN_FILE]
+        prefixes = [RUN_FILE, f"{RECEIPTS_DIR}/"]
         for directory in sorted(set(_all_writing_directories())):
             prefixes.append(f"{directory}/{ARTIFACTS_DIR}/")
             prefixes.append(f"{directory}/{BLOBS_DIR}/")
@@ -364,6 +428,27 @@ def _read_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise SchemaRefusal(f"{path} could not be read as an artifact: {error}") from error
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _receipt_reference(value: RunReceiptReference | dict[str, str]) -> RunReceiptReference:
+    if isinstance(value, RunReceiptReference):
+        return value
+    if not isinstance(value, dict) or set(value) != {"relative_path", "sha256"}:
+        raise SchemaRefusal("run receipt reference must contain exactly relative_path and sha256")
+    relative, digest = value["relative_path"], value["sha256"]
+    if not isinstance(relative, str) or not relative:
+        raise SchemaRefusal("run receipt reference has no relative_path")
+    if not _is_sha256(digest):
+        raise SchemaRefusal("run receipt reference has no lowercase sha256")
+    return RunReceiptReference(relative, digest)
 
 
 def _refuse_path_component(value: Any, what: str) -> None:

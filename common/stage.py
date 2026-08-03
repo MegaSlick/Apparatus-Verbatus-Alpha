@@ -16,15 +16,18 @@ import argparse
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Protocol
 
 from common.contracts.canonical import digest_of
 from common.contracts.envelope import build_envelope
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.outcomes import classify
 from common.contracts.stages import DESIGNATOR
 from common.runtree.store import PublishResult, RunTree
+from common.seats.models import AbsentSeat, ModelsConfig, SeatIdentity, ServingDetails
+from common.seats.protocol import SeatProtocol
+from common.seats.registry import SeatRegistry
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
 # keeping: 0 = complete, 2 = structural or fatal, 3 = accounted but holdable.
@@ -35,12 +38,33 @@ EXIT_FATAL = 2
 EXIT_HELD = 3
 
 
+class StageSeatProtocol(SeatProtocol, Protocol):
+    """The small additional config surface a calling stage needs.
+
+    A stage receives this explicitly rather than knowing which registry
+    implementation made it.  The production default is ``SeatRegistry``; the
+    deterministic fake beside the tests is a separate implementation of this
+    protocol, not a subclass or import of it.
+    """
+
+    config: ModelsConfig
+
+
 class StageContext:
     """One stage's view of the run it is part of."""
 
-    __slots__ = ("tree", "run", "fixture", "scenario", "stage", "adapter_revision", "args")
+    __slots__ = (
+        "tree",
+        "run",
+        "fixture",
+        "scenario",
+        "stage",
+        "adapter_revision",
+        "args",
+        "registry",
+    )
 
-    def __init__(self, tree, run, fixture, scenario, stage, adapter_revision, args):
+    def __init__(self, tree, run, fixture, scenario, stage, adapter_revision, args, registry):
         self.tree = tree
         self.run = run
         self.fixture = fixture
@@ -48,6 +72,7 @@ class StageContext:
         self.stage = stage
         self.adapter_revision = adapter_revision
         self.args = args
+        self.registry = registry
 
     @property
     def config_digest(self) -> str:
@@ -56,6 +81,10 @@ class StageContext:
     @property
     def witness_seats(self) -> list[str]:
         return list(self.run["witness_seats"])
+
+    @property
+    def witness_floor(self) -> int:
+        return self.registry.config.witness_floor
 
     def publish(
         self,
@@ -69,6 +98,11 @@ class StageContext:
         approval_ref: str | None = None,
     ) -> PublishResult:
         """Publish one artifact of this stage, with the envelope filled in."""
+        if kind == "serving-receipt":
+            raise SchemaRefusal(
+                "serving receipts are run receipts, never stage artifacts; "
+                "use StageContext.write_serving_receipt"
+            )
         envelope = build_envelope(
             run_id=self.tree.run_id,
             artifact_id=artifact_id(self.stage, kind, subject_id, attempt),
@@ -83,6 +117,24 @@ class StageContext:
             approval_ref=approval_ref,
         )
         return self.tree.publish_artifact(envelope)
+
+    def write_serving_receipt(
+        self, identity: SeatIdentity, serving: ServingDetails
+    ) -> dict[str, str]:
+        """Reverify one identity, then write this serving moment's receipt.
+
+        A receipt is deliberately outside stage artifacts because it contains the
+        serving endpoint and start moment. The stage receives only this immutable
+        reference plus the resolved identity it already holds. Reverification and
+        receipt construction come first on every reading. The run-tree writer
+        reuses only byte-identical receipts; it never looks up an older receipt by
+        model identity, because a restarted endpoint can have different serving
+        facts even when the model pin is unchanged.
+        """
+        self.registry.ensure(identity)
+        receipt = self.registry.receipt(identity, serving)
+        reference, _ = self.tree.write_run_receipt(receipt)
+        return reference.to_record()
 
     def input_ref(self, relative_path: str) -> dict[str, str]:
         """An input reference to something already in this run tree.
@@ -111,6 +163,7 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     # refuses an undeclared name after the fixture is loaded.
     parser.add_argument("--scenario", default="happy")
     parser.add_argument("--fixture-root", default="proof")
+    parser.add_argument("--models-config", default="config/models.toml")
     parser.add_argument("--operation", default="initial")
     parser.add_argument("--act", default=None, help="one act id, for a recovery operation")
     return parser
@@ -136,9 +189,170 @@ def load_fixture(fixture_root: str) -> dict[str, Any]:
     return fixture
 
 
-def fixture_config_digest(fixture: dict[str, Any], scenario: str) -> str:
-    """The canonical digest of everything that shapes this run's behaviour."""
-    return digest_of({"fixture": fixture, "scenario": scenario})
+def run_config_bindings(
+    models: ModelsConfig, fixture: dict[str, Any], scenario: str
+) -> dict[str, Any]:
+    """The three `run.json` bindings, and everything that shapes them.
+
+    Since spec 02 `config/models.toml` owns the roster, the witness floor and
+    the adapter recipes, so two of the three come straight off it. The third,
+    `config_digest`, is the digest of *everything* that shapes this run's
+    behaviour — the model configuration, the fixture, and the scenario.
+
+    All three parts are load-bearing, and the scenario is the one easiest to
+    drop by accident. Spec 01's third acceptance test reuses one run id under a
+    second scenario and requires the refusal *before any write*; the two
+    scenarios declare identical source pages, so with the scenario out of this
+    digest nothing in `run.json` distinguishes them and the run gets four
+    stages in before artifact immutability catches it. A late incidental
+    refusal is not the sealed-tree guarantee spec 01 landed.
+    """
+    return {
+        "witness_seats": list(models.witness_seats),
+        "config_digest": digest_of(
+            {"fixture": fixture, "scenario": scenario, "models": models.to_record()}
+        ),
+        "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
+    }
+
+
+def adapter_recipe_for(run: dict[str, Any], stage: str) -> str:
+    """The recipe sealed for this producer, never a stage-local fallback."""
+    recipes = run.get("adapter_recipes")
+    if not isinstance(recipes, dict):
+        raise ContractError("run.json has no adapter recipe map")
+    recipe = recipes.get(stage)
+    if not isinstance(recipe, str) or not recipe:
+        raise ContractError(
+            f"run.json has no non-blank adapter recipe for stage {stage!r}; "
+            "a stage may not invent or substitute one"
+        )
+    return recipe
+
+
+def fixture_serving_details(identity: SeatIdentity) -> ServingDetails:
+    """The declared serving details of the walking skeleton's offline seam.
+
+    Declared, not observed: nothing here served anything, so these are fixture
+    values in the same sense as the synthetic pages, and they say so —
+    `fixture://` for an endpoint, `fixture` for a dtype. Reading them as a
+    measurement of a real serving moment would be exactly the confusion
+    GOVERNANCE 10 forbids.
+
+    Two consequences worth knowing before spec 04 replaces this with a real
+    serving manager. Endpoint and start time are confined to the run receipt, so
+    a stage payload carries only the content-addressed reference to one. And
+    `started_at` is a constant *because* the skeleton's receipts sit inside the
+    tree the determinism tests hash; a real receipt is honestly
+    non-deterministic, and the run at which that becomes true is the run at which
+    `receipts/` has to leave those snapshots. Neither test is loosened for it
+    now, while every receipt in the tree is still a declared fixture value.
+    """
+    return ServingDetails(
+        tokenizer_revision=identity.receipt_revision,
+        seed=0,
+        context_cap=4096,
+        pixel_cap=52_000,
+        engine=identity.serving_recipe,
+        engine_version="fixture-v0",
+        dtype="fixture",
+        adapter_identity=None,
+        endpoint="fixture://offline-seat-runner",
+        started_at="2026-08-03T00:00:00Z",
+    )
+
+
+def validate_serving_provenance(
+    context: StageContext,
+    provenance: Any,
+    *,
+    producer_stage: str,
+    require_receipt: bool,
+) -> SeatIdentity | None:
+    """Validate the identity/receipt projection a downstream stage consumes.
+
+    The receipt holds serving-time facts, so endpoint and timestamp must never be
+    copied into a stage artifact. A configured identity must still agree exactly
+    with the named role in the sealed models config, its explicit revision, and
+    the digest-checked receipt reference. This validates evidence; it never asks
+    the registry for a neighbouring role, revision, recipe, or cache.
+    """
+    if not isinstance(provenance, dict):
+        raise SchemaRefusal("model provenance is not an object")
+    leaked = sorted({"endpoint", "started_at"} & set(provenance))
+    if leaked:
+        raise SchemaRefusal(
+            f"model provenance leaks serving-only field(s) {leaked}; use the run receipt reference"
+        )
+    if provenance.get("adapter_revision") != adapter_recipe_for(context.run, producer_stage):
+        raise SchemaRefusal(
+            f"model provenance does not carry the sealed adapter recipe for {producer_stage!r}"
+        )
+
+    state = provenance.get("seat_state")
+    seat = provenance.get("seat")
+    if not isinstance(seat, str) or not seat:
+        raise SchemaRefusal("model provenance has no seat name")
+    if state == "absent":
+        configured = context.registry.resolve(seat)
+        if not isinstance(configured, AbsentSeat):
+            raise SchemaRefusal(f"model provenance calls configured seat {seat!r} absent")
+        if provenance.get("absence") != configured.to_record():
+            raise SchemaRefusal(f"model provenance absence for {seat!r} differs from models config")
+        if any(
+            provenance.get(field) is not None
+            for field in ("resolved_identity", "resolved_revision", "receipt_ref")
+        ):
+            raise SchemaRefusal(f"absent seat {seat!r} carries a model identity or receipt")
+        if require_receipt:
+            raise SchemaRefusal(f"absent seat {seat!r} cannot have produced a reading")
+        return None
+
+    if state != "configured":
+        raise SchemaRefusal(f"model provenance has unknown seat state {state!r}")
+    record = provenance.get("resolved_identity")
+    if not isinstance(record, dict):
+        raise SchemaRefusal(f"configured seat {seat!r} has no resolved identity")
+    try:
+        identity = SeatIdentity(**record)
+    except TypeError as error:
+        raise SchemaRefusal(
+            f"resolved identity for {seat!r} has the wrong schema: {error}"
+        ) from error
+    if seat != identity.role or record != identity.to_record():
+        raise SchemaRefusal(f"resolved identity for {seat!r} is malformed")
+    configured = context.registry.resolve(identity.role)
+    if not isinstance(configured, SeatIdentity) or configured != identity:
+        raise SchemaRefusal(f"resolved identity for {seat!r} differs from the sealed models config")
+    revision = provenance.get("resolved_revision")
+    if revision != {
+        "kind": identity.receipt_revision_kind,
+        "value": identity.receipt_revision,
+    }:
+        raise SchemaRefusal(f"resolved revision for {seat!r} differs from its immutable identity")
+
+    reference = provenance.get("receipt_ref")
+    if not require_receipt:
+        if reference is not None:
+            raise SchemaRefusal(f"seat {seat!r} was not run but carries a serving receipt")
+        return identity
+    if not isinstance(reference, dict):
+        raise SchemaRefusal(f"reading from seat {seat!r} has no serving receipt reference")
+    receipt = context.tree.read_run_receipt(reference)
+    expected = {
+        "seat": identity.role,
+        "source": identity.source,
+        "resolved": identity.source_reference,
+        "revision": identity.receipt_revision,
+        "revision_kind": identity.receipt_revision_kind,
+        "digest_manifest": identity.digest_manifest,
+    }
+    differing = [field for field, value in expected.items() if receipt.get(field) != value]
+    if differing:
+        raise SchemaRefusal(
+            f"serving receipt for {seat!r} differs from the resolved identity at {differing}"
+        )
+    return identity
 
 
 def scenario_for(fixture: dict[str, Any], name: str) -> dict[str, Any]:
@@ -175,19 +389,42 @@ def expected_acts(context) -> list[dict[str, Any]]:
     return acts
 
 
-def open_context(args, stage: str, adapter_revision: str) -> StageContext:
+def open_context(
+    args,
+    stage: str,
+    *,
+    registry_factory: Callable[[str], StageSeatProtocol] = SeatRegistry.from_toml,
+) -> StageContext:
     """Open an existing run for a stage that is not the first to write."""
     fixture = load_fixture(args.fixture_root)
     scenario_for(fixture, args.scenario)
+    registry = registry_factory(args.models_config)
+    bindings = run_config_bindings(registry.config, fixture, args.scenario)
     tree = RunTree(Path(args.run_root), args.run_id)
+    run = tree.read_run()
+    differing = [
+        field
+        for field in ("config_digest", "adapter_recipes", "witness_seats")
+        if run.get(field) != bindings[field]
+    ]
+    if differing:
+        raise IncompatibleReuse(
+            f"run {args.run_id!r} is bound to different {', '.join(differing)} than "
+            "the currently loaded models config and fixture scenario; direct stages "
+            "may not run against an unsealed configuration"
+        )
     return StageContext(
         tree=tree,
-        run=tree.read_run(),
+        run=run,
         fixture=fixture,
         scenario=args.scenario,
         stage=stage,
-        adapter_revision=adapter_revision,
+        # No stage names its own recipe any more: once a run exists, the sealed
+        # `run.json` is the only source for the producer revision, so a stage
+        # program and the run authority cannot drift on what answered.
+        adapter_revision=adapter_recipe_for(run, stage),
         args=args,
+        registry=registry,
     )
 
 

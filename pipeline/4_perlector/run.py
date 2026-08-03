@@ -35,15 +35,17 @@ from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
+from common.seats.models import AbsentSeat, SeatIdentity  # noqa: E402
+from common.seats.registry import SeatRegistry  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     expected_acts,
+    fixture_serving_details,
     open_context,
     run_stage,
     stage_parser,
+    validate_serving_provenance,
 )
-
-ADAPTER_REVISION = "fake-perlector-v0"
 
 
 def regions_of(context, act_id: str) -> list[dict]:
@@ -58,9 +60,14 @@ def testimonia_of(context, act_id: str) -> list[dict]:
     records = []
     for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] == "testimonium" and entry["subject_id"] == act_id:
-            records.append(
-                context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+            record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+            validate_serving_provenance(
+                context,
+                record["payload"]["provenance"],
+                producer_stage=ATTESTATORES,
+                require_receipt=record["outcome"] in {"read", "genuinely-empty", "failed"},
             )
+            records.append(record)
     return sorted(records, key=lambda record: record["payload"]["seat"])
 
 
@@ -129,9 +136,68 @@ def declared_reading_failure(context, act_key: str) -> str | None:
     return None
 
 
-def main() -> int:
+def perlector_seat(context) -> SeatIdentity | AbsentSeat:
+    """The Perlector seat, resolved by name. Never another seat, never a base."""
+    resolved = context.registry.resolve(PERLECTOR)
+    if not isinstance(resolved, (SeatIdentity, AbsentSeat)):
+        raise ContractError("Perlector resolution returned neither an identity nor an absence")
+    return resolved
+
+
+def provenance_for(context, resolved: SeatIdentity | AbsentSeat, *, attempted: bool) -> dict:
+    """Project one Perlector outcome's immutable provenance.
+
+    A record for a reading that never happened — a held act, or an absent seat —
+    names what would have read and stops there. Manufacturing a receipt for it
+    would be a serving moment nobody observed.
+
+    A reading that *did* happen re-verifies the configured snapshot first, at the
+    moment it is produced rather than once at run creation: GOVERNANCE 6 is about
+    identity when the reading was made, and a receipt captured at serve time and
+    copied forward is the weaker claim spec 02 names and refuses.
+    """
+    regime = {
+        # Tyrel's 2026-07-30 ruling: witness identity travels under a run-level
+        # toggle, and every Perlectio records the regime it ran under so a later
+        # reader knows what it was shown.
+        "witness_regime": "named",
+        "adapter_revision": context.adapter_revision,
+    }
+    if isinstance(resolved, AbsentSeat):
+        return {
+            "seat": resolved.role,
+            "seat_state": "absent",
+            "absence": resolved.to_record(),
+            "resolved_identity": None,
+            "resolved_revision": None,
+            "receipt_ref": None,
+            **regime,
+        }
+    return {
+        "seat": resolved.role,
+        "seat_state": "configured",
+        "resolved_identity": resolved.to_record(),
+        "resolved_revision": {
+            "kind": resolved.receipt_revision_kind,
+            "value": resolved.receipt_revision,
+        },
+        "receipt_ref": (
+            context.write_serving_receipt(resolved, fixture_serving_details(resolved))
+            if attempted
+            else None
+        ),
+        **regime,
+    }
+
+
+def main(registry_factory=SeatRegistry.from_toml) -> int:
+    """Run through the explicitly supplied seat implementation.
+
+    Production passes the default registry. The test-only injection is a
+    dependency seam, not a runtime choice among models or seats.
+    """
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, PERLECTOR, ADAPTER_REVISION)
+    context = open_context(args, PERLECTOR, registry_factory=registry_factory)
     texts = {act["key"]: act["text"] for act in context.fixture["act"]}
 
     # A recovery re-reads only the acts that were recovered. Re-reading the rest
@@ -143,6 +209,7 @@ def main() -> int:
 
     read = 0
     acknowledged = 0
+    seat = perlector_seat(context)
     for act in wanted:
         act_id = act["act_id"]
         if act["outcome"] == "held":
@@ -165,6 +232,29 @@ def main() -> int:
                         "not read, because a reading of part of an act would be a "
                         "truncation delivered as an output"
                     ),
+                    "provenance": provenance_for(context, seat, attempted=False),
+                },
+            )
+            acknowledged += 1
+            continue
+
+        ordinal = _next_attempt(context, act_id)
+        if isinstance(seat, AbsentSeat):
+            # No seat to read with. Every act still gets an explicit record
+            # naming the absence: a stage that simply produced nothing would
+            # leave the Recensor to infer a gap it cannot see.
+            context.publish(
+                kind="perlectio",
+                subject_id=act_id,
+                outcome="not-run",
+                attempt=attempt_id(act_id, "perlegere", ordinal),
+                payload={
+                    "act_key": act["act_key"],
+                    "attempt_ordinal": ordinal,
+                    "reason": f"the Perlector seat is explicitly absent: {seat.reason}",
+                    "basis": {"regions": [], "testimonia": []},
+                    "dissent": [],
+                    "provenance": provenance_for(context, seat, attempted=False),
                 },
             )
             acknowledged += 1
@@ -194,7 +284,9 @@ def main() -> int:
         for basis in bases:
             basis["witness_covered"] = basis["region_id"] in witnessed
 
-        ordinal = _next_attempt(context, act_id)
+        # A real reading attempt, so the pinned snapshot is re-verified here, at
+        # the moment this reading is produced, and its receipt written.
+        provenance = provenance_for(context, seat, attempted=True)
         context.publish(
             kind="perlectio",
             subject_id=act_id,
@@ -217,14 +309,7 @@ def main() -> int:
                     ],
                 },
                 "dissent": dissent_against(reading, testimonia),
-                "provenance": {
-                    "resolved_identity": f"perlector@{ADAPTER_REVISION}",
-                    "adapter_revision": ADAPTER_REVISION,
-                    # Tyrel's 2026-07-30 ruling: witness identity travels under a
-                    # run-level toggle, and every Perlectio records the regime it
-                    # ran under so a later reader knows what it was shown.
-                    "witness_regime": "named",
-                },
+                "provenance": provenance,
             },
         )
         read += 1
