@@ -14,7 +14,7 @@ from typing import Any, Mapping
 from .errors import ConfigurationRefusal
 from .models import AbsentChair, ChairIdentity, ModelsConfig, is_hf_revision, is_sha256
 
-_TOP_LEVEL = {"witness_floor", "seats", "adapter_recipes", "model_root"}
+_TOP_LEVEL = {"witness_floor", "chairs", "adapter_recipes", "model_root"}
 _CONFIGURED_COMMON = {
     "state",
     "source",
@@ -59,9 +59,9 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
         model_root = _relative_posix("models.toml", "model_root", raw_model_root)
 
     adapter_recipes = _parse_adapter_recipes(raw.get("adapter_recipes", {}))
-    raw_chairs = raw.get("seats")
+    raw_chairs = raw.get("chairs")
     if not isinstance(raw_chairs, dict) or not raw_chairs:
-        raise ConfigurationRefusal("models.toml", "seats must be a non-empty table")
+        raise ConfigurationRefusal("models.toml", "chairs must be a non-empty table")
 
     chairs: dict[str, ChairIdentity | AbsentChair] = {}
     for role, values in raw_chairs.items():

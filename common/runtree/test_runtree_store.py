@@ -36,7 +36,7 @@ def make_run(tmp_path, run_id="r1", **overrides):
         "source_manifest": SOURCE,
         "config_digest": CONFIG_DIGEST,
         "adapter_recipes": RECIPES,
-        "witness_seats": CHAIRS,
+        "witness_chairs": CHAIRS,
     }
     kwargs.update(overrides)
     return RunTree.create(tmp_path, run_id, **kwargs)
@@ -92,7 +92,7 @@ def test_creating_a_run_writes_a_self_hashed_authority(tmp_path):
     tree = make_run(tmp_path)
     record = tree.read_run()
     assert record["run_id"] == "r1"
-    assert record["witness_seats"] == CHAIRS
+    assert record["witness_chairs"] == CHAIRS
     assert record["source_manifest"] == SOURCE
     assert (tmp_path / "r1" / RUN_FILE).exists()
 
@@ -181,7 +181,7 @@ def test_reusing_a_run_id_with_a_changed_chair_roster_is_refused(tmp_path):
     in it while looking like the run that was authorized."""
     make_run(tmp_path)
     with pytest.raises(IncompatibleReuse):
-        make_run(tmp_path, witness_seats=["attestator_1", "attestator_2"])
+        make_run(tmp_path, witness_chairs=["attestator_1", "attestator_2"])
 
 
 def test_an_incompatible_reuse_writes_nothing(tmp_path):
@@ -305,7 +305,7 @@ def test_a_run_receipt_is_content_addressed_and_reads_back(tmp_path):
     assert reference.relative_path.startswith(f"{RECEIPTS_DIR}/")
     assert reference.relative_path.endswith(f"{reference.sha256}.json")
     record = tree.read_run_receipt(reference)
-    assert record["seat"] == "attestator_1"
+    assert record["chair"] == "attestator_1"
     assert record["revision"] == "a" * 64
     assert tree.build_manifest(DESIGNATOR)["artifacts"] == []
 

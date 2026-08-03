@@ -47,8 +47,8 @@ FIXTURE = "synthetic-two-page-v0"
 # is internally consistent but no longer the run these tests describe. A change
 # here is legitimate exactly when a commit deliberately changes what a run
 # writes, and then the new value belongs in that commit and nowhere else.
-HAPPY_RUN_TREE_DIGEST = "c5fb7fcf83350bfc5a57301b7d1dc04c94ce5b33a42962f93eaea5eb1032fe38"
-REVIEW_RUN_TREE_DIGEST = "dc9d9e3409b5ecef5804c3ae51e0ac2c8dca3caf5e2757713ad02ef404323ad7"
+HAPPY_RUN_TREE_DIGEST = "847165af3a625f66e7bf0cf5c352295eb509e89c45b332ab889c85cce1ceb069"
+REVIEW_RUN_TREE_DIGEST = "87884692f20b75c08f87b24637fe6798c806aa81fcbddd7fd509457f036a0396"
 
 
 def orchestrate(
@@ -179,7 +179,7 @@ def test_the_run_used_no_network_and_no_model(happy_run):
     fixture = load_fixture(str(ROOT / "proof"))
     bindings = run_config_bindings(config, fixture, "happy")
     assert run["config_digest"] == bindings["config_digest"]
-    assert run["witness_seats"] == list(config.witness_seats)
+    assert run["witness_chairs"] == list(config.witness_chairs)
     assert run["adapter_recipes"] == dict(config.adapter_recipes)
     recipes = run["adapter_recipes"]
     assert len(recipes) == 8
@@ -217,7 +217,7 @@ def test_an_explicit_absent_witness_is_a_visible_not_run_and_counts_against_floo
     shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
     shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
     live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
-    configured = """[seats.attestator_3]
+    configured = """[chairs.attestator_3]
 state = \"configured\"
 source = \"local-repository\"
 path = \"attestator_3\"
@@ -226,7 +226,7 @@ manifest = \"manifests/attestator_3.json\"
 serving_recipe = \"fake-attestatores-v0\"
 license_note = \"fixture identity only; no model weights or model license apply\"
 """
-    absent = """[seats.attestator_3]
+    absent = """[chairs.attestator_3]
 state = \"absent\"
 reason = \"fixture test removes this witness without replacing it\"
 """
@@ -244,13 +244,13 @@ reason = \"fixture test removes this witness without replacing it\"
         if entry["kind"] == "testimonium"
     ]
     absent_records = [
-        record for record in testimonia if record["payload"]["seat"] == "attestator_3"
+        record for record in testimonia if record["payload"]["chair"] == "attestator_3"
     ]
     assert len(absent_records) == 2
     assert all(record["outcome"] == "not-run" for record in absent_records)
     for record in absent_records:
         provenance = record["payload"]["provenance"]
-        assert provenance["seat_state"] == "absent"
+        assert provenance["chair_state"] == "absent"
         assert provenance["absence"] == {
             "role": "attestator_3",
             "state": "absent",
@@ -259,7 +259,7 @@ reason = \"fixture test removes this witness without replacing it\"
     export = export_of(tree)
     assert export["aggregate"]["status"] == "partial"
     assert all(item["under_witnessed"] is True for item in export["review"])
-    assert tree.read_run()["witness_seats"] == ["attestator_1", "attestator_2", "attestator_3"]
+    assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
 
 
 def test_perlector_refuses_a_tampered_testimonium_model_provenance(tmp_path):

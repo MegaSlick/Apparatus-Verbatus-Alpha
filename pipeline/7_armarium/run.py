@@ -234,7 +234,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # refused is named here and in the aggregate's reasons, never only
             # implied by an act count that came up short.
             "pages": [{"ordinal": ordinal, **census[ordinal]} for ordinal in sorted(census)],
-            "witness_seats": context.witness_seats,
+            "witness_chairs": context.witness_chairs,
             "witness_floor": context.witness_floor,
         },
     )

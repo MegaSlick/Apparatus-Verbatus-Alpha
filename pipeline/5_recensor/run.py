@@ -98,7 +98,7 @@ def chair_outcomes(context, act_id: str) -> dict[str, str]:
     """
     latest: dict[str, dict] = {}
     for record in artifacts_for(context, ATTESTATORES, "testimonium", act_id):
-        chair = record["payload"]["seat"]
+        chair = record["payload"]["chair"]
         ordinal = record["payload"]["attempt_ordinal"]
         if chair not in latest or ordinal > latest[chair]["payload"]["attempt_ordinal"]:
             latest[chair] = record
@@ -124,7 +124,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         act_id, act_key = act["act_id"], act["act_key"]
 
         outcomes = chair_outcomes(context, act_id)
-        missing = set(context.witness_seats) - set(outcomes)
+        missing = set(context.witness_chairs) - set(outcomes)
         if missing:
             raise FatalAccounting(
                 f"act {act_id} has no outcome for configured seat(s) {sorted(missing)}. "

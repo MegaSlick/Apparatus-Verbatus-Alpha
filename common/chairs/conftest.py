@@ -82,7 +82,7 @@ def config_of(
     tmp_path: Path, chairs: dict[str, dict[str, Any]], *, witness_floor: int = 1, **top: Any
 ) -> ModelsConfig:
     """Parse a `models.toml`-shaped mapping, rooted at `tmp_path/models.toml`."""
-    raw: dict[str, Any] = {"witness_floor": witness_floor, "seats": chairs}
+    raw: dict[str, Any] = {"witness_floor": witness_floor, "chairs": chairs}
     raw.update(top)
     return parse_models_config(raw, source_path=tmp_path / "models.toml")
 
@@ -100,7 +100,7 @@ def write_models_toml(
         lines.append(f"{key} = {_toml_value(value)}")
     for role, fields in chairs.items():
         lines.append("")
-        lines.append(f"[seats.{role}]")
+        lines.append(f"[chairs.{role}]")
         for key, value in fields.items():
             lines.append(f"{key} = {_toml_value(value)}")
     path = tmp_path / "models.toml"

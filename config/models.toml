@@ -40,7 +40,7 @@ recensor = "fake-recensor-v0"
 archetypus = "fake-archetypus-v0"
 armarium = "fake-armarium-v0"
 
-[seats.designator_structure]
+[chairs.designator_structure]
 state = "configured"
 source = "local-repository"
 path = "designator_structure"
@@ -49,7 +49,7 @@ manifest = "manifests/designator_structure.json"
 serving_recipe = "fake-designator-v0"
 license_note = "fixture identity only; no model weights or model license apply"
 
-[seats.attestator_1]
+[chairs.attestator_1]
 state = "configured"
 source = "local-repository"
 path = "attestator_1"
@@ -58,7 +58,7 @@ manifest = "manifests/attestator_1.json"
 serving_recipe = "fake-attestatores-v0"
 license_note = "fixture identity only; no model weights or model license apply"
 
-[seats.attestator_2]
+[chairs.attestator_2]
 state = "configured"
 source = "local-repository"
 path = "attestator_2"
@@ -67,7 +67,7 @@ manifest = "manifests/attestator_2.json"
 serving_recipe = "fake-attestatores-v0"
 license_note = "fixture identity only; no model weights or model license apply"
 
-[seats.attestator_3]
+[chairs.attestator_3]
 state = "configured"
 source = "local-repository"
 path = "attestator_3"
@@ -76,7 +76,7 @@ manifest = "manifests/attestator_3.json"
 serving_recipe = "fake-attestatores-v0"
 license_note = "fixture identity only; no model weights or model license apply"
 
-[seats.perlector]
+[chairs.perlector]
 state = "configured"
 source = "local-repository"
 path = "perlector"
@@ -85,7 +85,7 @@ manifest = "manifests/perlector.json"
 serving_recipe = "fake-perlector-v0"
 license_note = "fixture identity only; no model weights or model license apply"
 
-[seats.secondary_proposer]
+[chairs.secondary_proposer]
 state = "absent"
 reason = "no secondary proposer is configured for the offline walking skeleton"
 
@@ -123,7 +123,7 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # git ls-remote --exit-code https://huggingface.co/Qwen/Qwen3.5-9B refs/heads/main
 # c202236235762e1c871ad0ccb60c8ee5ba337b9a	refs/heads/main
 #
-# [seats.designator_structure]
+# [chairs.designator_structure]
 # state = "configured"
 # source = "huggingface"
 # repo = "datalab-to/chandra-ocr-2"
@@ -136,7 +136,7 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # WITNESS_BENCH lists chandra-ocr-2 as "Designator structure + witness", so it
 # fills two roles and is pinned twice, at the same revision.
 #
-# [seats.attestator_1]
+# [chairs.attestator_1]
 # state = "configured"
 # source = "huggingface"
 # repo = "datalab-to/chandra-ocr-2"
@@ -146,7 +146,7 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # serving_recipe = "<serving-recipe>"
 # license_note = "Revenue-capped (>$2M revenue/funding barred; competitive use barred)"
 #
-# [seats.attestator_2]
+# [chairs.attestator_2]
 # state = "configured"
 # source = "huggingface"
 # repo = "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR"
@@ -156,7 +156,7 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # serving_recipe = "<serving-recipe>"
 # license_note = "No license declared at all; using it is Tyrel's explicit licensing decision, recorded when he approves the roster"
 #
-# [seats.attestator_3]
+# [chairs.attestator_3]
 # state = "configured"
 # source = "huggingface"
 # repo = "stanford-oval/churro-3B"
@@ -166,7 +166,7 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # serving_recipe = "<serving-recipe>"
 # license_note = "Non-commercial research only"
 #
-# [seats.secondary_proposer]
+# [chairs.secondary_proposer]
 # state = "configured"
 # source = "huggingface"
 # repo = "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection"
@@ -176,7 +176,7 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # serving_recipe = "<serving-recipe>"
 # license_note = "AGPL-3.0"
 #
-# [seats.perlector]
+# [chairs.perlector]
 # state = "configured"
 # source = "huggingface"
 # repo = "Qwen/Qwen3.5-9B"
@@ -190,6 +190,6 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # owed before Spec 11 builds, so the annotator role is listed and stays commented
 # out with the rest of the roster until that lands.
 #
-# [seats.annotator]
+# [chairs.annotator]
 # state = "absent"
 # reason = "the ARCHITECTURE annotation-layer wording is owed before Spec 11 builds"

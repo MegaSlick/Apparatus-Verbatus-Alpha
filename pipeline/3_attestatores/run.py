@@ -79,7 +79,7 @@ def proposed_regions(context, act_id: str) -> list[dict]:
 
 def declared_failures(context) -> set[tuple[str, str]]:
     return {
-        (row["act_key"], row["seat"])
+        (row["act_key"], row["chair"])
         for row in context.fixture.get("witness_failure", [])
         if row["scenario"] == context.scenario
     }
@@ -87,7 +87,7 @@ def declared_failures(context) -> set[tuple[str, str]]:
 
 def testimony_for(context, act_key: str, chair: str) -> str | None:
     for row in context.fixture["testimony"]:
-        if row["act_key"] == act_key and row["seat"] == chair:
+        if row["act_key"] == act_key and row["chair"] == chair:
             return row["reported"]
     return None
 
@@ -115,8 +115,8 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
     """
     if isinstance(resolved, AbsentChair):
         return {
-            "seat": resolved.role,
-            "seat_state": "absent",
+            "chair": resolved.role,
+            "chair_state": "absent",
             "absence": resolved.to_record(),
             "resolved_identity": None,
             "resolved_revision": None,
@@ -131,8 +131,8 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
         else None
     )
     return {
-        "seat": resolved.role,
-        "seat_state": "configured",
+        "chair": resolved.role,
+        "chair_state": "configured",
         "resolved_identity": resolved.to_record(),
         "resolved_revision": {
             "kind": resolved.receipt_revision_kind,
@@ -162,7 +162,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # still gets an explicit outcome — `not-run`, an unresolved unit —
             # because a seat that simply never appears is a silent skip, and a
             # silent skip is the shape of the original defect.
-            for chair in context.witness_seats:
+            for chair in context.witness_chairs:
                 resolved = context.registry.resolve(chair)
                 context.publish(
                     kind="testimonium",
@@ -170,7 +170,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     outcome="not-run",
                     attempt=attempt_id(act["act_id"], f"read:{chair}", 1),
                     payload={
-                        "seat": chair,
+                        "chair": chair,
                         "act_key": act["act_key"],
                         "attempt_ordinal": 1,
                         "regions": [],
@@ -199,7 +199,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             for record in regions
         ]
 
-        for chair in context.witness_seats:
+        for chair in context.witness_chairs:
             resolved = context.registry.resolve(chair)
             reported = testimony_for(context, act["act_key"], chair)
             failed = (act["act_key"], chair) in failures
@@ -237,7 +237,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     else []
                 ),
                 payload={
-                    "seat": chair,
+                    "chair": chair,
                     "act_key": act["act_key"],
                     "attempt_ordinal": 1,
                     "regions": region_references if attempted else [],

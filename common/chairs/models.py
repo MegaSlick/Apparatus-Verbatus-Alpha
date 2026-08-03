@@ -167,8 +167,8 @@ class ServingReceipt:
     def to_record(self) -> dict[str, object]:
         adapter = self.details.adapter_identity
         return {
-            "schema": "seat-serving-receipt.v1",
-            "seat": self.identity.role,
+            "schema": "chair-serving-receipt.v1",
+            "chair": self.identity.role,
             "source": self.identity.source,
             "resolved": self.identity.source_reference,
             "revision": self.identity.receipt_revision,
@@ -230,7 +230,7 @@ class ModelsConfig:
             "witness_floor": self.witness_floor,
             "model_root": self.model_root,
             "adapter_recipes": dict(sorted(self.adapter_recipes.items())),
-            "seats": chairs,
+            "chairs": chairs,
         }
 
     @property
@@ -246,7 +246,7 @@ class ModelsConfig:
         return digest_of(self.to_record())
 
     @property
-    def witness_seats(self) -> tuple[str, ...]:
+    def witness_chairs(self) -> tuple[str, ...]:
         """All Attestator roles, including explicit absences that stay in the roster."""
 
         return tuple(sorted(role for role in self.chairs if role.startswith("attestator_")))

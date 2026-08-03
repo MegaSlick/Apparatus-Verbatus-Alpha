@@ -66,7 +66,7 @@ RECEIPTS_DIR: Final = "receipts/sha256"
 
 # The facts a run id is bound to. Changing any of them means this is a different
 # run wearing an old name, and reuse is refused rather than resumed.
-_BOUND_FIELDS: Final = ("source_manifest", "config_digest", "adapter_recipes", "witness_seats")
+_BOUND_FIELDS: Final = ("source_manifest", "config_digest", "adapter_recipes", "witness_chairs")
 
 
 class PublishResult:
@@ -130,7 +130,7 @@ class RunTree:
         source_manifest: list[dict[str, Any]],
         config_digest: str,
         adapter_recipes: dict[str, str],
-        witness_seats: list[str],
+        witness_chairs: list[str],
     ) -> "RunTree":
         """Open a run, creating it if new and refusing an incompatible reuse.
 
@@ -170,7 +170,7 @@ class RunTree:
             ),
             "config_digest": config_digest,
             "adapter_recipes": dict(sorted(adapter_recipes.items())),
-            "witness_seats": sorted(witness_seats),
+            "witness_chairs": sorted(witness_chairs),
         }
         authority["self_hash"] = self_hash(authority)
 

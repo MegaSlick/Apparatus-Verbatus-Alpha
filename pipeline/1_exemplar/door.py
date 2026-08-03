@@ -93,7 +93,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         ],
         config_digest=bindings["config_digest"],
         adapter_recipes=bindings["adapter_recipes"],
-        witness_seats=bindings["witness_seats"],
+        witness_chairs=bindings["witness_chairs"],
     )
     run = tree.read_run()
     context = StageContext(

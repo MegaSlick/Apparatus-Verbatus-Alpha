@@ -216,7 +216,7 @@ def test_a_role_the_schema_has_never_seen_resolves_without_a_schema_change(tmp_p
     assert isinstance(identity, ChairIdentity)
     assert identity.role == "haruspex_of_the_marginalia"
     # And it is not mistaken for a witness merely by being new.
-    assert config.witness_seats == ("attestator_1",)
+    assert config.witness_chairs == ("attestator_1",)
 
 
 def test_a_role_with_no_table_at_all_refuses_naming_the_role(tmp_path):
@@ -240,19 +240,19 @@ def test_an_unknown_top_level_field_is_refused_rather_than_ignored(tmp_path):
     """A misspelt `witness_flor` silently ignored is a floor of zero nobody set."""
     with pytest.raises(ConfigurationRefusal, match="unknown top-level"):
         parse_models_config(
-            {"witness_floor": 1, "seats": {"a_1": hf_chair("a_1", DIGEST)}, "witness_flor": 3}
+            {"witness_floor": 1, "chairs": {"a_1": hf_chair("a_1", DIGEST)}, "witness_flor": 3}
         )
 
 
 def test_a_config_with_no_chairs_at_all_is_refused(tmp_path):
     with pytest.raises(ConfigurationRefusal, match="non-empty"):
-        parse_models_config({"witness_floor": 1, "seats": {}})
+        parse_models_config({"witness_floor": 1, "chairs": {}})
 
 
 @pytest.mark.parametrize("floor", [-1, "3", True, None, 1.5])
 def test_a_witness_floor_that_is_not_a_non_negative_integer_is_refused(floor):
     with pytest.raises(ConfigurationRefusal, match="witness_floor"):
-        parse_models_config({"witness_floor": floor, "seats": {"a_1": hf_chair("a_1", DIGEST)}})
+        parse_models_config({"witness_floor": floor, "chairs": {"a_1": hf_chair("a_1", DIGEST)}})
 
 
 def _registry(config, tmp_path):

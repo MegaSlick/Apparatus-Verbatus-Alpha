@@ -69,7 +69,7 @@ def testimonia_of(context, act_id: str) -> list[dict]:
                 require_receipt=record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES,
             )
             records.append(record)
-    return sorted(records, key=lambda record: record["payload"]["seat"])
+    return sorted(records, key=lambda record: record["payload"]["chair"])
 
 
 def verify_region(context, region: dict) -> dict:
@@ -114,12 +114,12 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     """
     rows = []
     for record in testimonia:
-        chair = record["payload"]["seat"]
+        chair = record["payload"]["chair"]
         if record["outcome"] != "read":
-            rows.append({"seat": chair, "compared": False, "reason": record["outcome"]})
+            rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
             continue
         reported = record["payload"]["reported"]
-        rows.append({"seat": chair, "compared": True, "departed": reported != reading})
+        rows.append({"chair": chair, "compared": True, "departed": reported != reading})
     return rows
 
 
@@ -166,8 +166,8 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
     }
     if isinstance(resolved, AbsentChair):
         return {
-            "seat": resolved.role,
-            "seat_state": "absent",
+            "chair": resolved.role,
+            "chair_state": "absent",
             "absence": resolved.to_record(),
             "resolved_identity": None,
             "resolved_revision": None,
@@ -175,8 +175,8 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
             **regime,
         }
     return {
-        "seat": resolved.role,
-        "seat_state": "configured",
+        "chair": resolved.role,
+        "chair_state": "configured",
         "resolved_identity": resolved.to_record(),
         "resolved_revision": {
             "kind": resolved.receipt_revision_kind,
@@ -302,7 +302,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "regions": bases,
                     "testimonia": [
                         {
-                            "seat": record["payload"]["seat"],
+                            "chair": record["payload"]["chair"],
                             "artifact_id": record["artifact_id"],
                             "outcome": record["outcome"],
                         }

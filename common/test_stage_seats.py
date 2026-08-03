@@ -32,7 +32,7 @@ def _context(tmp_path) -> tuple[StageContext, ChairIdentity]:
         source_manifest=[],
         config_digest=bindings["config_digest"],
         adapter_recipes=bindings["adapter_recipes"],
-        witness_seats=bindings["witness_seats"],
+        witness_chairs=bindings["witness_chairs"],
     )
     run = tree.read_run()
     context = StageContext(
@@ -64,7 +64,7 @@ def test_serving_receipts_are_refused_as_stage_artifacts_and_accepted_as_run_rec
 
     reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
     receipt = context.tree.read_run_receipt(reference)
-    assert receipt["seat"] == identity.role
+    assert receipt["chair"] == identity.role
     assert receipt["revision"] == identity.receipt_revision
 
 
@@ -89,8 +89,8 @@ def test_a_consumer_refuses_tampered_model_provenance_and_receipt_reference(tmp_
     context, identity = _context(tmp_path)
     reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
     provenance = {
-        "seat": identity.role,
-        "seat_state": "configured",
+        "chair": identity.role,
+        "chair_state": "configured",
         "resolved_identity": identity.to_record(),
         "resolved_revision": {
             "kind": identity.receipt_revision_kind,
@@ -145,8 +145,8 @@ def test_a_field_nothing_validates_is_refused_rather_than_carried(tmp_path):
     context, identity = _context(tmp_path)
     reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
     provenance = {
-        "seat": identity.role,
-        "seat_state": "configured",
+        "chair": identity.role,
+        "chair_state": "configured",
         "resolved_identity": identity.to_record(),
         "resolved_revision": {
             "kind": identity.receipt_revision_kind,
@@ -174,8 +174,8 @@ def test_a_witness_regime_that_cannot_be_true_is_refused(tmp_path):
     context, identity = _context(tmp_path)
     reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
     provenance = {
-        "seat": identity.role,
-        "seat_state": "configured",
+        "chair": identity.role,
+        "chair_state": "configured",
         "resolved_identity": identity.to_record(),
         "resolved_revision": {
             "kind": identity.receipt_revision_kind,

@@ -73,10 +73,10 @@ def test_an_absent_chair_may_not_carry_a_pin_field(tmp_path):
 
 
 def test_an_absent_witness_stays_in_the_roster_the_run_binds(roster):
-    """`run.json`'s `witness_seats` is the roster, absences included. A seat
+    """`run.json`'s `witness_chairs` is the roster, absences included. A seat
     dropped from it would make an under-witnessed run look fully witnessed, and
     reopening the same run id after the drop would not even be refused."""
-    assert roster.config.witness_seats == (
+    assert roster.config.witness_chairs == (
         "attestator_1",
         "attestator_2",
         "attestator_3",
@@ -123,7 +123,7 @@ def test_the_absence_reaches_the_coverage_record_as_an_unresolved_chair(roster):
 
     assert coverage["configured"] == 4
     assert coverage["by_class"]["completed"] == 3
-    assert coverage["unresolved_seats"] == 1
+    assert coverage["unresolved_chairs"] == 1
     assert coverage["under_witnessed"] is True
 
 

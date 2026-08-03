@@ -300,7 +300,7 @@ def witness_coverage(chair_outcomes: Mapping[str, str], configured_floor: int) -
         "under_witnessed": completed < configured_floor,
         # An unresolved seat is a question nobody answered; it is not evidence of
         # anything, so it cannot sit inside a run that calls itself complete.
-        "unresolved_seats": by_class[OutcomeClass.UNRESOLVED.value],
+        "unresolved_chairs": by_class[OutcomeClass.UNRESOLVED.value],
     }
 
 
@@ -355,9 +355,9 @@ def run_aggregate(
                 f"act {act} is under-witnessed "
                 f"({coverage['by_class']['completed']} of a floor of {coverage['floor']})"
             )
-        if coverage.get("unresolved_seats"):
+        if coverage.get("unresolved_chairs"):
             reasons.append(
-                f"act {act} has {coverage['unresolved_seats']} seat(s) with no outcome yet"
+                f"act {act} has {coverage['unresolved_chairs']} seat(s) with no outcome yet"
             )
 
     by_page_outcome: dict[str, int] = {}

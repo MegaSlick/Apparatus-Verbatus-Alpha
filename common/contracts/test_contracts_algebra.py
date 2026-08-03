@@ -200,7 +200,7 @@ def test_coverage_counts_classes_and_flags_below_floor():
     assert coverage["by_class"] == {"completed": 1, "unresolved": 0, "failed": 2}
     assert coverage["by_outcome"] == {"read": 1, "failed": 1, "dead": 1}
     assert coverage["under_witnessed"] is True
-    assert coverage["unresolved_seats"] == 0
+    assert coverage["unresolved_chairs"] == 0
 
 
 def test_coverage_at_floor_is_not_under_witnessed():

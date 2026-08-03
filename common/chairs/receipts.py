@@ -12,10 +12,10 @@ from typing import Any
 from .errors import ReceiptRefusal
 from .models import ChairIdentity, ServingDetails, ServingReceipt, is_hf_revision, is_sha256
 
-RECEIPT_SCHEMA = "seat-serving-receipt.v1"
+RECEIPT_SCHEMA = "chair-serving-receipt.v1"
 _REQUIRED = {
     "schema",
-    "seat",
+    "chair",
     "source",
     "resolved",
     "revision",
@@ -58,7 +58,7 @@ def validate_receipt(record: Any) -> dict[str, Any]:
 
     if not isinstance(record, dict):
         raise ReceiptRefusal("receipt", "receipt is not an object")
-    chair = record.get("seat") if isinstance(record.get("seat"), str) else "receipt"
+    chair = record.get("chair") if isinstance(record.get("chair"), str) else "receipt"
     missing = sorted(_REQUIRED - set(record))
     extra = sorted(set(record) - _REQUIRED)
     if missing:
@@ -73,7 +73,7 @@ def validate_receipt(record: Any) -> dict[str, Any]:
         record,
         chair,
         (
-            "seat",
+            "chair",
             "resolved",
             "tokenizer_revision",
             "engine",

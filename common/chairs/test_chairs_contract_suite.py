@@ -155,7 +155,7 @@ def test_receipt_names_the_resolved_identity_in_both(implementation):
     receipt = implementation.receipt(identity, serving_details())
 
     assert receipt.identity == identity
-    assert receipt.to_record()["seat"] == CONFIGURED
+    assert receipt.to_record()["chair"] == CONFIGURED
     assert receipt.to_record()["revision"] == identity.digest_manifest
 
 

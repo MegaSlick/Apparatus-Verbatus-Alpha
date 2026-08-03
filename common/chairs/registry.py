@@ -36,7 +36,7 @@ from .models import (
 )
 from .receipts import build_receipt
 
-CACHE_DESCRIPTOR = ".seat-identity.json"
+CACHE_DESCRIPTOR = ".chair-identity.json"
 
 
 class SnapshotFetcher(Protocol):

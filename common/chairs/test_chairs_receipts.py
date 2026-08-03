@@ -36,7 +36,7 @@ DIGEST = "d" * 64
 # among them. A receipt missing any one of these is refused (#42).
 REQUIRED_FIELDS = (
     "schema",
-    "seat",
+    "chair",
     "source",
     "resolved",
     "revision",
@@ -70,7 +70,7 @@ def test_a_receipt_carries_every_named_field_and_round_trips_through_its_validat
 
     assert set(record) == set(REQUIRED_FIELDS)
     assert record["schema"] == RECEIPT_SCHEMA
-    assert record["seat"] == "attestator_1"
+    assert record["chair"] == "attestator_1"
     assert record["resolved"] == "fixture-org/attestator_1"
     assert record["revision"] == "a" * 40
     assert record["revision_kind"] == "git-commit"
@@ -135,7 +135,7 @@ def test_a_receipt_carrying_a_field_nothing_declared_is_refused(identity):
 
 def test_a_receipt_under_another_schema_label_is_refused(identity):
     record = receipt_record(build_receipt(identity, serving_details()))
-    record["schema"] = "seat-serving-receipt.v0"
+    record["schema"] = "chair-serving-receipt.v0"
     with pytest.raises(ReceiptRefusal, match="schema"):
         validate_receipt(record)
 

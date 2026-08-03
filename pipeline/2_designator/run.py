@@ -76,8 +76,8 @@ def structure_provenance(context) -> dict:
         raise ContractError("Designator resolution returned neither an identity nor an absence")
     receipt_ref = context.write_serving_receipt(resolved, fixture_serving_details(resolved))
     return {
-        "seat": resolved.role,
-        "seat_state": "configured",
+        "chair": resolved.role,
+        "chair_state": "configured",
         "resolved_identity": resolved.to_record(),
         "resolved_revision": {
             "kind": resolved.receipt_revision_kind,

@@ -55,8 +55,8 @@ ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
 # `validate_serving_provenance`, not here.
 _PROVENANCE_FIELDS = frozenset(
     {
-        "seat",
-        "seat_state",
+        "chair",
+        "chair_state",
         "adapter_revision",
         "absence",
         "resolved_identity",
@@ -116,8 +116,8 @@ class StageContext:
         return self.run["config_digest"]
 
     @property
-    def witness_seats(self) -> list[str]:
-        return list(self.run["witness_seats"])
+    def witness_chairs(self) -> list[str]:
+        return list(self.run["witness_chairs"])
 
     @property
     def witness_floor(self) -> int:
@@ -245,7 +245,7 @@ def run_config_bindings(
     refusal is not the sealed-tree guarantee spec 01 landed.
     """
     return {
-        "witness_seats": list(models.witness_seats),
+        "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
             {"fixture": fixture, "scenario": scenario, "models": models.to_record()}
         ),
@@ -343,8 +343,8 @@ def validate_serving_provenance(
             f"model provenance does not carry the sealed adapter recipe for {producer_stage!r}"
         )
 
-    state = provenance.get("seat_state")
-    chair = provenance.get("seat")
+    state = provenance.get("chair_state")
+    chair = provenance.get("chair")
     if not isinstance(chair, str) or not chair:
         raise SchemaRefusal("model provenance has no seat name")
     if state == "absent":
@@ -398,7 +398,7 @@ def validate_serving_provenance(
         raise SchemaRefusal(f"reading from seat {chair!r} has no serving receipt reference")
     receipt = context.tree.read_run_receipt(reference)
     expected = {
-        "seat": identity.role,
+        "chair": identity.role,
         "source": identity.source,
         "resolved": identity.source_reference,
         "revision": identity.receipt_revision,
@@ -462,7 +462,7 @@ def open_context(
     run = tree.read_run()
     differing = [
         field
-        for field in ("config_digest", "adapter_recipes", "witness_seats")
+        for field in ("config_digest", "adapter_recipes", "witness_chairs")
         if run.get(field) != bindings[field]
     ]
     if differing:
