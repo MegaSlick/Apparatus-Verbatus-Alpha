@@ -15,9 +15,23 @@ wanted an in-session confirmation that could not exist.
 **You may spawn your own agents, and you should when the job is large.** The clone you
 are working in carries this repository's rules about agents, and some of those are
 about agents running on Tyrel's machine — the spawn-depth cap and "`Agent` is denied to
-every role" among them. **They are not about you.** Nothing you spawn can reach the
-host, the container is already the bound, and a clone you wreck is rebuilt in seconds.
-The cap is lifted in here deliberately; depth is yours to choose.
+every role" among them. **They are not about you.** Those bounds exist because a host
+agent runs on Tyrel's machine and you do not; the container is the bound instead, and a
+clone you wreck is rebuilt in seconds. The cap is lifted in here deliberately; depth is
+yours to choose.
+
+**What the container bounds is this machine's checkout, and not much else.** An earlier
+edition of this file said nothing you spawn can reach the host, and that was too strong.
+`/out` is a real host directory and everything you put there survives you. Your vendor's
+configuration volume is writable and outlives the chamber, shared with every later
+chamber of the same vendor. Network egress is open. Spend is real and no review returns
+it. Read that as a reason to keep what you spawn bounded, not as a licence.
+
+**Before you fan out, read `/work/.claude/agents/README.md`.** It is measured and this
+file is not: which seat, which effort, and what each actually costs are there. Give each
+agent a bounded unit with named stop conditions, have it land its result **on disk**
+rather than only in a reply, and read that result back yourself before you use it. You
+delegate the work, never the responsibility for it.
 
 Two things do still hold. You are the only integrator of your own work — a sub-agent's
 claim is evidence, not a finding, and you run the gate yourself at the end. And **neither
@@ -65,6 +79,11 @@ the next agent, so change nothing in it your task did not ask for.
   their granularity. Each one needs a `Co-Authored-By` trailer naming the model
   that wrote it — this clone has the repository's hooks installed, so a commit
   without one is refused, and `collect` names any that got through anyway.
+- **Stage only what you touched for your task. Never `git add -A`.** That is
+  CLAUDE.md's Branches section and it holds in here for a reason of its own: you
+  may not be the only thing writing in this clone. Your own sub-agents are, and a
+  bulk stage sweeps their half-finished work into a commit you then report as
+  yours. If a file changed under you, re-read it rather than staging over it.
 
 ## What you cannot do, and must not try to route around
 
