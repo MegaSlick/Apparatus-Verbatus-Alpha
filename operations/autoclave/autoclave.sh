@@ -744,11 +744,35 @@ cmd_dispatch() {
     # the model name is not checked against a list of its own: a launcher that refuses
     # every seat added after it was written is a launcher somebody edits under time
     # pressure to get a dispatch out.
+    # **`ultra` is Sol's and Terra's alone.** Codex's own model catalog on this machine
+    # (`models_cache.json`, under its config directory — named without a path here
+    # because the credential guard in `operations/test_autoclave.py` refuses that
+    # directory's spelling anywhere in this file, and rightly so) lists `ultra` under
+    # `supported_reasoning_levels` for `gpt-5.6-sol` and `gpt-5.6-terra` and nothing
+    # else; its
+    # description is "Maximum reasoning with automatic task delegation", one step above
+    # `max`. Measured against a live dispatch on 2026-08-03: Terra at `ultra` ran and
+    # echoed `reasoning effort: ultra` back.
+    #
+    # Refusing `ultra` for Claude is the load-bearing half. `claude --effort ultra` does
+    # not fail — it prints "Unknown --effort value 'ultra' — ignoring it and using the
+    # default effort" and carries on at the *default*, which is not even `max`. A Claude
+    # chamber buffers all output until it exits, so that warning would surface hours
+    # later beside work that had silently run shallow.
+    #
+    # **Claude's own orchestrating level is `ultracode`, and it is a real effort value.**
+    # An earlier draft of this comment said it was only a keyword to write into a brief.
+    # It is not: measured against the CLI in the image on 2026-08-03, `--effort ultracode`
+    # is accepted **silently**, while `--effort ultra` and `--effort banana` both draw the
+    # unknown-value warning. The CLI distinguishes it from a typo. It is absent from
+    # `--help`, which lists only low/medium/high/xhigh/max — which is exactly why it has
+    # to be recorded somewhere that is checked, and why this list is that place.
     case "$vendor" in
-        claude) reachable="low medium high xhigh max" ;;
+        claude) reachable="low medium high xhigh max ultracode" ;;
         codex)
             case "$model" in
                 gpt-5.3-codex-spark) reachable="low medium high xhigh" ;;
+                gpt-5.6-sol|gpt-5.6-terra) reachable="none low medium high xhigh max ultra" ;;
                 *) reachable="none low medium high xhigh max" ;;
             esac ;;
     esac

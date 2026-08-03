@@ -156,7 +156,15 @@ def test_judgement_roles_keep_their_effort_floors():
     # review must not quietly run at a cheap session's depth. Fail closed: a
     # judgement seat cannot shed its floor by deletion or rename — removing one
     # is a reviewed change that edits this dict in the same commit.
-    rank = {"low": 0, "medium": 1, "high": 2, "xhigh": 3, "max": 4}
+    # `ultracode` sits above `max` because that is what it is: Claude's orchestrating
+    # level, verified against the CLI on 2026-08-03 (`--effort ultracode` is accepted
+    # where `--effort ultra` draws the unknown-value warning). `ultra` is its Codex
+    # counterpart, on `gpt-5.6-sol` and `gpt-5.6-terra` only. Both are absent from either
+    # vendor's `--help`. They are here so a role that ever declares one is *ranked*
+    # rather than crashing this test with a KeyError — which is what would have happened
+    # the first time somebody raised a judgement role to the level Tyrel now wants by
+    # default for build work.
+    rank = {"low": 0, "medium": 1, "high": 2, "xhigh": 3, "max": 4, "ultra": 5, "ultracode": 5}
     # Duplicated in README.md's roster table on purpose; change both together.
     # Tyrel's ruling, 2026-08-01: medium is the default, and high or above is a
     # deliberate choice reserved for planning and for judging. The chamber briefs
