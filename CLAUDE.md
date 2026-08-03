@@ -67,7 +67,11 @@ a conflict: quote the rule, state the concrete consequence, recommend a complian
 
 **Gate** — a permission authorizing one exact action. Name the target, the cost or
 audience, the consequence, and the way back; his **clear** answer authorizes that action
-and nothing adjacent. Never inferred, never carried forward. **The gates:** opening a
+and nothing adjacent. Never inferred, never carried forward. **But a granted gate carries
+the procedure around it** — opening the pull request the push was for, watching it until
+CodeRabbit's threads are settled, running the checks a skill names. Those are the approved
+action, not adjacent ones; asking again for a step a skill already owns is a round trip he
+pays for. **The gates:** opening a
 pull request, merging, edits to governed paths, paid actions and live infrastructure,
 destructive or hard-to-recover operations, disclosure, deployment, and any message
 reaching another person.

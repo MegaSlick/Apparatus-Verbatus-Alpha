@@ -22,8 +22,19 @@ for file in README.md GOALS.md GOVERNANCE.md ARCHITECTURE.md GLOSSARY.md CLAUDE.
 done
 [ "$missing" -eq 0 ] || exit 1
 
+# **README.md is in this list now, by Tyrel's ruling.** It used to be the one canonical
+# document a date was allowed in, because status lived there and status is dated by
+# nature. That exemption is what let the status line sit a full day behind the thing it
+# described, in the document that calls itself the only place status lives — a claim
+# nothing could contradict, because nothing was checking. An undated status line can only
+# be wrong about its substance, and substance is what a reader notices.
+#
+# Dated state belongs in `history/` and in the standing ledgers under `workbench/`, which
+# are read as records rather than as instructions. Provenance — when a ruling was made,
+# when something was measured — lives in the documents that carry procedure, and none of
+# those six is scanned for it here.
 dated=0
-for file in GOALS.md GOVERNANCE.md ARCHITECTURE.md GLOSSARY.md CLAUDE.md; do
+for file in README.md GOALS.md GOVERNANCE.md ARCHITECTURE.md GLOSSARY.md CLAUDE.md; do
   # Print only the line number and matched date. This check runs before the
   # credential scanner in CI, so echoing the whole source line could expose a
   # credential that the next step correctly refuses.
@@ -31,7 +42,7 @@ for file in GOALS.md GOVERNANCE.md ARCHITECTURE.md GLOSSARY.md CLAUDE.md; do
   grep_status=$?
   if [ "$grep_status" -eq 0 ]; then
     printf '%s\n' "$date_lines"
-    echo "dated state belongs in README.md, not $file" >&2
+    echo "dated state belongs in history/ or workbench/, not $file" >&2
     dated=1
   elif [ "$grep_status" -ne 1 ]; then
     echo "could not inspect $file for dated state." >&2

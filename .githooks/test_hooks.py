@@ -286,6 +286,27 @@ def test_document_check_rejects_untracked_notes_and_dated_canonical_state(tmp_pa
     assert SAMPLE_SECRET not in result.stdout + result.stderr
 
 
+@pytest.mark.full
+def test_the_root_readme_is_scanned_for_dates_like_every_other_document(tmp_path):
+    """Tyrel ruled: no README states a date, and README.md is no longer the exception.
+
+    It used to be the one canonical document a date was allowed in, because status lives
+    there and status is dated by nature. That exemption is what let the status line sit a
+    full day behind the thing it described — in the document that calls itself the only
+    place status lives, with nothing checking the claim. An undated line can only be
+    wrong about its substance, and substance is what a reader notices.
+    """
+    repo = make_document_repo(tmp_path / "repo")
+    (repo / "README.md").write_text("# Apparatus Verbatus\n\n**Status — 2026-08-03:** alpha.\n")
+    result = run_hook(repo, "check-documents.sh")
+    assert result.returncode == 1, "a dated status line in README.md was accepted"
+    assert "dated state" in result.stderr
+    assert "README.md" in result.stderr
+    # And the positive control: undated, the same claim passes.
+    (repo / "README.md").write_text("# Apparatus Verbatus\n\n**Status:** alpha.\n")
+    assert run_hook(repo, "check-documents.sh").returncode == 0
+
+
 def test_document_check_rejects_control_character_paths(tmp_path):
     # A newline in a filename splits one record into two innocent-looking ones on
     # the way to the newline-delimited allowlist, so the paths are refused before
