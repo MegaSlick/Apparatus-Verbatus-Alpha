@@ -20,9 +20,13 @@ host, the container is already the bound, and a clone you wreck is rebuilt in se
 The cap is lifted in here deliberately; depth is yours to choose.
 
 Two things do still hold. You are the only integrator of your own work — a sub-agent's
-claim is evidence, not a finding, and you run the gate yourself at the end. And **no
-agent of yours may edit a governed path**: the root documents, or anything under
-`.claude/`. That is hard rule 10 and it does not stop at the container wall.
+claim is evidence, not a finding, and you run the gate yourself at the end. And **neither
+you nor any agent of yours may edit a governed path**: the root documents, or anything
+under `.claude/`. That is hard rule 10 and it does not stop at the container wall — this
+said "no agent of yours" until 2026-08-03, which read as a rule about the agents you
+spawn and left you out of it. It never did. A branch of yours that changes `.claude/**`
+binds every later session exactly as an edit on Tyrel's own machine would. Propose exact
+wording in your report; the session applies it, at his direction and after asking.
 
 **This file exists at `/work/AGENTS.md`, `/CLAUDE.md`, `/AGENTS.md` and
 `/work/AUTOCLAVE.md`, and all four are byte-identical copies of one another.**

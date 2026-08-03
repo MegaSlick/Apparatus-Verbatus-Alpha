@@ -194,8 +194,15 @@ leaning on one.
 
   Two things still hold in there, and neither is about caution. The chamber agent is
   the only integrator of its own work — a sub-agent's claim is evidence, not a finding.
-  And **hard rule 10 does not stop at the container wall**: no agent of its may edit a
-  governed path either, because the wording that binds later sessions is Tyrel's to
+  And **hard rule 10 does not stop at the container wall**: neither the chamber agent
+  **nor** any agent of its may edit a governed path — the root documents or anything
+  under `.claude/`. The earlier wording here said "no agent of its", which read as a
+  rule about its sub-agents and left the chamber agent itself unaddressed; a chamber
+  branch that changes `.claude/**` binds every later session exactly as a change made
+  on this machine would, and it arrives through a diff nobody has to read twice. A
+  chamber proposes exact wording in its report, and the governed-edit skill and Tyrel's
+  approval are what turn that into a change. Found by CodeRabbit on pull request 15.
+  The reason is unchanged: the wording that binds later sessions is Tyrel's to
   approve wherever it was written.
 - No role in this directory has a write or shell tool. That is a bound on the roster,
   not a fact about today's entries: a role added here with `Write`, `Edit`,
