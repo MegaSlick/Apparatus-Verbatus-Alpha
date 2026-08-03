@@ -383,9 +383,22 @@ class TestLogin:
         assert 'vendor="${3:-none}"' in source, "new no longer takes a vendor"
         assert "verbatus.vendor" in source, "the chamber does not record its vendor"
         assert "holds no ${vendor} credential" in source, "dispatch does not check the vendor"
-        # Both volumes reachable from one code path is the shape of the old defect.
-        both = f"{source.count('AUTH_VOL_CLAUDE:-')}{source.count('AUTH_VOL_CODEX:-')}"
-        assert both == "00", "a single branch still mounts both vendors"
+        # Both volumes reachable from one code path is the shape of the old defect,
+        # and this is what says so. It used to count the substring `AUTH_VOL_CLAUDE:-`
+        # and require zero of them — a spelling that appears nowhere in this script and
+        # appeared nowhere in the defective version either, so the assertion was
+        # `"00" == "00"` for every implementation there has ever been, including one
+        # that mounts both vendors from a single branch. The structure is what matters:
+        # the mount is built in exactly two places, one per vendor, and neither names
+        # both.
+        mounting = [ln for ln in code_lines() if 'auth_mounts="--volume' in ln]
+        assert len(mounting) == 2, f"expected one mount line per vendor, found {len(mounting)}"
+        for line in mounting:
+            assert not ("CLAUDE" in line and "CODEX" in line), (
+                f"a single line mounts both vendors: {line.strip()}"
+            )
+        assert sum("CLAUDE" in line for line in mounting) == 1
+        assert sum("CODEX" in line for line in mounting) == 1
 
     def test_the_mountpoints_are_created_before_the_bind(self):
         """All three masked drawers are gitignored, so a fresh clone has none of
@@ -393,9 +406,9 @@ class TestLogin:
         read-only, and `docker run` exits 125 — `new` fails outright on any machine
         but this one. Verified before this line existed.
         """
-        source = SCRIPT.read_text()
-        created = source.index('mkdir -p "${REPO_ROOT}/private"')
-        assert created < source.index("--tmpfs /src/private"), "mountpoints made too late"
+        runnable = "\n".join(code_lines())
+        created = runnable.index('mkdir -p "${REPO_ROOT}/private"')
+        assert created < runnable.index("--tmpfs /src/private"), "mountpoints made too late"
 
     def test_the_private_drawer_is_masked_inside_a_chamber(self):
         """`/src` read-only stops an agent changing this machine, not reading it.
@@ -405,15 +418,17 @@ class TestLogin:
         an empty tmpfs over that one path — not an exclusion from the bind, which
         Docker cannot express, and not deletion of the directory, which `/src`
         being read-only forbids anyway.
+
+        Read against the runnable lines and not the raw source. The comment beside
+        each mask explains it in the same words, so commenting all three out left this
+        green — a test that could not fail for the failure it names.
         """
-        source = SCRIPT.read_text()
-        assert "--tmpfs /src/private" in source, "the private drawer is exposed to every chamber"
-        assert "/src/private:ro" in source, "the masking tmpfs is writable"
+        runnable = " ".join(code_lines())
         # `workbench/` is the other drawer the guard's own SECRET_DRAWERS names, and
         # it holds every handoff, note and reviewer transcript. Masking `private/`
         # alone left half the rule unenforced.
-        for drawer in ("workbench", "scriptorium"):
-            assert f"--tmpfs /src/{drawer}:ro" in source, f"{drawer} is exposed to every chamber"
+        for drawer in ("private", "workbench", "scriptorium"):
+            assert f"--tmpfs /src/{drawer}:ro" in runnable, f"{drawer} is exposed to every chamber"
 
 
 class TestDispatch:
@@ -517,17 +532,78 @@ class TestDispatch:
         assert "$(cat /out/brief.md)" not in joined, "the brief is expanded into an argument"
 
     def test_permission_skipping_is_confined_to_the_chamber(self):
-        """`--dangerously-skip-permissions` is correct inside a container and
-        nowhere else, because the container is the boundary and a prompt inside a
-        detached one is a hang. This asserts it appears in exactly one runnable
-        line, so it cannot drift into something that executes on the host.
+        """Both bypass flags are correct inside a container and nowhere else, because
+        the container is the boundary and a prompt inside a detached one is a hang.
+        Each must appear in exactly one runnable line, and the docker call that line
+        belongs to must be an `exec`.
+
+        The *nearest preceding* docker call is what decides, not whether one appears
+        anywhere above. Written the loose way, `cmd_shell` guarantees a `docker exec` a
+        hundred lines up, so a host invocation added later carried the flag and still
+        passed.
+
+        **This still does not close it, and the next test is what does.** Moving both
+        invocations onto the host was tried against this assertion and it stayed green,
+        because the auth check immediately above them is itself a `docker exec` and
+        becomes the nearest one. What this pins is that each flag is written once; that
+        it reaches a container is an outcome, and is tested as one below.
         """
         lines = code_lines()
-        carrying = [ln for ln in lines if "--dangerously-skip-permissions" in ln]
-        assert len(carrying) == 1, f"expected one runnable use, found {len(carrying)}"
-        index = lines.index(carrying[0])
-        preceding = "\n".join(lines[:index])
-        assert "docker exec" in preceding, "the flag is not inside a docker exec"
+        for flag in (
+            "--dangerously-skip-permissions",
+            "--dangerously-bypass-approvals-and-sandbox",
+        ):
+            carrying = [ln for ln in lines if flag in ln]
+            assert len(carrying) == 1, f"expected one runnable use of {flag}, found {len(carrying)}"
+            index = lines.index(carrying[0])
+            before = [ln for ln in lines[:index] if "docker " in ln]
+            assert before, f"{flag} is not inside any docker call"
+            assert "docker exec" in before[-1], (
+                f"the docker call {flag} belongs to is not an exec: {before[-1].strip()}"
+            )
+
+    def test_the_bypass_flags_never_reach_a_host_binary(self, tmp_path):
+        """And the same thing as an outcome, because the reading above is a reading.
+
+        Failing `claude` and `codex` stubs sit on the dispatch's PATH. If either
+        invocation drifted onto the host it would run one of them, and the attempt
+        would be recorded. The recorded docker argv is what carries the flag.
+        """
+        script = elsewhere(tmp_path)
+        brief = tmp_path / "brief.md"
+        brief.write_text("bounded task\n")
+        drawer = tmp_path / "workbench" / "autoclave" / "task-x"
+        drawer.mkdir(parents=True)
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_CONTAINER_EXISTS": "1",
+                "FAKE_CHAMBER_VENDOR": "codex",
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_EXEC_STATUS": "0",
+            }
+        )
+
+        result = run(
+            "dispatch",
+            "task-x",
+            "codex",
+            str(brief),
+            "gpt-5.6-luna",
+            "high",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+
+        assert result.returncode == 0, result.stderr
+        carrying = [
+            call
+            for call in docker_calls(log)
+            if "--dangerously-bypass-approvals-and-sandbox" in " ".join(call)
+        ]
+        assert len(carrying) == 1 and carrying[0][0] == "exec"
+        assert not Path(env["FAKE_HOST_VENDOR_LOG"]).exists(), "a vendor CLI ran on the host"
 
     def test_a_model_is_required(self):
         """An omitted model runs the vendor's default, and `codex doctor` reports that
