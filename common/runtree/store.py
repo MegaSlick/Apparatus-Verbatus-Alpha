@@ -24,8 +24,17 @@ downstream expected-act authority, because acts are discovered and pages are giv
 Reusing a run id whose source, configuration, or adapter recipes have changed fails
 before any write. That is spec 01's third test, and it is the difference between a
 resumed run and a corrupted one.
+
+`receipts/sha256/` is the one thing here that is not a stage artifact. A serving
+receipt records which model actually answered, and it carries a live endpoint and a
+real moment — `envelope.py`'s docstring already rules that out of a stage artifact,
+and publishing one would break "repeating the identical command leaves every byte
+unchanged". So it is written content-addressed under the run root, outside every
+stage's directory and out of every stage manifest, and a stage payload carries only
+its digest-checked reference plus the immutable resolved identity and revision.
 """
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Final
@@ -41,6 +50,14 @@ from common.contracts.envelope import validate_envelope
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import writing_directory
+
+# At module level, not deferred inside the two receipt methods. The dependency is
+# real — the store is the one writer and the one reader of a run receipt, and it
+# refuses an invalid one at both ends — so it belongs where a reader of the
+# imports can see it. `common/seats/` imports nothing from here, so there is no
+# cycle to dodge, and a deferred import that exists only to hide a layer from the
+# eye is a layer nobody can check.
+from common.seats.receipts import receipt_record, validate_receipt
 
 RUN_FILE: Final = "run.json"
 MANIFEST_FILE: Final = "manifest.json"
@@ -265,9 +282,12 @@ class RunTree:
         so this writer never reaches ``publish_artifact`` or a stage manifest. The
         record is canonical and content-addressed, making an identical write reuse
         its bytes while a different receipt receives its own immutable reference.
-        """
-        from common.seats.receipts import receipt_record
 
+        The store validates on the way in and again on the way out, for the same
+        reason `build_envelope` does: an invalid record that reached the tree has
+        already lost the moment it described, and finding out at the reader means
+        the evidence of what went wrong is a stage away.
+        """
         record = receipt_record(receipt)
         data = canonical_bytes(record)
         digest = digest_bytes(data)
@@ -275,9 +295,13 @@ class RunTree:
         return RunReceiptReference(result.relative_path, digest), result
 
     def read_run_receipt(self, reference: RunReceiptReference | dict[str, str]) -> dict[str, Any]:
-        """Read a receipt only when both its reference and bytes still verify."""
-        from common.seats.receipts import validate_receipt
+        """Read a receipt only when both its reference and bytes still verify.
 
+        Three checks, because each catches a different lie: the path must be the
+        one its own digest names, the bytes there must hash to that digest, and
+        the record must still be a whole receipt (#42 — tampered or wrong-schema
+        provenance is refused, never repaired).
+        """
         parsed = _receipt_reference(reference)
         expected_path = self.receipt_path(parsed.sha256)
         if parsed.relative_path != expected_path:
@@ -292,7 +316,12 @@ class RunTree:
                 f"run receipt {parsed.relative_path} has digest {actual}, not the reference "
                 f"digest {parsed.sha256}"
             )
-        return validate_receipt(_read_json(self.resolve(parsed.relative_path)))
+        try:
+            return validate_receipt(json.loads(data.decode("utf-8")))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise SchemaRefusal(
+                f"run receipt {parsed.relative_path} could not be read: {error}"
+            ) from error
 
     def _publish_bytes(self, relative: str, data: bytes) -> PublishResult:
         target = self.resolve(relative)
@@ -422,8 +451,6 @@ def _atomic_write(target: Path, data: bytes) -> None:
 
 
 def _read_json(path: Path) -> Any:
-    import json
-
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
