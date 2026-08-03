@@ -551,7 +551,18 @@ cmd_new() {
     #
     # A frozen copy, for the same reason `/src` is a snapshot: a session that repairs
     # a spec while a chamber is reading it would otherwise change the tree underneath
-    # the agent. Copied at `new`, read-only inside, removed by `rm`.
+    # the agent. Copied at `new`, removed by `rm`.
+    #
+    # **Writable, and that is a correction.** It was read-only for one sitting, on the
+    # reasoning that an agent "has no business editing the specs" — which is tidiness,
+    # not containment, and the two are not the same rule. `/src` and `/window` are
+    # read-only because they are really this machine's tree and really the old
+    # repository; writing them would change the host with no diff to review. This is a
+    # per-chamber copy that `rm` deletes, so nothing it holds is anybody's original.
+    # Locking it cost a real dispatch (Tyrel, 2026-08-03): a builder told by its spec to
+    # record resolved model revisions in the bench memo could not, because this mount
+    # refused a write nothing needed refused. A chamber has free rein over what is its
+    # own; the boundary is the host, not the agent's judgement.
     specs_stage="${REPO_ROOT}/workbench/autoclave/.specs/${task}"
     rm -rf "$specs_stage"
     mkdir -p "$specs_stage"
@@ -596,7 +607,7 @@ cmd_new() {
         --tmpfs /src/workbench:ro,size=4k \
         --tmpfs /src/scriptorium:ro,size=4k \
         --volume "${outdir}:/out" \
-        --volume "${specs_stage}:/specs:ro" \
+        --volume "${specs_stage}:/specs" \
         $auth_mounts $window_mount \
         --workdir /work \
         "$IMAGE" \

@@ -72,11 +72,14 @@ rules and no need to hunt for one. The repository's own rules are separate and l
 - `/src` — the host repository, mounted **read-only**. Reference only. Writing
   here fails, and the failure is the mount, not a permission you can argue with.
 - `/out` — a scratch drawer shared with the host. This is how work leaves.
-- `/specs` — the design specs, **read-only** and frozen when this chamber was
-  made. `spec_NN_*.md` is the written source for any system you are asked to
+- `/specs` — the design specs, frozen when this chamber was made and **yours to
+  write**. `spec_NN_*.md` is the written source for any system you are asked to
   build; the master plan and the notes beside it are not here, and the brief you
   were given carries whatever else you need. They live outside git on the host,
-  which is why they arrive by their own mount rather than inside `/work`.
+  which is why they arrive by their own mount rather than inside `/work`. This is
+  a copy made for you, not the operator's original, so record what your brief
+  tells you to record. Say in your report what you changed here — it does not
+  travel back on your branch, so an unmentioned edit is an edit nobody reads.
 - `/window` — **present only when this chamber was given one**, and it is the old
   repository, mounted read-only. It is *reference*, and the rule on it is
   absolute: **no byte of it enters your branch.** Read it to understand what an

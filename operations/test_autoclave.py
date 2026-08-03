@@ -488,15 +488,20 @@ class TestLogin:
         for drawer in ("private", "workbench", "scriptorium"):
             assert f"--tmpfs /src/{drawer}:ro" in runnable, f"{drawer} is exposed to every chamber"
 
-    def test_the_specs_reach_a_chamber_read_only(self):
+    def test_the_specs_reach_a_chamber_and_the_chamber_may_write_them(self):
         """`workbench/design/` is gitignored *and* inside the masked drawer, so the
         specs were absent from a chamber twice over and a brief had to carry a whole
-        spec as prose. They arrive as their own mount, and read-only: the agent
-        builds from them and has no business editing them.
+        spec as prose. They arrive as their own mount.
+
+        Writable, and the asymmetry with `/src` and `/window` is the point: those two
+        are really this machine's tree and really the old repository, so writing them
+        would change the host with no diff. This is a per-chamber copy `rm` deletes.
+        It was read-only for one sitting and that cost a dispatch — a builder told by
+        its spec to record resolved revisions in the bench memo could not.
         """
         runnable = " ".join(code_lines())
-        assert '--volume "${specs_stage}:/specs:ro"' in runnable, "specs are not mounted"
-        assert '--volume "${specs_stage}:/specs" ' not in runnable, "specs are writable"
+        assert '--volume "${specs_stage}:/specs"' in runnable, "specs are not mounted"
+        assert "${specs_stage}:/specs:ro" not in runnable, "the specs mount is read-only again"
 
     def test_the_staged_specs_are_a_frozen_copy_not_a_live_bind(self):
         """Same reason `/src` is a snapshot: a session repairing a spec while a
@@ -506,7 +511,7 @@ class TestLogin:
         runnable = "\n".join(code_lines())
         assert 'cp -R "${REPO_ROOT}/workbench/design/."' in runnable, "specs are not copied"
         copied = runnable.index('cp -R "${REPO_ROOT}/workbench/design/."')
-        assert copied < runnable.index("${specs_stage}:/specs:ro"), "staged after the bind"
+        assert copied < runnable.index("${specs_stage}:/specs"), "staged after the bind"
 
     def test_the_window_onto_the_old_code_is_opt_in_and_read_only(self):
         """A chamber that can read the old repository can copy old bytes into its
