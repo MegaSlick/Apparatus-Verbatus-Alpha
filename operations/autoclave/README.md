@@ -91,13 +91,22 @@ an exact tree rather than to whatever a branch name meant at clone time.
 `collect` requires a clean tree inside — modified, staged **and untracked** —
 because a bundle carries commits and anything loose beside them is left behind.
 The refusal names the paths. A branch carrying no commits is not that failure:
-it collects, so the report survives, and says `NO COMMITS` loudly. It fetches
-the branch, names any commit that came back with no `Co-Authored-By` trailer,
-and prints the two commands to read it. **It never merges.**
+it collects, so the report survives, and says `NO COMMITS` loudly. It verifies
+that what is in the bundle slot is a bundle before git reads it, fetches the
+branch, names any commit that came back with no `Co-Authored-By` trailer, and
+prints the two commands to read it. **It never merges.**
 
-`rm` reads the chamber before destroying it: uncommitted work, or commits this
-repository does not have, are refused with the way out named. A stopped chamber
-cannot be read, so it is refused too. `rm <task> force` is the word that says
+**`collect` bundles `agent/<task>` and nothing else.** Work committed onto some
+other branch inside a chamber does not come back — move or merge it onto
+`agent/<task>` first. `rm` refuses a chamber holding any such commit, so it is
+not silently destroyed, but nothing collects it for you.
+
+`rm` reads the chamber before destroying it: uncommitted work, or a commit on
+any branch that this repository does not have, is refused with the way out
+named. "Does not have" means the object is absent here, not that the tips
+differ — so re-authoring a collected branch, which is the next thing `collect`
+tells you to do, does not lock the chamber. A stopped chamber cannot be read, so
+it is refused too. `rm <task> force` is the word that says
 the loss is intended, and it is also how to remove a chamber that will not
 start. Either way the output drawer is **kept**, because the bundle is the only
 surviving evidence that a dispatch happened.
