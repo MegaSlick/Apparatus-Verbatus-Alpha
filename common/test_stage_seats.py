@@ -132,3 +132,73 @@ def test_a_consumer_refuses_tampered_model_provenance_and_receipt_reference(tmp_
             producer_stage=ATTESTATORES,
             require_receipt=True,
         )
+
+
+def test_a_field_nothing_validates_is_refused_rather_than_carried(tmp_path):
+    """Invariant #42 refuses wrong-schema provenance, not a list of known-bad names.
+
+    The two serving-only leaks are named and refused above them, which catches the
+    mistake we have already made. This catches the one we have not: a field a later
+    stage invents travels inside a sealed reading with nothing checking it, and the
+    reading still verifies. An allowlist is the only shape that closes that.
+    """
+    context, identity = _context(tmp_path)
+    reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
+    provenance = {
+        "seat": identity.role,
+        "seat_state": "configured",
+        "resolved_identity": identity.to_record(),
+        "resolved_revision": {
+            "kind": identity.receipt_revision_kind,
+            "value": identity.receipt_revision,
+        },
+        "receipt_ref": reference,
+        "adapter_revision": context.adapter_revision,
+    }
+    with pytest.raises(SchemaRefusal, match="unknown field"):
+        validate_serving_provenance(
+            context,
+            {**provenance, "confidence": 0.9},
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+
+def test_a_witness_regime_that_cannot_be_true_is_refused(tmp_path):
+    """ARCHITECTURE: the named/blinded toggle is run-level and every Perlectio
+    records its regime. The Perlector writes the field; until this check nothing
+    read it back, so a Perlectio claiming a regime that does not exist travelled
+    sealed and provenance-checked. Binding it to a real run-level toggle is Spec
+    08's work; refusing a value that cannot be true is provenance validation.
+    """
+    context, identity = _context(tmp_path)
+    reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
+    provenance = {
+        "seat": identity.role,
+        "seat_state": "configured",
+        "resolved_identity": identity.to_record(),
+        "resolved_revision": {
+            "kind": identity.receipt_revision_kind,
+            "value": identity.receipt_revision,
+        },
+        "receipt_ref": reference,
+        "adapter_revision": context.adapter_revision,
+    }
+    for regime in ("named", "blinded"):
+        assert (
+            validate_serving_provenance(
+                context,
+                {**provenance, "witness_regime": regime},
+                producer_stage=ATTESTATORES,
+                require_receipt=True,
+            )
+            == identity
+        )
+
+    with pytest.raises(SchemaRefusal, match="witness regime"):
+        validate_serving_provenance(
+            context,
+            {**provenance, "witness_regime": "anonymised"},
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )

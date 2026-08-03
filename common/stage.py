@@ -46,6 +46,34 @@ EXIT_HELD = 3
 # and inventing a serving moment for either would be a receipt for nothing.
 ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
 
+# Every top-level field a reading's model provenance may carry. A closed set,
+# because invariant #42 refuses *wrong-schema* provenance rather than a list of
+# fields we already know are wrong: a denylist passes anything a later stage
+# invents, and an unvalidated field inside a sealed reading is exactly what #42
+# exists to stop. `absence` appears only on an absent seat and the identity
+# fields only on a configured one; which combination is legal is decided in
+# `validate_serving_provenance`, not here.
+_PROVENANCE_FIELDS = frozenset(
+    {
+        "seat",
+        "seat_state",
+        "adapter_revision",
+        "absence",
+        "resolved_identity",
+        "resolved_revision",
+        "receipt_ref",
+        "witness_regime",
+    }
+)
+
+# ARCHITECTURE's Perlector paragraph: witness identity travels under a run-level
+# named/blinded toggle, "every Perlectio recording its regime". The Perlector
+# writes it; until this check, nothing read it back, so a Perlectio claiming an
+# impossible regime — or a typo — travelled sealed. Binding it to an actual
+# run-level toggle is Spec 08's work; refusing a value that cannot be true is
+# this system's, because it is provenance and #42 governs provenance.
+_WITNESS_REGIMES = frozenset({"named", "blinded"})
+
 
 class StageSeatProtocol(SeatProtocol, Protocol):
     """The small additional config surface a calling stage needs.
@@ -292,6 +320,23 @@ def validate_serving_provenance(
     if leaked:
         raise SchemaRefusal(
             f"model provenance leaks serving-only field(s) {leaked}; use the run receipt reference"
+        )
+    # **An allowlist, because #42 refuses wrong-schema provenance rather than
+    # known-bad provenance.** Naming `endpoint` and `started_at` above catches the
+    # two leaks we have already made and nothing else: any field a later stage
+    # invents travels into a sealed reading unexamined, which is precisely the
+    # tampering the invariant is about. The check above stays because it names the
+    # two by name and says why; this one closes the rest.
+    unexpected = sorted(set(provenance) - _PROVENANCE_FIELDS)
+    if unexpected:
+        raise SchemaRefusal(
+            f"model provenance carries unknown field(s) {unexpected}; a reading's provenance "
+            "is a closed schema, and a field nothing validates is a field nothing can trust"
+        )
+    if "witness_regime" in provenance and provenance["witness_regime"] not in _WITNESS_REGIMES:
+        raise SchemaRefusal(
+            f"model provenance records witness regime {provenance['witness_regime']!r}, "
+            f"which is not one of {sorted(_WITNESS_REGIMES)}"
         )
     if provenance.get("adapter_revision") != adapter_recipe_for(context.run, producer_stage):
         raise SchemaRefusal(
