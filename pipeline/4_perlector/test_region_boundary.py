@@ -118,6 +118,23 @@ def test_perlector_refuses_a_tampered_designator_region_provenance(real_region, 
         perlector.regions_of(context, region["subject_id"])
 
 
+def test_perlector_names_a_designator_region_with_missing_provenance(real_region, monkeypatch):
+    context, region = real_region
+    missing = copy.deepcopy(region)
+    del missing["payload"]["provenance"]
+    missing["self_hash"] = self_hash(missing)
+    entry = next(
+        entry
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["artifact_id"] == region["artifact_id"]
+    )
+    context.tree.resolve(entry["relative_path"]).write_bytes(canonical_bytes(missing))
+    monkeypatch.setattr(context.tree, "build_manifest", lambda stage: {"artifacts": [entry]})
+
+    with pytest.raises(SchemaRefusal, match="model provenance is not an object"):
+        perlector.regions_of(context, region["subject_id"])
+
+
 def test_attestatores_verifies_crop_lineage_before_a_witness_reads_it(real_region, monkeypatch):
     context, region = real_region
     monkeypatch.setattr(attestatores, "validate_serving_provenance", lambda *args, **kwargs: None)
