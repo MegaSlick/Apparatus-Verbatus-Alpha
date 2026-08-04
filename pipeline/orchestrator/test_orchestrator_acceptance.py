@@ -48,8 +48,8 @@ FIXTURE = "synthetic-two-page-v0"
 # is internally consistent but no longer the run these tests describe. A change
 # here is legitimate exactly when a commit deliberately changes what a run
 # writes, and then the new value belongs in that commit and nowhere else.
-HAPPY_RUN_TREE_DIGEST = "847165af3a625f66e7bf0cf5c352295eb509e89c45b332ab889c85cce1ceb069"
-REVIEW_RUN_TREE_DIGEST = "589c6b4251bafb89a368574fd6caa7413cf106ec008b31d8a8c6db2cbb771cb9"
+HAPPY_RUN_TREE_DIGEST = "77177e3fc5561b4e367212d3b9d50b98ae42cd2ab23dd1eddd2964560d9a25cd"
+REVIEW_RUN_TREE_DIGEST = "91774dd7c103336157e61f239837d0d2cc9bd60af0e1b88524172272999afd25"
 
 
 def orchestrate(
@@ -214,7 +214,7 @@ def test_the_config_digest_still_binds_the_scenario_as_well_as_the_chairs(happy_
 
 def test_an_explicit_absent_witness_is_a_visible_not_run_and_counts_against_floor(tmp_path):
     """Exercise absence through real stage programs, not only the config parser."""
-    config_root = tmp_path / "seat-config"
+    config_root = tmp_path / "chair-config"
     shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
     shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
     live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
@@ -222,7 +222,7 @@ def test_an_explicit_absent_witness_is_a_visible_not_run_and_counts_against_floo
 state = \"configured\"
 source = \"local-repository\"
 path = \"attestator_3\"
-digest_manifest = \"170f41966db60a5e67fc437094d61122d6e7d557b2bd9fe64539f596d2ac6a1f\"
+digest_manifest = \"b9d6f5b6400e8aa36ecc35bad33cb4c54bb69b207e1ffdea39e1999cfa7e523a\"
 manifest = \"manifests/attestator_3.json\"
 serving_recipe = \"fake-attestatores-v0\"
 license_note = \"fixture identity only; no model weights or model license apply\"

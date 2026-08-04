@@ -1,1 +1,1 @@
-fixture seat: perlector
+fixture chair: perlector

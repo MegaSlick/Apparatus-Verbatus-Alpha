@@ -1,1 +1,1 @@
-fixture seat: designator_structure
+fixture chair: designator_structure

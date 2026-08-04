@@ -93,6 +93,21 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
             )
         if value.adapter_of == role:
             raise ConfigurationRefusal(role, "adapter_of cannot name the adapter chair itself")
+        # A self-reference is the one-step case of a cycle, and refusing only that let the
+        # two-step case through: two chairs each declaring the other as its base were both
+        # accepted, and neither pair member named a base artifact that exists. An adapter
+        # is an adapter *of* something, so a chain that never reaches a non-adapter chair
+        # is a roster with no base in it at all. Found by CodeRabbit on pull request 16.
+        seen = [role]
+        walker = value.adapter_of
+        while walker is not None:
+            if walker in seen:
+                raise ConfigurationRefusal(
+                    role, f"adapter_of forms a cycle {' -> '.join([*seen, walker])}"
+                )
+            seen.append(walker)
+            step = chairs.get(walker)
+            walker = step.adapter_of if isinstance(step, ChairIdentity) else None
 
     return ModelsConfig(
         witness_floor=witness_floor,

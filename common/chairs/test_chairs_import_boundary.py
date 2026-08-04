@@ -9,8 +9,17 @@ exist; a placeholder declaration before code would prove nothing."
 `pipeline/README.md` names why it has to be static: numbering the stage
 directories makes `import 4_perlector` invalid Python, "a useful deterrent... but
 not a complete boundary: dynamic imports and path manipulation can still cross
-it." Everything below reads source through `ast` and executes nothing, so a
-dynamic `importlib.import_module(...)` is caught exactly like a plain `import`.
+it." Everything below reads source through `ast` and executes nothing.
+
+**And a dynamic `importlib.import_module(...)` is *not* caught like a plain import.**
+`_imports_in` returns `ast.Import` and `ast.ImportFrom` nodes; a dynamic import is an
+`ast.Call` and is invisible to it. The evidence is in this file: the one sanctioned
+dynamic import in the package — `import_module("huggingface_hub")` inside
+`HuggingFaceFetcher.from_huggingface_hub` — has to be found by substring search further
+down, because the walker cannot see it. An earlier version of this docstring claimed the
+opposite, which would have let a session trust a boundary that is narrower than stated.
+Closing the gap means matching constant-string `import_module` calls and scoping that to
+`pipeline` and `proof`; it is worth doing and nobody has done it.
 
 Meta-invariant #88: no loop here reports success over an empty population.
 """

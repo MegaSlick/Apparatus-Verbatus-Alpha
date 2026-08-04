@@ -46,7 +46,7 @@ FIXTURE_CHAIRS = (
 
 def fixture_files(chair: str) -> dict[str, bytes]:
     """The bytes one fixture chair's snapshot holds, derived from its own name."""
-    return {"identity.txt": f"fixture seat: {chair}\n".encode()}
+    return {"identity.txt": f"fixture chair: {chair}\n".encode()}
 
 
 def build(model_root: Path, manifest_root: Path) -> dict[str, str]:

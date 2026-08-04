@@ -22,6 +22,7 @@ from .errors import (
     ChairRefusal,
     DigestMismatchRefusal,
     LocalPathRefusal,
+    ReceiptRefusal,
     ServingRecipeRefusal,
     UnresolvedChairRefusal,
 )
@@ -151,9 +152,33 @@ class ChairRegistry:
         return self._ensure_huggingface(identity, manifest)
 
     def receipt(self, identity: ChairIdentity, serving: ServingDetails) -> ServingReceipt:
-        """Validate a run-receipt value; writing it belongs to the run receipt writer."""
+        """Validate a run-receipt value; writing it belongs to the run receipt writer.
+
+        `build_receipt` binds the adapter base by *role*, which is all a value-level
+        validator can see. Only here is the configuration available, so only here can
+        the base's revision and digest be checked — and without that a receipt could
+        name the right base role at a stale revision, losing the identity of the base
+        artifact that actually answered. `_cache_descriptor` already refuses that exact
+        drift for the cache; this was the weaker door on the same fact. Found by
+        CodeRabbit on pull request 16.
+        """
 
         self._require_current_identity(identity)
+        supplied = serving.adapter_identity
+        if supplied is not None and identity.adapter_of is not None:
+            configured = self.resolve(identity.adapter_of)
+            if isinstance(configured, AbsentChair):
+                raise ReceiptRefusal(
+                    identity.role,
+                    f"adapter base {identity.adapter_of!r} is explicitly absent and cannot "
+                    "have answered",
+                )
+            if configured != supplied:
+                raise ReceiptRefusal(
+                    identity.role,
+                    f"receipt names adapter base {supplied.role!r} at a revision that is not "
+                    "the configured pin; a base is matched, never accepted as supplied",
+                )
         return build_receipt(identity, serving)
 
     def refuse_recipe_start(self, identity: ChairIdentity, difference: str) -> None:

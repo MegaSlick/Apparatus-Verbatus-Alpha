@@ -308,7 +308,17 @@ class RunTree:
                 f"receipt reference {parsed.relative_path!r} is not its content-addressed path "
                 f"{expected_path!r}"
             )
-        data = self.read_bytes(parsed.relative_path)
+        # A reference whose file is gone is a provenance failure, not a crash. Without
+        # this, a valid-looking reference to a removed receipt ended the stage with a
+        # bare FileNotFoundError instead of a named refusal — and #42 is about refusing
+        # provenance, which includes provenance that is no longer there. Found by
+        # CodeRabbit on pull request 16.
+        try:
+            data = self.read_bytes(parsed.relative_path)
+        except OSError as error:
+            raise SchemaRefusal(
+                f"run receipt {parsed.relative_path} could not be read: {error}"
+            ) from error
         actual = digest_bytes(data)
         if actual != parsed.sha256:
             raise SchemaRefusal(

@@ -1222,12 +1222,23 @@ cmd_rm() {
     # and an agent that forgot to report an edit made this the silent case. The drawer is
     # kept forever, so moving them there costs nothing and keeps the only copy.
     # Found by CodeRabbit on pull request 16.
+    # **Never onto a previous copy.** A task name may be reused after `rm`, the drawer
+    # persists across both, and the first draft of this deleted `<outdir>/specs` before
+    # moving the new one — destroying the earlier chamber's edits to save a rerun of the
+    # same name, which is the loss it was written to prevent. Each retention gets its own
+    # numbered directory instead, and nothing overwrites anything. Found by CodeRabbit on
+    # pull request 16.
     specs_stage="${REPO_ROOT}/workbench/autoclave/.specs/${task}"
     if [ -d "$specs_stage" ]; then
         mkdir -p "$(outdir_of "$task")"
-        rm -rf "$(outdir_of "$task")/specs"
-        if mv "$specs_stage" "$(outdir_of "$task")/specs" 2>/dev/null; then
-            note "staged specs kept at $(outdir_of "$task")/specs — read them for edits the agent made"
+        kept="$(outdir_of "$task")/specs"
+        n=1
+        while [ -e "$kept" ]; do
+            kept="$(outdir_of "$task")/specs-${n}"
+            n=$((n + 1))
+        done
+        if mv "$specs_stage" "$kept" 2>/dev/null; then
+            note "staged specs kept at ${kept} — read them for edits the agent made"
         else
             note "staged specs could not be moved; they remain at ${specs_stage}"
         fi

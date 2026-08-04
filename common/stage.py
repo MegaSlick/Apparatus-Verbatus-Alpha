@@ -280,8 +280,20 @@ def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
     reconciles, and a chair in the roster is something to reconcile.
 
     Absences count as addressed: an absent chair is a decision already recorded.
+
+    So does the configured base of an addressed adapter. No stage resolves a base by
+    name — the adapter is what a stage asks for — but the base artifact genuinely
+    participates in the reading and its identity travels in the serving receipt as
+    `adapter_identity`. Reporting it unaddressed forced a perfectly valid adapter
+    roster to `partial` for a chair that *is* accounted for, one indirection away.
+    Found by CodeRabbit on pull request 16.
     """
     addressed = set(models.witness_chairs) | {DESIGNATOR_CHAIR, PERLECTOR_CHAIR}
+    for role in list(addressed):
+        value = models.chairs.get(role)
+        while isinstance(value, ChairIdentity) and value.adapter_of is not None:
+            addressed.add(value.adapter_of)
+            value = models.chairs.get(value.adapter_of)
     return tuple(
         sorted(
             role
