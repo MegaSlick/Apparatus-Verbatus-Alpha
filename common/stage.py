@@ -21,7 +21,7 @@ from typing import Any, Callable, Protocol
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails
 from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
-from common.contracts.canonical import digest_of
+from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -36,6 +36,14 @@ from common.runtree.store import PublishResult, RunTree
 EXIT_COMPLETE = 0
 EXIT_FATAL = 2
 EXIT_HELD = 3
+
+# The Exemplar decoder routing shapes the first stage's output and therefore the
+# entire fixture run. Keep the exact bytes in every fixture-stage configuration
+# binding, so changing a valid route table cannot reuse a run id before artifacts
+# discover the disagreement one write too late.
+DEFAULT_FORMAT_POLICY_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "admitted_formats.toml"
+)
 
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
@@ -201,6 +209,7 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--scenario", default="happy")
     parser.add_argument("--fixture-root", default="proof")
     parser.add_argument("--models-config", default="config/models.toml")
+    parser.add_argument("--format-policy", default=str(DEFAULT_FORMAT_POLICY_PATH))
     parser.add_argument("--operation", default="initial")
     parser.add_argument("--act", default=None, help="one act id, for a recovery operation")
     return parser
@@ -227,14 +236,19 @@ def load_fixture(fixture_root: str) -> dict[str, Any]:
 
 
 def run_config_bindings(
-    models: ModelsConfig, fixture: dict[str, Any], scenario: str
+    models: ModelsConfig,
+    fixture: dict[str, Any],
+    scenario: str,
+    *,
+    format_policy_path: str | Path = DEFAULT_FORMAT_POLICY_PATH,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
     Since spec 02 `config/models.toml` owns the roster, the witness floor and
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
-    behaviour — the model configuration, the fixture, and the scenario.
+    behaviour — the model configuration, the fixture, scenario, and the exact
+    Exemplar decoder-routing bytes.
 
     All three parts are load-bearing, and the scenario is the one easiest to
     drop by accident. Spec 01's third acceptance test reuses one run id under a
@@ -244,10 +258,21 @@ def run_config_bindings(
     stages in before artifact immutability catches it. A late incidental
     refusal is not the sealed-tree guarantee spec 01 landed.
     """
+    try:
+        format_policy_digest = digest_bytes(Path(format_policy_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            f"the Exemplar format-policy binding at {format_policy_path} could not be read"
+        ) from error
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
-            {"fixture": fixture, "scenario": scenario, "models": models.to_record()}
+            {
+                "fixture": fixture,
+                "scenario": scenario,
+                "models": models.to_record(),
+                "format_policy_sha256": format_policy_digest,
+            }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
     }
@@ -532,7 +557,12 @@ def open_context(
     fixture = load_fixture(args.fixture_root)
     scenario_for(fixture, args.scenario)
     registry = registry_factory(args.models_config)
-    bindings = run_config_bindings(registry.config, fixture, args.scenario)
+    bindings = run_config_bindings(
+        registry.config,
+        fixture,
+        args.scenario,
+        format_policy_path=args.format_policy,
+    )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
     differing = [

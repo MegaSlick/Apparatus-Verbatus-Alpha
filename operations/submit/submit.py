@@ -21,47 +21,44 @@ memory, then written once, atomically. A crash at any point before that final
 rename leaves no manifest at all; there is no intermediate state that could be
 mistaken for a completed submission.
 
-**Logging never carries a name, a path, or a byte of content** — the data-handling
-policy's logging rule made mechanical: `log()` refuses any field outside a small
-allowed set of counts, digests, and status words.
+**Filenames are citation links, not a leak to discard.** The self-hashed manifest
+always carries each submitted path and digest. A refusal that identifies a source
+writes the source path and reason to a private, self-hashed refusal report under an
+approved storage root. Terminal output gives the count and report location; it does
+not print image bytes. This separates the immutable record from a captured terminal
+without breaking traceability.
 
-**And neither does a refusal.** `log()` was airtight and it was not the only
-output: `main()` printed every `ContractError` to stderr verbatim, and those
-messages carried the submitted folder's path and the relative path of an offending
-entry — so an ordinary rejected invocation emitted exactly the values the policy
-excludes, into the channel a shell runner, a CI job or a service manager captures
-by default. Three seats found it independently and it reproduced on an empty
-folder, a symlink and a FIFO. The refusal *reason* is what an operator needs and
-it is what they get; the name belongs in the accounted record, not in the log.
-`inventory.SubmissionInputError.entry` is how a refusal still carries the name for
-a caller with an approved place to write it — nothing here has one yet, which is a
-question in the gate package rather than a decision made here.
-
-**The distinction is submitted material, not every path.** A message naming
-`config/data_handling_policy.json` or the approval record the *operator* passed on
-the command line is naming their own configuration, not a declared filename out of
-a submission, and redacting it would leave an operator unable to tell which of
-their own files failed to load. The rule is about the material that arrived.
+**There is no ordinary deletion command here.** Whole-run disposal is permitted
+only when the run is dead/broken or complete/exported. This local tool has no sealed
+authority for either condition, so `purge()` refuses rather than pretending a
+manifest cleanup is a retention decision. `cleanup.py` remains the synthetic-drill
+verifier; it makes observable claims only.
 
     python operations/submit/submit.py --source <folder> --manifest-out <path> \
         --approval-record <path>
 """
 
 import argparse
-import glob
+import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, NoReturn
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash  # noqa: E402
+from common.contracts.canonical import (  # noqa: E402
+    canonical_bytes,
+    digest_bytes,
+    self_hash,
+    verify_self_hash,
+)
 from common.contracts.errors import ContractError  # noqa: E402
 from operations.submit import gate, inventory  # noqa: E402
 
 SCHEMA: Final = "submission-manifest.v0"
+REFUSAL_REPORT_SCHEMA: Final = "submission-refusal-report.v0"
 
 # The manifest names every submitted file, whatever its size — a source too large
 # for the door to admit is still a source that arrived, and it must stay in the
@@ -75,31 +72,29 @@ SCHEMA: Final = "submission-manifest.v0"
 # so the copy could not simply be shared; retaining nothing removes the need for it.
 RETAIN_NO_BYTES: Final = 0
 
-# Every field `log()` may carry. A count, a digest, or a status word — never a
-# filename, a declared path, or image bytes, which is what the data-handling
-# policy's logging rule actually requires.
+# Every field `log()` may carry. The immutable records carry filename linkage;
+# terminal presentation carries only counts, digests, and report locations. Image
+# bytes are never terminal output.
 _LOG_FIELDS: Final = frozenset({"files", "bytes", "digest", "removed", "status"})
-_LOG_EVENTS: Final = frozenset({"submission sealed", "cleanup"})
-_LOG_STATUSES: Final = frozenset({"target-absent", "target-present"})
+_LOG_EVENTS: Final = frozenset({"submission sealed", "submission refused"})
+_LOG_STATUSES: Final = frozenset({"refusal-report-written"})
 
 
 class SubmitRefusal(ContractError):
     """A folder could not be walked, or the gate refused it. Nothing was written."""
 
 
-class CleanupReport(NamedTuple):
-    """What the filesystem shows *after* a cleanup pass — never a claim beyond it.
+class ExistingRecordRefusal(SubmitRefusal):
+    """An immutable target already holds different sealed evidence."""
 
-    `volume_listing` is `None`, not `()`, when there is no volume to check: an
-    empty tuple would claim "checked, found nothing", and nothing here has checked
-    anything until spec 04's pod volume exists. Unknown is never zero
-    (GOVERNANCE 10).
-    """
 
-    target_removed: bool
-    temp_files_removed: int
-    remaining_temp_files: tuple[str, ...]
-    volume_listing: tuple[str, ...] | None
+class SubmissionRefusal(SubmitRefusal):
+    """A refused local submission with its private report location and count."""
+
+    def __init__(self, message: str, *, report_path: Path, refusal_count: int):
+        super().__init__(message)
+        self.report_path = Path(report_path)
+        self.refusal_count = refusal_count
 
 
 def log(event: str, **fields: Any) -> None:
@@ -108,12 +103,13 @@ def log(event: str, **fields: Any) -> None:
     if unexpected:
         raise SubmitRefusal(
             f"log() was asked to carry field(s) {unexpected}, outside its allowed set "
-            f"{sorted(_LOG_FIELDS)}; a log line may never carry a name, a path, or image bytes"
+            f"{sorted(_LOG_FIELDS)}; filename linkage belongs in the sealed record, and image "
+            "bytes may never reach terminal output"
         )
     if event not in _LOG_EVENTS:
         raise SubmitRefusal(
             "log event is outside the closed operational vocabulary; arbitrary event "
-            "text could carry a submitted name or path"
+            "text could carry image bytes or an unaccounted presentation claim"
         )
     for field in ("files", "bytes", "removed"):
         if field in fields and (
@@ -177,7 +173,97 @@ def build_manifest(
         "authorized_by": authorized_by,
     }
     manifest["self_hash"] = self_hash(manifest)
-    return manifest
+    return validate_manifest(manifest)
+
+
+def validate_manifest(record: Any) -> dict[str, Any]:
+    """Validate one self-hashed local filename ledger without logging or I/O.
+
+    The submit door and a later ingress may both need this exact check.  It keeps
+    the filename-to-digest ledger one closed shape: a non-empty, path-sorted set of
+    submitted files plus the content-addressed approval that admitted the set.
+    """
+    if not isinstance(record, dict):
+        raise SubmitRefusal("submission manifest is not an object")
+    if set(record) != {"schema", "files", "authorized_by", "self_hash"}:
+        raise SubmitRefusal("submission manifest has an unexpected shape")
+    if record["schema"] != SCHEMA:
+        raise SubmitRefusal("submission manifest has an unsupported schema")
+    if not verify_self_hash(record):
+        raise SubmitRefusal("submission manifest fails its self-hash")
+    files = record["files"]
+    if not isinstance(files, list) or not files:
+        raise SubmitRefusal("submission manifest names no submitted files")
+    paths: list[str] = []
+    for entry in files:
+        if not isinstance(entry, dict) or set(entry) != {"relative_path", "sha256", "bytes"}:
+            raise SubmitRefusal("submission manifest has an invalid file row")
+        path, digest, size = entry["relative_path"], entry["sha256"], entry["bytes"]
+        if not isinstance(path, str) or not path or path.startswith("/") or ".." in path.split("/"):
+            raise SubmitRefusal("submission manifest has an unsafe declared path")
+        if not _is_sha256(digest):
+            raise SubmitRefusal("submission manifest has a file row without a lowercase sha256")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise SubmitRefusal(
+                "submission manifest has a file row without a non-negative byte count"
+            )
+        paths.append(path)
+    if paths != sorted(paths) or len(paths) != len(set(paths)):
+        raise SubmitRefusal("submission manifest file rows are not sorted unique declared paths")
+    authorization = record["authorized_by"]
+    if not isinstance(authorization, dict) or set(authorization) != {"relative_path", "sha256"}:
+        raise SubmitRefusal("submission manifest has an invalid approval reference")
+    digest = authorization["sha256"]
+    if not _is_sha256(digest) or authorization["relative_path"] != f"receipts/sha256/{digest}.json":
+        raise SubmitRefusal("submission manifest approval reference is not content-addressed")
+    return record
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    """Load a canonical, self-hashed local filename ledger without terminal output."""
+    try:
+        data = Path(path).read_bytes()
+        record = json.loads(data.decode("utf-8"))
+        if canonical_bytes(record) != data:
+            raise SubmitRefusal("submission manifest is not canonical JSON")
+    except SubmitRefusal:
+        raise
+    except (OSError, UnicodeDecodeError, ValueError, TypeError) as error:
+        raise SubmitRefusal("submission manifest could not be read as canonical JSON") from error
+    return validate_manifest(record)
+
+
+def build_refusal_report(records: list[dict[str, str]]) -> dict[str, Any]:
+    """One private, self-hashed record of refused source names and reason codes."""
+    report = {
+        "schema": REFUSAL_REPORT_SCHEMA,
+        "refusals": sorted(records, key=lambda record: record["relative_path"]),
+    }
+    report["self_hash"] = self_hash(report)
+    return report
+
+
+def _write_refusal_report(path: Path, records: list[dict[str, str]]) -> Path:
+    """Write private immutable refusal evidence without losing a later refusal.
+
+    The ordinary location remains easy for an operator to find on its first use.
+    If a distinct later refusal already occupies it, the new self-hashed record
+    gets a content-addressed sibling instead of being overwritten or discarded.
+    """
+    report = build_refusal_report(records)
+    data = canonical_bytes(report)
+    try:
+        _atomic_create(path, data)
+    except ExistingRecordRefusal:
+        fallback = _content_addressed_report_path(path, report["self_hash"])
+        _atomic_create(fallback, data)
+        return fallback
+    return path
+
+
+def _content_addressed_report_path(path: Path, report_hash: str) -> Path:
+    """A sibling location whose name is bound to the self-hashed report bytes."""
+    return path.with_name(f"{path.stem}.{report_hash}{path.suffix}")
 
 
 def _atomic_create(target: Path, data: bytes) -> bool:
@@ -215,8 +301,8 @@ def _atomic_create(target: Path, data: bytes) -> bool:
         except FileExistsError:
             if _read_or_none(target) == data:
                 return False
-            raise SubmitRefusal(
-                "a submission manifest already exists at that path and seals different "
+            raise ExistingRecordRefusal(
+                "a sealed submission record already exists at that path and seals different "
                 "content. Evidence is never overwritten (GOVERNANCE 4): the existing "
                 "record was not touched, and a changed submission needs its own path"
             ) from None
@@ -249,12 +335,21 @@ def _read_or_none(path: Path) -> bytes | None:
         return None
 
 
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def submit(
     source: Path,
     manifest_out: Path,
     *,
     approval_record: Path | None,
     policy_path: Path = gate.DEFAULT_POLICY_PATH,
+    refusal_report_out: Path | None = None,
 ) -> dict[str, Any]:
     """Walk `source`, enforce the gate, and seal a manifest at `manifest_out`.
 
@@ -275,16 +370,43 @@ def submit(
     resolved_manifest = gate.require_approved_storage_location(
         manifest_out, roots, "submission manifest"
     )
+    report_target = (
+        resolved_manifest.with_suffix(".refusals.json")
+        if refusal_report_out is None
+        else gate.require_approved_storage_location(
+            refusal_report_out, roots, "private refusal report"
+        )
+    )
     if resolved_manifest.is_relative_to(resolved_source):
         raise SubmitRefusal(
             "the submission manifest cannot be written inside the submitted folder; "
             "otherwise the next inventory includes its own prior output and cannot be idempotent"
         )
+    if report_target.is_relative_to(resolved_source):
+        raise SubmitRefusal(
+            "the private refusal report cannot be written inside the submitted folder; "
+            "otherwise a retry inventories the tool-produced report as a submitted source"
+        )
 
     # The *resolved* paths from here on, not the caller's original strings. Checking
     # one path and then opening another is the shape a check-then-use race lives in,
     # and the resolved values were already in hand.
-    entries = walk_folder(resolved_source)
+    try:
+        entries = walk_folder(resolved_source)
+    except ContractError as error:
+        entry = getattr(error, "entry", None)
+        records = [] if entry is None else [{"relative_path": entry, "reason": str(error)}]
+        try:
+            written_report = _write_refusal_report(report_target, records)
+        except SubmitRefusal as report_error:
+            raise SubmitRefusal(
+                "submission was refused and its private refusal report could not be written"
+            ) from report_error
+        raise SubmissionRefusal(
+            f"submission refused: {len(records)} source refusal(s) recorded in private report",
+            report_path=written_report,
+            refusal_count=len(records),
+        ) from error
     manifest = build_manifest(entries, authorized_by=reference.to_record())
     data = canonical_bytes(manifest)
     _atomic_create(resolved_manifest, data)
@@ -292,78 +414,19 @@ def submit(
     return manifest
 
 
-def _entry_exists(path: Path) -> bool:
-    """Whether the directory entry itself is there, dangling symlink included.
+def purge(manifest_out: Path, approved_roots: tuple[Path, ...]) -> NoReturn:
+    """Refuse routine deletion: this tool has no sealed end-of-run authority.
 
-    `Path.exists()` follows the link, so a manifest that is a symlink to something
-    already gone read as absent: `purge` skipped the unlink, reported
-    `target_removed=True` and logged `status=target-absent` while the entry sat on
-    disk — and `cleanup._is_absent`, the verifier for the same drill, uses `lstat`
-    and calls that same state a failure. Two halves of one drill disagreeing about
-    what "gone" means is worse than either answer.
+    Synthetic cleanup drills use ``cleanup.verify_synthetic_cleanup`` against
+    deliberately-created synthetic paths.  A real manifest/ledger remains until a
+    run is dead/broken or complete/exported and whole-run disposal is performed by
+    the owning lifecycle operation, not this local submit command.
     """
-    return path.is_symlink() or path.exists()
-
-
-def purge(manifest_out: Path, approved_roots: tuple[Path, ...]) -> CleanupReport:
-    """The cleanup drill's removal half: remove the sealed manifest and any stray
-    temp file beside it, then report what the filesystem actually shows afterward.
-
-    Never a claim of forensic unrecoverability from storage media, snapshots, or
-    provider backups — no filesystem check can establish that (GOVERNANCE 10). This
-    only ever reports what a directory listing says after the removal, and
-    `cleanup.verify_synthetic_cleanup` is what turns that report into a pass or a
-    failure against declared, measurable bounds.
-    """
-    # `submit()` refuses to *write* outside the approved storage roots; deleting
-    # outside them was never checked at all. Required rather than optional: a
-    # removal path whose safety check is off by default fails open, which is the
-    # wrong direction for the one operation that cannot be undone.
-    #
-    # **The containment check is on the parent directory, not the entry.** Checking
-    # the entry would resolve it, and `require_approved_storage_location` refuses a
-    # symlink outright — which would refuse to clean up the one case this function
-    # was repaired for, a dangling manifest symlink that `cleanup._is_absent` calls
-    # a failure. Unlinking a name inside an approved directory removes that name and
-    # nothing else; it does not follow the link, and it cannot reach the link's
-    # victim. So the question is where the *entry lives*, and that is what is asked.
-    directory = gate.require_approved_storage_location(
-        manifest_out.parent, approved_roots, "cleanup target directory"
+    del manifest_out, approved_roots
+    raise SubmitRefusal(
+        "purge is unavailable for submitted material: retain the whole run until its sealed "
+        "dead/broken or complete/exported condition permits whole-volume disposal"
     )
-    manifest_out = directory / manifest_out.name
-
-    # Escaped, because a manifest named `batch[1].json` turns `.batch[1].json.tmp-*`
-    # into a character class: the glob then matches temp files belonging to some
-    # other manifest and misses its own, so `purge` would delete the wrong files and
-    # report a drill it did not perform.
-    temporary = f".{glob.escape(manifest_out.name)}.tmp-*"
-    removed_temp = 0
-    if manifest_out.parent.exists():
-        for candidate in manifest_out.parent.glob(temporary):
-            candidate.unlink()
-            removed_temp += 1
-    if _entry_exists(manifest_out):
-        manifest_out.unlink()
-
-    remaining = (
-        tuple(sorted(str(path) for path in manifest_out.parent.glob(temporary)))
-        if manifest_out.parent.exists()
-        else ()
-    )
-    report = CleanupReport(
-        target_removed=not _entry_exists(manifest_out),
-        temp_files_removed=removed_temp,
-        remaining_temp_files=remaining,
-        # No pod volume exists yet (spec 04); reporting an empty listing here would
-        # claim a check that never happened.
-        volume_listing=None,
-    )
-    log(
-        "cleanup",
-        removed=removed_temp,
-        status="target-absent" if report.target_removed else "target-present",
-    )
-    return report
 
 
 def main() -> int:
@@ -375,6 +438,10 @@ def main() -> int:
         help="path to Tyrel's sealed data-gate approval record for the current policy",
     )
     parser.add_argument("--policy", default=str(gate.DEFAULT_POLICY_PATH))
+    parser.add_argument(
+        "--refusal-report-out",
+        help="private approved-root location for a self-hashed refusal report",
+    )
     args = parser.parse_args()
 
     try:
@@ -383,20 +450,16 @@ def main() -> int:
             Path(args.manifest_out),
             approval_record=Path(args.approval_record) if args.approval_record else None,
             policy_path=Path(args.policy),
+            refusal_report_out=(
+                Path(args.refusal_report_out) if args.refusal_report_out is not None else None
+            ),
         )
     except ContractError as error:
-        # The reason, never the name. Every refusal that knows a submitted path
-        # carries it as `entry` rather than in its message, because this line is
-        # what a shell runner, a CI job or a service manager captures — and the
-        # data-handling policy's logging rule excludes a declared filename or path
-        # from exactly that. **What is missing is the operator's ability to see
-        # which entry was rejected**, and there is no approved place to put it yet;
-        # that is an open question in the gate package, not a decision made here.
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
-        if getattr(error, "entry", None) is not None:
+        if isinstance(error, SubmissionRefusal):
             print(
-                "the offending entry's submitted path is withheld from this channel by "
-                "the data-handling policy's logging rule",
+                f"{error.refusal_count} source refusal(s); private refusal report: "
+                f"{error.report_path}",
                 file=sys.stderr,
             )
         return 2

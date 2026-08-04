@@ -89,11 +89,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 subject_id=admission["subject_id"],
                 outcome="refused",
                 inputs=[admission_ref],
-                payload={"ordinal": ordinal, "reason": admission["payload"]["reason"]},
+                payload=_refused_page_payload(admission["payload"], ordinal, sources[ordinal]),
             )
             page_refs.append(context.input_ref(result.relative_path))
             census.append(
-                {"ordinal": ordinal, "page_id": None, "outcome": "refused", "source_sha256": None}
+                _census_row(
+                    sources[ordinal],
+                    ordinal=ordinal,
+                    page_identity=None,
+                    outcome="refused",
+                    source_sha256=None,
+                )
             )
             continue
 
@@ -108,16 +114,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             subject_id=identity,
             outcome="sealed",
             inputs=[admission_ref, blob_ref],
-            payload=_page_payload(payload, ordinal),
+            payload=_page_payload(payload, ordinal, sources[ordinal]),
         )
         page_refs.append(context.input_ref(result.relative_path))
         census.append(
-            {
-                "ordinal": ordinal,
-                "page_id": identity,
-                "outcome": "sealed",
-                "source_sha256": payload["sha256"],
-            }
+            _census_row(
+                sources[ordinal],
+                ordinal=ordinal,
+                page_identity=identity,
+                outcome="sealed",
+                source_sha256=payload["sha256"],
+            )
         )
         sealed += 1
 
@@ -141,31 +148,69 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     return EXIT_COMPLETE
 
 
-def _page_payload(payload: dict[str, Any], ordinal: int) -> dict[str, Any]:
-    """What a sealed page records: the ordinal, the sealed bytes, and any transform.
-
-    `pdf_page_index`/`container_sha256` travel from the admission when the sealed
-    bytes are a render rather than the submitted file itself. ARCHITECTURE's third
-    invariant needs the transform recorded, not merely performed.
-
-    Two digests, two words. `source_sha256` is the digest of the bytes this page
-    *is* — what `page_id` binds, and what `common/contracts/identities.py` calls it.
-    `rendered_from.container_sha256` is the digest of the multi-page file the page
-    was rendered out of. Both were called `source_sha256`, three lines apart, and
-    they coincide for a standalone raster, which is what made the collision easy to
-    miss and wrong for every rendered page.
-    """
+def _page_payload(payload: dict[str, Any], ordinal: int, source: dict[str, Any]) -> dict[str, Any]:
+    """What a sealed page records, including a complete container render contract."""
     sealed: dict[str, Any] = {
         "ordinal": ordinal,
+        "declared_path": source["relative_path"],
+        "declared_sha256": source["sha256"],
         "source_sha256": payload["sha256"],
         "image_path": payload["stored_at"],
     }
-    if "pdf_page_index" in payload:
-        sealed["rendered_from"] = {
-            "container_sha256": payload["container_sha256"],
-            "pdf_page_index": payload["pdf_page_index"],
-        }
+    if "bytes" in source:
+        sealed["declared_bytes"] = source["bytes"]
+    if "ledger_sha256" in source:
+        sealed["ledger_sha256"] = source["ledger_sha256"]
+    if source.get("container_page_index") is not None:
+        sealed["container_page_index"] = source["container_page_index"]
+    if "rendered_from" in payload:
+        sealed["rendered_from"] = payload["rendered_from"]
     return sealed
+
+
+def _refused_page_payload(
+    admission_payload: dict[str, Any], ordinal: int, source: dict[str, Any]
+) -> dict[str, Any]:
+    """Carry the submitted filename-ledger facts even when no page sealed."""
+    refused: dict[str, Any] = {
+        "ordinal": ordinal,
+        "declared_path": source["relative_path"],
+        "declared_sha256": source["sha256"],
+        "reason": admission_payload["reason"],
+    }
+    if "bytes" in source:
+        refused["declared_bytes"] = source["bytes"]
+    if "ledger_sha256" in source:
+        refused["ledger_sha256"] = source["ledger_sha256"]
+    if source.get("container_page_index") is not None:
+        refused["container_page_index"] = source["container_page_index"]
+    return refused
+
+
+def _census_row(
+    source: dict[str, Any],
+    *,
+    ordinal: int,
+    page_identity: str | None,
+    outcome: str,
+    source_sha256: str | None,
+) -> dict[str, Any]:
+    """One corpus-seal row, retaining the original filename ledger facts."""
+    row: dict[str, Any] = {
+        "ordinal": ordinal,
+        "declared_path": source["relative_path"],
+        "declared_sha256": source["sha256"],
+        "page_id": page_identity,
+        "outcome": outcome,
+        "source_sha256": source_sha256,
+    }
+    if "bytes" in source:
+        row["declared_bytes"] = source["bytes"]
+    if "ledger_sha256" in source:
+        row["ledger_sha256"] = source["ledger_sha256"]
+    if source.get("container_page_index") is not None:
+        row["container_page_index"] = source["container_page_index"]
+    return row
 
 
 def _open(args, registry_factory) -> StageContext:
@@ -214,8 +259,66 @@ def _submitted_sources(run: dict[str, Any]) -> dict[int, dict[str, Any]]:
             raise ContractError(f"run.json source ordinal {ordinal} declares no path")
         if not _is_sha256(digest):
             raise ContractError(f"run.json source ordinal {ordinal} has no lowercase sha256")
-        sources[ordinal] = {"ordinal": ordinal, "relative_path": path, "sha256": digest}
+        sources[ordinal] = dict(row)
+    _verify_source_ledger(run, sources)
     return sources
+
+
+def _verify_source_ledger(run: dict[str, Any], sources: dict[int, dict[str, Any]]) -> None:
+    """Rebuild the real-input filename ledger from the sealed source manifest.
+
+    A multi-page source occupies several page ordinals, so `run.json` repeats its
+    source facts once per page.  Collapsing those repetitions back to unique file
+    rows must reproduce the local submit manifest's self-hash exactly.  This is the
+    between-boundary check: the door cannot start from a smaller or differently
+    named set while still claiming the same original filename ledger.
+    """
+    mode, _policy_hash, approval_reference = parse_data_gate_ingress_record(run.get("ingress"))
+    carries_ledger = any("ledger_sha256" in row for row in sources.values())
+    if mode != APPROVAL_GATED_REAL_INGRESS:
+        if carries_ledger:
+            raise ContractError("a synthetic-fixture run carries a real submission filename ledger")
+        return
+    if approval_reference is None:
+        raise ContractError("a real run carries no approval reference to bind its filename ledger")
+    if not carries_ledger:
+        raise ContractError("a real run has no filename ledger bound into its source manifest")
+
+    ledger_hashes: set[str] = set()
+    files_by_path: dict[str, dict[str, Any]] = {}
+    for ordinal, source in sources.items():
+        ledger_hash = source.get("ledger_sha256")
+        size = source.get("bytes")
+        if not _is_sha256(ledger_hash):
+            raise ContractError(f"run.json source ordinal {ordinal} has no filename-ledger sha256")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise ContractError(
+                f"run.json source ordinal {ordinal} has no non-negative filename-ledger byte count"
+            )
+        ledger_hashes.add(ledger_hash)
+        source_file = {
+            "relative_path": source["relative_path"],
+            "sha256": source["sha256"],
+            "bytes": size,
+        }
+        existing = files_by_path.setdefault(source_file["relative_path"], source_file)
+        if existing != source_file:
+            raise ContractError(
+                "run.json repeats one filename with incompatible digest or byte-count entries; "
+                "its filename ledger cannot be reconstructed"
+            )
+    if len(ledger_hashes) != 1:
+        raise ContractError("run.json source rows name more than one filename ledger")
+    ledger = {
+        "schema": "submission-manifest.v0",
+        "files": sorted(files_by_path.values(), key=lambda item: item["relative_path"]),
+        "authorized_by": approval_reference.to_record(),
+    }
+    if self_hash(ledger) != next(iter(ledger_hashes)):
+        raise ContractError(
+            "run.json source rows do not reproduce the self-hashed filename ledger that "
+            "admitted this real submission"
+        )
 
 
 def _checked_admissions(
@@ -256,6 +359,18 @@ def _checked_admissions(
             raise ContractError(
                 f"door admission for ordinal {ordinal} disagrees with run.json's declared path"
             )
+        if payload.get("declared_sha256") != source["sha256"]:
+            raise ContractError(
+                f"door admission for ordinal {ordinal} disagrees with run.json's declared digest"
+            )
+        if "bytes" in source and payload.get("declared_bytes") != source["bytes"]:
+            raise ContractError(
+                f"door admission for ordinal {ordinal} disagrees with run.json's declared byte count"
+            )
+        if "ledger_sha256" in source and payload.get("ledger_sha256") != source["ledger_sha256"]:
+            raise ContractError(
+                f"door admission for ordinal {ordinal} disagrees with run.json's filename ledger"
+            )
         if admission["artifact_id"] != artifact_id(DOOR, "admission", f"source-{ordinal}"):
             raise ContractError(f"door admission for ordinal {ordinal} has a derived-id mismatch")
 
@@ -272,8 +387,9 @@ def _checked_admissions(
 
     missing = sorted(set(sources) - observed)
     if missing:
+        named = [f"{ordinal} ({sources[ordinal]['relative_path']})" for ordinal in missing]
         raise ContractError(
-            f"the door published no admission for submitted ordinal(s) {missing}; a source "
+            f"the door published no admission for submitted source(s) {named}; a source "
             "may not disappear between submission and sealing"
         )
     _verify_data_gate_evidence(tree, run, [item[1] for item in checked])
@@ -321,11 +437,10 @@ def _verify_admitted_blob(
 ) -> dict[str, str]:
     """Prove the sealed bytes are the bytes the door said it admitted.
 
-    The sealed digest equals the submitted digest for a standalone raster. It
-    legitimately differs for a page rendered out of a PDF — and *only* then, and
-    only when the admission records which page of which file produced it. A sealed
-    page whose bytes silently differ from its source with no recorded transform is
-    the one thing ARCHITECTURE's third invariant cannot survive.
+    The sealed digest equals the submitted digest for a standalone raster. It may
+    differ only when a complete recorded container render explains it. That records
+    the exact source page and renderer settings instead of making a changed digest
+    look like unaccounted corruption.
     """
     payload = admission["payload"]
     stored_at, sealed_digest = payload.get("stored_at"), payload.get("sha256")
@@ -333,37 +448,54 @@ def _verify_admitted_blob(
         raise ContractError("an admitted source records no lowercase sha256 for its bytes")
     if stored_at != tree.blob_path(DOOR, sealed_digest):
         raise ContractError("an admission's stored_at is not the content-addressed blob path")
-    # The recorded transform is checked whenever one is *claimed*, not only when the
-    # digests happen to differ. For a standalone raster they are equal, so the whole
-    # branch used to be skipped and a fabricated `pdf_page_index` was never looked
-    # at — then `_page_payload` read `container_sha256` beside it and died with a
-    # bare KeyError. A record claiming a transform that did not happen is the same
-    # class of untruth as a duplicate reason claiming an admission that did not.
-    claims_transform = "pdf_page_index" in payload or "container_sha256" in payload
+    claims_transform = "rendered_from" in payload
+    if source.get("container_page_index") is not None and not claims_transform:
+        raise ContractError(
+            "a fanned source page must carry the render transform that produced its sealed pixels"
+        )
     if sealed_digest != source["sha256"] and not claims_transform:
         raise ContractError(
             "an admitted source's sealed bytes differ from the bytes that were "
             "submitted, and no transform is recorded to explain it"
         )
     if claims_transform:
-        if "pdf_page_index" not in payload or "container_sha256" not in payload:
+        rendered_from = payload["rendered_from"]
+        if not isinstance(rendered_from, dict):
+            raise ContractError("an admitted source's render transform is not an object")
+        expected = {
+            "container_format",
+            "container_sha256",
+            "container_page_index",
+            "render_contract",
+        }
+        if set(rendered_from) != expected:
             raise ContractError(
-                "an admitted source records half a transform; a page rendered out of a "
-                "container names both which container and which page of it"
+                "an admitted source's render transform does not carry exactly its container "
+                "format, digest, page index, and render contract"
             )
-        if payload["container_sha256"] != source["sha256"]:
+        if rendered_from["container_sha256"] != source["sha256"]:
             raise ContractError(
                 "a rendered page names a container digest the run authority did not submit"
             )
-        index = payload["pdf_page_index"]
+        if (
+            not isinstance(rendered_from["container_format"], str)
+            or not rendered_from["container_format"]
+        ):
+            raise ContractError("a rendered page records no container format")
+        container_format = rendered_from["container_format"]
+        index = rendered_from["container_page_index"]
         if not isinstance(index, int) or isinstance(index, bool) or index < 0:
             raise ContractError("a rendered page records no non-negative page index")
-        if sealed_digest == source["sha256"]:
+        if source.get("container_page_index") != index:
             raise ContractError(
-                "an admitted source records a render transform, but its sealed bytes are "
-                "the submitted bytes unchanged; a transform that changed nothing was "
-                "not performed"
+                "a rendered page's transform page index disagrees with run.json's submitted row"
             )
+        _verify_render_contract(
+            rendered_from["render_contract"],
+            index,
+            payload,
+            container_format=container_format,
+        )
     if len(admission["inputs"]) != 1:
         raise ContractError("an admitted source must carry exactly one admitted-blob input")
     input_ref = admission["inputs"][0]
@@ -385,6 +517,77 @@ def _verify_admitted_blob(
         raise ContractError("an admitted blob's bytes no longer match their sealed digest")
     verify_input_bytes(input_ref, blob)
     return {"relative_path": stored_at, "sha256": sealed_digest}
+
+
+def _verify_render_contract(
+    contract: Any,
+    page_index: int,
+    payload: dict[str, Any],
+    *,
+    container_format: str,
+) -> None:
+    """Refuse a partial pixel-affecting render explanation before sealing it."""
+    if not isinstance(contract, dict):
+        raise ContractError("a rendered page carries no render contract object")
+    required = {
+        "renderer",
+        "renderer_version",
+        "container_page_index",
+        "output",
+        "width",
+        "height",
+    }
+    if not required.issubset(contract):
+        raise ContractError("a rendered page's render contract omits required pixel facts")
+    if contract["container_page_index"] != page_index:
+        raise ContractError("a rendered page's render contract names a different page index")
+    if not isinstance(contract["renderer"], str) or not contract["renderer"]:
+        raise ContractError("a rendered page's render contract names no renderer")
+    if not isinstance(contract["renderer_version"], str) or not contract["renderer_version"]:
+        raise ContractError("a rendered page's render contract names no renderer version")
+    output = contract["output"]
+    if output != {"codec": "png", "color_mode": "RGB"}:
+        raise ContractError("a rendered page's render contract does not name lossless PNG output")
+    if contract["renderer"] == "pypdfium2":
+        if container_format != "pdf":
+            raise ContractError("only a PDF container may claim the PDFium pixel renderer")
+        required_pdf = required | {
+            "pdfium_version",
+            "dpi",
+            "scale",
+            "background",
+            "draw_annotations",
+            "draw_forms",
+        }
+        if set(contract) != required_pdf:
+            raise ContractError("a PDF page's render contract omits or adds pixel-affecting facts")
+        if (
+            not isinstance(contract["pdfium_version"], str)
+            or not contract["pdfium_version"]
+            or contract["dpi"] != 300
+            or contract["scale"] != {"numerator": 300, "denominator": 72}
+            or contract["background"] != "white"
+            or contract["draw_annotations"] is not True
+            or contract["draw_forms"] is not True
+        ):
+            raise ContractError("a PDF page's render contract changes the sealed pixel recipe")
+    elif contract["renderer"] == "Pillow":
+        if container_format == "pdf":
+            raise ContractError("a PDF container must use the PDFium whole-page renderer")
+        if set(contract) != required:
+            raise ContractError(
+                "a raster page's render contract omits or adds pixel-affecting facts"
+            )
+    else:
+        raise ContractError("a rendered page's contract names an unrecognized renderer")
+    geometry = payload.get("geometry")
+    if not isinstance(geometry, dict) or (contract["width"], contract["height"]) != (
+        geometry.get("width"),
+        geometry.get("height"),
+    ):
+        raise ContractError(
+            "a rendered page's render contract disagrees with its admitted geometry"
+        )
 
 
 def _verify_refusal(admission: dict[str, Any]) -> None:

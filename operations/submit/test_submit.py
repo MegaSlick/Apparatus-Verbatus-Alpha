@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.approval import build_approval_record
-from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 from common.contracts.errors import ApprovalRefusal
 from operations.submit import cleanup, gate, inventory, submit
 
@@ -116,6 +116,52 @@ def test_the_manifest_digests_are_the_real_digests_of_the_real_bytes(submission)
         assert entry["bytes"] == len(data)
 
 
+def test_a_manifest_loads_only_when_its_canonical_self_hashed_filename_ledger_is_sound(
+    submission,
+):
+    submit.submit(
+        submission["folder"],
+        submission["manifest_out"],
+        approval_record=submission["approval"],
+        policy_path=submission["policy_path"],
+    )
+
+    loaded = submit.load_manifest(submission["manifest_out"])
+
+    assert loaded["files"][0]["relative_path"] == "nested/page-2.png"
+    assert loaded["files"][0]["sha256"] == digest_bytes(
+        (submission["folder"] / "nested" / "page-2.png").read_bytes()
+    )
+
+
+def test_a_manifest_with_unsorted_or_duplicate_filename_rows_is_refused_before_ingress(submission):
+    manifest = submit.submit(
+        submission["folder"],
+        submission["manifest_out"],
+        approval_record=submission["approval"],
+        policy_path=submission["policy_path"],
+    )
+    manifest["files"] = [manifest["files"][1], manifest["files"][0]]
+    manifest["self_hash"] = self_hash(manifest)
+
+    with pytest.raises(submit.SubmitRefusal, match="sorted unique"):
+        submit.validate_manifest(manifest)
+
+
+def test_a_manifest_with_a_non_receipt_approval_reference_is_refused_before_ingress(submission):
+    manifest = submit.submit(
+        submission["folder"],
+        submission["manifest_out"],
+        approval_record=submission["approval"],
+        policy_path=submission["policy_path"],
+    )
+    manifest["authorized_by"]["relative_path"] = "approvals/current.json"
+    manifest["self_hash"] = self_hash(manifest)
+
+    with pytest.raises(submit.SubmitRefusal, match="content-addressed"):
+        submit.validate_manifest(manifest)
+
+
 def test_submitting_the_same_folder_twice_seals_identical_bytes(submission):
     first = submit.submit(
         submission["folder"],
@@ -135,7 +181,7 @@ def test_submitting_the_same_folder_twice_seals_identical_bytes(submission):
 def test_an_empty_folder_is_a_loud_failure_rather_than_an_empty_submission(submission, tmp_path):
     empty = submission["approved"] / "empty"
     empty.mkdir()
-    with pytest.raises(submit.SubmitRefusal, match="no files to submit"):
+    with pytest.raises(submit.SubmissionRefusal, match="0 source refusal"):
         submit.submit(
             empty,
             submission["manifest_out"],
@@ -211,6 +257,21 @@ def test_the_manifest_cannot_be_written_inside_the_folder_it_inventories(submiss
     assert not inside.exists()
 
 
+def test_a_private_refusal_report_cannot_be_written_inside_the_folder_it_inventories(
+    submission,
+):
+    report_inside = submission["folder"] / "refusals.json"
+    with pytest.raises(submit.SubmitRefusal, match="private refusal report cannot be written"):
+        submit.submit(
+            submission["folder"],
+            submission["manifest_out"],
+            approval_record=submission["approval"],
+            policy_path=submission["policy_path"],
+            refusal_report_out=report_inside,
+        )
+    assert not report_inside.exists()
+
+
 # --- The logging rule, made mechanical -------------------------------------------
 
 
@@ -219,9 +280,9 @@ def test_a_log_line_may_carry_counts_and_digests(capsys):
     assert capsys.readouterr().out.strip() == f"submission sealed: digest={'a' * 64} files=2"
 
 
-def test_a_log_line_may_never_carry_a_name_a_path_or_bytes():
+def test_a_terminal_log_line_may_never_carry_image_bytes_or_unstructured_fields():
     for field in ("path", "filename", "relative_path", "image", "content"):
-        with pytest.raises(submit.SubmitRefusal, match="may never carry a name"):
+        with pytest.raises(submit.SubmitRefusal, match="sealed record"):
             submit.log("event", **{field: "page-1.png"})
 
 
@@ -229,7 +290,7 @@ def test_a_log_name_cannot_be_smuggled_through_the_event_or_an_allowed_field():
     with pytest.raises(submit.SubmitRefusal, match="event"):
         submit.log("page-1.png", files=1)
     with pytest.raises(submit.SubmitRefusal, match="status"):
-        submit.log("cleanup", status="page-1.png")
+        submit.log("submission sealed", status="page-1.png")
     with pytest.raises(submit.SubmitRefusal, match="digest"):
         submit.log("submission sealed", digest="page-1.png")
 
@@ -247,49 +308,19 @@ def test_no_log_line_the_tool_actually_emits_names_a_submitted_file(submission, 
         assert name not in printed
 
 
-# --- Test 6: the cleanup drill, on synthetic material, with declared bounds -------
+# --- Retention and the synthetic cleanup drill -------------------------------------
 
 
-def test_the_cleanup_drill_removes_its_target_and_verifies_declared_bounds(submission, tmp_path):
-    """The threat model is stated and narrow: a declared target path, temp path, log
-    marker, or listed volume object left behind. It is never a claim of forensic
-    unrecoverability from storage media, snapshots, or provider backups, which no
-    filesystem check can establish (GOVERNANCE 10)."""
+def test_purge_refuses_to_delete_a_submission_before_a_sealed_run_terminal_condition(submission):
     submit.submit(
         submission["folder"],
         submission["manifest_out"],
         approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
-    stray = submission["manifest_out"].with_name(f".{submission['manifest_out'].name}.tmp-999")
-    stray.write_bytes(b"a crashed write")
-    log_path = tmp_path / "run.log"
-    log_path.write_bytes(b"submission sealed: digest=abc files=2\n")
-
-    report = submit.purge(
-        submission["manifest_out"], gate.approved_storage_roots(submission["policy"])
-    )
-
-    assert report.target_removed is True
-    assert report.temp_files_removed == 1
-    assert report.remaining_temp_files == ()
-    assert report.volume_listing is None, "no volume exists yet; an empty tuple would claim a check"
-
-    result = cleanup.verify_synthetic_cleanup(
-        target_paths=[submission["manifest_out"]],
-        temporary_paths=[stray],
-        log_paths=[log_path],
-        forbidden_markers=[b"page-1.png", b"nested"],
-        volume_objects=None,
-    )
-    assert result.target_paths_checked == 1
-    assert result.temporary_paths_checked == 1
-    assert result.logs_scanned == 1
-    assert result.volume_objects_seen is None, (
-        "no volume applied to this drill, and reporting 0 would read identically to "
-        "'a volume was checked and found empty'. Unknown is never zero (GOVERNANCE 10), "
-        "which the CleanupReport handed in one line above already says"
-    )
+    with pytest.raises(submit.SubmitRefusal, match="sealed dead/broken or complete/exported"):
+        submit.purge(submission["manifest_out"], gate.approved_storage_roots(submission["policy"]))
+    assert submission["manifest_out"].exists()
 
 
 def test_the_cleanup_drill_fails_when_the_target_is_still_there(submission, tmp_path):
@@ -312,14 +343,7 @@ def test_the_cleanup_drill_fails_when_the_target_is_still_there(submission, tmp_
         )
 
 
-# --- Nothing the operator's shell captures may carry a submitted name ------------
-#
-# `log()` was airtight and it was not the only output. `main()` printed every
-# ContractError to stderr verbatim, and three of those messages interpolated the
-# submitted folder path or an entry's relative path — so an ordinary rejected
-# invocation emitted exactly the values the data-handling policy excludes, into the
-# channel a shell runner, a CI job or a service manager captures by default. Three
-# reviewing seats found it independently; a fourth reproduced all three cases.
+# --- Refusal records keep filenames; terminals point at the private report --------
 
 
 def run_cli(submission, source, *, manifest_out=None) -> subprocess.CompletedProcess:
@@ -343,53 +367,43 @@ def run_cli(submission, source, *, manifest_out=None) -> subprocess.CompletedPro
     )
 
 
-def test_a_rejected_submission_names_no_path_on_the_channel_a_runner_captures(submission):
-    """Every refusal shape that knows a name: an empty folder, a symlink, and a
-    non-regular entry. Each is an expected hostile input, which is what makes the
-    leak reachable rather than theoretical."""
+def test_a_rejected_submission_writes_a_private_named_refusal_report(submission):
+    """A filename stays in the record, while the terminal gives report location."""
     approved = submission["approved"]
-
-    empty = approved / "SECRET-CLIENT-ARCHIVE-2019-Q3"
-    empty.mkdir()
-
     linked = approved / "batch-with-link"
     linked.mkdir()
     (linked / "page.png").write_bytes(b"\x89PNG\r\n\x1a\nreal")
     (linked / "CLIENT-NAME-Smith-vs-Jones.png").symlink_to("/etc/passwd")
+    manifest_out = approved / "m.json"
 
-    piped = approved / "batch-with-fifo"
-    piped.mkdir()
-    (piped / "page.png").write_bytes(b"\x89PNG\r\n\x1a\nreal")
-    os.mkfifo(piped / "PRIVATE-CASE-42.pipe")
+    result = run_cli(submission, linked, manifest_out=manifest_out)
 
-    secrets = [
-        "SECRET-CLIENT-ARCHIVE-2019-Q3",
-        "CLIENT-NAME-Smith-vs-Jones.png",
-        "PRIVATE-CASE-42.pipe",
+    report_path = manifest_out.with_suffix(".refusals.json")
+    assert result.returncode == 2, result.stderr
+    assert "1 source refusal(s)" in result.stderr
+    assert str(report_path) in result.stderr
+    assert "CLIENT-NAME-Smith-vs-Jones.png" not in result.stderr
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert verify_self_hash(report)
+    assert report["refusals"] == [
+        {
+            "relative_path": "CLIENT-NAME-Smith-vs-Jones.png",
+            "reason": "the submission contains a symlink; only plain files and directories may be submitted",
+        }
     ]
-    for source in (empty, linked, piped):
-        result = run_cli(submission, source, manifest_out=submission["approved"] / "m.json")
-        assert result.returncode == 2, result.stderr
-        assert result.stderr.strip(), "a refusal still has to say why"
-        for secret in secrets:
-            assert secret not in result.stderr, (
-                f"{secret!r} reached stderr; the data-handling policy's logging rule "
-                "excludes a declared filename or path from operational output"
-            )
-            assert secret not in result.stdout
 
 
 def test_the_refusal_still_says_what_went_wrong(submission):
-    """Redaction that removed the reason as well as the name would trade one silent
-    loss for another (GOVERNANCE 2)."""
+    """The terminal names the report and the report carries the exact source/reason."""
     linked = submission["approved"] / "with-a-link"
     linked.mkdir()
     (linked / "page.png").write_bytes(b"\x89PNG\r\n\x1a\nreal")
     (linked / "elsewhere.png").symlink_to("/etc/passwd")
 
     result = run_cli(submission, linked, manifest_out=submission["approved"] / "m.json")
-    assert "symlink" in result.stderr
-    assert "withheld from this channel" in result.stderr
+    assert "private refusal report" in result.stderr
+    report = json.loads((submission["approved"] / "m.refusals.json").read_text(encoding="utf-8"))
+    assert "symlink" in report["refusals"][0]["reason"]
 
 
 def test_a_refusal_still_carries_the_name_for_a_caller_allowed_to_see_one(submission):
@@ -404,6 +418,63 @@ def test_a_refusal_still_carries_the_name_for_a_caller_allowed_to_see_one(submis
         inventory.read_submission(linked, max_bytes=0)
     assert caught.value.entry == "nested/target.png"
     assert "target.png" not in str(caught.value)
+
+
+def test_distinct_refusals_at_one_manifest_location_keep_both_named_reports(submission):
+    """A retry may not turn a second refused filename into an unrecorded error."""
+    first_source = submission["approved"] / "first-refusal"
+    second_source = submission["approved"] / "second-refusal"
+    for folder, name in ((first_source, "first-link.png"), (second_source, "second-link.png")):
+        folder.mkdir()
+        (folder / name).symlink_to("/etc/passwd")
+
+    with pytest.raises(submit.SubmissionRefusal) as first:
+        submit.submit(
+            first_source,
+            submission["manifest_out"],
+            approval_record=submission["approval"],
+            policy_path=submission["policy_path"],
+        )
+    with pytest.raises(submit.SubmissionRefusal) as second:
+        submit.submit(
+            second_source,
+            submission["manifest_out"],
+            approval_record=submission["approval"],
+            policy_path=submission["policy_path"],
+        )
+
+    assert first.value.report_path == submission["manifest_out"].with_suffix(".refusals.json")
+    assert second.value.report_path != first.value.report_path
+    assert second.value.report_path.name.startswith("submission.refusals.")
+    first_report = json.loads(first.value.report_path.read_text(encoding="utf-8"))
+    second_report = json.loads(second.value.report_path.read_text(encoding="utf-8"))
+    assert verify_self_hash(first_report) and verify_self_hash(second_report)
+    assert [row["relative_path"] for row in first_report["refusals"]] == ["first-link.png"]
+    assert [row["relative_path"] for row in second_report["refusals"]] == ["second-link.png"]
+
+
+def test_a_submit_budget_alarm_writes_the_source_name_to_its_private_report(
+    monkeypatch, submission
+):
+    """Aggregate limits are alarms about a particular next source, not empty reports."""
+    monkeypatch.setattr(inventory, "MAX_SUBMITTED_FILES", 1)
+    source = submission["approved"] / "over-budget"
+    source.mkdir()
+    (source / "first.png").write_bytes(b"first")
+    (source / "second.png").write_bytes(b"second")
+
+    with pytest.raises(submit.SubmissionRefusal) as refused:
+        submit.submit(
+            source,
+            submission["manifest_out"],
+            approval_record=submission["approval"],
+            policy_path=submission["policy_path"],
+        )
+
+    assert refused.value.refusal_count == 1
+    report = json.loads(refused.value.report_path.read_text(encoding="utf-8"))
+    assert report["refusals"][0]["relative_path"] == "second.png"
+    assert "more than 1 files" in report["refusals"][0]["reason"]
 
 
 # --- Evidence is never overwritten (GOVERNANCE 4) --------------------------------
@@ -447,63 +518,6 @@ def test_resubmitting_identical_content_to_one_path_is_still_a_true_no_op(submis
     assert submission["manifest_out"].exists()
 
 
-# --- The cleanup drill's two halves agree about what "gone" means ----------------
-
-
-def test_purge_reports_a_dangling_symlink_as_present_because_it_is(submission, tmp_path):
-    """`Path.exists()` follows the link, so a manifest that was a symlink to
-    something already gone read as absent: `purge` skipped the unlink, reported
-    `target_removed=True` and logged `status=target-absent` while the entry sat on
-    disk — and `cleanup._is_absent`, verifying the same drill, called that a
-    failure."""
-    target = submission["approved"] / "submission.json"
-    target.symlink_to(submission["approved"] / "never-existed.json")
-    assert not target.exists() and target.is_symlink()
-
-    report = submit.purge(target, gate.approved_storage_roots(submission["policy"]))
-    assert report.target_removed is True
-    assert not target.is_symlink(), "the directory entry itself was removed"
-    cleanup.verify_synthetic_cleanup(
-        target_paths=[target],
-        temporary_paths=[tmp_path / "absent.tmp"],
-        log_paths=[_scratch_log(tmp_path)],
-        forbidden_markers=[b"page-1.png"],
-        volume_objects=None,
-    )
-
-
-def test_purge_refuses_a_target_outside_the_approved_storage_roots(submission, tmp_path):
-    """`submit()` refuses to *write* outside them; deleting outside them was never
-    checked at all, and the check may not be one a caller can decline to pass."""
-    stray = tmp_path / "somewhere-else.json"
-    stray.write_text("{}", encoding="utf-8")
-    roots = gate.approved_storage_roots(submission["policy"])
-    with pytest.raises(gate.GateRefusal, match="outside every approved storage root"):
-        submit.purge(stray, roots)
-    assert stray.exists(), "a refused cleanup removes nothing"
-
-
-def test_purge_removing_a_link_is_not_entering_through_one(submission):
-    """The containment check is on the parent directory, not the entry. Resolving
-    the entry would refuse a symlink outright — and refuse to clean up the exact
-    case this function was repaired for. Unlinking a name inside an approved
-    directory removes that name and cannot reach what it pointed at."""
-    victim = submission["approved"] / "keep-me.json"
-    victim.write_text("{}", encoding="utf-8")
-    link = submission["approved"] / "submission.json"
-    link.symlink_to(victim)
-
-    submit.purge(link, gate.approved_storage_roots(submission["policy"]))
-    assert not link.is_symlink(), "the link entry was removed"
-    assert victim.exists(), "and what it pointed at was not touched"
-
-
-def _scratch_log(tmp_path):
-    path = tmp_path / "drill.log"
-    path.write_bytes(b"nothing sensitive\n")
-    return path
-
-
 # --- The walk is bounded in every direction an attacker shapes -------------------
 
 
@@ -535,8 +549,9 @@ def test_the_aggregate_file_count_is_bounded_not_only_the_per_file_size(monkeypa
     many.mkdir()
     for index in range(5):
         (many / f"page-{index}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-    with pytest.raises(inventory.SubmissionInputError, match="more than 3 files"):
+    with pytest.raises(inventory.SubmissionInputError, match="more than 3 files") as caught:
         inventory.read_submission(many, max_bytes=0)
+    assert caught.value.entry == "page-3.png"
 
 
 def test_the_aggregate_retained_bytes_are_bounded(monkeypatch, submission):
@@ -545,8 +560,9 @@ def test_the_aggregate_retained_bytes_are_bounded(monkeypatch, submission):
     many.mkdir()
     for index in range(4):
         (many / f"page-{index}.png").write_bytes(b"\x89PNG\r\n\x1a\n" * 2)
-    with pytest.raises(inventory.SubmissionInputError, match="aggregate limit"):
+    with pytest.raises(inventory.SubmissionInputError, match="aggregate limit") as caught:
         inventory.read_submission(many, max_bytes=1024)
+    assert caught.value.entry == "page-0.png"
 
 
 def test_the_submit_tool_retains_no_file_content_at_all(submission):
@@ -595,23 +611,6 @@ def test_a_manifest_name_at_the_filesystem_limit_refuses_rather_than_crashing(su
     )
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
-
-
-def test_purge_sweeps_the_temp_files_of_a_manifest_whose_name_holds_glob_syntax(submission):
-    """`Ledger [1948].json` is an ordinary archival name and `[1948]` is a character
-    class. The writer names the temp file literally and the sweeper globbed it, so
-    they disagreed: a temp file holding real page bytes survived, and
-    `remaining_temp_files` recomputed with the same broken pattern and reported
-    `()` — a clean drill that never happened."""
-    target = submission["approved"] / "Ledger [1948].json"
-    target.write_text("{}", encoding="utf-8")
-    stray = submission["approved"] / f".{target.name}.tmp-31337"
-    stray.write_bytes(b"\x89PNG crashed write holding real page bytes")
-
-    report = submit.purge(target, gate.approved_storage_roots(submission["policy"]))
-    assert report.temp_files_removed == 1
-    assert not stray.exists()
-    assert report.remaining_temp_files == ()
 
 
 def test_a_submitted_name_that_is_not_valid_utf8_is_a_named_refusal(submission):

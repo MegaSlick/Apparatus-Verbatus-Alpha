@@ -6,33 +6,40 @@ The knobs. One question per planned file, each answerable without reading code.
 |---|---|
 | `models.toml` | which model and revision fills each numbered role |
 | `recovery.toml` | how many times rework may be asked for before review |
-| `admitted_formats.toml` | which image formats may enter the pipeline at all |
+| `admitted_formats.toml` | how byte-detected image formats are decoded or page-rendered |
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
 | `spend.toml` | money caps |
 | `formats.toml` | which formats the Armarium writes |
 
-`admitted_formats.toml` is the admission list the door reads, and it is
-configuration precisely so that Tyrel's open ledger rulings — `.heic`, and whether
-PDF is admitted at all — are one line each rather than a code change. It is checked
-at load: it must name exactly the formats the door can detect, its actions come from
-a closed set, and it may not admit a format nothing can structurally verify.
+`admitted_formats.toml` is decoder routing, not an admission list. Tyrel ruled that
+an uncorrupted image is never declined by policy: a `raster` row gets a decoder
+attempt, and a `render-pages` row fans a container out and seals one lossless page
+render per ordinal. The file names exactly the formats the door can sniff and has no
+`refuse` action. A format/variant the installed readers cannot yet decode is a named
+pipeline alarm carried with its filename, rather than a routine rejection.
 
-**That claim was untrue for PDF and is now true.** The door decided the PDF fan-out
-from a hardcoded format name and never consulted this file, so `pdf = "refuse"`
-counted, rendered and sealed the pages anyway — three reviewing seats found it
-independently. The door now asks the list before it counts a page and again before
-it renders one, and `pipeline/1_exemplar/test_door.py` drives the shipped file end to
-end in both positions of the row. The shipped row is `refuse`, and the file says why.
+PDF and TIFF use `render-pages`. PDF is full-page PDFium rasterisation, which paints
+text, vectors, annotations, and images together; it is never embedded-image
+extraction. TIFF includes multi-page fan-out. JPEG suffix bytes after EOI are not
+called corruption.
 
 `data_handling_policy.json` is the version an approval record names. Its hash is the
 canonical digest of its own content, so editing one character of it invalidates
 every approval that named the old version — which is the honest behaviour, not a
-bug. The **data-handling gate package** is the written deliverable that explains this
-file to Tyrel and is handed to him rather than tracked here;
-`operations/submit/gate.py` is the machinery that enforces it. Note that both entry
-points expose the policy's path as a flag, so "the current policy" is whichever file
-the invoker names — a documented limit of a mechanism `common/contracts/approval.py`
-already describes as tamper-evidence rather than access control.
+bug. The **data-handling gate package** is the tracked
+`operations/submit/README.md`, and `operations/submit/gate.py` is the machinery
+that enforces it. Note that both entry points expose the policy's path as a flag, so
+"the current policy" is whichever file the invoker names — a documented limit of a
+mechanism `common/contracts/approval.py` already describes as tamper-evidence rather
+than access control.
+
+For real submissions, the local submit door writes a self-hashed filename ledger
+before any transfer. The Exemplar door requires that ledger and binds its filename,
+digest, byte-count, and fanned-page-index rows into `run.json`; an export carries
+the same linkage back out. The policy permits no per-stage deletion: retain the whole run until it is
+dead/broken or complete/exported, then its lifecycle owner may destroy the whole
+volume. See `operations/submit/README.md` for the package being handed to Tyrel;
+transfer/pod/UI work is not built here.
 
 `models.toml` is the operational cast list. Model assignments belong there rather
 than in stage code or stage documentation, which keeps a swap to one configuration

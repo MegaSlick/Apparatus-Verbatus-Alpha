@@ -102,18 +102,20 @@ class _Budget:
         self.files = 0
         self.retained = 0
 
-    def admit(self, size: int, retained: int) -> None:
+    def admit(self, size: int, retained: int, *, entry: str) -> None:
         self.files += 1
         if self.files > MAX_SUBMITTED_FILES:
             raise SubmissionInputError(
                 f"the submission holds more than {MAX_SUBMITTED_FILES} files; the door "
-                "refuses a submission it cannot bound rather than reading until it stops"
+                "refuses a submission it cannot bound rather than reading until it stops",
+                entry=entry,
             )
         self.retained += retained
         if self.retained > MAX_SUBMITTED_BYTES:
             raise SubmissionInputError(
                 f"the submission's retained bytes exceed the {MAX_SUBMITTED_BYTES}-byte "
-                "aggregate limit; the per-file limit bounds one source, not a corpus"
+                "aggregate limit; the per-file limit bounds one source, not a corpus",
+                entry=entry,
             )
 
 
@@ -134,14 +136,20 @@ def read_submission(folder: Path, *, max_bytes: int) -> list[SubmittedSource]:
     return sorted(sources, key=lambda source: source.relative_path)
 
 
-def _open_directory(path: Path | str, parent_descriptor: int | None = None) -> int:
+def _open_directory(
+    path: Path | str,
+    parent_descriptor: int | None = None,
+    *,
+    entry: str | None = None,
+) -> int:
     """Open a directory without following its final component."""
     no_follow = getattr(os, "O_NOFOLLOW", None)
     directory = getattr(os, "O_DIRECTORY", None)
     if no_follow is None or directory is None:
         raise SubmissionInputError(
             "this platform cannot open a directory without following links; the submit "
-            "door refuses rather than reading a folder it cannot bound"
+            "door refuses rather than reading a folder it cannot bound",
+            entry=entry,
         )
     flags = os.O_RDONLY | no_follow | directory | getattr(os, "O_NONBLOCK", 0)
     try:
@@ -152,34 +160,39 @@ def _open_directory(path: Path | str, parent_descriptor: int | None = None) -> i
         )
     except OSError as error:
         raise SubmissionInputError(
-            "a submitted directory could not be opened without following a redirect"
+            "a submitted directory could not be opened without following a redirect", entry=entry
         ) from error
     try:
         if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
-            raise SubmissionInputError("a submitted path is not a directory when opened")
+            raise SubmissionInputError(
+                "a submitted path is not a directory when opened", entry=entry
+            )
     except BaseException:
         os.close(descriptor)
         raise
     return descriptor
 
 
-def _open_regular_file(name: str, parent_descriptor: int) -> int:
+def _open_regular_file(name: str, parent_descriptor: int, *, entry: str) -> int:
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:
         raise SubmissionInputError(
             "this platform cannot open a file without following links; the submit door "
-            "refuses rather than reading bytes from somewhere else"
+            "refuses rather than reading bytes from somewhere else",
+            entry=entry,
         )
     flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(name, flags, dir_fd=parent_descriptor)
     except OSError as error:
         raise SubmissionInputError(
-            "a submitted source could not be opened without following a redirect"
+            "a submitted source could not be opened without following a redirect", entry=entry
         ) from error
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise SubmissionInputError("a submitted source is not a regular file when opened")
+            raise SubmissionInputError(
+                "a submitted source is not a regular file when opened", entry=entry
+            )
     except BaseException:
         os.close(descriptor)
         raise
@@ -194,16 +207,20 @@ def _walk(
         # rather than a RecursionError escaping past the ContractError handler.
         raise SubmissionInputError(
             f"the submission nests deeper than {MAX_DIRECTORY_DEPTH} directories; a tree "
-            "this deep is refused by name rather than by running out of stack"
+            "this deep is refused by name rather than by running out of stack",
+            entry=prefix or None,
         )
     sources: list[SubmittedSource] = []
     try:
         names = sorted(os.listdir(directory_descriptor))
     except OSError as error:
-        raise SubmissionInputError("a submitted directory could not be listed") from error
+        raise SubmissionInputError(
+            "a submitted directory could not be listed", entry=prefix or None
+        ) from error
     if len(names) > MAX_DIRECTORY_ENTRIES:
         raise SubmissionInputError(
-            f"a submitted directory holds more than {MAX_DIRECTORY_ENTRIES} entries"
+            f"a submitted directory holds more than {MAX_DIRECTORY_ENTRIES} entries",
+            entry=prefix or None,
         )
     for name in names:
         relative_path = f"{prefix}/{name}" if prefix else name
@@ -234,7 +251,7 @@ def _walk(
                 entry=relative_path,
             )
         if stat.S_ISDIR(details.st_mode):
-            child = _open_directory(name, directory_descriptor)
+            child = _open_directory(name, directory_descriptor, entry=relative_path)
             try:
                 sources.extend(_walk(child, relative_path, max_bytes, budget, depth=depth + 1))
             finally:
@@ -246,7 +263,7 @@ def _walk(
                 "it cannot read as a file",
                 entry=relative_path,
             )
-        descriptor = _open_regular_file(name, directory_descriptor)
+        descriptor = _open_regular_file(name, directory_descriptor, entry=relative_path)
         try:
             data, digest, size = _read_once(descriptor, max_bytes)
         except OSError as error:
@@ -257,7 +274,7 @@ def _walk(
             ) from error
         finally:
             os.close(descriptor)
-        budget.admit(size, len(data) if data is not None else 0)
+        budget.admit(size, len(data) if data is not None else 0, entry=relative_path)
         sources.append(SubmittedSource(relative_path, digest, size, data))
     return sources
 

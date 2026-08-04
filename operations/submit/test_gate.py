@@ -47,6 +47,13 @@ def test_the_shipped_policy_carries_every_clause_the_spec_requires(policy):
     assert policy["alpha_shortcuts_ledger"] == "workbench/standing/ALPHA_SHORTCUTS.md"
 
 
+def test_the_shipped_policy_keeps_filename_links_and_states_settled_whole_run_retention(policy):
+    assert "citation links" in policy["logging_rule"]
+    assert "private refusal report" in policy["logging_rule"]
+    assert "dead and broken or complete and exported" in policy["retention_and_deletion"]
+    assert "whole run volume" in policy["retention_and_deletion"]
+
+
 def test_the_alpha_shortcuts_ledger_is_a_clause_the_loader_enforces(tmp_path, policy):
     """It was named in the spec, asserted of the shipped file by the test above, and
     absent from what `load_policy` actually required — so a policy stripped of it

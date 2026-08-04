@@ -1,11 +1,11 @@
 """The data-handling gate: fail-closed machinery, not prose.
 
-The gate *package* — the written policy Tyrel approves — is a deliverable outside
-this repository (spec 03: "deliverable to Tyrel, not code"). What belongs here is
-the machinery that makes his approval checkable: a policy whose bytes hash the same
-way every other record in this tree hashes, an approval record bound to the exact
-policy version it approved, and a door that refuses real input without a current
-one.
+The gate *package* — the written policy Tyrel approves — is this directory's
+`README.md`, so its wording and the policy it explains travel with the
+implementation. What belongs here is the machinery that makes his approval
+checkable: a policy whose bytes hash the same way every other record in this tree
+hashes, an approval record bound to the exact policy version it approved, and a door
+that refuses real input without a current one.
 
 **Ruling 2026-08-04, item 1 — fixture status is never a flag.** The gate exposes
 only a real-input check. The door's fixture route is selected by the repository's

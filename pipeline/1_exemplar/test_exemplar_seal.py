@@ -21,13 +21,18 @@ from door import SourceEntry, process_sources
 from run import SEAL_SUBJECT
 from synthetic_sources import png
 
-from common.contracts.approval import synthetic_fixture_ingress_record
+from common.contracts.approval import (
+    ApprovalRecordReference,
+    approval_gated_real_ingress_record,
+    synthetic_fixture_ingress_record,
+)
 from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
 from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, page_id
 from common.contracts.stages import DOOR, EXEMPLAR
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, StageContext
+from operations.submit import submit
 
 ROOT = Path(__file__).resolve().parents[2]
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
@@ -144,6 +149,11 @@ def test_the_run_carries_exactly_one_corpus_seal_naming_every_page(tmp_path):
     assert payload["page_count"] == 3
     assert [page["ordinal"] for page in payload["pages"]] == [1, 2, 3]
     assert [page["outcome"] for page in payload["pages"]] == ["sealed", "sealed", "refused"]
+    assert [page["declared_path"] for page in payload["pages"]] == [
+        "page-1.png",
+        "page-2.png",
+        "page-3.png",
+    ]
     assert verify_self_hash(payload)
 
 
@@ -329,23 +339,73 @@ def test_a_run_with_no_submitted_source_manifest_cannot_be_reconciled_at_all():
         exemplar._submitted_sources({"source_manifest": []})
 
 
+def test_a_real_run_source_manifest_reconstructs_its_self_hashed_filename_ledger():
+    """The run authority retains the original-name/digest ledger, not a second list."""
+    reference = ApprovalRecordReference(f"receipts/sha256/{'a' * 64}.json", "a" * 64)
+    files = [
+        {"relative_path": "FS-101.png", "sha256": "1" * 64, "bytes": 123},
+        {"relative_path": "volume/FS-102.pdf", "sha256": "2" * 64, "bytes": 456},
+    ]
+    ledger = submit.build_manifest(files, authorized_by=reference.to_record())
+    run = {
+        "ingress": approval_gated_real_ingress_record("b" * 64, reference),
+        "source_manifest": [
+            {
+                **files[0],
+                "ordinal": 1,
+                "ledger_sha256": ledger["self_hash"],
+                "container_page_index": None,
+            },
+            {
+                **files[1],
+                "ordinal": 2,
+                "ledger_sha256": ledger["self_hash"],
+                "container_page_index": 0,
+            },
+            {
+                **files[1],
+                "ordinal": 3,
+                "ledger_sha256": ledger["self_hash"],
+                "container_page_index": 1,
+            },
+        ],
+    }
+    import run as exemplar
+
+    assert exemplar._submitted_sources(run)[3]["relative_path"] == "volume/FS-102.pdf"
+    run["source_manifest"][2]["bytes"] += 1
+    with pytest.raises(ContractError, match="incompatible digest or byte-count"):
+        exemplar._submitted_sources(run)
+
+
 def test_a_fabricated_render_transform_is_refused_rather_than_sealed_or_crashed(tmp_path):
-    """The transform was only inspected when the sealed and submitted digests
-    differed — which for a standalone raster they never do. So a raster admission
-    carrying a fabricated `pdf_page_index` was never checked, and the payload builder
-    then read `container_sha256` beside it and died with a bare KeyError. A record
-    claiming a transform that did not happen is the same untruth as a duplicate
-    reason claiming an admission that did not."""
+    """A standalone raster cannot claim a partial container render explanation."""
     tree, _ = build_door_run(tmp_path / "runs")
     identity = artifact_id(DOOR, "admission", "source-1")
     path = tree.resolve(tree.artifact_path(DOOR, "admission", identity))
     record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["pdf_page_index"] = 0
+    record["payload"]["rendered_from"] = {"container_page_index": 0}
     path.write_bytes(canonical_bytes(record))
     tree.write_manifest(DOOR)
 
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode == EXIT_FATAL
     assert "Traceback" not in result.stderr
-    assert "half a transform" in result.stderr
+    assert "does not carry exactly" in result.stderr
     assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
+
+
+def test_a_fanned_source_cannot_seal_raw_container_bytes_without_a_render_transform(tmp_path):
+    """A page ordinal from a container is never permission to pass its raw bytes on."""
+    tree, _ = build_door_run(tmp_path / "runs")
+    admission = tree.read_artifact(DOOR, "admission", artifact_id(DOOR, "admission", "source-1"))
+    source = {
+        "ordinal": 1,
+        "relative_path": admission["payload"]["declared_path"],
+        "sha256": admission["payload"]["declared_sha256"],
+        "container_page_index": 0,
+    }
+    import run as exemplar
+
+    with pytest.raises(ContractError, match="fanned source page must carry the render transform"):
+        exemplar._verify_admitted_blob(tree, admission, source)

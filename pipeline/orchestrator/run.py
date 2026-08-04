@@ -84,6 +84,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.fixture_root),
         "--models-config",
         str(args.models_config),
+        "--format-policy",
+        str(args.format_policy),
     ]
     for key, value in extra.items():
         command += [f"--{key.replace('_', '-')}", str(value)]
@@ -125,6 +127,11 @@ def main() -> int:
         "--models-config",
         default="config/models.toml",
         help="the sealed model-chair roster and recipes for this run",
+    )
+    parser.add_argument(
+        "--format-policy",
+        default="config/admitted_formats.toml",
+        help="the Exemplar decoder-routing file bound into this fixture run",
     )
     args = parser.parse_args()
 

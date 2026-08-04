@@ -1,234 +1,124 @@
 # Exemplar — handoff
 
-**What this stage writes:** the record of what arrived (the door's admissions), the
-sealed pages, and the corpus seal.
+The Exemplar is the immutable source of pixels for the rest of the run. The door
+writes its admissions into `1_exemplar/`; the Exemplar then seals one `kind="page"`
+outcome for every submitted ordinal and one self-hashed `kind="seal"` corpus census.
+No later stage re-renders a source container.
 
-**Where it writes it:** the run's `{run}/1_exemplar/` folder. The door owns no
-directory of its own and writes here too — see below.
+All paths below are existing RunTree shapes: `run.json`, artifacts, content-addressed
+blobs, manifests, and approval receipts. This stage invents no separate render or
+inventory directory.
 
----
+## Input and filename ledger
 
-This document is the only thing downstream stages may rely on. They read these
-files; they never import this stage's code. Every shape below is exercised by the
-proof fixture's `happy`, `review`, `refused-page` and `refused-first-page` scenarios
-(`pipeline/orchestrator/test_orchestrator_acceptance.py`), except the PDF path and
-the data-handling gate, which the walking skeleton's fixture never carries — those
-are proven directly in `pipeline/1_exemplar/test_pdf_render.py`,
-`pipeline/1_exemplar/test_door.py` and `operations/submit/test_gate.py`, against
-synthetic bytes standing in for real input.
+For a real submission, `operations/submit/submit.py` first creates a canonical,
+self-hashed `submission-manifest.v0`. It is the filename ledger: each original
+relative filename is bound to its SHA-256 and byte count before a copy moves.
 
-**No real image has been touched.** The real ingress path exists and is gated; the
-gate refuses without an approval record naming the current policy version, and no
-such approval exists.
+The real door requires that ledger with `--submission-manifest`. It verifies its
+self-hash and approval reference, compares the post-transfer folder to it, and
+extends `run.json`'s self-hashed `source_manifest` rather than making a second
+inventory. A source row has:
 
-## What the shipped admission list admits, and the three limits behind it
-
-`config/admitted_formats.toml` ships `png`, `jpeg` and `tiff` as `admit`, and `pdf`,
-`gif` and `heic` as `refuse`. **The list is the authority for every format**,
-including the multi-page ones: the door asks `admission.classify_detected_format`
-before it counts a page and again before it renders one, and names no format itself.
-
-Three limits a later stage — and Tyrel — should know about, because each one means a
-page this door will not read. Each is a **named, counted refusal**, never an
-anonymous "unsupported" counter, and each is one ruling away from changing:
-
-- **PDF is refused**, and `pipeline/1_exemplar/pdf_render.py` stays in the tree
-  behind that row, written and tested. It reads a page's *resources* and never its
-  `/Contents` stream, so it cannot tell a scanned page from a page that draws text or
-  vector marks beside the one image it carries — and on such a page it would seal the
-  image and lose the rest. Turning the row to `render-pages` needs no code change;
-  it needs a page-content interpreter that proves exactly one image is painted
-  exactly as recorded, which is its own spec.
-- **Multi-page TIFF is refused.** A second image directory is refused at the first
-  link of the chain, because the door assigns one ordinal per page and this stage
-  cannot extract page two as its own image. Multi-page TIFF is ordinary flatbed
-  output for a book, so this is a real coverage cost and a ledger item rather than a
-  settled question.
-- **A JPEG with any trailing byte after EOI is refused**, as a concatenated second
-  image or an appended payload. Real cameras and scanners do sometimes append a
-  thumbnail or padding there. Whether that bites depends entirely on what the actual
-  scanner emits, which cannot be known before the first real corpus.
-
-## `kind="admission"` — the door's record of every declared source
-
-One per declared source (per **page**, not per file — a multi-page PDF is fanned out
-to one ordinal per page before the door decides anything). `subject_id` is
-`f"source-{ordinal}"`. `outcome` is `"admitted"` or `"refused"` and nothing else;
-one kind carrying an outcome is what makes the door's census complete.
-
-Admitted payload:
-
-```
-declared_path   the path the source was declared under (for a PDF page, the PDF's
-                own path, shared across its pages)
-ordinal         the integer ordinal this source occupies in run.json's source_manifest
-sha256          the digest of the bytes actually sealed — for a standalone file its
-                own bytes; for a PDF page the *rendered page's* bytes
-stored_at       the blob's relative path, content-addressed under
-                1_exemplar/blobs/sha256/
-geometry        {width, height}, read off the real container by the structural
-                validator — never from a filename or a caller's claim
+```text
+ordinal               stable page ordinal
+relative_path         original filename / citation link
+sha256                original source-file digest from the ledger
+bytes                 original source-file size from the ledger
+ledger_sha256         the one submission-manifest self-hash for this set
+container_page_index  present for every fanned source page/frame, zero-based
 ```
 
-and, **only when the sealed bytes are a render rather than the submitted file**:
+Rows repeat a container's filename/digest for its fanned-out pages. The Exemplar
+reconstructs the unique file rows and requires them to reproduce `ledger_sha256`
+against the run's sealed approval reference. A changed copy creates a
+`digest-mismatch` alarm under the original filename; a source never silently drops.
 
-```
-pdf_page_index    which page of that container produced these bytes (0-based)
-container_sha256  the digest of the whole submitted file, matching run.json
-```
+Declared synthetic fixtures remain the only approval-free route. They carry the
+same core source rows but not a real filename ledger.
 
-`container_sha256`, not `source_sha256`: the page payload below already uses
-`source_sha256` for the digest of the **sealed** bytes — the one `page_id` binds —
-and one word for two concepts is GLOSSARY's opening rule broken three lines apart.
-They coincide for a standalone raster, which is what made it easy to miss.
+## Decoder routes and alarms
 
-Those two are the recorded transform. ARCHITECTURE's third invariant — the exact
-image shown to a model is reproducible from the Exemplar plus recorded transforms —
-is only true if the render is recorded, and the Exemplar refuses a sealed page whose
-bytes differ from what was submitted with no transform to explain it.
+`config/admitted_formats.toml` names how a detected format is read, never a policy
+decision to decline it:
 
-Refused payload:
+- `raster`: Pillow decodes the source pixels and a one-frame raster is sealed
+  unchanged. If its decoder reports multiple frames, every frame fans out and is
+  sealed as one lossless PNG page.
+- `render-pages`: the door assigns stable ordinals and seals one lossless PNG per
+  page.
 
-```
-declared_path   as above
-ordinal         as above
-reason          "<reason-code>: <detail>", the code drawn from the closed set
-                admission.RefusalReason — empty, unreadable, too-large,
-                unrecognized-format, refused-format, corrupt, unsupported-variant,
-                digest-mismatch, duplicate. Never free text alone; the Exemplar
-                reads the code back and refuses anything outside the set.
-```
+PNG, JPEG, TIFF, PDF, GIF, BMP, WebP, HEIC and an unknown signature all receive a
+decoder attempt by bytes, not extension. A valid image the installed readers do not
+yet understand becomes a named `unsupported-variant` or `unrecognized-format`
+pipeline alarm, not `refused-format`—that enum member no longer exists. JPEG bytes
+after EOI are retained. TIFF, including ordinary multi-page TIFF, fans out.
 
-A real (non-fixture) run additionally carries `data_gate_approval_ref` on every
-admission, admitted and refused alike — see "The data-handling gate" below.
+PDF is rendered as a whole page with PDFium at the door. Its visible content stream,
+text, vectors, images, rotation, annotations, and initialized form appearances are
+painted into the sealed pixels; embedded-image extraction is not used.
 
-**Admission is decided by bytes, never by a declared name or extension.** The format
-is sniffed from the source's own signature and then structurally validated
-(`image_formats.py` for jpeg/png/tiff; `pdf_render.py` for a PDF's one image per
-page). A file whose extension disagrees with its bytes is decided on the bytes. The
-list of which formats may enter at all is `config/admitted_formats.toml`.
+## Door `kind="admission"`
 
-## `kind="page"` — the Exemplar's own outcome for every page
+There is one admission artifact per source ordinal, whether its outcome is
+`"admitted"` or `"refused"`. Its payload always carries:
 
-One per page, derived from exactly one `kind="admission"` record. A page the door
-refused seals nothing and carries the refusal forward here, so it stays accounted
-for at this boundary too. `outcome` is `"sealed"` or `"refused"`.
-
-Sealed: `subject_id` is the page's derived identity (`pg_<hex>`, binding the digest
-of the bytes that were **actually admitted** and the ordinal — never a hash of a
-path, which was audit Q12's defect). Payload:
-
-```
-ordinal          as above
-source_sha256    the digest of the sealed bytes (the admission's sha256)
-image_path       the blob's relative path (the admission's stored_at)
-rendered_from    present only for a rendered page: {container_sha256,
-                 pdf_page_index}, carried through from the admission's
-                 recorded transform
+```text
+ordinal, declared_path, declared_sha256
+declared_bytes, ledger_sha256             (real ledger rows)
+data_gate_approval_ref                    (real runs)
 ```
 
-Refused: `subject_id` is the admission's own `f"source-{ordinal}"` — there is no
-page identity to derive, because nothing was sealed and a derived identity would
-claim to bind content that was never verified. Payload: `{ordinal, reason}`, the
-reason copied from the admission that caused it.
+An admitted payload additionally has `sha256`, `stored_at`, and `geometry`. A page
+render also has:
 
-Before any page is published, the Exemplar reconciles the door's census against
-`run.json`: every submitted ordinal has exactly one door outcome, no door outcome
-names an ordinal nobody submitted, every admission's declared path matches the run
-authority's, and every admitted blob's bytes still hash to the digest its admission
-claims. A source cannot disappear between submission and sealing.
-
-## `kind="seal"` — the corpus seal, once per run
-
-`subject_id` is the fixed string `"corpus-seal"`. `outcome` is always `"sealed"`:
-this artifact is written only once every page has been accounted for, and if no page
-sealed at all the stage refuses before reaching it. Payload:
-
-```
-page_count   the number of entries in `pages`, sealed and refused together
-pages        one entry per ordinal, sorted by ordinal:
-             {ordinal, page_id (null for a refused page), outcome,
-              source_sha256 (null for a refused page)}
-self_hash    the payload's own self-hash (common/contracts/canonical.py) over every
-             field above — the same mechanism run.json uses, so an edit after
-             sealing is detectable rather than merely undocumented
+```text
+rendered_from = {
+  container_format, container_sha256, container_page_index,
+  render_contract
+}
 ```
 
-`inputs` names every `kind="page"` artifact the seal accounts for, so its provenance
-reaches back to each page's admission in turn. Rerunning an unchanged run reproduces
-this artifact byte for byte; a rerun over a **tampered** seal refuses before it
-writes anything, rather than quietly building a second one beside the first.
+`render_contract` records the renderer/version, exact page index, lossless RGB PNG
+output, geometry, and PDF-specific pixel choices. It is a complete explanation for
+why a sealed rendered digest differs from the source container digest.
 
-## Blobs
+A refused payload has `reason`, whose prefix is one of the closed alarm codes:
+`empty`, `unreadable`, `too-large`, `unrecognized-format`, `corrupt`,
+`unsupported-variant`, `digest-mismatch`, or `duplicate`. The artifact retains the
+filename; a terminal is only presentation.
 
-`1_exemplar/blobs/sha256/<digest>` holds admitted bytes, content-addressed:
+## Exemplar `kind="page"` and corpus seal
 
-- a standalone admitted file's own bytes, unmodified — never re-encoded;
-- a rendered page's bytes, **if and only if the admission list asks for a format to
-  be rendered, which the shipped list does not**: a `DCTDecode` page is stored as the
-  embedded JPEG unmodified after its frame is checked against the colour space its
-  dictionary declares; a `FlateDecode` (or unfiltered) page's raw samples are encoded
-  as a PNG through `pdf_render.py`'s own minimal encoder.
+For an admitted source the Exemplar writes a `sealed` page whose identity binds the
+sealed-byte digest plus ordinal. Its payload retains `declared_path`,
+`declared_sha256`, `source_sha256`, `image_path`, and the ledger facts; rendered
+pages also retain `rendered_from`. A refused admission becomes an Exemplar `refused`
+page outcome with the same original filename/digest and reason.
 
-Identical bytes reused across ordinals are one blob referenced by more than one
-`stored_at`. That is deliberate — spec 03's "identical bytes reused rather than
-rewritten" — and is never evidence of resubmission.
+The one `kind="seal"`, subject `corpus-seal`, is self-hashed and has one census row
+per submitted ordinal. Each row includes outcome, page identity or null,
+sealed-byte digest or null, original filename, original digest, and real-ledger
+facts where applicable. Its inputs reference every Exemplar page artifact.
 
-## What downstream may rely on, and what it may not assume
+Before any design work, `pipeline/2_designator/run.py` independently reconciles the
+source manifest, every page outcome, the seal's rows, and the seal's input
+references. A missing page fails at that first boundary with the missing filename.
+For a sealed page, both the Designator and final Armarium boundary recheck the Door
+admission and exact content-addressed pixel blob before they crop or export; no
+later stage may turn altered pixels into new evidence. The Armarium repeats the
+filename/digest linkage and any `container_page_index` in `export.pages` and in
+every delivered crop's `source_regions`, so an individual output can be matched to
+all originals it used without guessing from an ordinal.
 
-- **Filter the manifest to `kind == "page"`** before reading. This directory also
-  holds `kind == "admission"` (the door's record) and `kind == "seal"`.
-  `pipeline/2_designator/run.py` and `pipeline/7_armarium/run.py` both already do.
-- A page's `image_path` is the exact, final, sealed bytes. Nothing downstream may
-  re-render, re-decode or regenerate them: `pdf_render.py` is door-private and
-  `pipeline/1_exemplar/test_import_boundaries.py` enforces that statically over the
-  repository's own Python, so there is no API a later stage could call.
-- **Duplicate submitted files are refused by their bytes and declared path.** Two
-  paths carrying the same raster or PDF source produce a named duplicate refusal.
-  Distinct pages within one PDF are not duplicate files: two blank pages can render
-  to identical bytes honestly, and refusing the second would lose a real page
-  (GOALS 1). A reader must not treat two page artifacts sharing one `image_path` as
-  evidence that either is spurious.
-- A refused page carries no `page_id`, no `source_sha256` and seals nothing. Its ink
-  was never read and nothing downstream may treat it as though it were.
-- Nothing in this stage's admission or sealing path consults a model, a witness, or
-  any chair output. Sealing depends on bytes alone — the old sealer's dependence on
-  a witness-stage model is the second defect this spec exists to kill.
+## Data handling and scope
 
-## The data-handling gate
+Real input is fail-closed on a current approval record bound to
+`config/data_handling_policy.json`. The local gate package is
+[`operations/submit/README.md`](../../operations/submit/README.md).
+It retains all run material, exports, and filename ledger until the whole run is
+dead/broken or complete/exported; only the lifecycle owner may then destroy the
+whole run volume. Nothing here performs transfer, pod provisioning, an upload UI,
+or routine deletion.
 
-Real (non-fixture) input is refused before a single file is opened, by
-`operations/submit/gate.py`'s `enforce()`, at two boundaries: `submit.py`'s folder
-walk, and the door's own admission loop. `enforce()` has no fixture override. The
-door derives the route from the self-hashed run ingress, and only the repository's
-declared fixture root and loaded manifest can create a synthetic-fixture run — a
-caller-named folder is real input whatever it is called.
-
-What a *run* was admitted under is stronger than either check, and is where a reader
-should look: `run.json` carries an `ingress` record inside its own self-hash, either
-
-```
-{"mode": "synthetic-fixture"}
-```
-
-or
-
-```
-{"mode": "approval-gated-real",
- "data_gate_policy_hash": <sha256 of config/data_handling_policy.json's content>,
- "data_gate_approval_ref": {"relative_path": "receipts/sha256/<digest>.json",
-                            "sha256": "<digest>"}}
-```
-
-The approval record itself is stored in the run tree at that content-addressed
-receipt path — the same shape a serving receipt uses, because an approval also
-records a human act at a moment and cannot be a deterministic stage artifact. The
-Exemplar checks that every door admission agrees with the run's ingress: all of them
-carry the same approval reference or none does, so a run cannot hold a mixture in
-which some pages were gated and others simply were not.
-
-The **data-handling gate package** is the written policy this machinery checks
-against, delivered to Tyrel for approval rather than tracked here.
-`config/data_handling_policy.json` is its machine-readable half. This document used
-to name an absolute path outside the repository for it, which was a container's
-scratch mount and could never be opened by a later reader.
+Tests use only synthetic bytes. No real image or PDF has been read or added.

@@ -5,22 +5,11 @@ Exemplar's, so the record of what arrived and the record of what was sealed sit
 together — a refusal filed somewhere nothing downstream reads is a refusal that has
 been lost, which GOVERNANCE 2 does not allow.
 
-**Spec 03 replaces the walking skeleton's toy PNG-signature check with the real
-thing.** Admission is decided by `admission.py` — the one format policy — against
-the structural validators in `image_formats.py`, never by a file's declared
-extension.
-
-**The admission list decides for every format, including the multi-page ones.**
-A `render-pages` source is fanned out into its pages and rendered once, here,
-through the door-private `pdf_render.py`; no module outside this stage imports it,
-which is what makes "no later stage may re-render" true by construction (spec 03,
-test 4) rather than by convention. But *whether* a format is fanned out at all is
-`admission.classify_detected_format`'s answer, asked once before the pages are
-counted and again before one is rendered. This module names no format anywhere: a
-`sniff(data) == "pdf"` branch here would be the admission rule existing twice —
-the exact drift spec 03 was written to kill — and under the shipped list, which
-refuses PDF, it would have fanned out and sealed pages the configuration says are
-not admitted.
+The one decoder-routing module (`admission.py`) decides from source bytes, never a
+declared extension. Its configuration names how a source is read, not formats to
+decline: ordinary rasters are decoder-backed; PDF and TIFF page containers fan out
+and render once. PDFium paints the complete visible PDF page rather than extracting
+an image XObject, so text beside an image stays in the sealed pixels.
 
 Two invariants from the harvest still shape this. **#1: only images enter, verified
 by decoding, not by extension** — now the real structural decode, not a magic-byte
@@ -48,7 +37,7 @@ Invoked as a program:
 
     python pipeline/1_exemplar/door.py --run-root <dir> --run-id <id>
     python pipeline/1_exemplar/door.py --run-root <dir> --run-id <id> \
-        --submission-folder <dir> --approval-record <path>
+        --submission-folder <dir> --submission-manifest <path> --approval-record <path>
 """
 
 import json
@@ -67,7 +56,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import admission  # noqa: E402
 import pdf_render  # noqa: E402
 from admission import RefusalReason  # noqa: E402
-from image_formats import MAX_SOURCE_BYTES, sniff  # noqa: E402
+from image_formats import (  # noqa: E402
+    MAX_DIMENSION,
+    MAX_PIXELS,
+    MAX_SOURCE_BYTES,
+    MAX_TIFF_PAGES,
+    FormatRefusal,
+    count_raster_pages,
+    raster_renderer_recipe,
+    render_raster_page,
+    sniff,
+)
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
@@ -77,9 +76,9 @@ from common.contracts.approval import (  # noqa: E402
     parse_data_gate_ingress_record,
     synthetic_fixture_ingress_record,
 )
-from common.contracts.canonical import digest_bytes, digest_of  # noqa: E402
+from common.contracts.canonical import digest_bytes, digest_of, self_hash  # noqa: E402
 from common.contracts.errors import ApprovalRefusal, ContractError  # noqa: E402
-from common.contracts.stages import DOOR, writing_directory  # noqa: E402
+from common.contracts.stages import DOOR  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -92,25 +91,18 @@ from common.stage import (  # noqa: E402
     stage_parser,
 )
 from operations.submit import gate, inventory  # noqa: E402
+from operations.submit import submit as submission_ledger  # noqa: E402
 
 
 class SourceEntry(NamedTuple):
-    """One declared page: a standalone raster file, or one page out of a PDF.
-
-    `pdf_page_index` is `None` for a standalone file. Several ordinals may share
-    one `declared_path` with different `pdf_page_index` values when that path names
-    a multi-page PDF — the fan-out the door performs itself, because turning "N
-    files" into "M pages" means opening each file to see what it is, which is the
-    inspection admission is required to do by bytes rather than by name. Ordinals
-    are always per-page, never per-file, so `RunTree.create`'s ordinal accounting
-    needs no special case for a PDF at all.
-    """
+    """One standalone raster or one page fanned out from a source container."""
 
     ordinal: int
     declared_path: str
     declared_sha256: str | None
-    pdf_page_index: int | None = None
+    container_page_index: int | None = None
     declared_size: int | None = None
+    ledger_sha256: str | None = None
 
 
 class _Decision(NamedTuple):
@@ -119,6 +111,11 @@ class _Decision(NamedTuple):
     digest: str | None
     store_bytes: bytes | None
     geometry: tuple[int, int] | None
+    rendered_from: dict[str, Any] | None = None
+
+
+DOOR_REFUSAL_REPORT_SCHEMA: Final = "door-refusal-report.v0"
+DOOR_REFUSAL_REPORT_SUBJECT: Final = "refusal-report"
 
 
 def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
@@ -141,60 +138,34 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     return declared
 
 
-def _prepared_document(data: bytes, declared_path: str, documents: dict[str, Any] | None) -> Any:
-    """The parsed container for this source, parsed once however many pages it has.
-
-    `render_page` used to take raw bytes and re-parse the whole cross-reference
-    table and page tree per call, so an N-page source paid it N+1 times. The cache
-    is per `process_sources` call and keyed by declared path, which is the same
-    scope the byte cache beside it uses.
-    """
-    if documents is None:
-        return pdf_render.open_document(data)
-    prepared = documents.get(declared_path)
-    if prepared is None:
-        prepared = pdf_render.open_document(data)
-        documents[declared_path] = prepared
-    return prepared
-
-
 def decide(
     data: bytes,
     source: SourceEntry,
     policy: dict[str, str],
-    *,
-    documents: dict[str, Any] | None = None,
 ) -> _Decision:
-    """One source's admission decision. PDF pages and standalone rasters alike.
-
-    **The policy decides first, for every source, whatever shape it has.** A page
-    index on a `SourceEntry` is a claim about how the file was fanned out; it is
-    never permission to skip the admission list. `expand_sources` asks the policy
-    before it counts a page and this asks it again before it renders one, so a
-    `render-pages` row turned to `refuse` refuses at both boundaries rather than at
-    neither.
-
-    `documents` is the caller's per-run cache of parsed containers, so a source is
-    parsed once rather than once per page inside it.
-    """
+    """Decide one raster or one source-container page by its actual bytes."""
     verdict = admission.classify_detected_format(sniff(data), policy)
-    if source.pdf_page_index is None:
-        # The size and emptiness checks live in `inspect_source` and are the first
-        # things it does, so a container that is empty or over the limit falls
-        # through to them rather than being told its manifest shape is wrong. A
-        # 64 MiB-plus PDF used to be refused as "must be declared with a page index",
-        # which is a statement about a manifest when the measured fact was a size.
+    whole_digest = digest_bytes(data)
+    if source.declared_sha256 is not None and whole_digest != source.declared_sha256:
+        return _Decision(
+            "refused",
+            admission.reason(
+                RefusalReason.DIGEST_MISMATCH,
+                f"computed {whole_digest}, but {source.declared_sha256} was declared",
+            ),
+            whole_digest,
+            None,
+            None,
+        )
+    if source.container_page_index is None:
         if verdict == admission.RENDER_PAGES and 0 < len(data) <= MAX_SOURCE_BYTES:
-            # A multi-page container reaching this branch means a manifest skipped
-            # the fan-out `expand_sources` performs; refused rather than guessed at.
             return _Decision(
                 "refused",
                 admission.reason(
                     RefusalReason.UNSUPPORTED_VARIANT,
-                    "a multi-page container must be declared with a page index; this "
-                    "one carries none",
+                    "a page container must be declared with a page index; this one carries none",
                 ),
-                digest_bytes(data),
+                whole_digest,
                 None,
                 None,
             )
@@ -209,99 +180,83 @@ def decide(
             result.geometry,
         )
 
-    if verdict != admission.RENDER_PAGES:
-        # The source was fanned out into pages under a policy that does not fan this
-        # format out — a stale manifest, a hand-built entry, or a policy edited
-        # between the fan-out and here. The admission list is the authority in every
-        # one of those cases, and the refusal names what is actually true of *these*
-        # bytes: a format the list refuses, bytes that match no signature, or — the
-        # case that is neither — a format the list admits as a single image and was
-        # nonetheless handed a page index. Reaching for "refuses by name" in that
-        # last case would assert something the list does not say.
-        detected = sniff(data)
-        if verdict is RefusalReason.UNRECOGNIZED_FORMAT:
-            code, detail = verdict, "bytes do not match any known image signature"
-        elif verdict is RefusalReason.REFUSED_FORMAT:
-            code, detail = verdict, admission.refused_format_detail(detected)
-        else:
-            code, detail = (
-                RefusalReason.UNSUPPORTED_VARIANT,
-                f"this source was declared with a page index, but the admission list "
-                f"gives {detected} the action {verdict!r} rather than page rendering; "
-                "a page index is a claim about a fan-out, never permission to skip the list",
-            )
-        return _Decision("refused", admission.reason(code, detail), digest_bytes(data), None, None)
-
-    # A PDF-sourced page: the declared digest names the *whole file*, checked once
-    # regardless of how many of its pages are being admitted, because a tampered
-    # container is untrustworthy for every page inside it.
-    whole_digest = digest_bytes(data)
-    if source.declared_sha256 is not None and whole_digest != source.declared_sha256:
-        return _Decision(
-            "refused",
-            admission.reason(
-                RefusalReason.DIGEST_MISMATCH,
-                f"computed {whole_digest} for the PDF, but {source.declared_sha256} was declared",
-            ),
-            whole_digest,
-            None,
-            None,
-        )
+    detected = sniff(data)
     try:
-        page_bytes, page_format = pdf_render.render_page(
-            _prepared_document(data, source.declared_path, documents), source.pdf_page_index
-        )
+        if detected == "pdf":
+            opened = pdf_render.open_document(data)
+            try:
+                rendered = pdf_render.render_page(opened, source.container_page_index)
+            finally:
+                pdf_render.close_document(opened)
+            page_bytes = rendered.png_bytes
+            rendered_from = {
+                "container_format": detected,
+                "container_sha256": whole_digest,
+                "container_page_index": source.container_page_index,
+                "render_contract": rendered.contract,
+            }
+        else:
+            page_count = count_raster_pages(data)
+            if page_count == 1 and verdict != admission.RENDER_PAGES:
+                return _Decision(
+                    "refused",
+                    admission.reason(
+                        RefusalReason.UNSUPPORTED_VARIANT,
+                        f"{detected or 'unknown'} was declared with a page index but decoder "
+                        "reports one frame",
+                    ),
+                    whole_digest,
+                    None,
+                    None,
+                )
+            page_bytes, _geometry, contract = render_raster_page(data, source.container_page_index)
+            rendered_from = {
+                "container_format": detected,
+                "container_sha256": whole_digest,
+                "container_page_index": source.container_page_index,
+                "render_contract": contract,
+            }
     except pdf_render.PdfRefusal as error:
         return _Decision("refused", str(error), None, None, None)
+    except FormatRefusal as error:
+        return _Decision(
+            "refused",
+            admission.reason(admission._refusal_code(error), str(error)),
+            None,
+            None,
+            None,
+        )
 
-    # What was rendered is now inspected as though it had been submitted: the same
-    # structural validators, the same one format policy. A renderer that emitted
-    # something malformed must not get a pass for being ours.
     checked = admission.inspect_source(page_bytes, declared_sha256=None, policy=policy)
     if checked.outcome != "admitted":
         return _Decision(
             "refused",
             admission.reason(
                 RefusalReason.CORRUPT,
-                f"the rendered {page_format} page did not itself admit: {checked.reason}",
+                f"the rendered page did not itself admit: {checked.reason}",
             ),
             None,
             None,
             None,
         )
-    # The bytes stored are what was rendered, never the original PDF: "what is
-    # sealed must be what was inspected" for a page means the page's own bytes.
-    return _Decision("admitted", None, checked.digest, page_bytes, checked.geometry)
+    return _Decision("admitted", None, checked.digest, page_bytes, checked.geometry, rendered_from)
 
 
 def expand_sources(
     files: list[dict[str, Any]], read_bytes: Callable[[str], bytes], policy: dict[str, str]
 ) -> list[SourceEntry]:
-    """Turn a list of submitted files into a list of pages with ordinals assigned.
+    """Expand configured PDF/TIFF containers to stable page ordinals.
 
-    `files` is a list of `{relative_path, sha256, bytes}` rows sorted by path, the
-    shape `operations/submit/submit.py`'s sealed manifest writes. Synthetic callers
-    may omit `bytes`; real inventory never does. A PDF's page count is read once
-    through the same door-private `pdf_render` call that renders them; nothing here
-    decodes a page early.
-
-    **A source is fanned out only when the admission list says to fan that format
-    out.** The decision is `admission.classify_detected_format`, the same one
-    function the raster path reads — never a format name written into this module.
-    A hardcoded `sniff(data) == "pdf"` here is the admission rule existing twice,
-    which is precisely the defect spec 03 exists to kill; under it, a policy row
-    reading `pdf = "refuse"` would be counted, fanned out and rendered anyway.
-
-    Refusals are *not* decided here. One unreadable or unopenable source still
-    occupies exactly one ordinal, and `process_sources` produces its named refusal
-    artifact — so there is exactly one place in this module that decides an
-    outcome, and the accounting cannot disagree with it.
+    Counting inspects only enough to learn a page count; it does not produce page
+    pixels.  Any source that cannot be read or counted still receives one ordinal,
+    so the later decision can publish a named alarm rather than lose it.
     """
     ordinal = 0
     sources: list[SourceEntry] = []
     for row in sorted(files, key=lambda item: item["relative_path"]):
         path, declared_sha256 = row["relative_path"], row["sha256"]
         declared_size = row.get("bytes")
+        ledger_sha256 = row.get("ledger_sha256")
         if declared_size is not None and (
             not isinstance(declared_size, int)
             or isinstance(declared_size, bool)
@@ -318,27 +273,51 @@ def expand_sources(
             data = read_bytes(path)
         except OSError:
             ordinal += 1
-            sources.append(SourceEntry(ordinal, path, declared_sha256, None, declared_size))
+            sources.append(
+                SourceEntry(ordinal, path, declared_sha256, None, declared_size, ledger_sha256)
+            )
             continue
-        if (
-            len(data) > MAX_SOURCE_BYTES
-            or admission.classify_detected_format(sniff(data), policy) != admission.RENDER_PAGES
-        ):
+        detected = sniff(data)
+        route = admission.classify_detected_format(detected, policy)
+        if len(data) > MAX_SOURCE_BYTES:
             ordinal += 1
-            sources.append(SourceEntry(ordinal, path, declared_sha256, None, declared_size))
+            sources.append(
+                SourceEntry(ordinal, path, declared_sha256, None, declared_size, ledger_sha256)
+            )
             continue
         try:
-            page_count = pdf_render.count_pages(data)
-        except pdf_render.PdfRefusal:
-            # An unopenable PDF still occupies exactly one ordinal: it is one
-            # declared source, refused as a whole, and the run-level source
-            # manifest must still account for it by ordinal.
+            page_count = (
+                pdf_render.count_pages(data) if detected == "pdf" else count_raster_pages(data)
+            )
+        except (pdf_render.PdfRefusal, FormatRefusal):
+            if route != admission.RENDER_PAGES:
+                ordinal += 1
+                sources.append(
+                    SourceEntry(ordinal, path, declared_sha256, None, declared_size, ledger_sha256)
+                )
+                continue
             ordinal += 1
-            sources.append(SourceEntry(ordinal, path, declared_sha256, 0, declared_size))
+            sources.append(
+                SourceEntry(ordinal, path, declared_sha256, 0, declared_size, ledger_sha256)
+            )
+            continue
+        # PDF/TIFF are declared page containers even when there is one page. For
+        # every other decoder-backed image, a reported multi-frame source is also
+        # fanned out. Retaining an animation as one raster would silently drop all
+        # but frame zero downstream; one-frame rasters retain their original bytes.
+        if route != admission.RENDER_PAGES and page_count == 1:
+            ordinal += 1
+            sources.append(
+                SourceEntry(ordinal, path, declared_sha256, None, declared_size, ledger_sha256)
+            )
             continue
         for page_index in range(page_count):
             ordinal += 1
-            sources.append(SourceEntry(ordinal, path, declared_sha256, page_index, declared_size))
+            sources.append(
+                SourceEntry(
+                    ordinal, path, declared_sha256, page_index, declared_size, ledger_sha256
+                )
+            )
     return sources
 
 
@@ -377,11 +356,6 @@ def process_sources(
     admitted = 0
     seen_sources: dict[str, tuple[str, int]] = {}
     cache: dict[str, bytes] = {}
-    # Parsed containers, alongside the bytes they were parsed from: a multi-page
-    # source is read once and parsed once, and every one of its pages is rendered
-    # out of that single parse.
-    documents: dict[str, Any] = {}
-
     for source in sorted(sources, key=lambda item: item.ordinal):
         if source.declared_size is not None and source.declared_size > MAX_SOURCE_BYTES:
             # Refused for its own size, never as a duplicate of something else. Two
@@ -414,18 +388,34 @@ def process_sources(
             )
             continue
 
-        actual_digest = digest_bytes(data)
-        first = seen_sources.get(actual_digest)
-        if first is not None and first[0] != source.declared_path:
+        if source.declared_size is not None and len(data) != source.declared_size:
             _publish(
                 context,
                 source,
                 outcome="refused",
-                reason=admission.duplicate_reason(first[1]),
+                reason=admission.reason(
+                    RefusalReason.DIGEST_MISMATCH,
+                    f"the source now has {len(data)} bytes, but {source.declared_size} bytes "
+                    "were recorded in its filename ledger",
+                ),
                 approval_reference=approval_reference,
             )
             continue
-        decision = decide(data, source, policy, documents=documents)
+
+        actual_digest = digest_bytes(data)
+        if source.declared_sha256 is not None and actual_digest != source.declared_sha256:
+            _publish(
+                context,
+                source,
+                outcome="refused",
+                reason=admission.reason(
+                    RefusalReason.DIGEST_MISMATCH,
+                    f"computed {actual_digest}, but {source.declared_sha256} was declared",
+                ),
+                approval_reference=approval_reference,
+            )
+            continue
+        decision = decide(data, source, policy)
 
         if decision.outcome == "refused":
             _publish(
@@ -433,6 +423,17 @@ def process_sources(
                 source,
                 outcome="refused",
                 reason=decision.reason,
+                approval_reference=approval_reference,
+            )
+            continue
+
+        first = seen_sources.get(actual_digest)
+        if first is not None and first[0] != source.declared_path:
+            _publish(
+                context,
+                source,
+                outcome="refused",
+                reason=admission.duplicate_reason(first[1]),
                 approval_reference=approval_reference,
             )
             continue
@@ -450,22 +451,8 @@ def process_sources(
             "stored_at": published.relative_path,
             "geometry": {"width": decision.geometry[0], "height": decision.geometry[1]},
         }
-        if source.pdf_page_index is not None:
-            # The one recorded transform this door performs. ARCHITECTURE's third
-            # invariant — the exact image shown to a model is reproducible from the
-            # Exemplar plus recorded transforms — is only true if the render is
-            # *recorded*: which page, of which file, produced these bytes. Without
-            # it a sealed page's digest simply disagrees with its source's and
-            # nothing can say why.
-            extra["pdf_page_index"] = source.pdf_page_index
-            # `container_sha256`, not `source_sha256`. The Exemplar's page payload
-            # already uses `source_sha256` for the digest of the *sealed* bytes —
-            # the one `page_id` binds, and the one `common/contracts/identities.py`
-            # names — so a second meaning for the same word inside one record is
-            # GLOSSARY's opening rule broken three lines apart, and a reader taking
-            # the top-level field for "the file this came from" would be right for
-            # every raster and wrong for every rendered page.
-            extra["container_sha256"] = source.declared_sha256 or digest_bytes(data)
+        if decision.rendered_from is not None:
+            extra["rendered_from"] = decision.rendered_from
         _publish(
             context,
             source,
@@ -489,7 +476,15 @@ def _publish(
     inputs: list[dict[str, str]] | None = None,
     approval_reference: ApprovalRecordReference | None = None,
 ) -> None:
-    payload: dict = {"declared_path": source.declared_path, "ordinal": source.ordinal}
+    payload: dict = {
+        "declared_path": source.declared_path,
+        "declared_sha256": source.declared_sha256,
+        "ordinal": source.ordinal,
+    }
+    if source.declared_size is not None:
+        payload["declared_bytes"] = source.declared_size
+    if source.ledger_sha256 is not None:
+        payload["ledger_sha256"] = source.ledger_sha256
     if outcome == "refused":
         payload["reason"] = reason
     else:
@@ -505,20 +500,58 @@ def _publish(
     )
 
 
-def require_some_admitted(admitted: int, tree: RunTree) -> None:
+def publish_refusal_report(context: StageContext) -> str | None:
+    """Seal every door alarm into one private, filename-bearing report.
+
+    The per-source admission artifacts remain the authority.  This report is their
+    self-hashed, input-referenced index for an operator who needs a named list
+    without putting filenames or image bytes into terminal output.  It is an
+    ordinary run-tree artifact, not a sixth on-disk file shape.
+    """
+    rows: list[dict[str, Any]] = []
+    inputs: list[dict[str, str]] = []
+    for entry in context.tree.build_manifest(DOOR)["artifacts"]:
+        if entry["kind"] != "admission" or entry["outcome"] != "refused":
+            continue
+        record = context.tree.read_artifact(DOOR, "admission", entry["artifact_id"])
+        payload = record["payload"]
+        ordinal, path, refusal = (
+            payload.get("ordinal"),
+            payload.get("declared_path"),
+            payload.get("reason"),
+        )
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise ContractError("a refused door admission has no integer source ordinal")
+        if not isinstance(path, str) or not path:
+            raise ContractError("a refused door admission has no declared filename")
+        # Reading the closed code back is what prevents a free-text report from
+        # turning a producer bug into the operator's only explanation.
+        admission.reason_code(refusal)
+        rows.append({"ordinal": ordinal, "declared_path": path, "reason": refusal})
+        inputs.append({"relative_path": entry["relative_path"], "sha256": entry["sha256"]})
+    if not rows:
+        return None
+    payload: dict[str, Any] = {
+        "schema": DOOR_REFUSAL_REPORT_SCHEMA,
+        "refusals": sorted(rows, key=lambda row: row["ordinal"]),
+    }
+    payload["self_hash"] = self_hash(payload)
+    published = context.publish(
+        kind="refusal-report",
+        subject_id=DOOR_REFUSAL_REPORT_SUBJECT,
+        outcome="refused",
+        inputs=inputs,
+        payload=payload,
+    )
+    return published.relative_path
+
+
+def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | None) -> None:
     """An empty or wholly refused input set is a loud failure (harvest #3).
 
-    Spec 03's test 2 asks for "zero admitted and a **named list**", and the name
-    that matters is the *reason*: the old door's actual defect was an anonymous
-    "unsupported" counter that told Tyrel a number and nothing he could act on. So
-    the failure carries the census of closed-set reason codes actually published,
-    read back off the door's own artifacts rather than off what this loop believed
-    it wrote — a summary is never verification.
-
-    It carries no declared path or filename. Those are recorded per source in the
-    admission artifacts named below, which live inside the run tree under an
-    approved storage root; the data-handling policy's logging rule keeps them out
-    of anything an operator's shell captures.
+    The terminal carries the count and private report location, while the report
+    itself names every source and reason. This preserves filenames as citation links
+    without placing them in a captured terminal stream.
     """
     if admitted != 0:
         return
@@ -527,9 +560,9 @@ def require_some_admitted(admitted: int, tree: RunTree) -> None:
     raise ContractError(
         f"the door admitted nothing: {total} source(s) submitted, "
         f"{sum(census.values())} refused ({named or 'no refusal was recorded either'}). "
-        f"Each one is named by ordinal and declared path in "
-        f"{writing_directory(DOOR)}/artifacts/admission/. An empty or wholly unreadable input "
-        "set is a loud failure, never a green run with no output (harvest #3)"
+        f"Private named refusal report: {refusal_report or 'unavailable'}. "
+        "An empty or wholly unreadable input set is a loud failure, never a green run with no "
+        "output (harvest #3)"
     )
 
 
@@ -605,24 +638,27 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         help="path to Tyrel's sealed data-gate approval record for the current policy",
     )
     parser.add_argument(
+        "--submission-manifest",
+        help=(
+            "self-hashed local filename ledger made before transfer; required with a real "
+            "submission folder"
+        ),
+    )
+    parser.add_argument(
         "--data-gate-policy",
         default=str(gate.DEFAULT_POLICY_PATH),
         help="the data-handling policy whose canonical hash the approval must name",
-    )
-    parser.add_argument(
-        "--format-policy",
-        default=str(admission.DEFAULT_FORMAT_POLICY_PATH),
-        help="the admission list: which formats may enter at all",
     )
     args = parser.parse_args()
     registry = registry_factory(args.models_config)
 
     if args.submission_folder is not None:
         return real_submission(args, registry)
-    if args.approval_record is not None:
+    if args.approval_record is not None or args.submission_manifest is not None:
         raise ContractError(
-            "an approval record is meaningful only with a real submission folder; the "
-            "walking skeleton's declared synthetic pages are not gated input"
+            "an approval record or submission filename ledger is meaningful only with a real "
+            "submission folder; the walking skeleton's declared synthetic pages are not "
+            "gated input"
         )
     return fixture_submission(args, registry)
 
@@ -634,7 +670,12 @@ def fixture_submission(args, registry) -> int:
     scenario_for(fixture, args.scenario)
     declared = declared_digests(fixture, args.scenario)
     policy = admission.load_format_policy(Path(args.format_policy))
-    bindings = run_config_bindings(registry.config, fixture, args.scenario)
+    bindings = run_config_bindings(
+        registry.config,
+        fixture,
+        args.scenario,
+        format_policy_path=args.format_policy,
+    )
 
     # The door creates the run: it is the first thing that knows what arrived, so
     # it is the only stage that can bind a run id to its inputs. The manifest
@@ -668,8 +709,10 @@ def fixture_submission(args, registry) -> int:
         lambda declared_path: (fixture_root / declared_path).read_bytes(),
         policy=policy,
     )
+    refusal_report = publish_refusal_report(context)
     context.finish(DOOR)
-    require_some_admitted(admitted, tree)
+    _announce_refusal_report(tree, refusal_report)
+    require_some_admitted(admitted, tree, refusal_report)
     return EXIT_COMPLETE
 
 
@@ -684,6 +727,11 @@ def real_submission(args, registry) -> int:
     data_policy = gate.load_policy(Path(args.data_gate_policy))
     if args.approval_record is None:
         gate.enforce(approval=None, policy=data_policy)
+    if args.submission_manifest is None:
+        raise ContractError(
+            "a real submission requires --submission-manifest: the self-hashed filename "
+            "ledger is how its copied bytes are matched back to the original set"
+        )
     approval, reference = gate.read_external_approval(Path(args.approval_record), data_policy)
 
     roots = gate.approved_storage_roots(data_policy)
@@ -693,19 +741,45 @@ def real_submission(args, registry) -> int:
     submission_folder = gate.require_approved_storage_location(
         Path(args.submission_folder), roots, "submitted folder"
     )
-    gate.require_approved_storage_location(Path(args.run_root), roots, "run root")
+    run_root = gate.require_approved_storage_location(Path(args.run_root), roots, "run root")
+    manifest_path = gate.require_approved_storage_location(
+        Path(args.submission_manifest), roots, "submission filename ledger"
+    )
+    for location, label in (
+        (run_root, "run root"),
+        (manifest_path, "submission filename ledger"),
+    ):
+        if location.is_relative_to(submission_folder):
+            raise ContractError(
+                f"the {label} cannot live inside the submitted folder; otherwise the next "
+                "inventory includes pipeline-produced records as submitted sources"
+            )
+    ledger = submission_ledger.load_manifest(manifest_path)
+    if ledger["authorized_by"] != reference.to_record():
+        raise ApprovalRefusal(
+            "the submission filename ledger names a different data-gate approval than the "
+            "approval record supplied to the door"
+        )
 
     format_policy = admission.load_format_policy(Path(args.format_policy))
     found = inventory.read_submission(submission_folder, max_bytes=MAX_SOURCE_BYTES)
-    if not found:
+    found_paths = {source.relative_path for source in found}
+    declared_paths = {row["relative_path"] for row in ledger["files"]}
+    unexpected = found_paths - declared_paths
+    if unexpected:
         raise ContractError(
-            "the submit door found no files to admit; an empty folder is a loud failure, "
-            "never a green run with no output (harvest #3)"
+            "the submitted folder contains file(s) absent from its self-hashed filename "
+            f"ledger ({len(unexpected)} extra); no run was created over an ambiguous set"
         )
     bytes_by_path = {source.relative_path: source.data for source in found}
 
     def read_bytes(relative_path: str) -> bytes:
-        data = bytes_by_path.get(relative_path)
+        try:
+            data = bytes_by_path[relative_path]
+        except KeyError as error:
+            raise OSError(
+                "a source named by the filename ledger is absent after transfer"
+            ) from error
         if data is None:
             # The inventory kept an exact digest and size but not the bytes. The
             # declared-size branch refuses it before this reader is called; this is
@@ -716,24 +790,28 @@ def real_submission(args, registry) -> int:
     sources = expand_sources(
         [
             {
-                "relative_path": source.relative_path,
-                "sha256": source.sha256,
-                "bytes": source.size,
+                "relative_path": source["relative_path"],
+                "sha256": source["sha256"],
+                "bytes": source["bytes"],
+                "ledger_sha256": ledger["self_hash"],
             }
-            for source in found
+            for source in ledger["files"]
         ],
         read_bytes,
         format_policy,
     )
-    bindings = _real_bindings(registry.config, found, data_policy, reference, format_policy)
+    bindings = _real_bindings(registry.config, ledger, data_policy, reference, format_policy)
     tree = RunTree.create(
-        Path(args.run_root),
+        run_root,
         args.run_id,
         source_manifest=[
             {
                 "relative_path": source.declared_path,
                 "sha256": source.declared_sha256,
                 "ordinal": source.ordinal,
+                "bytes": source.declared_size,
+                "ledger_sha256": source.ledger_sha256,
+                "container_page_index": source.container_page_index,
             }
             for source in sources
         ],
@@ -758,36 +836,70 @@ def real_submission(args, registry) -> int:
         policy=format_policy,
         data_policy=data_policy,
     )
+    refusal_report = publish_refusal_report(context)
     context.finish(DOOR)
-    require_some_admitted(admitted, tree)
+    _announce_refusal_report(tree, refusal_report)
+    require_some_admitted(admitted, tree, refusal_report)
     return EXIT_COMPLETE
 
 
-def _real_bindings(models, found, data_policy, reference, format_policy) -> dict[str, Any]:
+def _announce_refusal_report(tree: RunTree, refusal_report: str | None) -> None:
+    """Give the terminal only a count and private report location, never a name."""
+    if refusal_report is None:
+        return
+    _total, census = _refusal_census(tree)
+    print(
+        f"{sum(census.values())} door refusal(s); private refusal report: {refusal_report}",
+        file=sys.stderr,
+    )
+
+
+def _real_bindings(models, ledger, data_policy, reference, format_policy) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
     The source manifest binds the bytes. The configuration digest binds everything
     else that shaped what the door did: the model roster, the data-handling policy
-    version, the exact approval that admitted the corpus, and the admission list.
-    A run resumed under a different approval or a different admission list is a
-    different run wearing an old name, and `RunTree.create` refuses it before
-    anything is written.
+    version, the exact approval that admitted the corpus, decoder routing, and the
+    versions/settings that render pages. A run resumed under different versions or
+    routing is a different run wearing an old name, and `RunTree.create` refuses
+    it before anything is written.
     """
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
             {
                 "submission": [
-                    {"relative_path": source.relative_path, "sha256": source.sha256}
-                    for source in found
+                    {
+                        "relative_path": source["relative_path"],
+                        "sha256": source["sha256"],
+                        "bytes": source["bytes"],
+                    }
+                    for source in ledger["files"]
                 ],
+                "submission_ledger_sha256": ledger["self_hash"],
                 "data_gate_policy_hash": gate.policy_hash(data_policy),
                 "data_gate_approval_ref": reference.to_record(),
                 "format_policy": format_policy,
+                "door_execution_recipe": _door_execution_recipe(),
                 "models": models.to_record(),
             }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
+    }
+
+
+def _door_execution_recipe() -> dict[str, Any]:
+    """Facts that change page admission or pixels, sealed before real writes."""
+    return {
+        "pdf": pdf_render.renderer_recipe(),
+        "raster": raster_renderer_recipe(),
+        "limits": {
+            "max_source_bytes": MAX_SOURCE_BYTES,
+            "max_dimension": MAX_DIMENSION,
+            "max_pixels": MAX_PIXELS,
+            "max_tiff_pages": MAX_TIFF_PAGES,
+            "max_pdf_pages": pdf_render.MAX_PAGES,
+        },
     }
 
 
