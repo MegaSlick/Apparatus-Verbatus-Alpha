@@ -48,8 +48,17 @@ FIXTURE = "synthetic-two-page-v0"
 # is internally consistent but no longer the run these tests describe. A change
 # here is legitimate exactly when a commit deliberately changes what a run
 # writes, and then the new value belongs in that commit and nowhere else.
-HAPPY_RUN_TREE_DIGEST = "77177e3fc5561b4e367212d3b9d50b98ae42cd2ab23dd1eddd2964560d9a25cd"
-REVIEW_RUN_TREE_DIGEST = "91774dd7c103336157e61f239837d0d2cc9bd60af0e1b88524172272999afd25"
+#
+# Re-pinned again by spec 03. Three deliberate changes move these together:
+# the Exemplar now writes one additional artifact per run — the corpus seal
+# (`kind="seal"`, one per run, self-hashed), which is the whole of the +1 in each
+# file count; `run.json` now seals the run's ingress record, so the walking
+# skeleton says in the authority itself that it was synthetic; and a sealed page
+# derives its identity from the digest the door actually admitted rather than from
+# the fixture's declaration, which for these fixtures is the same string and so
+# moves nothing on its own. Recomputed against the real orchestrator.
+HAPPY_RUN_TREE_DIGEST = "26e80286723858fa639ab49078c7d9340cd23b90feffbd8734673840a330a219"
+REVIEW_RUN_TREE_DIGEST = "8448f1c1acace43d95c3b2c3f4bec80af9e5f6cbcaa758d347b615a62ec7b880"
 
 
 def orchestrate(
@@ -309,7 +318,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    assert len(before) == 41
+    assert len(before) == 42
     assert digest_of(before) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -326,7 +335,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    assert len(before) == 45
+    assert len(before) == 46
     assert digest_of(before) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before

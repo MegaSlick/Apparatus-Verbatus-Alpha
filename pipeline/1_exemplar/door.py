@@ -1,30 +1,72 @@
-"""The door: what may enter at all, decided before a run tree means anything.
+"""The door: what may enter at all, decided by bytes alone.
 
 The door owns no directory. It writes its admissions and refusals into the
 Exemplar's, so the record of what arrived and the record of what was sealed sit
-together — a refusal filed somewhere nothing downstream reads is a refusal that
-has been lost, which GOVERNANCE 2 does not allow.
+together — a refusal filed somewhere nothing downstream reads is a refusal that has
+been lost, which GOVERNANCE 2 does not allow.
 
-Two invariants from the harvest shape this even at skeleton scale. **#1: only
-images enter, verified by decoding, not by extension** — here that is the PNG
-signature check, because the skeleton has no decoder and must not pretend to. The
-real door (spec 03) decodes. **#3: a refused file is never silently omitted** —
-every refusal is an artifact with a reason, and an input set that admitted nothing
-is a loud failure rather than a green run with no output.
+**Spec 03 replaces the walking skeleton's toy PNG-signature check with the real
+thing.** Admission is decided by `admission.py` — the one format policy — against
+the structural validators in `image_formats.py`, never by a file's declared
+extension. A PDF source is fanned out into its pages and rendered once, here,
+through the door-private `pdf_render.py`; no module outside this stage imports it,
+which is what makes "no later stage may re-render" true by construction (spec 03,
+test 4) rather than by convention.
+
+Two invariants from the harvest still shape this. **#1: only images enter, verified
+by decoding, not by extension** — now the real structural decode, not a magic-byte
+check. **#3: a refused file is never silently omitted** — every refusal is an
+artifact with a reason drawn from `admission.RefusalReason`'s closed set, and an
+input set that admitted nothing is a loud failure rather than a green run with no
+output.
+
+**Two ways in, and the difference between them is not a flag.** The fixture path
+runs the walking skeleton on the repository's own declared synthetic pages, and it
+refuses to treat any other folder as a fixture — fixture status comes from the
+declared fixture root and the `load_fixture` manifest, never from a caller's word
+(ruling 2026-08-04, item 1). Everything else is real input: it is gated before a
+byte is read, and the approval that admitted it is sealed into `run.json`'s own
+self-hashed authority as the run's `ingress`, so a later reader asks the run
+authority rather than an optional field on a stage artifact that could simply be
+absent.
+
+**No real image has been touched.** The real path exists, is gated, and is proven
+against synthetic bytes standing in for real input; nothing has been pointed at a
+real register page, and nothing may be until Tyrel approves the data-handling gate
+package.
 
 Invoked as a program:
 
     python pipeline/1_exemplar/door.py --run-root <dir> --run-id <id>
+    python pipeline/1_exemplar/door.py --run-root <dir> --run-id <id> \
+        --submission-folder <dir> --approval-record <path>
 """
 
 import sys
 from pathlib import Path
+from typing import Any, Callable, Final, NamedTuple
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+ROOT = Path(__file__).resolve().parents[2]
+# The one folder in this repository whose contents are declared synthetic. A
+# caller-named folder is real input, whatever it is called and whatever it holds.
+DECLARED_SYNTHETIC_FIXTURE_ROOT: Final = ROOT / "proof"
+
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import admission  # noqa: E402
+import pdf_render  # noqa: E402
+from admission import RefusalReason  # noqa: E402
+from image_formats import MAX_SOURCE_BYTES, sniff  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.canonical import digest_bytes  # noqa: E402
-from common.contracts.errors import ContractError  # noqa: E402
+from common.contracts.approval import (  # noqa: E402
+    ApprovalRecordReference,
+    approval_gated_real_ingress_record,
+    synthetic_fixture_ingress_record,
+)
+from common.contracts.canonical import digest_bytes, digest_of  # noqa: E402
+from common.contracts.errors import ApprovalRefusal, ContractError  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -37,17 +79,42 @@ from common.stage import (  # noqa: E402
     scenario_for,
     stage_parser,
 )
+from operations.submit import gate, inventory  # noqa: E402
 
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+class SourceEntry(NamedTuple):
+    """One declared page: a standalone raster file, or one page out of a PDF.
+
+    `pdf_page_index` is `None` for a standalone file. Several ordinals may share
+    one `declared_path` with different `pdf_page_index` values when that path names
+    a multi-page PDF — the fan-out the door performs itself, because turning "N
+    files" into "M pages" means opening each file to see what it is, which is the
+    inspection admission is required to do by bytes rather than by name. Ordinals
+    are always per-page, never per-file, so `RunTree.create`'s ordinal accounting
+    needs no special case for a PDF at all.
+    """
+
+    ordinal: int
+    declared_path: str
+    declared_sha256: str | None
+    pdf_page_index: int | None = None
+
+
+class _Decision(NamedTuple):
+    outcome: str
+    reason: str | None
+    digest: str | None
+    store_bytes: bytes | None
+    geometry: tuple[int, int] | None
 
 
 def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     """The digest each page is declared to have, per ordinal, for this scenario.
 
-    A `page_refusal` row substitutes a declared digest the checked-in bytes
-    cannot match, so the refusal scenarios exercise the door's real inspection
-    path — the same comparison, the same refusal artifact — rather than any
-    scenario-aware branch that a real door would not have.
+    A `page_refusal` row substitutes a declared digest the checked-in bytes cannot
+    match, so the refusal scenarios exercise the door's real inspection path — the
+    same comparison, the same refusal artifact — rather than any scenario-aware
+    branch that a real door would not have.
     """
     declared = {page["ordinal"]: page["sha256"] for page in fixture["page"]}
     for row in fixture.get("page_refusal", []):
@@ -61,6 +128,286 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     return declared
 
 
+def decide(data: bytes, source: SourceEntry, policy: dict[str, str]) -> _Decision:
+    """One source's admission decision. PDF pages and standalone rasters alike."""
+    if source.pdf_page_index is None:
+        if sniff(data) == "pdf":
+            # A PDF reaching this branch means a manifest skipped the fan-out
+            # `expand_sources` performs; refused rather than guessed at.
+            return _Decision(
+                "refused",
+                admission.reason(
+                    RefusalReason.UNSUPPORTED_VARIANT,
+                    "a PDF source must be declared with a page index; this one carries none",
+                ),
+                digest_bytes(data),
+                None,
+                None,
+            )
+        result = admission.inspect_source(
+            data, declared_sha256=source.declared_sha256, policy=policy
+        )
+        return _Decision(
+            result.outcome,
+            result.reason,
+            result.digest,
+            data if result.outcome == "admitted" else None,
+            result.geometry,
+        )
+
+    # A PDF-sourced page: the declared digest names the *whole file*, checked once
+    # regardless of how many of its pages are being admitted, because a tampered
+    # container is untrustworthy for every page inside it.
+    whole_digest = digest_bytes(data)
+    if source.declared_sha256 is not None and whole_digest != source.declared_sha256:
+        return _Decision(
+            "refused",
+            admission.reason(
+                RefusalReason.DIGEST_MISMATCH,
+                f"computed {whole_digest} for the PDF, but {source.declared_sha256} was declared",
+            ),
+            whole_digest,
+            None,
+            None,
+        )
+    try:
+        page_bytes, page_format = pdf_render.render_page(data, source.pdf_page_index)
+    except pdf_render.PdfRefusal as error:
+        return _Decision("refused", str(error), None, None, None)
+
+    # What was rendered is now inspected as though it had been submitted: the same
+    # structural validators, the same one format policy. A renderer that emitted
+    # something malformed must not get a pass for being ours.
+    checked = admission.inspect_source(page_bytes, declared_sha256=None, policy=policy)
+    if checked.outcome != "admitted":
+        return _Decision(
+            "refused",
+            admission.reason(
+                RefusalReason.CORRUPT,
+                f"the rendered {page_format} page did not itself admit: {checked.reason}",
+            ),
+            None,
+            None,
+            None,
+        )
+    # The bytes stored are what was rendered, never the original PDF: "what is
+    # sealed must be what was inspected" for a page means the page's own bytes.
+    return _Decision("admitted", None, checked.digest, page_bytes, checked.geometry)
+
+
+def expand_sources(
+    files: list[dict[str, Any]], read_bytes: Callable[[str], bytes], policy: dict[str, str]
+) -> list[SourceEntry]:
+    """Turn a list of submitted files into a list of pages with ordinals assigned.
+
+    `files` is a list of `{relative_path, sha256}` rows sorted by path, the shape
+    `operations/submit/submit.py`'s sealed manifest writes. A PDF's page count is
+    read once through the same door-private `pdf_render` call that renders them;
+    nothing here decodes a page early.
+
+    Refusals are *not* decided here. One unreadable or unopenable source still
+    occupies exactly one ordinal, and `process_sources` produces its named refusal
+    artifact — so there is exactly one place in this module that decides an
+    outcome, and the accounting cannot disagree with it.
+    """
+    ordinal = 0
+    sources: list[SourceEntry] = []
+    for row in sorted(files, key=lambda item: item["relative_path"]):
+        path, declared_sha256 = row["relative_path"], row["sha256"]
+        try:
+            data = read_bytes(path)
+        except OSError:
+            ordinal += 1
+            sources.append(SourceEntry(ordinal, path, declared_sha256, None))
+            continue
+        if len(data) > MAX_SOURCE_BYTES or sniff(data) != "pdf":
+            ordinal += 1
+            sources.append(SourceEntry(ordinal, path, declared_sha256, None))
+            continue
+        try:
+            page_count = pdf_render.count_pages(data)
+        except pdf_render.PdfRefusal:
+            # An unopenable PDF still occupies exactly one ordinal: it is one
+            # declared source, refused as a whole, and the run-level source
+            # manifest must still account for it by ordinal.
+            ordinal += 1
+            sources.append(SourceEntry(ordinal, path, declared_sha256, pdf_page_index=0))
+            continue
+        for page_index in range(page_count):
+            ordinal += 1
+            sources.append(SourceEntry(ordinal, path, declared_sha256, page_index))
+    return sources
+
+
+def process_sources(
+    context: StageContext,
+    tree: RunTree,
+    sources: list[SourceEntry],
+    read_bytes: Callable[[str], bytes],
+    *,
+    policy: dict[str, str],
+    is_fixture: bool,
+    approval: dict[str, Any] | None = None,
+    data_policy: dict[str, Any] | None = None,
+    approval_reference: ApprovalRecordReference | None = None,
+) -> int:
+    """Admit or refuse every declared source. Returns the count admitted.
+
+    `is_fixture` is required, never defaulted: every caller must say plainly whether
+    this is the walking skeleton's declared synthetic input or real material,
+    because that is exactly the distinction the data-handling gate depends on. The
+    gate is checked first, before a single file is opened: real input with no
+    current approval is refused before `read_bytes` is ever called.
+
+    `read_bytes` is called once per distinct `declared_path` within *this* call,
+    even when several ordinals (a PDF's pages) share one: a source is read once and
+    every one of its pages is rendered from that single copy in memory.
+
+    Per-file, never per-folder (harvest #2): one unreadable or refused source does
+    not stop the rest from being decided. Duplicate content is refused by name, but
+    only among standalone raster sources — never between two PDF pages, which can
+    be honestly byte-identical (two blank pages in one scanned book), and never
+    against a PDF page at all.
+    """
+    gate.enforce(is_fixture=is_fixture, approval=approval, policy=data_policy)
+    admitted = 0
+    seen_digests: dict[str, int] = {}
+    cache: dict[str, bytes] = {}
+
+    for source in sorted(sources, key=lambda item: item.ordinal):
+        try:
+            data = cache.get(source.declared_path)
+            if data is None:
+                data = read_bytes(source.declared_path)
+                cache[source.declared_path] = data
+        except OSError as error:
+            _publish(
+                context,
+                source,
+                outcome="refused",
+                reason=admission.reason(RefusalReason.UNREADABLE, str(error)),
+                approval_reference=approval_reference,
+            )
+            continue
+
+        decision = decide(data, source, policy)
+
+        # Duplicate content is checked only among standalone raster sources — the
+        # "duplicate files" ledger item is about one file submitted twice. A PDF
+        # page is never a candidate: two rendered pages can be byte-identical
+        # honestly, and content-addressed blob storage already dedupes their bytes
+        # on disk without refusing either as an act.
+        if (
+            source.pdf_page_index is None
+            and decision.outcome == "admitted"
+            and decision.digest in seen_digests
+        ):
+            decision = _Decision(
+                "refused",
+                admission.duplicate_reason(seen_digests[decision.digest]),
+                decision.digest,
+                None,
+                None,
+            )
+
+        if decision.outcome == "refused":
+            _publish(
+                context,
+                source,
+                outcome="refused",
+                reason=decision.reason,
+                approval_reference=approval_reference,
+            )
+            continue
+
+        if source.pdf_page_index is None:
+            seen_digests[decision.digest] = source.ordinal
+        _, published = tree.put_blob(DOOR, decision.store_bytes)
+        extra: dict[str, Any] = {
+            "sha256": decision.digest,
+            "stored_at": published.relative_path,
+            "geometry": {"width": decision.geometry[0], "height": decision.geometry[1]},
+        }
+        if source.pdf_page_index is not None:
+            # The one recorded transform this door performs. ARCHITECTURE's third
+            # invariant — the exact image shown to a model is reproducible from the
+            # Exemplar plus recorded transforms — is only true if the render is
+            # *recorded*: which page, of which file, produced these bytes. Without
+            # it a sealed page's digest simply disagrees with its source's and
+            # nothing can say why.
+            extra["pdf_page_index"] = source.pdf_page_index
+            extra["source_sha256"] = source.declared_sha256 or digest_bytes(data)
+        _publish(
+            context,
+            source,
+            outcome="admitted",
+            payload_extra=extra,
+            inputs=[context.input_ref(published.relative_path)],
+            approval_reference=approval_reference,
+        )
+        admitted += 1
+
+    return admitted
+
+
+def _publish(
+    context: StageContext,
+    source: SourceEntry,
+    *,
+    outcome: str,
+    reason: str | None = None,
+    payload_extra: dict | None = None,
+    inputs: list[dict[str, str]] | None = None,
+    approval_reference: ApprovalRecordReference | None = None,
+) -> None:
+    payload: dict = {"declared_path": source.declared_path, "ordinal": source.ordinal}
+    if outcome == "refused":
+        payload["reason"] = reason
+    else:
+        payload.update(payload_extra or {})
+    if approval_reference is not None:
+        payload["data_gate_approval_ref"] = approval_reference.to_record()
+    context.publish(
+        kind="admission",
+        subject_id=f"source-{source.ordinal}",
+        outcome=outcome,
+        inputs=inputs or [],
+        payload=payload,
+    )
+
+
+def require_some_admitted(admitted: int) -> None:
+    """An empty or wholly refused input set is a loud failure (harvest #3)."""
+    if admitted == 0:
+        raise ContractError(
+            "the door admitted nothing. An empty or wholly unreadable input set is "
+            "a loud failure, never a green run with no output (harvest #3)"
+        )
+
+
+def declared_synthetic_fixture_root(requested_root: str) -> Path:
+    """The one root in this repository whose contents are declared synthetic.
+
+    Ruling 2026-08-04, item 1: fixture status comes from the declared fixture
+    manifest, never from a caller flag, a filename suffix, or a folder name. A
+    caller pointing `--fixture-root` at its own directory is pointing at real
+    input, and this is what says so instead of believing it.
+    """
+    try:
+        candidate = Path(requested_root).resolve(strict=True)
+    except OSError as error:
+        raise ContractError(
+            f"the declared synthetic fixture root {requested_root!r} could not be resolved"
+        ) from error
+    if candidate != DECLARED_SYNTHETIC_FIXTURE_ROOT.resolve():
+        raise ContractError(
+            f"{requested_root!r} is not the declared synthetic fixture root "
+            f"({DECLARED_SYNTHETIC_FIXTURE_ROOT}); a caller-owned folder is real input "
+            "and goes through --submission-folder, where the data-handling gate is"
+        )
+    return candidate
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Create the run with an explicitly supplied chair implementation.
 
@@ -68,12 +415,45 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     independent deterministic implementation through this seam; no command-line
     option chooses among implementations, chairs, revisions, recipes, or caches.
     """
-    args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    fixture = load_fixture(args.fixture_root)
-    scenario_for(fixture, args.scenario)
-    fixture_root = Path(args.fixture_root)
-    declared = declared_digests(fixture, args.scenario)
+    parser = stage_parser(__doc__.splitlines()[0])
+    parser.add_argument(
+        "--submission-folder",
+        help="a real local submission; any input arriving this way needs a current approval",
+    )
+    parser.add_argument(
+        "--approval-record",
+        help="path to Tyrel's sealed data-gate approval record for the current policy",
+    )
+    parser.add_argument(
+        "--data-gate-policy",
+        default=str(gate.DEFAULT_POLICY_PATH),
+        help="the data-handling policy whose canonical hash the approval must name",
+    )
+    parser.add_argument(
+        "--format-policy",
+        default=str(admission.DEFAULT_FORMAT_POLICY_PATH),
+        help="the admission list: which formats may enter at all",
+    )
+    args = parser.parse_args()
     registry = registry_factory(args.models_config)
+
+    if args.submission_folder is not None:
+        return real_submission(args, registry)
+    if args.approval_record is not None:
+        raise ContractError(
+            "an approval record is meaningful only with a real submission folder; the "
+            "walking skeleton's declared synthetic pages are not gated input"
+        )
+    return fixture_submission(args, registry)
+
+
+def fixture_submission(args, registry) -> int:
+    """The walking skeleton: declared synthetic pages, no gate, sealed as such."""
+    fixture_root = declared_synthetic_fixture_root(args.fixture_root)
+    fixture = load_fixture(str(fixture_root))
+    scenario_for(fixture, args.scenario)
+    declared = declared_digests(fixture, args.scenario)
+    policy = admission.load_format_policy(Path(args.format_policy))
     bindings = run_config_bindings(registry.config, fixture, args.scenario)
 
     # The door creates the run: it is the first thing that knows what arrived, so
@@ -94,92 +474,147 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         config_digest=bindings["config_digest"],
         adapter_recipes=bindings["adapter_recipes"],
         witness_chairs=bindings["witness_chairs"],
+        ingress=synthetic_fixture_ingress_record(),
     )
+    context = _door_context(tree, fixture, args.scenario, args, registry)
+    sources = [
+        SourceEntry(page["ordinal"], page["path"], declared[page["ordinal"]])
+        for page in fixture["page"]
+    ]
+    admitted = process_sources(
+        context,
+        tree,
+        sources,
+        lambda declared_path: (fixture_root / declared_path).read_bytes(),
+        policy=policy,
+        is_fixture=True,
+    )
+    context.finish(DOOR)
+    require_some_admitted(admitted)
+    return EXIT_COMPLETE
+
+
+def real_submission(args, registry) -> int:
+    """Gate a local folder, then admit its bytes into a run that says it was gated.
+
+    Order matters and is the whole point: the approval is verified, then the
+    storage roots, then the folder is inventoried, then the run is created with the
+    approval sealed into its authority, and only then is a byte published. A
+    missing, stale or damaged approval means nothing was read and nothing exists.
+    """
+    data_policy = gate.load_policy(Path(args.data_gate_policy))
+    if args.approval_record is None:
+        gate.enforce(is_fixture=False, approval=None, policy=data_policy)
+    approval, reference = gate.read_external_approval(Path(args.approval_record), data_policy)
+
+    roots = gate.approved_storage_roots(data_policy)
+    gate.require_approved_storage_location(Path(args.submission_folder), roots, "submitted folder")
+    gate.require_approved_storage_location(Path(args.run_root), roots, "run root")
+
+    format_policy = admission.load_format_policy(Path(args.format_policy))
+    found = inventory.read_submission(Path(args.submission_folder), max_bytes=MAX_SOURCE_BYTES)
+    if not found:
+        raise ContractError(
+            "the submit door found no files to admit; an empty folder is a loud failure, "
+            "never a green run with no output (harvest #3)"
+        )
+    bytes_by_path = {source.relative_path: source.data for source in found}
+
+    def read_bytes(relative_path: str) -> bytes:
+        data = bytes_by_path.get(relative_path)
+        if data is None:
+            # The inventory kept an exact digest but not the bytes: the source is
+            # past the admission size limit. Raised as an OSError so it reaches the
+            # one place that turns a read failure into a named refusal.
+            raise OSError(f"source exceeds the {MAX_SOURCE_BYTES}-byte admission limit")
+        return data
+
+    sources = expand_sources(
+        [{"relative_path": source.relative_path, "sha256": source.sha256} for source in found],
+        read_bytes,
+        format_policy,
+    )
+    bindings = _real_bindings(registry.config, found, data_policy, reference, format_policy)
+    tree = RunTree.create(
+        Path(args.run_root),
+        args.run_id,
+        source_manifest=[
+            {
+                "relative_path": source.declared_path,
+                "sha256": source.declared_sha256,
+                "ordinal": source.ordinal,
+            }
+            for source in sources
+        ],
+        config_digest=bindings["config_digest"],
+        adapter_recipes=bindings["adapter_recipes"],
+        witness_chairs=bindings["witness_chairs"],
+        ingress=approval_gated_real_ingress_record(gate.policy_hash(data_policy), reference),
+    )
+    stored, _ = tree.write_approval_record(approval)
+    if stored.to_record() != reference.to_record():
+        raise ApprovalRefusal(
+            "the data-gate approval changed between verification and storage; the run "
+            "authority names one record and the tree holds another"
+        )
+
+    context = _door_context(tree, {}, "real-submission", args, registry)
+    admitted = process_sources(
+        context,
+        tree,
+        sources,
+        read_bytes,
+        policy=format_policy,
+        is_fixture=False,
+        approval=approval,
+        data_policy=data_policy,
+        approval_reference=stored,
+    )
+    context.finish(DOOR)
+    require_some_admitted(admitted)
+    return EXIT_COMPLETE
+
+
+def _real_bindings(models, found, data_policy, reference, format_policy) -> dict[str, Any]:
+    """The sealed configuration facts for a real submission.
+
+    The source manifest binds the bytes. The configuration digest binds everything
+    else that shaped what the door did: the model roster, the data-handling policy
+    version, the exact approval that admitted the corpus, and the admission list.
+    A run resumed under a different approval or a different admission list is a
+    different run wearing an old name, and `RunTree.create` refuses it before
+    anything is written.
+    """
+    return {
+        "witness_chairs": list(models.witness_chairs),
+        "config_digest": digest_of(
+            {
+                "submission": [
+                    {"relative_path": source.relative_path, "sha256": source.sha256}
+                    for source in found
+                ],
+                "data_gate_policy_hash": gate.policy_hash(data_policy),
+                "data_gate_approval_ref": reference.to_record(),
+                "format_policy": format_policy,
+                "models": models.to_record(),
+            }
+        ),
+        "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
+    }
+
+
+def _door_context(tree: RunTree, fixture: dict, scenario: str, args, registry) -> StageContext:
     run = tree.read_run()
-    context = StageContext(
+    return StageContext(
         tree=tree,
         run=run,
         fixture=fixture,
-        scenario=args.scenario,
+        scenario=scenario,
         stage=DOOR,
         adapter_revision=adapter_recipe_for(run, DOOR),
         args=args,
         registry=registry,
     )
-
-    admitted = 0
-    for page in fixture["page"]:
-        source = fixture_root / page["path"]
-        outcome, reason, digest, data = inspect(source, declared[page["ordinal"]])
-        if outcome == "admitted":
-            # Store the bytes that were actually verified. Reading the file a
-            # second time here would open a window in which the file changed
-            # between the check and the store, leaving an admission whose recorded
-            # digest describes bytes the run does not hold. What is sealed must be
-            # what was inspected.
-            _, published = tree.put_blob(DOOR, data)
-            context.publish(
-                kind="admission",
-                subject_id=f"source-{page['ordinal']}",
-                outcome="admitted",
-                # The admission names the bytes it admitted. Without this the
-                # first handoff would be the one boundary carrying no verifiable
-                # reference, and the boundary test would have to skip it — a
-                # skip-list being precisely how a gap goes unnoticed (#87).
-                inputs=[context.input_ref(published.relative_path)],
-                payload={
-                    "declared_path": page["path"],
-                    "ordinal": page["ordinal"],
-                    "sha256": digest,
-                    "stored_at": published.relative_path,
-                },
-            )
-            admitted += 1
-        else:
-            # Per-file refusal, never per-folder: one unreadable file is refused
-            # alone and named, and the readable pages proceed (harvest #2). The
-            # ordinal travels with the refusal so the page stays reconcilable as
-            # a unit all the way to the Armarium's census.
-            context.publish(
-                kind="admission",
-                subject_id=f"source-{page['ordinal']}",
-                outcome="refused",
-                payload={
-                    "declared_path": page["path"],
-                    "ordinal": page["ordinal"],
-                    "reason": reason,
-                },
-            )
-
-    if admitted == 0:
-        raise ContractError(
-            "the door admitted nothing. An empty or wholly unreadable input set is "
-            "a loud failure, never a green run with no output (harvest #3)"
-        )
-
-    context.finish(DOOR)
-    return EXIT_COMPLETE
-
-
-def inspect(source: Path, declared_sha256: str) -> tuple[str, str, str, bytes]:
-    """Decide one file, and hand back the exact bytes the decision was made on.
-
-    Returning the bytes rather than the caller re-reading them is what makes the
-    decision and the stored evidence describe the same thing.
-    """
-    if not source.exists():
-        return "refused", f"{source} does not exist", "", b""
-    data = source.read_bytes()
-    if not data:
-        return "refused", f"{source} is empty", "", b""
-    if not data.startswith(PNG_SIGNATURE):
-        # By signature, never by extension: a text file renamed .png is exactly
-        # the case the old upload endpoint let through to die deep in a run.
-        return "refused", f"{source} does not carry a PNG signature", "", b""
-    digest = digest_bytes(data)
-    if digest != declared_sha256:
-        return "refused", f"{source} has digest {digest}, not the declared one", digest, b""
-    return "admitted", "", digest, data
 
 
 if __name__ == "__main__":
