@@ -18,7 +18,9 @@ it.
 This matters because the word is everywhere in these files, and a session that boots,
 reads sixty uses of "seat" and reaches for `seat.sh` has been led there by the wording
 rather than by the design. That happened on 2026-08-03 and cost most of a session.
-**Agents run in containers. Read every "seat" below as "the model doing this job".**
+**Agents run wherever the roles table below says they run.** Anything whose subject is
+this repository goes in a container; the three reading roles are host seats and hold no
+shell. Read every "seat" below as "the model doing this job".
 
 ## The two kinds, and the only line that matters
 
