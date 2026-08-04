@@ -50,13 +50,15 @@ from synthetic_sources import (
 # --- sniff -----------------------------------------------------------------------
 
 
-def test_sniff_recognizes_every_format_the_admission_list_can_name():
+def test_sniff_recognizes_every_explicitly_named_format():
     assert sniff(png()) == "png"
     assert sniff(jpeg()) == "jpeg"
     assert sniff(tiff()) == "tiff"
     assert sniff(b"%PDF-1.4\n%...") == "pdf"
     assert sniff(gif()) == "gif"
     assert sniff(heic()) == "heic"
+    assert sniff(struct.pack(">I", 16) + b"ftyp" + b"avif" + b"\x00" * 4) == "avif"
+    assert sniff(struct.pack(">I", 16) + b"ftyp" + b"mif1" + b"\x00" * 4) == "heif"
     assert sniff(b"BM" + b"\x00" * 16) == "bmp"
     assert sniff(b"RIFF\x00\x00\x00\x00WEBP") == "webp"
 

@@ -22,27 +22,16 @@ import pypdfium2 as pdfium
 from admission import RefusalReason
 from image_formats import MAX_DIMENSION, MAX_PIXELS, MAX_PNG_DECODED_BYTES
 from PIL import Image
+from render_config import PdfRenderSettings
 
 PDF_SIGNATURE: Final = b"%PDF-"
 MAX_PAGES: Final = 5_000
-# **`RENDER_DPI` is an unmeasured choice standing in for a measurement, and it
-# should be read as one.** Both lanes picked a number without measuring anything and
-# both said so; 300 is the archival scanning convention and 400 is nearer what "very
-# high resolution" iPhone-to-PDF output actually carries. 400 is sealed here because
-# the cost of the two errors is not symmetric: too much resolution costs disk and
-# render time, too little costs a reading of a faint secretary hand that no later
-# stage can recover, and GOALS 1 says which of those is worse. It should be checked
-# against a real sample once the data-handling gate is approved (GOVERNANCE 9,
-# "prove before scale"), and it is the kind of number that moves after that check.
-RENDER_DPI: Final = 400
 # The floor this module will not render below. A page is capped *downward* toward
 # it rather than refused for being large: a huge legitimate page captured at reduced
 # resolution is a poorly read act, and refusing it outright is a missed one. Only a
 # page whose declared size is degenerate even at the floor refuses.
 MIN_RENDER_DPI: Final = 72
 POINTS_PER_INCH: Final = 72
-RENDER_SCALE: Final = RENDER_DPI / POINTS_PER_INCH
-RENDER_SCALE_RECORD: Final = {"numerator": RENDER_DPI, "denominator": POINTS_PER_INCH}
 RENDER_COLOR_MODE: Final = "RGB"
 RENDER_CODEC: Final = "png"
 RENDER_BACKGROUND: Final = "white"
@@ -75,7 +64,7 @@ class OpenPdf(NamedTuple):
     page_count: int
 
 
-def renderer_recipe() -> dict[str, Any]:
+def renderer_recipe(settings: PdfRenderSettings) -> dict[str, Any]:
     """The complete PDFium recipe bound before a page is ever rasterised.
 
     `dpi` here is the *target*. A page too large to render at it is rendered at the
@@ -87,9 +76,10 @@ def renderer_recipe() -> dict[str, Any]:
         "renderer": "pypdfium2",
         "renderer_version": str(pdfium.PYPDFIUM_INFO),
         "pdfium_version": str(pdfium.PDFIUM_INFO),
-        "dpi": RENDER_DPI,
+        "configured_target_dpi": settings.configured_target_dpi,
+        "dpi": settings.target_dpi,
         "min_dpi": MIN_RENDER_DPI,
-        "scale": dict(RENDER_SCALE_RECORD),
+        "scale": {"numerator": settings.target_dpi, "denominator": POINTS_PER_INCH},
         "output": {"codec": RENDER_CODEC, "color_mode": RENDER_COLOR_MODE},
         "background": RENDER_BACKGROUND,
         "draw_annotations": DRAW_ANNOTATIONS,
@@ -181,7 +171,7 @@ def count_pages(data: bytes) -> int:
         close_document(opened)
 
 
-def render_page(opened: OpenPdf, page_index: int) -> RenderedPage:
+def render_page(opened: OpenPdf, page_index: int, settings: PdfRenderSettings) -> RenderedPage:
     """Paint one complete page once and encode it losslessly as RGB PNG.
 
     The output dimensions are calculated and bounded before PDFium allocates a
@@ -200,7 +190,9 @@ def render_page(opened: OpenPdf, page_index: int) -> RenderedPage:
     try:
         page = opened.document[page_index]
         points_wide, points_high = page.get_size()
-        dpi, expected_width, expected_height = _render_dimensions(points_wide, points_high)
+        dpi, expected_width, expected_height = _render_dimensions(
+            points_wide, points_high, settings.target_dpi
+        )
         bitmap = page.render(
             scale=dpi / POINTS_PER_INCH,
             draw_annots=DRAW_ANNOTATIONS,
@@ -244,7 +236,7 @@ def render_page(opened: OpenPdf, page_index: int) -> RenderedPage:
         width,
         height,
         {
-            **renderer_recipe(),
+            **renderer_recipe(settings),
             "container_page_index": page_index,
             # What this page was *actually* rendered at, which is the target unless
             # the page was too large for it. Without this the sealed record could
@@ -271,7 +263,9 @@ def _close_native_document(document: Any) -> None:
         pass
 
 
-def _render_dimensions(points_wide: float, points_high: float) -> tuple[int, int, int]:
+def _render_dimensions(
+    points_wide: float, points_high: float, target_dpi: int
+) -> tuple[int, int, int]:
     """Choose the whole DPI for one page and the pixel size it will produce.
 
     Capped downward from the target, never upward, and refusing only a page so
@@ -289,10 +283,13 @@ def _render_dimensions(points_wide: float, points_high: float) -> tuple[int, int
     if points_wide <= 0 or points_high <= 0:
         raise PdfRefusal(RefusalReason.CORRUPT, "the PDF page has a zero or negative dimension")
     budget = min(MAX_PIXELS, MAX_PNG_DECODED_BYTES // 3) * 0.99
-    allowed = min(
-        RENDER_SCALE,
-        MAX_DIMENSION / max(points_wide, points_high),
-        (budget / (points_wide * points_high)) ** 0.5,
+    # Keep the configured integer out of floating-point conversion. An arbitrarily
+    # large positive TOML integer must still cap downward to what this page can
+    # hold, not overflow before the code-owned pixel limits get a say.
+    allowed_dpi = min(
+        target_dpi,
+        MAX_DIMENSION * POINTS_PER_INCH / max(points_wide, points_high),
+        (budget / (points_wide * points_high)) ** 0.5 * POINTS_PER_INCH,
     )
     # Rounded down to a whole DPI, and that is not cosmetic. The square root above
     # is a float whose last bit is not guaranteed identical across platforms or
@@ -300,7 +297,7 @@ def _render_dimensions(points_wide: float, points_high: float) -> tuple[int, int
     # pixels, which would make the same page seal a different blob on a different
     # machine. A whole DPI is exactly representable, exactly recordable in a
     # canonical artifact — which carries integers, never floats — and reproducible.
-    dpi = int(allowed * POINTS_PER_INCH)
+    dpi = int(allowed_dpi)
     if dpi < MIN_RENDER_DPI:
         raise PdfRefusal(
             RefusalReason.UNSUPPORTED_VARIANT,

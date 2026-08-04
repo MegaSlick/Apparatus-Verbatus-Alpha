@@ -6,18 +6,18 @@ alarm rather than a policy refusal.  The all-refused-folder check needs a run tr
 and remains in `test_door.py`.
 """
 
-import tomllib
 from io import BytesIO
 
 import image_formats
 import pytest
 from admission import (
     ADMIT_OR_FAN_OUT,
+    FORMAT_ROUTES,
     RENDER_PAGES,
     SNIFFABLE_FORMATS,
     AdmissionOutcome,
-    FormatPolicyRefusal,
     RefusalReason,
+    _refusal_code,
     classify_detected_format,
     duplicate_reason,
     inspect_source,
@@ -25,7 +25,7 @@ from admission import (
     reason,
     reason_code,
 )
-from image_formats import MAX_DIMENSION, MAX_SOURCE_BYTES
+from image_formats import MAX_DIMENSION, MAX_SOURCE_BYTES, FormatRefusal, FormatVerdict
 from PIL import Image
 from synthetic_sources import (
     gif,
@@ -41,7 +41,7 @@ from common.contracts.errors import ContractError
 POLICY = load_format_policy()
 
 
-# --- Decoder routes are configuration, and are checked ----------------------------
+# --- Decoder routes are code-owned and exhaustive --------------------------------
 
 
 def _one_pixel_gif() -> bytes:
@@ -73,94 +73,24 @@ def test_the_shipped_decoder_routes_name_readers_not_formats_to_refuse():
     assert set(POLICY.values()) <= {ADMIT_OR_FAN_OUT, RENDER_PAGES}
 
 
-def test_the_decoder_routes_cover_exactly_the_formats_the_door_can_detect(tmp_path):
-    """A missing route would make a fan-out decision by omission."""
+def test_the_decoder_routes_cover_exactly_the_formats_the_door_can_detect():
+    """The map is derived from the sniffer, so no format can route by omission."""
     assert set(POLICY) == SNIFFABLE_FORMATS
-    short = tmp_path / "short.toml"
-    short.write_text('[format]\npng = "admit-or-fan-out"\n', encoding="utf-8")
-    with pytest.raises(FormatPolicyRefusal, match="Missing"):
-        load_format_policy(short)
+    assert POLICY == FORMAT_ROUTES
 
 
-def test_the_decoder_routes_reject_an_unknown_row_name(tmp_path):
-    rows = _routing_rows()
-    path = tmp_path / "extra.toml"
-    path.write_text(f'[format]\n{rows}\navif = "admit-or-fan-out"\n', encoding="utf-8")
-    with pytest.raises(FormatPolicyRefusal, match="Unknown"):
-        load_format_policy(path)
-
-
-def test_the_decoder_routes_reject_an_action_outside_their_closed_set(tmp_path):
-    rows = _routing_rows(overrides={"png": "maybe"})
-    path = tmp_path / "bad-action.toml"
-    path.write_text(f"[format]\n{rows}\n", encoding="utf-8")
-    with pytest.raises(FormatPolicyRefusal, match="not one of"):
-        load_format_policy(path)
-
-
-def test_a_reader_route_does_not_require_a_bespoke_structural_walker(tmp_path):
+def test_a_reader_route_does_not_require_a_bespoke_structural_walker():
     """A reader gap is an alarm at byte admission, never a load-time format ban.
 
     Every sniffable raster format loads without this module owning a hand-written
     validator for it: HEIC and WebP have no bespoke structural walker here and are
     still routed to a decoder attempt rather than banned when the routing is read.
     """
-    path = tmp_path / "all-raster.toml"
-    path.write_text(f"[format]\n{_routing_rows()}\n", encoding="utf-8")
-    loaded = load_format_policy(path)
+    loaded = load_format_policy()
     assert loaded["pdf"] == RENDER_PAGES
     assert {name: action for name, action in loaded.items() if name != "pdf"} == {
         name: ADMIT_OR_FAN_OUT for name in sorted(SNIFFABLE_FORMATS - {"pdf"})
     }
-
-
-def _routing_rows(overrides: dict[str, str] | None = None) -> str:
-    """The shipped shape of the routing table, with named rows swapped out."""
-    rows = {
-        name: RENDER_PAGES if name == "pdf" else ADMIT_OR_FAN_OUT
-        for name in sorted(SNIFFABLE_FORMATS)
-    }
-    rows.update(overrides or {})
-    return "\n".join(f'{name} = "{action}"' for name, action in sorted(rows.items()))
-
-
-def test_routing_a_raster_format_through_page_rendering_refuses_at_load(tmp_path):
-    """`render-pages` re-encodes unconditionally; no raster format may take it.
-
-    This is the half of the guard that protects the *common* case.  A single-page
-    TIFF routed to `render-pages` would be decoded and re-encoded into new PNG
-    pixels on every run, when its own bytes already seal cleanly — GOVERNANCE 4's
-    immutable Exemplar, spent for nothing.  Refusing the configuration is what makes
-    "a single-page TIFF keeps its own bytes" a property of the door rather than a
-    habit of whoever last edited the file.
-    """
-    path = tmp_path / "tiff-rendered.toml"
-    path.write_text(
-        f"[format]\n{_routing_rows(overrides={'tiff': RENDER_PAGES})}\n", encoding="utf-8"
-    )
-    with pytest.raises(FormatPolicyRefusal, match="always containers of pages"):
-        load_format_policy(path)
-
-
-def test_routing_pdf_away_from_page_rendering_refuses_at_load(tmp_path):
-    """The other half: a PDF handed to a raster decoder paints no page at all."""
-    path = tmp_path / "pdf-rastered.toml"
-    path.write_text(
-        f"[format]\n{_routing_rows(overrides={'pdf': ADMIT_OR_FAN_OUT})}\n", encoding="utf-8"
-    )
-    with pytest.raises(FormatPolicyRefusal, match="always containers of pages"):
-        load_format_policy(path)
-
-
-def test_an_unreadable_admission_list_is_a_failed_check_not_an_empty_one(tmp_path):
-    missing = tmp_path / "nothing-here.toml"
-    with pytest.raises(FormatPolicyRefusal, match="could not be read"):
-        load_format_policy(missing)
-
-
-def test_the_shipped_decoder_routes_parse_as_the_one_table_they_claim_to_be():
-    with open("config/admitted_formats.toml", "rb") as handle:
-        assert set(tomllib.load(handle)) == {"format"}
 
 
 def test_an_unknown_magic_or_handbuilt_missing_route_gets_a_generic_raster_attempt():
@@ -318,24 +248,39 @@ def test_a_reason_outside_the_closed_set_is_refused_when_it_is_read_back():
             reason_code(text)
 
 
-# --- A missing reader is our defect, and says which defect it is -----------------
+def test_format_alarm_severity_is_typed_not_inferred_from_its_message():
+    alarm = FormatRefusal(
+        FormatVerdict.UNSUPPORTED,
+        "corrupt is deliberately the first word of this presentation detail",
+    )
+    alarm.args = ("corrupt presentation text changed independently of its type",)
+
+    assert image_formats.FormatVerdict.UNSUPPORTED is alarm.verdict
+    assert _refusal_code(alarm) is RefusalReason.UNSUPPORTED_VARIANT
 
 
-def test_a_format_with_no_reader_at_all_is_named_as_this_pipeline_s_gap():
-    """HEIC has no decoder in this build, and the refusal says so in those words.
+# --- Installed readers distinguish valid images from damaged containers ----------
 
-    Ruling 2: nothing is rejected, and a failure is either corruption or a broken
-    pipeline. This is the second of those, and the wording has to be the second of
-    those — an iPhone HEIC is an ordinary photograph, and telling Tyrel it is
-    unreadable would be telling him something false about his own file.
-    """
-    outcome = inspect_source(heic(), declared_sha256=None, policy=POLICY)
+
+def test_an_iphone_native_heic_is_decoded_and_admitted():
+    output = BytesIO()
+    Image.new("RGB", (3, 2), (17, 34, 51)).save(output, format="HEIF", lossless=True)
+    data = output.getvalue()
+
+    outcome = inspect_source(data, declared_sha256=None, policy=POLICY)
+
+    assert outcome == AdmissionOutcome("admitted", None, "heif", digest_bytes(data), (3, 2))
+    assert image_formats.sniff(data) == "heic"
+    assert image_formats.has_reader("heic")
+
+
+def test_a_truncated_heic_file_type_box_is_typed_as_corruption():
+    data = (28).to_bytes(4, "big") + heic()[4:]
+    outcome = inspect_source(data, declared_sha256=None, policy=POLICY)
 
     assert outcome.outcome == "refused"
-    assert reason_code(outcome.reason) is RefusalReason.UNSUPPORTED_VARIANT
-    assert "no reader for heic at all yet" in outcome.reason
-    assert "gap in this pipeline rather than anything about this file" in outcome.reason
-    assert not image_formats.has_reader("heic")
+    assert reason_code(outcome.reason) is RefusalReason.CORRUPT
+    assert "file-type box" in outcome.reason
 
 
 def test_a_format_with_a_reader_that_still_fails_is_worded_about_the_bytes():

@@ -25,20 +25,20 @@ its own bytes must keep them (GOVERNANCE 4 — the Exemplar is the immutable sou
 
 from __future__ import annotations
 
-import tomllib
 from enum import Enum
-from pathlib import Path
 from typing import Final, NamedTuple
 
 import image_formats
-from image_formats import MAX_SOURCE_BYTES, FormatRefusal, decode_raster, sniff
+from image_formats import (
+    MAX_SOURCE_BYTES,
+    FormatRefusal,
+    FormatVerdict,
+    decode_raster,
+    sniff,
+)
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
-
-DEFAULT_FORMAT_POLICY_PATH: Final = (
-    Path(__file__).resolve().parents[2] / "config" / "admitted_formats.toml"
-)
 
 # A raster format: decoded, and then admitted as its own unmodified bytes when the
 # decoder reports one frame, or fanned out to one ordinal per frame when it reports
@@ -50,10 +50,6 @@ RENDER_PAGES: Final = "render-pages"
 ALWAYS_A_CONTAINER: Final = frozenset({"pdf"})
 ACTIONS: Final = frozenset({ADMIT_OR_FAN_OUT, RENDER_PAGES})
 SNIFFABLE_FORMATS: Final = image_formats.SNIFFABLE_FORMATS
-
-
-class FormatPolicyRefusal(ContractError):
-    """The decoder-routing configuration cannot be read or covers the wrong set."""
 
 
 class RefusalReason(str, Enum):
@@ -102,46 +98,21 @@ def reason_code(text: object) -> RefusalReason:
         ) from None
 
 
-def load_format_policy(path: Path = DEFAULT_FORMAT_POLICY_PATH) -> dict[str, str]:
-    """Load every named decoder route fresh for each door run."""
-    try:
-        with open(path, "rb") as handle:
-            document = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        raise FormatPolicyRefusal(
-            f"the decoder routing at {path} could not be read: {error}"
-        ) from error
-    table = document.get("format")
-    if set(document) != {"format"} or not isinstance(table, dict):
-        raise FormatPolicyRefusal(f"{path} is not a single [format] table of format-name rows")
-    named = set(table)
-    if named != SNIFFABLE_FORMATS:
-        missing = sorted(SNIFFABLE_FORMATS - named)
-        unknown = sorted(named - SNIFFABLE_FORMATS)
-        raise FormatPolicyRefusal(
-            f"{path} must name exactly the formats the door can sniff. "
-            f"Missing: {missing}. Unknown: {unknown}."
-        )
-    for format_name, action in sorted(table.items()):
-        if action not in ACTIONS:
-            raise FormatPolicyRefusal(
-                f"{path} gives format {format_name!r} the action {action!r}, "
-                f"which is not one of {sorted(ACTIONS)}"
-            )
-        if (action == RENDER_PAGES) != (format_name in ALWAYS_A_CONTAINER):
-            # Both directions are configuration errors with real costs, so both
-            # refuse rather than being honoured.  A raster format routed through
-            # `render-pages` would re-encode every ordinary one-frame file into
-            # new pixels nobody asked for; a container routed the other way would
-            # be handed to a raster decoder that cannot paint its pages at all.
-            raise FormatPolicyRefusal(
-                f"{path} gives format {format_name!r} the action {action!r}. "
-                f"{sorted(ALWAYS_A_CONTAINER)} are always containers of pages and take "
-                f"{RENDER_PAGES!r}; every other format is usually one image and takes "
-                f"{ADMIT_OR_FAN_OUT!r}, which fans it out only when its decoder reports "
-                "more than one frame"
-            )
-    return dict(sorted(table.items()))
+FORMAT_ROUTES: Final = {
+    format_name: RENDER_PAGES if format_name in ALWAYS_A_CONTAINER else ADMIT_OR_FAN_OUT
+    for format_name in sorted(SNIFFABLE_FORMATS)
+}
+
+
+def load_format_policy() -> dict[str, str]:
+    """Return the complete code-owned routing map.
+
+    Ruling 2 leaves no operator choice here: every raster is decoded and fanned out
+    when needed, while PDF is always painted page by page. Deriving the map from the
+    sniffer means a new named format cannot be omitted, and keeping it in code avoids
+    presenting the one legal routing as a configurable decision.
+    """
+    return dict(FORMAT_ROUTES)
 
 
 def classify_detected_format(detected: str | None, policy: dict[str, str]) -> str:
@@ -219,10 +190,9 @@ def inspect_source(
 
 
 def _refusal_code(error: FormatRefusal) -> RefusalReason:
-    text = str(error)
-    if text.startswith("unrecognized"):
+    if error.verdict is FormatVerdict.UNRECOGNIZED:
         return RefusalReason.UNRECOGNIZED_FORMAT
-    if text.startswith("unsupported"):
+    if error.verdict is FormatVerdict.UNSUPPORTED:
         return RefusalReason.UNSUPPORTED_VARIANT
     return RefusalReason.CORRUPT
 

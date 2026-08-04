@@ -55,6 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import admission  # noqa: E402
 import pdf_render  # noqa: E402
+import render_config  # noqa: E402
 from admission import RefusalReason  # noqa: E402
 from image_formats import (  # noqa: E402
     MAX_DIMENSION,
@@ -142,8 +143,11 @@ def decide(
     data: bytes,
     source: SourceEntry,
     policy: dict[str, str],
+    pdf_settings: render_config.PdfRenderSettings | None = None,
 ) -> _Decision:
     """Decide one raster or one source-container page by its actual bytes."""
+    if pdf_settings is None:
+        pdf_settings = render_config.load_pdf_render_settings(minimum_dpi=pdf_render.MIN_RENDER_DPI)
     verdict = admission.classify_detected_format(sniff(data), policy)
     whole_digest = digest_bytes(data)
     if source.declared_sha256 is not None and whole_digest != source.declared_sha256:
@@ -185,7 +189,7 @@ def decide(
         if detected == "pdf":
             opened = pdf_render.open_document(data)
             try:
-                rendered = pdf_render.render_page(opened, source.container_page_index)
+                rendered = pdf_render.render_page(opened, source.container_page_index, pdf_settings)
             finally:
                 pdf_render.close_document(opened)
             page_bytes = rendered.png_bytes
@@ -328,6 +332,7 @@ def process_sources(
     read_bytes: Callable[[str], bytes],
     *,
     policy: dict[str, str],
+    pdf_settings: render_config.PdfRenderSettings | None = None,
     data_policy: dict[str, Any] | None = None,
 ) -> int:
     """Admit or refuse every declared source. Returns the count admitted.
@@ -348,6 +353,8 @@ def process_sources(
     mode, _ingress_hash, approval_reference = parse_data_gate_ingress_record(
         context.run.get("ingress")
     )
+    if pdf_settings is None:
+        pdf_settings = render_config.load_pdf_render_settings(minimum_dpi=pdf_render.MIN_RENDER_DPI)
     if mode == APPROVAL_GATED_REAL_INGRESS:
         if data_policy is None:
             gate.enforce(approval=None, policy=None)
@@ -415,7 +422,7 @@ def process_sources(
                 approval_reference=approval_reference,
             )
             continue
-        decision = decide(data, source, policy)
+        decision = decide(data, source, policy, pdf_settings)
 
         if decision.outcome == "refused":
             _publish(
@@ -678,12 +685,18 @@ def fixture_submission(args, registry) -> int:
     fixture = load_fixture(str(fixture_root))
     scenario_for(fixture, args.scenario)
     declared = declared_digests(fixture, args.scenario)
-    policy = admission.load_format_policy(Path(args.format_policy))
+    policy = admission.load_format_policy()
+    pdf_settings = render_config.load_pdf_render_settings(
+        Path(args.pdf_render_config),
+        target_override=args.pdf_target_dpi,
+        minimum_dpi=pdf_render.MIN_RENDER_DPI,
+    )
     bindings = run_config_bindings(
         registry.config,
         fixture,
         args.scenario,
-        format_policy_path=args.format_policy,
+        pdf_render_config_path=args.pdf_render_config,
+        pdf_target_dpi=args.pdf_target_dpi,
     )
 
     # The door creates the run: it is the first thing that knows what arrived, so
@@ -705,6 +718,7 @@ def fixture_submission(args, registry) -> int:
         adapter_recipes=bindings["adapter_recipes"],
         witness_chairs=bindings["witness_chairs"],
         ingress=synthetic_fixture_ingress_record(),
+        render_settings={"pdf": pdf_settings.to_record()},
     )
     context = _door_context(tree, fixture, args.scenario, args, registry)
     sources = [
@@ -717,6 +731,7 @@ def fixture_submission(args, registry) -> int:
         sources,
         lambda declared_path: (fixture_root / declared_path).read_bytes(),
         policy=policy,
+        pdf_settings=pdf_settings,
     )
     refusal_report = publish_refusal_report(context)
     context.finish(DOOR)
@@ -770,7 +785,12 @@ def real_submission(args, registry) -> int:
             "approval record supplied to the door"
         )
 
-    format_policy = admission.load_format_policy(Path(args.format_policy))
+    format_policy = admission.load_format_policy()
+    pdf_settings = render_config.load_pdf_render_settings(
+        Path(args.pdf_render_config),
+        target_override=args.pdf_target_dpi,
+        minimum_dpi=pdf_render.MIN_RENDER_DPI,
+    )
     found = inventory.read_submission(submission_folder, max_bytes=MAX_SOURCE_BYTES)
     found_paths = {source.relative_path for source in found}
     declared_paths = {row["relative_path"] for row in ledger["files"]}
@@ -809,7 +829,9 @@ def real_submission(args, registry) -> int:
         read_bytes,
         format_policy,
     )
-    bindings = _real_bindings(registry.config, ledger, data_policy, reference, format_policy)
+    bindings = _real_bindings(
+        registry.config, ledger, data_policy, reference, format_policy, pdf_settings
+    )
     tree = RunTree.create(
         run_root,
         args.run_id,
@@ -828,6 +850,7 @@ def real_submission(args, registry) -> int:
         adapter_recipes=bindings["adapter_recipes"],
         witness_chairs=bindings["witness_chairs"],
         ingress=approval_gated_real_ingress_record(gate.policy_hash(data_policy), reference),
+        render_settings={"pdf": pdf_settings.to_record()},
     )
     stored, _ = tree.write_approval_record(approval)
     if stored.to_record() != reference.to_record():
@@ -843,6 +866,7 @@ def real_submission(args, registry) -> int:
         sources,
         read_bytes,
         policy=format_policy,
+        pdf_settings=pdf_settings,
         data_policy=data_policy,
     )
     refusal_report = publish_refusal_report(context)
@@ -863,7 +887,9 @@ def _announce_refusal_report(tree: RunTree, refusal_report: str | None) -> None:
     )
 
 
-def _real_bindings(models, ledger, data_policy, reference, format_policy) -> dict[str, Any]:
+def _real_bindings(
+    models, ledger, data_policy, reference, format_policy, pdf_settings
+) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
     The source manifest binds the bytes. The configuration digest binds everything
@@ -889,7 +915,7 @@ def _real_bindings(models, ledger, data_policy, reference, format_policy) -> dic
                 "data_gate_policy_hash": gate.policy_hash(data_policy),
                 "data_gate_approval_ref": reference.to_record(),
                 "format_policy": format_policy,
-                "door_execution_recipe": _door_execution_recipe(),
+                "door_execution_recipe": _door_execution_recipe(pdf_settings),
                 "models": models.to_record(),
             }
         ),
@@ -897,10 +923,10 @@ def _real_bindings(models, ledger, data_policy, reference, format_policy) -> dic
     }
 
 
-def _door_execution_recipe() -> dict[str, Any]:
+def _door_execution_recipe(pdf_settings) -> dict[str, Any]:
     """Facts that change page admission or pixels, sealed before real writes."""
     return {
-        "pdf": pdf_render.renderer_recipe(),
+        "pdf": pdf_render.renderer_recipe(pdf_settings),
         "raster": raster_renderer_recipe(),
         "limits": {
             "max_source_bytes": MAX_SOURCE_BYTES,

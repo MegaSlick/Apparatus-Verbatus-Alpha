@@ -375,7 +375,7 @@ def _checked_admissions(
             raise ContractError(f"door admission for ordinal {ordinal} has a derived-id mismatch")
 
         if admission["outcome"] == "admitted":
-            blob_ref = _verify_admitted_blob(tree, admission, source)
+            blob_ref = _verify_admitted_blob(tree, run, admission, source)
         elif admission["outcome"] == "refused":
             _verify_refusal(admission)
             blob_ref = None
@@ -433,7 +433,7 @@ def _verify_admission_context(
 
 
 def _verify_admitted_blob(
-    tree: RunTree, admission: dict[str, Any], source: dict[str, Any]
+    tree: RunTree, run: dict[str, Any], admission: dict[str, Any], source: dict[str, Any]
 ) -> dict[str, str]:
     """Prove the sealed bytes are the bytes the door said it admitted.
 
@@ -494,6 +494,7 @@ def _verify_admitted_blob(
             rendered_from["render_contract"],
             index,
             payload,
+            run,
             container_format=container_format,
         )
     if len(admission["inputs"]) != 1:
@@ -523,6 +524,7 @@ def _verify_render_contract(
     contract: Any,
     page_index: int,
     payload: dict[str, Any],
+    run: dict[str, Any],
     *,
     container_format: str,
 ) -> None:
@@ -553,6 +555,7 @@ def _verify_render_contract(
             raise ContractError("only a PDF container may claim the PDFium pixel renderer")
         required_pdf = required | {
             "pdfium_version",
+            "configured_target_dpi",
             "dpi",
             "min_dpi",
             "effective_dpi",
@@ -563,17 +566,32 @@ def _verify_render_contract(
         }
         if set(contract) != required_pdf:
             raise ContractError("a PDF page's render contract omits or adds pixel-affecting facts")
-        # These numbers are written out rather than imported from `pdf_render`.
-        # That is the point of the check: the Exemplar is confirming what the door
-        # claims it did, and a check that reads its expectation from the module it
-        # is checking would agree with any change that module ever makes. Changing
-        # the render recipe has to change this line too, deliberately.
+        settings = run.get("render_settings")
+        if not isinstance(settings, dict) or set(settings) != {"pdf"}:
+            raise ContractError("the run authority carries no unique PDF render setting")
+        pdf_settings = settings["pdf"]
+        if not isinstance(pdf_settings, dict) or set(pdf_settings) != {
+            "configured_target_dpi",
+            "target_dpi",
+            "minimum_dpi",
+        }:
+            raise ContractError("the run authority carries an incomplete PDF render setting")
+        configured = pdf_settings["configured_target_dpi"]
+        target = pdf_settings["target_dpi"]
+        minimum = pdf_settings["minimum_dpi"]
         if (
             not isinstance(contract["pdfium_version"], str)
             or not contract["pdfium_version"]
-            or contract["dpi"] != 400
-            or contract["min_dpi"] != 72
-            or contract["scale"] != {"numerator": 400, "denominator": 72}
+            or any(
+                not isinstance(value, int) or isinstance(value, bool) or value <= 0
+                for value in (configured, target, minimum)
+            )
+            or target != max(configured, minimum)
+            or minimum != 72
+            or contract["configured_target_dpi"] != configured
+            or contract["dpi"] != target
+            or contract["min_dpi"] != minimum
+            or contract["scale"] != {"numerator": target, "denominator": 72}
             or contract["background"] != "white"
             or contract["draw_annotations"] is not True
             or contract["draw_forms"] is not True
@@ -595,10 +613,16 @@ def _verify_render_contract(
     elif contract["renderer"] == "Pillow":
         if container_format == "pdf":
             raise ContractError("a PDF container must use the PDFium whole-page renderer")
-        if set(contract) != required:
+        required_raster = required | {"pillow_heif_version", "libheif_version"}
+        if set(contract) != required_raster:
             raise ContractError(
                 "a raster page's render contract omits or adds pixel-affecting facts"
             )
+        if any(
+            not isinstance(contract[field], str) or not contract[field]
+            for field in ("pillow_heif_version", "libheif_version")
+        ):
+            raise ContractError("a raster page's render contract names no HEIF decoder version")
     else:
         raise ContractError("a rendered page's contract names an unrecognized renderer")
     geometry = payload.get("geometry")

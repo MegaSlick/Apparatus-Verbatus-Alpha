@@ -13,6 +13,7 @@ import pdf_render
 import pypdfium2
 import pypdfium2.internal
 import pytest
+import render_config
 from admission import RefusalReason
 from image_formats import MAX_DIMENSION, MAX_PIXELS, validate_png
 from pdf_render import MAX_PAGES, PdfRefusal, close_document, count_pages, open_document
@@ -26,12 +27,15 @@ from synthetic_sources import (
     two_page_pdf,
 )
 
+PDF_SETTINGS = render_config.load_pdf_render_settings(minimum_dpi=pdf_render.MIN_RENDER_DPI)
+RENDER_SCALE = PDF_SETTINGS.target_dpi / pdf_render.POINTS_PER_INCH
+
 
 def render_page(data: bytes, page_index: int = 0) -> pdf_render.RenderedPage:
     """Open, render and close one synthetic document like the door owns it."""
     opened = open_document(data)
     try:
-        return pdf_render.render_page(opened, page_index)
+        return pdf_render.render_page(opened, page_index, PDF_SETTINGS)
     finally:
         close_document(opened)
 
@@ -44,7 +48,7 @@ def rendered_image(page: pdf_render.RenderedPage) -> Image.Image:
 
 def point_box(left: int, bottom: int, right: int, top: int, *, page_height: int = 72):
     """Convert a PDF-point region to an enclosing top-left-origin pixel box."""
-    scale = pdf_render.RENDER_SCALE
+    scale = RENDER_SCALE
     return (
         int(left * scale),
         int((page_height - top) * scale),
@@ -68,15 +72,15 @@ def test_page_count_drives_fan_out_and_each_page_paints_distinct_pixels():
     opened = open_document(data)
     try:
         assert opened.page_count == 2
-        first = pdf_render.render_page(opened, 0)
-        second = pdf_render.render_page(opened, 1)
+        first = pdf_render.render_page(opened, 0, PDF_SETTINGS)
+        second = pdf_render.render_page(opened, 1, PDF_SETTINGS)
     finally:
         close_document(opened)
 
     assert first.png_bytes != second.png_bytes
     assert (first.width, first.height) == (
-        ceil(4 * pdf_render.RENDER_SCALE),
-        ceil(3 * pdf_render.RENDER_SCALE),
+        ceil(4 * RENDER_SCALE),
+        ceil(3 * RENDER_SCALE),
     )
     assert validate_png(first.png_bytes).width == first.width
     assert validate_png(second.png_bytes).height == second.height
@@ -88,8 +92,8 @@ def test_text_beside_a_separately_painted_image_survives_the_same_page_render():
     image = rendered_image(page)
 
     canvas = (
-        ceil(144 * pdf_render.RENDER_SCALE),
-        ceil(72 * pdf_render.RENDER_SCALE),
+        ceil(144 * RENDER_SCALE),
+        ceil(72 * RENDER_SCALE),
     )
     assert image.size == canvas, "the sealed pixels are the page canvas, not the 4x4 XObject"
     assert dark_pixels(image, point_box(8, 12, 48, 52)) > 20_000
@@ -117,8 +121,8 @@ def test_a_vector_only_page_is_painted_in_its_declared_colour():
     page = render_page(content_page_pdf(b"1 0 0 rg 20 10 60 30 re f"))
     image = rendered_image(page)
 
-    center_x = int(50 * pdf_render.RENDER_SCALE)
-    center_y = int((72 - 25) * pdf_render.RENDER_SCALE)
+    center_x = int(50 * RENDER_SCALE)
+    center_y = int((72 - 25) * RENDER_SCALE)
     red, green, blue = image.getpixel((center_x, center_y))
     assert red > 240 and green < 20 and blue < 20
 
@@ -133,12 +137,8 @@ def test_multiple_image_xobjects_can_both_contribute_to_one_page():
     )
     image = rendered_image(page)
 
-    left = image.getpixel(
-        (int(25 * pdf_render.RENDER_SCALE), int((72 - 25) * pdf_render.RENDER_SCALE))
-    )
-    right = image.getpixel(
-        (int(105 * pdf_render.RENDER_SCALE), int((72 - 25) * pdf_render.RENDER_SCALE))
-    )
+    left = image.getpixel((int(25 * RENDER_SCALE), int((72 - 25) * RENDER_SCALE)))
+    right = image.getpixel((int(105 * RENDER_SCALE), int((72 - 25) * RENDER_SCALE)))
     assert max(left) < 10
     assert all(160 <= channel <= 200 for channel in right)
 
@@ -150,8 +150,8 @@ def test_normal_page_rotation_is_rendered_and_swaps_the_canvas_dimensions():
     image = rendered_image(page)
 
     assert (page.width, page.height) == (
-        ceil(72 * pdf_render.RENDER_SCALE),
-        ceil(144 * pdf_render.RENDER_SCALE),
+        ceil(72 * RENDER_SCALE),
+        ceil(144 * RENDER_SCALE),
     )
     assert (
         sum(
@@ -170,8 +170,8 @@ def test_rendering_twice_from_one_open_document_is_byte_deterministic():
     )
     opened = open_document(data)
     try:
-        first = pdf_render.render_page(opened, 0)
-        second = pdf_render.render_page(opened, 0)
+        first = pdf_render.render_page(opened, 0, PDF_SETTINGS)
+        second = pdf_render.render_page(opened, 0, PDF_SETTINGS)
     finally:
         close_document(opened)
 
@@ -186,10 +186,11 @@ def test_the_render_contract_records_every_pixel_affecting_choice():
     assert contract["renderer_version"]
     assert contract["pdfium_version"]
     assert contract["container_page_index"] == 0
-    assert contract["dpi"] == pdf_render.RENDER_DPI == 400
+    assert contract["configured_target_dpi"] == 400
+    assert contract["dpi"] == PDF_SETTINGS.target_dpi == 400
     assert contract["min_dpi"] == pdf_render.MIN_RENDER_DPI == 72
     assert contract["effective_dpi"] == 400
-    assert contract["scale"] == pdf_render.RENDER_SCALE_RECORD
+    assert contract["scale"] == {"numerator": 400, "denominator": 72}
     assert contract["output"] == {"codec": "png", "color_mode": "RGB"}
     assert contract["background"] == "white"
     assert contract["draw_annotations"] is True
@@ -220,10 +221,18 @@ def test_a_large_legitimate_page_renders_at_reduced_resolution_rather_than_refus
     # project's pixel bounds.
     rendered = render_page(content_page_pdf(b"", width=2384, height=3370))
 
-    assert 72 <= rendered.contract["effective_dpi"] < pdf_render.RENDER_DPI
+    assert 72 <= rendered.contract["effective_dpi"] < PDF_SETTINGS.target_dpi
     assert rendered.width * rendered.height <= MAX_PIXELS
     assert max(rendered.width, rendered.height) <= MAX_DIMENSION
     assert validate_png(rendered.png_bytes).width == rendered.width
+
+
+def test_an_arbitrarily_large_configured_target_still_caps_before_float_conversion():
+    dpi, width, height = pdf_render._render_dimensions(72, 72, 10**1_000)
+
+    assert dpi < 10**1_000
+    assert width * height <= MAX_PIXELS
+    assert max(width, height) <= MAX_DIMENSION
 
 
 @pytest.mark.parametrize(
@@ -232,7 +241,7 @@ def test_a_large_legitimate_page_renders_at_reduced_resolution_rather_than_refus
 )
 def test_a_non_positive_page_dimension_is_a_corrupt_alarm(width: int, height: int):
     with pytest.raises(PdfRefusal) as caught:
-        pdf_render._render_dimensions(width, height)
+        pdf_render._render_dimensions(width, height, PDF_SETTINGS.target_dpi)
     assert caught.value.reason is RefusalReason.CORRUPT
 
 
@@ -267,7 +276,7 @@ def test_invalid_page_indexes_are_named_alarms(page_index):
     opened = open_document(data)
     try:
         with pytest.raises(PdfRefusal) as caught:
-            pdf_render.render_page(opened, page_index)
+            pdf_render.render_page(opened, page_index, PDF_SETTINGS)
     finally:
         close_document(opened)
     assert caught.value.reason is RefusalReason.CORRUPT

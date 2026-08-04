@@ -84,9 +84,11 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.fixture_root),
         "--models-config",
         str(args.models_config),
-        "--format-policy",
-        str(args.format_policy),
+        "--pdf-render-config",
+        str(args.pdf_render_config),
     ]
+    if args.pdf_target_dpi is not None:
+        command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
     for key, value in extra.items():
         command += [f"--{key.replace('_', '-')}", str(value)]
 
@@ -129,9 +131,15 @@ def main() -> int:
         help="the sealed model-chair roster and recipes for this run",
     )
     parser.add_argument(
-        "--format-policy",
-        default="config/admitted_formats.toml",
-        help="the Exemplar decoder-routing file bound into this fixture run",
+        "--pdf-render-config",
+        default="config/pdf_render.toml",
+        help="the default whole-page PDF rasterisation target for this run",
+    )
+    parser.add_argument(
+        "--pdf-target-dpi",
+        type=int,
+        default=None,
+        help="override the configured PDF target for this run only",
     )
     args = parser.parse_args()
 

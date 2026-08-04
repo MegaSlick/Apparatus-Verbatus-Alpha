@@ -37,13 +37,7 @@ EXIT_COMPLETE = 0
 EXIT_FATAL = 2
 EXIT_HELD = 3
 
-# The Exemplar decoder routing shapes the first stage's output and therefore the
-# entire fixture run. Keep the exact bytes in every fixture-stage configuration
-# binding, so changing a valid route table cannot reuse a run id before artifacts
-# discover the disagreement one write too late.
-DEFAULT_FORMAT_POLICY_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "admitted_formats.toml"
-)
+DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "pdf_render.toml"
 
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
@@ -209,7 +203,8 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--scenario", default="happy")
     parser.add_argument("--fixture-root", default="proof")
     parser.add_argument("--models-config", default="config/models.toml")
-    parser.add_argument("--format-policy", default=str(DEFAULT_FORMAT_POLICY_PATH))
+    parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
+    parser.add_argument("--pdf-target-dpi", type=int, default=None)
     parser.add_argument("--operation", default="initial")
     parser.add_argument("--act", default=None, help="one act id, for a recovery operation")
     return parser
@@ -240,7 +235,8 @@ def run_config_bindings(
     fixture: dict[str, Any],
     scenario: str,
     *,
-    format_policy_path: str | Path = DEFAULT_FORMAT_POLICY_PATH,
+    pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
+    pdf_target_dpi: int | None = None,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -259,10 +255,10 @@ def run_config_bindings(
     refusal is not the sealed-tree guarantee spec 01 landed.
     """
     try:
-        format_policy_digest = digest_bytes(Path(format_policy_path).read_bytes())
+        pdf_render_config_digest = digest_bytes(Path(pdf_render_config_path).read_bytes())
     except OSError as error:
         raise ContractError(
-            f"the Exemplar format-policy binding at {format_policy_path} could not be read"
+            f"the PDF render configuration binding at {pdf_render_config_path} could not be read"
         ) from error
     return {
         "witness_chairs": list(models.witness_chairs),
@@ -271,7 +267,8 @@ def run_config_bindings(
                 "fixture": fixture,
                 "scenario": scenario,
                 "models": models.to_record(),
-                "format_policy_sha256": format_policy_digest,
+                "pdf_render_config_sha256": pdf_render_config_digest,
+                "pdf_target_dpi_override": pdf_target_dpi,
             }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
@@ -561,7 +558,8 @@ def open_context(
         registry.config,
         fixture,
         args.scenario,
-        format_policy_path=args.format_policy,
+        pdf_render_config_path=args.pdf_render_config,
+        pdf_target_dpi=args.pdf_target_dpi,
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()

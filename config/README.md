@@ -6,19 +6,18 @@ The knobs. One question per planned file, each answerable without reading code.
 |---|---|
 | `models.toml` | which model and revision fills each numbered role |
 | `recovery.toml` | how many times rework may be asked for before review |
-| `admitted_formats.toml` | how byte-detected image formats are decoded or page-rendered |
+| `pdf_render.toml` | what whole-page PDF resolution the next run targets |
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
 | `spend.toml` | money caps |
 | `formats.toml` | which formats the Armarium writes |
 
-`admitted_formats.toml` is decoder routing, not an admission list. Tyrel ruled that
-an uncorrupted image is never declined by policy: an `admit-or-fan-out` row gets a
-decoder attempt and is sealed as its own unmodified bytes when the decoder reports
-one frame, or fanned out to one ordinal per frame when it reports more; a
-`render-pages` row is always a document of pages and every page is painted once at
-the door. The file names exactly the formats the door can sniff and has no `refuse`
-action. A format/variant the installed readers cannot yet decode is a named pipeline
-alarm carried with its filename, rather than a routine rejection.
+Decoder routing is deliberately not configuration. Tyrel ruled that an uncorrupted
+image is never declined by policy, and there is exactly one valid route map: every
+raster gets a decoder attempt and is sealed unchanged or fanned out when it has more
+than one frame; PDF is always painted page by page. `admission.py` derives that map
+from the formats the byte sniffer can name, so a new format cannot route by omission.
+A format/variant the installed readers cannot yet decode is a named pipeline alarm
+carried with its filename, rather than a routine rejection.
 
 PDF alone uses `render-pages`, and the loader refuses any other format given that
 action. PDF is full-page PDFium rasterisation, which paints text, vectors,
@@ -27,6 +26,14 @@ annotations, and images together; it is never embedded-image extraction. TIFF is
 multi-page one — including the LZW, Deflate, PackBits and CCITT compressions real
 flatbed scanners produce — fans out to one ordinal per page. JPEG suffix bytes after
 EOI are not called corruption.
+
+`pdf_render.toml` supplies the documented default target for whole-page PDF
+rasterisation. `--pdf-target-dpi` overrides it for one run. The run authority records
+the configured target and the code-bounded target, and every rendered PDF page records
+those beside its `effective_dpi`. The 72-DPI floor, pixel ceiling, and decoded-byte
+ceiling remain in code; configuration cannot weaken them. The default is **unmeasured**:
+making it adjustable does not prove it suitable, and it should be checked against a
+real sample only after the data-handling gate is approved (GOVERNANCE 9).
 
 `data_handling_policy.json` is the version an approval record names. Its hash is the
 canonical digest of its own content, so editing one character of it invalidates

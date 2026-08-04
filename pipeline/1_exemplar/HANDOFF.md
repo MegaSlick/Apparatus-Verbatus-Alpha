@@ -39,7 +39,7 @@ same core source rows but not a real filename ledger.
 
 ## Decoder routes and alarms
 
-`config/admitted_formats.toml` names how a detected format is read, never a policy
+`admission.py` derives how each detected format is read, never a policy
 decision to decline it:
 
 - `admit-or-fan-out`: Pillow decodes the source pixels and a one-frame raster is
@@ -47,7 +47,7 @@ decision to decline it:
   frames, every frame fans out to its own ordinal and is sealed as one lossless PNG
   page. This is every raster format, TIFF included.
 - `render-pages`: a format that is always a document of pages — PDF alone, enforced
-  when the routing is loaded. The door assigns stable ordinals and seals one
+  by the code-owned route. The door assigns stable ordinals and seals one
   lossless PNG per page.
 
 PNG, JPEG, TIFF, PDF, GIF, BMP, WebP, HEIC and an unknown signature all receive a
@@ -58,26 +58,23 @@ after EOI are retained. TIFF, including ordinary multi-page TIFF, BigTIFF, and t
 LZW, Deflate, PackBits and CCITT compressions flatbed scanners produce, fans out; a
 single-page TIFF keeps its own bytes and is never re-encoded.
 
-**The one named format gap is HEIC**, and it is ours, not a property of anyone's
-file. This build has no HEIC decoder installed at all, so an iPhone photograph in
-its native format gets an ordinal, a filename, and an `unsupported-variant` alarm
-saying in those words that this pipeline owes it a reader. Closing it is installing
-a decoder, not writing one. The alarm distinguishes that case from a format we *do*
-have a reader for that still could not open a particular file — a different fact,
-and a different thing to do about it.
+HEIC/HEIF is decoded by the pinned `pillow-heif` plugin, including an iPhone-native
+single-frame source that seals its original bytes unchanged. AVIF remains Pillow's
+native decoder route and is named separately from HEIC; generic HEIF brands are not
+mislabelled as either codec. Decoder and bundled libheif versions are bound into the
+Door execution recipe, and downstream crop decoding registers the same plugin.
 
 PDF is rendered as a whole page with PDFium at the door. Its visible content stream,
 text, vectors, images, rotation, annotations, and initialized form appearances are
 painted into the sealed pixels; embedded-image extraction is not used.
 
-The render targets **400 DPI**, capped downward to a whole DPI — never below 72 —
-when a page's declared size would otherwise exceed the admission pixel bounds, so a
-large page is captured at reduced resolution rather than refused. Each page's
-`render_contract` records the DPI it was *actually* rendered at alongside the
-target, because the target alone does not describe a capped page's pixels. **400 is
-an unmeasured choice standing in for a measurement**: no real sample has been
-rendered at either 400 or 300, and the number should be checked against Tyrel's own
-iPhone-to-PDF output once the data-handling gate is approved.
+`config/pdf_render.toml` supplies the **400-DPI default**, and
+`--pdf-target-dpi` overrides it for one run. The chosen value is sealed explicitly
+in `run.json`; each page's `render_contract` records the configured target, the
+code-bounded target, and the whole `effective_dpi` actually used. Pixel/byte caps and
+the 72-DPI floor stay in code. **400 remains unmeasured**: configuration makes it
+adjustable, not proven, and it should be checked against Tyrel's approved real sample
+under GOVERNANCE 9 before scale.
 
 ## Door `kind="admission"`
 

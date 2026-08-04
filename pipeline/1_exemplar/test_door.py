@@ -446,60 +446,6 @@ def test_expansion_ordinals_are_stable_by_filename_and_page_index():
     ]
 
 
-def test_a_fixture_run_id_refuses_changed_decoder_routing_before_artifacts_change(
-    tmp_path, monkeypatch
-):
-    """The exact routing bytes are bound into the run, and a resume checks them.
-
-    The change made here is a comment, and that is the point rather than a
-    weakness. `run_config_bindings` digests the routing *file's bytes*, not the
-    table parsed out of them, so any edit at all makes a resumed run a different
-    run. That is the conservative reading and the right one: a comment in this file
-    is where the reason for a route is written down, and a resume that silently
-    accepted a rewritten justification would be accepting a decision nobody
-    recorded.
-
-    It also has to be a comment now. With `refuse` deleted and `render-pages`
-    restricted to PDF when the routing loads, exactly one routing *table* is valid,
-    so rerouting a format — what this test used to do — no longer reaches the
-    config-digest check at all; it refuses one step earlier, at the load, which
-    `test_admission.py` covers directly.
-    """
-    run_root = tmp_path / "runs"
-    base_args = [
-        "door.py",
-        "--run-root",
-        str(run_root),
-        "--run-id",
-        "routing-bound",
-        "--fixture-root",
-        str(ROOT / "proof"),
-    ]
-    monkeypatch.setattr(sys, "argv", base_args)
-    assert door.main() == 0
-    before = {
-        path.relative_to(run_root): path.read_bytes()
-        for path in run_root.rglob("*")
-        if path.is_file()
-    }
-
-    shipped = (ROOT / "config" / "admitted_formats.toml").read_text(encoding="utf-8")
-    changed_policy = tmp_path / "changed-routes.toml"
-    changed_policy.write_text(shipped + "# a later hand's note about why\n", encoding="utf-8")
-    assert load_format_policy(changed_policy) == load_format_policy(
-        ROOT / "config" / "admitted_formats.toml"
-    )
-    monkeypatch.setattr(sys, "argv", [*base_args, "--format-policy", str(changed_policy)])
-    with pytest.raises(ContractError, match="config_digest"):
-        door.main()
-    after = {
-        path.relative_to(run_root): path.read_bytes()
-        for path in run_root.rglob("*")
-        if path.is_file()
-    }
-    assert after == before
-
-
 def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_written(monkeypatch):
     class Models:
         witness_chairs = ("attestator_1",)
@@ -514,10 +460,17 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         "self_hash": "b" * 64,
     }
     reference = ApprovalRecordReference("receipts/sha256/" + "c" * 64 + ".json", "c" * 64)
-    baseline = door._real_bindings(Models(), ledger, {"policy": "synthetic"}, reference, POLICY)
-    altered_pdf_recipe = dict(door.pdf_render.renderer_recipe(), dpi=301)
-    monkeypatch.setattr(door.pdf_render, "renderer_recipe", lambda: altered_pdf_recipe)
-    changed = door._real_bindings(Models(), ledger, {"policy": "synthetic"}, reference, POLICY)
+    settings = door.render_config.load_pdf_render_settings(
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    )
+    baseline = door._real_bindings(
+        Models(), ledger, {"policy": "synthetic"}, reference, POLICY, settings
+    )
+    altered_pdf_recipe = dict(door.pdf_render.renderer_recipe(settings), dpi=301)
+    monkeypatch.setattr(door.pdf_render, "renderer_recipe", lambda _settings: altered_pdf_recipe)
+    changed = door._real_bindings(
+        Models(), ledger, {"policy": "synthetic"}, reference, POLICY, settings
+    )
 
     assert baseline["config_digest"] != changed["config_digest"]
 

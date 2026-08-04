@@ -1,0 +1,10 @@
+# Whole-page PDF rasterisation target for the next run. This default is
+# deliberately unmeasured: configuration makes it adjustable, not proven. Check it
+# against a real approved sample before scale (GOVERNANCE 9).
+#
+# A run may override this with --pdf-target-dpi. The door records both this chosen
+# target and the bounded target it can safely use. Pixel, decoded-byte, and 72-DPI
+# floor limits remain code-owned and cannot be weakened here.
+
+[pdf]
+target_dpi = 400

@@ -54,14 +54,12 @@ FIXTURE = "synthetic-two-page-v0"
 # filename/digest linkage; the Designator independently verifies that census before
 # it creates proposals. Recomputed against the real orchestrator.
 #
-# Re-pinned once more when the two lanes were merged. `config/admitted_formats.toml`
-# was rewritten — TIFF moved from `render-pages` to `admit-or-fan-out`, so a
-# single-page TIFF now seals its own bytes — and `run_config_bindings` digests that
-# file's bytes into every run's `config_digest`, which every artifact carries. No
-# artifact's *shape* changed here; the run is bound to a different routing file, and
-# that is exactly what these digests exist to notice.
-HAPPY_RUN_TREE_DIGEST = "6dd775f6dd23befba9f133b983e976c9ddabf205a16c25fb15c5d98d7f47d41b"
-REVIEW_RUN_TREE_DIGEST = "b6c28c6750de4758cccb633ee94737d660ce1680b0fc09d99f87eeeb553d29cf"
+# Re-pinned for ruling 14 and the final System 03 check. The run authority now carries
+# its PDF target, the fixed decoder route is no longer disguised as configuration,
+# and every delivered source region retains its complete crop transform. These are
+# deliberate record changes, so the whole-tree pins change with them.
+HAPPY_RUN_TREE_DIGEST = "cc6f45d0e204606f0c808b173a1b6a6121533de8c50ebbb69753cd513a60f34b"
+REVIEW_RUN_TREE_DIGEST = "0a40c1d29f975476b8fc09d6f5ed5d1b972f202a5d6dfad672998bc0a74c22e2"
 
 
 def orchestrate(

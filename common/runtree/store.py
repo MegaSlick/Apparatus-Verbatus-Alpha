@@ -70,6 +70,7 @@ RECEIPTS_DIR: Final = "receipts/sha256"
 # run wearing an old name, and reuse is refused rather than resumed.
 _BOUND_FIELDS: Final = ("source_manifest", "config_digest", "adapter_recipes", "witness_chairs")
 _INGRESS_FIELD: Final = "ingress"
+_RENDER_SETTINGS_FIELD: Final = "render_settings"
 
 
 class PublishResult:
@@ -145,6 +146,7 @@ class RunTree:
         adapter_recipes: dict[str, str],
         witness_chairs: list[str],
         ingress: dict[str, Any] | None = None,
+        render_settings: dict[str, Any] | None = None,
     ) -> "RunTree":
         """Open a run, creating it if new and refusing an incompatible reuse.
 
@@ -188,6 +190,10 @@ class RunTree:
         }
         if ingress is not None:
             authority[_INGRESS_FIELD] = ingress
+        if render_settings is not None:
+            if not isinstance(render_settings, dict) or not render_settings:
+                raise SchemaRefusal("run render_settings must be a non-empty object when supplied")
+            authority[_RENDER_SETTINGS_FIELD] = render_settings
         authority["self_hash"] = self_hash(authority)
 
         run_file = tree.root / RUN_FILE
@@ -207,11 +213,12 @@ class RunTree:
                     f"{existing.get('schema')!r} and this is {authority['schema']!r}; "
                     "the two describe different shapes and cannot share a tree"
                 ) from None
-            bound_fields = _BOUND_FIELDS + (
-                (_INGRESS_FIELD,)
-                if _INGRESS_FIELD in authority or _INGRESS_FIELD in existing
-                else ()
+            optional_bound_fields = tuple(
+                field
+                for field in (_INGRESS_FIELD, _RENDER_SETTINGS_FIELD)
+                if field in authority or field in existing
             )
+            bound_fields = _BOUND_FIELDS + optional_bound_fields
             differing = [
                 field
                 for field in bound_fields

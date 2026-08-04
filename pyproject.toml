@@ -10,6 +10,9 @@ dependencies = [
     # Basic image codecs used to make every supported raster and TIFF page readable
     # at the Exemplar boundary and by downstream crop operations.
     "Pillow==12.3.0",
+    # Pillow plugin backed by libheif for iPhone-native HEIC/HEIF sources. The
+    # door and downstream crop reader both register it explicitly.
+    "pillow-heif==1.5.0",
     # PDFium binding used to rasterise complete PDF pages once at the submit door.
     "pypdfium2==5.12.1",
 ]

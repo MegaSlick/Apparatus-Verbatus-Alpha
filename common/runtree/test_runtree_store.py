@@ -189,6 +189,18 @@ def test_reusing_a_run_id_with_changed_config_is_refused(tmp_path):
         make_run(tmp_path, config_digest="d" * 64)
 
 
+def test_render_settings_are_an_explicit_run_binding_not_only_an_opaque_digest(tmp_path):
+    first = {"pdf": {"configured_target_dpi": 300, "target_dpi": 300, "minimum_dpi": 72}}
+    second = {"pdf": {"configured_target_dpi": 400, "target_dpi": 400, "minimum_dpi": 72}}
+    make_run(tmp_path, render_settings=first)
+    before = (tmp_path / "r1" / "run.json").read_bytes()
+
+    with pytest.raises(IncompatibleReuse, match="render_settings"):
+        make_run(tmp_path, render_settings=second)
+
+    assert (tmp_path / "r1" / "run.json").read_bytes() == before
+
+
 def test_reusing_a_run_id_with_changed_adapter_recipes_is_refused(tmp_path):
     make_run(tmp_path)
     with pytest.raises(IncompatibleReuse):

@@ -28,10 +28,15 @@ this stage imports it, so structural inspection only ever happens once, at admis
 import struct
 import warnings
 import zlib
+from enum import Enum
 from io import BytesIO
 from typing import Any, Final, NamedTuple
 
+import pillow_heif
 from PIL import Image, UnidentifiedImageError
+
+pillow_heif.register_heif_opener()
+
 
 # Bounds on what may be inspected at all. A source larger than `MAX_SOURCE_BYTES`
 # is refused before a validator sees it; a declared geometry past `MAX_DIMENSION`
@@ -58,13 +63,38 @@ class ImageGeometry(NamedTuple):
     height: int
 
 
+class FormatVerdict(str, Enum):
+    """Why bytes did not yield a page, independent of exception wording."""
+
+    CORRUPT = "corrupt"
+    UNSUPPORTED = "unsupported"
+    UNRECOGNIZED = "unrecognized"
+
+
 class FormatRefusal(ValueError):
-    """Bytes claim to be an instance of a format and are not a genuine one.
+    """Typed decoder alarm whose presentation text is not its control flow.
 
     A ValueError subclass, not a ContractError: this module has no notion of a
     pipeline run, an artifact, or a stage. The caller turns this into a named
     admission refusal.
     """
+
+    def __init__(self, verdict: FormatVerdict, detail: str):
+        self.verdict = verdict
+        self.detail = detail
+        super().__init__(f"{verdict.value} {detail}")
+
+
+def corrupt(detail: str) -> FormatRefusal:
+    return FormatRefusal(FormatVerdict.CORRUPT, detail)
+
+
+def unsupported(detail: str) -> FormatRefusal:
+    return FormatRefusal(FormatVerdict.UNSUPPORTED, detail)
+
+
+def unrecognized(detail: str) -> FormatRefusal:
+    return FormatRefusal(FormatVerdict.UNRECOGNIZED, detail)
 
 
 PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
@@ -99,8 +129,10 @@ _SIGNATURES: Final = (
 # extension — admission is by bytes, and the extension plays no part in what a file
 # actually is (harvest Q12/Q14, spec 03's admission-by-bytes invariant).
 _HEIC_BRANDS: Final = frozenset(
-    {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs", b"mif1", b"msf1"}
+    {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs"}
 )
+_AVIF_BRANDS: Final = frozenset({b"avif", b"avis"})
+_HEIF_BRANDS: Final = frozenset({b"mif1", b"msf1"})
 
 
 def sniff(data: bytes) -> str | None:
@@ -115,13 +147,14 @@ def sniff(data: bytes) -> str | None:
             return name
     if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == WEBP_SIGNATURE:
         return "webp"
-    if _is_heic(data):
-        return "heic"
+    iso_format = _iso_bmff_image_format(data)
+    if iso_format is not None:
+        return iso_format
     return None
 
 
-def _is_heic(data: bytes) -> bool:
-    """True when the bytes open with an `ftyp` box naming a HEIC/HEIF brand.
+def _iso_bmff_image_format(data: bytes) -> str | None:
+    """Name a HEIC, generic HEIF, or AVIF container from its own brands.
 
     Every ISO-BMFF file (HEIC, HEIF, but also MP4/MOV) opens with a box: a 4-byte
     size, then a 4-byte type. `ftyp` at offset 4 is the type; the brand list that
@@ -129,25 +162,37 @@ def _is_heic(data: bytes) -> bool:
     container sharing the same outer shape, so this checks the brand rather than
     stopping at `ftyp`.
     """
-    if len(data) < 16 or data[4:8] != b"ftyp":
-        return False
+    if len(data) < 12 or data[4:8] != b"ftyp":
+        return None
     box_size = struct.unpack(">I", data[:4])[0]
-    if box_size < 16 or box_size > len(data):
-        return False
     major_brand = data[8:12]
-    # minor_version at [12:16], then compatible brands, 4 bytes each, to box_size.
-    return major_brand in _HEIC_BRANDS or any(
-        data[offset : offset + 4] in _HEIC_BRANDS for offset in range(16, box_size, 4)
-    )
+    readable_end = min(max(box_size, 12), len(data))
+    brands = {major_brand} | {data[offset : offset + 4] for offset in range(16, readable_end, 4)}
+    if brands & _HEIC_BRANDS:
+        return "heic"
+    if brands & _AVIF_BRANDS:
+        return "avif"
+    if brands & _HEIF_BRANDS:
+        return "heif"
+    return None
+
+
+def _validate_iso_bmff_image_header(data: bytes, format_name: str) -> None:
+    """Catch an objectively truncated or mis-sized opening `ftyp` box."""
+    if len(data) < 16 or data[4:8] != b"ftyp":
+        raise corrupt(f"{format_name.upper()}: truncated ISO-BMFF file-type box")
+    box_size = struct.unpack(">I", data[:4])[0]
+    if box_size < 16 or box_size > len(data) or box_size % 4:
+        raise corrupt(f"{format_name.upper()}: malformed ISO-BMFF file-type box size")
 
 
 def _geometry(format_name: str, width: Any, height: Any) -> ImageGeometry:
     """Bound a declared geometry before anything is sized or decompressed from it."""
     if not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
-        raise FormatRefusal(f"corrupt {format_name.upper()}: a zero or negative dimension")
+        raise corrupt(f"{format_name.upper()}: a zero or negative dimension")
     if width > MAX_DIMENSION or height > MAX_DIMENSION or width * height > MAX_PIXELS:
-        raise FormatRefusal(
-            f"unsupported {format_name.upper()}: {width}x{height} exceeds the admission "
+        raise unsupported(
+            f"{format_name.upper()}: {width}x{height} exceeds the admission "
             f"limits ({MAX_DIMENSION} per side, {MAX_PIXELS} pixels)"
         )
     return ImageGeometry(format_name, width, height)
@@ -180,7 +225,7 @@ _ADAM7: Final = (
 def validate_png(data: bytes) -> ImageGeometry:
     """Walk every chunk, verify every CRC, and inflate IDAT to its declared size."""
     if not data.startswith(PNG_SIGNATURE):
-        raise FormatRefusal("not a PNG: missing signature")
+        raise corrupt("PNG: missing signature")
 
     offset = 8
     chunks = 0
@@ -191,77 +236,73 @@ def validate_png(data: bytes) -> ImageGeometry:
 
     while offset < len(data):
         if len(data) - offset < 12:
-            raise FormatRefusal("corrupt PNG: truncated chunk header")
+            raise corrupt("PNG: truncated chunk header")
         if chunks >= MAX_PNG_CHUNKS:
-            raise FormatRefusal(f"unsupported PNG: more than {MAX_PNG_CHUNKS} chunks")
+            raise unsupported(f"PNG: more than {MAX_PNG_CHUNKS} chunks")
         (length,) = struct.unpack_from(">I", data, offset)
         end = offset + 12 + length
         if end > len(data):
-            raise FormatRefusal("corrupt PNG: chunk data runs past the end of the file")
+            raise corrupt("PNG: chunk data runs past the end of the file")
         chunk_type = data[offset + 4 : offset + 8]
         chunk_data = data[offset + 8 : offset + 8 + length]
         (stored_crc,) = struct.unpack_from(">I", data, offset + 8 + length)
         if not _is_png_chunk_type(chunk_type):
-            raise FormatRefusal(
-                "corrupt PNG: chunk type is not four ASCII letters with the reserved bit clear"
-            )
+            raise corrupt("PNG: chunk type is not four ASCII letters with the reserved bit clear")
         if zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF != stored_crc:
-            raise FormatRefusal(f"corrupt PNG: chunk {chunk_type!r} fails its own CRC")
+            raise corrupt(f"PNG: chunk {chunk_type!r} fails its own CRC")
         chunks += 1
 
         if chunks == 1:
             if chunk_type != b"IHDR" or length != 13:
-                raise FormatRefusal("corrupt PNG: the file does not open with a 13-byte IHDR")
+                raise corrupt("PNG: the file does not open with a 13-byte IHDR")
             width, height, bit_depth, color_type, compression, filtering, interlace = struct.unpack(
                 ">IIBBBBB", chunk_data
             )
             geometry = _geometry("png", width, height)
             if compression != 0 or filtering != 0:
-                raise FormatRefusal("unsupported PNG: unknown compression or filter method")
+                raise unsupported("PNG: unknown compression or filter method")
             if color_type not in _PNG_VALID_BIT_DEPTHS:
-                raise FormatRefusal(f"corrupt PNG: unknown color type {color_type}")
+                raise corrupt(f"PNG: unknown color type {color_type}")
             if bit_depth not in _PNG_VALID_BIT_DEPTHS[color_type]:
-                raise FormatRefusal(
-                    f"corrupt PNG: bit depth {bit_depth} is not valid for color type {color_type}"
+                raise corrupt(
+                    f"PNG: bit depth {bit_depth} is not valid for color type {color_type}"
                 )
             if interlace not in (0, 1):
-                raise FormatRefusal("corrupt PNG: unknown interlace method")
+                raise corrupt("PNG: unknown interlace method")
         elif chunk_type == b"IHDR":
-            raise FormatRefusal("corrupt PNG: more than one IHDR")
+            raise corrupt("PNG: more than one IHDR")
         elif chunk_type == b"PLTE":
             if saw_palette or saw_idat:
-                raise FormatRefusal("corrupt PNG: palette is repeated or arrives after image data")
+                raise corrupt("PNG: palette is repeated or arrives after image data")
             _validate_png_palette(chunk_data, color_type, bit_depth)
             saw_palette = True
         elif chunk_type == b"IDAT":
             if ended_idat:
-                raise FormatRefusal("corrupt PNG: IDAT chunks are not consecutive")
+                raise corrupt("PNG: IDAT chunks are not consecutive")
             if color_type == 3 and not saw_palette:
-                raise FormatRefusal("corrupt PNG: indexed image carries no palette")
+                raise corrupt("PNG: indexed image carries no palette")
             saw_idat = True
             idat.append(chunk_data)
         elif chunk_type == b"IEND":
             if length != 0 or end != len(data) or not saw_idat:
-                raise FormatRefusal("corrupt PNG: malformed IEND, or trailing bytes after it")
+                raise corrupt("PNG: malformed IEND, or trailing bytes after it")
             seen_iend = True
             break
         else:
             if _is_png_critical(chunk_type):
-                raise FormatRefusal(
-                    f"unsupported PNG: unknown critical chunk {chunk_type!r} cannot be ignored"
-                )
+                raise unsupported(f"PNG: unknown critical chunk {chunk_type!r} cannot be ignored")
             if saw_idat:
                 ended_idat = True
         offset = end
 
     if not seen_iend:
-        raise FormatRefusal("corrupt PNG: no IEND; truncated file")
+        raise corrupt("PNG: no IEND; truncated file")
     if geometry is None or color_type is None or bit_depth is None or interlace is None:
-        raise FormatRefusal("corrupt PNG: no IHDR")
+        raise corrupt("PNG: no IHDR")
 
     expected = _png_inflated_size(geometry, color_type, bit_depth, interlace)
     if expected > MAX_PNG_DECODED_BYTES:
-        raise FormatRefusal("unsupported PNG: declared image data exceeds the admission limit")
+        raise unsupported("PNG: declared image data exceeds the admission limit")
     raw = _inflate_exactly(b"".join(idat), expected)
     _validate_png_filter_bytes(raw, geometry, color_type, bit_depth, interlace)
     return geometry
@@ -282,13 +323,13 @@ def _inflate_exactly(compressed: bytes, expected: int) -> bytes:
         if len(raw) <= expected:
             raw += inflater.flush(expected + 1 - len(raw))
     except zlib.error as error:
-        raise FormatRefusal(f"corrupt PNG: image data would not decompress ({error})") from error
+        raise corrupt(f"PNG: image data would not decompress ({error})") from error
     if len(raw) > expected:
-        raise FormatRefusal("corrupt PNG: image data expands past its own declared size")
+        raise corrupt("PNG: image data expands past its own declared size")
     if not inflater.eof or inflater.unused_data or inflater.unconsumed_tail:
-        raise FormatRefusal("corrupt PNG: image data stream is truncated or has trailing bytes")
+        raise corrupt("PNG: image data stream is truncated or has trailing bytes")
     if len(raw) != expected:
-        raise FormatRefusal("corrupt PNG: decompressed data has the wrong length")
+        raise corrupt("PNG: decompressed data has the wrong length")
     return raw
 
 
@@ -320,21 +361,19 @@ def _validate_png_filter_bytes(
     for height, row_bytes in _png_rows(geometry, color_type, bit_depth, interlace):
         for _ in range(height):
             if raw[cursor] > 4:
-                raise FormatRefusal(
-                    f"corrupt PNG: a scanline carries unknown filter type {raw[cursor]}"
-                )
+                raise corrupt(f"PNG: a scanline carries unknown filter type {raw[cursor]}")
             cursor += 1 + row_bytes
     if cursor != len(raw):
-        raise FormatRefusal("corrupt PNG: scanlines do not account for the decompressed data")
+        raise corrupt("PNG: scanlines do not account for the decompressed data")
 
 
 def _validate_png_palette(payload: bytes, color_type: int | None, bit_depth: int | None) -> None:
     if color_type not in (2, 3, 6) or bit_depth is None:
-        raise FormatRefusal("corrupt PNG: a palette is not legal for this color type")
+        raise corrupt("PNG: a palette is not legal for this color type")
     if not payload or len(payload) % 3 or len(payload) > 256 * 3:
-        raise FormatRefusal("corrupt PNG: palette has an invalid number of entries")
+        raise corrupt("PNG: palette has an invalid number of entries")
     if color_type == 3 and len(payload) // 3 > 1 << bit_depth:
-        raise FormatRefusal("corrupt PNG: palette has more entries than its bit depth can index")
+        raise corrupt("PNG: palette has more entries than its bit depth can index")
 
 
 def _is_png_chunk_type(kind: bytes) -> bool:
@@ -412,7 +451,7 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
     means the embedded stream is not the image its dictionary describes.
     """
     if not data.startswith(JPEG_SIGNATURE):
-        raise FormatRefusal("not a JPEG: missing SOI")
+        raise corrupt("JPEG: missing SOI")
 
     geometry: ImageGeometry | None = None
     frame_components: list[tuple[int, int]] = []  # (component id, quantization table id)
@@ -426,17 +465,17 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
     while True:
         if marker == 0xD9:  # EOI
             if geometry is None:
-                raise FormatRefusal("corrupt JPEG: no start-of-frame marker; no geometry to read")
+                raise corrupt("JPEG: no start-of-frame marker; no geometry to read")
             if not saw_sos:
-                raise FormatRefusal("corrupt JPEG: EOI before any scan")
+                raise corrupt("JPEG: EOI before any scan")
             return geometry
         if marker == 0xD8 or marker == 0x01 or 0xD0 <= marker <= 0xD7:
-            raise FormatRefusal(f"corrupt JPEG: standalone marker 0xFF{marker:02X} is misplaced")
+            raise corrupt(f"JPEG: standalone marker 0xFF{marker:02X} is misplaced")
         if cursor + 2 > len(data):
-            raise FormatRefusal("corrupt JPEG: truncated segment length")
+            raise corrupt("JPEG: truncated segment length")
         (length,) = struct.unpack_from(">H", data, cursor)
         if length < 2 or cursor + length > len(data):
-            raise FormatRefusal(f"corrupt JPEG: marker 0xFF{marker:02X} segment runs past EOF")
+            raise corrupt(f"JPEG: marker 0xFF{marker:02X} segment runs past EOF")
         payload = data[cursor + 2 : cursor + length]
         cursor += length
 
@@ -448,27 +487,27 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
             arithmetic_conditioning |= _jpeg_arithmetic_conditioning(payload)
         elif marker in _JPEG_SOF_MARKERS:
             if geometry is not None:
-                raise FormatRefusal("corrupt JPEG: a second start-of-frame marker")
+                raise corrupt("JPEG: a second start-of-frame marker")
             if len(payload) < 6:
-                raise FormatRefusal("corrupt JPEG: SOF segment too short to carry geometry")
+                raise corrupt("JPEG: SOF segment too short to carry geometry")
             height, width, components = struct.unpack_from(">HHB", payload, 1)
             if components < 1:
-                raise FormatRefusal("corrupt JPEG: SOF declares no component at all")
+                raise corrupt("JPEG: SOF declares no component at all")
             if components > 4:
                 # T.81 permits up to 255; four is the baseline/JFIF convention and
                 # the limit of what anything downstream here handles. A genuine
                 # instance of a variant this door does not decode is "unsupported",
                 # not "corrupt" — the two words are different facts and
                 # `admission._refusal_code` turns them into different reasons.
-                raise FormatRefusal(
-                    f"unsupported JPEG: {components} components is past the four this "
+                raise unsupported(
+                    f"JPEG: {components} components is past the four this "
                     "door decodes; more is a documented limit"
                 )
             if len(payload) != 6 + 3 * components:
-                raise FormatRefusal("corrupt JPEG: SOF component count disagrees with its length")
+                raise corrupt("JPEG: SOF component count disagrees with its length")
             if expected_components is not None and components != expected_components:
-                raise FormatRefusal(
-                    f"corrupt JPEG: the frame declares {components} component(s), but the "
+                raise corrupt(
+                    f"JPEG: the frame declares {components} component(s), but the "
                     f"container around it declares {expected_components}"
                 )
             geometry = _geometry("jpeg", width, height)
@@ -481,7 +520,7 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
 
         if marker == 0xDA:  # SOS: entropy-coded data follows, scan past it
             if geometry is None or not frame_components:
-                raise FormatRefusal("corrupt JPEG: a scan precedes its frame header")
+                raise corrupt("JPEG: a scan precedes its frame header")
             _validate_jpeg_scan(
                 payload,
                 frame_components=frame_components,
@@ -505,10 +544,10 @@ def _jpeg_quantization_tables(payload: bytes) -> set[int]:
     while cursor < len(payload):
         precision, identifier = payload[cursor] >> 4, payload[cursor] & 0x0F
         if precision not in (0, 1) or identifier > 3:
-            raise FormatRefusal("corrupt JPEG: DQT declares an out-of-range precision or table id")
+            raise corrupt("JPEG: DQT declares an out-of-range precision or table id")
         cursor += 1 + 64 * (2 if precision else 1)
         if cursor > len(payload):
-            raise FormatRefusal("corrupt JPEG: a DQT table runs past its own segment")
+            raise corrupt("JPEG: a DQT table runs past its own segment")
         defined.add(identifier)
     return defined
 
@@ -524,14 +563,14 @@ def _jpeg_huffman_tables(payload: bytes) -> set[tuple[int, int]]:
     cursor = 0
     while cursor < len(payload):
         if cursor + 17 > len(payload):
-            raise FormatRefusal("corrupt JPEG: a DHT table header runs past its own segment")
+            raise corrupt("JPEG: a DHT table header runs past its own segment")
         table_class, identifier = payload[cursor] >> 4, payload[cursor] & 0x0F
         if table_class not in (0, 1) or identifier > 3:
-            raise FormatRefusal("corrupt JPEG: DHT declares an out-of-range table class or id")
+            raise corrupt("JPEG: DHT declares an out-of-range table class or id")
         symbols = sum(payload[cursor + 1 : cursor + 17])
         cursor += 17 + symbols
         if cursor > len(payload):
-            raise FormatRefusal("corrupt JPEG: a DHT table runs past its own segment")
+            raise corrupt("JPEG: a DHT table runs past its own segment")
         defined.add((table_class, identifier))
     return defined
 
@@ -539,12 +578,12 @@ def _jpeg_huffman_tables(payload: bytes) -> set[tuple[int, int]]:
 def _jpeg_arithmetic_conditioning(payload: bytes) -> set[tuple[int, int]]:
     """Every (class, id) conditioning slot this DAC segment defines."""
     if len(payload) % 2:
-        raise FormatRefusal("corrupt JPEG: DAC segment is not a whole number of entries")
+        raise corrupt("JPEG: DAC segment is not a whole number of entries")
     defined: set[tuple[int, int]] = set()
     for cursor in range(0, len(payload), 2):
         table_class, identifier = payload[cursor] >> 4, payload[cursor] & 0x0F
         if table_class not in (0, 1) or identifier > 3:
-            raise FormatRefusal("corrupt JPEG: DAC declares an out-of-range table class or id")
+            raise corrupt("JPEG: DAC declares an out-of-range table class or id")
         defined.add((table_class, identifier))
     return defined
 
@@ -580,7 +619,7 @@ def _validate_jpeg_scan(
         not 1 <= scan_components <= len(frame_components)
         or len(payload) != 1 + 2 * scan_components + 3
     ):
-        raise FormatRefusal("corrupt JPEG: scan components disagree with the segment")
+        raise corrupt("JPEG: scan components disagree with the segment")
 
     spectral_start, _spectral_end, approximation = payload[-3], payload[-2], payload[-1]
     high_approximation = approximation >> 4
@@ -590,7 +629,7 @@ def _validate_jpeg_scan(
         component_id = payload[1 + 2 * index]
         selectors = payload[2 + 2 * index]
         if component_id not in by_id:
-            raise FormatRefusal("corrupt JPEG: a scan names a component the frame does not declare")
+            raise corrupt("JPEG: a scan names a component the frame does not declare")
         # A lossless frame does not quantize, so it legally carries no DQT at all
         # and its Tq field is required to be zero. Demanding one refused a conforming
         # file — and the first form of this repair did exactly that while believing
@@ -598,8 +637,8 @@ def _validate_jpeg_scan(
         # check. An adversarial read caught it; the test below is the other half.
         quantization_id = by_id[component_id]
         if not lossless and quantization_id not in quantization_tables:
-            raise FormatRefusal(
-                f"corrupt JPEG: a scanned component selects quantization table "
+            raise corrupt(
+                f"JPEG: a scanned component selects quantization table "
                 f"{quantization_id}, which no DQT defined"
             )
         if arithmetic:
@@ -620,19 +659,19 @@ def _validate_jpeg_scan(
         for table in needed:
             if table not in huffman_tables:
                 kind = "DC" if table[0] == 0 else "AC"
-                raise FormatRefusal(
-                    f"corrupt JPEG: a scan selects the {kind} Huffman table {table[1]}, "
+                raise corrupt(
+                    f"JPEG: a scan selects the {kind} Huffman table {table[1]}, "
                     "which no DHT defined"
                 )
 
 
 def _jpeg_marker_at(data: bytes, cursor: int) -> tuple[int, int]:
     if cursor >= len(data) or data[cursor] != 0xFF:
-        raise FormatRefusal(f"corrupt JPEG: expected a marker at byte {cursor}")
+        raise corrupt(f"JPEG: expected a marker at byte {cursor}")
     while cursor < len(data) and data[cursor] == 0xFF:
         cursor += 1
     if cursor >= len(data) or data[cursor] == 0:
-        raise FormatRefusal("corrupt JPEG: marker is truncated, or stuffed outside a scan")
+        raise corrupt("JPEG: marker is truncated, or stuffed outside a scan")
     return data[cursor], cursor + 1
 
 
@@ -645,13 +684,13 @@ def _jpeg_marker_after_entropy(data: bytes, cursor: int) -> tuple[int, int]:
         while cursor < len(data) and data[cursor] == 0xFF:
             cursor += 1
         if cursor >= len(data):
-            raise FormatRefusal("corrupt JPEG: scan data ends in a marker prefix")
+            raise corrupt("JPEG: scan data ends in a marker prefix")
         marker = data[cursor]
         cursor += 1
         if marker == 0x00 or 0xD0 <= marker <= 0xD7:
             continue  # a stuffed byte or an in-scan restart marker: still scan data
         return marker, cursor
-    raise FormatRefusal("corrupt JPEG: truncated scan data, no terminating marker")
+    raise corrupt("JPEG: truncated scan data, no terminating marker")
 
 
 # --- TIFF ----------------------------------------------------------------------
@@ -725,18 +764,18 @@ def validate_tiff(data: bytes) -> ImageGeometry:
     first-directory walker remains a structural check of the source's opening page.
     """
     if len(data) < 8 or data[:2] not in (b"II", b"MM"):
-        raise FormatRefusal("not a TIFF: missing byte-order header")
+        raise corrupt("TIFF: missing byte-order header")
     endian = "<" if data[:2] == b"II" else ">"
     (magic,) = struct.unpack_from(endian + "H", data, 2)
     if magic != 42:
-        raise FormatRefusal(
-            "unsupported TIFF: not classic TIFF (BigTIFF or an unknown magic is a documented limit)"
+        raise unsupported(
+            "TIFF: not classic TIFF (BigTIFF or an unknown magic is a documented limit)"
         )
     (offset,) = struct.unpack_from(endian + "I", data, 4)
     if offset == 0:
-        raise FormatRefusal("corrupt TIFF: the header names no image directory")
+        raise corrupt("TIFF: the header names no image directory")
     if offset + 2 > len(data):
-        raise FormatRefusal("corrupt TIFF: IFD offset falls outside the file")
+        raise corrupt("TIFF: IFD offset falls outside the file")
 
     width = height = None
     image_data: dict[int, list[int]] = {}
@@ -744,7 +783,7 @@ def validate_tiff(data: bytes) -> ImageGeometry:
     (count,) = struct.unpack_from(endian + "H", data, offset)
     table_end = offset + 2 + count * 12 + 4
     if table_end > len(data):
-        raise FormatRefusal("corrupt TIFF: IFD entries run past the end of the file")
+        raise corrupt("TIFF: IFD entries run past the end of the file")
 
     for index in range(count):
         entry = offset + 2 + index * 12
@@ -763,19 +802,19 @@ def validate_tiff(data: bytes) -> ImageGeometry:
             # GOALS 1. A tag we *do* interpret is a different matter: an unreadable
             # value there is a check that cannot run, which is a failure.
             if interpreted:
-                raise FormatRefusal(
-                    f"corrupt TIFF: tag {tag} carries unknown field type {field_type}, and "
+                raise corrupt(
+                    f"TIFF: tag {tag} carries unknown field type {field_type}, and "
                     "this validator has to read that tag"
                 )
             continue
         if value_count > len(data) // size:
-            raise FormatRefusal(f"corrupt TIFF: tag {tag} declares more values than the file")
+            raise corrupt(f"TIFF: tag {tag} declares more values than the file")
         value_size = value_count * size
         value_field = data[entry + 8 : entry + 12]
         if value_size > 4:
             (value_offset,) = struct.unpack(endian + "I", value_field)
             if value_offset + value_size > len(data):
-                raise FormatRefusal(f"corrupt TIFF: tag {tag} value escapes the file bounds")
+                raise corrupt(f"TIFF: tag {tag} value escapes the file bounds")
             value_bytes = data[value_offset : value_offset + value_size]
         else:
             value_bytes = value_field[:value_size]
@@ -784,23 +823,23 @@ def validate_tiff(data: bytes) -> ImageGeometry:
             value = _tiff_dimension(tag, value_bytes, field_type, value_count, endian)
             if tag == _TIFF_TAG_IMAGE_WIDTH:
                 if width is not None:
-                    raise FormatRefusal(f"corrupt TIFF: tag {tag} appears twice in one directory")
+                    raise corrupt(f"TIFF: tag {tag} appears twice in one directory")
                 width = value
             else:
                 if height is not None:
-                    raise FormatRefusal(f"corrupt TIFF: tag {tag} appears twice in one directory")
+                    raise corrupt(f"TIFF: tag {tag} appears twice in one directory")
                 height = value
         elif tag in _TIFF_DATA_TAGS or tag in _TIFF_LAYOUT_TAGS:
             target = image_data if tag in _TIFF_DATA_TAGS else layout
             if tag in target:
-                raise FormatRefusal(f"corrupt TIFF: tag {tag} appears twice in one directory")
+                raise corrupt(f"TIFF: tag {tag} appears twice in one directory")
             target[tag] = _tiff_unsigned_values(value_bytes, field_type, value_count, endian, tag)
 
     # A non-zero next IFD is a further page.  Its own pixels are decoded and bound
     # when the door fans it out; rejecting it here would lose a normal scan.
 
     if width is None or height is None:
-        raise FormatRefusal("corrupt TIFF: no ImageWidth/ImageLength tag")
+        raise corrupt("TIFF: no ImageWidth/ImageLength tag")
     geometry = _geometry("tiff", width, height)
     _validate_tiff_sample_storage(data, geometry, image_data, layout)
     return geometry
@@ -811,10 +850,10 @@ def _tiff_single(layout: dict[int, list[int]], tag: int, default: int | None, na
     values = layout.get(tag)
     if values is None:
         if default is None:
-            raise FormatRefusal(f"corrupt TIFF: no {name} tag; a baseline image declares one")
+            raise corrupt(f"TIFF: no {name} tag; a baseline image declares one")
         return default
     if len(values) != 1:
-        raise FormatRefusal(f"corrupt TIFF: {name} declares {len(values)} values, not one")
+        raise corrupt(f"TIFF: {name} declares {len(values)} values, not one")
     return values[0]
 
 
@@ -825,7 +864,7 @@ def _tiff_dimension(tag: int, value: bytes, field_type: int, count: int, endian:
     refusal the door can name rather than a crash that aborts every other source
     still waiting to be decided."""
     if count != 1 or field_type not in (3, 4):
-        raise FormatRefusal(f"corrupt TIFF: tag {tag} is not one SHORT or LONG")
+        raise corrupt(f"TIFF: tag {tag} is not one SHORT or LONG")
     return struct.unpack(endian + ("H" if field_type == 3 else "I"), value)[0]
 
 
@@ -834,17 +873,14 @@ def _tiff_unsigned_values(
 ) -> list[int]:
     """Decode a SHORT/LONG tag's values without touching a byte of pixel data."""
     if not count or field_type not in (3, 4):
-        raise FormatRefusal(
-            f"corrupt TIFF: tag {tag} values are not a non-empty list of unsigned integers"
-        )
+        raise corrupt(f"TIFF: tag {tag} values are not a non-empty list of unsigned integers")
     if count > MAX_TIFF_DATA_SEGMENTS:
-        raise FormatRefusal(
-            f"unsupported TIFF: {count} image-data segments exceed the "
-            f"{MAX_TIFF_DATA_SEGMENTS}-segment limit"
+        raise unsupported(
+            f"TIFF: {count} image-data segments exceed the {MAX_TIFF_DATA_SEGMENTS}-segment limit"
         )
     unit = 2 if field_type == 3 else 4
     if len(value) != count * unit:
-        raise FormatRefusal("corrupt TIFF: image-data value length disagrees with its IFD entry")
+        raise corrupt("TIFF: image-data value length disagrees with its IFD entry")
     return list(struct.unpack(endian + ("H" if field_type == 3 else "I") * count, value))
 
 
@@ -863,22 +899,20 @@ def _validate_tiff_sample_storage(
     """
     samples = _tiff_single(layout, _TIFF_TAG_SAMPLES_PER_PIXEL, 1, "SamplesPerPixel")
     if not 1 <= samples <= 8:
-        raise FormatRefusal(f"unsupported TIFF: {samples} samples per pixel is a documented limit")
+        raise unsupported(f"TIFF: {samples} samples per pixel is a documented limit")
     compression = _tiff_single(layout, _TIFF_TAG_COMPRESSION, _TIFF_UNCOMPRESSED, "Compression")
     # Refused rather than defaulted: it is the tag that says what the samples *mean*,
     # a baseline IFD is required to carry it, and a file omitting it is not one.
     _tiff_single(layout, _TIFF_TAG_PHOTOMETRIC, None, "PhotometricInterpretation")
     planar = _tiff_single(layout, _TIFF_TAG_PLANAR_CONFIGURATION, 1, "PlanarConfiguration")
     if planar != 1:
-        raise FormatRefusal(
-            "unsupported TIFF: planar (component-separated) storage is a documented limit; "
+        raise unsupported(
+            "TIFF: planar (component-separated) storage is a documented limit; "
             "its strip arithmetic is not the chunky one this reconciles"
         )
     bits = layout.get(_TIFF_TAG_BITS_PER_SAMPLE, [1] * samples)
     if len(bits) != samples or any(not 1 <= bit <= 64 for bit in bits):
-        raise FormatRefusal(
-            "corrupt TIFF: BitsPerSample does not carry one usable width per sample"
-        )
+        raise corrupt("TIFF: BitsPerSample does not carry one usable width per sample")
     row_bytes = (geometry.width * sum(bits) + 7) // 8
 
     strips = [image_data.get(tag) for tag in _TIFF_STRIP_TAGS]
@@ -886,12 +920,12 @@ def _validate_tiff_sample_storage(
     has_strips = any(part is not None for part in strips)
     has_tiles = any(part is not None for part in tiles)
     if has_strips and has_tiles:
-        raise FormatRefusal("corrupt TIFF: both strip and tile image-data inventories are named")
+        raise corrupt("TIFF: both strip and tile image-data inventories are named")
     offsets, counts = strips if has_strips else tiles
     if offsets is None and counts is None:
-        raise FormatRefusal("corrupt TIFF: no strip or tile image-data inventory")
+        raise corrupt("TIFF: no strip or tile image-data inventory")
     if offsets is None or counts is None or len(offsets) != len(counts):
-        raise FormatRefusal("corrupt TIFF: image-data offsets and byte counts do not reconcile")
+        raise corrupt("TIFF: image-data offsets and byte counts do not reconcile")
 
     expected = (
         _tiff_expected_tile_sizes(geometry, layout, bits)
@@ -899,19 +933,19 @@ def _validate_tiff_sample_storage(
         else _tiff_expected_strip_sizes(geometry, layout, row_bytes)
     )
     if len(offsets) != len(expected):
-        raise FormatRefusal(
-            f"corrupt TIFF: the image declares {len(offsets)} image-data segment(s), but its "
+        raise corrupt(
+            f"TIFF: the image declares {len(offsets)} image-data segment(s), but its "
             f"{geometry.width}x{geometry.height} geometry needs {len(expected)}"
         )
     for offset, count, needed in zip(offsets, counts, expected, strict=True):
         if offset < 8 or count <= 0 or offset + count > len(data):
-            raise FormatRefusal("corrupt TIFF: an image-data range falls outside the file")
+            raise corrupt("TIFF: an image-data range falls outside the file")
         # Only an uncompressed segment's size is derivable from the geometry. For a
         # compressed one the count is whatever the codec produced, and reconciling it
         # would mean decompressing — the named limit this module keeps.
         if compression == _TIFF_UNCOMPRESSED and count != needed:
-            raise FormatRefusal(
-                f"corrupt TIFF: an uncompressed image-data segment stores {count} byte(s) "
+            raise corrupt(
+                f"TIFF: an uncompressed image-data segment stores {count} byte(s) "
                 f"where its share of a {geometry.width}x{geometry.height} image needs {needed}"
             )
 
@@ -922,7 +956,7 @@ def _tiff_expected_strip_sizes(
     """The byte count each strip would occupy uncompressed, in order."""
     rows_per_strip = _tiff_single(layout, _TIFF_TAG_ROWS_PER_STRIP, geometry.height, "RowsPerStrip")
     if rows_per_strip <= 0:
-        raise FormatRefusal("corrupt TIFF: RowsPerStrip is not a positive row count")
+        raise corrupt("TIFF: RowsPerStrip is not a positive row count")
     rows_per_strip = min(rows_per_strip, geometry.height)
     whole, remainder = divmod(geometry.height, rows_per_strip)
     return [rows_per_strip * row_bytes] * whole + ([remainder * row_bytes] if remainder else [])
@@ -936,13 +970,12 @@ def _tiff_expected_tile_sizes(
     tile_width = _tiff_single(layout, _TIFF_TAG_TILE_WIDTH, None, "TileWidth")
     tile_length = _tiff_single(layout, _TIFF_TAG_TILE_LENGTH, None, "TileLength")
     if tile_width <= 0 or tile_length <= 0:
-        raise FormatRefusal("corrupt TIFF: a tile dimension is not positive")
+        raise corrupt("TIFF: a tile dimension is not positive")
     across = -(-geometry.width // tile_width)
     down = -(-geometry.height // tile_length)
     if across * down > MAX_TIFF_DATA_SEGMENTS:
-        raise FormatRefusal(
-            f"unsupported TIFF: {across * down} tiles exceed the "
-            f"{MAX_TIFF_DATA_SEGMENTS}-segment limit"
+        raise unsupported(
+            f"TIFF: {across * down} tiles exceed the {MAX_TIFF_DATA_SEGMENTS}-segment limit"
         )
     return [tile_length * ((tile_width * sum(bits) + 7) // 8)] * (across * down)
 
@@ -955,7 +988,9 @@ VALIDATORS: Final = {"png": validate_png, "jpeg": validate_jpeg, "tiff": validat
 # from the dispatch table `validate()` uses. `admission.py` reads these to check
 # the policy's coverage, and a hand-kept copy there would only ever agree with
 # another hand-kept copy.
-SNIFFABLE_FORMATS: Final = frozenset({name for name, _ in _SIGNATURES} | {"heic", "webp"})
+SNIFFABLE_FORMATS: Final = frozenset(
+    {name for name, _ in _SIGNATURES} | {"heic", "heif", "avif", "webp"}
+)
 STRUCTURALLY_VALIDATED: Final = frozenset(VALIDATORS)
 
 
@@ -964,7 +999,7 @@ def validate(format_name: str, data: bytes) -> ImageGeometry:
     try:
         validator = VALIDATORS[format_name]
     except KeyError:
-        raise FormatRefusal(f"no structural validator for format {format_name!r}") from None
+        raise unsupported(f"format {format_name!r}: no structural validator") from None
     return validator(data)
 
 
@@ -1006,7 +1041,7 @@ def _structural_corruption_check(format_name: str | None, data: bytes) -> None:
     try:
         validate(format_name, data)
     except FormatRefusal as error:
-        if str(error).startswith("corrupt"):
+        if error.verdict is FormatVerdict.CORRUPT:
             raise
 
 
@@ -1019,6 +1054,8 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
     unsupported variant; bytes that name no image at all are unrecognized.
     """
     detected_by_signature = sniff(data)
+    if detected_by_signature in {"heic", "heif", "avif"}:
+        _validate_iso_bmff_image_header(data, detected_by_signature)
     if detected_by_signature == "tiff":
         # A resource bound, not a verdict about the layout: it propagates whatever
         # the structural walker below decides, because a decoder that happily
@@ -1038,23 +1075,21 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                 detected = _pillow_format_name(image.format)
                 frames = getattr(image, "n_frames", 1)
                 if not isinstance(frames, int) or frames < 1:
-                    raise FormatRefusal("corrupt image: decoder returned no frames")
+                    raise corrupt("image: decoder returned no frames")
                 # The fan-out bound, checked on whatever the decoder reports rather
                 # than only on a classic TIFF's directory chain. A BigTIFF, an
                 # animated GIF or a WebP reaches this line without ever passing the
                 # chain walker, and a frame count read out of an untrusted file is
                 # a loop bound somebody else wrote.
                 if frames > MAX_RASTER_FRAMES:
-                    raise FormatRefusal(
-                        f"unsupported {detected}: {frames} frames exceed the "
+                    raise unsupported(
+                        f"{detected}: {frames} frames exceed the "
                         f"{MAX_RASTER_FRAMES}-frame fan-out limit"
                     )
                 if not isinstance(page_index, int) or isinstance(page_index, bool):
-                    raise FormatRefusal("corrupt image: page index is not an integer")
+                    raise corrupt("image: page index is not an integer")
                 if not 0 <= page_index < frames:
-                    raise FormatRefusal(
-                        f"corrupt {detected}: page index {page_index} is outside 0..{frames - 1}"
-                    )
+                    raise corrupt(f"{detected}: page index {page_index} is outside 0..{frames - 1}")
                 # Seeking chooses the frame but does not ask Pillow to decode its
                 # pixels.  Bound that frame's declared dimensions before `load()`
                 # can inflate attacker-controlled data into memory.
@@ -1064,17 +1099,15 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                 return DecodedRaster(detected, geometry.width, geometry.height, frames)
     except UnidentifiedImageError as error:
         if detected_by_signature is not None:
-            raise FormatRefusal(missing_reader_detail(detected_by_signature)) from error
-        raise FormatRefusal(
-            "unrecognized image format: no installed decoder recognizes these bytes"
-        ) from error
+            raise unsupported(missing_reader_detail(detected_by_signature)) from error
+        raise unrecognized("image format: no installed decoder recognizes these bytes") from error
     except (Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
-        raise FormatRefusal(
-            f"unsupported image variant: decoder rejected unsafe pixel dimensions ({error})"
+        raise unsupported(
+            f"image variant: decoder rejected unsafe pixel dimensions ({error})"
         ) from error
     except (OSError, SyntaxError, ValueError) as error:
-        raise FormatRefusal(
-            f"unsupported image variant: the installed decoder could not read it ({error})"
+        raise unsupported(
+            f"image variant: the installed decoder could not read it ({error})"
         ) from error
 
 
@@ -1089,6 +1122,8 @@ _DECODER_PLUGINS: Final = {
     "bmp": "BMP",
     "webp": "WEBP",
     "heic": "HEIF",
+    "heif": "HEIF",
+    "avif": "AVIF",
 }
 
 
@@ -1116,13 +1151,10 @@ def missing_reader_detail(format_name: str) -> str:
     """
     if not has_reader(format_name):
         return (
-            f"unsupported {format_name}: this build has no reader for {format_name} at all "
+            f"{format_name}: this build has no reader for {format_name} at all "
             "yet, which is a gap in this pipeline rather than anything about this file"
         )
-    return (
-        f"unsupported {format_name}: this build has a {format_name} reader and it could "
-        "not open these bytes"
-    )
+    return f"{format_name}: this build has a {format_name} reader and it could not open these bytes"
 
 
 def count_raster_pages(data: bytes) -> int:
@@ -1140,6 +1172,8 @@ def raster_renderer_recipe() -> dict[str, Any]:
     return {
         "renderer": "Pillow",
         "renderer_version": Image.__version__,
+        "pillow_heif_version": pillow_heif.__version__,
+        "libheif_version": pillow_heif.libheif_info()["libheif"],
         "output": {"codec": "png", "color_mode": "RGB"},
     }
 
@@ -1166,8 +1200,8 @@ def render_raster_page(data: bytes, page_index: int) -> tuple[bytes, ImageGeomet
         SyntaxError,
         ValueError,
     ) as error:
-        raise FormatRefusal(
-            f"unsupported {decoded.format}: the installed decoder could not rasterise page {page_index} ({error})"
+        raise unsupported(
+            f"{decoded.format}: the installed decoder could not rasterise page {page_index} ({error})"
         ) from error
     return (
         output.getvalue(),
@@ -1211,17 +1245,15 @@ def _validate_classic_tiff_page_chain(data: bytes) -> None:
     pages = 0
     while offset:
         if offset in seen:
-            raise FormatRefusal("corrupt TIFF: image-directory chain contains a cycle")
+            raise corrupt("TIFF: image-directory chain contains a cycle")
         if offset + 2 > len(data):
-            raise FormatRefusal("corrupt TIFF: image-directory offset falls outside the file")
+            raise corrupt("TIFF: image-directory offset falls outside the file")
         seen.add(offset)
         (entries,) = struct.unpack_from(endian + "H", data, offset)
         next_offset_at = offset + 2 + entries * 12
         if next_offset_at + 4 > len(data):
-            raise FormatRefusal("corrupt TIFF: image-directory entries run past the file")
+            raise corrupt("TIFF: image-directory entries run past the file")
         pages += 1
         if pages > MAX_TIFF_PAGES:
-            raise FormatRefusal(
-                f"unsupported TIFF: more than {MAX_TIFF_PAGES} pages exceed the fan-out limit"
-            )
+            raise unsupported(f"TIFF: more than {MAX_TIFF_PAGES} pages exceed the fan-out limit")
         (offset,) = struct.unpack_from(endian + "I", data, next_offset_at)

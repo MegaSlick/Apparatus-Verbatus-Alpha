@@ -408,4 +408,4 @@ def test_a_fanned_source_cannot_seal_raw_container_bytes_without_a_render_transf
     import run as exemplar
 
     with pytest.raises(ContractError, match="fanned source page must carry the render transform"):
-        exemplar._verify_admitted_blob(tree, admission, source)
+        exemplar._verify_admitted_blob(tree, tree.read_run(), admission, source)

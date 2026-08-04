@@ -26,7 +26,10 @@ import zlib
 from io import BytesIO
 from typing import TypedDict
 
+import pillow_heif
 from PIL import Image, UnidentifiedImageError
+
+pillow_heif.register_heif_opener()
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
