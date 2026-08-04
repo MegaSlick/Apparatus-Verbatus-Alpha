@@ -47,6 +47,17 @@ The act-level proposal seal remains the authority for expected acts. The Armariu
 places each one in exactly one terminal category and retains a review reason where a
 text cannot be delivered. An accepted act must have exactly one Archetypus record;
 a non-accepted terminal act must have none, so the stage never selects one record
-from an ambiguous or orphaned set. A sealed page with no diagnosed act remains
-partial: silence is not `confirmed-blank` evidence. The Armarium does not choose
-among witness readings or put witness text in output.
+from an ambiguous or orphaned set. The Armarium does not choose among witness
+readings or put witness text in output.
+
+**Every sealed page must have had an act marked out on it, and that is checked per
+page rather than per run.** The stage derives each act's page coverage from the
+Designator regions actually cut -- not from the proposal seal's primary
+`page_ordinal`, because an act running over a page break is cut on both sides and
+examines both -- and hands it to the run aggregate, which names any sealed page no
+act reached. Silence is not `confirmed-blank` evidence, and a check that asked only
+whether the *run* produced any acts let every busy page discharge a silent page's
+proof obligation. Nothing here diagnoses a blank page; that is the unbuilt
+Recensor's, and what artifact will eventually prove a page-level `confirmed-blank`
+is open -- the category algebra is act-oriented and has no way to say "this page was
+examined and held nothing".

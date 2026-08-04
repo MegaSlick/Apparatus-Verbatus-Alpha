@@ -47,7 +47,14 @@ with its reason, not a fabricated text. The deterministic fixture also exercises
 ## Consumer obligations
 
 Recensor derives the latest reading by unique attempt ordinal, refuses a tie, and
-writes the exact Perlectio reference it reviewed into every review/request.
+writes the exact Perlectio reference it reviewed into every review/request. The
+ordinal is not taken on the payload's word: every consumer names the operation it
+is collapsing attempts of (`perlegere`, `recense`, `read:<chair>`) and the sealed
+`attempt_id` is recomputed from (subject, operation, ordinal), because the envelope
+binds `artifact_id` to that token without ever re-deriving the token itself.
+Ordinals must also be the contiguous run 1..N -- attempts are append-only and never
+reused, so a gap is an attempt that is no longer here, and a manufactured far
+ordinal cannot leapfrog the attempt that happened.
 Archetypus and Armarium follow that reference rather than independently looking up
 whatever reading now sorts latest. This prevents an unreviewed recovery reading
 from becoming established text.
