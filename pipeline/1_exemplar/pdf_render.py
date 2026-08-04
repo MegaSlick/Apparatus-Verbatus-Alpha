@@ -32,7 +32,13 @@ from typing import Any, Final, NamedTuple
 
 import admission
 from admission import RefusalReason
-from image_formats import MAX_DIMENSION, MAX_PIXELS, FormatRefusal, validate_jpeg
+from image_formats import (
+    MAX_DIMENSION,
+    MAX_PIXELS,
+    MAX_PNG_DECODED_BYTES,
+    FormatRefusal,
+    validate_jpeg,
+)
 
 PDF_SIGNATURE: Final = b"%PDF-"
 
@@ -40,6 +46,10 @@ PDF_SIGNATURE: Final = b"%PDF-"
 # page count read out of an untrusted file is a loop bound an attacker writes, so
 # it is bounded here before the fan-out ever runs.
 MAX_PAGES: Final = 5_000
+# A scan-only PDF needs a small, bounded number of objects per page. Without a
+# separate xref bound, a 64 MiB source can still allocate millions of dictionary
+# entries before page counting begins.
+MAX_XREF_ENTRIES: Final = 200_000
 
 _WHITESPACE: Final = b"\x00\t\n\x0c\r "
 _DELIMITER_BYTES: Final = b"()<>[]{}/%"
@@ -161,6 +171,7 @@ def _parse_hex_string(data: bytes, pos: int) -> tuple[bytes, int]:
 # RecursionError — GOVERNANCE's "fail closed, always" applies to this parser's
 # own crash modes as much as to the documents it reads.
 _MAX_OBJECT_NESTING: Final = 100
+_MAX_OBJECT_ITEMS: Final = 10_000
 
 
 def _parse_array(data: bytes, pos: int, depth: int) -> tuple[list, int]:
@@ -172,6 +183,11 @@ def _parse_array(data: bytes, pos: int, depth: int) -> tuple[list, int]:
             raise PdfRefusal(RefusalReason.CORRUPT, "unterminated array")
         if data[pos : pos + 1] == b"]":
             return items, pos + 1
+        if len(items) >= _MAX_OBJECT_ITEMS:
+            raise PdfRefusal(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"an array exceeds the {_MAX_OBJECT_ITEMS}-object item limit",
+            )
         value, pos = parse_object(data, pos, depth + 1)
         items.append(value)
 
@@ -179,18 +195,25 @@ def _parse_array(data: bytes, pos: int, depth: int) -> tuple[list, int]:
 def _parse_dict(data: bytes, pos: int, depth: int) -> tuple[dict, int]:
     pos += 2  # skip '<<'
     result: dict[str, Any] = {}
+    parsed_items = 0
     while True:
         pos = _skip_ws_comments(data, pos)
         if pos >= len(data):
             raise PdfRefusal(RefusalReason.CORRUPT, "unterminated dictionary")
         if data[pos : pos + 2] == b">>":
             return result, pos + 2
+        if parsed_items >= _MAX_OBJECT_ITEMS:
+            raise PdfRefusal(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"a dictionary exceeds the {_MAX_OBJECT_ITEMS}-object item limit",
+            )
         if data[pos : pos + 1] != b"/":
             raise PdfRefusal(RefusalReason.CORRUPT, f"dictionary key is not a name at byte {pos}")
         key, pos = _parse_name(data, pos)
         pos = _skip_ws_comments(data, pos)
         value, pos = parse_object(data, pos, depth + 1)
         result[key] = value
+        parsed_items += 1
 
 
 def _parse_number_token(data: bytes, pos: int) -> tuple[int | float, int] | None:
@@ -198,7 +221,13 @@ def _parse_number_token(data: bytes, pos: int) -> tuple[int | float, int] | None
     if not match:
         return None
     text = match.group(0)
-    return (float(text) if b"." in text else int(text)), match.end()
+    try:
+        value = float(text) if b"." in text else int(text)
+    except (OverflowError, ValueError) as error:
+        raise PdfRefusal(
+            RefusalReason.CORRUPT, "numeric object is too large to decode safely"
+        ) from error
+    return value, match.end()
 
 
 def parse_object(data: bytes, pos: int, depth: int = 0) -> tuple[Any, int]:
@@ -259,7 +288,12 @@ def _find_startxref(data: bytes) -> int:
     match = re.search(rb"startxref\s+(\d+)", data[index:])
     if not match:
         raise PdfRefusal(RefusalReason.CORRUPT, "startxref names no offset")
-    return int(match.group(1))
+    try:
+        return int(match.group(1))
+    except ValueError as error:
+        raise PdfRefusal(
+            RefusalReason.CORRUPT, "startxref offset is too large to decode safely"
+        ) from error
 
 
 def _parse_xref_table(data: bytes, offset: int) -> tuple[dict[int, int], dict[str, Any]]:
@@ -279,11 +313,25 @@ def _parse_xref_table(data: bytes, offset: int) -> tuple[dict[int, int], dict[st
         )
     pos = offset + match.end()
     entries: dict[int, int] = {}
+    declared_entries = 0
     while True:
         sub_match = re.match(rb"(\d+)\s+(\d+)\s*[\r\n]+", data[pos:])
         if not sub_match:
             break
-        start_num, count = int(sub_match.group(1)), int(sub_match.group(2))
+        try:
+            start_num, count = int(sub_match.group(1)), int(sub_match.group(2))
+        except ValueError as error:
+            raise PdfRefusal(
+                RefusalReason.CORRUPT,
+                "cross-reference subsection bounds are too large to decode safely",
+            ) from error
+        declared_entries += count
+        if declared_entries > MAX_XREF_ENTRIES:
+            raise PdfRefusal(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"the PDF declares more than the {MAX_XREF_ENTRIES}-entry "
+                "cross-reference entry limit",
+            )
         pos += sub_match.end()
         for i in range(count):
             row = data[pos : pos + 20]
@@ -379,7 +427,16 @@ def _page_list(data: bytes, xref: dict[int, int], trailer: dict[str, Any]) -> li
     pages_root = resolve(root.get("Pages"), data, xref)
 
     result: list[dict[str, Any]] = []
-    _walk_pages(pages_root, data, xref, result, {}, depth=0, seen=frozenset())
+    _walk_pages(
+        pages_root,
+        data,
+        xref,
+        result,
+        {},
+        depth=0,
+        seen=frozenset(),
+        visited=set(),
+    )
     if not result:
         raise PdfRefusal(RefusalReason.CORRUPT, "the PDF declares no pages")
     if len(result) > MAX_PAGES:
@@ -399,6 +456,7 @@ def _walk_pages(
     *,
     depth: int,
     seen: frozenset,
+    visited: set,
 ) -> None:
     if depth > 64:
         raise PdfRefusal(RefusalReason.CORRUPT, "page tree is too deep, likely a cycle")
@@ -412,16 +470,65 @@ def _walk_pages(
 
     node_type = node.get("Type")
     if "Kids" in node or node_type == "Pages":
+        declared_count = resolve(node.get("Count"), data, xref)
+        if (
+            not isinstance(declared_count, int)
+            or isinstance(declared_count, bool)
+            or declared_count < 0
+        ):
+            raise PdfRefusal(
+                RefusalReason.CORRUPT, "page-tree /Count is not a non-negative integer"
+            )
+        if declared_count > MAX_PAGES:
+            raise PdfRefusal(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"the page tree declares {declared_count} pages, past the "
+                f"{MAX_PAGES}-page admission limit",
+            )
         kids = resolve(node.get("Kids"), data, xref)
         if not isinstance(kids, list):
             raise PdfRefusal(RefusalReason.CORRUPT, "/Kids is not an array")
+        if len(kids) > MAX_PAGES:
+            raise PdfRefusal(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"a page-tree node carries {len(kids)} children, past the "
+                f"{MAX_PAGES}-page admission limit",
+            )
+        before = len(result)
         for kid_ref in kids:
             key = (kid_ref.num, kid_ref.gen) if isinstance(kid_ref, PdfRef) else id(kid_ref)
             if key in seen:
                 raise PdfRefusal(RefusalReason.CORRUPT, "page tree contains a cycle")
+            if key in visited:
+                raise PdfRefusal(
+                    RefusalReason.CORRUPT,
+                    "page tree references one page or page-tree object more than once",
+                )
+            visited.add(key)
             kid = resolve(kid_ref, data, xref)
-            _walk_pages(kid, data, xref, result, merged, depth=depth + 1, seen=seen | {key})
+            _walk_pages(
+                kid,
+                data,
+                xref,
+                result,
+                merged,
+                depth=depth + 1,
+                seen=seen | {key},
+                visited=visited,
+            )
+        actual_count = len(result) - before
+        if actual_count != declared_count:
+            raise PdfRefusal(
+                RefusalReason.CORRUPT,
+                f"page-tree /Count declares {declared_count}, but its descendants contain "
+                f"{actual_count} pages",
+            )
     elif node_type == "Page":
+        if len(result) >= MAX_PAGES:
+            raise PdfRefusal(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"the PDF contains more than the {MAX_PAGES}-page admission limit",
+            )
         result.append({**merged, **node})
     else:
         raise PdfRefusal(RefusalReason.CORRUPT, f"unknown page tree node type {node_type!r}")
@@ -516,6 +623,12 @@ def _decode_image_xobject(xobj: PdfStream, data: bytes, xref: dict[int, int]) ->
             )
         channels, color_type = _RAW_COLORSPACES[colorspace]
         expected = width * height * channels
+        if expected > MAX_PNG_DECODED_BYTES:
+            raise PdfRefusal(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"the page declares {expected} decoded sample bytes, past the "
+                f"{MAX_PNG_DECODED_BYTES}-byte decoded-byte admission limit",
+            )
 
         if image_filter == "FlateDecode":
             decompressor = zlib.decompressobj()
@@ -532,6 +645,11 @@ def _decode_image_xobject(xobj: PdfStream, data: bytes, xref: dict[int, int]) ->
                 )
             if not decompressor.eof:
                 raise PdfRefusal(RefusalReason.CORRUPT, "image stream is truncated")
+            if decompressor.unused_data or decompressor.unconsumed_tail:
+                raise PdfRefusal(
+                    RefusalReason.CORRUPT,
+                    "image stream has trailing bytes after its compressed data",
+                )
         else:
             samples = xobj.raw
 

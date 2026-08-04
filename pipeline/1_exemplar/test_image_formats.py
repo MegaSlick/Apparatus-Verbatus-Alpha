@@ -14,6 +14,7 @@ a test that only checked "it raised" would let the two collapse.
 """
 
 import struct
+import tracemalloc
 import zlib
 
 import pytest
@@ -22,6 +23,7 @@ from image_formats import (
     MAX_TIFF_IFDS,
     FormatRefusal,
     ImageGeometry,
+    _tiff_unsigned_values,
     sniff,
     validate,
     validate_jpeg,
@@ -52,6 +54,27 @@ def test_sniff_does_not_call_an_unrelated_iso_container_a_heic():
     name and admit nothing either way."""
     mp4 = struct.pack(">I", 24) + b"ftyp" + b"isom" + b"\x00" * 4 + b"isom" + b"mp42"
     assert sniff(mp4) is None
+
+
+def test_heic_brand_sniffing_does_not_allocate_from_the_ftyp_box_size():
+    """A refused format still crosses the sniffer; its header cannot size a list."""
+    box_size = 256 * 1024
+    data = (
+        struct.pack(">I", box_size)
+        + b"ftyp"
+        + b"isom"
+        + b"\x00" * 4
+        + b"mp42" * ((box_size - 16) // 4)
+    )
+
+    tracemalloc.start()
+    try:
+        assert sniff(data) is None
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 1024 * 1024
 
 
 # --- PNG -------------------------------------------------------------------------
@@ -234,6 +257,12 @@ def test_validate_jpeg_refuses_non_jpeg_bytes():
 def test_validate_tiff_reads_geometry_little_and_big_endian():
     assert validate_tiff(tiff(6, 5)) == ImageGeometry("tiff", 6, 5)
     assert validate_tiff(tiff(8, 3, little_endian=False)) == ImageGeometry("tiff", 8, 3)
+
+
+def test_tiff_strip_counts_are_bounded_before_struct_allocates_from_the_header():
+    count = 100_001
+    with pytest.raises(FormatRefusal, match="segment limit"):
+        _tiff_unsigned_values(b"\x00\x00" * count, 3, count, "<")
 
 
 def test_validate_tiff_accepts_long_typed_tags():

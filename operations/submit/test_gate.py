@@ -12,6 +12,7 @@ record of nobody's decision, and it is used only to prove that the machinery aro
 one behaves.
 """
 
+import inspect
 import json
 
 import pytest
@@ -79,13 +80,13 @@ def test_editing_one_character_of_the_policy_changes_its_hash(policy):
 
 def test_real_input_with_no_approval_at_all_is_refused(policy):
     with pytest.raises(gate.GateRefusal, match="none was supplied"):
-        gate.enforce(is_fixture=False, approval=None, policy=policy)
+        gate.enforce(approval=None, policy=policy)
 
 
 def test_real_input_with_a_stale_approval_is_refused_and_names_the_mismatch(policy):
     stale = approval(policy, target="b" * 64)
     with pytest.raises(gate.GateRefusal, match="stale"):
-        gate.enforce(is_fixture=False, approval=stale, policy=policy)
+        gate.enforce(approval=stale, policy=policy)
 
 
 def test_an_approval_for_a_different_action_does_not_authorize_this_door(policy):
@@ -93,21 +94,22 @@ def test_an_approval_for_a_different_action_does_not_authorize_this_door(policy)
     are not this one, whatever target hash they happen to carry."""
     wrong = approval(policy, action="exclusion")
     with pytest.raises(gate.GateRefusal, match="does not authorize real input"):
-        gate.enforce(is_fixture=False, approval=wrong, policy=policy)
+        gate.enforce(approval=wrong, policy=policy)
 
 
 def test_real_input_with_a_current_approval_passes(policy):
-    gate.enforce(is_fixture=False, approval=approval(policy), policy=policy)
+    gate.enforce(approval=approval(policy), policy=policy)
 
 
-def test_fixture_input_passes_with_no_approval(policy):
-    gate.enforce(is_fixture=True, approval=None, policy=policy)
+def test_the_gate_has_no_caller_controlled_fixture_override():
+    """Fixture status comes from the loaded fixture path, never a gate argument."""
+    assert "is_fixture" not in inspect.signature(gate.enforce).parameters
 
 
 def test_a_missing_policy_on_the_real_path_refuses_rather_than_passing():
     """Unknown is never zero: a check that cannot run is a failure."""
     with pytest.raises(gate.GateRefusal, match="missing policy is a failed check"):
-        gate.enforce(is_fixture=False, approval={"action": "data-gate"}, policy=None)
+        gate.enforce(approval={"action": "data-gate"}, policy=None)
 
 
 # --- The approval travels as a digest-checked reference --------------------------

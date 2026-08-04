@@ -147,10 +147,10 @@ rewritten" — and is never evidence of resubmission.
   re-render, re-decode or regenerate them: `pdf_render.py` is door-private and
   `pipeline/1_exemplar/test_import_boundaries.py` enforces that statically over the
   repository's own Python, so there is no API a later stage could call.
-- **Duplicate content is refused only among standalone raster sources** — never
-  between two PDF pages, and never between a PDF page and anything else. Two
-  genuinely distinct pages (two blank pages in one scanned book, most plainly) can
-  render to identical bytes honestly, and refusing the second would lose a real page
+- **Duplicate submitted files are refused by their bytes and declared path.** Two
+  paths carrying the same raster or PDF source produce a named duplicate refusal.
+  Distinct pages within one PDF are not duplicate files: two blank pages can render
+  to identical bytes honestly, and refusing the second would lose a real page
   (GOALS 1). A reader must not treat two page artifacts sharing one `image_path` as
   evidence that either is spurious.
 - A refused page carries no `page_id`, no `source_sha256` and seals nothing. Its ink
@@ -163,10 +163,10 @@ rewritten" — and is never evidence of resubmission.
 
 Real (non-fixture) input is refused before a single file is opened, by
 `operations/submit/gate.py`'s `enforce()`, at two boundaries: `submit.py`'s folder
-walk, and the door's own admission loop. A caller cannot reach either without
-deciding `is_fixture` explicitly, and the door treats only the repository's declared
-fixture root as synthetic — a caller-named folder is real input whatever it is
-called.
+walk, and the door's own admission loop. `enforce()` has no fixture override. The
+door derives the route from the self-hashed run ingress, and only the repository's
+declared fixture root and loaded manifest can create a synthetic-fixture run — a
+caller-named folder is real input whatever it is called.
 
 What a *run* was admitted under is stronger than either check, and is where a reader
 should look: `run.json` carries an `ingress` record inside its own self-hash, either

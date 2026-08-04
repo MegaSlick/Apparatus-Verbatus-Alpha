@@ -18,6 +18,7 @@ from admission import RefusalReason
 from image_formats import validate_png
 from pdf_render import MAX_PAGES, PdfRefusal, count_pages, parse_object, render_page
 from synthetic_sources import (
+    PdfBuilder,
     custom_image,
     gray_image,
     image_page_pdf,
@@ -182,6 +183,47 @@ def test_the_page_fan_out_is_bounded_before_it_runs():
     assert MAX_PAGES == 5_000
 
 
+def page_tree_pdf(*, kids: list[int], declared_count: int, builder: PdfBuilder) -> bytes:
+    catalog = builder.add()
+    pages = builder.add()
+    builder.objects[pages] = (
+        f"<< /Type /Pages /Kids [{' '.join(f'{kid} 0 R' for kid in kids)}] "
+        f"/Count {declared_count} >>"
+    ).encode()
+    builder.objects[catalog] = f"<< /Type /Catalog /Pages {pages} 0 R >>".encode()
+    return builder.build(catalog)
+
+
+def test_a_declared_page_count_past_the_limit_refuses_before_the_tree_is_walked():
+    builder = PdfBuilder()
+    data = page_tree_pdf(kids=[], declared_count=MAX_PAGES + 1, builder=builder)
+    with pytest.raises(PdfRefusal, match="page admission limit"):
+        count_pages(data)
+
+
+def test_the_page_tree_count_must_equal_the_pages_it_actually_contains():
+    builder = PdfBuilder()
+    page = builder.add(b"<< /Type /Page >>")
+    data = page_tree_pdf(kids=[page], declared_count=2, builder=builder)
+    with pytest.raises(PdfRefusal, match="Count"):
+        count_pages(data)
+
+
+def test_one_page_object_cannot_be_counted_twice_through_duplicate_references():
+    builder = PdfBuilder()
+    page = builder.add(b"<< /Type /Page >>")
+    data = page_tree_pdf(kids=[page, page], declared_count=2, builder=builder)
+    with pytest.raises(PdfRefusal, match="more than once"):
+        count_pages(data)
+
+
+def test_a_cross_reference_count_is_bounded_before_entries_are_allocated():
+    data = single_gray_page_pdf()
+    data = re.sub(rb"xref\n0 \d+", b"xref\n0 1000000", data, count=1)
+    with pytest.raises(PdfRefusal, match="cross-reference entry limit"):
+        count_pages(data)
+
+
 # --- corrupt documents, refused rather than guessed at ---------------------------
 
 
@@ -211,6 +253,14 @@ def test_a_flate_stream_that_would_inflate_past_its_declared_geometry_is_bounded
     has verified yet."""
     data = image_page_pdf([custom_image(2, 2, raw=zlib.compress(bytes(range(256)) * 40))])
     with pytest.raises(PdfRefusal, match="disagrees"):
+        render_page(data, 0)
+
+
+def test_a_flate_stream_with_trailing_encoded_bytes_is_refused_as_corrupt():
+    data = image_page_pdf(
+        [custom_image(2, 2, raw=zlib.compress(b"\x00\x01\x02\x03") + b"trailing")]
+    )
+    with pytest.raises(PdfRefusal, match="trailing bytes"):
         render_page(data, 0)
 
 
@@ -245,6 +295,31 @@ def test_pathologically_nested_objects_refuse_rather_than_crash():
     documents it reads: a Python RecursionError is not a named refusal."""
     with pytest.raises(PdfRefusal, match="nesting"):
         parse_object(b"[" * 3000 + b"]" * 3000, 0)
+
+
+def test_a_pathologically_large_integer_refuses_instead_of_escaping_as_value_error():
+    with pytest.raises(PdfRefusal, match="numeric object"):
+        parse_object(b"9" * 5_000, 0)
+
+
+def test_an_object_array_is_bounded_before_it_can_allocate_from_file_length():
+    with pytest.raises(PdfRefusal, match="object item limit"):
+        parse_object(b"[" + b"0 " * 10_001 + b"]", 0)
+
+
+def test_raw_render_allocation_is_bounded_independently_of_pixel_count():
+    data = image_page_pdf(
+        [
+            custom_image(
+                50_000,
+                1_000,
+                colorspace="DeviceRGB",
+                raw=zlib.compress(b"\x00"),
+            )
+        ]
+    )
+    with pytest.raises(PdfRefusal, match="decoded-byte admission limit"):
+        render_page(data, 0)
 
 
 def test_a_non_numeric_cross_reference_offset_refuses_rather_than_crashes():

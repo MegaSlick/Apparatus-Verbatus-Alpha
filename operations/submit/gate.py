@@ -7,12 +7,11 @@ way every other record in this tree hashes, an approval record bound to the exac
 policy version it approved, and a door that refuses real input without a current
 one.
 
-**Ruling 2026-08-04, item 1 — fixture status is never a flag.** `is_fixture` is
-threaded in by the caller from the same `load_fixture` path the skeleton already
-uses, and the door additionally refuses to call anything but the repository's own
-declared fixture root synthetic. Nothing here re-derives fixture status from a
-filename, a folder name, or a command-line switch, because any of those would be
-exactly the bypass this gate exists to close.
+**Ruling 2026-08-04, item 1 — fixture status is never a flag.** The gate exposes
+only a real-input check. The door's fixture route is selected by the repository's
+own declared fixture root and loaded manifest, and the self-hashed run ingress
+records which route created it. Nothing here accepts a filename, folder name,
+command-line switch, or boolean that can relabel real material as a fixture.
 
 **Ruling 2026-08-04, item 2 — the canonical policy bytes are the policy file
 itself.** `policy_hash` is `digest_bytes(canonical_bytes(...))` over the record
@@ -134,35 +133,28 @@ def load_approval(
     return require_current_data_gate_approval(policy, reference, read_bytes)
 
 
-def enforce(
-    *, is_fixture: bool, approval: dict[str, Any] | None, policy: dict[str, Any] | None
-) -> None:
+def enforce(*, approval: dict[str, Any] | None, policy: dict[str, Any] | None) -> None:
     """Refuse real input without a current, valid data-handling-gate approval.
 
-    Fixture input always passes, regardless of `approval` — the whole walking
-    skeleton runs on declared synthetic pages and none of it is real input. Real
-    input with no approval, a stale one (the policy changed underneath it), or one
-    naming a different action are each refused, named, before anything else happens
-    with the bytes.
+    This function has no fixture switch. The declared fixture route does not call
+    the real-input gate; every route that does call it is real. A boolean here would
+    let any caller relabel real material as fixture material, which is precisely the
+    bypass the gate exists to prevent.
 
-    This is deliberately checkable against a record already in hand, so a caller
-    that loaded an approval once can enforce it again at a second boundary without
-    a second disk read — the door does exactly that, because the spec says plainly
-    that "the door refuses real (non-fixture) input without a current one", and
-    that has to mean the door's own admission loop and not only the earlier tool
-    that happens to be the first real boundary today.
+    This is deliberately checkable against a validated record already in hand.
+    The door first reloads that record through the digest-checked reference sealed
+    into run authority, then applies this policy/action check at its own admission
+    loop. That keeps the second boundary independent of an earlier caller's word.
     """
-    if is_fixture:
-        return
-    if approval is None:
-        raise GateRefusal(
-            "real input requires a current data-handling-gate approval-record "
-            "artifact naming this exact policy version; none was supplied"
-        )
     if policy is None:
         raise GateRefusal(
             "real input cannot be checked against an absent policy; a missing policy "
             "is a failed check, never a passed one"
+        )
+    if approval is None:
+        raise GateRefusal(
+            "real input requires a current data-handling-gate approval-record "
+            "artifact naming this exact policy version; none was supplied"
         )
     if approval.get("action") != GATE_ACTION:
         raise GateRefusal(

@@ -93,7 +93,6 @@ def build_door_run(run_root: Path, run_id: str = "r1", *, files: dict[str, bytes
         sources,
         lambda path: files[path],
         policy=load_format_policy(),
-        is_fixture=True,
     )
     context.finish(DOOR)
     return tree, files

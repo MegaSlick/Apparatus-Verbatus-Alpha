@@ -19,9 +19,14 @@ from admission import RefusalReason, load_format_policy, reason_code
 from door import SourceEntry, expand_sources, process_sources
 from synthetic_sources import gif, jpeg, png, single_gray_page_pdf, tiff, two_page_pdf
 
-from common.contracts.approval import build_approval_record, synthetic_fixture_ingress_record
+from common.contracts.approval import (
+    ApprovalRecordReference,
+    approval_gated_real_ingress_record,
+    build_approval_record,
+    synthetic_fixture_ingress_record,
+)
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError
+from common.contracts.errors import ApprovalRefusal, ContractError
 from common.contracts.stages import DOOR
 from common.runtree.store import RunTree
 from common.stage import StageContext
@@ -94,10 +99,7 @@ def test_a_genuine_jpeg_named_png_is_admitted_under_the_format_its_bytes_prove(t
     tree, context = open_door(tmp_path, sources)
 
     assert (
-        process_sources(
-            context, tree, sources, reader({"scan-01.png": data}), policy=POLICY, is_fixture=True
-        )
-        == 1
+        process_sources(context, tree, sources, reader({"scan-01.png": data}), policy=POLICY) == 1
     )
 
     context.finish(DOOR)
@@ -112,9 +114,7 @@ def test_a_text_file_named_png_is_refused_and_the_reason_names_why(tmp_path):
     sources = [SourceEntry(1, "scan-01.png", digest_bytes(data))]
     tree, context = open_door(tmp_path, sources)
 
-    admitted = process_sources(
-        context, tree, sources, reader({"scan-01.png": data}), policy=POLICY, is_fixture=True
-    )
+    admitted = process_sources(context, tree, sources, reader({"scan-01.png": data}), policy=POLICY)
     context.finish(DOOR)
 
     assert admitted == 0
@@ -136,9 +136,7 @@ def test_an_unreadable_source_is_refused_by_name_and_the_rest_still_decide(tmp_p
     ]
     tree, context = open_door(tmp_path, sources)
 
-    admitted = process_sources(
-        context, tree, sources, reader({"here.png": good}), policy=POLICY, is_fixture=True
-    )
+    admitted = process_sources(context, tree, sources, reader({"here.png": good}), policy=POLICY)
     context.finish(DOOR)
 
     assert admitted == 1
@@ -152,9 +150,7 @@ def test_an_input_set_that_admitted_nothing_is_a_loud_failure(tmp_path):
     """Harvest #3, verbatim: never a green DONE with no output."""
     sources = [SourceEntry(1, "junk.png", "0" * 64)]
     tree, context = open_door(tmp_path, sources)
-    admitted = process_sources(
-        context, tree, sources, reader({"junk.png": b"junk"}), policy=POLICY, is_fixture=True
-    )
+    admitted = process_sources(context, tree, sources, reader({"junk.png": b"junk"}), policy=POLICY)
     context.finish(DOOR)
 
     with pytest.raises(ContractError, match="admitted nothing"):
@@ -189,9 +185,7 @@ def test_a_pdf_fans_out_into_one_ordinal_per_page(tmp_path):
     assert [(entry.ordinal, entry.pdf_page_index) for entry in sources] == [(1, 0), (2, 1)]
 
     tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(context, tree, sources, reader(files), policy=POLICY, is_fixture=True) == 2
-    )
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 2
     context.finish(DOOR)
 
     published = admissions(tree)
@@ -223,14 +217,12 @@ def test_a_pdf_page_is_rendered_at_the_door_and_never_again(tmp_path):
         [{"relative_path": "scan.pdf", "sha256": digest_bytes(data)}], reader(files), POLICY
     )
     tree, context = open_door(tmp_path, sources)
-    process_sources(context, tree, sources, reader(files), policy=POLICY, is_fixture=True)
+    process_sources(context, tree, sources, reader(files), policy=POLICY)
     context.finish(DOOR)
     first = {path: path.read_bytes() for path in sorted((tree.root).rglob("*")) if path.is_file()}
 
     tree_again, context_again = open_door(tmp_path, sources)
-    process_sources(
-        context_again, tree_again, sources, reader(files), policy=POLICY, is_fixture=True
-    )
+    process_sources(context_again, tree_again, sources, reader(files), policy=POLICY)
     context_again.finish(DOOR)
     second = {
         path: path.read_bytes() for path in sorted((tree_again.root).rglob("*")) if path.is_file()
@@ -245,9 +237,7 @@ def test_an_unrenderable_pdf_page_is_refused_and_still_holds_its_ordinal(tmp_pat
         [{"relative_path": "rotated.pdf", "sha256": digest_bytes(data)}], reader(files), POLICY
     )
     tree, context = open_door(tmp_path, sources)
-    admitted = process_sources(
-        context, tree, sources, reader(files), policy=POLICY, is_fixture=True
-    )
+    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
     context.finish(DOOR)
 
     assert admitted == 0
@@ -270,9 +260,7 @@ def test_a_pdf_declared_without_a_page_index_is_refused_rather_than_guessed_at(t
     data = single_gray_page_pdf()
     sources = [SourceEntry(1, "scan.pdf", digest_bytes(data), None)]
     tree, context = open_door(tmp_path, sources)
-    process_sources(
-        context, tree, sources, reader({"scan.pdf": data}), policy=POLICY, is_fixture=True
-    )
+    process_sources(context, tree, sources, reader({"scan.pdf": data}), policy=POLICY)
     context.finish(DOOR)
 
     record = admissions(tree)[1]
@@ -289,9 +277,7 @@ def test_a_pdf_whose_container_digest_disagrees_with_its_declaration_is_refused(
         SourceEntry(2, "book.pdf", "0" * 64, 1),
     ]
     tree, context = open_door(tmp_path, sources)
-    process_sources(
-        context, tree, sources, reader({"book.pdf": data}), policy=POLICY, is_fixture=True
-    )
+    process_sources(context, tree, sources, reader({"book.pdf": data}), policy=POLICY)
     context.finish(DOOR)
 
     for record in admissions(tree).values():
@@ -328,7 +314,6 @@ def test_a_duplicate_source_file_is_refused_by_name_and_names_the_first(tmp_path
         sources,
         reader({"scan-01.png": data, "scan-01-copy.png": data}),
         policy=POLICY,
-        is_fixture=True,
     )
     context.finish(DOOR)
 
@@ -337,6 +322,59 @@ def test_a_duplicate_source_file_is_refused_by_name_and_names_the_first(tmp_path
     assert published[1]["outcome"] == "admitted"
     assert reason_code(published[2]["payload"]["reason"]) is RefusalReason.DUPLICATE
     assert "source-1" in published[2]["payload"]["reason"]
+
+
+def test_a_duplicate_pdf_file_is_refused_without_losing_identical_pages_within_one_pdf(tmp_path):
+    data = two_page_pdf()
+    files = {"book.pdf": data, "book-copy.pdf": data}
+    rows = [{"relative_path": name, "sha256": digest_bytes(value)} for name, value in files.items()]
+    sources = expand_sources(rows, reader(files), POLICY)
+    tree, context = open_door(tmp_path, sources)
+
+    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
+    context.finish(DOOR)
+
+    assert admitted == 2
+    published = admissions(tree)
+    assert [published[index]["outcome"] for index in (1, 2)] == ["admitted", "admitted"]
+    assert all(
+        reason_code(published[index]["payload"]["reason"]) is RefusalReason.DUPLICATE
+        for index in (3, 4)
+    )
+
+
+def test_an_oversized_source_is_named_too_large_without_being_read(tmp_path):
+    opened: list[str] = []
+    sources = [SourceEntry(1, "large.png", "a" * 64, declared_size=door.MAX_SOURCE_BYTES + 1)]
+    tree, context = open_door(tmp_path, sources)
+
+    admitted = process_sources(
+        context,
+        tree,
+        sources,
+        lambda path: opened.append(path),
+        policy=POLICY,
+    )
+    context.finish(DOOR)
+
+    assert admitted == 0
+    assert opened == []
+    assert reason_code(admissions(tree)[1]["payload"]["reason"]) is RefusalReason.TOO_LARGE
+
+
+def test_real_inventory_size_survives_page_expansion_for_the_too_large_refusal():
+    rows = [
+        {
+            "relative_path": "large.png",
+            "sha256": "a" * 64,
+            "bytes": door.MAX_SOURCE_BYTES + 1,
+        }
+    ]
+
+    def unavailable(_path: str) -> bytes:
+        raise OSError("bytes intentionally not retained")
+
+    assert expand_sources(rows, unavailable, POLICY)[0].declared_size == door.MAX_SOURCE_BYTES + 1
 
 
 def test_two_byte_identical_pdf_pages_are_both_admitted(tmp_path):
@@ -349,9 +387,7 @@ def test_two_byte_identical_pdf_pages_are_both_admitted(tmp_path):
         [{"relative_path": "blank.pdf", "sha256": digest_bytes(data)}], reader(files), POLICY
     )
     tree, context = open_door(tmp_path, sources)
-    admitted = process_sources(
-        context, tree, sources, reader(files), policy=POLICY, is_fixture=True
-    )
+    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
     context.finish(DOOR)
 
     assert admitted == 2
@@ -371,25 +407,43 @@ def pdf_with_two_identical_pages() -> bytes:
 # --- Test 7, door half: real input is gated before a byte is read -----------------
 
 
-def test_real_input_with_no_approval_refuses_before_any_source_is_opened(tmp_path):
+def test_a_real_run_with_missing_approval_bytes_refuses_before_any_source_is_opened(tmp_path):
     opened: list[str] = []
 
     def watched(relative_path: str) -> bytes:
         opened.append(relative_path)
         return png()
 
-    sources = [SourceEntry(1, "real.png", None)]
-    tree, context = open_door(tmp_path, sources)
-    with pytest.raises(gate.GateRefusal, match="none was supplied"):
+    sources = [SourceEntry(1, "real.png", "a" * 64)]
+    reference = ApprovalRecordReference(f"receipts/sha256/{'b' * 64}.json", "b" * 64)
+    data_policy = gate.load_policy()
+    tree = RunTree.create(
+        tmp_path / "runs",
+        "real-missing-approval",
+        source_manifest=[{"relative_path": "real.png", "sha256": "a" * 64, "ordinal": 1}],
+        config_digest="c" * 64,
+        adapter_recipes=RECIPES,
+        witness_chairs=CHAIRS,
+        ingress=approval_gated_real_ingress_record(gate.policy_hash(data_policy), reference),
+    )
+    context = StageContext(
+        tree=tree,
+        run=tree.read_run(),
+        fixture={},
+        scenario="real-submission",
+        stage=DOOR,
+        adapter_revision=RECIPES["door"],
+        args=None,
+        registry=None,
+    )
+    with pytest.raises(ApprovalRefusal, match="could not be read"):
         process_sources(
             context,
             tree,
             sources,
             watched,
             policy=POLICY,
-            is_fixture=False,
-            approval=None,
-            data_policy=gate.load_policy(),
+            data_policy=data_policy,
         )
     assert opened == [], "the gate must refuse before a single source is read"
     assert admissions(tree) == {}
@@ -399,12 +453,7 @@ def test_fixture_input_needs_no_approval_at_all(tmp_path):
     data = png(2, 2)
     sources = [SourceEntry(1, "page-1.png", digest_bytes(data))]
     tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context, tree, sources, reader({"page-1.png": data}), policy=POLICY, is_fixture=True
-        )
-        == 1
-    )
+    assert process_sources(context, tree, sources, reader({"page-1.png": data}), policy=POLICY) == 1
 
 
 def test_a_real_run_seals_the_approval_into_every_admission_it_publishes(tmp_path, monkeypatch):

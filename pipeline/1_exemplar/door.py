@@ -61,8 +61,10 @@ from image_formats import MAX_SOURCE_BYTES, sniff  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
+    APPROVAL_GATED_REAL_INGRESS,
     ApprovalRecordReference,
     approval_gated_real_ingress_record,
+    parse_data_gate_ingress_record,
     synthetic_fixture_ingress_record,
 )
 from common.contracts.canonical import digest_bytes, digest_of  # noqa: E402
@@ -98,6 +100,7 @@ class SourceEntry(NamedTuple):
     declared_path: str
     declared_sha256: str | None
     pdf_page_index: int | None = None
+    declared_size: int | None = None
 
 
 class _Decision(NamedTuple):
@@ -200,10 +203,11 @@ def expand_sources(
 ) -> list[SourceEntry]:
     """Turn a list of submitted files into a list of pages with ordinals assigned.
 
-    `files` is a list of `{relative_path, sha256}` rows sorted by path, the shape
-    `operations/submit/submit.py`'s sealed manifest writes. A PDF's page count is
-    read once through the same door-private `pdf_render` call that renders them;
-    nothing here decodes a page early.
+    `files` is a list of `{relative_path, sha256, bytes}` rows sorted by path, the
+    shape `operations/submit/submit.py`'s sealed manifest writes. Synthetic callers
+    may omit `bytes`; real inventory never does. A PDF's page count is read once
+    through the same door-private `pdf_render` call that renders them; nothing here
+    decodes a page early.
 
     Refusals are *not* decided here. One unreadable or unopenable source still
     occupies exactly one ordinal, and `process_sources` produces its named refusal
@@ -214,15 +218,22 @@ def expand_sources(
     sources: list[SourceEntry] = []
     for row in sorted(files, key=lambda item: item["relative_path"]):
         path, declared_sha256 = row["relative_path"], row["sha256"]
+        declared_size = row.get("bytes")
+        if declared_size is not None and (
+            not isinstance(declared_size, int)
+            or isinstance(declared_size, bool)
+            or declared_size < 0
+        ):
+            raise ContractError(f"submitted source {path!r} has no non-negative byte count")
         try:
             data = read_bytes(path)
         except OSError:
             ordinal += 1
-            sources.append(SourceEntry(ordinal, path, declared_sha256, None))
+            sources.append(SourceEntry(ordinal, path, declared_sha256, None, declared_size))
             continue
         if len(data) > MAX_SOURCE_BYTES or sniff(data) != "pdf":
             ordinal += 1
-            sources.append(SourceEntry(ordinal, path, declared_sha256, None))
+            sources.append(SourceEntry(ordinal, path, declared_sha256, None, declared_size))
             continue
         try:
             page_count = pdf_render.count_pages(data)
@@ -231,11 +242,11 @@ def expand_sources(
             # declared source, refused as a whole, and the run-level source
             # manifest must still account for it by ordinal.
             ordinal += 1
-            sources.append(SourceEntry(ordinal, path, declared_sha256, pdf_page_index=0))
+            sources.append(SourceEntry(ordinal, path, declared_sha256, 0, declared_size))
             continue
         for page_index in range(page_count):
             ordinal += 1
-            sources.append(SourceEntry(ordinal, path, declared_sha256, page_index))
+            sources.append(SourceEntry(ordinal, path, declared_sha256, page_index, declared_size))
     return sources
 
 
@@ -246,35 +257,55 @@ def process_sources(
     read_bytes: Callable[[str], bytes],
     *,
     policy: dict[str, str],
-    is_fixture: bool,
-    approval: dict[str, Any] | None = None,
     data_policy: dict[str, Any] | None = None,
-    approval_reference: ApprovalRecordReference | None = None,
 ) -> int:
     """Admit or refuse every declared source. Returns the count admitted.
 
-    `is_fixture` is required, never defaulted: every caller must say plainly whether
-    this is the walking skeleton's declared synthetic input or real material,
-    because that is exactly the distinction the data-handling gate depends on. The
-    gate is checked first, before a single file is opened: real input with no
-    current approval is refused before `read_bytes` is ever called.
+    Fixture status is read from the self-hashed run authority, never accepted from
+    a caller argument. The real-input gate is checked first, before a single file
+    is opened, through the approval reference that same authority carries.
 
     `read_bytes` is called once per distinct `declared_path` within *this* call,
     even when several ordinals (a PDF's pages) share one: a source is read once and
     every one of its pages is rendered from that single copy in memory.
 
     Per-file, never per-folder (harvest #2): one unreadable or refused source does
-    not stop the rest from being decided. Duplicate content is refused by name, but
-    only among standalone raster sources — never between two PDF pages, which can
-    be honestly byte-identical (two blank pages in one scanned book), and never
-    against a PDF page at all.
+    not stop the rest from being decided. Duplicate files are refused by their
+    source bytes and declared path. Byte-identical pages within one PDF remain
+    distinct pages; a second path carrying the same PDF bytes is a duplicate file.
     """
-    gate.enforce(is_fixture=is_fixture, approval=approval, policy=data_policy)
+    mode, _ingress_hash, approval_reference = parse_data_gate_ingress_record(
+        context.run.get("ingress")
+    )
+    if mode == APPROVAL_GATED_REAL_INGRESS:
+        if data_policy is None:
+            gate.enforce(approval=None, policy=None)
+        approval = gate.load_approval(approval_reference, root=tree.root, policy=data_policy)
+        gate.enforce(approval=approval, policy=data_policy)
     admitted = 0
-    seen_digests: dict[str, int] = {}
+    seen_sources: dict[str, tuple[str, int]] = {}
     cache: dict[str, bytes] = {}
 
     for source in sorted(sources, key=lambda item: item.ordinal):
+        if source.declared_size is not None and source.declared_size > MAX_SOURCE_BYTES:
+            first = seen_sources.get(source.declared_sha256)
+            if first is not None and first[0] != source.declared_path:
+                refusal = admission.duplicate_reason(first[1])
+            else:
+                seen_sources[source.declared_sha256] = (source.declared_path, source.ordinal)
+                refusal = admission.reason(
+                    RefusalReason.TOO_LARGE,
+                    f"{source.declared_size} bytes exceeds the "
+                    f"{MAX_SOURCE_BYTES}-byte admission limit",
+                )
+            _publish(
+                context,
+                source,
+                outcome="refused",
+                reason=refusal,
+                approval_reference=approval_reference,
+            )
+            continue
         try:
             data = cache.get(source.declared_path)
             if data is None:
@@ -290,25 +321,19 @@ def process_sources(
             )
             continue
 
-        decision = decide(data, source, policy)
-
-        # Duplicate content is checked only among standalone raster sources — the
-        # "duplicate files" ledger item is about one file submitted twice. A PDF
-        # page is never a candidate: two rendered pages can be byte-identical
-        # honestly, and content-addressed blob storage already dedupes their bytes
-        # on disk without refusing either as an act.
-        if (
-            source.pdf_page_index is None
-            and decision.outcome == "admitted"
-            and decision.digest in seen_digests
-        ):
-            decision = _Decision(
-                "refused",
-                admission.duplicate_reason(seen_digests[decision.digest]),
-                decision.digest,
-                None,
-                None,
+        actual_digest = digest_bytes(data)
+        first = seen_sources.get(actual_digest)
+        if first is not None and first[0] != source.declared_path:
+            _publish(
+                context,
+                source,
+                outcome="refused",
+                reason=admission.duplicate_reason(first[1]),
+                approval_reference=approval_reference,
             )
+            continue
+        seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
+        decision = decide(data, source, policy)
 
         if decision.outcome == "refused":
             _publish(
@@ -320,8 +345,6 @@ def process_sources(
             )
             continue
 
-        if source.pdf_page_index is None:
-            seen_digests[decision.digest] = source.ordinal
         _, published = tree.put_blob(DOOR, decision.store_bytes)
         extra: dict[str, Any] = {
             "sha256": decision.digest,
@@ -487,7 +510,6 @@ def fixture_submission(args, registry) -> int:
         sources,
         lambda declared_path: (fixture_root / declared_path).read_bytes(),
         policy=policy,
-        is_fixture=True,
     )
     context.finish(DOOR)
     require_some_admitted(admitted)
@@ -504,7 +526,7 @@ def real_submission(args, registry) -> int:
     """
     data_policy = gate.load_policy(Path(args.data_gate_policy))
     if args.approval_record is None:
-        gate.enforce(is_fixture=False, approval=None, policy=data_policy)
+        gate.enforce(approval=None, policy=data_policy)
     approval, reference = gate.read_external_approval(Path(args.approval_record), data_policy)
 
     roots = gate.approved_storage_roots(data_policy)
@@ -523,14 +545,21 @@ def real_submission(args, registry) -> int:
     def read_bytes(relative_path: str) -> bytes:
         data = bytes_by_path.get(relative_path)
         if data is None:
-            # The inventory kept an exact digest but not the bytes: the source is
-            # past the admission size limit. Raised as an OSError so it reaches the
-            # one place that turns a read failure into a named refusal.
+            # The inventory kept an exact digest and size but not the bytes. The
+            # declared-size branch refuses it before this reader is called; this is
+            # the fail-closed fallback if those two records ever drift.
             raise OSError(f"source exceeds the {MAX_SOURCE_BYTES}-byte admission limit")
         return data
 
     sources = expand_sources(
-        [{"relative_path": source.relative_path, "sha256": source.sha256} for source in found],
+        [
+            {
+                "relative_path": source.relative_path,
+                "sha256": source.sha256,
+                "bytes": source.size,
+            }
+            for source in found
+        ],
         read_bytes,
         format_policy,
     )
@@ -565,10 +594,7 @@ def real_submission(args, registry) -> int:
         sources,
         read_bytes,
         policy=format_policy,
-        is_fixture=False,
-        approval=approval,
         data_policy=data_policy,
-        approval_reference=stored,
     )
     context.finish(DOOR)
     require_some_admitted(admitted)

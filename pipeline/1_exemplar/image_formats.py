@@ -39,6 +39,7 @@ MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
 MAX_TIFF_IFDS: Final = 64
+MAX_TIFF_DATA_SEGMENTS: Final = 100_000
 
 
 class ImageGeometry(NamedTuple):
@@ -111,8 +112,9 @@ def _is_heic(data: bytes) -> bool:
         return False
     major_brand = data[8:12]
     # minor_version at [12:16], then compatible brands, 4 bytes each, to box_size.
-    compatible = [data[i : i + 4] for i in range(16, box_size, 4)]
-    return major_brand in _HEIC_BRANDS or any(brand in _HEIC_BRANDS for brand in compatible)
+    return major_brand in _HEIC_BRANDS or any(
+        data[offset : offset + 4] in _HEIC_BRANDS for offset in range(16, box_size, 4)
+    )
 
 
 def _geometry(format_name: str, width: Any, height: Any) -> ImageGeometry:
@@ -545,6 +547,11 @@ def _tiff_unsigned_values(value: bytes, field_type: int, count: int, endian: str
     """Decode strip/tile positions without touching a byte of pixel data."""
     if not count or field_type not in (3, 4):
         raise FormatRefusal("corrupt TIFF: image-data offsets or counts are not unsigned integers")
+    if count > MAX_TIFF_DATA_SEGMENTS:
+        raise FormatRefusal(
+            f"unsupported TIFF: {count} image-data segments exceed the "
+            f"{MAX_TIFF_DATA_SEGMENTS}-segment limit"
+        )
     unit = 2 if field_type == 3 else 4
     if len(value) != count * unit:
         raise FormatRefusal("corrupt TIFF: image-data value length disagrees with its IFD entry")

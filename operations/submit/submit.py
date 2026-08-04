@@ -54,6 +54,8 @@ MAX_RETAINED_BYTES: Final = 64 * 1024 * 1024
 # filename, a declared path, or image bytes, which is what the data-handling
 # policy's logging rule actually requires.
 _LOG_FIELDS: Final = frozenset({"files", "bytes", "digest", "removed", "status"})
+_LOG_EVENTS: Final = frozenset({"submission sealed", "cleanup"})
+_LOG_STATUSES: Final = frozenset({"target-absent", "target-present"})
 
 
 class SubmitRefusal(ContractError):
@@ -83,6 +85,28 @@ def log(event: str, **fields: Any) -> None:
             f"log() was asked to carry field(s) {unexpected}, outside its allowed set "
             f"{sorted(_LOG_FIELDS)}; a log line may never carry a name, a path, or image bytes"
         )
+    if event not in _LOG_EVENTS:
+        raise SubmitRefusal(
+            "log event is outside the closed operational vocabulary; arbitrary event "
+            "text could carry a submitted name or path"
+        )
+    for field in ("files", "bytes", "removed"):
+        if field in fields and (
+            not isinstance(fields[field], int)
+            or isinstance(fields[field], bool)
+            or fields[field] < 0
+        ):
+            raise SubmitRefusal(f"log field {field!r} must be a non-negative count")
+    if "digest" in fields:
+        value = fields["digest"]
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise SubmitRefusal("log field 'digest' must be a lowercase sha256")
+    if "status" in fields and fields["status"] not in _LOG_STATUSES:
+        raise SubmitRefusal("log field 'status' is outside the closed status vocabulary")
     rendered = " ".join(f"{key}={fields[key]}" for key in sorted(fields))
     print(f"{event}: {rendered}" if rendered else event)
 
@@ -152,16 +176,25 @@ def submit(
     The gate is checked *before* a single file is read: a refused submission
     touches no bytes and writes nothing, so a refusal can never leave a partial
     trace that a later run might mistake for progress. The storage-root check is
-    part of that — the approved policy decides where real material may live, and a
-    folder outside every approved root is refused before it is opened.
+    part of that — the approved policy decides where real material and its manifest
+    may live, and either location outside every approved root is refused before the
+    folder is opened.
     """
     policy = gate.load_policy(policy_path)
     if approval_record is None:
-        gate.enforce(is_fixture=False, approval=None, policy=policy)
+        gate.enforce(approval=None, policy=policy)
     _approval, reference = gate.read_external_approval(Path(approval_record), policy)
 
     roots = gate.approved_storage_roots(policy)
-    gate.require_approved_storage_location(source, roots, "submitted folder")
+    resolved_source = gate.require_approved_storage_location(source, roots, "submitted folder")
+    resolved_manifest = gate.require_approved_storage_location(
+        manifest_out, roots, "submission manifest"
+    )
+    if resolved_manifest.is_relative_to(resolved_source):
+        raise SubmitRefusal(
+            "the submission manifest cannot be written inside the submitted folder; "
+            "otherwise the next inventory includes its own prior output and cannot be idempotent"
+        )
 
     entries = walk_folder(source)
     manifest = build_manifest(entries, authorized_by=reference.to_record())

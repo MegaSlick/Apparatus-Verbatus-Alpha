@@ -4,7 +4,9 @@ The import door: a local folder in, a checksummed and sealed manifest out.
 
 `submit.py` walks a folder through `inventory.py`, hashes every regular file, and
 writes one atomic, self-hashed submission manifest naming the approval that admitted
-the corpus. It does not decode, sniff or judge image content — that is admission,
+the corpus. Both the folder and manifest must be under an approved storage root, and
+the manifest cannot sit inside the folder it inventories. It does not decode, sniff
+or judge image content — that is admission,
 and admission belongs to `pipeline/1_exemplar/door.py` and its one format policy.
 It does not transfer anything to a pod either; spec 04 owns "checksummed and
 resumable", and no pod exists yet.

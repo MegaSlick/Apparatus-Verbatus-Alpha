@@ -181,6 +181,30 @@ def test_a_folder_outside_the_approved_storage_roots_is_refused(submission, tmp_
     assert not submission["manifest_out"].exists()
 
 
+def test_a_manifest_outside_the_approved_storage_roots_is_refused(submission, tmp_path):
+    outside = tmp_path / "outside" / "submission.json"
+    with pytest.raises(gate.GateRefusal, match="outside every approved storage root"):
+        submit.submit(
+            submission["folder"],
+            outside,
+            approval_record=submission["approval"],
+            policy_path=submission["policy_path"],
+        )
+    assert not outside.exists()
+
+
+def test_the_manifest_cannot_be_written_inside_the_folder_it_inventories(submission):
+    inside = submission["folder"] / "submission.json"
+    with pytest.raises(submit.SubmitRefusal, match="inside the submitted folder"):
+        submit.submit(
+            submission["folder"],
+            inside,
+            approval_record=submission["approval"],
+            policy_path=submission["policy_path"],
+        )
+    assert not inside.exists()
+
+
 # --- The logging rule, made mechanical -------------------------------------------
 
 
@@ -193,6 +217,15 @@ def test_a_log_line_may_never_carry_a_name_a_path_or_bytes():
     for field in ("path", "filename", "relative_path", "image", "content"):
         with pytest.raises(submit.SubmitRefusal, match="may never carry a name"):
             submit.log("event", **{field: "page-1.png"})
+
+
+def test_a_log_name_cannot_be_smuggled_through_the_event_or_an_allowed_field():
+    with pytest.raises(submit.SubmitRefusal, match="event"):
+        submit.log("page-1.png", files=1)
+    with pytest.raises(submit.SubmitRefusal, match="status"):
+        submit.log("cleanup", status="page-1.png")
+    with pytest.raises(submit.SubmitRefusal, match="digest"):
+        submit.log("submission sealed", digest="page-1.png")
 
 
 def test_no_log_line_the_tool_actually_emits_names_a_submitted_file(submission, capsys):
