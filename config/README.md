@@ -12,17 +12,27 @@ The knobs. One question per planned file, each answerable without reading code.
 | `formats.toml` | which formats the Armarium writes |
 
 `admitted_formats.toml` is the admission list the door reads, and it is
-configuration precisely so that Tyrel's open ledger rulings — `.heic`, and whether
-PDF is admitted at all — are one line each rather than a code change. It is checked
-at load: it must name exactly the formats the door can detect, its actions come from
-a closed set, and it may not admit a format nothing can structurally verify.
+configuration precisely so that a format's route through the door — admit as-is,
+fan out unconditionally, fan out on demand, or a named gap — is one line each rather
+than a code change. It is checked at load: it must name exactly the formats the door
+can detect, its actions come from a closed set, and it may not admit a format
+nothing can structurally verify.
 
-**That claim was untrue for PDF and is now true.** The door decided the PDF fan-out
-from a hardcoded format name and never consulted this file, so `pdf = "refuse"`
-counted, rendered and sealed the pages anyway — three reviewing seats found it
-independently. The door now asks the list before it counts a page and again before
-it renders one, and `pipeline/1_exemplar/test_door.py` drives the shipped file end to
-end in both positions of the row. The shipped row is `refuse`, and the file says why.
+**There is no `refuse` action.** Ruling 2026-08-04, item 2 deleted it: "nothing
+should be rejected — any image and image formats should work." A refusal is always
+one of two facts — damaged bytes, or a format this project cannot yet decode — and
+the second is the `gap` action, worded and counted as a pipeline defect rather than
+a decision about the file. The shipped rows: `png`/`jpeg` admit; `tiff` is
+admit-or-fan-out (single-directory sealed unmodified, multi-directory fanned out and
+rendered); `pdf` renders every page, rasterised whole through `pypdfium2`; `gif` and
+`heic` are gapped, sniffable with no reader built yet.
+
+**A hardcoded format name bypassing this file was a real defect, once.** The door
+used to decide the PDF fan-out from `sniff(data) == "pdf"` directly and never
+consulted this file, so a policy refusing PDF still counted, rendered and sealed its
+pages — three reviewing seats found it independently. The door now asks the list
+before it counts a page and again before it renders one, for every multi-page-capable
+format, and `pipeline/1_exemplar/test_door.py` drives the shipped file end to end.
 
 `data_handling_policy.json` is the version an approval record names. Its hash is the
 canonical digest of its own content, so editing one character of it invalidates

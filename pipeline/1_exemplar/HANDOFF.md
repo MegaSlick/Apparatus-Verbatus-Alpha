@@ -11,9 +11,10 @@ directory of its own and writes here too — see below.
 This document is the only thing downstream stages may rely on. They read these
 files; they never import this stage's code. Every shape below is exercised by the
 proof fixture's `happy`, `review`, `refused-page` and `refused-first-page` scenarios
-(`pipeline/orchestrator/test_orchestrator_acceptance.py`), except the PDF path and
-the data-handling gate, which the walking skeleton's fixture never carries — those
-are proven directly in `pipeline/1_exemplar/test_pdf_render.py`,
+(`pipeline/orchestrator/test_orchestrator_acceptance.py`), except the PDF path, the
+multi-page TIFF fan-out and the data-handling gate, which the walking skeleton's
+fixture never carries — those are proven directly in
+`pipeline/1_exemplar/test_pdf_render.py`, `pipeline/1_exemplar/test_tiff_render.py`,
 `pipeline/1_exemplar/test_door.py` and `operations/submit/test_gate.py`, against
 synthetic bytes standing in for real input.
 
@@ -21,49 +22,65 @@ synthetic bytes standing in for real input.
 gate refuses without an approval record naming the current policy version, and no
 such approval exists.
 
-## What the shipped admission list admits, and the three limits behind it
+## What the shipped admission list admits, and the one limit behind it
 
-`config/admitted_formats.toml` ships `png`, `jpeg` and `tiff` as `admit`, and `pdf`,
-`gif` and `heic` as `refuse`. **The list is the authority for every format**,
-including the multi-page ones: the door asks `admission.classify_detected_format`
-before it counts a page and again before it renders one, and names no format itself.
+**Repaired 2026-08-04 against Tyrel's rulings, which overturned this section's whole
+premise.** "Nothing should be rejected — any image and image formats should work. If
+things are failing the image got corrupted … or the pipeline is broken." There is no
+`refuse` action any more: `config/admitted_formats.toml` ships `png` and `jpeg` as
+`admit`, `tiff` as `admit-or-fan-out`, `pdf` as `render-pages`, and `gif`/`heic` as
+`gap` — sniffable, with no reader built yet. **The list is still the authority for
+every format**, including the multi-page ones: the door asks
+`admission.classify_detected_format` before it counts a page and again before it
+renders one, and names no format's admission itself.
 
-Three limits a later stage — and Tyrel — should know about, because each one means a
-page this door will not read. Each is a **named, counted refusal**, never an
-anonymous "unsupported" counter, and each is one ruling away from changing:
+The three limits this section used to carry are settled:
 
-- **PDF is refused**, and `pipeline/1_exemplar/pdf_render.py` stays in the tree
-  behind that row, written and tested. It reads a page's *resources* and never its
-  `/Contents` stream, so it cannot tell a scanned page from a page that draws text or
-  vector marks beside the one image it carries — and on such a page it would seal the
-  image and lose the rest. Turning the row to `render-pages` needs no code change;
-  it needs a page-content interpreter that proves exactly one image is painted
-  exactly as recorded, which is its own spec.
-- **Multi-page TIFF is refused.** A second image directory is refused at the first
-  link of the chain, because the door assigns one ordinal per page and this stage
-  cannot extract page two as its own image. Multi-page TIFF is ordinary flatbed
-  output for a book, so this is a real coverage cost and a ledger item rather than a
-  settled question.
-- **A JPEG with any trailing byte after EOI is refused**, as a concatenated second
-  image or an appended payload. Real cameras and scanners do sometimes append a
-  thumbnail or padding there. Whether that bites depends entirely on what the actual
-  scanner emits, which cannot be known before the first real corpus.
+- **PDF is admitted, rasterised per page.** `pipeline/1_exemplar/pdf_render.py` no
+  longer reads a page's resource dictionary and extracts one image XObject — that
+  approach never touched `/Contents` and could not tell a scanned page from one that
+  draws text or vector marks beside its one image, which is exactly the defect that
+  used to hold this row at `refuse`. It now renders the whole page to pixels via
+  `pypdfium2` (cleared to enter, ruling 9), so a page's content-stream shape is the
+  renderer's problem rather than a hundred named limits: rotation, colour space,
+  incremental updates and non-classic cross-reference tables all stop mattering by
+  construction.
+- **Multi-page TIFF is fanned out**, exactly like PDF, through the door-private
+  `pipeline/1_exemplar/tiff_render.py`. A single-directory TIFF is still sealed
+  unmodified — nothing about the common case changed — but a file the door finds
+  holding more than one directory (`image_formats.tiff_directory_offsets`) is fanned
+  into one ordinal per page and each page rendered. **What tiff_render.py cannot yet
+  do**, and names as a gap rather than a refusal: a directory using any compression
+  codec other than none (LZW, Deflate, PackBits, CCITT, ...), tiled rather than
+  stripped storage, or more than 8 bits per sample. Extending it is additive — one
+  more branch, not a different door.
+- **A JPEG with a trailing byte after EOI is admitted.** Real cameras and scanners do
+  append a thumbnail or padding there; refusing it told Tyrel a real photograph was
+  corrupt when it was not.
+
+**A format with no reader at all — GIF, HEIC today — is a named gap, not a
+refusal by policy.** Its refusal reason is `UNSUPPORTED_VARIANT`, the same code a
+genuine undecodable variant of a *supported* format gets, because both mean the same
+thing: a pipeline defect, never a decision about the file. Turning either row to
+`admit` needs a structural validator in `image_formats.py` first; `admission.py`
+refuses to load a policy that admits a format nothing can verify.
 
 ## `kind="admission"` — the door's record of every declared source
 
-One per declared source (per **page**, not per file — a multi-page PDF is fanned out
-to one ordinal per page before the door decides anything). `subject_id` is
-`f"source-{ordinal}"`. `outcome` is `"admitted"` or `"refused"` and nothing else;
-one kind carrying an outcome is what makes the door's census complete.
+One per declared source (per **page**, not per file — a multi-page container, a PDF
+or a multi-directory TIFF, is fanned out to one ordinal per page before the door
+decides anything). `subject_id` is `f"source-{ordinal}"`. `outcome` is `"admitted"`
+or `"refused"` and nothing else; one kind carrying an outcome is what makes the
+door's census complete.
 
 Admitted payload:
 
 ```
-declared_path   the path the source was declared under (for a PDF page, the PDF's
-                own path, shared across its pages)
+declared_path   the path the source was declared under (for a container page, the
+                container's own path, shared across its pages)
 ordinal         the integer ordinal this source occupies in run.json's source_manifest
 sha256          the digest of the bytes actually sealed — for a standalone file its
-                own bytes; for a PDF page the *rendered page's* bytes
+                own bytes; for a container page the *rendered page's* bytes
 stored_at       the blob's relative path, content-addressed under
                 1_exemplar/blobs/sha256/
 geometry        {width, height}, read off the real container by the structural
@@ -73,9 +90,15 @@ geometry        {width, height}, read off the real container by the structural
 and, **only when the sealed bytes are a render rather than the submitted file**:
 
 ```
-pdf_page_index    which page of that container produced these bytes (0-based)
-container_sha256  the digest of the whole submitted file, matching run.json
+container_page_index  which page of that container produced these bytes (0-based)
+container_sha256      the digest of the whole submitted file, matching run.json
 ```
+
+**Repaired 2026-08-04.** This field was `pdf_page_index`. Ruling 2026-08-04, item 2
+reverses multi-page TIFF's blanket refusal — it is fanned out exactly like PDF
+(`pipeline/1_exemplar/tiff_render.py`) — so a fanned-out TIFF directory records the
+identical transform, and a PDF-only name was wrong the moment a second container
+format started producing it. GLOSSARY's opening rule, "one word per concept."
 
 `container_sha256`, not `source_sha256`: the page payload below already uses
 `source_sha256` for the digest of the **sealed** bytes — the one `page_id` binds —
@@ -94,19 +117,28 @@ declared_path   as above
 ordinal         as above
 reason          "<reason-code>: <detail>", the code drawn from the closed set
                 admission.RefusalReason — empty, unreadable, too-large,
-                unrecognized-format, refused-format, corrupt, unsupported-variant,
-                digest-mismatch, duplicate. Never free text alone; the Exemplar
-                reads the code back and refuses anything outside the set.
+                unrecognized-format, corrupt, unsupported-variant, digest-mismatch,
+                duplicate. Never free text alone; the Exemplar reads the code back
+                and refuses anything outside the set.
 ```
+
+**Repaired 2026-08-04.** `REFUSED_FORMAT` is retired — ruling 2026-08-04, item 2
+deletes the whole idea of a format refused by policy. A format nothing here can
+decode yet (a `gap` action: GIF, HEIC today) refuses under `UNSUPPORTED_VARIANT`,
+the same code an undecodable variant of a *supported* format gets, because both are
+the same fact: a pipeline defect this project owes a reader for, never a decision
+about the file.
 
 A real (non-fixture) run additionally carries `data_gate_approval_ref` on every
 admission, admitted and refused alike — see "The data-handling gate" below.
 
 **Admission is decided by bytes, never by a declared name or extension.** The format
 is sniffed from the source's own signature and then structurally validated
-(`image_formats.py` for jpeg/png/tiff; `pdf_render.py` for a PDF's one image per
-page). A file whose extension disagrees with its bytes is decided on the bytes. The
-list of which formats may enter at all is `config/admitted_formats.toml`.
+(`image_formats.py` for png/jpeg/tiff) or rendered (`pdf_render.py` rasterises a
+PDF's page whole; `tiff_render.py` renders a multi-directory TIFF's pages, one
+directory at a time). A file whose extension disagrees with its bytes is decided on
+the bytes. The list of which formats may enter at all, and how, is
+`config/admitted_formats.toml`.
 
 ## `kind="page"` — the Exemplar's own outcome for every page
 
@@ -123,7 +155,7 @@ ordinal          as above
 source_sha256    the digest of the sealed bytes (the admission's sha256)
 image_path       the blob's relative path (the admission's stored_at)
 rendered_from    present only for a rendered page: {container_sha256,
-                 pdf_page_index}, carried through from the admission's
+                 container_page_index}, carried through from the admission's
                  recorded transform
 ```
 
@@ -163,16 +195,41 @@ writes anything, rather than quietly building a second one beside the first.
 
 `1_exemplar/blobs/sha256/<digest>` holds admitted bytes, content-addressed:
 
-- a standalone admitted file's own bytes, unmodified — never re-encoded;
-- a rendered page's bytes, **if and only if the admission list asks for a format to
-  be rendered, which the shipped list does not**: a `DCTDecode` page is stored as the
-  embedded JPEG unmodified after its frame is checked against the colour space its
-  dictionary declares; a `FlateDecode` (or unfiltered) page's raw samples are encoded
-  as a PNG through `pdf_render.py`'s own minimal encoder.
+- a standalone admitted file's own bytes, unmodified — never re-encoded. This is
+  every PNG and JPEG, and every single-directory TIFF (the common case even under
+  `admit-or-fan-out`);
+- a rendered page's bytes, **whenever the admission list asks for a format to be
+  fanned out and the source actually is** — PDF always, a TIFF the door finds
+  holding more than one directory. Every rendered page, whichever container it came
+  from, is encoded as a lossless PNG through `image_formats.encode_png`, the one
+  encoder both door-private renderers share. A PDF page is rasterised whole —
+  everything the page paints, text and image alike, through `pypdfium2` — never an
+  embedded image extracted from the page's resources.
 
 Identical bytes reused across ordinals are one blob referenced by more than one
 `stored_at`. That is deliberate — spec 03's "identical bytes reused rather than
 rewritten" — and is never evidence of resubmission.
+
+## The filename ledger
+
+**Ruling 2026-08-04, item 1: "We literally need the file name. That is how we link
+it."** FamilySearch, archives and microfilm all carry an ID system in the filename of
+what you download; that identifier is the citation and the route back to the source.
+Filenames are retained and used throughout this stage's record — never scrubbed —
+and `run.json`'s `source_manifest` is the ledger itself: every submitted file's name
+bound to the sha256 of its bytes, at the moment of submission, sealed into the run
+authority's own self-hash before a single byte moves. No second inventory exists
+beside it. A byte flipped in transfer is caught by comparing the manifest's declared
+digest against the bytes actually read (`admission.RefusalReason.DIGEST_MISMATCH`),
+reported with the file named in the admission artifact that refused it.
+
+**The split is between the record and the operator's terminal, not between "has a
+name" and "does not."** Every admission artifact — admitted or refused — carries
+`declared_path`. What a human sees scroll past a shell is a presentation decision:
+`require_some_admitted`'s loud failure names reason codes and counts, never a
+filename, and points at `1_exemplar/artifacts/admission/` for the names themselves;
+`operations/submit/submit.py`'s CLI does the same, writing a private refusal report
+beside the manifest rather than repeating a submitted name on stderr.
 
 ## What downstream may rely on, and what it may not assume
 
@@ -180,15 +237,16 @@ rewritten" — and is never evidence of resubmission.
   holds `kind == "admission"` (the door's record) and `kind == "seal"`.
   `pipeline/2_designator/run.py` and `pipeline/7_armarium/run.py` both already do.
 - A page's `image_path` is the exact, final, sealed bytes. Nothing downstream may
-  re-render, re-decode or regenerate them: `pdf_render.py` is door-private and
-  `pipeline/1_exemplar/test_import_boundaries.py` enforces that statically over the
-  repository's own Python, so there is no API a later stage could call.
+  re-render, re-decode or regenerate them: `pdf_render.py` and `tiff_render.py` are
+  both door-private and `pipeline/1_exemplar/test_import_boundaries.py` enforces
+  that statically over the repository's own Python, so there is no API a later
+  stage could call.
 - **Duplicate submitted files are refused by their bytes and declared path.** Two
-  paths carrying the same raster or PDF source produce a named duplicate refusal.
-  Distinct pages within one PDF are not duplicate files: two blank pages can render
-  to identical bytes honestly, and refusing the second would lose a real page
-  (GOALS 1). A reader must not treat two page artifacts sharing one `image_path` as
-  evidence that either is spurious.
+  paths carrying the same raster or container source produce a named duplicate
+  refusal. Distinct pages within one container (a PDF, or a multi-directory TIFF)
+  are not duplicate files: two blank pages can render to identical bytes honestly,
+  and refusing the second would lose a real page (GOALS 1). A reader must not treat
+  two page artifacts sharing one `image_path` as evidence that either is spurious.
 - A refused page carries no `page_id`, no `source_sha256` and seals nothing. Its ink
   was never read and nothing downstream may treat it as though it were.
 - Nothing in this stage's admission or sealing path consults a model, a witness, or
