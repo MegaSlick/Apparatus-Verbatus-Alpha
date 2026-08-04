@@ -803,7 +803,7 @@ def run_stage(main) -> int:
         return EXIT_FATAL
 
 
-def latest_attempt(records: list[dict[str, Any]], what: str) -> dict[str, Any]:
+def latest_attempt(records: list[dict[str, Any]], what: str, *, operation: str) -> dict[str, Any]:
     """The current record for a subject: the latest attempt, with its honest status.
 
     "Current" is derived, never stored as a pointer — Tyrel's retention ruling of
@@ -816,6 +816,31 @@ def latest_attempt(records: list[dict[str, Any]], what: str) -> dict[str, Any]:
     listed first. The orchestrator read a stale "recovery-requested" that way and
     dispatched a second recrop over the top of the first. An evidence channel that
     cannot be read makes the answer unknown; it never resolves in the run's favour.
+
+    **`operation` is what binds the ordinal to the sealed identity, and it is why
+    this function cannot be called without naming one.** The envelope proves that
+    `artifact_id` derives from `attempt_id`, and stops there: it takes the attempt
+    token as an opaque well-formed string and never re-derives it from the
+    subject/operation/ordinal it is supposed to bind. `attempt_ordinal` lives in the
+    payload, outside that derivation, and this function used to select on it alone.
+    So the field that decides which reading is current was the one field in the
+    chain nothing recomputed. Demonstrated on a real run tree before this change: a
+    second `perlectio` for one act, carrying different text and `attempt_ordinal:
+    99`, validated as an envelope and became the current reading over the record
+    that had actually read the ink.
+
+    The caller knows its own operation — the Perlector reads `perlegere`, the
+    Recensor recenses, a chair reads `read:<chair>` — so the identity can be
+    recomputed here without the envelope growing a field, and `skeleton.v1` does not
+    have to become `skeleton.v2` to close it. A richer envelope carrying the
+    operation and the ordinal would be the more general answer, and it stays open;
+    this is the reader-side half of it, which needs no migration.
+
+    Ordinals must also be the contiguous run 1..N. Attempts are append-only and
+    never reused, so a gap means an attempt that existed is no longer here — which
+    is the one thing GOVERNANCE 2 does not allow to pass quietly — and it is also
+    what stops an honestly-derived attempt 99 from being manufactured beside
+    attempt 1 and outranking it.
     """
     if not records:
         raise FatalAccounting(f"no {what} to derive a current outcome from")
@@ -833,7 +858,22 @@ def latest_attempt(records: list[dict[str, Any]], what: str) -> dict[str, Any]:
                 f"{ordinals[ordinal]!r} and {record.get('artifact_id')!r}; a tie is not "
                 "a latest attempt and may not be selected"
             )
+        subject = record.get("subject_id")
+        expected = attempt_id(subject, operation, ordinal) if isinstance(subject, str) else None
+        if record.get("attempt_id") != expected:
+            raise FatalAccounting(
+                f"a {what} artifact claims attempt ordinal {ordinal} in its payload but its "
+                f"sealed attempt identity {record.get('attempt_id')!r} does not derive from "
+                f"({subject!r}, {operation!r}, {ordinal}). The ordinal decides which record is "
+                "current, so an ordinal the identity does not bind is a reading nobody sealed"
+            )
         ordinals[ordinal] = record.get("artifact_id", "<unknown>")
+    if sorted(ordinals) != list(range(1, len(ordinals) + 1)):
+        raise FatalAccounting(
+            f"{what} carries attempt ordinals {sorted(ordinals)}, which is not the contiguous "
+            "run 1.. that append-only attempts produce; a gap is an attempt that is no longer "
+            "here, and nothing is lost silently"
+        )
     return max(records, key=lambda record: record["payload"]["attempt_ordinal"])
 
 
@@ -857,7 +897,7 @@ def current_recovery_request(
     for entry in tree.build_manifest(RECENSOR)["artifacts"]:
         if entry["kind"] == "review" and entry["subject_id"] == act_id:
             reviews.append(tree.read_artifact(RECENSOR, "review", entry["artifact_id"]))
-    review = latest_attempt(reviews, f"Recensor review of {act_id}")
+    review = latest_attempt(reviews, f"Recensor review of {act_id}", operation="recense")
     if review["outcome"] != "recovery-requested":
         raise ContractError(
             f"act {act_id}'s latest Recensor review is {review['outcome']!r}, not an "
@@ -970,7 +1010,7 @@ def latest_per_chair(records: list[dict[str, Any]], what: str) -> list[dict[str,
             raise FatalAccounting(f"a {what} artifact carries no chair to group its attempts by")
         by_chair.setdefault(chair, []).append(record)
     return [
-        latest_attempt(group, f"{what} from chair {chair}")
+        latest_attempt(group, f"{what} from chair {chair}", operation=f"read:{chair}")
         for chair, group in sorted(by_chair.items())
     ]
 

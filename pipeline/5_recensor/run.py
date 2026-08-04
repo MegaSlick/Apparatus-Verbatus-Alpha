@@ -140,7 +140,7 @@ def preflight_review_evidence(context) -> None:
                 f"act {act_id} reached the Recensor with no reading at all. A unit "
                 "in no terminal set is a fatal accounting imbalance (#10)"
             )
-        latest = latest_attempt(readings, f"reading of {act_id}")
+        latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
         if classify(PERLECTOR, latest["outcome"]) is OutcomeClass.COMPLETED:
             for region in reading_basis_regions(latest, f"reading of {act_id}"):
@@ -211,7 +211,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # object a later stage happens to find.  The reference is both an input
         # digest and a payload fact so Archetypus can prove it establishes the
         # exact reading Recensor assessed.
-        latest = latest_attempt(readings, f"reading of {act_id}")
+        latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
         basis_regions = (

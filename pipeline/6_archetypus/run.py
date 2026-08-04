@@ -55,7 +55,11 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
 
 def final_review(context, act_id: str) -> dict:
     """The Recensor's last word on this act."""
-    return latest_attempt(artifacts_for(context, RECENSOR, "review", act_id), f"review of {act_id}")
+    return latest_attempt(
+        artifacts_for(context, RECENSOR, "review", act_id),
+        f"review of {act_id}",
+        operation="recense",
+    )
 
 
 def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str, str]]:

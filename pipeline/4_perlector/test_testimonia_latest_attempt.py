@@ -17,6 +17,7 @@ import pytest
 
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ATTESTATORES, DESIGNATOR
 from common.runtree.store import RunTree
@@ -144,3 +145,87 @@ def test_the_witness_read_filter_excludes_a_chair_whose_current_attempt_failed(
         record["payload"]["chair"] for record in testimonia if record["outcome"] == "read"
     }
     assert chair not in read_chairs
+
+
+def _forge_attempt(tree, first, act_id, chair, *, sealed_ordinal, payload_ordinal):
+    """Publish a second testimonium whose sealed identity and payload ordinal may
+    deliberately disagree, and return the forged record."""
+    forged = copy.deepcopy(first)
+    forged["payload"]["attempt_ordinal"] = payload_ordinal
+    forged["payload"]["reported"] = "a reading nobody sealed under this ordinal"
+    forged["attempt_id"] = attempt_id(act_id, f"read:{chair}", sealed_ordinal)
+    forged["artifact_id"] = artifact_id(ATTESTATORES, "testimonium", act_id, forged["attempt_id"])
+    forged["self_hash"] = self_hash(forged)
+    path = tree.resolve(f"3_attestatores/artifacts/testimonium/{forged['artifact_id']}.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(forged))
+    tree.write_manifest(ATTESTATORES)
+    return forged
+
+
+@pytest.fixture
+def happy_run(tmp_path):
+    root = tmp_path / "runs"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/orchestrator/run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--scenario",
+            "happy",
+            "--run-root",
+            str(root),
+            "--run-id",
+            "attempt-binding",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "attempt-binding")
+    first = next(
+        record
+        for record in (
+            tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+            for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+            if entry["kind"] == "testimonium"
+        )
+        if record["outcome"] == "read"
+    )
+    return _Context(tree), first
+
+
+def test_an_ordinal_its_own_sealed_identity_does_not_bind_cannot_decide_what_is_current(
+    happy_run,
+):
+    """The envelope binds `artifact_id` to an opaque well-formed `attempt_id` and
+    stops there: it never re-derives that token from the subject, operation and
+    ordinal it is supposed to bind. `attempt_ordinal` sits in the payload, outside
+    that derivation, and it is the field that decides which record is current.
+
+    So the one field the whole retention ruling turns on was the one field nothing
+    recomputed. Here the sealed identity says attempt 1 and the payload says 3; the
+    record is a perfectly valid envelope, and it used to outrank the reading that
+    actually happened."""
+    context, first = happy_run
+    act_id, chair = first["subject_id"], first["payload"]["chair"]
+    _forge_attempt(context.tree, first, act_id, chair, sealed_ordinal=1, payload_ordinal=3)
+
+    with pytest.raises(FatalAccounting, match="does not derive from"):
+        perlector.testimonia_of(context, act_id, _proposal_regions(context, act_id))
+
+
+def test_a_manufactured_far_ordinal_cannot_leapfrog_the_attempt_that_happened(happy_run):
+    """Deriving the identity honestly for ordinal 99 is three lines with this
+    repository's own API, so the derivation check alone does not close it. Attempts
+    are append-only and never reused, so their ordinals are the contiguous run
+    1..N; a gap is an attempt that is no longer here, and refusing the gap is what
+    stops a manufactured attempt 99 sitting beside attempt 1 and winning."""
+    context, first = happy_run
+    act_id, chair = first["subject_id"], first["payload"]["chair"]
+    _forge_attempt(context.tree, first, act_id, chair, sealed_ordinal=99, payload_ordinal=99)
+
+    with pytest.raises(FatalAccounting, match="contiguous run"):
+        perlector.testimonia_of(context, act_id, _proposal_regions(context, act_id))

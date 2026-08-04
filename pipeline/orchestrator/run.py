@@ -108,7 +108,7 @@ def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, 
         by_subject.setdefault(record["subject_id"], []).append(record)
     outstanding: list[tuple[str, str]] = []
     for subject, records in by_subject.items():
-        review = latest_attempt(records, f"Recensor review of {subject}")
+        review = latest_attempt(records, f"Recensor review of {subject}", operation="recense")
         if review["outcome"] != "recovery-requested":
             continue
         request = current_recovery_request(tree, subject, recovery_policy)

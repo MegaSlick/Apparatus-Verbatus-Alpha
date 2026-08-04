@@ -290,7 +290,7 @@ def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | Non
     reviews = artifacts_for(context, RECENSOR, "review", act_id)
     if not reviews:
         raise FatalAccounting(f"act {act_id} reached the Armarium with no Recensor outcome")
-    review = latest_attempt(reviews, f"review of {act_id}")
+    review = latest_attempt(reviews, f"review of {act_id}", operation="recense")
 
     terminal = terminal_category(RECENSOR, review["outcome"])
     if terminal is not None:
