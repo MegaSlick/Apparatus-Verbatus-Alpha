@@ -38,16 +38,19 @@ the pixel blobs of the proposal regions attempted, and provenance includes the
 resolved chair identity, revision, adapter recipe, and a serving receipt. A
 genuinely-empty report is a completed read of the pixels (`reported=""` and
 `content_health.empty=true`), not an absent attempt; it counts as witness
-coverage. `not-run` carries no invented receipt or region input.
+coverage. It is still one fallible Testimonium, not evidence that the act or page
+is blank, and it never authorizes `confirmed-blank`; that diagnosis belongs to
+the unbuilt Recensor. `not-run` carries no invented receipt or region input.
 
 ## Consumer obligations
 
 Perlector reads every Testimonium for an act, verifies its direct inputs and
 serving provenance, and requires its `regions` payload to be exactly the current
 original-proposal region set (not a recovery crop added after the witness ran).
-It retains a digest-checked reference to every record it consulted in the
-Perlectio basis. It may record disagreement structurally, but it does not choose
+It then derives the current record for each chair by unique attempt ordinal while
+leaving every historical attempt in the tree, and retains a digest-checked
+reference to every current record it consulted in the Perlectio basis. It may
+record disagreement structurally, but it does not choose
 a witness, count agreement to determine text, or promote a missing/failed result
-to coverage. Recensor derives a current outcome per chair only by the recorded
-attempt ordinal and refuses duplicate ordinals rather than choosing an arbitrary
-record.
+to coverage. Recensor uses the same current-per-chair derivation and refuses
+duplicate ordinals rather than choosing an arbitrary record.

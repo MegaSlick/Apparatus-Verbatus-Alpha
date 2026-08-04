@@ -45,5 +45,8 @@ visibly partial export rather than disappearing from the page set.
 
 The act-level proposal seal remains the authority for expected acts. The Armarium
 places each one in exactly one terminal category and retains a review reason where a
-text cannot be delivered. It does not choose among witness readings or put witness
-text in output.
+text cannot be delivered. An accepted act must have exactly one Archetypus record;
+a non-accepted terminal act must have none, so the stage never selects one record
+from an ambiguous or orphaned set. A sealed page with no diagnosed act remains
+partial: silence is not `confirmed-blank` evidence. The Armarium does not choose
+among witness readings or put witness text in output.

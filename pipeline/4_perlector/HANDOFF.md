@@ -10,9 +10,11 @@ with derived identities, attempt bindings, self-hashes, and checked direct input
 
 For every proposed act, the stage reads every Designator region currently in the
 act's history, recomputes its crop from the sealed Exemplar page and transform,
-and checks the crop bytes. It reads every Testimonium for the act, validates the
-resolved identity/revision and serving receipt, and keeps the whole set. It does
-not select a preferred witness or use witness agreement to choose its text.
+checks the crop bytes, and validates the region's own resolved Designator
+identity/revision and serving receipt. It reads and validates every Testimonium
+for the act, then derives one current record per chair by unique attempt ordinal;
+all superseded records remain immutable history. It does not select a preferred
+witness or use witness agreement to choose its text.
 
 Recovery regions are readable evidence for a later attempt. They remain marked
 `witness_covered=false` unless a completed Testimonium actually names that exact
