@@ -226,6 +226,73 @@ def tiff(
     return header + body + bytes(max(1, stored))
 
 
+def multi_page_tiff(
+    pages: tuple[tuple[int, int], ...] = ((6, 5), (4, 3)),
+    *,
+    little_endian: bool = True,
+    bits_per_sample: int = 8,
+    compression: int = 1,
+    photometric: int = 1,
+) -> bytes:
+    """A classic multi-directory TIFF: one chained IFD per page, absolute offsets.
+
+    `pages` is `(width, height)` per page, uncompressed, one strip covering every
+    row exactly as `tiff()` builds. Every stored offset — each IFD's own position,
+    each strip's position, each next-directory pointer — is absolute within the
+    *combined* file, which is what a real multi-page scan looks like and what
+    `image_formats.tiff_directory_offsets`/`tiff_render.py` must walk. `tiff()`
+    above builds one self-contained single-page file whose own strip offset is
+    only valid when the file begins at byte 0, so it cannot simply be
+    concatenated to build this.
+    """
+    endian = "<" if little_endian else ">"
+    order = b"II" if little_endian else b"MM"
+    entry_count = 9  # 256,257,258,259,262,273,277,278,279
+    ifd_size = 2 + entry_count * 12 + 4
+
+    layout: list[tuple[int, int, int]] = []  # (ifd_offset, strip_offset, stored_bytes)
+    cursor = 8
+    for width, height in pages:
+        ifd_offset = cursor
+        strip_offset = ifd_offset + ifd_size
+        stored = height * ((width * bits_per_sample + 7) // 8)
+        layout.append((ifd_offset, strip_offset, stored))
+        cursor = strip_offset + stored
+
+    def short(tag: int, value: int) -> bytes:
+        return (
+            struct.pack(endian + "HHI", tag, 3, 1) + struct.pack(endian + "H", value) + b"\x00\x00"
+        )
+
+    def long_tag(tag: int, value: int) -> bytes:
+        return struct.pack(endian + "HHI", tag, 4, 1) + struct.pack(endian + "I", value)
+
+    body = bytearray()
+    for index, (width, height) in enumerate(pages):
+        ifd_offset, strip_offset, stored = layout[index]
+        next_ifd = layout[index + 1][0] if index + 1 < len(layout) else 0
+        entries = struct.pack(endian + "H", entry_count)
+        entries += struct.pack(endian + "HHI", 256, 3, 1) + struct.pack(endian + "H", width) + b"\x00\x00"
+        entries += (
+            struct.pack(endian + "HHI", 257, 3, 1) + struct.pack(endian + "H", height) + b"\x00\x00"
+        )
+        entries += short(258, bits_per_sample)
+        entries += short(259, compression)
+        entries += short(262, photometric)
+        entries += long_tag(273, strip_offset)
+        entries += short(277, 1)
+        entries += long_tag(278, height)
+        entries += long_tag(279, stored)
+        entries += struct.pack(endian + "I", next_ifd)
+        assert len(entries) == ifd_size
+        assert len(body) + 8 == ifd_offset
+        body += entries
+        body += bytes(max(1, stored))
+
+    header = order + struct.pack(endian + "H", 42) + struct.pack(endian + "I", 8)
+    return header + bytes(body)
+
+
 def tiff_ifd_entry_offset(index: int) -> int:
     """Where entry `index` of the first IFD starts. Entry 0 is always ImageWidth."""
     return 8 + 2 + index * 12
@@ -294,13 +361,20 @@ def image_page_pdf(
     rotate: int | None = None,
     extra_page: str = "",
     xobject_count: int = 1,
+    text: str | None = None,
 ) -> bytes:
-    """One PDF with one page per entry in `images`, each carrying one image XObject.
+    """One PDF with one page per entry in `images`, each drawing its image XObject
+    (and, if given, some text) through a real content stream.
 
     Each entry names `width`, `height`, `dictionary` (the XObject dictionary text
-    before `/Length`) and `raw` (the stream bytes). `xobject_count` above one
-    repeats the same reference under extra names, which is how the
-    more-than-one-XObject refusal is exercised.
+    before `/Length`) and `raw` (the stream bytes). Rasterisation reads what a
+    content stream actually *paints* — the door-private renderer's whole point,
+    after spec 03's ruling, is that it no longer merely reads a resource
+    dictionary — so a fixture that only declared an XObject without drawing it
+    would rasterise to a blank page under the new renderer. Every page built here
+    paints what it declares, scaled to fill the page's own `MediaBox`. `text`, when
+    given, draws a Helvetica string near the bottom-left corner — the fixture spec
+    03's own PDF test needs: a page carrying text beside an image.
     """
     builder = PdfBuilder()
     image_numbers = [
@@ -308,16 +382,33 @@ def image_page_pdf(
     ]
     catalog = builder.add()
     pages = builder.add()
+    font_number = (
+        builder.add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+        if text is not None
+        else None
+    )
     page_numbers = []
     rotate_clause = f" /Rotate {rotate}" if rotate is not None else ""
     for entry, image_number in zip(images, image_numbers, strict=True):
         names = " ".join(f"/Im{index} {image_number} 0 R" for index in range(xobject_count))
+        ops = " ".join(
+            f"q {entry['width']} 0 0 {entry['height']} 0 0 cm /Im{index} Do Q"
+            for index in range(xobject_count)
+        )
+        resources = f"/Resources << /XObject << {names} >>"
+        if text is not None:
+            escaped = text.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+            font_size = max(min(entry["height"] // 2, 24), 6)
+            ops += f" BT /F1 {font_size} Tf 1 1 Td ({escaped}) Tj ET"
+            resources += f" /Font << /F1 {font_number} 0 R >>"
+        resources += " >>"
+        contents_number = builder.add(stream_object("<<", ops.encode()))
         page_numbers.append(
             builder.add(
                 (
-                    f"<< /Type /Page /Parent {pages} 0 R /Resources "
-                    f"<< /XObject << {names} >> >> "
-                    f"/MediaBox [0 0 {entry['width']} {entry['height']}]"
+                    f"<< /Type /Page /Parent {pages} 0 R {resources} "
+                    f"/MediaBox [0 0 {entry['width']} {entry['height']}] "
+                    f"/Contents {contents_number} 0 R"
                     f"{rotate_clause}{extra_page} >>"
                 ).encode()
             )

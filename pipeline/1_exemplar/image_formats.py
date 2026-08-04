@@ -39,10 +39,11 @@ MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
 MAX_TIFF_DATA_SEGMENTS: Final = 100_000
-# There is no bound on the number of TIFF image directories, because more than one
-# is refused by name: `validate_tiff` reads directory zero and refuses a non-zero
-# next-directory offset. A walk of exactly one is the tightest bound there is, and
-# an IFD-count cap was a bound on a chain that is no longer entered.
+# `validate_tiff` still refuses a *file* holding more than one image directory —
+# that shape is fanned out at the door instead (ruling 2026-08-04, item 2;
+# `tiff_directory_offsets`, `tiff_render.py`). Walking the chain to find that out
+# is itself an attacker-shaped loop, so `MAX_TIFF_DIRECTORIES` bounds it, defined
+# beside `tiff_directory_offsets` below.
 
 
 class ImageGeometry(NamedTuple):
@@ -339,6 +340,53 @@ def _is_png_critical(kind: bytes) -> bool:
     return not bool(kind[0] & 0x20)
 
 
+def _png_chunk(tag: bytes, chunk_data: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(chunk_data))
+        + tag
+        + chunk_data
+        + struct.pack(">I", zlib.crc32(tag + chunk_data))
+    )
+
+
+def encode_png(width: int, height: int, color_type: int, channels: int, samples: bytes) -> bytes:
+    """A general PNG encoder for raw, already-decoded 8-bit samples: gray or RGB.
+
+    Shared by every door-private renderer that produces genuinely new pixels
+    rather than sealing a submitted file's own bytes unmodified —
+    `pdf_render.py`'s rasterized pages and `tiff_render.py`'s extracted strips
+    both carry whatever colour type their raw samples actually are, which
+    `common/imaging.py`'s grayscale-only encoder is explicit it is not for
+    (`common/imaging.py` serves the Designator and Perlector on synthetic input,
+    never the door). One implementation here rather than one hand-copied into
+    each renderer is what keeps them from drifting apart on how a scanline filter
+    byte or an IHDR field is written.
+
+    `samples` must already be exactly `height` rows of `width * channels` bytes
+    each, tightly packed with no stride padding — the shape both callers already
+    produce (a validated TIFF strip's reconciled byte count; pypdfium2's
+    `rev_byteorder` render buffer, which pypdfium2 confirms carries no padding).
+    """
+    row_bytes = width * channels
+    if len(samples) != height * row_bytes:
+        raise ValueError(
+            f"encode_png expected {height * row_bytes} sample bytes for a "
+            f"{width}x{height} image at {channels} channel(s), got {len(samples)}"
+        )
+    rows = bytearray()
+    for row in range(height):
+        rows.append(0)  # filter type 0 (None) on every scanline
+        rows.extend(samples[row * row_bytes : (row + 1) * row_bytes])
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)
+    idat = zlib.compress(bytes(rows), level=9)
+    return (
+        PNG_SIGNATURE
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", idat)
+        + _png_chunk(b"IEND", b"")
+    )
+
+
 # --- JPEG --------------------------------------------------------------------------
 
 # Start-of-frame markers that carry geometry. 0xC4 (DHT), 0xC8 (JPG extension,
@@ -387,9 +435,12 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
     does not claim to. That is the same named, documented limit the module docstring
     states for all three formats.
 
-    Trailing bytes after EOI are refused: they are either a second concatenated
-    image or an appended payload, and neither is the single page the door believes
-    it admitted.
+    **Trailing bytes after EOI are admitted, not refused** (ruling 2026-08-04, item
+    2). A concatenated thumbnail or appended padding after the entropy-coded frame
+    is ordinary output from real scanners and cameras — the walking skeleton refused
+    it as corrupt, and that told Tyrel his original was damaged when it was not.
+    Geometry is read off the one frame this validator walks; whatever bytes follow
+    EOI play no part in it.
 
     `expected_components` is the colour-space reconciliation the PDF renderer needs —
     the number of components the *container around this JPEG* declares. A mismatch
@@ -413,8 +464,11 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
                 raise FormatRefusal("corrupt JPEG: no start-of-frame marker; no geometry to read")
             if not saw_sos:
                 raise FormatRefusal("corrupt JPEG: EOI before any scan")
-            if cursor != len(data):
-                raise FormatRefusal("corrupt JPEG: trailing bytes after EOI")
+            # Trailing bytes after EOI are *admitted*, not refused (ruling
+            # 2026-08-04, item 2, second reversal): a concatenated thumbnail or
+            # appended padding is ordinary output from real scanners and cameras,
+            # and geometry is read off the frame this validator already walked —
+            # what follows EOI plays no part in it.
             return geometry
         if marker == 0xD8 or marker == 0x01 or 0xD0 <= marker <= 0xD7:
             raise FormatRefusal(f"corrupt JPEG: standalone marker 0xFF{marker:02X} is misplaced")
@@ -666,7 +720,7 @@ _TIFF_TAG_ROWS_PER_STRIP: Final = 278
 _TIFF_TAG_PLANAR_CONFIGURATION: Final = 284
 _TIFF_TAG_TILE_WIDTH: Final = 322
 _TIFF_TAG_TILE_LENGTH: Final = 323
-_TIFF_UNCOMPRESSED: Final = 1
+TIFF_UNCOMPRESSED: Final = 1
 # Where the actual samples live. A TIFF that names none of these declares an image
 # with no image data, and one whose ranges leave the file is not an instance of the
 # format it claims however tidy its header looks.
@@ -687,34 +741,12 @@ _TIFF_LAYOUT_TAGS: Final = (
 )
 
 
-def validate_tiff(data: bytes) -> ImageGeometry:
-    """Prove one image directory whose stored samples reconcile with its geometry.
+def read_tiff_header(data: bytes) -> tuple[str, int]:
+    """The byte-order and first image-directory offset, before any directory read.
 
-    **What is proven, exactly.** Classic (32-bit offset) little- or big-endian TIFF;
-    one image directory, every entry's value inside the file; the baseline tags a
-    reader needs to know what the samples *are* — `PhotometricInterpretation`,
-    `Compression`, `BitsPerSample`, `SamplesPerPixel`; and the strip or tile
-    inventory reconciled against the declared geometry, so the number of segments is
-    the number the image's own rows and tiles require. For an **uncompressed** image
-    the byte counts are checked exactly, row by row: a 6x5 8-bit image must carry 30
-    bytes and not one. Before that check, a 63-byte file could declare a 1000x1000
-    image behind a single stored byte and be admitted as genuine.
-
-    **What is not proven.** For a *compressed* image the stored byte counts cannot be
-    reconciled without decompressing, which is pixel reconstruction — so the segment
-    count is checked against the geometry and the byte counts are not. That is a
-    named, documented limit, not a shortcut, and it is why this module says a file
-    that passes here is provably the format it claims rather than provably intact.
-
-    **Multi-page TIFF is refused by name at the first link of the chain.** The door
-    assigns one ordinal per page, and this module cannot extract page N as its own
-    image, so sealing only the first page would lose every page after it without a
-    refusal to show — GOALS 1, in the place the old door failed. Keying that refusal
-    on a *duplicate geometry tag*, as this used to, missed a second directory that
-    declared no geometry: three separate shapes of two-page TIFF were admitted as one
-    page. A non-zero next-directory offset is the whole test now, and because the
-    chain is never entered, the walk is bounded at one directory rather than at a
-    constant nobody could reach.
+    Shared by `validate_tiff` and `tiff_directory_offsets`/`tiff_render.py`'s page
+    reader, so "how a TIFF header is parsed" has one implementation regardless of
+    how many directories the file turns out to hold.
     """
     if len(data) < 8 or data[:2] not in (b"II", b"MM"):
         raise FormatRefusal("not a TIFF: missing byte-order header")
@@ -729,14 +761,27 @@ def validate_tiff(data: bytes) -> ImageGeometry:
         raise FormatRefusal("corrupt TIFF: the header names no image directory")
     if offset + 2 > len(data):
         raise FormatRefusal("corrupt TIFF: IFD offset falls outside the file")
+    return endian, offset
 
-    width = height = None
-    image_data: dict[int, list[int]] = {}
-    layout: dict[int, list[int]] = {}
+
+def read_tiff_directory(
+    data: bytes, endian: str, offset: int
+) -> tuple[int | None, int | None, dict[int, list[int]], dict[int, list[int]], int]:
+    """One image directory's width, height, data-tag values, layout-tag values, and
+    the offset of the next directory in its chain (0 when this is the last one).
+
+    Reads exactly one IFD at `offset` — never follows the chain itself, so a caller
+    walking multiple directories (`tiff_directory_offsets`, a multi-page renderer)
+    controls its own bound rather than inheriting one from in here.
+    """
     (count,) = struct.unpack_from(endian + "H", data, offset)
     table_end = offset + 2 + count * 12 + 4
     if table_end > len(data):
         raise FormatRefusal("corrupt TIFF: IFD entries run past the end of the file")
+
+    width = height = None
+    image_data: dict[int, list[int]] = {}
+    layout: dict[int, list[int]] = {}
 
     for index in range(count):
         entry = offset + 2 + index * 12
@@ -789,17 +834,78 @@ def validate_tiff(data: bytes) -> ImageGeometry:
             target[tag] = _tiff_unsigned_values(value_bytes, field_type, value_count, endian, tag)
 
     (next_offset,) = struct.unpack_from(endian + "I", data, table_end - 4)
+    return width, height, image_data, layout, next_offset
+
+
+# One scanned register volume is hundreds of pages, not hundreds of thousands —
+# the same reasoning `pdf_render.MAX_PAGES` states for PDF, applied to a TIFF's
+# own image-directory chain.
+MAX_TIFF_DIRECTORIES: Final = 5_000
+
+
+def tiff_directory_offsets(data: bytes) -> list[int]:
+    """Every image-directory offset in this TIFF's chain, in order, bounded.
+
+    Enumeration only: no directory's tags are interpreted beyond what finding the
+    next offset requires, and nothing here proves any directory is a genuine,
+    decodable image. `tiff_render.py` uses this to tell the common single-directory
+    case (admitted as-is, unmodified, exactly like any other raster) from a
+    multi-page file (fanned out, one ordinal per directory, exactly like a PDF).
+    A cycle — a directory whose chain loops back on an offset already visited — is
+    refused rather than walked forever.
+    """
+    endian, offset = read_tiff_header(data)
+    offsets: list[int] = []
+    seen: set[int] = set()
+    while offset != 0:
+        if offset in seen:
+            raise FormatRefusal("corrupt TIFF: the image-directory chain cycles back on itself")
+        seen.add(offset)
+        offsets.append(offset)
+        if len(offsets) > MAX_TIFF_DIRECTORIES:
+            raise FormatRefusal(
+                f"unsupported TIFF: the file chains more than {MAX_TIFF_DIRECTORIES} "
+                "image directories, past the admission limit"
+            )
+        _, _, _, _, offset = read_tiff_directory(data, endian, offset)
+    return offsets
+
+
+def validate_tiff(data: bytes) -> ImageGeometry:
+    """Prove one image directory whose stored samples reconcile with its geometry.
+
+    **What is proven, exactly.** Classic (32-bit offset) little- or big-endian TIFF;
+    one image directory, every entry's value inside the file; the baseline tags a
+    reader needs to know what the samples *are* — `PhotometricInterpretation`,
+    `Compression`, `BitsPerSample`, `SamplesPerPixel`; and the strip or tile
+    inventory reconciled against the declared geometry, so the number of segments is
+    the number the image's own rows and tiles require. For an **uncompressed** image
+    the byte counts are checked exactly, row by row: a 6x5 8-bit image must carry 30
+    bytes and not one. Before that check, a 63-byte file could declare a 1000x1000
+    image behind a single stored byte and be admitted as genuine.
+
+    **What is not proven.** For a *compressed* image the stored byte counts cannot be
+    reconciled without decompressing, which is pixel reconstruction — so the segment
+    count is checked against the geometry and the byte counts are not. That is a
+    named, documented limit, not a shortcut, and it is why this module says a file
+    that passes here is provably the format it claims rather than provably intact.
+
+    **A single-directory file is the whole of what this function admits.** Ruling
+    2026-08-04, item 2 reverses the walking skeleton's blanket multi-page refusal:
+    "Fan it out, exactly as PDF is fanned out." That fan-out is the door's job
+    (`tiff_directory_offsets`, `tiff_render.py`) and happens *before* a multi-page
+    source ever reaches this function — a directory chain of more than one reaching
+    here means the fan-out was skipped, not that the file is unsupported by name.
+    """
+    endian, offset = read_tiff_header(data)
+    _, _, _, _, next_offset = read_tiff_directory(data, endian, offset)
     if next_offset != 0:
         raise FormatRefusal(
-            "unsupported TIFF: the file chains a second image directory; multi-page TIFF "
-            "is a documented limit, because the door assigns one ordinal per page and "
-            "this validator cannot hand it page two"
+            "unsupported TIFF: this file chains more than one image directory and must "
+            "be declared with a page index; a multi-page TIFF is fanned out at the door "
+            "rather than validated here as a single image"
         )
-
-    if width is None or height is None:
-        raise FormatRefusal("corrupt TIFF: no ImageWidth/ImageLength tag")
-    geometry = _geometry("tiff", width, height)
-    _validate_tiff_sample_storage(data, geometry, image_data, layout)
+    geometry, _storage = validate_tiff_directory(data, endian, offset)
     return geometry
 
 
@@ -845,12 +951,31 @@ def _tiff_unsigned_values(
     return list(struct.unpack(endian + ("H" if field_type == 3 else "I") * count, value))
 
 
+class TiffSampleStorage(NamedTuple):
+    """The reconciled facts about one directory's stored samples.
+
+    Returned rather than discarded so a caller that actually needs the pixels —
+    `tiff_render.py`'s uncompressed page extraction — reads the same reconciled
+    values this validator already proved, instead of re-deriving them and risking
+    a second implementation that could disagree with the one that validated them.
+    """
+
+    compression: int
+    photometric: int
+    samples_per_pixel: int
+    bits_per_sample: tuple[int, ...]
+    is_tiled: bool
+    offsets: tuple[int, ...]
+    counts: tuple[int, ...]
+    row_bytes: int
+
+
 def _validate_tiff_sample_storage(
     data: bytes,
     geometry: ImageGeometry,
     image_data: dict[int, list[int]],
     layout: dict[int, list[int]],
-) -> None:
+) -> TiffSampleStorage:
     """Reconcile the stored strip or tile inventory against the declared image.
 
     The inventory being *in the file* was the whole of the old check, which let a
@@ -861,10 +986,10 @@ def _validate_tiff_sample_storage(
     samples = _tiff_single(layout, _TIFF_TAG_SAMPLES_PER_PIXEL, 1, "SamplesPerPixel")
     if not 1 <= samples <= 8:
         raise FormatRefusal(f"unsupported TIFF: {samples} samples per pixel is a documented limit")
-    compression = _tiff_single(layout, _TIFF_TAG_COMPRESSION, _TIFF_UNCOMPRESSED, "Compression")
+    compression = _tiff_single(layout, _TIFF_TAG_COMPRESSION, TIFF_UNCOMPRESSED, "Compression")
     # Refused rather than defaulted: it is the tag that says what the samples *mean*,
     # a baseline IFD is required to carry it, and a file omitting it is not one.
-    _tiff_single(layout, _TIFF_TAG_PHOTOMETRIC, None, "PhotometricInterpretation")
+    photometric = _tiff_single(layout, _TIFF_TAG_PHOTOMETRIC, None, "PhotometricInterpretation")
     planar = _tiff_single(layout, _TIFF_TAG_PLANAR_CONFIGURATION, 1, "PlanarConfiguration")
     if planar != 1:
         raise FormatRefusal(
@@ -906,11 +1031,42 @@ def _validate_tiff_sample_storage(
         # Only an uncompressed segment's size is derivable from the geometry. For a
         # compressed one the count is whatever the codec produced, and reconciling it
         # would mean decompressing — the named limit this module keeps.
-        if compression == _TIFF_UNCOMPRESSED and count != needed:
+        if compression == TIFF_UNCOMPRESSED and count != needed:
             raise FormatRefusal(
                 f"corrupt TIFF: an uncompressed image-data segment stores {count} byte(s) "
                 f"where its share of a {geometry.width}x{geometry.height} image needs {needed}"
             )
+    return TiffSampleStorage(
+        compression=compression,
+        photometric=photometric,
+        samples_per_pixel=samples,
+        bits_per_sample=tuple(bits),
+        is_tiled=has_tiles,
+        offsets=tuple(offsets),
+        counts=tuple(counts),
+        row_bytes=row_bytes,
+    )
+
+
+def validate_tiff_directory(
+    data: bytes, endian: str, offset: int
+) -> tuple[ImageGeometry, TiffSampleStorage]:
+    """Validate one image directory at a known offset, and return its facts.
+
+    Unlike `validate_tiff`, this never refuses a multi-directory *file* — the
+    caller already knows the chain's shape (`tiff_directory_offsets`) and is
+    asking about one specific directory in it, exactly as `tiff_render.py`'s page
+    reader does for a fanned-out multi-page TIFF. `validate_tiff` itself calls this
+    for the single-directory case, so there is one implementation of "is this
+    directory a genuine, reconciled image" regardless of how many directories the
+    file turns out to hold.
+    """
+    width, height, image_data, layout, _next_offset = read_tiff_directory(data, endian, offset)
+    if width is None or height is None:
+        raise FormatRefusal("corrupt TIFF: no ImageWidth/ImageLength tag")
+    geometry = _geometry("tiff", width, height)
+    storage = _validate_tiff_sample_storage(data, geometry, image_data, layout)
+    return geometry, storage
 
 
 def _tiff_expected_strip_sizes(

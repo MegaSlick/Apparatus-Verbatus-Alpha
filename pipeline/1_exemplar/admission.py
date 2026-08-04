@@ -14,6 +14,19 @@ for the same reason. Nothing here ever looks at a suffix — not even to refuse,
 because a suffix check that can refuse is a suffix check that decides, and then the
 rule exists in two places again.
 
+**Tyrel's ruling 2026-08-04, item 2: nothing is rejected; every image format
+works.** "Nothing should be rejected — any image and image formats should work. If
+things are failing the image got corrupted … or the pipeline is broken." A refusal
+here is always one of two facts, and both are alarms: the bytes are damaged (they do
+not match a declared digest, or the container is genuinely malformed), or this
+project cannot yet read the format (a gap in the pipeline, never a decision about
+his file). There is no third category — "refused by policy" — and the `refuse`
+action the walking skeleton shipped is gone. A format nothing here decodes yet gets
+the `gap` action instead: still refused today, but refused as a named defect this
+project owes him, counted under the same `UNSUPPORTED_VARIANT` code a genuine
+undecodable variant gets, because both say the same thing — "we have work to do,"
+never "your file is wrong."
+
 Refusal reasons are a closed set — `RefusalReason` below — because the walking
 skeleton's free-text reasons are exactly what this spec is required to replace. The
 admission payload shape stays what the skeleton landed (`declared_path`, `ordinal`,
@@ -38,12 +51,33 @@ DEFAULT_FORMAT_POLICY_PATH: Final = (
     Path(__file__).resolve().parents[2] / "config" / "admitted_formats.toml"
 )
 
-# The three things the policy may say about a format. A fourth word in the file is
+# The four things the policy may say about a format. A fifth word in the file is
 # refused at load rather than treated as "not admit".
+#
+# There is deliberately no "refuse" action (ruling 2026-08-04, item 2 deleted it):
+# nothing here declines a real, uncorrupted file as a matter of policy. A format
+# this project cannot yet decode gets `GAP`, not a refusal-by-name — see the module
+# docstring.
 ADMIT: Final = "admit"
 RENDER_PAGES: Final = "render-pages"
-REFUSE: Final = "refuse"
-ACTIONS: Final = frozenset({ADMIT, RENDER_PAGES, REFUSE})
+# A format that is *usually* one image but may structurally hold more than one —
+# today, exactly TIFF. The door probes every admitted-or-fan-out source for its real
+# page count before deciding anything: a single-directory file is admitted as-is,
+# unmodified, exactly like `ADMIT`; a multi-directory file is fanned out and each
+# page rendered, exactly like `RENDER_PAGES`. Unlike `RENDER_PAGES`, this action
+# never re-encodes the common single-page case — Tyrel's ruling that TIFF "100%
+# must work" is about not losing a page, not about re-touching bytes that already
+# seal cleanly as they are.
+ADMIT_OR_FAN_OUT: Final = "admit-or-fan-out"
+# A format `image_formats.sniff()` can name, with no reader built yet. Ruling
+# 2026-08-04, item 2: "GIF, HEIC, WebP, BMP, and the rest — admit as readers land
+# ... until a reader exists, a real file of that format is a named gap, never a
+# refusal by policy." The refusal this still produces is real — nothing decodes the
+# bytes — but it is filed under `UNSUPPORTED_VARIANT`, the same code a genuine
+# undecodable variant of a *supported* format gets, because both mean the same
+# thing: a pipeline defect, not a fact about his file.
+GAP: Final = "gap"
+ACTIONS: Final = frozenset({ADMIT, RENDER_PAGES, ADMIT_OR_FAN_OUT, GAP})
 
 # Every format name `image_formats.sniff()` can return, and every format a
 # structural validator exists for. The policy must cover the first set exactly: a
@@ -83,7 +117,6 @@ class RefusalReason(str, Enum):
     UNREADABLE = "unreadable"
     TOO_LARGE = "too-large"
     UNRECOGNIZED_FORMAT = "unrecognized-format"
-    REFUSED_FORMAT = "refused-format"
     CORRUPT = "corrupt"
     UNSUPPORTED_VARIANT = "unsupported-variant"
     DIGEST_MISMATCH = "digest-mismatch"
@@ -103,6 +136,22 @@ class AdmissionOutcome(NamedTuple):
 def reason(code: RefusalReason, detail: str) -> str:
     """The one spelling of a refusal reason. Never assembled anywhere else."""
     return f"{code.value}: {detail}"
+
+
+class RenderRefusal(ValueError):
+    """One page, or one whole multi-page container, refused with a closed-set reason.
+
+    Shared by every door-private container renderer — `pdf_render.py`,
+    `tiff_render.py` — so `door.py` catches one exception type regardless of which
+    renderer produced it, rather than a per-renderer type the dispatch table would
+    have to enumerate. The reason string is assembled by `reason()` above, the
+    same single spelling every other refusal in this stage uses.
+    """
+
+    def __init__(self, code: RefusalReason, detail: str):
+        self.reason = code
+        self.detail = detail
+        super().__init__(reason(code, detail))
 
 
 def reason_code(text: object) -> RefusalReason:
@@ -158,7 +207,7 @@ def load_format_policy(path: Path = DEFAULT_FORMAT_POLICY_PATH) -> dict[str, str
                 f"{path} gives format {format_name!r} the action {action!r}, "
                 f"which is not one of {sorted(ACTIONS)}"
             )
-        if action == ADMIT and format_name not in STRUCTURALLY_VALIDATED:
+        if action in (ADMIT, ADMIT_OR_FAN_OUT) and format_name not in STRUCTURALLY_VALIDATED:
             raise FormatPolicyRefusal(
                 f"{path} admits {format_name!r}, but image_formats.py has no structural "
                 f"validator for it. Admitting a format nothing can verify would admit "
@@ -168,7 +217,15 @@ def load_format_policy(path: Path = DEFAULT_FORMAT_POLICY_PATH) -> dict[str, str
         if action == RENDER_PAGES and format_name != "pdf":
             raise FormatPolicyRefusal(
                 f"{path} asks for page rendering of {format_name!r}; the door renders "
-                "pages out of PDF alone, and no other renderer exists to call"
+                "pages unconditionally out of PDF alone, and no other renderer is wired "
+                "that way — a format that is *usually* one image belongs to "
+                f"{ADMIT_OR_FAN_OUT!r} instead"
+            )
+        if action == ADMIT_OR_FAN_OUT and format_name != "tiff":
+            raise FormatPolicyRefusal(
+                f"{path} asks {format_name!r} to admit-or-fan-out; only TIFF can "
+                "structurally hold more than one image directory under one file, and "
+                "the door has no other renderer wired for this action"
             )
     return dict(sorted(table.items()))
 
@@ -176,22 +233,48 @@ def load_format_policy(path: Path = DEFAULT_FORMAT_POLICY_PATH) -> dict[str, str
 def classify_detected_format(detected: str | None, policy: dict[str, str]) -> str | RefusalReason:
     """The policy's verdict for a sniffed format: an action, or the reason to refuse.
 
-    Shared by the raster path below and the door's PDF fan-out, so the two admission
-    surfaces this spec has read one table rather than two copies that could drift.
+    Shared by the raster path below and the door's container fan-out, so the
+    admission surfaces this spec has read one table rather than copies that could
+    drift. The return value is one of the four actions (`ADMIT`, `RENDER_PAGES`,
+    `ADMIT_OR_FAN_OUT`, `GAP`) or an already-terminal `RefusalReason` — never a
+    fifth, undocumented shape.
     """
     if detected is None:
         return RefusalReason.UNRECOGNIZED_FORMAT
     action = policy.get(detected)
-    if action is None or action == REFUSE:
-        # `None` is unreachable while `load_format_policy` requires full coverage,
-        # and it is kept as the fail-closed catch: a format this table has no
-        # opinion on is refused, never admitted by omission.
-        return RefusalReason.REFUSED_FORMAT
+    if action is None:
+        # Unreachable while `load_format_policy` requires full coverage: every
+        # sniffable format names a row. Kept as the fail-closed catch — a format
+        # this table has no opinion on is a gap, never admitted by omission.
+        return RefusalReason.UNSUPPORTED_VARIANT
     return action
 
 
-def refused_format_detail(detected: str) -> str:
-    return f"detected format is {detected}, which this project's admission list refuses by name"
+def gap_detail(detected: str) -> str:
+    """Why a `GAP`-action format refuses: a named pipeline defect, not his file.
+
+    Ruling 2026-08-04, item 2: "if things are failing ... the pipeline is broken."
+    A format nothing here decodes yet is exactly that — this project owes a reader
+    for it — and the wording says so rather than framing it as a decision made
+    about the specific file.
+    """
+    return (
+        f"detected format is {detected}, and this project has no reader for it yet; "
+        "that is a gap in the pipeline, not a decision about this file"
+    )
+
+
+def no_policy_opinion_detail(detected: str) -> str:
+    """The dead-code safety net's own wording, kept distinct from `gap_detail`.
+
+    Unreachable while `load_format_policy` enforces full coverage of
+    `SNIFFABLE_FORMATS`; if it is ever reached, the admission list itself is the
+    defect, not merely an unread format.
+    """
+    return (
+        f"detected format is {detected}, and this project's admission list names no "
+        "action for it at all"
+    )
 
 
 def inspect_source(
@@ -200,8 +283,12 @@ def inspect_source(
     """Decide one already-read source by its bytes, before any run tree is touched.
 
     A `render-pages` format (PDF) is *not* decided here: a container of pages is
-    not one image, and its admission is the door's per-page fan-out. This returns
-    the action so the door can dispatch, rather than deciding for it.
+    not one image, and its admission is the door's per-page fan-out. `admit-or-fan-out`
+    (TIFF) *is* decided here for the common case: a single-directory file is an
+    ordinary raster and is admitted exactly like `admit`. Only a source the door has
+    already found to hold more than one directory bypasses this function, because a
+    multi-page TIFF is fanned out the same way a PDF is. This returns the action so
+    the door can dispatch a container it must fan out, rather than deciding for it.
     """
     if not data:
         return AdmissionOutcome(
@@ -230,9 +317,21 @@ def inspect_source(
             digest,
             None,
         )
-    if verdict is RefusalReason.REFUSED_FORMAT:
+    if verdict is RefusalReason.UNSUPPORTED_VARIANT:
         return AdmissionOutcome(
-            "refused", reason(verdict, refused_format_detail(detected)), detected, digest, None
+            "refused",
+            reason(verdict, no_policy_opinion_detail(detected)),
+            detected,
+            digest,
+            None,
+        )
+    if verdict == GAP:
+        return AdmissionOutcome(
+            "refused",
+            reason(RefusalReason.UNSUPPORTED_VARIANT, gap_detail(detected)),
+            detected,
+            digest,
+            None,
         )
     if verdict == RENDER_PAGES:
         raise ValueError(
@@ -240,11 +339,15 @@ def inspect_source(
             "asking this function to admit it as one image"
         )
 
+    # ADMIT and ADMIT_OR_FAN_OUT both reach here. For ADMIT_OR_FAN_OUT the
+    # validator itself proves whether this is the common single-directory case
+    # (admitted, exactly like ADMIT) or a multi-directory file that should have
+    # been fanned out before it ever reached this function.
     try:
         geometry = validate(detected, data)
     except FormatRefusal as error:
         return AdmissionOutcome(
-            "refused", reason(_refusal_code(error), str(error)), detected, digest, None
+            "refused", reason(refusal_code_for_format_error(error), str(error)), detected, digest, None
         )
 
     if declared_sha256 is not None and digest != declared_sha256:
@@ -261,14 +364,16 @@ def inspect_source(
     return AdmissionOutcome("admitted", None, detected, digest, (geometry.width, geometry.height))
 
 
-def _refusal_code(error: FormatRefusal) -> RefusalReason:
+def refusal_code_for_format_error(error: FormatRefusal) -> RefusalReason:
     """Corrupt bytes and an unhandled-but-legal variant are different facts.
 
     The validators say "unsupported ..." for a file that is a genuine instance of
     a variant this door does not decode, and "corrupt ..." for one that is not a
     genuine instance at all. Collapsing the two would tell Tyrel a real photograph
     was damaged when the truth is that we cannot read that flavour of it yet —
-    a different decision for him entirely.
+    a different decision for him entirely. Public rather than module-private
+    because every door-private container renderer (`pdf_render.py`,
+    `tiff_render.py`) reads a `FormatRefusal` back through the same one rule.
     """
     return (
         RefusalReason.UNSUPPORTED_VARIANT

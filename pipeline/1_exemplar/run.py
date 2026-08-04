@@ -144,9 +144,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 def _page_payload(payload: dict[str, Any], ordinal: int) -> dict[str, Any]:
     """What a sealed page records: the ordinal, the sealed bytes, and any transform.
 
-    `pdf_page_index`/`container_sha256` travel from the admission when the sealed
-    bytes are a render rather than the submitted file itself. ARCHITECTURE's third
-    invariant needs the transform recorded, not merely performed.
+    `container_page_index`/`container_sha256` travel from the admission when the
+    sealed bytes are a render rather than the submitted file itself — a PDF page or
+    a fanned-out TIFF directory alike, hence the container-agnostic name (renamed
+    from `pdf_page_index`: a fanned-out TIFF directory records the identical
+    transform, and calling it PDF-only would be wrong the moment TIFF started
+    fanning out too). ARCHITECTURE's third invariant needs the transform recorded,
+    not merely performed.
 
     Two digests, two words. `source_sha256` is the digest of the bytes this page
     *is* — what `page_id` binds, and what `common/contracts/identities.py` calls it.
@@ -160,10 +164,10 @@ def _page_payload(payload: dict[str, Any], ordinal: int) -> dict[str, Any]:
         "source_sha256": payload["sha256"],
         "image_path": payload["stored_at"],
     }
-    if "pdf_page_index" in payload:
+    if "container_page_index" in payload:
         sealed["rendered_from"] = {
             "container_sha256": payload["container_sha256"],
-            "pdf_page_index": payload["pdf_page_index"],
+            "container_page_index": payload["container_page_index"],
         }
     return sealed
 
@@ -322,10 +326,11 @@ def _verify_admitted_blob(
     """Prove the sealed bytes are the bytes the door said it admitted.
 
     The sealed digest equals the submitted digest for a standalone raster. It
-    legitimately differs for a page rendered out of a PDF — and *only* then, and
-    only when the admission records which page of which file produced it. A sealed
-    page whose bytes silently differ from its source with no recorded transform is
-    the one thing ARCHITECTURE's third invariant cannot survive.
+    legitimately differs for a page rendered out of a container (a PDF, or a
+    fanned-out multi-directory TIFF) — and *only* then, and only when the
+    admission records which page of which file produced it. A sealed page whose
+    bytes silently differ from its source with no recorded transform is the one
+    thing ARCHITECTURE's third invariant cannot survive.
     """
     payload = admission["payload"]
     stored_at, sealed_digest = payload.get("stored_at"), payload.get("sha256")
@@ -335,18 +340,19 @@ def _verify_admitted_blob(
         raise ContractError("an admission's stored_at is not the content-addressed blob path")
     # The recorded transform is checked whenever one is *claimed*, not only when the
     # digests happen to differ. For a standalone raster they are equal, so the whole
-    # branch used to be skipped and a fabricated `pdf_page_index` was never looked
-    # at — then `_page_payload` read `container_sha256` beside it and died with a
-    # bare KeyError. A record claiming a transform that did not happen is the same
-    # class of untruth as a duplicate reason claiming an admission that did not.
-    claims_transform = "pdf_page_index" in payload or "container_sha256" in payload
+    # branch used to be skipped and a fabricated `container_page_index` was never
+    # looked at — then `_page_payload` read `container_sha256` beside it and died
+    # with a bare KeyError. A record claiming a transform that did not happen is
+    # the same class of untruth as a duplicate reason claiming an admission that
+    # did not.
+    claims_transform = "container_page_index" in payload or "container_sha256" in payload
     if sealed_digest != source["sha256"] and not claims_transform:
         raise ContractError(
             "an admitted source's sealed bytes differ from the bytes that were "
             "submitted, and no transform is recorded to explain it"
         )
     if claims_transform:
-        if "pdf_page_index" not in payload or "container_sha256" not in payload:
+        if "container_page_index" not in payload or "container_sha256" not in payload:
             raise ContractError(
                 "an admitted source records half a transform; a page rendered out of a "
                 "container names both which container and which page of it"
@@ -355,7 +361,7 @@ def _verify_admitted_blob(
             raise ContractError(
                 "a rendered page names a container digest the run authority did not submit"
             )
-        index = payload["pdf_page_index"]
+        index = payload["container_page_index"]
         if not isinstance(index, int) or isinstance(index, bool) or index < 0:
             raise ContractError("a rendered page records no non-negative page index")
         if sealed_digest == source["sha256"]:

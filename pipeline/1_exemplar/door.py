@@ -11,16 +11,24 @@ the structural validators in `image_formats.py`, never by a file's declared
 extension.
 
 **The admission list decides for every format, including the multi-page ones.**
-A `render-pages` source is fanned out into its pages and rendered once, here,
-through the door-private `pdf_render.py`; no module outside this stage imports it,
-which is what makes "no later stage may re-render" true by construction (spec 03,
-test 4) rather than by convention. But *whether* a format is fanned out at all is
-`admission.classify_detected_format`'s answer, asked once before the pages are
-counted and again before one is rendered. This module names no format anywhere: a
-`sniff(data) == "pdf"` branch here would be the admission rule existing twice —
-the exact drift spec 03 was written to kill — and under the shipped list, which
-refuses PDF, it would have fanned out and sealed pages the configuration says are
-not admitted.
+A `render-pages` source (PDF) is *always* fanned out into its pages and rendered
+once, here, through the door-private `pdf_render.py`. An `admit-or-fan-out` source
+(TIFF) is *usually* one image and is probed for its real page count before
+anything else is decided: a single-directory file is admitted exactly like any
+other raster, unmodified; a multi-directory file is fanned out and rendered once,
+through the door-private `tiff_render.py`, exactly like PDF. Neither renderer is
+imported outside this stage, which is what makes "no later stage may re-render"
+true by construction (spec 03, test 4) rather than by convention. But *whether* and
+*how* a format is fanned out is always `admission.classify_detected_format`'s
+answer, asked once before pages are counted and again before one is rendered. This
+module names no format's admission anywhere: a `sniff(data) == "pdf"` branch
+deciding admission here would be the admission rule existing twice — the exact
+drift spec 03 was written to kill. Dispatching a *known* container format's bytes
+to the renderer built for it (`_RENDERERS` below) is a different thing: PDF and
+TIFF are the only two formats that can hold more than one page at all, so naming
+them to pick a renderer is not a second admission decision, only a second decision
+about which door-private module does the rendering the admission list already
+asked for.
 
 Two invariants from the harvest still shape this. **#1: only images enter, verified
 by decoding, not by extension** — now the real structural decode, not a magic-byte
@@ -66,8 +74,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import admission  # noqa: E402
 import pdf_render  # noqa: E402
+import tiff_render  # noqa: E402
 from admission import RefusalReason  # noqa: E402
 from image_formats import MAX_SOURCE_BYTES, sniff  # noqa: E402
+
+# The only two formats that can hold more than one page at all, and the
+# door-private module that fans each one out. Keyed by the format name
+# `image_formats.sniff()` returns, never the other way around, so adding a third
+# multi-page format later is one new entry rather than a new kind of branch.
+_RENDERERS: Final = {"pdf": pdf_render, "tiff": tiff_render}
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
@@ -95,21 +110,24 @@ from operations.submit import gate, inventory  # noqa: E402
 
 
 class SourceEntry(NamedTuple):
-    """One declared page: a standalone raster file, or one page out of a PDF.
+    """One declared page: a standalone raster file, or one page out of a
+    multi-page container (a PDF, or a TIFF holding more than one directory).
 
-    `pdf_page_index` is `None` for a standalone file. Several ordinals may share
-    one `declared_path` with different `pdf_page_index` values when that path names
-    a multi-page PDF — the fan-out the door performs itself, because turning "N
-    files" into "M pages" means opening each file to see what it is, which is the
-    inspection admission is required to do by bytes rather than by name. Ordinals
-    are always per-page, never per-file, so `RunTree.create`'s ordinal accounting
-    needs no special case for a PDF at all.
+    `container_page_index` is `None` for a standalone file — including a
+    single-directory TIFF, which is a standalone file too, sealed unmodified
+    exactly like a PNG or JPEG. Several ordinals may share one `declared_path`
+    with different `container_page_index` values when that path names a
+    multi-page container — the fan-out the door performs itself, because turning
+    "N files" into "M pages" means opening each file to see what it is, which is
+    the inspection admission is required to do by bytes rather than by name.
+    Ordinals are always per-page, never per-file, so `RunTree.create`'s ordinal
+    accounting needs no special case for a multi-page source at all.
     """
 
     ordinal: int
     declared_path: str
     declared_sha256: str | None
-    pdf_page_index: int | None = None
+    container_page_index: int | None = None
     declared_size: int | None = None
 
 
@@ -141,21 +159,26 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     return declared
 
 
-def _prepared_document(data: bytes, declared_path: str, documents: dict[str, Any] | None) -> Any:
+def _prepared_document(
+    data: bytes, declared_path: str, detected: str, documents: dict[str, tuple[str, Any]] | None
+) -> Any:
     """The parsed container for this source, parsed once however many pages it has.
 
-    `render_page` used to take raw bytes and re-parse the whole cross-reference
-    table and page tree per call, so an N-page source paid it N+1 times. The cache
-    is per `process_sources` call and keyed by declared path, which is the same
-    scope the byte cache beside it uses.
+    A renderer's own `render_page` used to take raw bytes and re-parse the whole
+    structure per call, so an N-page source paid the parse N+1 times. The cache is
+    per `process_sources` call, keyed by declared path, and stores which renderer
+    produced each entry alongside it, so `process_sources` can close every parsed
+    document through the same renderer that opened it once every source is
+    decided.
     """
+    renderer = _RENDERERS[detected]
     if documents is None:
-        return pdf_render.open_document(data)
+        return renderer.open_document(data)
     prepared = documents.get(declared_path)
     if prepared is None:
-        prepared = pdf_render.open_document(data)
+        prepared = (detected, renderer.open_document(data))
         documents[declared_path] = prepared
-    return prepared
+    return prepared[1]
 
 
 def decide(
@@ -163,27 +186,35 @@ def decide(
     source: SourceEntry,
     policy: dict[str, str],
     *,
-    documents: dict[str, Any] | None = None,
+    documents: dict[str, tuple[str, Any]] | None = None,
 ) -> _Decision:
-    """One source's admission decision. PDF pages and standalone rasters alike.
+    """One source's admission decision. Container pages and standalone rasters alike.
 
     **The policy decides first, for every source, whatever shape it has.** A page
     index on a `SourceEntry` is a claim about how the file was fanned out; it is
     never permission to skip the admission list. `expand_sources` asks the policy
-    before it counts a page and this asks it again before it renders one, so a
-    `render-pages` row turned to `refuse` refuses at both boundaries rather than at
-    neither.
+    before it counts pages and this asks it again before it renders one, so a
+    `render-pages` or `admit-or-fan-out` row turned to `gap` refuses at both
+    boundaries rather than at neither.
 
     `documents` is the caller's per-run cache of parsed containers, so a source is
     parsed once rather than once per page inside it.
     """
-    verdict = admission.classify_detected_format(sniff(data), policy)
-    if source.pdf_page_index is None:
+    detected = sniff(data)
+    verdict = admission.classify_detected_format(detected, policy)
+    if source.container_page_index is None:
         # The size and emptiness checks live in `inspect_source` and are the first
         # things it does, so a container that is empty or over the limit falls
         # through to them rather than being told its manifest shape is wrong. A
         # 64 MiB-plus PDF used to be refused as "must be declared with a page index",
         # which is a statement about a manifest when the measured fact was a size.
+        #
+        # `RENDER_PAGES` alone, never `ADMIT_OR_FAN_OUT`: a PDF is *always* fanned
+        # out, so reaching this branch under that verdict means the fan-out was
+        # skipped. A TIFF reaching this branch under `ADMIT_OR_FAN_OUT` is the
+        # common single-directory case and belongs here — `inspect_source` admits
+        # it exactly like any other raster, and independently refuses it if the
+        # bytes turn out to hold more than one directory after all.
         if verdict == admission.RENDER_PAGES and 0 < len(data) <= MAX_SOURCE_BYTES:
             # A multi-page container reaching this branch means a manifest skipped
             # the fan-out `expand_sources` performs; refused rather than guessed at.
@@ -209,49 +240,54 @@ def decide(
             result.geometry,
         )
 
-    if verdict != admission.RENDER_PAGES:
+    if verdict not in (admission.RENDER_PAGES, admission.ADMIT_OR_FAN_OUT):
         # The source was fanned out into pages under a policy that does not fan this
         # format out — a stale manifest, a hand-built entry, or a policy edited
         # between the fan-out and here. The admission list is the authority in every
         # one of those cases, and the refusal names what is actually true of *these*
-        # bytes: a format the list refuses, bytes that match no signature, or — the
-        # case that is neither — a format the list admits as a single image and was
-        # nonetheless handed a page index. Reaching for "refuses by name" in that
-        # last case would assert something the list does not say.
-        detected = sniff(data)
+        # bytes: a format the list has no reader for, bytes that match no
+        # signature, or — the case that is neither — a format the list admits as a
+        # single image and was nonetheless handed a page index. Reaching for "no
+        # reader" in that last case would assert something the list does not say.
         if verdict is RefusalReason.UNRECOGNIZED_FORMAT:
             code, detail = verdict, "bytes do not match any known image signature"
-        elif verdict is RefusalReason.REFUSED_FORMAT:
-            code, detail = verdict, admission.refused_format_detail(detected)
+        elif verdict is RefusalReason.UNSUPPORTED_VARIANT:
+            code, detail = verdict, admission.no_policy_opinion_detail(detected)
+        elif verdict == admission.GAP:
+            code, detail = RefusalReason.UNSUPPORTED_VARIANT, admission.gap_detail(detected)
         else:
             code, detail = (
                 RefusalReason.UNSUPPORTED_VARIANT,
                 f"this source was declared with a page index, but the admission list "
-                f"gives {detected} the action {verdict!r} rather than page rendering; "
+                f"gives {detected} the action {verdict!r}, which does not fan out; "
                 "a page index is a claim about a fan-out, never permission to skip the list",
             )
         return _Decision("refused", admission.reason(code, detail), digest_bytes(data), None, None)
 
-    # A PDF-sourced page: the declared digest names the *whole file*, checked once
-    # regardless of how many of its pages are being admitted, because a tampered
-    # container is untrustworthy for every page inside it.
+    # A container-sourced page (PDF or a multi-directory TIFF): the declared
+    # digest names the *whole file*, checked once regardless of how many of its
+    # pages are being admitted, because a tampered container is untrustworthy for
+    # every page inside it.
     whole_digest = digest_bytes(data)
     if source.declared_sha256 is not None and whole_digest != source.declared_sha256:
         return _Decision(
             "refused",
             admission.reason(
                 RefusalReason.DIGEST_MISMATCH,
-                f"computed {whole_digest} for the PDF, but {source.declared_sha256} was declared",
+                f"computed {whole_digest} for the {detected} container, but "
+                f"{source.declared_sha256} was declared",
             ),
             whole_digest,
             None,
             None,
         )
+    renderer = _RENDERERS[detected]
     try:
-        page_bytes, page_format = pdf_render.render_page(
-            _prepared_document(data, source.declared_path, documents), source.pdf_page_index
+        page_bytes, page_format = renderer.render_page(
+            _prepared_document(data, source.declared_path, detected, documents),
+            source.container_page_index,
         )
-    except pdf_render.PdfRefusal as error:
+    except admission.RenderRefusal as error:
         return _Decision("refused", str(error), None, None, None)
 
     # What was rendered is now inspected as though it had been submitted: the same
@@ -281,16 +317,22 @@ def expand_sources(
 
     `files` is a list of `{relative_path, sha256, bytes}` rows sorted by path, the
     shape `operations/submit/submit.py`'s sealed manifest writes. Synthetic callers
-    may omit `bytes`; real inventory never does. A PDF's page count is read once
-    through the same door-private `pdf_render` call that renders them; nothing here
+    may omit `bytes`; real inventory never does. A container's page count is read
+    once through the same door-private renderer that renders them; nothing here
     decodes a page early.
 
-    **A source is fanned out only when the admission list says to fan that format
-    out.** The decision is `admission.classify_detected_format`, the same one
-    function the raster path reads — never a format name written into this module.
-    A hardcoded `sniff(data) == "pdf"` here is the admission rule existing twice,
-    which is precisely the defect spec 03 exists to kill; under it, a policy row
-    reading `pdf = "refuse"` would be counted, fanned out and rendered anyway.
+    **A source is fanned out only when the admission list says its format can hold
+    more than one page.** The decision is `admission.classify_detected_format`, the
+    same one function the raster path reads — never a format name written into
+    this module for the purpose of deciding admission. A `render-pages` format
+    (PDF) is *always* fanned out, its page count read unconditionally. An
+    `admit-or-fan-out` format (TIFF) is *probed first*: only a file that
+    structurally holds more than one image directory is fanned out; a
+    single-directory file — the common case — falls straight through to the
+    ordinary single-file path and is sealed unmodified, exactly like any other
+    raster. Dispatching to the renderer built for a *known* multi-page-capable
+    format is not the admission rule existing twice — see `door.py`'s module
+    docstring.
 
     Refusals are *not* decided here. One unreadable or unopenable source still
     occupies exactly one ordinal, and `process_sources` produces its named refusal
@@ -320,25 +362,58 @@ def expand_sources(
             ordinal += 1
             sources.append(SourceEntry(ordinal, path, declared_sha256, None, declared_size))
             continue
-        if (
-            len(data) > MAX_SOURCE_BYTES
-            or admission.classify_detected_format(sniff(data), policy) != admission.RENDER_PAGES
-        ):
+        if len(data) > MAX_SOURCE_BYTES:
             ordinal += 1
             sources.append(SourceEntry(ordinal, path, declared_sha256, None, declared_size))
             continue
-        try:
-            page_count = pdf_render.count_pages(data)
-        except pdf_render.PdfRefusal:
-            # An unopenable PDF still occupies exactly one ordinal: it is one
-            # declared source, refused as a whole, and the run-level source
-            # manifest must still account for it by ordinal.
-            ordinal += 1
-            sources.append(SourceEntry(ordinal, path, declared_sha256, 0, declared_size))
+
+        detected = sniff(data)
+        verdict = admission.classify_detected_format(detected, policy)
+
+        if verdict == admission.RENDER_PAGES:
+            try:
+                page_count = _RENDERERS[detected].count_pages(data)
+            except admission.RenderRefusal:
+                # An unopenable container still occupies exactly one ordinal,
+                # fanned out as its own page zero: it is one declared source,
+                # refused as a whole, and the run-level source manifest must still
+                # account for it by ordinal. A `render-pages` format is *always*
+                # fanned out, so this source needs a page index to reach
+                # `decide`'s container path at all — unlike `admit-or-fan-out`
+                # below, there is no ordinary single-file path for it to fall
+                # back to.
+                ordinal += 1
+                sources.append(SourceEntry(ordinal, path, declared_sha256, 0, declared_size))
+                continue
+            for page_index in range(page_count):
+                ordinal += 1
+                sources.append(
+                    SourceEntry(ordinal, path, declared_sha256, page_index, declared_size)
+                )
             continue
-        for page_index in range(page_count):
-            ordinal += 1
-            sources.append(SourceEntry(ordinal, path, declared_sha256, page_index, declared_size))
+
+        if verdict == admission.ADMIT_OR_FAN_OUT:
+            try:
+                page_count = _RENDERERS[detected].count_pages(data)
+            except admission.RenderRefusal:
+                # Unlike `render-pages`, this format's common case is a single,
+                # unmodified file, so a source whose page count could not even be
+                # probed falls through to the ordinary single-file path below —
+                # `decide`'s admission check, the same structural validator, names
+                # what is actually wrong with it rather than this probe guessing.
+                pass
+            else:
+                if page_count > 1:
+                    for page_index in range(page_count):
+                        ordinal += 1
+                        sources.append(
+                            SourceEntry(ordinal, path, declared_sha256, page_index, declared_size)
+                        )
+                    continue
+                # Exactly one directory: the common case, sealed unmodified below.
+
+        ordinal += 1
+        sources.append(SourceEntry(ordinal, path, declared_sha256, None, declared_size))
     return sources
 
 
@@ -377,106 +452,121 @@ def process_sources(
     admitted = 0
     seen_sources: dict[str, tuple[str, int]] = {}
     cache: dict[str, bytes] = {}
-    # Parsed containers, alongside the bytes they were parsed from: a multi-page
-    # source is read once and parsed once, and every one of its pages is rendered
-    # out of that single parse.
-    documents: dict[str, Any] = {}
+    # Parsed containers, alongside which renderer parsed them and the bytes they
+    # were parsed from: a multi-page source is read once and parsed once, and
+    # every one of its pages is rendered out of that single parse. The renderer
+    # name travels with each entry so the `finally` below can close every document
+    # through the same renderer that opened it, whichever one that was.
+    documents: dict[str, tuple[str, Any]] = {}
 
-    for source in sorted(sources, key=lambda item: item.ordinal):
-        if source.declared_size is not None and source.declared_size > MAX_SOURCE_BYTES:
-            # Refused for its own size, never as a duplicate of something else. Two
-            # oversized copies of one file are two oversized files, and each is told
-            # the truth about itself.
+    try:
+        for source in sorted(sources, key=lambda item: item.ordinal):
+            if source.declared_size is not None and source.declared_size > MAX_SOURCE_BYTES:
+                # Refused for its own size, never as a duplicate of something else.
+                # Two oversized copies of one file are two oversized files, and
+                # each is told the truth about itself.
+                _publish(
+                    context,
+                    source,
+                    outcome="refused",
+                    reason=admission.reason(
+                        RefusalReason.TOO_LARGE,
+                        f"{source.declared_size} bytes exceeds the "
+                        f"{MAX_SOURCE_BYTES}-byte admission limit",
+                    ),
+                    approval_reference=approval_reference,
+                )
+                continue
+            try:
+                data = cache.get(source.declared_path)
+                if data is None:
+                    data = read_bytes(source.declared_path)
+                    cache[source.declared_path] = data
+            except OSError as error:
+                _publish(
+                    context,
+                    source,
+                    outcome="refused",
+                    reason=admission.reason(RefusalReason.UNREADABLE, str(error)),
+                    approval_reference=approval_reference,
+                )
+                continue
+
+            actual_digest = digest_bytes(data)
+            first = seen_sources.get(actual_digest)
+            if first is not None and first[0] != source.declared_path:
+                _publish(
+                    context,
+                    source,
+                    outcome="refused",
+                    reason=admission.duplicate_reason(first[1]),
+                    approval_reference=approval_reference,
+                )
+                continue
+            decision = decide(data, source, policy, documents=documents)
+
+            if decision.outcome == "refused":
+                _publish(
+                    context,
+                    source,
+                    outcome="refused",
+                    reason=decision.reason,
+                    approval_reference=approval_reference,
+                )
+                continue
+
+            # Registered *after* the decision, and only on an admission: the
+            # duplicate reason says "already admitted as source-N", and a record
+            # may only claim what actually happened (GOVERNANCE 10). Registering
+            # before `decide` made a refused source the "first", so a second copy
+            # of two corrupt files was told its twin had been admitted, and the
+            # census read "one corrupt file, one duplicate" when the truth was
+            # two corrupt files.
+            seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
+            _, published = tree.put_blob(DOOR, decision.store_bytes)
+            extra: dict[str, Any] = {
+                "sha256": decision.digest,
+                "stored_at": published.relative_path,
+                "geometry": {"width": decision.geometry[0], "height": decision.geometry[1]},
+            }
+            if source.container_page_index is not None:
+                # The one recorded transform this door performs. ARCHITECTURE's
+                # third invariant — the exact image shown to a model is
+                # reproducible from the Exemplar plus recorded transforms — is
+                # only true if the render is *recorded*: which page, of which
+                # file, produced these bytes. Without it a sealed page's digest
+                # simply disagrees with its source's and nothing can say why.
+                # Named `container_page_index` rather than `pdf_page_index`: a
+                # fanned-out TIFF directory records the identical transform, and
+                # GLOSSARY's "one word per concept" rules out a PDF-only name for
+                # a fact that is no longer PDF-only.
+                extra["container_page_index"] = source.container_page_index
+                # `container_sha256`, not `source_sha256`. The Exemplar's page
+                # payload already uses `source_sha256` for the digest of the
+                # *sealed* bytes — the one `page_id` binds, and the one
+                # `common/contracts/identities.py` names — so a second meaning
+                # for the same word inside one record is GLOSSARY's opening rule
+                # broken three lines apart, and a reader taking the top-level
+                # field for "the file this came from" would be right for every
+                # raster and wrong for every rendered page.
+                extra["container_sha256"] = source.declared_sha256 or digest_bytes(data)
             _publish(
                 context,
                 source,
-                outcome="refused",
-                reason=admission.reason(
-                    RefusalReason.TOO_LARGE,
-                    f"{source.declared_size} bytes exceeds the "
-                    f"{MAX_SOURCE_BYTES}-byte admission limit",
-                ),
+                outcome="admitted",
+                payload_extra=extra,
+                inputs=[context.input_ref(published.relative_path)],
                 approval_reference=approval_reference,
             )
-            continue
-        try:
-            data = cache.get(source.declared_path)
-            if data is None:
-                data = read_bytes(source.declared_path)
-                cache[source.declared_path] = data
-        except OSError as error:
-            _publish(
-                context,
-                source,
-                outcome="refused",
-                reason=admission.reason(RefusalReason.UNREADABLE, str(error)),
-                approval_reference=approval_reference,
-            )
-            continue
+            admitted += 1
 
-        actual_digest = digest_bytes(data)
-        first = seen_sources.get(actual_digest)
-        if first is not None and first[0] != source.declared_path:
-            _publish(
-                context,
-                source,
-                outcome="refused",
-                reason=admission.duplicate_reason(first[1]),
-                approval_reference=approval_reference,
-            )
-            continue
-        decision = decide(data, source, policy, documents=documents)
-
-        if decision.outcome == "refused":
-            _publish(
-                context,
-                source,
-                outcome="refused",
-                reason=decision.reason,
-                approval_reference=approval_reference,
-            )
-            continue
-
-        # Registered *after* the decision, and only on an admission: the duplicate
-        # reason says "already admitted as source-N", and a record may only claim
-        # what actually happened (GOVERNANCE 10). Registering before `decide` made
-        # a refused source the "first", so a second copy of two corrupt files was
-        # told its twin had been admitted, and the census read "one corrupt file,
-        # one duplicate" when the truth was two corrupt files.
-        seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
-        _, published = tree.put_blob(DOOR, decision.store_bytes)
-        extra: dict[str, Any] = {
-            "sha256": decision.digest,
-            "stored_at": published.relative_path,
-            "geometry": {"width": decision.geometry[0], "height": decision.geometry[1]},
-        }
-        if source.pdf_page_index is not None:
-            # The one recorded transform this door performs. ARCHITECTURE's third
-            # invariant — the exact image shown to a model is reproducible from the
-            # Exemplar plus recorded transforms — is only true if the render is
-            # *recorded*: which page, of which file, produced these bytes. Without
-            # it a sealed page's digest simply disagrees with its source's and
-            # nothing can say why.
-            extra["pdf_page_index"] = source.pdf_page_index
-            # `container_sha256`, not `source_sha256`. The Exemplar's page payload
-            # already uses `source_sha256` for the digest of the *sealed* bytes —
-            # the one `page_id` binds, and the one `common/contracts/identities.py`
-            # names — so a second meaning for the same word inside one record is
-            # GLOSSARY's opening rule broken three lines apart, and a reader taking
-            # the top-level field for "the file this came from" would be right for
-            # every raster and wrong for every rendered page.
-            extra["container_sha256"] = source.declared_sha256 or digest_bytes(data)
-        _publish(
-            context,
-            source,
-            outcome="admitted",
-            payload_extra=extra,
-            inputs=[context.input_ref(published.relative_path)],
-            approval_reference=approval_reference,
-        )
-        admitted += 1
-
-    return admitted
+        return admitted
+    finally:
+        # Every native handle a renderer opened is released once every source has
+        # been decided — an N-page PDF or multi-directory TIFF is parsed once and
+        # closed once, never left for garbage collection to notice eventually.
+        for detected, document in documents.values():
+            _RENDERERS[detected].close_document(document)
 
 
 def _publish(
