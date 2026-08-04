@@ -74,8 +74,8 @@ rules and no need to hunt for one. The repository's own rules are separate and l
 - `/out` — a scratch drawer shared with the host. This is how work leaves.
 - `/specs` — the design specs, frozen when this chamber was made and **yours to
   write**. `spec_NN_*.md` is the written source for any system you are asked to
-  build; the master plan and the notes beside it are not here, and the brief you
-  were given carries whatever else you need. They live outside git on the host,
+  build; the design notes beside them are copied too, and the brief you were
+  given carries whatever else you need. They live outside git on the host,
   which is why they arrive by their own mount rather than inside `/work`. This is
   a copy made for you, not the operator's original, so record what your brief
   tells you to record. Say in your report what you changed here — it does not

@@ -587,6 +587,13 @@ cmd_new() {
         case "$AUTOCLAVE_WINDOW" in
             *[[:space:]]*) die "AUTOCLAVE_WINDOW must not contain whitespace — this script splits the flag list on it" ;;
         esac
+        # A colon is the separator in Docker's short `--volume src:dst:opts` form, so a
+        # path containing one is read as three fields the operator never wrote. Refusing
+        # it here says which path is wrong; letting it through produces an
+        # invalid-volume-specification error naming a mount nobody asked for.
+        case "$AUTOCLAVE_WINDOW" in
+            *:*) die "AUTOCLAVE_WINDOW must not contain ':' — Docker reads it as a volume-spec separator" ;;
+        esac
         [ -d "$AUTOCLAVE_WINDOW" ] ||
             die "AUTOCLAVE_WINDOW names '${AUTOCLAVE_WINDOW}', which is not a directory"
         window_mount="--volume ${AUTOCLAVE_WINDOW}:/window:ro"

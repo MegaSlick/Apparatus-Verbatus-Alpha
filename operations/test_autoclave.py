@@ -524,6 +524,17 @@ class TestLogin:
         assert 'window_mount="--volume ${AUTOCLAVE_WINDOW}:/window:ro"' in runnable
         assert ":/window:rw" not in runnable, "the window is writable"
 
+    def test_the_window_path_cannot_forge_a_volume_spec(self):
+        """`window_mount` is word-split into the flag list, and Docker's short volume
+        form is `src:dst:opts`. So the two characters that could make one path read as
+        several fields — whitespace and a colon — are refused before the flag is built.
+        A path with a colon in it produced an invalid-volume-specification error naming
+        a mount the operator never wrote.
+        """
+        runnable = "\n".join(code_lines())
+        assert "*[[:space:]]*) die " in runnable, "whitespace is not refused"
+        assert "*:*) die " in runnable, "a colon is not refused"
+
     def test_an_unset_window_mounts_nothing(self):
         """The flag is empty unless the variable is set, and it word-splits into the
         `docker run` line beside the auth mounts. An empty string must contribute no
