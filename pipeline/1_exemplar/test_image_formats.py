@@ -1,4 +1,4 @@
-"""Structural validators, proven against hand-built bytes.
+"""Structural validators and decoder-backed page handling, proven synthetically.
 
 Every fixture here is built in memory by `synthetic_sources.py`, never a checked-in
 binary: the ingress guard only allows png/jpeg/tiff media types under
@@ -6,16 +6,15 @@ binary: the ingress guard only allows png/jpeg/tiff media types under
 and nothing here is register material in the first place — GOVERNANCE's
 synthetic-fixture rule applies to bytes that stand for a page, and these do not.
 
-The validators refuse in two distinct voices and the difference is load-bearing.
-"corrupt ..." means the bytes are not a genuine instance of the format at all;
-"unsupported ..." means they are genuine and name a variant this door does not
-decode. `admission._refusal_code` turns those into two different closed reasons, so
-a test that only checked "it raised" would let the two collapse.
+The structural walkers distinguish malformed bytes from documented decoder limits.
+Their errors become closed admission alarms; no test below permits a format-policy
+refusal to take their place.
 """
 
 import struct
 import tracemalloc
 import zlib
+from io import BytesIO
 
 import pytest
 from image_formats import (
@@ -23,12 +22,16 @@ from image_formats import (
     FormatRefusal,
     ImageGeometry,
     _tiff_unsigned_values,
+    count_raster_pages,
+    decode_raster,
+    render_raster_page,
     sniff,
     validate,
     validate_jpeg,
     validate_png,
     validate_tiff,
 )
+from PIL import Image
 from synthetic_sources import (
     PNG_MAGIC,
     gif,
@@ -52,6 +55,8 @@ def test_sniff_recognizes_every_format_the_admission_list_can_name():
     assert sniff(b"%PDF-1.4\n%...") == "pdf"
     assert sniff(gif()) == "gif"
     assert sniff(heic()) == "heic"
+    assert sniff(b"BM" + b"\x00" * 16) == "bmp"
+    assert sniff(b"RIFF\x00\x00\x00\x00WEBP") == "webp"
 
 
 def test_sniff_returns_none_for_unrecognized_bytes():
@@ -67,7 +72,7 @@ def test_sniff_does_not_call_an_unrelated_iso_container_a_heic():
 
 
 def test_heic_brand_sniffing_does_not_allocate_from_the_ftyp_box_size():
-    """A refused format still crosses the sniffer; its header cannot size a list."""
+    """A reader route still crosses the sniffer; its header cannot size a list."""
     box_size = 256 * 1024
     data = (
         struct.pack(">I", box_size)
@@ -239,11 +244,11 @@ def test_validate_jpeg_refuses_a_missing_eoi():
         validate_jpeg(jpeg(eoi=False))
 
 
-def test_validate_jpeg_refuses_bytes_appended_after_eoi():
-    """Two concatenated images, or an appended payload. Either way the file is not
-    the single page the door would believe it admitted."""
-    with pytest.raises(FormatRefusal, match="trailing bytes after EOI"):
-        validate_jpeg(jpeg(trailing=b"a second document entirely"))
+def test_validate_jpeg_accepts_scanner_bytes_appended_after_eoi():
+    """EOI closes a JPEG; scanners commonly preserve harmless suffix bytes."""
+    assert validate_jpeg(jpeg(trailing=b"scanner-metadata-after-eoi")) == ImageGeometry(
+        "jpeg", 5, 4
+    )
 
 
 def test_validate_jpeg_refuses_no_start_of_frame():
@@ -391,44 +396,34 @@ def test_validate_tiff_refuses_a_geometry_tag_with_a_zero_count_rather_than_cras
         validate_tiff(bytes(data))
 
 
-@pytest.mark.parametrize(
-    ("label", "second_directory"),
-    [
-        # Every shape of second directory, including the three that used to be
-        # admitted as a one-page image because the old check keyed on a *duplicate
-        # geometry tag* rather than on the chain having a second link. A two-page
-        # TIFF sealed as one page loses a page with no refusal to show for it.
-        ("declaring its own geometry", [(256, 3, 4), (257, 3, 3)]),
-        ("carrying strip tags only", [(273, 4, 8), (279, 4, 1)]),
-        ("carrying one unrelated tag", [(259, 3, 1)]),
-        ("carrying nothing at all", []),
-    ],
-)
-def test_validate_tiff_refuses_any_second_image_directory(label, second_directory):
-    """Multi-page TIFF: the door assigns one ordinal per page, so silently sealing
-    only the first would lose every page after it without a refusal to show."""
-    first = tiff(4, 3)
-    data = bytearray(first)
-    struct.pack_into("<I", data, tiff_next_ifd_offset(first), len(first))
-    entries = b"".join(
-        struct.pack("<HHI", tag, field_type, 1)
-        + (struct.pack("<H", value) + b"\x00\x00" if field_type == 3 else struct.pack("<I", value))
-        for tag, field_type, value in second_directory
-    )
-    data += struct.pack("<H", len(second_directory)) + entries + struct.pack("<I", 0)
-    with pytest.raises(FormatRefusal, match="multi-page TIFF is a documented limit"):
-        validate_tiff(bytes(data)), label
+def _two_page_tiff() -> bytes:
+    """Two synthetic TIFF pages with deliberately different geometries."""
+    output = BytesIO()
+    first = Image.new("L", (4, 3), 17)
+    second = Image.new("L", (2, 5), 231)
+    first.save(output, format="TIFF", save_all=True, append_images=[second])
+    return output.getvalue()
 
 
-def test_a_cyclic_ifd_chain_cannot_be_entered_at_all():
-    """A chain pointing back at its own first directory is refused at the first
-    link, by the same rule that refuses an honest second page. There is no IFD
-    walk left to bound, which is a tighter bound than the count this replaced."""
+def test_multi_page_tiff_is_a_page_container_that_can_be_counted_and_rendered():
+    """The first structural walk remains useful; the door owns every later page."""
+    data = _two_page_tiff()
+    assert validate_tiff(data) == ImageGeometry("tiff", 4, 3)
+    assert count_raster_pages(data) == 2
+    assert decode_raster(data, page_index=1).width == 2
+    rendered, geometry, contract = render_raster_page(data, 1)
+    assert validate_png(rendered) == ImageGeometry("png", 2, 5)
+    assert geometry == ImageGeometry("tiff", 2, 5)
+    assert contract["container_page_index"] == 1
+
+
+def test_a_cyclic_ifd_chain_is_still_a_named_decoder_failure():
+    """Normal later directories are fanned out; a loop is not a normal container."""
     first = tiff()
     data = bytearray(first)
     struct.pack_into("<I", data, tiff_next_ifd_offset(first), 8)
-    with pytest.raises(FormatRefusal, match="multi-page TIFF is a documented limit"):
-        validate_tiff(bytes(data))
+    with pytest.raises(FormatRefusal):
+        count_raster_pages(bytes(data))
 
 
 # --- what a TIFF actually stores has to hold the image it declares ----------------

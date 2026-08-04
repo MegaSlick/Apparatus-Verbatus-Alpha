@@ -49,7 +49,6 @@ DOOR_PRIVATE_MODULES = {
         {
             "pipeline/1_exemplar/door.py",
             "pipeline/1_exemplar/test_pdf_render.py",
-            "pipeline/1_exemplar/test_door.py",
         }
     ),
     "image_formats": frozenset(
@@ -60,6 +59,7 @@ DOOR_PRIVATE_MODULES = {
             "pipeline/1_exemplar/test_admission.py",
             "pipeline/1_exemplar/test_image_formats.py",
             "pipeline/1_exemplar/test_pdf_render.py",
+            "pipeline/1_exemplar/test_door.py",
         }
     ),
 }

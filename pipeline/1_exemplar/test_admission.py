@@ -1,19 +1,17 @@
-"""The one admission module: by bytes, from one configured list, in a closed set.
+"""The Exemplar's byte-led routes and its closed alarm vocabulary.
 
-Spec 03's test 1 lives here — correct magic and decodable bytes are admitted; the
-wrong extension over the right bytes is admitted under the *detected* type; the
-right extension over the wrong bytes is refused and named — and so does the half of
-test 2 that is about the reason vocabulary itself. The other half, an all-refused
-folder exiting loud, needs a run tree and is in `test_door.py`.
+Spec 03's admission-by-bytes checks live here: a reader route never decides from an
+extension, PDF and TIFF containers are sent to page fan-out, and a reader gap is an
+alarm rather than a policy refusal.  The all-refused-folder check needs a run tree
+and remains in `test_door.py`.
 """
 
-import struct
 import tomllib
+from io import BytesIO
 
 import pytest
 from admission import (
-    ADMIT,
-    REFUSE,
+    RASTER,
     RENDER_PAGES,
     SNIFFABLE_FORMATS,
     AdmissionOutcome,
@@ -27,12 +25,9 @@ from admission import (
     reason_code,
 )
 from image_formats import MAX_DIMENSION, MAX_SOURCE_BYTES
+from PIL import Image
 from synthetic_sources import (
-    gif,
-    heic,
-    jpeg,
     png,
-    png_container,
     single_gray_page_pdf,
     tiff,
 )
@@ -43,43 +38,56 @@ from common.contracts.errors import ContractError
 POLICY = load_format_policy()
 
 
-# --- The admission list is configuration, and it is checked ----------------------
+# --- Decoder routes are configuration, and are checked ----------------------------
 
 
-def test_the_shipped_admission_list_says_what_the_ledger_says_it_says():
-    """Tyrel's two open ledger items are one line each in `config/admitted_formats.toml`,
-    and this is what would notice if a code change quietly moved either of them."""
-    assert POLICY["png"] == POLICY["jpeg"] == POLICY["tiff"] == ADMIT
-    assert POLICY["gif"] == REFUSE
-    assert POLICY["heic"] == REFUSE, "the .heic ruling is Tyrel's; until he makes it, refused"
-    assert POLICY["pdf"] == REFUSE, (
-        "PDF is held behind this row until the renderer proves the pixels it returns are "
-        "the page's complete visible content; it reads one image XObject and never "
-        "interprets /Contents, so a page carrying text beside that image would lose it"
+def _one_pixel_gif() -> bytes:
+    """A complete synthetic GIF89a image for the ordinary-reader route."""
+    return bytes.fromhex(
+        "47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002024401003b"
     )
 
 
-def test_the_admission_list_covers_exactly_the_formats_the_door_can_detect(tmp_path):
-    """A format with no row would be admitted or refused by omission — the silent
-    drift that let the old door accept `.gif` on one path and refuse it on another."""
+def _decoder_jpeg(width: int = 5, height: int = 4, *, trailing: bytes = b"") -> bytes:
+    """A pixel-decodable synthetic JPEG, optionally with scanner-style suffix bytes."""
+    output = BytesIO()
+    Image.new("RGB", (width, height), (17, 34, 51)).save(output, format="JPEG")
+    return output.getvalue() + trailing
+
+
+def test_the_shipped_decoder_routes_name_readers_not_formats_to_refuse():
+    """The route table is exhaustive, but contains no rejection action.
+
+    TIFF and PDF are containers whose pages must be fanned out.  The remaining
+    currently-sniffed types make one raster-decoder attempt; a gap there is a named
+    pipeline alarm rather than a decision to exclude a file format.
+    """
+    assert POLICY["png"] == POLICY["jpeg"] == POLICY["gif"] == RASTER
+    assert POLICY["heic"] == POLICY["bmp"] == POLICY["webp"] == RASTER
+    assert POLICY["tiff"] == POLICY["pdf"] == RENDER_PAGES
+    assert set(POLICY.values()) <= {RASTER, RENDER_PAGES}
+
+
+def test_the_decoder_routes_cover_exactly_the_formats_the_door_can_detect(tmp_path):
+    """A missing route would make a fan-out decision by omission."""
     assert set(POLICY) == SNIFFABLE_FORMATS
     short = tmp_path / "short.toml"
-    short.write_text('[format]\npng = "admit"\n', encoding="utf-8")
+    short.write_text('[format]\npng = "raster"\n', encoding="utf-8")
     with pytest.raises(FormatPolicyRefusal, match="Missing"):
         load_format_policy(short)
 
 
-def test_the_admission_list_refuses_a_format_it_cannot_detect(tmp_path):
-    rows = "\n".join(f'{name} = "refuse"' for name in sorted(SNIFFABLE_FORMATS))
+def test_the_decoder_routes_reject_an_unknown_row_name(tmp_path):
+    rows = "\n".join(f'{name} = "raster"' for name in sorted(SNIFFABLE_FORMATS))
     path = tmp_path / "extra.toml"
-    path.write_text(f'[format]\n{rows}\nwebp = "refuse"\n', encoding="utf-8")
+    path.write_text(f'[format]\n{rows}\navif = "raster"\n', encoding="utf-8")
     with pytest.raises(FormatPolicyRefusal, match="Unknown"):
         load_format_policy(path)
 
 
-def test_the_admission_list_refuses_an_action_outside_its_closed_set(tmp_path):
+def test_the_decoder_routes_reject_an_action_outside_their_closed_set(tmp_path):
     rows = "\n".join(
-        f'{name} = "{"maybe" if name == "png" else "refuse"}"' for name in sorted(SNIFFABLE_FORMATS)
+        f'{name} = "{"maybe" if name == "png" else "raster"}"' for name in sorted(SNIFFABLE_FORMATS)
     )
     path = tmp_path / "bad-action.toml"
     path.write_text(f"[format]\n{rows}\n", encoding="utf-8")
@@ -87,18 +95,12 @@ def test_the_admission_list_refuses_an_action_outside_its_closed_set(tmp_path):
         load_format_policy(path)
 
 
-def test_admitting_a_format_nothing_can_verify_is_refused_at_load(tmp_path):
-    """The honest cost of the `.heic` ruling. Turning that line to "admit" is one
-    edit, and on its own it would admit unverified bytes under a name claiming they
-    were checked — so it refuses, and says what is actually missing."""
-    rows = "\n".join(
-        f'{name} = "{"admit" if name == "heic" else POLICY[name]}"'
-        for name in sorted(SNIFFABLE_FORMATS)
-    )
-    path = tmp_path / "heic-admitted.toml"
+def test_a_reader_route_does_not_require_a_bespoke_structural_walker(tmp_path):
+    """A reader gap is an alarm at byte admission, never a load-time format ban."""
+    rows = "\n".join(f'{name} = "raster"' for name in sorted(SNIFFABLE_FORMATS))
+    path = tmp_path / "all-raster.toml"
     path.write_text(f"[format]\n{rows}\n", encoding="utf-8")
-    with pytest.raises(FormatPolicyRefusal, match="no structural validator"):
-        load_format_policy(path)
+    assert load_format_policy(path) == {name: RASTER for name in sorted(SNIFFABLE_FORMATS)}
 
 
 def test_an_unreadable_admission_list_is_a_failed_check_not_an_empty_one(tmp_path):
@@ -107,16 +109,16 @@ def test_an_unreadable_admission_list_is_a_failed_check_not_an_empty_one(tmp_pat
         load_format_policy(missing)
 
 
-def test_the_shipped_admission_list_parses_as_the_one_table_it_claims_to_be():
+def test_the_shipped_decoder_routes_parse_as_the_one_table_they_claim_to_be():
     with open("config/admitted_formats.toml", "rb") as handle:
         assert set(tomllib.load(handle)) == {"format"}
 
 
-def test_a_format_the_table_has_no_opinion_on_is_refused_rather_than_admitted():
-    """Unreachable while `load_format_policy` requires full coverage, and kept as
-    the fail-closed catch. Unknown is never "fine"."""
-    assert classify_detected_format("webp", POLICY) is RefusalReason.REFUSED_FORMAT
-    assert classify_detected_format(None, POLICY) is RefusalReason.UNRECOGNIZED_FORMAT
+def test_an_unknown_magic_or_handbuilt_missing_route_gets_a_generic_raster_attempt():
+    """Neither case may reintroduce a format-policy refusal path."""
+    partial_policy = {name: action for name, action in POLICY.items() if name != "webp"}
+    assert classify_detected_format("webp", partial_policy) == RASTER
+    assert classify_detected_format(None, POLICY) == RASTER
 
 
 # --- Test 1: admission by bytes, never by extension ------------------------------
@@ -126,8 +128,8 @@ def test_a_format_the_table_has_no_opinion_on_is_refused_rather_than_admitted():
     ("data", "detected", "geometry"),
     [
         (png(2, 3), "png", (2, 3)),
-        (jpeg(3, 2), "jpeg", (3, 2)),
-        (tiff(4, 5), "tiff", (4, 5)),
+        (_decoder_jpeg(3, 2), "jpeg", (3, 2)),
+        (_one_pixel_gif(), "gif", (1, 1)),
     ],
 )
 def test_correct_bytes_are_admitted_and_their_true_geometry_is_read(data, detected, geometry):
@@ -140,7 +142,9 @@ def test_the_declared_name_plays_no_part_at_all():
     same bytes under any other name, because no name is ever passed in. There is no
     parameter here to mislead — which is the point, and this is what would notice a
     suffix creeping back in as a "harmless" extra refusal."""
-    assert inspect_source(jpeg(), declared_sha256=None, policy=POLICY).outcome == "admitted"
+    assert (
+        inspect_source(_decoder_jpeg(), declared_sha256=None, policy=POLICY).outcome == "admitted"
+    )
     outcome = inspect_source(b"not an image", declared_sha256=None, policy=POLICY)
     assert outcome.outcome == "refused"
     assert reason_code(outcome.reason) is RefusalReason.UNRECOGNIZED_FORMAT
@@ -152,28 +156,31 @@ def test_a_declared_digest_that_does_not_match_the_bytes_is_refused_and_named():
     assert outcome.digest == digest_bytes(png())
 
 
-def test_a_pdf_is_never_admitted_as_one_image_here():
-    """A container of pages is not one image; the door fans it out. Asking this
-    function to decide one is a programming error, not a refusal — but only while
-    the list actually asks for the fan-out. Under the shipped list, which refuses
-    PDF, the same call is an ordinary named refusal."""
-    render_pages = {**POLICY, "pdf": RENDER_PAGES}
-    with pytest.raises(ValueError, match="multi-page container"):
-        inspect_source(single_gray_page_pdf(), declared_sha256=None, policy=render_pages)
+def test_a_transfer_changed_raster_is_a_digest_alarm_before_the_decoder_reads_it():
+    original = png()
+    changed = bytearray(original)
+    changed[changed.find(b"IDAT") + 5] ^= 0xFF
 
-    outcome = inspect_source(single_gray_page_pdf(), declared_sha256=None, policy=POLICY)
-    assert reason_code(outcome.reason) is RefusalReason.REFUSED_FORMAT
+    outcome = inspect_source(bytes(changed), declared_sha256=digest_bytes(original), policy=POLICY)
+    assert reason_code(outcome.reason) is RefusalReason.DIGEST_MISMATCH
 
 
-def test_the_pdf_row_is_the_whole_of_the_pdf_decision():
-    """`classify_detected_format` is the one authority, and the door reads it rather
-    than naming a format itself. Three of four reviewing seats found the same bypass
-    — a hardcoded `sniff(data) == "pdf"` fan-out that never consulted this — so this
-    pins the table's answer for every action the row can carry."""
-    assert (
-        classify_detected_format("pdf", {**POLICY, "pdf": REFUSE}) is RefusalReason.REFUSED_FORMAT
-    )
-    assert classify_detected_format("pdf", {**POLICY, "pdf": RENDER_PAGES}) == RENDER_PAGES
+def test_scanner_style_jpeg_suffix_bytes_are_admitted():
+    """EOI closes the image; harmless bytes after it are not a corruption alarm."""
+    data = _decoder_jpeg(trailing=b"scanner-metadata-after-eoi")
+    outcome = inspect_source(data, declared_sha256=None, policy=POLICY)
+    assert outcome == AdmissionOutcome("admitted", None, "jpeg", digest_bytes(data), (5, 4))
+
+
+@pytest.mark.parametrize(
+    ("data", "detected"),
+    [(single_gray_page_pdf(), "pdf"), (tiff(4, 5), "tiff")],
+)
+def test_pdf_and_tiff_are_page_containers_not_single_image_refusals(data, detected):
+    """The door owns their page count and one-time rendering, not `inspect_source`."""
+    assert classify_detected_format(detected, POLICY) == RENDER_PAGES
+    with pytest.raises(ValueError, match="page container"):
+        inspect_source(data, declared_sha256=None, policy=POLICY)
 
 
 # --- Test 2: the refusal vocabulary is closed, and every member is exercised ------
@@ -185,8 +192,7 @@ def _oversized_png() -> bytes:
     Structurally sound and honestly what it says it is — it is simply larger than
     this door will inspect, which is a documented limit rather than damage.
     """
-    header = struct.pack(">IIBBBBB", MAX_DIMENSION + 1, 2, 8, 0, 0, 0, 0)
-    return png_container((b"IHDR", header), (b"IEND", b""))
+    return png(MAX_DIMENSION + 1, 2)
 
 
 def _exercised() -> dict[RefusalReason, str]:
@@ -204,9 +210,6 @@ def _exercised() -> dict[RefusalReason, str]:
         ).reason,
         RefusalReason.UNRECOGNIZED_FORMAT: inspect_source(
             b"plain text", declared_sha256=None, policy=POLICY
-        ).reason,
-        RefusalReason.REFUSED_FORMAT: inspect_source(
-            gif(), declared_sha256=None, policy=POLICY
         ).reason,
         RefusalReason.CORRUPT: inspect_source(
             png()[:-4], declared_sha256=None, policy=POLICY
@@ -241,14 +244,11 @@ def test_the_two_refusal_voices_stay_apart():
     assert reason_code(unsupported.reason) is RefusalReason.UNSUPPORTED_VARIANT
 
 
-def test_a_refused_format_names_the_format_rather_than_counting_anonymously():
-    """Audit Q14's actual defect was an anonymous "unsupported" counter. Both
-    disputed formats are refused *by name*, whatever Tyrel rules about `.heic`."""
-    for data, detected in ((gif(), "gif"), (heic(), "heic")):
-        outcome = inspect_source(data, declared_sha256=None, policy=POLICY)
-        assert reason_code(outcome.reason) is RefusalReason.REFUSED_FORMAT
-        assert detected in outcome.reason
-        assert outcome.detected_format == detected
+def test_the_closed_alarm_vocabulary_has_no_format_policy_member():
+    """A decoder gap remains visible work; it cannot be rebranded as a format ban."""
+    assert "refused-format" not in {member.value for member in RefusalReason}
+    with pytest.raises(ContractError):
+        reason_code("refused-format: the route table excluded this file")
 
 
 def test_a_reason_outside_the_closed_set_is_refused_when_it_is_read_back():

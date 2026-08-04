@@ -13,8 +13,10 @@ be the soft place.
 """
 
 import zlib
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 from common.imaging import (
     PNG_SIGNATURE,
@@ -100,3 +102,14 @@ def test_undecodable_input_is_refused_rather_than_guessed_at():
 def test_crop_refuses_what_the_decoder_refuses():
     with pytest.raises(ValueError):
         crop_png(b"not a png", {"x": 0, "y": 0, "w": 1, "h": 1})
+
+
+def test_crop_converts_an_admitted_cmyk_jpeg_to_a_png_compatible_display_mode():
+    source = BytesIO()
+    Image.new("CMYK", (3, 2), (0, 255, 255, 0)).save(source, format="JPEG")
+
+    cropped = crop_png(source.getvalue(), {"x": 1, "y": 0, "w": 2, "h": 2})
+    with Image.open(BytesIO(cropped)) as image:
+        image.load()
+        assert image.mode == "RGB"
+        assert image.size == (2, 2)

@@ -14,14 +14,19 @@ bookkeeping on synthetic input, and a codec that quietly half-handled a real
 photograph would be worse than one that says no. Spec 03 brings a real decoder in
 at the door, where decoding is the point.
 
-No dependency. Pillow and numpy are both the obvious answer and the wrong one for
-drawing rectangles into a project that has zero dependencies and intends to keep
-its list short.
+This module keeps its tiny grayscale codec for deterministic synthetic fixtures.
+The project may also use ordinary imaging libraries where full decoding is needed:
+Tyrel's ruling permits basic tools such as Pillow and PDFium, and the Exemplar uses
+them to preserve real source pages rather than refusing formats for lack of a
+decoder.
 """
 
 import struct
 import zlib
+from io import BytesIO
 from typing import TypedDict
+
+from PIL import Image, UnidentifiedImageError
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -157,25 +162,60 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
 
 
 def crop_png(png_bytes: bytes, bounds: Bounds) -> bytes:
-    """Cut a rectangle out of a page and re-encode it through the same encoder.
+    """Cut a rectangle out of a sealed page and return lossless PNG bytes.
 
     The crop is genuinely derived from the page's pixels rather than described,
     which is what makes ARCHITECTURE's third invariant — the exact image shown to
     a model is reproducible from the Exemplar plus the recorded transforms —
     a property of this code rather than a claim about it.
     """
-    width, height, rows = decode_grayscale_png(png_bytes)
     x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
-
     if w <= 0 or h <= 0:
         raise ValueError(f"crop bounds {bounds} must have positive width and height")
+    try:
+        width, height, rows = decode_grayscale_png(png_bytes)
+    except ValueError:
+        return _crop_decoded_page(png_bytes, x, y, w, h)
     if x < 0 or y < 0 or x + w > width or y + h > height:
         raise ValueError(f"crop bounds {bounds} fall outside a {width}x{height} page")
-
     return encode_grayscale_png(w, h, [row[x : x + w] for row in rows[y : y + h]])
 
 
 def dimensions(png_bytes: bytes) -> tuple[int, int]:
-    """The width and height of a decodable image, for verifying a region reference."""
-    width, height, _ = decode_grayscale_png(png_bytes)
-    return width, height
+    """The dimensions of a sealed page, including RGB PNG renders from the door."""
+    try:
+        width, height, _ = decode_grayscale_png(png_bytes)
+        return width, height
+    except ValueError:
+        try:
+            with Image.open(BytesIO(png_bytes)) as image:
+                image.load()
+                return image.width, image.height
+        except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as error:
+            raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
+
+
+def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> bytes:
+    """Crop a decoded page and encode a PNG-compatible, display-ready result.
+
+    PNG cannot represent CMYK or several decoder-private modes.  The sealed crop
+    is a display image for later stages, so non-alpha modes become RGB and alpha
+    modes become RGBA; no transparent pixel is flattened against an invented
+    background.  The original Exemplar blob remains untouched and traceable.
+    """
+    try:
+        with Image.open(BytesIO(png_bytes)) as image:
+            image.load()
+            if x < 0 or y < 0 or x + w > image.width or y + h > image.height:
+                raise ValueError(
+                    f"crop bounds {{'x': {x}, 'y': {y}, 'w': {w}, 'h': {h}}} fall outside a "
+                    f"{image.width}x{image.height} page"
+                )
+            crop = image.crop((x, y, x + w, y + h))
+            if crop.mode not in {"1", "L", "LA", "P", "RGB", "RGBA"}:
+                crop = crop.convert("RGBA" if "A" in crop.getbands() else "RGB")
+            output = BytesIO()
+            crop.save(output, format="PNG", optimize=False, compress_level=9)
+            return output.getvalue()
+    except (UnidentifiedImageError, OSError, SyntaxError) as error:
+        raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error

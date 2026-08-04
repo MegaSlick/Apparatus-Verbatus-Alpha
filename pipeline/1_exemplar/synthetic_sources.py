@@ -239,12 +239,12 @@ def tiff_next_ifd_offset(data: bytes, *, little_endian: bool = True) -> int:
 
 
 def gif() -> bytes:
-    """Enough of a GIF to be sniffed as one. It is refused by name regardless."""
+    """Enough GIF bytes to exercise a named decoder-gap route in a test."""
     return b"GIF89a" + b"\x00" * 12
 
 
 def heic() -> bytes:
-    """An ISO-BMFF `ftyp` box declaring a HEIC brand. Refused by name, by bytes."""
+    """An ISO-BMFF `ftyp` header declaring HEIC for decoder-gap tests."""
     return struct.pack(">I", 24) + b"ftyp" + b"heic" + b"\x00\x00\x00\x00" + b"mif1" + b"heic"
 
 
@@ -288,6 +288,104 @@ def stream_object(dictionary: str, raw: bytes) -> bytes:
     return f"{dictionary} /Length {len(raw)} >>".encode() + b"\nstream\n" + raw + b"\nendstream"
 
 
+def content_page_pdf(
+    content: bytes,
+    *,
+    width: int = 144,
+    height: int = 72,
+    images: list[dict] | None = None,
+    rotate: int | None = None,
+) -> bytes:
+    """One page whose complete display list is authored by a test.
+
+    Images are exposed as ``/Im0``, ``/Im1`` and so on. ``/F1`` is a standard
+    Helvetica resource, letting tests paint synthetic text without checking a
+    font file into the repository. The content stream remains caller-owned so a
+    test can place text, vectors and images independently and prove that the
+    whole page, rather than one convenient object, was rasterised.
+    """
+    builder = PdfBuilder()
+    image_numbers = [
+        builder.add(stream_object(entry["dictionary"], entry["raw"])) for entry in (images or [])
+    ]
+    font = builder.add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    contents = builder.add(stream_object("<<", content))
+    catalog = builder.add()
+    pages = builder.add()
+    names = " ".join(f"/Im{index} {number} 0 R" for index, number in enumerate(image_numbers))
+    rotation = f" /Rotate {rotate}" if rotate is not None else ""
+    resources = f"<< /Font << /F1 {font} 0 R >> /XObject << {names} >> >>"
+    page = builder.add(
+        (
+            f"<< /Type /Page /Parent {pages} 0 R /Resources {resources} "
+            f"/MediaBox [0 0 {width} {height}] /Contents {contents} 0 R{rotation} >>"
+        ).encode()
+    )
+    builder.objects[pages] = f"<< /Type /Pages /Kids [{page} 0 R] /Count 1 >>".encode()
+    builder.objects[catalog] = f"<< /Type /Catalog /Pages {pages} 0 R >>".encode()
+    return builder.build(catalog)
+
+
+def form_text_pdf(value: str = "FORM") -> bytes:
+    """One synthetic AcroForm text field whose value must be drawn by PDFium.
+
+    The widget is a terminal field on a one-page document, using a built-in font
+    and default appearance.  There is intentionally no page content stream that
+    paints the value: a render only shows its ink when the PDF form environment
+    was initialized and `may_draw_forms` is honored.
+    """
+    builder = PdfBuilder()
+    font = builder.add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    catalog = builder.add()
+    pages = builder.add()
+    form = builder.add()
+    widget = builder.add()
+    contents = builder.add(stream_object("<<", b""))
+    page = builder.add(
+        (
+            f"<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 144 72] "
+            f"/Resources << /Font << /Helv {font} 0 R >> >> "
+            f"/Annots [{widget} 0 R] /Contents {contents} 0 R >>"
+        ).encode()
+    )
+    builder.objects[widget] = (
+        f"<< /Type /Annot /Subtype /Widget /FT /Tx /T (field) /Rect [20 20 130 52] "
+        f"/V ({value}) /DA (/Helv 18 Tf 0 g) /F 4 /P {page} 0 R >>"
+    ).encode()
+    builder.objects[form] = (
+        f"<< /Fields [{widget} 0 R] /DR << /Font << /Helv {font} 0 R >> >> "
+        "/DA (/Helv 18 Tf 0 g) /NeedAppearances true >>"
+    ).encode()
+    builder.objects[pages] = f"<< /Type /Pages /Kids [{page} 0 R] /Count 1 >>".encode()
+    builder.objects[catalog] = (
+        f"<< /Type /Catalog /Pages {pages} 0 R /AcroForm {form} 0 R >>"
+    ).encode()
+    return builder.build(catalog)
+
+
+def blank_pages_pdf(count: int, *, width: int = 1, height: int = 1) -> bytes:
+    """A real page tree of ``count`` empty synthetic pages.
+
+    This intentionally emits every leaf rather than trusting a forged ``/Count``:
+    PDFium, not this test writer, decides how many pages the document contains.
+    """
+    builder = PdfBuilder()
+    catalog = builder.add()
+    pages = builder.add()
+    page_numbers = [
+        builder.add(
+            f"<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 {width} {height}] >>".encode()
+        )
+        for _ in range(count)
+    ]
+    kids = " ".join(f"{number} 0 R" for number in page_numbers)
+    builder.objects[pages] = (
+        f"<< /Type /Pages /Kids [{kids}] /Count {len(page_numbers)} >>".encode()
+    )
+    builder.objects[catalog] = f"<< /Type /Catalog /Pages {pages} 0 R >>".encode()
+    return builder.build(catalog)
+
+
 def image_page_pdf(
     images: list[dict],
     *,
@@ -312,13 +410,19 @@ def image_page_pdf(
     rotate_clause = f" /Rotate {rotate}" if rotate is not None else ""
     for entry, image_number in zip(images, image_numbers, strict=True):
         names = " ".join(f"/Im{index} {image_number} 0 R" for index in range(xobject_count))
+        commands = (
+            f"q {entry['width']} 0 0 {entry['height']} 0 0 cm /Im0 Do Q".encode()
+            if xobject_count
+            else b""
+        )
+        contents = builder.add(stream_object("<<", commands))
         page_numbers.append(
             builder.add(
                 (
                     f"<< /Type /Page /Parent {pages} 0 R /Resources "
                     f"<< /XObject << {names} >> >> "
                     f"/MediaBox [0 0 {entry['width']} {entry['height']}]"
-                    f"{rotate_clause}{extra_page} >>"
+                    f" /Contents {contents} 0 R{rotate_clause}{extra_page} >>"
                 ).encode()
             )
         )

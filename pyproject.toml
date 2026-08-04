@@ -7,6 +7,11 @@ dependencies = [
     # Hugging Face snapshot metadata/download client used by common.chairs.  It is
     # pinned so a configured model identity is resolved by a reproducible client.
     "huggingface_hub==1.26.0",
+    # Basic image codecs used to make every supported raster and TIFF page readable
+    # at the Exemplar boundary and by downstream crop operations.
+    "Pillow==12.3.0",
+    # PDFium binding used to rasterise complete PDF pages once at the submit door.
+    "pypdfium2==5.12.1",
 ]
 
 # Dependencies are pinned from the first line rather than retrofitted.

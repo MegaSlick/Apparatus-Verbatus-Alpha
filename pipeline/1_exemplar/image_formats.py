@@ -1,10 +1,10 @@
-"""Structural validators for PNG, JPEG and TIFF: door-private, standard library only.
+"""Structural checks and decoder-backed raster helpers for the door.
 
-Spec 03's ruling (settled 2026-08-04, item 5): the door brings a real decoder in,
-where decoding is the point, and `common/imaging.py` stays the narrow synthetic-only
-codec it always was — it says so in its own docstring, naming this spec as the place
-a real one is answered. Pillow and numpy are both the obvious answer and the wrong
-one for a project with zero dependencies.
+Spec 03's ruling (settled 2026-08-04, item 5): the door uses a real decoder where
+decoding is the point. Pillow supplies ordinary raster support, while the structural
+walkers below keep catching malformed common containers before a later stage could
+mistake them for a page. A decoder gap is an alarm about this pipeline, never a
+format policy that rejects the submitted image.
 
 **"Real" here means structural, not photometric.** Each validator walks the real
 container far enough to prove the bytes are a genuine, uncorrupted instance of the
@@ -26,8 +26,12 @@ this stage imports it, so structural inspection only ever happens once, at admis
 """
 
 import struct
+import warnings
 import zlib
+from io import BytesIO
 from typing import Any, Final, NamedTuple
+
+from PIL import Image, UnidentifiedImageError
 
 # Bounds on what may be inspected at all. A source larger than `MAX_SOURCE_BYTES`
 # is refused before a validator sees it; a declared geometry past `MAX_DIMENSION`
@@ -39,10 +43,7 @@ MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
 MAX_TIFF_DATA_SEGMENTS: Final = 100_000
-# There is no bound on the number of TIFF image directories, because more than one
-# is refused by name: `validate_tiff` reads directory zero and refuses a non-zero
-# next-directory offset. A walk of exactly one is the tightest bound there is, and
-# an IFD-count cap was a bound on a chain that is no longer entered.
+MAX_TIFF_PAGES: Final = 5_000
 
 
 class ImageGeometry(NamedTuple):
@@ -67,6 +68,8 @@ JPEG_SIGNATURE: Final = b"\xff\xd8"
 TIFF_SIGNATURES: Final = (b"II*\x00", b"MM\x00*")
 PDF_SIGNATURE: Final = b"%PDF-"
 GIF_SIGNATURES: Final = (b"GIF87a", b"GIF89a")
+BMP_SIGNATURES: Final = (b"BM", b"BA", b"CI", b"CP", b"IC", b"PT")
+WEBP_SIGNATURE: Final = b"WEBP"
 
 # The one table `sniff()` walks, so the list of formats the door can detect is
 # *derived* from what the sniffer executes rather than hand-copied beside it. A
@@ -78,6 +81,7 @@ _SIGNATURES: Final = (
     ("tiff", TIFF_SIGNATURES),
     ("pdf", (PDF_SIGNATURE,)),
     ("gif", GIF_SIGNATURES),
+    ("bmp", BMP_SIGNATURES),
 )
 
 # ISO base media file format "brand" codes that mark a file as HEIC/HEIF. Detected
@@ -99,6 +103,8 @@ def sniff(data: bytes) -> str | None:
     for name, signatures in _SIGNATURES:
         if any(data.startswith(signature) for signature in signatures):
             return name
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == WEBP_SIGNATURE:
+        return "webp"
     if _is_heic(data):
         return "heic"
     return None
@@ -360,7 +366,7 @@ _JPEG_LOSSLESS_MARKERS: Final = frozenset({0xC3, 0xC7, 0xCB, 0xCF})
 
 
 def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> ImageGeometry:
-    """Walk marker segments to an EOI that ends the file, reading geometry off SOF.
+    """Walk marker segments to an EOI, reading geometry off SOF.
 
     **What is proven, exactly.** The file is framed by SOI and a terminating EOI at
     the very end; every marker segment's declared length lies inside the file; there
@@ -387,9 +393,9 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
     does not claim to. That is the same named, documented limit the module docstring
     states for all three formats.
 
-    Trailing bytes after EOI are refused: they are either a second concatenated
-    image or an appended payload, and neither is the single page the door believes
-    it admitted.
+    Trailing bytes after EOI are retained. Some scanners append metadata or padding;
+    the EOI still closes the JPEG image and this door must not call that normal form
+    corrupted merely because it carries bytes after it.
 
     `expected_components` is the colour-space reconciliation the PDF renderer needs —
     the number of components the *container around this JPEG* declares. A mismatch
@@ -413,8 +419,6 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
                 raise FormatRefusal("corrupt JPEG: no start-of-frame marker; no geometry to read")
             if not saw_sos:
                 raise FormatRefusal("corrupt JPEG: EOI before any scan")
-            if cursor != len(data):
-                raise FormatRefusal("corrupt JPEG: trailing bytes after EOI")
             return geometry
         if marker == 0xD8 or marker == 0x01 or 0xD0 <= marker <= 0xD7:
             raise FormatRefusal(f"corrupt JPEG: standalone marker 0xFF{marker:02X} is misplaced")
@@ -706,15 +710,9 @@ def validate_tiff(data: bytes) -> ImageGeometry:
     named, documented limit, not a shortcut, and it is why this module says a file
     that passes here is provably the format it claims rather than provably intact.
 
-    **Multi-page TIFF is refused by name at the first link of the chain.** The door
-    assigns one ordinal per page, and this module cannot extract page N as its own
-    image, so sealing only the first page would lose every page after it without a
-    refusal to show — GOALS 1, in the place the old door failed. Keying that refusal
-    on a *duplicate geometry tag*, as this used to, missed a second directory that
-    declared no geometry: three separate shapes of two-page TIFF were admitted as one
-    page. A non-zero next-directory offset is the whole test now, and because the
-    chain is never entered, the walk is bounded at one directory rather than at a
-    constant nobody could reach.
+    A later image directory is normal multi-page TIFF, not a refusal. The door asks
+    Pillow for the bounded page count and renders each directory separately; this
+    first-directory walker remains a structural check of the source's opening page.
     """
     if len(data) < 8 or data[:2] not in (b"II", b"MM"):
         raise FormatRefusal("not a TIFF: missing byte-order header")
@@ -788,13 +786,8 @@ def validate_tiff(data: bytes) -> ImageGeometry:
                 raise FormatRefusal(f"corrupt TIFF: tag {tag} appears twice in one directory")
             target[tag] = _tiff_unsigned_values(value_bytes, field_type, value_count, endian, tag)
 
-    (next_offset,) = struct.unpack_from(endian + "I", data, table_end - 4)
-    if next_offset != 0:
-        raise FormatRefusal(
-            "unsupported TIFF: the file chains a second image directory; multi-page TIFF "
-            "is a documented limit, because the door assigns one ordinal per page and "
-            "this validator cannot hand it page two"
-        )
+    # A non-zero next IFD is a further page.  Its own pixels are decoded and bound
+    # when the door fans it out; rejecting it here would lose a normal scan.
 
     if width is None or height is None:
         raise FormatRefusal("corrupt TIFF: no ImageWidth/ImageLength tag")
@@ -952,7 +945,7 @@ VALIDATORS: Final = {"png": validate_png, "jpeg": validate_jpeg, "tiff": validat
 # from the dispatch table `validate()` uses. `admission.py` reads these to check
 # the policy's coverage, and a hand-kept copy there would only ever agree with
 # another hand-kept copy.
-SNIFFABLE_FORMATS: Final = frozenset({name for name, _ in _SIGNATURES} | {"heic"})
+SNIFFABLE_FORMATS: Final = frozenset({name for name, _ in _SIGNATURES} | {"heic", "webp"})
 STRUCTURALLY_VALIDATED: Final = frozenset(VALIDATORS)
 
 
@@ -963,3 +956,175 @@ def validate(format_name: str, data: bytes) -> ImageGeometry:
     except KeyError:
         raise FormatRefusal(f"no structural validator for format {format_name!r}") from None
     return validator(data)
+
+
+class DecodedRaster(NamedTuple):
+    """One decoded raster page, preserving the decoder's detected format."""
+
+    format: str
+    width: int
+    height: int
+    frame_count: int
+
+
+def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
+    """Decode one page through Pillow without trusting a filename or extension.
+
+    Pillow is asked to load pixels, not merely identify a header.  Its normal
+    truncated-image behaviour is left enabled, so a partial scan cannot become a
+    silently grey page.  A known format that this build cannot decode is an
+    unsupported variant; bytes that name no image at all are unrecognized.
+    """
+    detected_by_signature = sniff(data)
+    # These walkers catch malformed PNG/JPEG structures a permissive decoder can
+    # otherwise display partially. TIFF's many legal layouts are left to Pillow's
+    # full decoder so a valid multi-page or compressed scan is not refused for a
+    # limitation in this narrow first-IFD checker.
+    if detected_by_signature in {"png", "jpeg"}:
+        validate(detected_by_signature, data)
+    elif detected_by_signature == "tiff":
+        _validate_classic_tiff_page_chain(data)
+    try:
+        # Pillow warns for a decompression bomb while opening some formats.  A
+        # warning emitted to a terminal is neither a sealed outcome nor a useful
+        # failure mode, so turn it into the same named decoder alarm as its error
+        # form.  Our own geometry check below is the project limit; Pillow's is a
+        # conservative first line before it allocates decoder state.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(data)) as image:
+                detected = _pillow_format_name(image.format)
+                frames = getattr(image, "n_frames", 1)
+                if not isinstance(frames, int) or frames < 1:
+                    raise FormatRefusal("corrupt image: decoder returned no frames")
+                if not isinstance(page_index, int) or isinstance(page_index, bool):
+                    raise FormatRefusal("corrupt image: page index is not an integer")
+                if not 0 <= page_index < frames:
+                    raise FormatRefusal(
+                        f"corrupt {detected}: page index {page_index} is outside 0..{frames - 1}"
+                    )
+                # Seeking chooses the frame but does not ask Pillow to decode its
+                # pixels.  Bound that frame's declared dimensions before `load()`
+                # can inflate attacker-controlled data into memory.
+                image.seek(page_index)
+                geometry = _geometry(detected, image.width, image.height)
+                image.load()
+                return DecodedRaster(detected, geometry.width, geometry.height, frames)
+    except UnidentifiedImageError as error:
+        if detected_by_signature is not None:
+            raise FormatRefusal(
+                f"unsupported {detected_by_signature}: the installed decoder could not read it"
+            ) from error
+        raise FormatRefusal(
+            "unrecognized image format: no installed decoder recognizes these bytes"
+        ) from error
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
+        raise FormatRefusal(
+            f"unsupported image variant: decoder rejected unsafe pixel dimensions ({error})"
+        ) from error
+    except (OSError, SyntaxError, ValueError) as error:
+        raise FormatRefusal(
+            f"unsupported image variant: the installed decoder could not read it ({error})"
+        ) from error
+
+
+def count_raster_pages(data: bytes) -> int:
+    """Read a decoder-backed page count without creating output pixels."""
+    return decode_raster(data).frame_count
+
+
+def raster_renderer_recipe() -> dict[str, Any]:
+    """The Pillow facts that affect a door-produced page render.
+
+    This is also bound before a real run is created.  A Pillow upgrade must make a
+    resumed render a new run rather than discover different immutable pixels only
+    after it has published a blob.
+    """
+    return {
+        "renderer": "Pillow",
+        "renderer_version": Image.__version__,
+        "output": {"codec": "png", "color_mode": "RGB"},
+    }
+
+
+def render_raster_page(data: bytes, page_index: int) -> tuple[bytes, ImageGeometry, dict[str, Any]]:
+    """Render one multi-page raster page to a lossless, door-sealed PNG."""
+    decoded = decode_raster(data, page_index=page_index)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(data)) as image:
+                image.seek(page_index)
+                # `decode_raster()` above already made this exact source/frame
+                # pass the project geometry bound before loading it.
+                image.load()
+                rendered = image.convert("RGB")
+                output = BytesIO()
+                rendered.save(output, format="PNG", optimize=False, compress_level=9)
+    except (
+        UnidentifiedImageError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        OSError,
+        SyntaxError,
+        ValueError,
+    ) as error:
+        raise FormatRefusal(
+            f"unsupported {decoded.format}: the installed decoder could not rasterise page {page_index} ({error})"
+        ) from error
+    return (
+        output.getvalue(),
+        ImageGeometry(decoded.format, decoded.width, decoded.height),
+        {
+            **raster_renderer_recipe(),
+            "container_page_index": page_index,
+            "width": decoded.width,
+            "height": decoded.height,
+        },
+    )
+
+
+def _pillow_format_name(format_name: str | None) -> str:
+    """Use a stable lowercase name even for a decoder format no sniffer names."""
+    if not format_name:
+        return "unknown-raster"
+    aliases = {"JPEG": "jpeg", "TIFF": "tiff", "PNG": "png", "WEBP": "webp"}
+    return aliases.get(format_name, format_name.lower())
+
+
+def _validate_classic_tiff_page_chain(data: bytes) -> None:
+    """Bound classic TIFF page links without mistaking later pages for an error.
+
+    Pillow owns actual pixel decoding and accepts several valid TIFF layouts this
+    project's narrow first-page structural walker deliberately does not interpret.
+    The link chain is different: every classic directory gives a finite next-IFD
+    offset, so a loop is objectively malformed and could otherwise leave a decoder
+    reporting an arbitrary first-frame count.  Check only that universal shape;
+    BigTIFF is left entirely to the installed decoder rather than rejected for
+    being a wider offset layout.
+    """
+    if len(data) < 8 or data[:2] not in (b"II", b"MM"):
+        return
+    endian = "<" if data[:2] == b"II" else ">"
+    (magic,) = struct.unpack_from(endian + "H", data, 2)
+    if magic != 42:
+        return
+    (offset,) = struct.unpack_from(endian + "I", data, 4)
+    seen: set[int] = set()
+    pages = 0
+    while offset:
+        if offset in seen:
+            raise FormatRefusal("corrupt TIFF: image-directory chain contains a cycle")
+        if offset + 2 > len(data):
+            raise FormatRefusal("corrupt TIFF: image-directory offset falls outside the file")
+        seen.add(offset)
+        (entries,) = struct.unpack_from(endian + "H", data, offset)
+        next_offset_at = offset + 2 + entries * 12
+        if next_offset_at + 4 > len(data):
+            raise FormatRefusal("corrupt TIFF: image-directory entries run past the file")
+        pages += 1
+        if pages > MAX_TIFF_PAGES:
+            raise FormatRefusal(
+                f"unsupported TIFF: more than {MAX_TIFF_PAGES} pages exceed the fan-out limit"
+            )
+        (offset,) = struct.unpack_from(endian + "I", data, next_offset_at)
