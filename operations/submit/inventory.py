@@ -53,6 +53,12 @@ _CHUNK: Final = 1024 * 1024
 # pages in a shallow tree; these are far above anything real and far below what
 # exhausts a machine. A bound nobody can reach is still the difference between a
 # named refusal and an out-of-memory kill nobody can read afterwards.
+#
+# `MAX_SUBMITTED_BYTES` counts *retained* bytes, so it is inert for `submit.py`,
+# which asks for `max_bytes=0` and holds no content at all, and live for the
+# pipeline door, which asks for 64 MiB per file and is the caller that actually
+# accumulates a corpus in memory. That asymmetry is the point: the bound sits where
+# the memory does. The other three bind both callers.
 MAX_SUBMITTED_FILES: Final = 100_000
 MAX_SUBMITTED_BYTES: Final = 8 * 1024 * 1024 * 1024
 MAX_DIRECTORY_DEPTH: Final = 64
