@@ -531,21 +531,46 @@ class TestLogin:
         assert ":/window:rw" not in runnable, "the window is writable"
         assert ":/stage:rw" not in runnable, "the stage window is writable"
 
-    def test_the_real_corpus_is_masked_out_of_the_window(self):
-        """The window's directories hold roughly 31,500 real register images, and a
-        chamber has open network egress — so a readable image is a sendable one. The
-        mask is built from `window.conf`'s lists as empty read-only tmpfs mounts, the
-        same mechanism that hides `private/`, `workbench/` and `scriptorium/` on `/src`.
+    def test_the_old_repository_is_admitted_by_named_directory_never_whole(self):
+        """The old repository is 5.5 GB and holds roughly 31,500 real register images
+        plus months of dated notes, and a chamber has open network egress — a readable
+        image is a sendable one.
 
-        A mask that is merely configured is not a mask that holds; what proves it is
-        scanning the mounts from inside a chamber, which is not something a static test
-        can do. This asserts the mechanism exists and is read-only, and the chamber-side
-        scan is recorded in the commit that added it.
+        **The control is that the root is never mounted.** `window.conf` names the
+        directories that may cross and the launcher mounts each one individually, so a
+        drawer that appears in the old repository tomorrow is absent from the airlock
+        until somebody names it. An exclusion list would have the opposite default and
+        would admit it silently — the same reasoning that makes the repository's own
+        `.dockerignore` deny everything and re-admit two files by name.
+
+        A control that is merely configured is not a control that holds; what proves it
+        is scanning the mounts from inside a chamber, which no static test can do. The
+        chamber-side scan is recorded in the commit that added this.
         """
         runnable = "\n".join(code_lines())
-        assert "--tmpfs /window/${masked}:ro" in runnable, "the window corpus is not masked"
+        assert "${WINDOW_OCR_ROOT}/${wdir}:/window/${wdir}:ro" in runnable, (
+            "the old repository is not mounted directory by directory"
+        )
+        assert "--volume ${WINDOW_OCR_ROOT}:/window" not in runnable, (
+            "the old repository root is mounted whole"
+        )
         assert "--tmpfs /stage/${masked}:ro" in runnable, "the stage probes are not masked"
         assert "$window_masks" in runnable, "the mask flags never reach docker run"
+
+    def test_the_stage_mount_does_not_clobber_the_window_mount(self):
+        """Both flag sets share one variable, and `/stage` was assigned into it rather
+        than appended — so every `/window` flag built above was silently discarded and
+        the chamber came up with `/stage` present, `/window` absent, and a log line
+        still saying the airlock was open.
+
+        Caught by inspecting a real container's mounts rather than by reading the
+        script, which is the only way this class of bug shows itself.
+        """
+        runnable = "\n".join(code_lines())
+        assert 'window_mount="--volume ${WINDOW_STAGE}:/stage:ro"' not in runnable, (
+            "the stage mount overwrites the window mount instead of appending"
+        )
+        assert 'window_mount="${window_mount} --volume ${WINDOW_STAGE}:/stage:ro"' in runnable
 
     def test_the_window_path_cannot_forge_a_volume_spec(self):
         """`window_mount` is word-split into the flag list, and Docker's short volume

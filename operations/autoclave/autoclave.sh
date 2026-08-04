@@ -603,16 +603,29 @@ cmd_new() {
     if [ -z "${AUTOCLAVE_WINDOW:-}" ] && [ -f "${REPO_ROOT}/operations/autoclave/window.conf" ]; then
         # shellcheck disable=SC1091
         . "${REPO_ROOT}/operations/autoclave/window.conf"
-        if [ -n "${WINDOW_OCR:-}" ] && [ -d "${WINDOW_OCR}" ]; then
-            AUTOCLAVE_WINDOW="${WINDOW_OCR}"
-            for masked in ${WINDOW_OCR_MASKS:-}; do
-                window_masks="${window_masks} --tmpfs /window/${masked}:ro,size=4k"
+        # The old pipeline's code, mounted directory by directory rather than whole.
+        # Naming each one is what keeps the corpus, the datasets and the months of
+        # dated notes out — a mount of the repository root with exclusions would admit
+        # every new drawer that appears, which is the failure `.dockerignore` at the
+        # repository root was already shaped to avoid.
+        if [ -n "${WINDOW_OCR_ROOT:-}" ] && [ -d "${WINDOW_OCR_ROOT}" ]; then
+            for wdir in ${WINDOW_OCR_DIRS:-}; do
+                if [ -d "${WINDOW_OCR_ROOT}/${wdir}" ]; then
+                    window_mount="${window_mount} --volume ${WINDOW_OCR_ROOT}/${wdir}:/window/${wdir}:ro"
+                else
+                    note "window.conf names ${wdir}, absent from ${WINDOW_OCR_ROOT} — not mounted"
+                fi
             done
-        elif [ -n "${WINDOW_OCR:-}" ]; then
-            note "window.conf names ${WINDOW_OCR}, which is not on this machine — /window not mounted"
+            [ -n "$window_mount" ] &&
+                note "airlock open: the old pipeline's code is readable at /window. It is contaminated — reference only, and no line of it may enter a branch."
+        elif [ -n "${WINDOW_OCR_ROOT:-}" ]; then
+            note "window.conf names ${WINDOW_OCR_ROOT}, which is not on this machine — /window not mounted"
         fi
         if [ -n "${WINDOW_STAGE:-}" ] && [ -d "${WINDOW_STAGE}" ]; then
-            window_mount="--volume ${WINDOW_STAGE}:/stage:ro"
+            # Appended, never assigned: `=` here silently discarded every /window flag
+            # built above it, and the chamber came up with /stage present and /window
+            # absent while the log still said the airlock was open.
+            window_mount="${window_mount} --volume ${WINDOW_STAGE}:/stage:ro"
             for masked in ${WINDOW_STAGE_MASKS:-}; do
                 window_masks="${window_masks} --tmpfs /stage/${masked}:ro,size=4k"
             done
