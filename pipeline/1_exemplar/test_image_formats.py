@@ -19,6 +19,7 @@ from io import BytesIO
 import pytest
 from image_formats import (
     MAX_DIMENSION,
+    DecodedRaster,
     FormatRefusal,
     ImageGeometry,
     _tiff_unsigned_values,
@@ -555,3 +556,59 @@ def test_an_unknown_field_type_in_a_tag_this_validator_never_reads_is_skipped():
     unreadable_width = struct.pack("<HHI", 278, 129, 1) + b"\x00\x00\x00\x00"
     with pytest.raises(FormatRefusal, match="has to read that tag"):
         validate_tiff(tiff(6, 5, extra_entries=unreadable_width, extra_entry_count=1))
+
+
+# --- Structural walking is corruption detection, and only that --------------------
+
+
+def test_structurally_damaged_tiff_bytes_refuse_before_a_decoder_sees_them():
+    """A `corrupt ...` structural verdict still refuses, and refuses as damage.
+
+    This is the half of structural validation the spec keeps: proving the bytes are
+    a genuine instance of what they claim. Here an uncompressed image's stored strip
+    is truncated to a byte, so the file claims a 6x5 image behind storage that
+    cannot hold one. A permissive decoder can render most of that as a page, which
+    is how a damaged transfer becomes a plausible-looking Exemplar.
+    """
+    data = bytearray(tiff(6, 5))
+    strip_byte_count = _tiff_tag_value_offset(bytes(data), 279)
+    struct.pack_into("<I", data, strip_byte_count, 1)
+    with pytest.raises(FormatRefusal, match="corrupt TIFF"):
+        decode_raster(bytes(data))
+
+
+def test_a_layout_this_walker_cannot_read_defers_to_the_real_decoder():
+    """An `unsupported ...` structural verdict is about this module, not the file.
+
+    Spec 03: structural validation "may no longer decide a real file is inadmissible
+    because nothing here reconstructs its pixels". `validate_tiff` refuses BigTIFF by
+    name — it walks 32-bit offsets and says so — but the installed decoder reads
+    BigTIFF perfectly well, and a large archival scan in that layout is exactly the
+    "real, uncorrupted file refused by policy" ruling 2 deletes. So the decoder
+    answers instead, and the file is admitted.
+
+    BigTIFF is sniffed as TIFF for this to be the route it takes. Left unsniffed it
+    would be admitted anyway, through the unknown-magic fallback — but by accident
+    rather than by name, and it would turn into `unrecognized-format` the day that
+    fallback is ever tightened.
+    """
+    output = BytesIO()
+    Image.new("RGB", (8, 6), (12, 34, 56)).save(output, format="TIFF", big_tiff=True)
+    data = output.getvalue()
+
+    assert sniff(data) == "tiff"
+    with pytest.raises(FormatRefusal, match="unsupported TIFF: not classic TIFF"):
+        validate_tiff(data)
+    assert decode_raster(data) == DecodedRaster("tiff", 8, 6, 1)
+
+
+def _tiff_tag_value_offset(data: bytes, tag: int) -> int:
+    """Where one IFD-0 entry's inline value field starts, for damaging it."""
+    (offset,) = struct.unpack_from("<I", data, 4)
+    (count,) = struct.unpack_from("<H", data, offset)
+    for index in range(count):
+        entry = offset + 2 + index * 12
+        (found,) = struct.unpack_from("<H", data, entry)
+        if found == tag:
+            return entry + 8
+    raise AssertionError(f"the synthetic TIFF carries no tag {tag}")

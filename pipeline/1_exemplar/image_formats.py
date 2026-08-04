@@ -43,7 +43,11 @@ MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
 MAX_TIFF_DATA_SEGMENTS: Final = 100_000
+# One scanned register volume is hundreds of pages, not hundreds of thousands.
+# `MAX_TIFF_PAGES` bounds the classic-TIFF directory chain walk; `MAX_RASTER_FRAMES`
+# bounds whatever any decoder reports, for the containers that never reach that walk.
 MAX_TIFF_PAGES: Final = 5_000
+MAX_RASTER_FRAMES: Final = 5_000
 
 
 class ImageGeometry(NamedTuple):
@@ -65,7 +69,13 @@ class FormatRefusal(ValueError):
 
 PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
 JPEG_SIGNATURE: Final = b"\xff\xd8"
-TIFF_SIGNATURES: Final = (b"II*\x00", b"MM\x00*")
+# Classic TIFF and BigTIFF alike. BigTIFF is TIFF — the same tags and the same
+# image, with 64-bit offsets — and "TIFF 100% must work" does not carve it out.
+# It is sniffed here rather than left to the unknown-magic fallback so that a
+# large archival scan is admitted *as a TIFF, by name*, instead of by the accident
+# of no signature matching: the structural walker below cannot read its 64-bit
+# offset table and says so, and the decoder answers instead.
+TIFF_SIGNATURES: Final = (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")
 PDF_SIGNATURE: Final = b"%PDF-"
 GIF_SIGNATURES: Final = (b"GIF87a", b"GIF89a")
 BMP_SIGNATURES: Final = (b"BM", b"BA", b"CI", b"CP", b"IC", b"PT")
@@ -967,6 +977,39 @@ class DecodedRaster(NamedTuple):
     frame_count: int
 
 
+def _structural_corruption_check(format_name: str | None, data: bytes) -> None:
+    """Run a structural walker as a corruption detector, and only as that.
+
+    Spec 03 keeps structural validation and says exactly what it may no longer do:
+    "Walking the container to prove the bytes are a genuine, uncorrupted instance of
+    the format they claim ... is exactly the corruption detection ruling 2 asks for,
+    and it stays. **What it may no longer do is decide a real file is inadmissible
+    because nothing here reconstructs its pixels.**"
+
+    Those two halves are distinguishable in the walkers' own vocabulary, and neither
+    lane split them. A `corrupt ...` refusal says the bytes are not a genuine
+    instance of what they claim — that is damage, and it is refused here before a
+    permissive decoder can render half of it as a page. An `unsupported ...` refusal
+    says only that *this narrow walker* does not interpret that layout: BigTIFF,
+    planar storage, a lossless JPEG process. That is a statement about this module,
+    not about the file, so the real decoder gets to answer instead. If the decoder
+    cannot read it either, its own refusal is what surfaces — an
+    `unsupported-variant` alarm naming a reader this project owes.
+
+    Lane A dropped TIFF's structural walk entirely for fear it would refuse valid
+    compressed and multi-page scans; Lane B kept the walk and let it decide
+    admission. Splitting the verdict keeps the corruption detection over every
+    format without either cost.
+    """
+    if format_name not in VALIDATORS:
+        return
+    try:
+        validate(format_name, data)
+    except FormatRefusal as error:
+        if str(error).startswith("corrupt"):
+            raise
+
+
 def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
     """Decode one page through Pillow without trusting a filename or extension.
 
@@ -976,14 +1019,13 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
     unsupported variant; bytes that name no image at all are unrecognized.
     """
     detected_by_signature = sniff(data)
-    # These walkers catch malformed PNG/JPEG structures a permissive decoder can
-    # otherwise display partially. TIFF's many legal layouts are left to Pillow's
-    # full decoder so a valid multi-page or compressed scan is not refused for a
-    # limitation in this narrow first-IFD checker.
-    if detected_by_signature in {"png", "jpeg"}:
-        validate(detected_by_signature, data)
-    elif detected_by_signature == "tiff":
+    if detected_by_signature == "tiff":
+        # A resource bound, not a verdict about the layout: it propagates whatever
+        # the structural walker below decides, because a decoder that happily
+        # enumerates fifty thousand directories is not a reason to fan out fifty
+        # thousand ordinals.
         _validate_classic_tiff_page_chain(data)
+    _structural_corruption_check(detected_by_signature, data)
     try:
         # Pillow warns for a decompression bomb while opening some formats.  A
         # warning emitted to a terminal is neither a sealed outcome nor a useful
@@ -997,6 +1039,16 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                 frames = getattr(image, "n_frames", 1)
                 if not isinstance(frames, int) or frames < 1:
                     raise FormatRefusal("corrupt image: decoder returned no frames")
+                # The fan-out bound, checked on whatever the decoder reports rather
+                # than only on a classic TIFF's directory chain. A BigTIFF, an
+                # animated GIF or a WebP reaches this line without ever passing the
+                # chain walker, and a frame count read out of an untrusted file is
+                # a loop bound somebody else wrote.
+                if frames > MAX_RASTER_FRAMES:
+                    raise FormatRefusal(
+                        f"unsupported {detected}: {frames} frames exceed the "
+                        f"{MAX_RASTER_FRAMES}-frame fan-out limit"
+                    )
                 if not isinstance(page_index, int) or isinstance(page_index, bool):
                     raise FormatRefusal("corrupt image: page index is not an integer")
                 if not 0 <= page_index < frames:
