@@ -548,7 +548,12 @@ def _verify_render_contract(
     if not isinstance(contract["renderer_version"], str) or not contract["renderer_version"]:
         raise ContractError("a rendered page's render contract names no renderer version")
     output = contract["output"]
-    if output != {"codec": "png", "color_mode": "RGB"}:
+    if (
+        not isinstance(output, dict)
+        or set(output) != {"codec", "color_mode"}
+        or output["codec"] != "png"
+        or not isinstance(output["color_mode"], str)
+    ):
         raise ContractError("a rendered page's render contract does not name lossless PNG output")
     if contract["renderer"] == "pypdfium2":
         if container_format != "pdf":
@@ -610,10 +615,18 @@ def _verify_render_contract(
                 "a PDF page's render contract does not name the whole DPI it was "
                 "actually rendered at, inside the recipe's own floor and target"
             )
+        if output["color_mode"] != "RGB":
+            raise ContractError("a PDF page's render contract changes its RGB pixel recipe")
     elif contract["renderer"] == "Pillow":
         if container_format == "pdf":
             raise ContractError("a PDF container must use the PDFium whole-page renderer")
-        required_raster = required | {"pillow_heif_version", "libheif_version"}
+        required_raster = required | {
+            "pillow_heif_version",
+            "libheif_version",
+            "source_mode",
+            "source_bands",
+            "mode_transform",
+        }
         if set(contract) != required_raster:
             raise ContractError(
                 "a raster page's render contract omits or adds pixel-affecting facts"
@@ -623,6 +636,26 @@ def _verify_render_contract(
             for field in ("pillow_heif_version", "libheif_version")
         ):
             raise ContractError("a raster page's render contract names no HEIF decoder version")
+        source_mode = contract["source_mode"]
+        source_bands = contract["source_bands"]
+        transform = contract["mode_transform"]
+        preserved = {"1", "L", "LA", "RGB", "RGBA", "I;16"}
+        if (
+            not isinstance(source_mode, str)
+            or not source_mode
+            or not isinstance(source_bands, list)
+            or not source_bands
+            or any(not isinstance(band, str) or not band for band in source_bands)
+        ):
+            raise ContractError("a raster page's render contract names no source pixel mode")
+        if source_mode in preserved:
+            expected_transform = "identity"
+            expected_mode = source_mode
+        else:
+            expected_mode = "RGBA" if "A" in source_bands else "RGB"
+            expected_transform = f"convert-to-{expected_mode.lower()}"
+        if transform != expected_transform or output["color_mode"] != expected_mode:
+            raise ContractError("a raster page's render contract changes its mode conversion")
     else:
         raise ContractError("a rendered page's contract names an unrecognized renderer")
     geometry = payload.get("geometry")

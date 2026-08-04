@@ -421,6 +421,32 @@ def test_multi_page_tiff_is_a_page_container_that_can_be_counted_and_rendered():
     assert contract["container_page_index"] == 1
 
 
+@pytest.mark.parametrize(
+    ("mode", "first", "second"),
+    [
+        ("RGBA", (1, 2, 3, 4), (5, 6, 7, 8)),
+        ("I;16", 1_000, 50_000),
+    ],
+)
+def test_raster_fan_out_preserves_png_compatible_alpha_and_precision(mode, first, second):
+    output = BytesIO()
+    Image.new(mode, (2, 2), first).save(
+        output,
+        format="TIFF",
+        save_all=True,
+        append_images=[Image.new(mode, (2, 2), second)],
+    )
+
+    rendered, _, contract = render_raster_page(output.getvalue(), 1)
+    with Image.open(BytesIO(rendered)) as page:
+        page.load()
+        assert page.mode == mode
+        assert page.getpixel((0, 0)) == second
+    assert contract["source_mode"] == mode
+    assert contract["mode_transform"] == "identity"
+    assert contract["output"] == {"codec": "png", "color_mode": mode}
+
+
 def test_a_cyclic_ifd_chain_is_still_a_named_decoder_failure():
     """Normal later directories are fanned out; a loop is not a normal container."""
     first = tiff()

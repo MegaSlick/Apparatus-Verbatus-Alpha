@@ -1174,7 +1174,10 @@ def raster_renderer_recipe() -> dict[str, Any]:
         "renderer_version": Image.__version__,
         "pillow_heif_version": pillow_heif.__version__,
         "libheif_version": pillow_heif.libheif_info()["libheif"],
-        "output": {"codec": "png", "color_mode": "RGB"},
+        "output": {
+            "codec": "png",
+            "mode_policy": "preserve-png-mode-else-convert-by-alpha",
+        },
     }
 
 
@@ -1189,7 +1192,15 @@ def render_raster_page(data: bytes, page_index: int) -> tuple[bytes, ImageGeomet
                 # `decode_raster()` above already made this exact source/frame
                 # pass the project geometry bound before loading it.
                 image.load()
-                rendered = image.convert("RGB")
+                source_mode = image.mode
+                source_bands = list(image.getbands())
+                if source_mode in {"1", "L", "LA", "RGB", "RGBA", "I;16"}:
+                    rendered = image.copy()
+                    mode_transform = "identity"
+                else:
+                    target_mode = "RGBA" if "A" in source_bands else "RGB"
+                    rendered = image.convert(target_mode)
+                    mode_transform = f"convert-to-{target_mode.lower()}"
                 output = BytesIO()
                 rendered.save(output, format="PNG", optimize=False, compress_level=9)
     except (
@@ -1208,6 +1219,10 @@ def render_raster_page(data: bytes, page_index: int) -> tuple[bytes, ImageGeomet
         ImageGeometry(decoded.format, decoded.width, decoded.height),
         {
             **raster_renderer_recipe(),
+            "source_mode": source_mode,
+            "source_bands": source_bands,
+            "mode_transform": mode_transform,
+            "output": {"codec": "png", "color_mode": rendered.mode},
             "container_page_index": page_index,
             "width": decoded.width,
             "height": decoded.height,
