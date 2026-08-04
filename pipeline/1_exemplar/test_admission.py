@@ -9,6 +9,7 @@ and remains in `test_door.py`.
 import tomllib
 from io import BytesIO
 
+import image_formats
 import pytest
 from admission import (
     ADMIT_OR_FAN_OUT,
@@ -27,6 +28,8 @@ from admission import (
 from image_formats import MAX_DIMENSION, MAX_SOURCE_BYTES
 from PIL import Image
 from synthetic_sources import (
+    gif,
+    heic,
     png,
     single_gray_page_pdf,
     tiff,
@@ -313,3 +316,39 @@ def test_a_reason_outside_the_closed_set_is_refused_when_it_is_read_back():
     for text in ("page.png does not carry a PNG signature", "", None, 42, "invented: detail"):
         with pytest.raises(ContractError):
             reason_code(text)
+
+
+# --- A missing reader is our defect, and says which defect it is -----------------
+
+
+def test_a_format_with_no_reader_at_all_is_named_as_this_pipeline_s_gap():
+    """HEIC has no decoder in this build, and the refusal says so in those words.
+
+    Ruling 2: nothing is rejected, and a failure is either corruption or a broken
+    pipeline. This is the second of those, and the wording has to be the second of
+    those — an iPhone HEIC is an ordinary photograph, and telling Tyrel it is
+    unreadable would be telling him something false about his own file.
+    """
+    outcome = inspect_source(heic(), declared_sha256=None, policy=POLICY)
+
+    assert outcome.outcome == "refused"
+    assert reason_code(outcome.reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "no reader for heic at all yet" in outcome.reason
+    assert "gap in this pipeline rather than anything about this file" in outcome.reason
+    assert not image_formats.has_reader("heic")
+
+
+def test_a_format_with_a_reader_that_still_fails_is_worded_about_the_bytes():
+    """The other half of the same sentence, and it is a different fact.
+
+    A GIF reader is installed, so a GIF that will not open says something about
+    these bytes rather than about a reader this project owes. Collapsing the two —
+    which is what happens when the wording keys on the format name alone — would
+    file a real decoding failure under work we have not done.
+    """
+    outcome = inspect_source(gif(), declared_sha256=None, policy=POLICY)
+
+    assert outcome.outcome == "refused"
+    assert reason_code(outcome.reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "has a gif reader and it could not open these bytes" in outcome.reason
+    assert image_formats.has_reader("gif")

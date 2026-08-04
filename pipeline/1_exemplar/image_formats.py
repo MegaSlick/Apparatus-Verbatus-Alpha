@@ -1064,9 +1064,7 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                 return DecodedRaster(detected, geometry.width, geometry.height, frames)
     except UnidentifiedImageError as error:
         if detected_by_signature is not None:
-            raise FormatRefusal(
-                f"unsupported {detected_by_signature}: the installed decoder could not read it"
-            ) from error
+            raise FormatRefusal(missing_reader_detail(detected_by_signature)) from error
         raise FormatRefusal(
             "unrecognized image format: no installed decoder recognizes these bytes"
         ) from error
@@ -1078,6 +1076,53 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         raise FormatRefusal(
             f"unsupported image variant: the installed decoder could not read it ({error})"
         ) from error
+
+
+# The Pillow plugin name for each format this door can sniff, so "is there a reader
+# for this format at all" is answered from what is actually installed rather than
+# from a list somebody keeps up to date by hand.
+_DECODER_PLUGINS: Final = {
+    "png": "PNG",
+    "jpeg": "JPEG",
+    "tiff": "TIFF",
+    "gif": "GIF",
+    "bmp": "BMP",
+    "webp": "WEBP",
+    "heic": "HEIF",
+}
+
+
+def has_reader(format_name: str) -> bool:
+    """Whether this build has any decoder for that format at all.
+
+    A capability question about the installation, answerable without looking at a
+    file — which is what makes it possible to tell "we cannot read this format yet"
+    apart from "this particular file will not decode".
+    """
+    Image.init()
+    plugin = _DECODER_PLUGINS.get(format_name)
+    return plugin is not None and plugin in Image.OPEN
+
+
+def missing_reader_detail(format_name: str) -> str:
+    """Why a sniffed format did not decode, worded as whose defect it is.
+
+    Ruling 2: "If things are failing the image got corrupted … or the pipeline is
+    broken." Those are different sentences to write to Tyrel, and which one is true
+    is knowable: if nothing installed here reads that format at all, this project
+    owes him a reader and says so; if a reader exists and still could not open the
+    file, that is about these bytes. Lane B worded the first case correctly and had
+    no way to reach the second; Lane A could reach both and worded them alike.
+    """
+    if not has_reader(format_name):
+        return (
+            f"unsupported {format_name}: this build has no reader for {format_name} at all "
+            "yet, which is a gap in this pipeline rather than anything about this file"
+        )
+    return (
+        f"unsupported {format_name}: this build has a {format_name} reader and it could "
+        "not open these bytes"
+    )
 
 
 def count_raster_pages(data: bytes) -> int:

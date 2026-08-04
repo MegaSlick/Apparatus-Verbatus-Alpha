@@ -54,9 +54,17 @@ PNG, JPEG, TIFF, PDF, GIF, BMP, WebP, HEIC and an unknown signature all receive 
 decoder attempt by bytes, not extension. A valid image the installed readers do not
 yet understand becomes a named `unsupported-variant` or `unrecognized-format`
 pipeline alarm, not `refused-format`—that enum member no longer exists. JPEG bytes
-after EOI are retained. TIFF, including ordinary multi-page TIFF and the LZW, Deflate, PackBits and CCITT
-compressions flatbed scanners produce, fans out; a single-page TIFF keeps its own
-bytes and is never re-encoded.
+after EOI are retained. TIFF, including ordinary multi-page TIFF, BigTIFF, and the
+LZW, Deflate, PackBits and CCITT compressions flatbed scanners produce, fans out; a
+single-page TIFF keeps its own bytes and is never re-encoded.
+
+**The one named format gap is HEIC**, and it is ours, not a property of anyone's
+file. This build has no HEIC decoder installed at all, so an iPhone photograph in
+its native format gets an ordinal, a filename, and an `unsupported-variant` alarm
+saying in those words that this pipeline owes it a reader. Closing it is installing
+a decoder, not writing one. The alarm distinguishes that case from a format we *do*
+have a reader for that still could not open a particular file — a different fact,
+and a different thing to do about it.
 
 PDF is rendered as a whole page with PDFium at the door. Its visible content stream,
 text, vectors, images, rotation, annotations, and initialized form appearances are
