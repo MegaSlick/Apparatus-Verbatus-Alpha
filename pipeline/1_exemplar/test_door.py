@@ -281,6 +281,23 @@ def test_a_page_index_is_not_permission_to_skip_the_admission_list(tmp_path):
         assert reason_code(record["payload"]["reason"]) is RefusalReason.REFUSED_FORMAT
 
 
+def test_a_page_index_on_an_admitted_format_is_refused_without_asserting_a_falsehood(tmp_path):
+    """The third case, and the one easy to get wrong: a page index on bytes whose
+    format the list *admits*. Refusing it is right — a page index is a claim about a
+    fan-out — but calling it `refused-format` would say the list refuses PNG by name,
+    which it does not. A record may only claim what is true (GOVERNANCE 10)."""
+    data = png(3, 2)
+    sources = [SourceEntry(1, "page.png", digest_bytes(data), 0)]
+    tree, context = open_door(tmp_path, sources)
+    assert process_sources(context, tree, sources, reader({"page.png": data}), policy=POLICY) == 0
+    context.finish(DOOR)
+
+    reason = admissions(tree)[1]["payload"]["reason"]
+    assert reason_code(reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "page index" in reason and "admit" in reason
+    assert "refuses by name" not in reason
+
+
 def test_turning_the_pdf_row_back_on_is_the_only_change_it_takes(tmp_path):
     """The reversal route `config/README.md` promises Tyrel is one line, and this is
     what proves it stayed true: the same bytes, the same door, one changed row."""

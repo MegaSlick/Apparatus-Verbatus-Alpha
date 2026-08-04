@@ -208,18 +208,23 @@ def decide(
         # The source was fanned out into pages under a policy that does not fan this
         # format out — a stale manifest, a hand-built entry, or a policy edited
         # between the fan-out and here. The admission list is the authority in every
-        # one of those cases, and the refusal it names is the one the list gives.
+        # one of those cases, and the refusal names what is actually true of *these*
+        # bytes: a format the list refuses, bytes that match no signature, or — the
+        # case that is neither — a format the list admits as a single image and was
+        # nonetheless handed a page index. Reaching for "refuses by name" in that
+        # last case would assert something the list does not say.
         detected = sniff(data)
-        code = (
-            RefusalReason.UNRECOGNIZED_FORMAT
-            if verdict is RefusalReason.UNRECOGNIZED_FORMAT
-            else RefusalReason.REFUSED_FORMAT
-        )
-        detail = (
-            "bytes do not match any known image signature"
-            if detected is None
-            else admission.refused_format_detail(detected)
-        )
+        if verdict is RefusalReason.UNRECOGNIZED_FORMAT:
+            code, detail = verdict, "bytes do not match any known image signature"
+        elif verdict is RefusalReason.REFUSED_FORMAT:
+            code, detail = verdict, admission.refused_format_detail(detected)
+        else:
+            code, detail = (
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"this source was declared with a page index, but the admission list "
+                f"gives {detected} the action {verdict!r} rather than page rendering; "
+                "a page index is a claim about a fan-out, never permission to skip the list",
+            )
         return _Decision("refused", admission.reason(code, detail), digest_bytes(data), None, None)
 
     # A PDF-sourced page: the declared digest names the *whole file*, checked once
