@@ -497,3 +497,25 @@ def test_validate_dispatches_by_format_name():
 def test_validate_refuses_a_format_it_has_no_validator_for():
     with pytest.raises(FormatRefusal, match="no structural validator"):
         validate("gif", b"anything")
+
+
+def test_a_lossless_frame_needs_only_its_dc_table():
+    """A lossless frame (SOF3/C7/CB/CF) codes DC coefficients only and legally
+    defines no AC table. The first form of this check demanded both and refused a
+    conforming file — a page nobody reads, for a check that was never owed. Caught
+    by testing the widening against variants rather than only against the gap."""
+    for marker in (0xC3, 0xC7):
+        assert validate_jpeg(
+            jpeg(sof_marker=marker, huffman_tables=((0, 0),), spectral_start=1)
+        ) == ImageGeometry("jpeg", 5, 4)
+    with pytest.raises(FormatRefusal, match="DC Huffman table 0"):
+        validate_jpeg(jpeg(sof_marker=0xC3, huffman_tables=((1, 0),), spectral_start=1))
+
+
+def test_an_arithmetic_coded_frame_needs_no_huffman_table_at_all():
+    """Arithmetic coding replaces the Huffman tables with conditioning that may be
+    left at its default, so there is no selector to reconcile — while the
+    quantization table every frame component names is still required."""
+    assert validate_jpeg(jpeg(sof_marker=0xC9, huffman_tables=None)) == ImageGeometry("jpeg", 5, 4)
+    with pytest.raises(FormatRefusal, match="quantization table 0"):
+        validate_jpeg(jpeg(sof_marker=0xC9, huffman_tables=None, quantization_tables=None))

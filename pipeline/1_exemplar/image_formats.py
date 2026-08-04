@@ -352,6 +352,11 @@ _JPEG_SOF_MARKERS: Final = frozenset(
 # defined, so the scan check has to know them apart rather than demanding one shape.
 _JPEG_PROGRESSIVE_MARKERS: Final = frozenset({0xC2, 0xC6, 0xCA, 0xCE})
 _JPEG_ARITHMETIC_MARKERS: Final = frozenset({0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
+# Lossless frames code DC coefficients only and legally define no AC table at all.
+# Demanding one of them would refuse a conforming file — a page nobody reads, for a
+# check that was never owed, which is the exact regression a widened validator has
+# to avoid being.
+_JPEG_LOSSLESS_MARKERS: Final = frozenset({0xC3, 0xC7, 0xCB, 0xCF})
 
 
 def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> ImageGeometry:
@@ -388,7 +393,7 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
 
     geometry: ImageGeometry | None = None
     frame_components: list[tuple[int, int]] = []  # (component id, quantization table id)
-    progressive = arithmetic = False
+    progressive = arithmetic = lossless = False
     quantization_tables: set[int] = set()
     huffman_tables: set[tuple[int, int]] = set()  # (class, id): class 0 = DC, 1 = AC
     arithmetic_conditioning: set[tuple[int, int]] = set()
@@ -438,6 +443,7 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
             geometry = _geometry("jpeg", width, height)
             progressive = marker in _JPEG_PROGRESSIVE_MARKERS
             arithmetic = marker in _JPEG_ARITHMETIC_MARKERS
+            lossless = marker in _JPEG_LOSSLESS_MARKERS
             frame_components = [
                 (payload[6 + 3 * index], payload[8 + 3 * index]) for index in range(components)
             ]
@@ -450,6 +456,7 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
                 frame_components=frame_components,
                 progressive=progressive,
                 arithmetic=arithmetic,
+                lossless=lossless,
                 quantization_tables=quantization_tables,
                 huffman_tables=huffman_tables,
                 arithmetic_conditioning=arithmetic_conditioning,
@@ -517,6 +524,7 @@ def _validate_jpeg_scan(
     frame_components: list[tuple[int, int]],
     progressive: bool,
     arithmetic: bool,
+    lossless: bool,
     quantization_tables: set[int],
     huffman_tables: set[tuple[int, int]],
     arithmetic_conditioning: set[tuple[int, int]],
@@ -529,7 +537,12 @@ def _validate_jpeg_scan(
     demanding neither is the hole this closes. In a sequential frame every scanned
     component uses both. In a progressive frame a first DC scan uses its DC table,
     a DC *refinement* scan (`Ah > 0`) is coded as raw bits and uses no table at all,
-    and an AC scan uses only its AC table.
+    and an AC scan uses only its AC table. A **lossless** frame codes DC only and
+    legally defines no AC table — demanding one refused a conforming file, which
+    this validator caught itself doing before it shipped.
+
+    A quantization table is a different matter: every frame component names one, in
+    every frame type, so that check is unconditional.
     """
     scan_components = payload[0] if payload else 0
     if (
@@ -553,19 +566,23 @@ def _validate_jpeg_scan(
                 f"corrupt JPEG: a scanned component selects quantization table "
                 f"{quantization_id}, which no DQT defined"
             )
-        needed: list[tuple[int, int]] = []
-        if not progressive:
+        if arithmetic:
+            # An arithmetic-coded scan may legally use the default conditioning, so
+            # a DAC segment is optional and there is no selector to reconcile. The
+            # conditioning that *was* declared is still parsed, above, for shape.
+            continue
+        needed: list[tuple[int, int]]
+        if lossless:
+            needed = [(0, selectors >> 4)]
+        elif not progressive:
             needed = [(0, selectors >> 4), (1, selectors & 0x0F)]
         elif spectral_start == 0:
             # A DC refinement scan carries one raw bit per coefficient, no table.
             needed = [] if high_approximation else [(0, selectors >> 4)]
         else:
             needed = [(1, selectors & 0x0F)]
-        defined = arithmetic_conditioning if arithmetic else huffman_tables
         for table in needed:
-            # An arithmetic-coded scan may legally use the default conditioning, so
-            # only a Huffman-coded scan's selector must have been defined.
-            if not arithmetic and table not in defined:
+            if table not in huffman_tables:
                 kind = "DC" if table[0] == 0 else "AC"
                 raise FormatRefusal(
                     f"corrupt JPEG: a scan selects the {kind} Huffman table {table[1]}, "
