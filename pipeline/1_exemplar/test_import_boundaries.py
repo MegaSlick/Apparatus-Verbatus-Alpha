@@ -1,4 +1,4 @@
-"""`pdf_render.py` is door-private: nothing outside this stage may import it.
+"""The door-private modules: nothing outside this stage may import them.
 
 Spec 03, test 4: "re-render attempts by any later stage have no API to call (the
 render module is door-private)." Every docstring in this tree that makes that claim
@@ -34,16 +34,35 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# The only files permitted to import pdf_render at all: the door itself, and the
-# render module's own direct test suite plus the door's, which exercise it by
+# The only files permitted to import each door-private module at all: the door and
+# the admission module themselves, plus the direct test suites that exercise them by
 # design. Everything else in the repository is "later" or "elsewhere".
-ALLOWED_IMPORTERS = frozenset(
-    {
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/test_pdf_render.py",
-        "pipeline/1_exemplar/test_door.py",
-    }
-)
+#
+# **`image_formats` is here because its docstring made the same claim and nothing
+# checked it.** An asserted invariant sitting beside an executable one is the shape
+# CLAUDE.md's "a summary is never verification" is about: the claim happened to be
+# true, and nothing would have failed if a later stage had imported it tomorrow. The
+# two allow-lists are genuinely different — `admission.py` imports the validators and
+# must never import the renderer — so this is a table, not a copied test.
+DOOR_PRIVATE_MODULES = {
+    "pdf_render": frozenset(
+        {
+            "pipeline/1_exemplar/door.py",
+            "pipeline/1_exemplar/test_pdf_render.py",
+            "pipeline/1_exemplar/test_door.py",
+        }
+    ),
+    "image_formats": frozenset(
+        {
+            "pipeline/1_exemplar/admission.py",
+            "pipeline/1_exemplar/door.py",
+            "pipeline/1_exemplar/pdf_render.py",
+            "pipeline/1_exemplar/test_admission.py",
+            "pipeline/1_exemplar/test_image_formats.py",
+            "pipeline/1_exemplar/test_pdf_render.py",
+        }
+    ),
+}
 
 # Tracked but deliberately not parsed. `cleanroom/` holds presumed-contaminated
 # drafts nobody has reviewed yet — `pyproject.toml` excludes it from ruff and pytest
@@ -76,8 +95,8 @@ def repository_python_files() -> list[str]:
     return sorted(path for path in paths if not path.startswith(EXCLUDED_PREFIXES))
 
 
-def imports_pdf_render(path: Path) -> bool:
-    """True when `path` names `pdf_render` in any `import`/`from ... import`.
+def imports_module(path: Path, module: str) -> bool:
+    """True when `path` names `module` in any `import`/`from ... import`.
 
     Walked with `ast.walk`, so a deferred import inside a function is caught exactly
     like a top-level one.
@@ -85,10 +104,10 @@ def imports_pdf_render(path: Path) -> bool:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            if any(alias.name.split(".")[0] == "pdf_render" for alias in node.names):
+            if any(alias.name.split(".")[0] == module for alias in node.names):
                 return True
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
-            if (node.module or "").split(".")[0] == "pdf_render":
+            if (node.module or "").split(".")[0] == module:
                 return True
     return False
 
@@ -106,32 +125,35 @@ def test_the_population_is_the_repositorys_own_python():
     )
 
 
-def test_pdf_render_is_imported_only_by_the_door_and_its_own_tests():
+@pytest.mark.parametrize("module", sorted(DOOR_PRIVATE_MODULES))
+def test_a_door_private_module_is_imported_only_by_the_door_and_its_own_tests(module):
     files = repository_python_files()
     importers = {
         path
         for path in files
-        if not path.endswith("pdf_render.py") and imports_pdf_render(ROOT / path)
+        if not path.endswith(f"{module}.py") and imports_module(ROOT / path, module)
     }
     assert importers, (
-        "no file imports pdf_render at all — this test would pass vacuously over an "
+        f"no file imports {module} at all — this test would pass vacuously over an "
         "empty population, which is exactly the false green meta-invariant #88 refuses"
     )
-    violations = importers - ALLOWED_IMPORTERS
+    allowed = DOOR_PRIVATE_MODULES[module]
+    violations = importers - allowed
     assert not violations, (
-        "pdf_render.py is door-private and must not be imported outside "
-        f"{sorted(ALLOWED_IMPORTERS)}, but found:\n" + "\n".join(sorted(violations))
+        f"{module}.py is door-private and must not be imported outside "
+        f"{sorted(allowed)}, but found:\n" + "\n".join(sorted(violations))
     )
 
 
-def test_the_allowed_importers_all_still_exist_and_still_import_it():
+@pytest.mark.parametrize("module", sorted(DOOR_PRIVATE_MODULES))
+def test_the_allowed_importers_all_still_exist_and_still_import_it(module):
     """A stale allowance is a hole nobody notices: if `door.py` stopped importing
     the renderer, this list would keep permitting a file that no longer needs it."""
-    for path in sorted(ALLOWED_IMPORTERS):
+    for path in sorted(DOOR_PRIVATE_MODULES[module]):
         target = ROOT / path
         assert target.exists(), f"{path} is on the allow-list and does not exist"
-        assert imports_pdf_render(target), (
-            f"{path} is allowed to import pdf_render and no longer does; the allowance "
+        assert imports_module(target, module), (
+            f"{path} is allowed to import {module} and no longer does; the allowance "
             "is stale and should be removed rather than left standing"
         )
 
@@ -155,6 +177,7 @@ def test_an_unparseable_gitignored_file_does_not_break_this_check():
     try:
         assert str(scratch.relative_to(ROOT)) not in repository_python_files()
         test_the_population_is_the_repositorys_own_python()
-        test_pdf_render_is_imported_only_by_the_door_and_its_own_tests()
+        for module in sorted(DOOR_PRIVATE_MODULES):
+            test_a_door_private_module_is_imported_only_by_the_door_and_its_own_tests(module)
     finally:
         scratch.unlink()

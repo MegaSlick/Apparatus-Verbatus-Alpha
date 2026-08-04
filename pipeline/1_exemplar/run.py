@@ -343,7 +343,18 @@ def _verify_admitted_blob(
     input_ref = admission["inputs"][0]
     if input_ref.get("relative_path") != stored_at or input_ref.get("sha256") != sealed_digest:
         raise ContractError("an admission's input does not name its content-addressed blob")
-    blob = tree.read_bytes(stored_at)
+    try:
+        blob = tree.read_bytes(stored_at)
+    except OSError as error:
+        # A *deleted* blob, where the branch below catches a *changed* one. Without
+        # this the stage died with a FileNotFoundError traceback and CPython's exit
+        # 1, where `common/stage.py` turns a ContractError into EXIT_FATAL (2) and
+        # says exit codes carry cause — while `_read_checked_admission` three
+        # functions up catches OSError for exactly this class of failure.
+        raise ContractError(
+            "an admitted blob could not be read; the bytes the door sealed are no "
+            "longer in the run tree, and a page cannot be sealed over bytes nobody has"
+        ) from error
     if digest_bytes(blob) != sealed_digest:
         raise ContractError("an admitted blob's bytes no longer match their sealed digest")
     verify_input_bytes(input_ref, blob)

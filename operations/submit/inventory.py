@@ -18,6 +18,21 @@ it.** A per-file refusal is the *door's* job and needs bytes to refuse; an
 inventory that quietly omitted a file it could not open would shrink the
 denominator the Armarium's census later reconciles against, which is exactly the
 silent loss GOVERNANCE 2 forbids.
+
+**A refusal here says what happened and not what it was called.** The messages used
+to interpolate the offending entry's submitted relative path, and `submit.py`'s CLI
+prints every one of them to stderr — so a rejected submission emitted a declared
+path into the channel a runner captures, which the data-handling policy's logging
+rule excludes. The name still exists: it rides on the exception as `entry`, for a
+caller with an approved place to write it. Nothing in this repository has one yet,
+which is a question in the gate package rather than a decision made here.
+
+**The walk is bounded in four directions, not one.** `max_bytes` bounded a single
+file's retained bytes and nothing else: a submission's file count, its aggregate
+retained bytes, its directory depth and its entries per directory were all
+attacker-shaped. Depth was the sharpest — 2,000 nested directories escaped as a
+`RecursionError` and CPython's exit 1 rather than a named refusal, past the
+`ContractError` handler entirely.
 """
 
 import hashlib
@@ -33,6 +48,15 @@ from common.contracts.errors import ContractError
 # submitted file, refused ones included — so it is streamed to the hash rather than
 # read wholesale only to discover it was too big.
 _CHUNK: Final = 1024 * 1024
+
+# What a submission may be, in aggregate. One scanned register volume is hundreds of
+# pages in a shallow tree; these are far above anything real and far below what
+# exhausts a machine. A bound nobody can reach is still the difference between a
+# named refusal and an out-of-memory kill nobody can read afterwards.
+MAX_SUBMITTED_FILES: Final = 100_000
+MAX_SUBMITTED_BYTES: Final = 8 * 1024 * 1024 * 1024
+MAX_DIRECTORY_DEPTH: Final = 64
+MAX_DIRECTORY_ENTRIES: Final = 100_000
 
 
 class SubmittedSource(NamedTuple):
@@ -50,7 +74,41 @@ class SubmittedSource(NamedTuple):
 
 
 class SubmissionInputError(ContractError):
-    """A folder could not be inventoried without lying about what is in it."""
+    """A folder could not be inventoried without lying about what is in it.
+
+    `str(...)` never carries a submitted name or path, because `submit.py`'s CLI
+    prints it to stderr and the data-handling policy's logging rule excludes exactly
+    those values from operational output. `entry` holds the submitted relative path
+    when one is what went wrong, for a caller with an approved place to record it.
+    """
+
+    def __init__(self, message: str, *, entry: str | None = None):
+        super().__init__(message)
+        self.entry = entry
+
+
+class _Budget:
+    """What one whole submission may consume, checked as the walk proceeds."""
+
+    __slots__ = ("files", "retained")
+
+    def __init__(self) -> None:
+        self.files = 0
+        self.retained = 0
+
+    def admit(self, size: int, retained: int) -> None:
+        self.files += 1
+        if self.files > MAX_SUBMITTED_FILES:
+            raise SubmissionInputError(
+                f"the submission holds more than {MAX_SUBMITTED_FILES} files; the door "
+                "refuses a submission it cannot bound rather than reading until it stops"
+            )
+        self.retained += retained
+        if self.retained > MAX_SUBMITTED_BYTES:
+            raise SubmissionInputError(
+                f"the submission's retained bytes exceed the {MAX_SUBMITTED_BYTES}-byte "
+                "aggregate limit; the per-file limit bounds one source, not a corpus"
+            )
 
 
 def read_submission(folder: Path, *, max_bytes: int) -> list[SubmittedSource]:
@@ -61,10 +119,10 @@ def read_submission(folder: Path, *, max_bytes: int) -> list[SubmittedSource]:
             "the submitted folder is a symlink; a submission cannot be entered by redirect"
         )
     if not root.is_dir():
-        raise SubmissionInputError(f"{root} is not a directory")
+        raise SubmissionInputError("the submitted folder is not a directory")
     descriptor = _open_directory(root)
     try:
-        sources = _walk(descriptor, "", max_bytes)
+        sources = _walk(descriptor, "", max_bytes, _Budget(), depth=0)
     finally:
         os.close(descriptor)
     return sorted(sources, key=lambda source: source.relative_path)
@@ -122,36 +180,52 @@ def _open_regular_file(name: str, parent_descriptor: int) -> int:
     return descriptor
 
 
-def _walk(directory_descriptor: int, prefix: str, max_bytes: int) -> list[SubmittedSource]:
+def _walk(
+    directory_descriptor: int, prefix: str, max_bytes: int, budget: _Budget, *, depth: int
+) -> list[SubmittedSource]:
+    if depth > MAX_DIRECTORY_DEPTH:
+        # Checked before descending, so a pathological tree is a named refusal
+        # rather than a RecursionError escaping past the ContractError handler.
+        raise SubmissionInputError(
+            f"the submission nests deeper than {MAX_DIRECTORY_DEPTH} directories; a tree "
+            "this deep is refused by name rather than by running out of stack"
+        )
     sources: list[SubmittedSource] = []
     try:
         names = sorted(os.listdir(directory_descriptor))
     except OSError as error:
         raise SubmissionInputError("a submitted directory could not be listed") from error
+    if len(names) > MAX_DIRECTORY_ENTRIES:
+        raise SubmissionInputError(
+            f"a submitted directory holds more than {MAX_DIRECTORY_ENTRIES} entries"
+        )
     for name in names:
         relative_path = f"{prefix}/{name}" if prefix else name
         try:
             details = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
         except OSError as error:
             raise SubmissionInputError(
-                "a submitted entry could not be inspected without following a redirect"
+                "a submitted entry could not be inspected without following a redirect",
+                entry=relative_path,
             ) from error
         if stat.S_ISLNK(details.st_mode):
             raise SubmissionInputError(
-                f"the submission contains a symlink ({relative_path}); only plain files "
-                "and directories may be submitted"
+                "the submission contains a symlink; only plain files and directories "
+                "may be submitted",
+                entry=relative_path,
             )
         if stat.S_ISDIR(details.st_mode):
             child = _open_directory(name, directory_descriptor)
             try:
-                sources.extend(_walk(child, relative_path, max_bytes))
+                sources.extend(_walk(child, relative_path, max_bytes, budget, depth=depth + 1))
             finally:
                 os.close(child)
             continue
         if not stat.S_ISREG(details.st_mode):
             raise SubmissionInputError(
-                f"the submission contains a non-regular entry ({relative_path}); the door "
-                "cannot bind bytes it cannot read as a file"
+                "the submission contains a non-regular entry; the door cannot bind bytes "
+                "it cannot read as a file",
+                entry=relative_path,
             )
         descriptor = _open_regular_file(name, directory_descriptor)
         try:
@@ -159,10 +233,12 @@ def _walk(directory_descriptor: int, prefix: str, max_bytes: int) -> list[Submit
         except OSError as error:
             raise SubmissionInputError(
                 "a submitted source could not be read for its digest; the door will not "
-                "invent a source record without bytes"
+                "invent a source record without bytes",
+                entry=relative_path,
             ) from error
         finally:
             os.close(descriptor)
+        budget.admit(size, len(data) if data is not None else 0)
         sources.append(SubmittedSource(relative_path, digest, size, data))
     return sources
 

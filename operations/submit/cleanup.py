@@ -21,12 +21,21 @@ class CleanupDrillRefusal(ContractError):
 
 @dataclass(frozen=True)
 class CleanupDrillResult:
-    """Counts that make one synthetic cleanup drill reviewable."""
+    """Counts that make one synthetic cleanup drill reviewable.
+
+    ``volume_objects_seen`` is ``None``, not ``0``, when no volume applied to this
+    drill. Zero for both would mean "there was no volume to check" and "a volume was
+    checked and found empty" produce identical records, and a reader could not tell
+    them apart — which is the conflation ``submit.CleanupReport`` next door goes out
+    of its way to avoid, citing GOVERNANCE 10 in its own docstring: unknown is never
+    zero. It is harmless today because no pod volume exists; it would misreport from
+    the moment spec 04 provisions one.
+    """
 
     target_paths_checked: int
     temporary_paths_checked: int
     logs_scanned: int
-    volume_objects_seen: int
+    volume_objects_seen: int | None
 
 
 def verify_synthetic_cleanup(
@@ -71,14 +80,14 @@ def verify_synthetic_cleanup(
         if any(marker in content for marker in markers):
             raise CleanupDrillRefusal("cleanup drill log contains a forbidden marker")
 
-    objects = () if volume_objects is None else tuple(volume_objects)
+    objects = None if volume_objects is None else tuple(volume_objects)
     if objects:
         raise CleanupDrillRefusal("cleanup drill volume object listing is not empty")
     return CleanupDrillResult(
         target_paths_checked=len(targets),
         temporary_paths_checked=len(temporary),
         logs_scanned=len(logs),
-        volume_objects_seen=len(objects),
+        volume_objects_seen=None if objects is None else len(objects),
     )
 
 

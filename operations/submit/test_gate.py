@@ -43,9 +43,43 @@ def policy():
 def test_the_shipped_policy_carries_every_clause_the_spec_requires(policy):
     """A policy missing a clause is not a shorter policy; it is one Tyrel never
     approved, and reading it as valid would be the gate approving itself."""
-    for field in gate._REQUIRED_POLICY_FIELDS:
-        assert policy.get(field), f"the shipped policy has no {field}"
+    assert set(policy) == gate._POLICY_FIELDS
     assert policy["alpha_shortcuts_ledger"] == "workbench/standing/ALPHA_SHORTCUTS.md"
+
+
+def test_the_alpha_shortcuts_ledger_is_a_clause_the_loader_enforces(tmp_path, policy):
+    """It was named in the spec, asserted of the shipped file by the test above, and
+    absent from what `load_policy` actually required — so a policy stripped of it
+    loaded clean and the mismatch was invisible to the suite."""
+    stripped = {key: value for key, value in policy.items() if key != "alpha_shortcuts_ledger"}
+    path = tmp_path / "no-ledger.json"
+    path.write_text(json.dumps(stripped), encoding="utf-8")
+    with pytest.raises(gate.GateRefusal, match="alpha_shortcuts_ledger"):
+        gate.load_policy(path)
+
+
+@pytest.mark.parametrize("value", [True, 1, {"x": 1}, "x", ["a rule"]])
+def test_a_clause_that_states_no_rule_is_refused(tmp_path, policy, value):
+    """`if not record.get(field)` was pure truthiness, so every prose clause but
+    `storage_roots` could be replaced by `true` and the policy still loaded, hashed
+    and gated — a policy that says nothing passing as one that does."""
+    mutated = dict(policy)
+    mutated["logging_rule"] = value
+    path = tmp_path / "boolean-clause.json"
+    path.write_text(json.dumps(mutated), encoding="utf-8")
+    with pytest.raises(gate.GateRefusal, match="not a stated rule"):
+        gate.load_policy(path)
+
+
+def test_a_clause_this_gate_does_not_enforce_is_refused(tmp_path, policy):
+    """The other direction, and the reason the field set is exact: a clause Tyrel
+    approved that nothing here checks is a rule with no machinery behind it."""
+    extended = dict(policy)
+    extended["a_clause_nothing_enforces"] = "some rule nobody checks"
+    path = tmp_path / "extra-clause.json"
+    path.write_text(json.dumps(extended), encoding="utf-8")
+    with pytest.raises(gate.GateRefusal, match="Unknown"):
+        gate.load_policy(path)
 
 
 def test_a_policy_with_a_clause_removed_is_refused(tmp_path, policy):

@@ -455,6 +455,48 @@ def test_a_duplicate_source_file_is_refused_by_name_and_names_the_first(tmp_path
     assert "source-1" in published[2]["payload"]["reason"]
 
 
+def test_two_identical_refused_sources_are_each_told_the_truth_about_themselves(tmp_path):
+    """The duplicate reason says "already admitted as source-N". A digest registered
+    *before* the decision made a refused source the "first", so two identical corrupt
+    files read as "one corrupt file, one duplicate" — a record asserting an admission
+    that never happened, and the second file's real fault hidden behind it. Which
+    changes what Tyrel would do about the batch, which is the point of GOVERNANCE 10.
+    """
+    broken = b"neither an image nor anything else"
+    sources = [
+        SourceEntry(1, "scan-01.png", digest_bytes(broken)),
+        SourceEntry(2, "scan-01-copy.png", digest_bytes(broken)),
+    ]
+    tree, context = open_door(tmp_path, sources)
+    files = {"scan-01.png": broken, "scan-01-copy.png": broken}
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 0
+    context.finish(DOOR)
+
+    published = admissions(tree)
+    for ordinal in (1, 2):
+        assert reason_code(published[ordinal]["payload"]["reason"]) is (
+            RefusalReason.UNRECOGNIZED_FORMAT
+        ), "each source is refused for its own bytes, not as a copy of a refusal"
+
+
+def test_two_identical_oversized_sources_are_each_named_too_large(tmp_path):
+    """The same rule on the branch that never opens a file. It used to key the
+    duplicate map on a *declared* digest while the main path keyed it on the actual
+    one — two keyspaces in one dict — and call the second copy a duplicate of a
+    source that was itself refused."""
+    sources = [
+        SourceEntry(1, "big-a.png", "a" * 64, declared_size=door.MAX_SOURCE_BYTES + 1),
+        SourceEntry(2, "big-b.png", "a" * 64, declared_size=door.MAX_SOURCE_BYTES + 1),
+    ]
+    tree, context = open_door(tmp_path, sources)
+    assert process_sources(context, tree, sources, lambda path: b"", policy=POLICY) == 0
+    context.finish(DOOR)
+
+    published = admissions(tree)
+    for ordinal in (1, 2):
+        assert reason_code(published[ordinal]["payload"]["reason"]) is RefusalReason.TOO_LARGE
+
+
 def test_a_duplicate_pdf_file_is_refused_without_losing_identical_pages_within_one_pdf(tmp_path):
     data = two_page_pdf()
     files = {"book.pdf": data, "book-copy.pdf": data}

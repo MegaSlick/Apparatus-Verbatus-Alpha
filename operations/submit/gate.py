@@ -58,16 +58,32 @@ DEFAULT_POLICY_PATH: Final = ROOT / "config" / "data_handling_policy.json"
 # things and do not authorize this gate, whatever their target hash says.
 GATE_ACTION: Final = "data-gate"
 
-_REQUIRED_POLICY_FIELDS: Final = (
+# Every clause the policy carries, and its shape. Spec 03 names each of these as
+# something the gate package must say; `alpha_shortcuts_ledger` was named there and
+# missing from this list, so a policy stripped of it loaded clean while a separate
+# test asserted the shipped file had one — the check and the claim in different
+# places, agreeing with nobody.
+#
+# **The set is exact and the types are checked.** `if not record.get(field)` was
+# pure truthiness, so `logging_rule` could be `True`, `1`, `{"x": 1}` or the string
+# `"x"` and load; every prose clause but `storage_roots` could be replaced by a
+# boolean and the policy still hashed, loaded and gated. A clause that says nothing
+# is not a shorter policy either.
+_REQUIRED_PROSE_CLAUSES: Final = (
     "policy_version",
-    "storage_roots",
+    "storage_roots_note",
     "logging_rule",
     "temp_file_handling",
     "retention_and_deletion",
     "routing_rule",
     "third_party_transmission",
     "cleanup_drill",
+    "alpha_shortcuts_ledger",
 )
+_POLICY_FIELDS: Final = frozenset({*_REQUIRED_PROSE_CLAUSES, "storage_roots"})
+# Short enough to be a placeholder rather than a clause. Not a quality judgement —
+# nothing here reads what a clause says — only a floor under "present".
+_MINIMUM_CLAUSE_LENGTH: Final = 8
 
 
 class GateRefusal(ContractError):
@@ -94,12 +110,28 @@ def load_policy(path: Path = DEFAULT_POLICY_PATH) -> dict[str, Any]:
         raise GateRefusal(f"data-handling policy at {path} could not be read: {error}") from error
     if not isinstance(record, dict):
         raise GateRefusal(f"{path} is not a data-handling policy record")
-    missing = [field for field in _REQUIRED_POLICY_FIELDS if not record.get(field)]
-    if missing:
+    if set(record) != _POLICY_FIELDS:
+        missing = sorted(_POLICY_FIELDS - set(record))
+        unknown = sorted(set(record) - _POLICY_FIELDS)
         raise GateRefusal(
-            f"{path} is missing required policy clause(s) {missing}; a policy with a "
-            "clause absent is not a shorter policy, it is one that was never approved"
+            f"{path} does not carry exactly the clauses this gate enforces. "
+            f"Missing: {missing}. Unknown: {unknown}. A policy with a clause absent is "
+            "not a shorter policy, it is one that was never approved; and a clause "
+            "nothing here checks is one Tyrel approved and nothing enforces"
         )
+    for field in _REQUIRED_PROSE_CLAUSES:
+        value = record[field]
+        if not isinstance(value, str) or len(value.strip()) < _MINIMUM_CLAUSE_LENGTH:
+            raise GateRefusal(
+                f"{path} gives clause {field!r} a value that is not a stated rule "
+                f"({type(value).__name__}); a truthiness check accepted `true`, `1` and "
+                "`{...}` here, which is a policy that says nothing passing as one that does"
+            )
+    roots = record["storage_roots"]
+    if not isinstance(roots, list) or not roots:
+        raise GateRefusal(f"{path} names no approved storage roots")
+    if any(not isinstance(root, str) or not root.strip() for root in roots):
+        raise GateRefusal(f"{path} names a storage root that is not a non-empty path")
     return record
 
 

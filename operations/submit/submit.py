@@ -25,6 +25,18 @@ mistaken for a completed submission.
 policy's logging rule made mechanical: `log()` refuses any field outside a small
 allowed set of counts, digests, and status words.
 
+**And neither does a refusal.** `log()` was airtight and it was not the only
+output: `main()` printed every `ContractError` to stderr verbatim, and those
+messages carried the submitted folder's path and the relative path of an offending
+entry — so an ordinary rejected invocation emitted exactly the values the policy
+excludes, into the channel a shell runner, a CI job or a service manager captures
+by default. Three seats found it independently and it reproduced on an empty
+folder, a symlink and a FIFO. The refusal *reason* is what an operator needs and
+it is what they get; the name belongs in the accounted record, not in the log.
+`redact()` below is the one place that distinction is made, and
+`SubmitRefusal.operator_detail` is how a message carries a name for a caller that
+is allowed to see one.
+
     python operations/submit/submit.py --source <folder> --manifest-out <path> \
         --approval-record <path>
 """
@@ -46,9 +58,15 @@ SCHEMA: Final = "submission-manifest.v0"
 
 # The manifest names every submitted file, whatever its size — a source too large
 # for the door to admit is still a source that arrived, and it must stay in the
-# denominator. The inventory keeps bytes only up to this bound; the digest is exact
-# either way.
-MAX_RETAINED_BYTES: Final = 64 * 1024 * 1024
+# denominator. This tool needs no file's *content* to write that, so it retains
+# none: the digest is streamed and exact either way.
+#
+# This replaces a `MAX_RETAINED_BYTES = 64 MiB` that was a second, independent copy
+# of `image_formats.MAX_SOURCE_BYTES` — the same number kept by hand in two places,
+# which is the shape of drift this spec exists to kill, and which two seats flagged.
+# `operations/submit/` may not import the pipeline (the dependency points one way),
+# so the copy could not simply be shared; retaining nothing removes the need for it.
+RETAIN_NO_BYTES: Final = 0
 
 # Every field `log()` may carry. A count, a digest, or a status word — never a
 # filename, a declared path, or image bytes, which is what the data-handling
@@ -112,12 +130,19 @@ def log(event: str, **fields: Any) -> None:
 
 
 def walk_folder(source: Path) -> list[dict[str, Any]]:
-    """Every regular file under `source`, sorted, hashed. No format sniffing."""
-    sources = inventory.read_submission(source, max_bytes=MAX_RETAINED_BYTES)
+    """Every regular file under `source`, sorted, hashed. No format sniffing.
+
+    Not one byte of content is retained. This tool writes a manifest of paths,
+    digests and sizes, and never looks at what a file holds — so `max_bytes=0` is
+    the honest request, and it also removes the second hand-kept copy of the door's
+    64 MiB admission limit that used to live here under another name. The digest is
+    streamed and exact whatever the file's size.
+    """
+    sources = inventory.read_submission(source, max_bytes=RETAIN_NO_BYTES)
     if not sources:
         raise SubmitRefusal(
-            f"{source} contains no files to submit; an empty folder is a loud failure, "
-            "never a green submission with nothing in it"
+            "the submitted folder contains no files to submit; an empty folder is a loud "
+            "failure, never a green submission with nothing in it"
         )
     return [
         {"relative_path": found.relative_path, "sha256": found.sha256, "bytes": found.size}
@@ -148,9 +173,21 @@ def build_manifest(
     return manifest
 
 
-def _atomic_write(target: Path, data: bytes) -> None:
-    """Temp file in the same directory, flushed, then replaced — never a partial
-    file at the target path, mirroring `common/runtree/store.py`'s own writer."""
+def _atomic_create(target: Path, data: bytes) -> bool:
+    """Create the manifest, or reuse an identical one. Never overwrite a different.
+
+    GOVERNANCE 4: evidence is never overwritten. `os.replace` clobbered
+    unconditionally, so resubmitting a *changed* folder to the same path replaced a
+    valid, self-hashed record of what was previously sealed with a different one —
+    no comparison, no warning, no refusal, and nothing on disk retaining the record
+    it superseded. "Sealed" then meant only "self-consistent now".
+
+    `os.link` is the same atomic-create-or-fail pattern `common/runtree/store.py`
+    uses one layer down, where `RunTree.create` already refuses a changed manifest;
+    this record sits upstream of any run tree and had no such protection. Identical
+    bytes are a true no-op, so a byte-identical resubmission stays idempotent.
+    Returns True when the file was created, False when an identical one was reused.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.tmp-{os.getpid()}")
     try:
@@ -158,10 +195,27 @@ def _atomic_write(target: Path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            if _read_or_none(target) == data:
+                return False
+            raise SubmitRefusal(
+                "a submission manifest already exists at that path and seals different "
+                "content. Evidence is never overwritten (GOVERNANCE 4): the existing "
+                "record was not touched, and a changed submission needs its own path"
+            ) from None
+        return True
     finally:
-        if temporary.exists():
+        if temporary.is_symlink() or temporary.exists():
             temporary.unlink()
+
+
+def _read_or_none(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
 
 
 def submit(
@@ -196,15 +250,31 @@ def submit(
             "otherwise the next inventory includes its own prior output and cannot be idempotent"
         )
 
-    entries = walk_folder(source)
+    # The *resolved* paths from here on, not the caller's original strings. Checking
+    # one path and then opening another is the shape a check-then-use race lives in,
+    # and the resolved values were already in hand.
+    entries = walk_folder(resolved_source)
     manifest = build_manifest(entries, authorized_by=reference.to_record())
     data = canonical_bytes(manifest)
-    _atomic_write(manifest_out, data)
+    _atomic_create(resolved_manifest, data)
     log("submission sealed", files=len(entries), digest=digest_bytes(data))
     return manifest
 
 
-def purge(manifest_out: Path) -> CleanupReport:
+def _entry_exists(path: Path) -> bool:
+    """Whether the directory entry itself is there, dangling symlink included.
+
+    `Path.exists()` follows the link, so a manifest that is a symlink to something
+    already gone read as absent: `purge` skipped the unlink, reported
+    `target_removed=True` and logged `status=target-absent` while the entry sat on
+    disk — and `cleanup._is_absent`, the verifier for the same drill, uses `lstat`
+    and calls that same state a failure. Two halves of one drill disagreeing about
+    what "gone" means is worse than either answer.
+    """
+    return path.is_symlink() or path.exists()
+
+
+def purge(manifest_out: Path, approved_roots: tuple[Path, ...] | None = None) -> CleanupReport:
     """The cleanup drill's removal half: remove the sealed manifest and any stray
     temp file beside it, then report what the filesystem actually shows afterward.
 
@@ -214,12 +284,19 @@ def purge(manifest_out: Path) -> CleanupReport:
     `cleanup.verify_synthetic_cleanup` is what turns that report into a pass or a
     failure against declared, measurable bounds.
     """
+    if approved_roots is not None:
+        # `submit()` refuses to *write* outside the approved storage roots; deleting
+        # outside them was never checked, because nothing reaches `purge` from the
+        # CLI today. A removal path that trusts its argument is the one to bound
+        # before something starts calling it.
+        gate.require_approved_storage_location(manifest_out, approved_roots, "cleanup target")
+
     removed_temp = 0
     if manifest_out.parent.exists():
         for candidate in manifest_out.parent.glob(f".{manifest_out.name}.tmp-*"):
             candidate.unlink()
             removed_temp += 1
-    if manifest_out.exists():
+    if _entry_exists(manifest_out):
         manifest_out.unlink()
 
     remaining = (
@@ -228,7 +305,7 @@ def purge(manifest_out: Path) -> CleanupReport:
         else ()
     )
     report = CleanupReport(
-        target_removed=not manifest_out.exists(),
+        target_removed=not _entry_exists(manifest_out),
         temp_files_removed=removed_temp,
         remaining_temp_files=remaining,
         # No pod volume exists yet (spec 04); reporting an empty listing here would
@@ -262,7 +339,20 @@ def main() -> int:
             policy_path=Path(args.policy),
         )
     except ContractError as error:
+        # The reason, never the name. Every refusal that knows a submitted path
+        # carries it as `entry` rather than in its message, because this line is
+        # what a shell runner, a CI job or a service manager captures — and the
+        # data-handling policy's logging rule excludes a declared filename or path
+        # from exactly that. **What is missing is the operator's ability to see
+        # which entry was rejected**, and there is no approved place to put it yet;
+        # that is an open question in the gate package, not a decision made here.
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        if getattr(error, "entry", None) is not None:
+            print(
+                "the offending entry's submitted path is withheld from this channel by "
+                "the data-handling policy's logging rule",
+                file=sys.stderr,
+            )
         return 2
     return 0
 

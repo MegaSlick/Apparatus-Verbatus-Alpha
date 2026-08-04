@@ -27,7 +27,7 @@ from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, page_id
 from common.contracts.stages import DOOR, EXEMPLAR
 from common.runtree.store import RunTree
-from common.stage import StageContext
+from common.stage import EXIT_FATAL, StageContext
 
 ROOT = Path(__file__).resolve().parents[2]
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
@@ -230,6 +230,11 @@ def test_a_source_that_lost_its_door_outcome_refuses_before_anything_is_sealed(t
     assert result.returncode != 0
     assert "may not disappear between submission and sealing" in result.stderr
     assert not (tree.root / "1_exemplar" / "artifacts" / "page").exists()
+    # The ordering claim, on a run that actually reached the Exemplar and refused:
+    # the seal names the pages, so a seal written before the census closed would be
+    # a summary of a partial corpus. Asserted here rather than in a door-only test,
+    # where "no seal exists" is true whatever the Exemplar does.
+    assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
 
 
 def test_an_admitted_blob_whose_bytes_changed_refuses(tmp_path):
@@ -240,6 +245,23 @@ def test_an_admitted_blob_whose_bytes_changed_refuses(tmp_path):
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode != 0
     assert "no longer match" in result.stderr
+
+
+def test_an_admitted_blob_that_is_gone_refuses_by_name_rather_than_crashing(tmp_path):
+    """The *deleted* blob, beside the *changed* one above. It escaped as a
+    FileNotFoundError traceback and CPython's exit 1, where `common/stage.py` says
+    an exit code carries cause and reserves 2 for a named contract failure. A
+    stage that dies by traceback has still failed loudly — but it has told the
+    orchestrator "something went wrong" instead of "this run does not reconcile"."""
+    tree, _ = build_door_run(tmp_path / "runs")
+    admission = tree.read_artifact(DOOR, "admission", artifact_id(DOOR, "admission", "source-1"))
+    tree.resolve(admission["payload"]["stored_at"]).unlink()
+
+    result = run_exemplar(tmp_path / "runs")
+    assert result.returncode == EXIT_FATAL
+    assert "Traceback" not in result.stderr
+    assert "an admitted blob could not be read" in result.stderr
+    assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
 
 
 def test_a_door_refusal_carrying_a_free_text_reason_is_refused(tmp_path):
@@ -293,14 +315,15 @@ def test_the_exemplar_refuses_a_run_the_door_never_wrote(tmp_path):
     assert "no admissions to seal" in result.stderr
 
 
-def test_the_seal_is_written_only_after_every_page_is_accounted_for(tmp_path):
-    """Ordering, asserted rather than assumed: the seal names the pages, so a seal
-    written before the census closed would be a summary of a partial corpus."""
-    tree, _ = build_door_run(tmp_path / "runs")
-    with pytest.raises(ContractError):
-        # A run with no source manifest cannot be reconciled at all, and nothing —
-        # least of all a seal — may be published over it.
-        import run as exemplar
+def test_a_run_with_no_submitted_source_manifest_cannot_be_reconciled_at_all():
+    """This used to close with "no seal artifact exists" over a tree only the *door*
+    had written, and call that an ordering assertion. It was true before the test
+    body ran and stayed true against an Exemplar mutated to publish the seal first —
+    a guard nobody has seen fail. The ordering claim now lives in
+    `test_a_source_that_lost_its_door_outcome_refuses_before_anything_is_sealed`,
+    which actually runs the Exemplar; what is left here is the one thing this test
+    really exercised, said plainly."""
+    import run as exemplar
 
+    with pytest.raises(ContractError, match="no submitted source manifest"):
         exemplar._submitted_sources({"source_manifest": []})
-    assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
