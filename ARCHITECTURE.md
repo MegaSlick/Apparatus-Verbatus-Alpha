@@ -66,7 +66,7 @@ Where it produces several readings, it reconciles them **itself, against the ima
 and that reconciliation is bound by "never picks" like any other step. It reads through
 to the end; truncation is a failure, not an output.
 
-**The Perlector seat is swappable, and that is a design requirement rather than a
+**The Perlector chair is swappable, and that is a design requirement rather than a
 convenience.** A stock base model, an unaltered vendor model, and a locally trained checkpoint
 must all be able to sit in it behind the same interface, with the resolved identity of whichever
 one ran bound into every Perlectio. A locally trained checkpoint is *called* like any other

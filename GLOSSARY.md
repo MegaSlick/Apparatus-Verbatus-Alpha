@@ -23,6 +23,14 @@ material, and a missed act is worse than a poorly read one.
 
 **crop** — the image region marked out for one act.
 
+**chair** — a numbered place in the pipeline that one model occupies. The chair is the
+role; the model is the occupant, named only in `config/models.toml` and swapped without
+touching code. *Attestator 1* is a chair; whichever model currently sits in it is not.
+
+**Not "seat".** In `.claude/` and the working notes a *seat* is a model doing an agent's
+job — building, reviewing, auditing. That is harness vocabulary and it stops at the
+pipeline's edge.
+
 **pod** — a rented cloud machine with a GPU. It bills by the hour while it exists.
 
 ## The stages
@@ -67,3 +75,4 @@ These appear in the old repository and mean nothing here. If you see one, it is 
 | consolidator | its witness-voting is **retired**. If an assembled page hypothesis is kept at all, it is a **Testimonium** like any other |
 | witness_dai_churro, chandra (as a stage name) | **Attestatores**, **Designator** |
 | lean bundle, pilot_*, *_v2 / *_v3 | naming carries meaning, not history |
+| seat (as a pipeline word) | **chair**. *Seat* is the harness's word for a model doing an agent's job and does not cross into the pipeline |
