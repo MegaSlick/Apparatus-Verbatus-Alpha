@@ -425,20 +425,26 @@ def recovery_pass(context, act_id: str, request_id: str) -> int:
         "bounds": bounds,
     }
     duplicate = region_id(act_id, transform)
-    if any(
-        record["payload"].get("region_id") == duplicate for record in _regions_of(context, act_id)
-    ):
+    already_recovered = [
+        record
+        for record in _regions_of(context, act_id)
+        if record["payload"].get("origin") == "recovery"
+    ]
+    # Against recovery regions only. `region_id` binds the act and the transform
+    # and nothing else — a proposal region and a recovery region cut at the same
+    # bounds derive the identical id — so comparing against every region of the act
+    # made a first, entirely legitimate recovery refusable purely because its
+    # recrop happened to land on the act's original bounds. That is a shape a real
+    # fixture may well declare: a recrop asked for because the crop *decoded*
+    # badly, not because it was cut badly, wants exactly the same rectangle.
+    # The guard's own purpose, in its author's words, is that a fulfilled request
+    # may not be cut again, and only recovery regions can be a second cut.
+    if any(record["payload"].get("region_id") == duplicate for record in already_recovered):
         raise ContractError(
             f"recovery asked for {act_id}, which already has a recovery region cut "
             "for this exact transform; a fulfilled recovery request may not be cut again"
         )
-    recovery_count = len(
-        [
-            record
-            for record in _regions_of(context, act_id)
-            if record["payload"].get("origin") == "recovery"
-        ]
-    )
+    recovery_count = len(already_recovered)
     if request_payload.get("budget_used") != recovery_count or ordinal != recovery_count + 1:
         raise ContractError(
             "the supplied recovery request is stale or skips a recovery ordinal; a recrop "
