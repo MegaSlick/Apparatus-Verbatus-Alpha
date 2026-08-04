@@ -58,8 +58,11 @@ FIXTURE = "synthetic-two-page-v0"
 # its PDF target, the fixed decoder route is no longer disguised as configuration,
 # and every delivered source region retains its complete crop transform. These are
 # deliberate record changes, so the whole-tree pins change with them.
-HAPPY_RUN_TREE_DIGEST = "f18ba5ff5a3ba53cc58d91c458c032aa628804329971b1956f8f595b87058feb"
-REVIEW_RUN_TREE_DIGEST = "3ff2b39ab6a50562c64ca8de5d682ffefe9f3d00abb59f1f3886c9cb3223e4e0"
+# Re-pinned for the round-two merge. The recovery policy values are unchanged,
+# but its corrected explanatory text changes the policy file hash deliberately
+# sealed into run.json and therefore every downstream artifact config digest.
+HAPPY_RUN_TREE_DIGEST = "f9639419dea324bbbaa35704716a144380678750940c20a3ccb56ed854239d02"
+REVIEW_RUN_TREE_DIGEST = "d3a86ff00b866c97e922daba8aa75bf008c6b0c957809874728d092fea092bee"
 
 
 def orchestrate(
