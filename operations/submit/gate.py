@@ -98,11 +98,29 @@ class GateRefusal(ContractError):
 def load_policy(path: Path = DEFAULT_POLICY_PATH) -> dict[str, Any]:
     """The canonical policy record, read fresh from disk every time.
 
-    Never cached: a cached policy could disagree with the file a stale approval
-    was actually compared against, and the gate's whole point is comparing against
-    what is *currently* on disk. Every clause the spec requires the package to
-    carry must be present — a policy missing its retention rule is not a shorter
-    policy, it is one Tyrel did not approve.
+    Never cached *by this function*: a cached policy could disagree with the file a
+    stale approval was actually compared against, and the gate's whole point is
+    comparing against what is currently on disk. Every clause the spec requires the
+    package to carry must be present — a policy missing its retention rule is not a
+    shorter policy, it is one Tyrel did not approve.
+
+    **The snapshot point is the start of a command, and that is a ruling rather than
+    an accident.** `door.real_submission` loads the policy once, then may spend a
+    long time inventorying a folder before the second gate check runs against that
+    same in-memory record. So a policy edited *during* a run does not retroactively
+    make that run's approval stale. The alternative — re-reading mid-run — would let
+    a run half-admitted under one policy finish under another, which is a worse
+    answer to the same question. One command, one policy version, named in the run
+    authority's `ingress` and re-checkable afterwards.
+
+    **`path` is caller-supplied, which the docstrings here used to omit.** Both
+    entry points expose `--policy` / `--data-gate-policy`, so "the current policy" is
+    whatever file the invoker names. `common/contracts/approval.py` is explicit that
+    this whole mechanism is tamper-evidence and staleness-checking rather than access
+    control — "a file says what it says" — and anyone able to pass that flag could
+    equally write a matching self-hashed approval. It is disclosed here because a
+    documented limit is not the same thing as a silent one, and the gate package puts
+    it to Tyrel to confirm the boundary is where he thinks it is.
     """
     try:
         record = json.loads(Path(path).read_text(encoding="utf-8"))

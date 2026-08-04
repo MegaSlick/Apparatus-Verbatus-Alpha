@@ -33,9 +33,17 @@ version of `config/data_handling_policy.json`, and the gate is checked before a
 single byte is hashed. A missing, stale or edited approval leaves nothing written at
 all.
 
-`/out/data_handling_gate.md` is the written policy package awaiting his approval.
-Until he approves it, no real image may be submitted through here, and none has
-been.
+The **data-handling gate package** is the written policy awaiting his approval —
+spec 03's principal non-code deliverable, handed to him rather than tracked here.
+`config/data_handling_policy.json` is its machine-readable half, and the version an
+approval record names; the package is what explains that file to him and asks him
+the questions it cannot answer. Until he approves it, no real image may be submitted
+through here, and none has been.
+
+**This README used to name an absolute path outside the repository**, which was a
+container's scratch mount and a dangling reference for every later reader. Where the
+package currently lives is the collecting session's to record; where it should live
+*durably* is an open question in the package itself.
 
 ## What the cleanup drill does and does not claim
 

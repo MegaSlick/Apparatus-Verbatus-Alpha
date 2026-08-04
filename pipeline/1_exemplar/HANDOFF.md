@@ -21,6 +21,34 @@ synthetic bytes standing in for real input.
 gate refuses without an approval record naming the current policy version, and no
 such approval exists.
 
+## What the shipped admission list admits, and the three limits behind it
+
+`config/admitted_formats.toml` ships `png`, `jpeg` and `tiff` as `admit`, and `pdf`,
+`gif` and `heic` as `refuse`. **The list is the authority for every format**,
+including the multi-page ones: the door asks `admission.classify_detected_format`
+before it counts a page and again before it renders one, and names no format itself.
+
+Three limits a later stage — and Tyrel — should know about, because each one means a
+page this door will not read. Each is a **named, counted refusal**, never an
+anonymous "unsupported" counter, and each is one ruling away from changing:
+
+- **PDF is refused**, and `pipeline/1_exemplar/pdf_render.py` stays in the tree
+  behind that row, written and tested. It reads a page's *resources* and never its
+  `/Contents` stream, so it cannot tell a scanned page from a page that draws text or
+  vector marks beside the one image it carries — and on such a page it would seal the
+  image and lose the rest. Turning the row to `render-pages` needs no code change;
+  it needs a page-content interpreter that proves exactly one image is painted
+  exactly as recorded, which is its own spec.
+- **Multi-page TIFF is refused.** A second image directory is refused at the first
+  link of the chain, because the door assigns one ordinal per page and this stage
+  cannot extract page two as its own image. Multi-page TIFF is ordinary flatbed
+  output for a book, so this is a real coverage cost and a ledger item rather than a
+  settled question.
+- **A JPEG with any trailing byte after EOI is refused**, as a concatenated second
+  image or an appended payload. Real cameras and scanners do sometimes append a
+  thumbnail or padding there. Whether that bites depends entirely on what the actual
+  scanner emits, which cannot be known before the first real corpus.
+
 ## `kind="admission"` — the door's record of every declared source
 
 One per declared source (per **page**, not per file — a multi-page PDF is fanned out
@@ -45,9 +73,14 @@ geometry        {width, height}, read off the real container by the structural
 and, **only when the sealed bytes are a render rather than the submitted file**:
 
 ```
-pdf_page_index  which page of that PDF produced these bytes (0-based)
-source_sha256   the digest of the whole submitted PDF, matching run.json
+pdf_page_index    which page of that container produced these bytes (0-based)
+container_sha256  the digest of the whole submitted file, matching run.json
 ```
+
+`container_sha256`, not `source_sha256`: the page payload below already uses
+`source_sha256` for the digest of the **sealed** bytes — the one `page_id` binds —
+and one word for two concepts is GLOSSARY's opening rule broken three lines apart.
+They coincide for a standalone raster, which is what made it easy to miss.
 
 Those two are the recorded transform. ARCHITECTURE's third invariant — the exact
 image shown to a model is reproducible from the Exemplar plus recorded transforms —
@@ -89,8 +122,9 @@ path, which was audit Q12's defect). Payload:
 ordinal          as above
 source_sha256    the digest of the sealed bytes (the admission's sha256)
 image_path       the blob's relative path (the admission's stored_at)
-rendered_from    present only for a PDF page: {source_sha256, pdf_page_index},
-                 carried through from the admission's recorded transform
+rendered_from    present only for a rendered page: {container_sha256,
+                 pdf_page_index}, carried through from the admission's
+                 recorded transform
 ```
 
 Refused: `subject_id` is the admission's own `f"source-{ordinal}"` — there is no
@@ -130,9 +164,11 @@ writes anything, rather than quietly building a second one beside the first.
 `1_exemplar/blobs/sha256/<digest>` holds admitted bytes, content-addressed:
 
 - a standalone admitted file's own bytes, unmodified — never re-encoded;
-- a PDF page's *rendered* bytes: a `DCTDecode` page is stored as the embedded JPEG
-  unmodified; a `FlateDecode` (or unfiltered) page's raw samples are encoded as a
-  PNG through `pdf_render.py`'s own minimal encoder.
+- a rendered page's bytes, **if and only if the admission list asks for a format to
+  be rendered, which the shipped list does not**: a `DCTDecode` page is stored as the
+  embedded JPEG unmodified after its frame is checked against the colour space its
+  dictionary declares; a `FlateDecode` (or unfiltered) page's raw samples are encoded
+  as a PNG through `pdf_render.py`'s own minimal encoder.
 
 Identical bytes reused across ordinals are one blob referenced by more than one
 `stored_at`. That is deliberate — spec 03's "identical bytes reused rather than
@@ -191,5 +227,8 @@ Exemplar checks that every door admission agrees with the run's ingress: all of 
 carry the same approval reference or none does, so a run cannot hold a mixture in
 which some pages were gated and others simply were not.
 
-`/out/data_handling_gate.md` is the written policy package this machinery checks
+The **data-handling gate package** is the written policy this machinery checks
 against, delivered to Tyrel for approval rather than tracked here.
+`config/data_handling_policy.json` is its machine-readable half. This document used
+to name an absolute path outside the repository for it, which was a container's
+scratch mount and could never be opened by a later reader.

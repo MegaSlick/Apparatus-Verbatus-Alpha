@@ -144,9 +144,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 def _page_payload(payload: dict[str, Any], ordinal: int) -> dict[str, Any]:
     """What a sealed page records: the ordinal, the sealed bytes, and any transform.
 
-    `pdf_page_index`/`source_sha256` travel from the admission when the sealed bytes
-    are a render rather than the submitted file itself. ARCHITECTURE's third
+    `pdf_page_index`/`container_sha256` travel from the admission when the sealed
+    bytes are a render rather than the submitted file itself. ARCHITECTURE's third
     invariant needs the transform recorded, not merely performed.
+
+    Two digests, two words. `source_sha256` is the digest of the bytes this page
+    *is* — what `page_id` binds, and what `common/contracts/identities.py` calls it.
+    `rendered_from.container_sha256` is the digest of the multi-page file the page
+    was rendered out of. Both were called `source_sha256`, three lines apart, and
+    they coincide for a standalone raster, which is what made the collision easy to
+    miss and wrong for every rendered page.
     """
     sealed: dict[str, Any] = {
         "ordinal": ordinal,
@@ -155,7 +162,7 @@ def _page_payload(payload: dict[str, Any], ordinal: int) -> dict[str, Any]:
     }
     if "pdf_page_index" in payload:
         sealed["rendered_from"] = {
-            "source_sha256": payload["source_sha256"],
+            "container_sha256": payload["container_sha256"],
             "pdf_page_index": payload["pdf_page_index"],
         }
     return sealed
@@ -332,9 +339,9 @@ def _verify_admitted_blob(
                 "an admitted source's sealed bytes differ from the bytes that were "
                 "submitted, and no transform is recorded to explain it"
             )
-        if payload.get("source_sha256") != source["sha256"]:
+        if payload.get("container_sha256") != source["sha256"]:
             raise ContractError(
-                "a rendered page names a source digest the run authority did not submit"
+                "a rendered page names a container digest the run authority did not submit"
             )
         if not isinstance(payload["pdf_page_index"], int) or payload["pdf_page_index"] < 0:
             raise ContractError("a rendered page records no non-negative PDF page index")

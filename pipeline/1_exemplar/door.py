@@ -442,7 +442,14 @@ def process_sources(
             # it a sealed page's digest simply disagrees with its source's and
             # nothing can say why.
             extra["pdf_page_index"] = source.pdf_page_index
-            extra["source_sha256"] = source.declared_sha256 or digest_bytes(data)
+            # `container_sha256`, not `source_sha256`. The Exemplar's page payload
+            # already uses `source_sha256` for the digest of the *sealed* bytes —
+            # the one `page_id` binds, and the one `common/contracts/identities.py`
+            # names — so a second meaning for the same word inside one record is
+            # GLOSSARY's opening rule broken three lines apart, and a reader taking
+            # the top-level field for "the file this came from" would be right for
+            # every raster and wrong for every rendered page.
+            extra["container_sha256"] = source.declared_sha256 or digest_bytes(data)
         _publish(
             context,
             source,

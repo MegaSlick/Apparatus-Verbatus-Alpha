@@ -324,7 +324,7 @@ def test_a_pdf_fans_out_into_one_ordinal_per_page(tmp_path):
     # of the container travels beside them as the recorded transform's source.
     for ordinal, record in published.items():
         payload = record["payload"]
-        assert payload["source_sha256"] == digest_bytes(data)
+        assert payload["container_sha256"] == digest_bytes(data)
         assert payload["sha256"] != digest_bytes(data)
         rendered, _ = pdf_render.render_page(
             pdf_render.open_document(data), payload["pdf_page_index"]
@@ -691,6 +691,24 @@ def test_a_real_run_seals_the_approval_into_every_admission_it_publishes(tmp_pat
         )
     stored = tree.read_approval_record(gate.read_external_approval(approval_path, policy)[1])
     assert stored["action"] == "data-gate"
+
+    # Spec 03 test 3 — "byte-identical rerun reproduces identical seal" — was covered
+    # on the fixture path and the orchestrator's, and *not* on this one. The real
+    # path is the one with an approval record, a storage-root check and a content-
+    # addressed receipt in it, which is exactly where an unmeasured claim of
+    # idempotence would be worth least.
+    before = {
+        str(path.relative_to(run_root)): path.read_bytes()
+        for path in sorted(run_root.rglob("*"))
+        if path.is_file()
+    }
+    assert door.main() == 0
+    after = {
+        str(path.relative_to(run_root)): path.read_bytes()
+        for path in sorted(run_root.rglob("*"))
+        if path.is_file()
+    }
+    assert after == before, "a second identical real submission rewrote something"
 
 
 def test_a_real_submission_outside_the_approved_storage_roots_is_refused(tmp_path, monkeypatch):

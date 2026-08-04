@@ -17,11 +17,22 @@ PDF is admitted at all — are one line each rather than a code change. It is ch
 at load: it must name exactly the formats the door can detect, its actions come from
 a closed set, and it may not admit a format nothing can structurally verify.
 
+**That claim was untrue for PDF and is now true.** The door decided the PDF fan-out
+from a hardcoded format name and never consulted this file, so `pdf = "refuse"`
+counted, rendered and sealed the pages anyway — three reviewing seats found it
+independently. The door now asks the list before it counts a page and again before
+it renders one, and `pipeline/1_exemplar/test_door.py` drives the shipped file end to
+end in both positions of the row. The shipped row is `refuse`, and the file says why.
+
 `data_handling_policy.json` is the version an approval record names. Its hash is the
 canonical digest of its own content, so editing one character of it invalidates
 every approval that named the old version — which is the honest behaviour, not a
-bug. `/out/data_handling_gate.md` is the written package that explains it to Tyrel;
-`operations/submit/gate.py` is the machinery that enforces it.
+bug. The **data-handling gate package** is the written deliverable that explains this
+file to Tyrel and is handed to him rather than tracked here;
+`operations/submit/gate.py` is the machinery that enforces it. Note that both entry
+points expose the policy's path as a flag, so "the current policy" is whichever file
+the invoker names — a documented limit of a mechanism `common/contracts/approval.py`
+already describes as tamper-evidence rather than access control.
 
 `models.toml` is the operational cast list. Model assignments belong there rather
 than in stage code or stage documentation, which keeps a swap to one configuration
