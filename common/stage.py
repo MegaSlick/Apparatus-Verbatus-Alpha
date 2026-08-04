@@ -68,12 +68,15 @@ _PROVENANCE_FIELDS = frozenset(
     }
 )
 
-# ARCHITECTURE's Perlector paragraph: witness identity travels under a run-level
-# named/blinded toggle, "every Perlectio recording its regime". The Perlector
-# writes it; until this check, nothing read it back, so a Perlectio claiming an
-# impossible regime — or a typo — travelled sealed. Binding it to an actual
-# run-level toggle is Spec 08's work; refusing a value that cannot be true is
-# this system's, because it is provenance and #42 governs provenance.
+# Tyrel's 2026-07-30 ruling (courtroom_doctrine.md's "Rulings received" section,
+# formalized in the unbuilt spec_08_perlector.md — not ARCHITECTURE.md, which
+# names no regime/toggle anywhere in its own text or history): witness identity
+# travels under a run-level named/blinded toggle, "every Perlectio recording its
+# regime". The Perlector writes it; until this check, nothing read it back, so a
+# Perlectio claiming an impossible regime — or a typo — travelled sealed. Binding
+# it to an actual run-level toggle is Spec 08's work; refusing a value that
+# cannot be true is this system's, because it is provenance and #42 governs
+# provenance.
 _WITNESS_REGIMES = frozenset({"named", "blinded"})
 
 

@@ -181,11 +181,14 @@ def test_a_field_nothing_validates_is_refused_rather_than_carried(tmp_path):
 
 
 def test_a_witness_regime_that_cannot_be_true_is_refused(tmp_path):
-    """ARCHITECTURE: the named/blinded toggle is run-level and every Perlectio
-    records its regime. The Perlector writes the field; until this check nothing
-    read it back, so a Perlectio claiming a regime that does not exist travelled
-    sealed and provenance-checked. Binding it to a real run-level toggle is Spec
-    08's work; refusing a value that cannot be true is provenance validation.
+    """Tyrel's 2026-07-30 ruling (courtroom_doctrine.md, formalized in the
+    unbuilt spec_08_perlector.md — this is not in ARCHITECTURE.md, which names
+    no regime/toggle anywhere): the named/blinded toggle is run-level and every
+    Perlectio records its regime. The Perlector writes the field; until this
+    check nothing read it back, so a Perlectio claiming a regime that does not
+    exist travelled sealed and provenance-checked. Binding it to a real
+    run-level toggle is Spec 08's work; refusing a value that cannot be true is
+    provenance validation.
 
     Required of the Perlector and forbidden of everyone else, in both directions.
     An earlier version of this test proved only that a bad value is refused *when
