@@ -506,17 +506,7 @@ def require_some_admitted(admitted: int, tree: RunTree) -> None:
     """
     if admitted != 0:
         return
-    census: dict[str, int] = {}
-    total = 0
-    for entry in tree.build_manifest(DOOR)["artifacts"]:
-        if entry["kind"] != "admission":
-            continue
-        total += 1
-        record = json.loads(tree.read_bytes(entry["relative_path"]).decode("utf-8"))
-        if record["outcome"] != "refused":
-            continue
-        code = admission.reason_code(record["payload"].get("reason"))
-        census[code.value] = census.get(code.value, 0) + 1
+    total, census = _refusal_census(tree)
     named = ", ".join(f"{code}: {count}" for code, count in sorted(census.items()))
     raise ContractError(
         f"the door admitted nothing: {total} source(s) submitted, "
@@ -525,6 +515,38 @@ def require_some_admitted(admitted: int, tree: RunTree) -> None:
         f"{writing_directory(DOOR)}/artifacts/admission/. An empty or wholly unreadable input "
         "set is a loud failure, never a green run with no output (harvest #3)"
     )
+
+
+def _refusal_census(tree: RunTree) -> tuple[int, dict[str, int]]:
+    """Count the published refusals by closed-set reason code.
+
+    **Nothing in here may raise.** It runs only on the failure path, to describe a
+    failure that has already happened, and an exception from reading a damaged
+    artifact would replace "the door admitted nothing" with something about JSON —
+    the primary failure masked by a secondary one, which is a worse answer to
+    GOVERNANCE 2 than a partial census. So an artifact that cannot be read or whose
+    reason is outside the closed set is counted under a name that says so, and the
+    loud failure still says what it is.
+    """
+    census: dict[str, int] = {}
+    total = 0
+    try:
+        entries = tree.build_manifest(DOOR)["artifacts"]
+    except (OSError, ValueError, ContractError):
+        return 0, {"the door's own census could not be read": 1}
+    for entry in entries:
+        if entry.get("kind") != "admission":
+            continue
+        total += 1
+        try:
+            record = json.loads(tree.read_bytes(entry["relative_path"]).decode("utf-8"))
+            if record["outcome"] != "refused":
+                continue
+            code = admission.reason_code(record["payload"].get("reason")).value
+        except (OSError, ValueError, KeyError, ContractError):
+            code = "unreadable record"
+        census[code] = census.get(code, 0) + 1
+    return total, census
 
 
 def declared_synthetic_fixture_root(requested_root: str) -> Path:

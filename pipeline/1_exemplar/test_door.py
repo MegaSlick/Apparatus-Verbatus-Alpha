@@ -787,3 +787,24 @@ def test_the_page_fan_out_really_does_read_every_declared_file():
     rows = [{"relative_path": name, "sha256": digest_bytes(data)} for name, data in files.items()]
     expand_sources(rows, watched, POLICY)
     assert sorted(opened) == ["a.png", "b.pdf"]
+
+
+def test_the_loud_failure_survives_a_census_it_cannot_read(tmp_path):
+    """The census runs only on the failure path, to describe a failure that has
+    already happened. An exception from reading a damaged artifact would replace
+    "the door admitted nothing" with something about JSON — the primary failure
+    masked by a secondary one."""
+    sources = [SourceEntry(1, "junk.png", "0" * 64)]
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(context, tree, sources, reader({"junk.png": b"junk"}), policy=POLICY)
+    context.finish(DOOR)
+
+    for entry in tree.build_manifest(DOOR)["artifacts"]:
+        tree.resolve(entry["relative_path"]).write_bytes(b"not json at all")
+
+    with pytest.raises(ContractError) as raised:
+        door.require_some_admitted(admitted, tree)
+    assert "admitted nothing" in str(raised.value)
+    assert "unreadable record" in str(raised.value) or "census could not be read" in str(
+        raised.value
+    )
