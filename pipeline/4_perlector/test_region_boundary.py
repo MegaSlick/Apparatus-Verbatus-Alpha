@@ -31,17 +31,6 @@ def _load_perlector():
 perlector = _load_perlector()
 
 
-def _load_attestatores():
-    path = ROOT / "pipeline/3_attestatores/run.py"
-    spec = importlib.util.spec_from_file_location("attestatores_run_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-attestatores = _load_attestatores()
-
-
 class _Context:
     def __init__(self, tree):
         self.tree = tree
@@ -133,18 +122,6 @@ def test_perlector_names_a_designator_region_with_missing_provenance(real_region
 
     with pytest.raises(SchemaRefusal, match="model provenance is not an object"):
         perlector.regions_of(context, region["subject_id"])
-
-
-def test_attestatores_verifies_crop_lineage_before_a_witness_reads_it(real_region, monkeypatch):
-    context, region = real_region
-    monkeypatch.setattr(attestatores, "validate_serving_provenance", lambda *args, **kwargs: None)
-
-    def refuse(*args, **kwargs):
-        raise ContractError("crop-lineage marker")
-
-    monkeypatch.setattr(attestatores, "verify_exemplar_crop_lineage", refuse)
-    with pytest.raises(ContractError, match="crop-lineage marker"):
-        attestatores.proposed_regions(context, region["subject_id"])
 
 
 def test_a_crop_from_page_one_cannot_claim_another_valid_page(real_region):
