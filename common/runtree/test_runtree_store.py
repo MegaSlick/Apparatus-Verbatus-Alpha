@@ -252,6 +252,17 @@ def test_an_edited_run_authority_is_refused(tmp_path):
     assert "self-hash" in str(caught.value)
 
 
+def test_an_old_schema_run_authority_is_refused_before_a_stage_can_use_it(tmp_path):
+    tree = make_run(tmp_path)
+    record = tree.read_run()
+    record["schema"] = "skeleton.v0"
+    record["self_hash"] = self_hash(record)
+    (tmp_path / "r1" / RUN_FILE).write_bytes(canonical_bytes(record))
+
+    with pytest.raises(IncompatibleReuse, match="old run cannot be reinterpreted"):
+        tree.read_run()
+
+
 def test_reading_a_run_that_does_not_exist_is_refused(tmp_path):
     with pytest.raises(IncompatibleReuse):
         RunTree(tmp_path, "never-created").read_run()
@@ -317,6 +328,27 @@ def test_an_artifact_for_another_run_is_refused(tmp_path):
     tree = make_run(tmp_path)
     with pytest.raises(SchemaRefusal):
         tree.publish_artifact(make_envelope(run_id="r2"))
+
+
+def test_every_artifact_read_route_refuses_bytes_from_another_run(tmp_path):
+    tree = make_run(tmp_path)
+    foreign = make_envelope(run_id="r2")
+    relative = tree.artifact_path(DESIGNATOR, "proposal", foreign["artifact_id"])
+    path = tree.resolve(relative)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = canonical_bytes(foreign)
+    path.write_bytes(data)
+
+    with pytest.raises(SchemaRefusal, match="belongs to run 'r2'"):
+        tree.read_artifact(DESIGNATOR, "proposal", foreign["artifact_id"])
+    with pytest.raises(SchemaRefusal, match="belongs to run 'r2'"):
+        tree.read_artifact_reference(
+            {"relative_path": relative, "sha256": digest_bytes(data)},
+            stage=DESIGNATOR,
+            kind="proposal",
+        )
+    with pytest.raises(SchemaRefusal, match="belongs to run 'r2'"):
+        tree.build_manifest(DESIGNATOR)
 
 
 def test_a_published_artifact_reads_back_and_revalidates(tmp_path):

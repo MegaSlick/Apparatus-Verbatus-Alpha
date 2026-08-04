@@ -248,6 +248,15 @@ class RunTree:
                 f"{run_file} fails its own self-hash: the run authority was edited "
                 "after it was sealed, so nothing in this tree can be trusted against it"
             )
+        if record.get("schema") != SCHEMA_LABEL:
+            raise IncompatibleReuse(
+                f"{run_file} declares schema {record.get('schema')!r}, not {SCHEMA_LABEL!r}; "
+                "an old run cannot be reinterpreted under a new evidence contract"
+            )
+        if record.get("run_id") != self.run_id:
+            raise IncompatibleReuse(
+                f"{run_file} belongs to run {record.get('run_id')!r}, not {self.run_id!r}"
+            )
         return record
 
     # --- Paths -----------------------------------------------------------------
@@ -441,6 +450,7 @@ class RunTree:
     def read_artifact(self, stage: str, kind: str, artifact_id: str) -> dict[str, Any]:
         relative = self.artifact_path(stage, kind, artifact_id)
         record = validate_envelope(_read_json(self.resolve(relative)))
+        self._verify_artifact_run(record)
         if (
             record["stage"] != stage
             or record["kind"] != kind
@@ -484,6 +494,7 @@ class RunTree:
             raise SchemaRefusal(
                 f"referenced artifact {relative_path!r} is not valid JSON evidence: {error}"
             ) from error
+        self._verify_artifact_run(record)
         self._verify_artifact_path(relative_path, record)
         self._verify_artifact_inputs(record)
         if record["stage"] != stage or record["kind"] != kind:
@@ -520,6 +531,7 @@ class RunTree:
         if artifacts_root.exists():
             for path in sorted(artifacts_root.rglob("*.json")):
                 record = validate_envelope(_read_json(path))
+                self._verify_artifact_run(record)
                 relative_path = str(path.relative_to(self.root))
                 self._verify_artifact_path(relative_path, record)
                 # Door and Exemplar deliberately share one physical directory:
@@ -561,6 +573,13 @@ class RunTree:
         if relative_path != expected:
             raise SchemaRefusal(
                 f"artifact at {relative_path!r} does not occupy its derived path {expected!r}"
+            )
+
+    def _verify_artifact_run(self, record: dict[str, Any]) -> None:
+        """Bind every read route to the run tree whose authority is being used."""
+        if record["run_id"] != self.run_id:
+            raise SchemaRefusal(
+                f"artifact belongs to run {record['run_id']!r}, not {self.run_id!r}"
             )
 
     def _verify_artifact_inputs(self, record: dict[str, Any]) -> None:
