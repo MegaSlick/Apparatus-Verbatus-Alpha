@@ -39,6 +39,7 @@ from common.stage import (  # noqa: E402
     EXIT_HELD,
     expected_acts,
     latest_attempt,
+    latest_per_chair,
     open_context,
     run_stage,
     scenario_for,
@@ -95,14 +96,15 @@ def chair_outcomes(context, act_id: str) -> dict[str, str]:
 
     Derived, never stored as a pointer. A failed attempt 2 over a successful
     attempt 1 therefore reads as `failed`, with attempt 1 intact as history.
+    `latest_per_chair` is the one shared derivation of "current" per chair,
+    also used by `pipeline/4_perlector/run.py::testimonia_of` over the same
+    upstream artifacts, so the two consumers cannot drift on what "current" means.
     """
-    latest: dict[str, dict] = {}
-    for record in artifacts_for(context, ATTESTATORES, "testimonium", act_id):
-        chair = record["payload"]["chair"]
-        ordinal = record["payload"]["attempt_ordinal"]
-        if chair not in latest or ordinal > latest[chair]["payload"]["attempt_ordinal"]:
-            latest[chair] = record
-    return {chair: record["outcome"] for chair, record in latest.items()}
+    records = artifacts_for(context, ATTESTATORES, "testimonium", act_id)
+    return {
+        record["payload"]["chair"]: record["outcome"]
+        for record in latest_per_chair(records, f"testimonium for {act_id}")
+    }
 
 
 def recoveries_so_far(context, act_id: str) -> int:

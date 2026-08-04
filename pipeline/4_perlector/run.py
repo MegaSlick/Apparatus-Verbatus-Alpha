@@ -42,6 +42,7 @@ from common.stage import (  # noqa: E402
     PERLECTOR_CHAIR,
     expected_acts,
     fixture_serving_details,
+    latest_per_chair,
     open_context,
     run_stage,
     stage_parser,
@@ -58,6 +59,16 @@ def regions_of(context, act_id: str) -> list[dict]:
 
 
 def testimonia_of(context, act_id: str) -> list[dict]:
+    """Every chair's current testimonium for this act — the latest attempt only.
+
+    Attempts are append-only (GOVERNANCE 4): a failed re-read is recorded beside
+    the earlier success, never over it. Every record is still read and its
+    provenance still validated, but only each chair's latest attempt is returned
+    as evidence — the same collapsing `pipeline/5_recensor/run.py::chair_outcomes`
+    already does for the identical artifacts, so dissent, witness-coverage, and the
+    Perlectio's own recorded basis cannot see a superseded attempt as though it
+    were still live.
+    """
     records = []
     for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] == "testimonium" and entry["subject_id"] == act_id:
@@ -69,7 +80,7 @@ def testimonia_of(context, act_id: str) -> list[dict]:
                 require_receipt=record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES,
             )
             records.append(record)
-    return sorted(records, key=lambda record: record["payload"]["chair"])
+    return latest_per_chair(records, f"testimonium for {act_id}")
 
 
 def verify_region(context, region: dict) -> dict:

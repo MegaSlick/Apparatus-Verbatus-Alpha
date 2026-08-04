@@ -630,6 +630,34 @@ def latest_attempt(records: list[dict[str, Any]], what: str) -> dict[str, Any]:
     return max(records, key=lambda record: record["payload"]["attempt_ordinal"])
 
 
+def latest_per_chair(records: list[dict[str, Any]], what: str) -> list[dict[str, Any]]:
+    """One record per chair: each chair's own latest attempt, honest status kept.
+
+    Attestatores attempts are append-only per (act, chair) — a failed re-read shows
+    as `failed` with the earlier success intact as history (GOVERNANCE 4) — so any
+    consumer of a flat list of testimonium records for one act has to collapse each
+    chair's own history down to its current attempt before treating the group as
+    evidence. `pipeline/5_recensor/run.py` did this collapsing inline;
+    `pipeline/4_perlector/run.py` read the same artifacts unfiltered, so once a
+    chair gained a second attempt the two consumers of one upstream contract would
+    disagree about what "current" means — one dissent row per attempt instead of
+    per chair, and a since-superseded `read` still marking a region witness-covered.
+    One derivation, reused by both, is what keeps that from recurring.
+    """
+    from common.contracts.errors import FatalAccounting
+
+    by_chair: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        chair = record.get("payload", {}).get("chair")
+        if not isinstance(chair, str) or not chair:
+            raise FatalAccounting(f"a {what} artifact carries no chair to group its attempts by")
+        by_chair.setdefault(chair, []).append(record)
+    return [
+        latest_attempt(group, f"{what} from chair {chair}")
+        for chair, group in sorted(by_chair.items())
+    ]
+
+
 def page_for(fixture: dict[str, Any], ordinal: int) -> dict[str, Any]:
     for page in fixture["page"]:
         if page["ordinal"] == ordinal:
