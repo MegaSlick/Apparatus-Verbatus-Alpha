@@ -1,0 +1,36 @@
+# The admission list — what may enter this pipeline at all, by format.
+#
+# Spec 03's ledger items live here as configuration rather than as a conditional
+# buried in the decoder, so Tyrel's rulings are one line each:
+#
+#   * `.heic` — the two readings disagree and it is his to settle. Audit Q14 says
+#     admit it (a real camera format; a refused page is a page nobody reads);
+#     spec 03 says refuse it by name (the sources are flatbed scans, and admitting
+#     a format nothing produces widens the decode surface for no coverage). It is
+#     refused by name here until he rules. Turning that line to "admit" is not
+#     sufficient on its own: `pipeline/1_exemplar/image_formats.py` has no
+#     structural validator for ISO-BMFF/HEVC and `admission.py` refuses to load a
+#     policy that admits a format nothing can verify. See the gate package.
+#   * `.gif` — refused by name, not disputed by either reading.
+#   * `pdf` — admitted and rendered once, per page, at the door. Reversing that is
+#     this file's `pdf = "refuse"`, plus deleting `pipeline/1_exemplar/pdf_render.py`
+#     and its tests.
+#
+# Actions are a closed set:
+#   "admit"        — a single-image raster, structurally validated, sealed as-is.
+#   "render-pages" — a multi-page container, fanned out and rendered at the door.
+#   "refuse"       — refused by name, with a counted refusal artifact. Never an
+#                    anonymous "unsupported" counter: that anonymous counter is the
+#                    old door defect audit Q14 was written about.
+#
+# Every format `image_formats.sniff()` can name must have a row here, and a row
+# naming a format it cannot name is a drift error. Both are checked at load, so a
+# format can never be admitted by omission or refused by silence.
+
+[format]
+png = "admit"
+jpeg = "admit"
+tiff = "admit"
+pdf = "render-pages"
+gif = "refuse"
+heic = "refuse"
