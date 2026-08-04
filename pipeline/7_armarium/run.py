@@ -257,6 +257,19 @@ def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | Non
 
     terminal = terminal_category(RECENSOR, review["outcome"])
     if terminal is not None:
+        # A held/refused/confirmed-blank/excluded act is terminal here, at the
+        # Recensor, and the Archetypus's own guard already refuses to establish
+        # one (pipeline/6_archetypus/run.py: "a stage may not resurrect a held
+        # act"). An Archetypus record existing anyway is therefore an artifact
+        # nothing published through that guard -- exactly the class of imbalance
+        # invariant #10 exists to catch, checked here rather than trusted absent,
+        # the same way an accepted act with no Archetypus is checked below.
+        orphaned = artifacts_for(context, ARCHETYPUS, "archetypus", act_id)
+        if orphaned:
+            raise FatalAccounting(
+                f"act {act_id} is {review['outcome']!r} at the Recensor but carries an "
+                "Archetypus record anyway; a non-accepted act may not also be established"
+            )
         return terminal, review, None
 
     established = artifacts_for(context, ARCHETYPUS, "archetypus", act_id)

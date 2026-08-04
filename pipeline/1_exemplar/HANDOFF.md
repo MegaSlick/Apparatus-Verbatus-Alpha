@@ -97,9 +97,12 @@ rendered_from = {
 }
 ```
 
-`render_contract` records the renderer/version, exact page index, lossless RGB PNG
+`render_contract` records the renderer/version, exact page index, lossless PNG
 output, geometry, and PDF-specific pixel choices. It is a complete explanation for
-why a sealed rendered digest differs from the source container digest.
+why a sealed rendered digest differs from the source container digest. Only the
+PDFium whole-page renderer forces RGB; the raster fan-out renderer preserves an
+already-PNG-legal source mode (grayscale, bilevel, LA, RGBA, 16-bit) unchanged
+rather than converting it.
 
 A refused payload has `reason`, whose prefix is one of the closed alarm codes:
 `empty`, `unreadable`, `too-large`, `unrecognized-format`, `corrupt`,

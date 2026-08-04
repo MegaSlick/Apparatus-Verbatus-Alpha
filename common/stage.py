@@ -75,12 +75,15 @@ _PROVENANCE_FIELDS = frozenset(
     }
 )
 
-# ARCHITECTURE's Perlector paragraph: witness identity travels under a run-level
-# named/blinded toggle, "every Perlectio recording its regime". The Perlector
-# writes it; until this check, nothing read it back, so a Perlectio claiming an
-# impossible regime — or a typo — travelled sealed. Binding it to an actual
-# run-level toggle is Spec 08's work; refusing a value that cannot be true is
-# this system's, because it is provenance and #42 governs provenance.
+# Tyrel's 2026-07-30 ruling (courtroom_doctrine.md's "Rulings received" section,
+# formalized in the unbuilt spec_08_perlector.md — not ARCHITECTURE.md, which
+# names no regime/toggle anywhere in its own text or history): witness identity
+# travels under a run-level named/blinded toggle, "every Perlectio recording its
+# regime". The Perlector writes it; until this check, nothing read it back, so a
+# Perlectio claiming an impossible regime — or a typo — travelled sealed. Binding
+# it to an actual run-level toggle is Spec 08's work; refusing a value that
+# cannot be true is this system's, because it is provenance and #42 governs
+# provenance.
 _WITNESS_REGIMES = frozenset({"named", "blinded"})
 
 
@@ -944,6 +947,32 @@ def reading_basis_regions(reading: dict[str, Any], what: str) -> list[dict[str, 
                 "the crop bytes it read"
             )
     return regions
+
+
+def latest_per_chair(records: list[dict[str, Any]], what: str) -> list[dict[str, Any]]:
+    """One record per chair: each chair's own latest attempt, honest status kept.
+
+    Attestatores attempts are append-only per (act, chair) — a failed re-read shows
+    as `failed` with the earlier success intact as history (GOVERNANCE 4) — so any
+    consumer of a flat list of testimonium records for one act has to collapse each
+    chair's own history down to its current attempt before treating the group as
+    evidence. `pipeline/5_recensor/run.py` did this collapsing inline;
+    `pipeline/4_perlector/run.py` read the same artifacts unfiltered, so once a
+    chair gained a second attempt the two consumers of one upstream contract would
+    disagree about what "current" means — one dissent row per attempt instead of
+    per chair, and a since-superseded `read` still marking a region witness-covered.
+    One derivation, reused by both, is what keeps that from recurring.
+    """
+    by_chair: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        chair = record.get("payload", {}).get("chair")
+        if not isinstance(chair, str) or not chair:
+            raise FatalAccounting(f"a {what} artifact carries no chair to group its attempts by")
+        by_chair.setdefault(chair, []).append(record)
+    return [
+        latest_attempt(group, f"{what} from chair {chair}")
+        for chair, group in sorted(by_chair.items())
+    ]
 
 
 def page_for(fixture: dict[str, Any], ordinal: int) -> dict[str, Any]:

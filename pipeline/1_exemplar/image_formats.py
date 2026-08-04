@@ -1105,7 +1105,31 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         raise unsupported(
             f"image variant: decoder rejected unsafe pixel dimensions ({error})"
         ) from error
-    except (OSError, SyntaxError, ValueError) as error:
+    except (
+        OSError,
+        SyntaxError,
+        ValueError,
+        TypeError,
+        EOFError,
+        KeyError,
+        IndexError,
+        AttributeError,
+        struct.error,
+        zlib.error,
+    ) as error:
+        # A later frame's internal tag directory can be corrupt in a way the
+        # structural walker above does not interpret (that walker bounds only the
+        # universal IFD-chain shape; Pillow owns the per-tag layout). Reading that
+        # frame's dimensions then fails deep inside Pillow's own plugin code, which
+        # does not raise one of the three exception types above — a real, crafted
+        # multi-page TIFF whose second page's ImageWidth entry points its out-of-line
+        # value past EOF makes Pillow's TiffImagePlugin._setup() raise a bare
+        # TypeError("Missing dimensions") while `n_frames` walks the chain to count
+        # pages. Ruling 2 ("nothing is rejected... a refusal is an alarm, never a
+        # routine outcome") and this module's own per-file isolation (`corrupt`
+        # detail on _tiff_dimension: "a bare struct.error is not a named refusal")
+        # both mean this has to become a closed-taxonomy refusal, not a process
+        # crash that would abort every other source still waiting to be decided.
         raise unsupported(
             f"image variant: the installed decoder could not read it ({error})"
         ) from error

@@ -21,7 +21,7 @@ import pytest
 
 from common.chairs import ChairIdentity, load_models_toml
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
-from common.contracts.envelope import validate_envelope, verify_input_bytes
+from common.contracts.envelope import build_envelope, validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import (
@@ -532,6 +532,74 @@ def test_armarium_rechecks_sealed_pixels_tampered_after_designator(tmp_path):
     assert result.returncode == 2
     assert "changed under a sealed reference" in result.stderr
     assert snapshot(root) == before
+
+
+def test_armarium_refuses_an_archetypus_record_orphaned_beside_a_held_act(tmp_path):
+    """The mirror of "an accepted act must have an Archetypus": a held/refused act
+    must NOT have one. pipeline/6_archetypus/run.py's own guard already refuses to
+    establish a held act, so a record here can only exist by writing straight to
+    the tree — exactly the class of forgery this checks, the same way every other
+    tamper test in this file writes an artifact no stage would ever produce and
+    proves the next real stage still refuses it."""
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "refused-page").returncode == 3
+    tree = RunTree(root, "r")
+
+    review = next(
+        record
+        for record in artifacts(tree, RECENSOR, "review")
+        if record["payload"]["act_key"] == "a2"
+    )
+    act_id = review["subject_id"]
+    assert review["outcome"] == "held-for-review"
+
+    run = tree.read_run()
+    payload = {
+        "act_id": act_id,
+        "act_key": "a2",
+        "page_id": "pg_0000000000000000",
+        "text": "FORGED TEXT NO STAGE WROTE",
+        "status": "established",
+        "regions": [],
+        "provenance": {},
+        "dissent_ref": "art_0000000000000000",
+        "recensor_ref": review["artifact_id"],
+    }
+    payload["self_hash"] = self_hash(payload)
+    envelope = build_envelope(
+        run_id="r",
+        artifact_id=artifact_id(ARCHETYPUS, "archetypus", act_id),
+        subject_id=act_id,
+        stage=ARCHETYPUS,
+        kind="archetypus",
+        outcome="established",
+        config_digest=run["config_digest"],
+        adapter_revision=run["adapter_recipes"][ARCHETYPUS],
+        inputs=[],
+        payload=payload,
+    )
+    path = tree.resolve(tree.artifact_path(ARCHETYPUS, "archetypus", envelope["artifact_id"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(envelope))
+    tree.write_manifest(ARCHETYPUS)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/7_armarium/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "refused-page",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "may not also be established" in result.stderr
 
 
 def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(happy_run):

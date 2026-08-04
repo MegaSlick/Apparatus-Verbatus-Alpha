@@ -43,6 +43,7 @@ from common.stage import (  # noqa: E402
     WITNESS_READING_OUTCOMES,
     expected_acts,
     fixture_serving_details,
+    latest_per_chair,
     open_context,
     run_stage,
     stage_parser,
@@ -51,10 +52,27 @@ from common.stage import (  # noqa: E402
 
 
 def regions_of(context, act_id: str) -> list[dict]:
+    """Every Designator region for this act, its own provenance verified first.
+
+    `pipeline/3_attestatores/run.py::proposed_regions` already validates the
+    identical artifact kind before showing a region to a witness; reading it here
+    unvalidated would let a tampered Designator provenance reach a real reading
+    while the equivalent tamper on a Testimonium is refused. A region always
+    carries a receipt-backed provenance -- `structure_provenance` refuses before
+    any region is cut if the Designator chair is absent or unverifiable -- so
+    every region validated here requires one.
+    """
     records = []
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
         if entry["kind"] == "region" and entry["subject_id"] == act_id:
-            records.append(context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"]))
+            record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+            validate_serving_provenance(
+                context,
+                record["payload"]["provenance"],
+                producer_stage=DESIGNATOR,
+                require_receipt=True,
+            )
+            records.append(record)
     return sorted(records, key=lambda record: record["payload"]["attempt_ordinal"])
 
 
@@ -99,6 +117,16 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
 
 
 def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[dict]:
+    """Every chair's current testimonium for this act — the latest attempt only.
+
+    Attempts are append-only (GOVERNANCE 4): a failed re-read is recorded beside
+    the earlier success, never over it. Every record is still read and its
+    provenance still validated, but only each chair's latest attempt is returned
+    as evidence — the same collapsing `pipeline/5_recensor/run.py::chair_outcomes`
+    already does for the identical artifacts, so dissent, witness-coverage, and the
+    Perlectio's own recorded basis cannot see a superseded attempt as though it
+    were still live.
+    """
     records = []
     for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] == "testimonium" and entry["subject_id"] == act_id:
@@ -111,7 +139,7 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
             )
             validate_testimonium_regions(context, record, proposal_regions)
             records.append(record)
-    return sorted(records, key=lambda record: record["payload"]["chair"])
+    return latest_per_chair(records, f"testimonium for {act_id}")
 
 
 def verify_region(context, region: dict) -> dict:

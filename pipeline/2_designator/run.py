@@ -417,6 +417,22 @@ def recovery_pass(context, act_id: str, request_id: str) -> int:
 
     pages = sealed_pages(page_records(context))
     bounds = {key: recovery[0][key] for key in ("x", "y", "w", "h")}
+    page_record = pages[act["page_ordinal"]]
+    transform = {
+        "operation": "crop",
+        "source_page_ordinal": act["page_ordinal"],
+        "source_page_id": page_record["subject_id"],
+        "bounds": bounds,
+    }
+    duplicate = region_id(act_id, transform)
+    if any(
+        record["payload"].get("region_id") == duplicate
+        for record in _regions_of(context, act_id)
+    ):
+        raise ContractError(
+            f"recovery asked for {act_id}, which already has a recovery region cut "
+            "for this exact transform; a fulfilled recovery request may not be cut again"
+        )
     recovery_count = len(
         [
             record
