@@ -10,7 +10,7 @@ meta-invariant #89's vacuous pass, so both exist on purpose.
 
 import pytest
 
-from common.contracts.canonical import SCHEMA_LABEL, digest_bytes
+from common.contracts.canonical import SCHEMA_LABEL, digest_bytes, self_hash
 from common.contracts.envelope import (
     build_envelope,
     validate_envelope,
@@ -37,6 +37,12 @@ def sound_envelope(**overrides):
         payload={"proposals": 2},
     )
     envelope.update(overrides)
+    return envelope
+
+
+def reseal(envelope):
+    """Model a syntactically resealed edit so semantic checks do real work."""
+    envelope["self_hash"] = self_hash(envelope)
     return envelope
 
 
@@ -67,7 +73,7 @@ def test_building_validates_on_the_way_out_too():
 
 def test_an_unknown_schema_label_is_refused():
     with pytest.raises(SchemaRefusal) as caught:
-        validate_envelope(sound_envelope(schema="skeleton.v1"))
+        validate_envelope(sound_envelope(schema="skeleton.v0"))
     assert "declares schema" in str(caught.value)
 
 
@@ -77,6 +83,7 @@ def test_every_required_field_is_actually_required():
         "schema",
         "run_id",
         "artifact_id",
+        "attempt_id",
         "subject_id",
         "stage",
         "kind",
@@ -85,13 +92,14 @@ def test_every_required_field_is_actually_required():
         "producer",
         "inputs",
         "payload",
+        "self_hash",
     ):
         envelope = sound_envelope()
         del envelope[field]
         with pytest.raises(SchemaRefusal):
             validate_envelope(envelope)
         checked += 1
-    assert checked == 11
+    assert checked == 13
 
 
 def test_a_non_object_artifact_is_refused():
@@ -128,6 +136,22 @@ def test_a_malformed_artifact_id_is_refused():
     for bad in ("", "art_notlongenough", "proposal-1", None):
         with pytest.raises(SchemaRefusal):
             validate_envelope(sound_envelope(artifact_id=bad))
+
+
+def test_a_well_formed_but_wrong_artifact_identity_is_refused_after_resealing():
+    """Shape-only identity checks would accept this forged handoff binding."""
+    forged = reseal(sound_envelope(artifact_id="art_" + "0" * 16))
+    with pytest.raises(SchemaRefusal, match="does not verify against"):
+        validate_envelope(forged)
+
+
+def test_an_unresealed_payload_change_is_refused_when_the_identity_is_unchanged():
+    """The self-hash protects ordinary payload bytes, not only derived IDs."""
+    changed = sound_envelope()
+    changed["payload"] = {"proposals": 99}
+    with pytest.raises(SchemaRefusal, match="self-hash"):
+        validate_envelope(changed)
+    assert validate_envelope(reseal(changed))["payload"] == {"proposals": 99}
 
 
 # --- Corruption kind 3: the input digest --------------------------------------
@@ -228,6 +252,7 @@ def test_an_excluded_artifact_without_an_approval_reference_is_refused():
 def test_an_excluded_artifact_with_an_approval_reference_validates():
     envelope = sound_envelope(outcome="excluded")
     envelope["approval_ref"] = artifact_id("designator", "approval", "pg_0123456789abcdef")
+    envelope["self_hash"] = self_hash(envelope)
     assert validate_envelope(envelope)
 
 

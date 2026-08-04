@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.canonical import digest_bytes  # noqa: E402
+from common.contracts.canonical import digest_bytes, verify_self_hash  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     ArmariumCategory,
@@ -50,6 +50,7 @@ from common.stage import (  # noqa: E402
     expected_acts,
     latest_attempt,
     open_context,
+    reading_basis_regions,
     run_stage,
     stage_parser,
     unaddressed_chairs,
@@ -264,8 +265,95 @@ def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | Non
             f"act {act_id} was accepted by the Recensor but has no Archetypus. It "
             "would leave the pipeline in no terminal set at all"
         )
+    if len(established) != 1:
+        raise FatalAccounting(
+            f"act {act_id} was accepted by the Recensor but carries {len(established)} "
+            "Archetypus records. There is no rule for choosing one established text"
+        )
     record = established[0]
     return terminal_category(ARCHETYPUS, record["outcome"]), review, record
+
+
+def verify_established_record(context, act: dict, review: dict, established: dict) -> dict:
+    """Reconcile an exportable Archetypus against its exact reviewed Perlectio.
+
+    The Archetypus is the first record to call one reading established.  It must
+    therefore carry a tamper-evident payload and digest-checked parents for both
+    the Recensor decision and the Perlectio it decided about.  Reconstructing
+    these links from whatever is latest would be a hidden selection of evidence.
+    """
+    payload = established.get("payload")
+    if not isinstance(payload, dict) or not verify_self_hash(payload):
+        raise FatalAccounting("an Archetypus payload fails its own self-hash before export")
+    expected_scalars = {
+        "act_id": act["act_id"],
+        "act_key": act["act_key"],
+        "page_id": act["page_id"],
+        "status": "established",
+    }
+    if any(payload.get(field) != value for field, value in expected_scalars.items()):
+        raise FatalAccounting("an Archetypus does not describe the act the export is categorizing")
+
+    review_ref = payload.get("recensor_ref")
+    reading_ref = payload.get("perlectio_ref")
+    if not isinstance(review_ref, dict) or not isinstance(reading_ref, dict):
+        raise FatalAccounting(
+            "an Archetypus lacks digest-checked Recensor and Perlectio parent references"
+        )
+    expected_review_ref = context.artifact_ref(RECENSOR, "review", review["artifact_id"])
+    if review_ref != expected_review_ref or review_ref not in established.get("inputs", []):
+        raise FatalAccounting(
+            "an Archetypus does not input the exact current Recensor review that accepted it"
+        )
+    checked_review = context.tree.read_artifact_reference(
+        review_ref,
+        stage=RECENSOR,
+        kind="review",
+        subject_id=act["act_id"],
+    )
+    if (
+        checked_review["artifact_id"] != review["artifact_id"]
+        or checked_review["outcome"] != "accepted"
+    ):
+        raise FatalAccounting("an Archetypus is not bound to an accepted Recensor review")
+
+    review_payload = checked_review.get("payload")
+    if not isinstance(review_payload, dict) or review_payload.get("perlectio_ref") != reading_ref:
+        raise FatalAccounting(
+            "an Archetypus names a Perlectio different from the one its Recensor review assessed"
+        )
+    if reading_ref not in established.get("inputs", []) or reading_ref not in checked_review.get(
+        "inputs", []
+    ):
+        raise FatalAccounting("the Perlectio parent is not a direct sealed input at every handoff")
+    reading = context.tree.read_artifact_reference(
+        reading_ref,
+        stage=PERLECTOR,
+        kind="perlectio",
+        subject_id=act["act_id"],
+    )
+    reading_payload = reading.get("payload")
+    if not isinstance(reading_payload, dict):
+        raise FatalAccounting("an established Perlectio has no payload")
+    reading_regions = reading_basis_regions(reading, f"established Perlectio of {act['act_id']}")
+    if (
+        payload.get("text") != reading_payload.get("text")
+        or payload.get("regions") != reading_regions
+        or payload.get("provenance") != reading_payload.get("provenance")
+        or payload.get("dissent_ref") != reading["artifact_id"]
+    ):
+        raise FatalAccounting(
+            "an Archetypus does not exactly preserve the Perlectio its review accepted"
+        )
+
+    expected_inputs = [review_ref, reading_ref] + [
+        context.input_ref(region["image_path"]) for region in reading_regions
+    ]
+    if sorted(established.get("inputs", []), key=lambda item: item["relative_path"]) != sorted(
+        expected_inputs, key=lambda item: item["relative_path"]
+    ):
+        raise FatalAccounting("an Archetypus input set does not reconcile to its parent evidence")
+    return payload
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
@@ -309,7 +397,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         }
 
         if established is not None:
-            payload = established["payload"]
+            payload = verify_established_record(context, act, review, established)
             validate_serving_provenance(
                 context,
                 payload["provenance"],

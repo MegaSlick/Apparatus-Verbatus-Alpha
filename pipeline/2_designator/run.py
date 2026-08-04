@@ -44,14 +44,16 @@ from common.contracts.approval import (  # noqa: E402
     APPROVAL_GATED_REAL_INGRESS,
     parse_data_gate_ingress_record,
 )
+from common.contracts.canonical import self_hash  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
-from common.contracts.stages import DESIGNATOR, EXEMPLAR  # noqa: E402
+from common.contracts.stages import DESIGNATOR, EXEMPLAR, RECENSOR  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
     verify_sealed_page_pixels,
 )
 from common.imaging import crop_png  # noqa: E402
+from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
@@ -61,6 +63,7 @@ from common.stage import (  # noqa: E402
     act_identity,
     adapter_recipe_for,
     continuation_for,
+    current_recovery_request,
     fixture_serving_details,
     open_context,
     page_identity,
@@ -173,7 +176,16 @@ def sealed_pages(records: dict[int, dict]) -> dict[int, dict]:
     }
 
 
-def cut_region(context, act, page_record, bounds, ordinal, page_ordinal, origin):
+def cut_region(
+    context,
+    act,
+    page_record,
+    bounds,
+    ordinal,
+    page_ordinal,
+    origin,
+    recovery_request: dict[str, str] | None = None,
+):
     """Cut one region of one act and publish it.
 
     `origin` separates two things that a bare sequence number runs together. A
@@ -199,12 +211,12 @@ def cut_region(context, act, page_record, bounds, ordinal, page_ordinal, origin)
     crop_bytes = crop_png(page_bytes, bounds)
     digest, stored = context.tree.put_blob(DESIGNATOR, crop_bytes)
 
-    context.publish(
+    return context.publish(
         kind="region",
         subject_id=act_id,
         outcome="proposed",
         attempt=attempt_id(act_id, "crop", ordinal),
-        inputs=[context.input_ref(image_path)],
+        inputs=[context.input_ref(image_path)] + ([recovery_request] if recovery_request else []),
         payload={
             "region_id": region_id(act_id, transform),
             "act_key": act["key"],
@@ -216,10 +228,9 @@ def cut_region(context, act, page_record, bounds, ordinal, page_ordinal, origin)
             "provenance": provenance,
         },
     )
-    return act_id
 
 
-def hold_act(context, act, act_id: str, unsealed_ordinal: int, records, reason: str) -> None:
+def hold_act(context, act, act_id: str, unsealed_ordinal: int, records, reason: str):
     """Publish the artifact that says why this act could not be marked out.
 
     The hold is a real record, never a skipped loop iteration: before it existed,
@@ -236,7 +247,7 @@ def hold_act(context, act, act_id: str, unsealed_ordinal: int, records, reason: 
             "recorded no outcome for it at all — a page in neither the sealed nor "
             "the refused set is invariant #10's imbalance, not a page to skip"
         )
-    context.publish(
+    return context.publish(
         kind="hold",
         subject_id=act_id,
         outcome="held",
@@ -256,11 +267,13 @@ def initial_pass(context) -> int:
         raise ContractError("the Designator found no sealed page to mark out")
 
     expected = []
+    seal_inputs = []
     for act in context.fixture["act"]:
         page_ordinal = act["page_ordinal"]
         act_id = act_identity(context.fixture, act)
         continuation = continuation_for(context.fixture, act["key"])
         continuation_cut = False
+        evidence = []
 
         if page_ordinal not in pages:
             # The act's own page never sealed. It cannot be marked out, and it
@@ -269,7 +282,7 @@ def initial_pass(context) -> int:
             # orphan far-side crop would be evidence of an act nothing accounts
             # for.
             outcome = "held"
-            hold_act(
+            hold = hold_act(
                 context,
                 act,
                 act_id,
@@ -277,16 +290,18 @@ def initial_pass(context) -> int:
                 records,
                 f"page {page_ordinal} was not sealed, so the act could not be marked out",
             )
+            evidence.append(context.input_ref(hold.relative_path))
         else:
-            cut_region(
+            primary = cut_region(
                 context, act, pages[page_ordinal], act_bounds(act), 1, page_ordinal, "proposal"
             )
+            evidence.append(context.input_ref(primary.relative_path))
 
             # An act that runs over the page break gets a second region of the
             # SAME act. A continuation that became its own act would quietly turn
             # one entry into two and break identity where it is hardest to see.
             if continuation and continuation["page_ordinal"] in pages:
-                cut_region(
+                continuation_region = cut_region(
                     context,
                     act,
                     pages[continuation["page_ordinal"]],
@@ -295,6 +310,7 @@ def initial_pass(context) -> int:
                     continuation["page_ordinal"],
                     "proposal",
                 )
+                evidence.append(context.input_ref(continuation_region.relative_path))
                 continuation_cut = True
 
             if continuation and not continuation_cut:
@@ -303,7 +319,7 @@ def initial_pass(context) -> int:
                 # a reading of the near side alone would be a truncation wearing
                 # a complete act's name.
                 outcome = "held"
-                hold_act(
+                hold = hold_act(
                     context,
                     act,
                     act_id,
@@ -312,6 +328,7 @@ def initial_pass(context) -> int:
                     f"the act continues onto page {continuation['page_ordinal']}, "
                     "which was not sealed, so its continuation could not be cut",
                 )
+                evidence.append(context.input_ref(hold.relative_path))
             else:
                 outcome = "proposed"
 
@@ -327,8 +344,10 @@ def initial_pass(context) -> int:
                 # as a complete reading.
                 "has_continuation": continuation_cut,
                 "outcome": outcome,
+                "evidence": sorted(evidence, key=lambda reference: reference["relative_path"]),
             }
         )
+        seal_inputs.extend(evidence)
 
     if not expected:
         raise ContractError("no act was marked out on any sealed page")
@@ -336,20 +355,23 @@ def initial_pass(context) -> int:
     # The seal, emitted once and never rewritten: this is what downstream stages
     # reconcile against, so "every expected act has exactly one outcome" is a
     # question with an answer.
+    payload = {
+        "expected_acts": expected,
+        "count": len(expected),
+        "provenance": structure_provenance(context),
+    }
+    payload["self_hash"] = self_hash(payload)
     context.publish(
         kind="proposal-seal",
         subject_id="proposal-seal",
         outcome="proposed",
-        payload={
-            "expected_acts": expected,
-            "count": len(expected),
-            "provenance": structure_provenance(context),
-        },
+        inputs=seal_inputs,
+        payload=payload,
     )
     return len(expected)
 
 
-def recovery_pass(context, act_id: str) -> int:
+def recovery_pass(context, act_id: str, request_id: str) -> int:
     """Cut one replacement region for one act, at the Recensor's request.
 
     The Recensor asked; the Designator cuts. Keeping the ownership straight is
@@ -366,6 +388,28 @@ def recovery_pass(context, act_id: str) -> int:
             "recropped back to life"
         )
 
+    policy = load_recovery_policy(context.args.recovery_config)
+    request = current_recovery_request(
+        context.tree,
+        act_id,
+        policy,
+        request_id=request_id,
+    )
+    request_payload = request.get("payload")
+    # `current_recovery_request` has already verified the record's shape, its
+    # exact current review reference, its Perlectio, and the run-bound policy.
+    # Keep this local guard only to make the payload type explicit to the crop
+    # accounting immediately below.
+    if not isinstance(request_payload, dict):  # pragma: no cover - common guard above
+        raise ContractError("the requested Recensor recovery record has no payload")
+    ordinal = request_payload.get("attempt_ordinal")
+    if not isinstance(ordinal, int) or isinstance(ordinal, bool):  # pragma: no cover
+        raise ContractError("the requested Recensor recovery record has no attempt ordinal")
+    if request_payload.get("act_key") != match[0]["act_key"]:
+        raise ContractError(
+            "the exact current Recensor recovery request does not bind this proposal-seal act"
+        )
+
     act = next(item for item in context.fixture["act"] if item["key"] == match[0]["act_key"])
     recovery = [row for row in context.fixture.get("recovery", []) if row["act_key"] == act["key"]]
     if not recovery:
@@ -373,9 +417,28 @@ def recovery_pass(context, act_id: str) -> int:
 
     pages = sealed_pages(page_records(context))
     bounds = {key: recovery[0][key] for key in ("x", "y", "w", "h")}
-    ordinal = _next_region_ordinal(context, act_id)
+    recovery_count = len(
+        [
+            record
+            for record in _regions_of(context, act_id)
+            if record["payload"].get("origin") == "recovery"
+        ]
+    )
+    if request_payload.get("budget_used") != recovery_count or ordinal != recovery_count + 1:
+        raise ContractError(
+            "the supplied recovery request is stale or skips a recovery ordinal; a recrop "
+            "may only answer the next recorded request"
+        )
+    region_ordinal = _next_region_ordinal(context, act_id)
     cut_region(
-        context, act, pages[act["page_ordinal"]], bounds, ordinal, act["page_ordinal"], "recovery"
+        context,
+        act,
+        pages[act["page_ordinal"]],
+        bounds,
+        region_ordinal,
+        act["page_ordinal"],
+        "recovery",
+        context.artifact_ref(RECENSOR, "recovery-request", request["artifact_id"]),
     )
     return 1
 
@@ -442,7 +505,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     if args.operation == "recover":
         if not args.act:
             raise ContractError("a recovery operation must name the act it is recovering")
-        recovery_pass(context, args.act)
+        if not args.recovery_request:
+            raise ContractError(
+                "a recovery operation must name the exact Recensor recovery request it answers"
+            )
+        recovery_pass(context, args.act, args.recovery_request)
     else:
         initial_pass(context)
 

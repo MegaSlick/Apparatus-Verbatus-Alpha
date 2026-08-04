@@ -55,7 +55,7 @@ from common.contracts.canonical import (
     self_hash,
     verify_self_hash,
 )
-from common.contracts.envelope import validate_envelope
+from common.contracts.envelope import validate_envelope, validate_input_refs, verify_input_bytes
 from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import writing_directory
@@ -439,8 +439,64 @@ class RunTree:
     # --- Reading ----------------------------------------------------------------
 
     def read_artifact(self, stage: str, kind: str, artifact_id: str) -> dict[str, Any]:
-        record = _read_json(self.resolve(self.artifact_path(stage, kind, artifact_id)))
-        return validate_envelope(record)
+        relative = self.artifact_path(stage, kind, artifact_id)
+        record = validate_envelope(_read_json(self.resolve(relative)))
+        if (
+            record["stage"] != stage
+            or record["kind"] != kind
+            or record["artifact_id"] != artifact_id
+        ):
+            raise SchemaRefusal(
+                "artifact contents do not match the stage, kind, and identity requested by "
+                f"their path {relative!r}"
+            )
+        self._verify_artifact_path(relative, record)
+        self._verify_artifact_inputs(record)
+        return record
+
+    def read_artifact_reference(
+        self,
+        reference: dict[str, str],
+        *,
+        stage: str,
+        kind: str,
+        subject_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Read an artifact through a producer's digest-checked input reference.
+
+        An artifact id is an address, not enough evidence that a consumer saw the
+        same bytes the producer saw.  Semantic handoffs therefore retain the
+        ordinary input reference and resolve it here: its path, bytes, envelope,
+        and declared producer all have to agree before a later stage can use it.
+        """
+        validate_input_refs([reference])
+        relative_path = reference["relative_path"]
+        try:
+            data = self.read_bytes(relative_path)
+        except OSError as error:
+            raise SchemaRefusal(
+                f"referenced artifact {relative_path!r} could not be read: {error}"
+            ) from error
+        verify_input_bytes(reference, data)
+        try:
+            record = validate_envelope(json.loads(data.decode("utf-8")))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise SchemaRefusal(
+                f"referenced artifact {relative_path!r} is not valid JSON evidence: {error}"
+            ) from error
+        self._verify_artifact_path(relative_path, record)
+        self._verify_artifact_inputs(record)
+        if record["stage"] != stage or record["kind"] != kind:
+            raise SchemaRefusal(
+                f"referenced artifact {relative_path!r} is {record['stage']!r}/"
+                f"{record['kind']!r}, not required {stage!r}/{kind!r}"
+            )
+        if subject_id is not None and record["subject_id"] != subject_id:
+            raise SchemaRefusal(
+                f"referenced artifact {relative_path!r} names subject {record['subject_id']!r}, "
+                f"not required {subject_id!r}"
+            )
+        return record
 
     def read_bytes(self, relative_path: str) -> bytes:
         return self.resolve(relative_path).read_bytes()
@@ -464,13 +520,22 @@ class RunTree:
         if artifacts_root.exists():
             for path in sorted(artifacts_root.rglob("*.json")):
                 record = validate_envelope(_read_json(path))
+                relative_path = str(path.relative_to(self.root))
+                self._verify_artifact_path(relative_path, record)
+                # Door and Exemplar deliberately share one physical directory:
+                # a Door admission is part of what Exemplar must account for.
+                # Their manifests still describe producer inventories, not every
+                # neighboring JSON file under that directory.
+                if record["stage"] != stage:
+                    continue
+                self._verify_artifact_inputs(record)
                 entries.append(
                     {
                         "artifact_id": record["artifact_id"],
                         "kind": record["kind"],
                         "subject_id": record["subject_id"],
                         "outcome": record["outcome"],
-                        "relative_path": str(path.relative_to(self.root)),
+                        "relative_path": relative_path,
                         "sha256": digest_bytes(path.read_bytes()),
                     }
                 )
@@ -483,6 +548,37 @@ class RunTree:
             "artifacts": sorted(entries, key=lambda entry: entry["artifact_id"]),
             "blobs": blobs,
         }
+
+    def _verify_artifact_path(self, relative_path: str, record: dict[str, Any]) -> None:
+        """Require a sealed artifact to live under the path its own fields derive.
+
+        A manifest is rebuilt by walking a directory, while a consumer may ask for
+        one exact artifact path.  Both routes must agree about what the bytes are;
+        otherwise a syntactically valid envelope can be copied below a different
+        producer directory and acquire an identity it never had.
+        """
+        expected = self.artifact_path(record["stage"], record["kind"], record["artifact_id"])
+        if relative_path != expected:
+            raise SchemaRefusal(
+                f"artifact at {relative_path!r} does not occupy its derived path {expected!r}"
+            )
+
+    def _verify_artifact_inputs(self, record: dict[str, Any]) -> None:
+        """Verify each direct input before a consumer may reinterpret this artifact.
+
+        Input references form the handoff chain.  Validating only their shape at
+        publication lets an input be edited later and every downstream manifest
+        still look complete; its recorded digest is useful only if a reader
+        checks it against the bytes again.
+        """
+        for reference in record["inputs"]:
+            try:
+                data = self.read_bytes(reference["relative_path"])
+            except OSError as error:
+                raise SchemaRefusal(
+                    f"artifact input {reference['relative_path']!r} could not be read: {error}"
+                ) from error
+            verify_input_bytes(reference, data)
 
     def write_manifest(self, stage: str) -> PublishResult:
         """Publish the derived manifest.

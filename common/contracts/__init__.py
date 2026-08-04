@@ -1,4 +1,4 @@
-"""The one executable authority for `skeleton.v0`.
+"""The one executable authority for `skeleton.v1`.
 
 Each stage's HANDOFF.md describes what that stage owns and links here; none of them
 carries a competing copy of the schema, because two copies of a contract is one
@@ -6,7 +6,7 @@ contract and one thing that goes stale. The canonical DATA_CONTRACT.md is reserv
 until specs 01-03 have stabilized and can be written from observed behaviour rather
 than ahead of it (master plan ledger).
 
-`skeleton.v0` is disposable on purpose. It exists to prove wiring and bookkeeping
+`skeleton.v1` is disposable on purpose. It exists to prove wiring and bookkeeping
 before any model, GPU, or real page exists, and it proves nothing whatever about
 reading ink.
 """

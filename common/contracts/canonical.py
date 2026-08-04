@@ -31,7 +31,15 @@ from typing import Any
 # Everything this system writes in its first form carries this label. It is
 # deliberately disposable: spec 01 calls the contracts intentionally throwaway
 # before alpha, and DATA_CONTRACT.md is reserved until 01-03 have stabilized.
-SCHEMA_LABEL = "skeleton.v0"
+#
+# v1 adds the attempt binding and a self-hash to every envelope.  An earlier
+# envelope carried an artifact id derived from that binding without carrying the
+# binding itself, so a consumer could only check the id's shape rather than
+# recomputing it.  It also left ordinary stage payloads mutable without any
+# integrity evidence. Reusing a v0 run under the repaired rule would be an
+# incompatible interpretation of its evidence, so the label changes rather than
+# pretending the two shapes agree.
+SCHEMA_LABEL = "skeleton.v1"
 
 
 def _refuse_floats(value: Any, path: str = "$") -> None:

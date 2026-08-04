@@ -20,10 +20,10 @@ from pathlib import Path
 import pytest
 
 from common.chairs import ChairIdentity, load_models_toml
-from common.contracts.canonical import canonical_bytes, digest_of
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.envelope import validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.identities import artifact_id
+from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import (
     ARCHETYPUS,
     ARMARIUM,
@@ -58,12 +58,17 @@ FIXTURE = "synthetic-two-page-v0"
 # its PDF target, the fixed decoder route is no longer disguised as configuration,
 # and every delivered source region retains its complete crop transform. These are
 # deliberate record changes, so the whole-tree pins change with them.
-HAPPY_RUN_TREE_DIGEST = "cc6f45d0e204606f0c808b173a1b6a6121533de8c50ebbb69753cd513a60f34b"
-REVIEW_RUN_TREE_DIGEST = "0a40c1d29f975476b8fc09d6f5ed5d1b972f202a5d6dfad672998bc0a74c22e2"
+HAPPY_RUN_TREE_DIGEST = "f18ba5ff5a3ba53cc58d91c458c032aa628804329971b1956f8f595b87058feb"
+REVIEW_RUN_TREE_DIGEST = "3ff2b39ab6a50562c64ca8de5d682ffefe9f3d00abb59f1f3886c9cb3223e4e0"
 
 
 def orchestrate(
-    run_root: Path, run_id: str, scenario: str, *, models_config: Path | None = None
+    run_root: Path,
+    run_id: str,
+    scenario: str,
+    *,
+    models_config: Path | None = None,
+    recovery_config: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
     command = [
@@ -80,12 +85,49 @@ def orchestrate(
     ]
     if models_config is not None:
         command.extend(("--models-config", str(models_config)))
+    if recovery_config is not None:
+        command.extend(("--recovery-config", str(recovery_config)))
     return subprocess.run(
         command,
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
+
+
+def invoke_stage(
+    run_root: Path, run_id: str, scenario: str, program: str, **extra
+) -> subprocess.CompletedProcess:
+    """Run one real stage program against a staged synthetic run tree."""
+    command = [
+        sys.executable,
+        str(ROOT / program),
+        "--run-root",
+        str(run_root),
+        "--run-id",
+        run_id,
+        "--scenario",
+        scenario,
+    ]
+    for key, value in extra.items():
+        command.extend((f"--{key.replace('_', '-')}", str(value)))
+    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+
+
+def run_through_recensor(
+    run_root: Path, run_id: str, scenario: str = "happy", *, allow_held: bool = False
+) -> None:
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+        "pipeline/5_recensor/run.py",
+    ):
+        result = invoke_stage(run_root, run_id, scenario, program)
+        expected = {0, 3} if allow_held else {0}
+        assert result.returncode in expected, f"{program}: {result.stderr}"
 
 
 def snapshot(root: Path) -> dict[str, str]:
@@ -187,6 +229,244 @@ def test_the_final_export_keeps_each_original_filename_and_digest_link(happy_run
             assert region["declared_sha256"] == source["sha256"]
 
 
+def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "genuinely-empty-witness")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
+    empty = next(
+        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium"
+        and entry["outcome"] == "genuinely-empty"
+        and entry["subject_id"]
+    )
+    assert empty["payload"]["chair"] == "attestator_3"
+    assert empty["payload"]["content_health"] == {
+        "empty": True,
+        "truncated": False,
+        "characters": 0,
+    }
+    reading = next(
+        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio" and entry["subject_id"] == empty["subject_id"]
+    )
+    assert all(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
+    assert export_of(tree)["aggregate"]["status"] == "complete"
+
+
+def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_path):
+    """The fixture's a2 cannot silently disappear from the downstream denominator."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+    ):
+        result = invoke_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+    tree = RunTree(root, "r")
+    seal_id = artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal")
+    path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal-seal", seal_id))
+    seal = json.loads(path.read_text(encoding="utf-8"))
+    seal["payload"]["expected_acts"] = seal["payload"]["expected_acts"][:1]
+    seal["payload"]["count"] = 1
+    seal["payload"]["self_hash"] = self_hash(seal["payload"])
+    seal["self_hash"] = self_hash(seal)
+    path.write_bytes(canonical_bytes(seal))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    assert result.returncode == 2
+    assert "does not reconcile to every synthetic act" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_recensor_refuses_duplicate_witness_attempt_ordinals_instead_of_selecting_one(tmp_path):
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+    ):
+        result = invoke_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+    tree = RunTree(root, "r")
+    original = next(
+        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium" and entry["outcome"] == "read"
+    )
+    act_id = original["subject_id"]
+    chair = original["payload"]["chair"]
+    forged = json.loads(json.dumps(original))
+    forged_attempt = attempt_id(act_id, f"read:{chair}", 2)
+    forged["attempt_id"] = forged_attempt
+    forged["artifact_id"] = artifact_id(ATTESTATORES, "testimonium", act_id, forged_attempt)
+    # A new artifact identity with the old semantic ordinal is an ambiguity, not
+    # an attempt 2 that the Recensor is allowed to choose among.
+    forged["self_hash"] = self_hash(forged)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", forged["artifact_id"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(forged))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
+    assert result.returncode == 2
+    assert "duplicate attempt ordinal" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_designator_refuses_a_commandless_recovery_recrop(tmp_path):
+    root = tmp_path / "runs"
+    # This must be a real outstanding request.  An empty tree would fail later
+    # for lack of any Recensor record even if the CLI guard disappeared, making
+    # the test a check of an error spelling rather than a check that the request
+    # argument is required to authorize a crop.
+    run_through_recensor(root, "r", "review", allow_held=True)
+    tree = RunTree(root, "r")
+    act_id = next(
+        tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])["subject_id"]
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "recovery-request"
+    )
+    before = snapshot(root)
+
+    result = invoke_stage(
+        root,
+        "r",
+        "review",
+        "pipeline/2_designator/run.py",
+        operation="recover",
+        act=act_id,
+    )
+    assert result.returncode == 2
+    assert "exact Recensor recovery request" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_designator_refuses_a_standalone_next_recovery_request(tmp_path):
+    """Only the latest Recensor review can authorize its exact request.
+
+    First make the legitimate first recrop and reread, then add a syntactically
+    sound second request.  It has the right act, next ordinal, policy, and new
+    Perlectio input, but no current review names it.  Before the cross-stage
+    check, direct invocation of the crop author accepted this unreviewed request.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r", "review", allow_held=True)
+    tree = RunTree(root, "r")
+    original = next(
+        tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "recovery-request"
+    )
+    act_id = original["subject_id"]
+    assert (
+        invoke_stage(
+            root,
+            "r",
+            "review",
+            "pipeline/2_designator/run.py",
+            operation="recover",
+            act=act_id,
+            recovery_request=original["artifact_id"],
+        ).returncode
+        == 0
+    )
+    assert (
+        invoke_stage(
+            root,
+            "r",
+            "review",
+            "pipeline/4_perlector/run.py",
+            act=act_id,
+        ).returncode
+        == 0
+    )
+
+    latest_reading = max(
+        (
+            tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+            for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+            if entry["kind"] == "perlectio" and entry["subject_id"] == act_id
+        ),
+        key=lambda record: record["payload"]["attempt_ordinal"],
+    )
+    reading_path = tree.artifact_path(PERLECTOR, "perlectio", latest_reading["artifact_id"])
+    reading_ref = {
+        "relative_path": reading_path,
+        "sha256": digest_bytes(tree.read_bytes(reading_path)),
+    }
+    forged = json.loads(json.dumps(original))
+    forged_attempt = attempt_id(act_id, "recover", 2)
+    forged["attempt_id"] = forged_attempt
+    forged["artifact_id"] = artifact_id(RECENSOR, "recovery-request", act_id, forged_attempt)
+    forged["inputs"] = [reading_ref]
+    forged["payload"]["attempt_ordinal"] = 2
+    forged["payload"]["budget_used"] = 1
+    forged["payload"]["perlectio_ref"] = reading_ref
+    forged["self_hash"] = self_hash(forged)
+    forged_path = tree.resolve(
+        tree.artifact_path(RECENSOR, "recovery-request", forged["artifact_id"])
+    )
+    forged_path.parent.mkdir(parents=True, exist_ok=True)
+    forged_path.write_bytes(canonical_bytes(forged))
+    before = snapshot(root)
+
+    result = invoke_stage(
+        root,
+        "r",
+        "review",
+        "pipeline/2_designator/run.py",
+        operation="recover",
+        act=act_id,
+        recovery_request=forged["artifact_id"],
+    )
+    assert result.returncode == 2
+    assert "not the exact current Recensor request" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_designator_refuses_a_current_recovery_review_with_a_different_policy(tmp_path):
+    """The review's policy is evidence, not a decorative copy of the request's."""
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r", "review", allow_held=True)
+    tree = RunTree(root, "r")
+    request = next(
+        tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "recovery-request"
+    )
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "recovery-requested"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["payload"]["recovery_policy"] = {"not": "the run-bound policy"}
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+    before = snapshot(root)
+
+    result = invoke_stage(
+        root,
+        "r",
+        "review",
+        "pipeline/2_designator/run.py",
+        operation="recover",
+        act=request["subject_id"],
+        recovery_request=request["artifact_id"],
+    )
+    assert result.returncode == 2
+    assert "run-bound policy" in result.stderr
+    assert snapshot(root) == before
+
+
 def test_armarium_rechecks_a_corpus_seal_tampered_after_designator(tmp_path):
     root = tmp_path / "runs"
     assert orchestrate(root, "r", "happy").returncode == 0
@@ -195,6 +475,7 @@ def test_armarium_rechecks_a_corpus_seal_tampered_after_designator(tmp_path):
     path = tree.resolve(tree.artifact_path(EXEMPLAR, "seal", identity))
     record = json.loads(path.read_text(encoding="utf-8"))
     record["payload"]["page_count"] = 999
+    record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
     before = snapshot(root)
 
@@ -249,7 +530,7 @@ def test_armarium_rechecks_sealed_pixels_tampered_after_designator(tmp_path):
     )
 
     assert result.returncode == 2
-    assert "final Exemplar pixel boundary" in result.stderr
+    assert "changed under a sealed reference" in result.stderr
     assert snapshot(root) == before
 
 
@@ -377,6 +658,7 @@ def test_perlector_refuses_a_tampered_testimonium_model_provenance(tmp_path):
         "kind": "digest-manifest",
         "value": "0" * 64,
     }
+    record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
 
     result = subprocess.run(
@@ -397,6 +679,192 @@ def test_perlector_refuses_a_tampered_testimonium_model_provenance(tmp_path):
     assert result.returncode == 2
     assert "SchemaRefusal" in result.stderr
     assert "resolved revision" in result.stderr
+
+
+def test_a_perlectio_retains_digest_checked_testimonia_it_used(tmp_path):
+    """Changing a witness record after reading must stop the next real consumer."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+    ):
+        result = invoke_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "r")
+    testimony = next(
+        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium" and entry["outcome"] == "read"
+    )
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", testimony["artifact_id"]))
+    changed = json.loads(path.read_text(encoding="utf-8"))
+    changed["payload"]["reported"] = "changed after Perlectio"
+    changed["self_hash"] = self_hash(changed)
+    path.write_bytes(canonical_bytes(changed))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
+    assert result.returncode == 2
+    assert "changed under a sealed reference" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_recensor_refuses_a_completed_perlectio_without_an_object_region_basis(tmp_path):
+    """A resealed malformed payload is an accounting refusal, never a traceback."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+    ):
+        result = invoke_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+    tree = RunTree(root, "r")
+    entry = next(
+        entry
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio" and entry["outcome"] == "read"
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"]["basis"] = []
+    record["self_hash"] = self_hash(record)
+    path.write_bytes(canonical_bytes(record))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "no object basis" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_archetypus_refuses_a_resealed_completed_perlectio_without_an_object_basis(tmp_path):
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    old_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(old_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    reading["payload"]["basis"] = []
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    new_ref = {
+        "relative_path": old_ref["relative_path"],
+        "sha256": digest_bytes(reading_path.read_bytes()),
+    }
+    review["inputs"] = [
+        new_ref if reference == old_ref else reference for reference in review["inputs"]
+    ]
+    review["payload"]["perlectio_ref"] = new_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "no object basis" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_archetypus_uses_the_perlectio_named_by_the_accepted_review(tmp_path):
+    """A newer unreviewed reading may not replace the reading Recensor assessed."""
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    # Choose a1 explicitly: it has an accepted review in the happy trace.
+    review = next(
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    act_id = review["subject_id"]
+    original = tree.read_artifact(
+        PERLECTOR,
+        "perlectio",
+        review["payload"]["perlectio_ref"]["relative_path"].split("/")[-1].removesuffix(".json"),
+    )
+    forged = json.loads(json.dumps(original))
+    forged_attempt = attempt_id(act_id, "perlegere", 2)
+    forged["attempt_id"] = forged_attempt
+    forged["artifact_id"] = artifact_id(PERLECTOR, "perlectio", act_id, forged_attempt)
+    forged["payload"]["attempt_ordinal"] = 2
+    forged["payload"]["text"] = "UNREVIEWED REPLACEMENT"
+    forged["self_hash"] = self_hash(forged)
+    forged_path = tree.resolve(tree.artifact_path(PERLECTOR, "perlectio", forged["artifact_id"]))
+    forged_path.parent.mkdir(parents=True, exist_ok=True)
+    forged_path.write_bytes(canonical_bytes(forged))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 0, result.stderr
+    established = tree.read_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+    )
+    assert established["payload"]["text"] == original["payload"]["text"]
+    assert established["payload"]["text"] != forged["payload"]["text"]
+
+
+def test_armarium_refuses_a_resealed_archetypus_text_that_disagrees_with_its_parent(tmp_path):
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    entry = next(
+        entry
+        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
+        if entry["kind"] == "archetypus"
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"]["text"] = "ALTERED ESTABLISHED TEXT"
+    record["payload"]["self_hash"] = self_hash(record["payload"])
+    record["self_hash"] = self_hash(record)
+    path.write_bytes(canonical_bytes(record))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
+    assert result.returncode == 2
+    assert "does not exactly preserve the Perlectio" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_armarium_refuses_two_established_records_instead_of_selecting_one(tmp_path):
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    original = next(
+        tree.read_artifact(ARCHETYPUS, "archetypus", entry["artifact_id"])
+        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
+        if entry["kind"] == "archetypus"
+    )
+    act_id = original["subject_id"]
+    forged = json.loads(json.dumps(original))
+    forged_attempt = attempt_id(act_id, "establish", 2)
+    forged["attempt_id"] = forged_attempt
+    forged["artifact_id"] = artifact_id(ARCHETYPUS, "archetypus", act_id, forged_attempt)
+    forged["self_hash"] = self_hash(forged)
+    path = tree.resolve(tree.artifact_path(ARCHETYPUS, "archetypus", forged["artifact_id"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(forged))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
+    assert result.returncode == 2
+    assert "carries 2 Archetypus records" in result.stderr
+    assert snapshot(root) == before
 
 
 # --- 2. Repeating the identical command changes nothing ------------------------
@@ -653,6 +1121,16 @@ HANDOFF_ARTIFACTS = (
     (ARCHETYPUS, ARMARIUM, "archetypus"),
 )
 
+CONSUMER_PROGRAMS = {
+    EXEMPLAR: "pipeline/1_exemplar/run.py",
+    DESIGNATOR: "pipeline/2_designator/run.py",
+    ATTESTATORES: "pipeline/3_attestatores/run.py",
+    PERLECTOR: "pipeline/4_perlector/run.py",
+    RECENSOR: "pipeline/5_recensor/run.py",
+    ARCHETYPUS: "pipeline/6_archetypus/run.py",
+    ARMARIUM: "pipeline/7_armarium/run.py",
+}
+
 
 def one_artifact(tree: RunTree, stage: str, kind: str) -> tuple[Path, dict]:
     entries = [entry for entry in tree.build_manifest(stage)["artifacts"] if entry["kind"] == kind]
@@ -665,7 +1143,7 @@ def one_artifact(tree: RunTree, stage: str, kind: str) -> tuple[Path, dict]:
 
 @pytest.mark.full
 @pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_refuses_a_corrupted_schema(happy_run, producer, consumer, kind):
+def test_each_handoff_validator_refuses_a_corrupted_schema(happy_run, producer, consumer, kind):
     _, tree = happy_run
     _, record = one_artifact(tree, producer, kind)
     record["schema"] = "skeleton.v99"
@@ -675,7 +1153,7 @@ def test_each_handoff_refuses_a_corrupted_schema(happy_run, producer, consumer, 
 
 @pytest.mark.full
 @pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_refuses_a_malformed_identity(happy_run, producer, consumer, kind):
+def test_each_handoff_validator_refuses_a_malformed_identity(happy_run, producer, consumer, kind):
     _, tree = happy_run
     _, record = one_artifact(tree, producer, kind)
     record["artifact_id"] = "art_not_a_real_identity"
@@ -685,7 +1163,7 @@ def test_each_handoff_refuses_a_malformed_identity(happy_run, producer, consumer
 
 @pytest.mark.full
 @pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_refuses_duplicate_accounting(happy_run, producer, consumer, kind):
+def test_each_handoff_validator_refuses_duplicate_accounting(happy_run, producer, consumer, kind):
     """A duplicate reference is how one page gets counted twice and a conservation
     check passes over something nobody read."""
     _, tree = happy_run
@@ -702,7 +1180,7 @@ def test_each_handoff_refuses_duplicate_accounting(happy_run, producer, consumer
 
 @pytest.mark.full
 @pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
-def test_each_handoff_refuses_bytes_that_changed_under_a_sealed_reference(
+def test_each_handoff_validator_refuses_bytes_that_changed_under_a_sealed_reference(
     happy_run, producer, consumer, kind
 ):
     _, tree = happy_run
@@ -714,22 +1192,48 @@ def test_each_handoff_refuses_bytes_that_changed_under_a_sealed_reference(
 
 
 @pytest.mark.full
-def test_a_corrupted_artifact_on_disk_stops_the_stage_that_reads_it(tmp_path):
-    """The refusals above are checked against the validator. This one proves a
-    real consumer actually calls it: corrupt a sealed page on disk, rerun, and the
-    pipeline must stop rather than carry on with what it can still parse.
-    """
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+@pytest.mark.parametrize("producer,consumer,kind", HANDOFF_ARTIFACTS)
+def test_each_handoff_corruption_stops_its_named_real_consumer(
+    happy_run, tmp_path, producer, consumer, kind
+):
+    """The validator matrix above is not evidence that a consumer calls it.
 
+    Give every contract edge a fresh complete tree, damage its producer record on
+    disk, and invoke the particular downstream program named by the handoff.  A
+    generic test that merely calls ``validate_envelope`` can stay green while a
+    stage bypasses the boundary entirely; this one cannot.
+    """
+    source_root, _ = happy_run
+    root = tmp_path / "runs"
+    shutil.copytree(source_root, root)
     tree = RunTree(root, "r")
-    path, record = one_artifact(tree, EXEMPLAR, "page")
+    path, record = one_artifact(tree, producer, kind)
     record["schema"] = "skeleton.v99"
     path.write_bytes(canonical_bytes(record))
+    before = snapshot(root)
 
-    result = orchestrate(root, "r", "happy")
+    result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[consumer])
     assert result.returncode != 0
     assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_recovery_policy_is_a_run_bound_configuration_not_a_late_local_default(tmp_path):
+    """A policy change must refuse the old run before any stage can reinterpret it."""
+    root = tmp_path / "runs"
+    policy = tmp_path / "recovery.toml"
+    policy.write_text((ROOT / "config/recovery.toml").read_text(encoding="utf-8"), encoding="utf-8")
+    assert orchestrate(root, "r", "happy", recovery_config=policy).returncode == 0
+    before = snapshot(root)
+
+    policy.write_text(
+        "absolute_cap = 3\n\n[budget]\nfallback_recrop = 0\npage_level_reread = 1\n",
+        encoding="utf-8",
+    )
+    result = orchestrate(root, "r", "happy", recovery_config=policy)
+    assert result.returncode == 2
+    assert "different config_digest" in result.stderr
+    assert snapshot(root) == before
 
 
 @pytest.mark.full
@@ -740,6 +1244,7 @@ def test_every_handoff_in_the_contract_is_covered_by_this_table():
     from common.contracts.stages import HANDOFFS
 
     assert {(producer, consumer) for producer, consumer, _ in HANDOFF_ARTIFACTS} == set(HANDOFFS)
+    assert {consumer for _, consumer, _ in HANDOFF_ARTIFACTS} == set(CONSUMER_PROGRAMS)
     assert len(HANDOFF_ARTIFACTS) == 7
 
 
@@ -933,8 +1438,6 @@ def test_the_recensor_refuses_a_continuation_claim_with_one_region(tmp_path):
         ("door", "pipeline/1_exemplar/door.py"),
         ("exemplar", "pipeline/1_exemplar/run.py"),
         ("designator", "pipeline/2_designator/run.py"),
-        ("attestatores", "pipeline/3_attestatores/run.py"),
-        ("perlector", "pipeline/4_perlector/run.py"),
     ):
         result = subprocess.run(
             [
@@ -964,7 +1467,57 @@ def test_the_recensor_refuses_a_continuation_claim_with_one_region(tmp_path):
         == 2
     ]
     assert len(continuations) == 1
+    continuation = continuations[0]
+    seal_path = tree.resolve(
+        tree.artifact_path(
+            DESIGNATOR,
+            "proposal-seal",
+            artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal"),
+        )
+    )
+    seal = json.loads(seal_path.read_text(encoding="utf-8"))
+    # Model an internally resealed bad producer, not a bare deleted file: all
+    # direct references are coherent, but the proposal still asserts that a2
+    # continues while only its near-side region remains.  This reaches
+    # Recensor's own defence rather than the earlier store-integrity guard.
+    seal["inputs"] = [
+        reference
+        for reference in seal["inputs"]
+        if reference["relative_path"] != continuation["relative_path"]
+    ]
+    for act in seal["payload"]["expected_acts"]:
+        if act["act_id"] == continuation["subject_id"]:
+            act["evidence"] = [
+                reference
+                for reference in act["evidence"]
+                if reference["relative_path"] != continuation["relative_path"]
+            ]
+    seal["payload"]["self_hash"] = self_hash(seal["payload"])
+    seal["self_hash"] = self_hash(seal)
+    seal_path.write_bytes(canonical_bytes(seal))
     tree.resolve(continuations[0]["relative_path"]).unlink()
+    tree.write_manifest(DESIGNATOR)
+
+    for name, program in (
+        ("attestatores", "pipeline/3_attestatores/run.py"),
+        ("perlector", "pipeline/4_perlector/run.py"),
+    ):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / program),
+                "--run-root",
+                str(root),
+                "--run-id",
+                "r",
+                "--scenario",
+                "happy",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{name}: {result.stderr}"
 
     result = subprocess.run(
         [
@@ -1109,7 +1662,14 @@ def test_the_recensor_refuses_a_testimonium_from_a_chair_the_run_never_sealed(tm
     )
     forged = json.loads(json.dumps(entry))
     forged["payload"]["chair"] = "attestator_9"
-    forged["artifact_id"] = "art_" + "9" * 16
+    forged["attempt_id"] = attempt_id(forged["subject_id"], "read:attestator_9", 1)
+    forged["artifact_id"] = artifact_id(
+        ATTESTATORES,
+        "testimonium",
+        forged["subject_id"],
+        forged["attempt_id"],
+    )
+    forged["self_hash"] = self_hash(forged)
     path = tree.resolve(
         f"{STAGE_DIRECTORIES[ATTESTATORES]}/artifacts/testimonium/{forged['artifact_id']}.json"
     )
@@ -1155,7 +1715,21 @@ def test_armarium_rechecks_the_filename_a_page_was_sealed_under(tmp_path):
     path = tree.resolve(entry["relative_path"])
     record = json.loads(path.read_text(encoding="utf-8"))
     record["payload"]["declared_path"] = "some-other-scan.png"
+    record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
+    seal_path = tree.resolve(
+        tree.artifact_path(
+            EXEMPLAR,
+            "seal",
+            artifact_id(EXEMPLAR, "seal", "corpus-seal"),
+        )
+    )
+    seal = json.loads(seal_path.read_text(encoding="utf-8"))
+    for reference in seal["inputs"]:
+        if reference["relative_path"] == entry["relative_path"]:
+            reference["sha256"] = digest_bytes(path.read_bytes())
+    seal["self_hash"] = self_hash(seal)
+    seal_path.write_bytes(canonical_bytes(seal))
     tree.write_manifest(EXEMPLAR)
     before = snapshot(root)
 

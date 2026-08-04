@@ -80,6 +80,7 @@ from common.contracts.approval import (  # noqa: E402
 from common.contracts.canonical import digest_bytes, digest_of, self_hash  # noqa: E402
 from common.contracts.errors import ApprovalRefusal, ContractError  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
+from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -697,6 +698,7 @@ def fixture_submission(args, registry) -> int:
         args.scenario,
         pdf_render_config_path=args.pdf_render_config,
         pdf_target_dpi=args.pdf_target_dpi,
+        recovery_config_path=args.recovery_config,
     )
 
     # The door creates the run: it is the first thing that knows what arrived, so
@@ -830,7 +832,13 @@ def real_submission(args, registry) -> int:
         format_policy,
     )
     bindings = _real_bindings(
-        registry.config, ledger, data_policy, reference, format_policy, pdf_settings
+        registry.config,
+        ledger,
+        data_policy,
+        reference,
+        format_policy,
+        pdf_settings,
+        load_recovery_policy(args.recovery_config),
     )
     tree = RunTree.create(
         run_root,
@@ -888,7 +896,7 @@ def _announce_refusal_report(tree: RunTree, refusal_report: str | None) -> None:
 
 
 def _real_bindings(
-    models, ledger, data_policy, reference, format_policy, pdf_settings
+    models, ledger, data_policy, reference, format_policy, pdf_settings, recovery_policy
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
@@ -916,6 +924,7 @@ def _real_bindings(
                 "data_gate_approval_ref": reference.to_record(),
                 "format_policy": format_policy,
                 "door_execution_recipe": _door_execution_recipe(pdf_settings),
+                "recovery_policy": recovery_policy,
                 "models": models.to_record(),
             }
         ),

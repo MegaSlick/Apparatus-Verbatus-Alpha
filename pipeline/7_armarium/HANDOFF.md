@@ -39,8 +39,9 @@ source-manifest ordinal to exactly one Exemplar page outcome. It independently r
 the one Exemplar `corpus-seal`, verifies its self-hash, page census, and input
 references, then compares each row against the source manifest and page artifact.
 For every sealed page it also rechecks the Door admission and content-addressed
-pixel blob before export. A missing, duplicate, altered, or unsealed page is fatal;
-an export never treats a smaller page set or changed pixels as complete.
+pixel blob before export. A missing, duplicate, altered, or unaccounted page is
+fatal; an Exemplar-refused page remains explicit evidence and contributes to a
+visibly partial export rather than disappearing from the page set.
 
 The act-level proposal seal remains the authority for expected acts. The Armarium
 places each one in exactly one terminal category and retains a review reason where a

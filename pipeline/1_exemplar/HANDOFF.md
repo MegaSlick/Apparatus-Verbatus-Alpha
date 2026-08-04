@@ -121,7 +121,9 @@ facts where applicable. Its inputs reference every Exemplar page artifact.
 
 Before any design work, `pipeline/2_designator/run.py` independently reconciles the
 source manifest, every page outcome, the seal's rows, and the seal's input
-references. A missing page fails at that first boundary with the missing filename.
+references. A missing or changed page fails at that first boundary: an erased page
+that a corpus-seal input still names is rejected by its exact artifact path, and a
+reconcilable page census names the original filename from the source ledger.
 For a sealed page, both the Designator and final Armarium boundary recheck the Door
 admission and exact content-addressed pixel blob before they crop or export; no
 later stage may turn altered pixels into new evidence. The Armarium repeats the

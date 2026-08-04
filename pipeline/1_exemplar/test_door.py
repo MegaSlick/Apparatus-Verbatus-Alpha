@@ -31,7 +31,7 @@ from common.contracts.approval import (
     build_approval_record,
     synthetic_fixture_ingress_record,
 )
-from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 from common.contracts.errors import ApprovalRefusal, ContractError
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
 from common.runtree.store import RunTree
@@ -464,12 +464,24 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
     baseline = door._real_bindings(
-        Models(), ledger, {"policy": "synthetic"}, reference, POLICY, settings
+        Models(),
+        ledger,
+        {"policy": "synthetic"},
+        reference,
+        POLICY,
+        settings,
+        door.load_recovery_policy(),
     )
     altered_pdf_recipe = dict(door.pdf_render.renderer_recipe(settings), dpi=301)
     monkeypatch.setattr(door.pdf_render, "renderer_recipe", lambda _settings: altered_pdf_recipe)
     changed = door._real_bindings(
-        Models(), ledger, {"policy": "synthetic"}, reference, POLICY, settings
+        Models(),
+        ledger,
+        {"policy": "synthetic"},
+        reference,
+        POLICY,
+        settings,
+        door.load_recovery_policy(),
     )
 
     assert baseline["config_digest"] != changed["config_digest"]
@@ -1039,7 +1051,17 @@ def test_the_loud_failure_survives_one_record_it_cannot_make_sense_of(tmp_path):
     path = tree.resolve(entry["relative_path"])
     record = json.loads(path.read_text(encoding="utf-8"))
     record["payload"]["reason"] = "just some free text nobody closed"
+    # Preserve the outer transport seal so this exercises the census's closed
+    # refusal vocabulary rather than the earlier envelope-integrity guard.
+    record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
+    report_record = json.loads(tree.read_bytes(report).decode("utf-8"))
+    for reference in report_record["inputs"]:
+        if reference["relative_path"] == entry["relative_path"]:
+            reference["sha256"] = digest_bytes(path.read_bytes())
+    report_record["self_hash"] = self_hash(report_record)
+    tree.resolve(report).write_bytes(canonical_bytes(report_record))
+    tree.write_manifest(DOOR)
 
     with pytest.raises(ContractError) as caught:
         door.require_some_admitted(0, tree, report)

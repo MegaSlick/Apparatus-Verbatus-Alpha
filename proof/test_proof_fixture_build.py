@@ -239,6 +239,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "refused-page",
         "refused-first-page",
         "truncated-reading",
+        "genuinely-empty-witness",
     ]
     by_name = {scenario["name"]: scenario for scenario in skeleton["scenario"]}
     assert by_name["happy"]["recover_acts"] == []
@@ -254,6 +255,22 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # nothing about the guard.
     assert by_name["truncated-reading"]["recover_acts"] == []
     assert by_name["truncated-reading"]["hold_acts"] == []
+    assert by_name["genuinely-empty-witness"]["recover_acts"] == []
+    assert by_name["genuinely-empty-witness"]["hold_acts"] == []
+
+
+def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
+    skeleton, models_config
+):
+    rows = skeleton["witness_empty"]
+    assert rows == [
+        {
+            "scenario": "genuinely-empty-witness",
+            "act_key": "a1",
+            "chair": "attestator_3",
+        }
+    ]
+    assert rows[0]["chair"] in configured_witness_chairs(models_config)
 
 
 def test_the_declared_reading_failure_is_a_failed_class_outcome_carrying_text(skeleton):
