@@ -513,16 +513,39 @@ class TestLogin:
         copied = runnable.index('cp -R "${REPO_ROOT}/workbench/design/."')
         assert copied < runnable.index("${specs_stage}:/specs"), "staged after the bind"
 
-    def test_the_window_onto_the_old_code_is_opt_in_and_read_only(self):
-        """A chamber that can read the old repository can copy old bytes into its
-        branch, and the only control on that is the operator reading the diff. So the
-        window is off unless `AUTOCLAVE_WINDOW` names one — a default-on window would
-        make the risk invisible — and read-only when it is open.
+    def test_the_window_onto_the_old_code_is_open_by_default_and_read_only(self):
+        """**Tyrel ruled 2026-08-04 that the window is on by default**, reversing the
+        opt-in rule this test used to assert. His evidence: four seats built System 03
+        with no window and one decided to refuse PDFs outright, while the old pipeline
+        had taken PDFs at stage one all along. An opt-in window is one every session
+        must remember, and the session that forgot cost a night.
+
+        The copying risk the old rule guarded against is unchanged and is still
+        controlled the same way — the operator reads every line of the diff. What is
+        mechanical here is that neither mount can ever be writable.
         """
         runnable = "\n".join(code_lines())
-        assert 'window_mount=""' in runnable, "the window has no closed default"
-        assert 'window_mount="--volume ${AUTOCLAVE_WINDOW}:/window:ro"' in runnable
+        assert "window.conf" in runnable, "the window is not configured from window.conf"
+        assert ":/window:ro" in runnable, "the old-code window is not mounted read-only"
+        assert ":/stage:ro" in runnable, "the audit-notes window is not mounted read-only"
         assert ":/window:rw" not in runnable, "the window is writable"
+        assert ":/stage:rw" not in runnable, "the stage window is writable"
+
+    def test_the_real_corpus_is_masked_out_of_the_window(self):
+        """The window's directories hold roughly 31,500 real register images, and a
+        chamber has open network egress — so a readable image is a sendable one. The
+        mask is built from `window.conf`'s lists as empty read-only tmpfs mounts, the
+        same mechanism that hides `private/`, `workbench/` and `scriptorium/` on `/src`.
+
+        A mask that is merely configured is not a mask that holds; what proves it is
+        scanning the mounts from inside a chamber, which is not something a static test
+        can do. This asserts the mechanism exists and is read-only, and the chamber-side
+        scan is recorded in the commit that added it.
+        """
+        runnable = "\n".join(code_lines())
+        assert "--tmpfs /window/${masked}:ro" in runnable, "the window corpus is not masked"
+        assert "--tmpfs /stage/${masked}:ro" in runnable, "the stage probes are not masked"
+        assert "$window_masks" in runnable, "the mask flags never reach docker run"
 
     def test_the_window_path_cannot_forge_a_volume_spec(self):
         """`window_mount` is word-split into the flag list, and Docker's short volume
@@ -535,13 +558,23 @@ class TestLogin:
         assert "*[[:space:]]*) die " in runnable, "whitespace is not refused"
         assert "*:*) die " in runnable, "a colon is not refused"
 
-    def test_an_unset_window_mounts_nothing(self):
-        """The flag is empty unless the variable is set, and it word-splits into the
-        `docker run` line beside the auth mounts. An empty string must contribute no
-        argument at all — a stray quote here would pass Docker an empty operand.
+    def test_an_absent_window_mounts_nothing(self):
+        """The flags are empty when the configured paths are not on this machine, and
+        they word-split into the `docker run` line beside the auth mounts. An empty
+        string must contribute no argument at all — a stray quote here would pass Docker
+        an empty operand.
+
+        This is what keeps `window.conf`'s machine-specific absolute paths harmless in a
+        clone somewhere else: the directory is missing, the flag stays empty, and the
+        chamber starts without a window rather than failing to start at all.
         """
         runnable = " ".join(code_lines())
-        assert "$auth_mounts $window_mount \\" in runnable, "the window flag is quoted or absent"
+        assert "$auth_mounts $window_mount $window_masks \\" in runnable, (
+            "a window flag is quoted or absent"
+        )
+        assert 'window_mount=""' in runnable, "the window flag has no empty default"
+        assert 'window_masks=""' in runnable, "the mask flag list has no empty default"
+        assert "is not on this machine" in runnable, "a missing window path is not reported"
 
 
 class TestDispatch:
