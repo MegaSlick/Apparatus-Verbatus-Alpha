@@ -53,8 +53,15 @@ FIXTURE = "synthetic-two-page-v0"
 # admissions, Exemplar pages/census, and Armarium export rows now retain original
 # filename/digest linkage; the Designator independently verifies that census before
 # it creates proposals. Recomputed against the real orchestrator.
-HAPPY_RUN_TREE_DIGEST = "5ff498f55793e83137376dcd8209ac10c74943f977c93a44e9b4e64b3d8451e8"
-REVIEW_RUN_TREE_DIGEST = "5f935160f99a6d1bd9cd83f6f005c058becbbb29d5bdf6cda051c61b2b806b42"
+#
+# Re-pinned once more when the two lanes were merged. `config/admitted_formats.toml`
+# was rewritten — TIFF moved from `render-pages` to `admit-or-fan-out`, so a
+# single-page TIFF now seals its own bytes — and `run_config_bindings` digests that
+# file's bytes into every run's `config_digest`, which every artifact carries. No
+# artifact's *shape* changed here; the run is bound to a different routing file, and
+# that is exactly what these digests exist to notice.
+HAPPY_RUN_TREE_DIGEST = "6dd775f6dd23befba9f133b983e976c9ddabf205a16c25fb15c5d98d7f47d41b"
+REVIEW_RUN_TREE_DIGEST = "b6c28c6750de4758cccb633ee94737d660ce1680b0fc09d99f87eeeb553d29cf"
 
 
 def orchestrate(

@@ -305,6 +305,100 @@ def test_every_decoder_reported_animation_frame_fans_out_once(tmp_path):
     assert records[1]["payload"]["sha256"] != records[2]["payload"]["sha256"]
 
 
+# `tiff_lzw` and `tiff_adobe_deflate` are what real flatbed and archival scanning
+# software writes by default; `packbits` is the baseline TIFF 6.0 compression; and
+# `group4` is CCITT fax, which is what microfilm and bitonal register scans arrive
+# as. This is the gap one lane left open and named as the thing it was least sure
+# about — every page still got an ordinal there, but only an uncompressed directory
+# actually rendered, so a compressed page reached the Exemplar as a named alarm and
+# not as pixels. It is closed by using a decoder that reads these codecs rather than
+# by hand-writing four decompressors.
+TIFF_COMPRESSIONS = ["tiff_lzw", "tiff_adobe_deflate", "packbits", "group4"]
+
+
+def compressed_multipage_tiff(compression: str) -> bytes:
+    """Two distinct TIFF pages under one of the compressions scanners produce."""
+    output = BytesIO()
+    mode = "1" if compression == "group4" else "L"
+    first = Image.new("L", (4, 3), 19).convert(mode)
+    second = Image.new("L", (2, 5), 231).convert(mode)
+    first.save(
+        output,
+        format="TIFF",
+        save_all=True,
+        append_images=[second],
+        compression=compression,
+    )
+    return output.getvalue()
+
+
+@pytest.mark.parametrize("compression", TIFF_COMPRESSIONS)
+def test_a_compressed_multipage_tiff_fans_out_and_every_page_reaches_real_pixels(
+    tmp_path, compression
+):
+    """ "TIFF 100% must work" is not satisfied by an ordinal with no pixels behind it.
+
+    A page that fans out to an ordinal and then refuses is still a page nobody
+    reads, which is GOALS 1 failing quietly rather than loudly. So this asserts the
+    whole way through: two ordinals, two admitted outcomes, two distinct sealed PNG
+    blobs, and the second page's real geometry — not merely that the door noticed
+    there were two directories.
+    """
+    data = compressed_multipage_tiff(compression)
+    files = {f"flatbed-{compression}.tif": data}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
+            for path in files
+        ],
+        reader(files),
+        POLICY,
+    )
+    assert [source.container_page_index for source in sources] == [0, 1]
+
+    tree, context = open_door(tmp_path, sources)
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 2
+    context.finish(DOOR)
+
+    records = admissions(tree)
+    assert {record["outcome"] for record in records.values()} == {"admitted"}
+    pixels = [validate_png(tree.read_bytes(records[o]["payload"]["stored_at"])) for o in (1, 2)]
+    assert [(page.width, page.height) for page in pixels] == [(4, 3), (2, 5)]
+    assert records[1]["payload"]["sha256"] != records[2]["payload"]["sha256"]
+
+
+def test_a_single_page_tiff_is_sealed_as_its_own_untouched_bytes(tmp_path):
+    """The common TIFF is one image, and the Exemplar seals the submitted bytes.
+
+    A TIFF is *usually* one page, unlike a PDF, and re-encoding an ordinary scan on
+    the way in would spend the Exemplar's immutability (GOVERNANCE 4) for nothing.
+    The check that matters is the last assertion: the stored blob is byte-identical
+    to what was submitted, not merely an image of the same size.
+    """
+    data = tiff(6, 5)
+    files = {"register-page.tif": data}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
+            for path in files
+        ],
+        reader(files),
+        POLICY,
+    )
+    assert [(source.declared_path, source.container_page_index) for source in sources] == [
+        ("register-page.tif", None)
+    ]
+
+    tree, context = open_door(tmp_path, sources)
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 1
+    context.finish(DOOR)
+
+    payload = admissions(tree)[1]["payload"]
+    assert "rendered_from" not in payload
+    assert payload["sha256"] == digest_bytes(data)
+    assert tree.read_bytes(payload["stored_at"]) == data
+
+
 def test_duplicate_files_are_an_alarm_but_identical_pages_inside_one_pdf_are_not(tmp_path):
     data = png(3, 2)
     sources = [
@@ -349,6 +443,22 @@ def test_expansion_ordinals_are_stable_by_filename_and_page_index():
 def test_a_fixture_run_id_refuses_changed_decoder_routing_before_artifacts_change(
     tmp_path, monkeypatch
 ):
+    """The exact routing bytes are bound into the run, and a resume checks them.
+
+    The change made here is a comment, and that is the point rather than a
+    weakness. `run_config_bindings` digests the routing *file's bytes*, not the
+    table parsed out of them, so any edit at all makes a resumed run a different
+    run. That is the conservative reading and the right one: a comment in this file
+    is where the reason for a route is written down, and a resume that silently
+    accepted a rewritten justification would be accepting a decision nobody
+    recorded.
+
+    It also has to be a comment now. With `refuse` deleted and `render-pages`
+    restricted to PDF when the routing loads, exactly one routing *table* is valid,
+    so rerouting a format — what this test used to do — no longer reaches the
+    config-digest check at all; it refuses one step earlier, at the load, which
+    `test_admission.py` covers directly.
+    """
     run_root = tmp_path / "runs"
     base_args = [
         "door.py",
@@ -367,12 +477,11 @@ def test_a_fixture_run_id_refuses_changed_decoder_routing_before_artifacts_chang
         if path.is_file()
     }
 
+    shipped = (ROOT / "config" / "admitted_formats.toml").read_text(encoding="utf-8")
     changed_policy = tmp_path / "changed-routes.toml"
-    changed_policy.write_text(
-        (ROOT / "config" / "admitted_formats.toml")
-        .read_text(encoding="utf-8")
-        .replace('gif = "raster"', 'gif = "render-pages"'),
-        encoding="utf-8",
+    changed_policy.write_text(shipped + "# a later hand's note about why\n", encoding="utf-8")
+    assert load_format_policy(changed_policy) == load_format_policy(
+        ROOT / "config" / "admitted_formats.toml"
     )
     monkeypatch.setattr(sys, "argv", [*base_args, "--format-policy", str(changed_policy)])
     with pytest.raises(ContractError, match="config_digest"):

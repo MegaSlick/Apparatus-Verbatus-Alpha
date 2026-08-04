@@ -12,16 +12,21 @@ The knobs. One question per planned file, each answerable without reading code.
 | `formats.toml` | which formats the Armarium writes |
 
 `admitted_formats.toml` is decoder routing, not an admission list. Tyrel ruled that
-an uncorrupted image is never declined by policy: a `raster` row gets a decoder
-attempt, and a `render-pages` row fans a container out and seals one lossless page
-render per ordinal. The file names exactly the formats the door can sniff and has no
-`refuse` action. A format/variant the installed readers cannot yet decode is a named
-pipeline alarm carried with its filename, rather than a routine rejection.
+an uncorrupted image is never declined by policy: an `admit-or-fan-out` row gets a
+decoder attempt and is sealed as its own unmodified bytes when the decoder reports
+one frame, or fanned out to one ordinal per frame when it reports more; a
+`render-pages` row is always a document of pages and every page is painted once at
+the door. The file names exactly the formats the door can sniff and has no `refuse`
+action. A format/variant the installed readers cannot yet decode is a named pipeline
+alarm carried with its filename, rather than a routine rejection.
 
-PDF and TIFF use `render-pages`. PDF is full-page PDFium rasterisation, which paints
-text, vectors, annotations, and images together; it is never embedded-image
-extraction. TIFF includes multi-page fan-out. JPEG suffix bytes after EOI are not
-called corruption.
+PDF alone uses `render-pages`, and the loader refuses any other format given that
+action. PDF is full-page PDFium rasterisation, which paints text, vectors,
+annotations, and images together; it is never embedded-image extraction. TIFF is
+`admit-or-fan-out`: a single-directory scan seals its own bytes untouched, and a
+multi-page one — including the LZW, Deflate, PackBits and CCITT compressions real
+flatbed scanners produce — fans out to one ordinal per page. JPEG suffix bytes after
+EOI are not called corruption.
 
 `data_handling_policy.json` is the version an approval record names. Its hash is the
 canonical digest of its own content, so editing one character of it invalidates

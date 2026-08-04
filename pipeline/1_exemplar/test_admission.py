@@ -11,7 +11,7 @@ from io import BytesIO
 
 import pytest
 from admission import (
-    RASTER,
+    ADMIT_OR_FAN_OUT,
     RENDER_PAGES,
     SNIFFABLE_FORMATS,
     AdmissionOutcome,
@@ -58,37 +58,37 @@ def _decoder_jpeg(width: int = 5, height: int = 4, *, trailing: bytes = b"") -> 
 def test_the_shipped_decoder_routes_name_readers_not_formats_to_refuse():
     """The route table is exhaustive, but contains no rejection action.
 
-    TIFF and PDF are containers whose pages must be fanned out.  The remaining
-    currently-sniffed types make one raster-decoder attempt; a gap there is a named
-    pipeline alarm rather than a decision to exclude a file format.
+    PDF is the one format that is always a document of pages.  Every raster type,
+    TIFF included, is admitted as its own bytes or fanned out according to the frame
+    count its decoder reports; a gap there is a named pipeline alarm rather than a
+    decision to exclude a file format.
     """
-    assert POLICY["png"] == POLICY["jpeg"] == POLICY["gif"] == RASTER
-    assert POLICY["heic"] == POLICY["bmp"] == POLICY["webp"] == RASTER
-    assert POLICY["tiff"] == POLICY["pdf"] == RENDER_PAGES
-    assert set(POLICY.values()) <= {RASTER, RENDER_PAGES}
+    assert POLICY["pdf"] == RENDER_PAGES
+    assert all(action == ADMIT_OR_FAN_OUT for name, action in POLICY.items() if name != "pdf"), (
+        POLICY
+    )
+    assert set(POLICY.values()) <= {ADMIT_OR_FAN_OUT, RENDER_PAGES}
 
 
 def test_the_decoder_routes_cover_exactly_the_formats_the_door_can_detect(tmp_path):
     """A missing route would make a fan-out decision by omission."""
     assert set(POLICY) == SNIFFABLE_FORMATS
     short = tmp_path / "short.toml"
-    short.write_text('[format]\npng = "raster"\n', encoding="utf-8")
+    short.write_text('[format]\npng = "admit-or-fan-out"\n', encoding="utf-8")
     with pytest.raises(FormatPolicyRefusal, match="Missing"):
         load_format_policy(short)
 
 
 def test_the_decoder_routes_reject_an_unknown_row_name(tmp_path):
-    rows = "\n".join(f'{name} = "raster"' for name in sorted(SNIFFABLE_FORMATS))
+    rows = _routing_rows()
     path = tmp_path / "extra.toml"
-    path.write_text(f'[format]\n{rows}\navif = "raster"\n', encoding="utf-8")
+    path.write_text(f'[format]\n{rows}\navif = "admit-or-fan-out"\n', encoding="utf-8")
     with pytest.raises(FormatPolicyRefusal, match="Unknown"):
         load_format_policy(path)
 
 
 def test_the_decoder_routes_reject_an_action_outside_their_closed_set(tmp_path):
-    rows = "\n".join(
-        f'{name} = "{"maybe" if name == "png" else "raster"}"' for name in sorted(SNIFFABLE_FORMATS)
-    )
+    rows = _routing_rows(overrides={"png": "maybe"})
     path = tmp_path / "bad-action.toml"
     path.write_text(f"[format]\n{rows}\n", encoding="utf-8")
     with pytest.raises(FormatPolicyRefusal, match="not one of"):
@@ -96,11 +96,57 @@ def test_the_decoder_routes_reject_an_action_outside_their_closed_set(tmp_path):
 
 
 def test_a_reader_route_does_not_require_a_bespoke_structural_walker(tmp_path):
-    """A reader gap is an alarm at byte admission, never a load-time format ban."""
-    rows = "\n".join(f'{name} = "raster"' for name in sorted(SNIFFABLE_FORMATS))
+    """A reader gap is an alarm at byte admission, never a load-time format ban.
+
+    Every sniffable raster format loads without this module owning a hand-written
+    validator for it: HEIC and WebP have no bespoke structural walker here and are
+    still routed to a decoder attempt rather than banned when the routing is read.
+    """
     path = tmp_path / "all-raster.toml"
-    path.write_text(f"[format]\n{rows}\n", encoding="utf-8")
-    assert load_format_policy(path) == {name: RASTER for name in sorted(SNIFFABLE_FORMATS)}
+    path.write_text(f"[format]\n{_routing_rows()}\n", encoding="utf-8")
+    loaded = load_format_policy(path)
+    assert loaded["pdf"] == RENDER_PAGES
+    assert {name: action for name, action in loaded.items() if name != "pdf"} == {
+        name: ADMIT_OR_FAN_OUT for name in sorted(SNIFFABLE_FORMATS - {"pdf"})
+    }
+
+
+def _routing_rows(overrides: dict[str, str] | None = None) -> str:
+    """The shipped shape of the routing table, with named rows swapped out."""
+    rows = {
+        name: RENDER_PAGES if name == "pdf" else ADMIT_OR_FAN_OUT
+        for name in sorted(SNIFFABLE_FORMATS)
+    }
+    rows.update(overrides or {})
+    return "\n".join(f'{name} = "{action}"' for name, action in sorted(rows.items()))
+
+
+def test_routing_a_raster_format_through_page_rendering_refuses_at_load(tmp_path):
+    """`render-pages` re-encodes unconditionally; no raster format may take it.
+
+    This is the half of the guard that protects the *common* case.  A single-page
+    TIFF routed to `render-pages` would be decoded and re-encoded into new PNG
+    pixels on every run, when its own bytes already seal cleanly — GOVERNANCE 4's
+    immutable Exemplar, spent for nothing.  Refusing the configuration is what makes
+    "a single-page TIFF keeps its own bytes" a property of the door rather than a
+    habit of whoever last edited the file.
+    """
+    path = tmp_path / "tiff-rendered.toml"
+    path.write_text(
+        f"[format]\n{_routing_rows(overrides={'tiff': RENDER_PAGES})}\n", encoding="utf-8"
+    )
+    with pytest.raises(FormatPolicyRefusal, match="always containers of pages"):
+        load_format_policy(path)
+
+
+def test_routing_pdf_away_from_page_rendering_refuses_at_load(tmp_path):
+    """The other half: a PDF handed to a raster decoder paints no page at all."""
+    path = tmp_path / "pdf-rastered.toml"
+    path.write_text(
+        f"[format]\n{_routing_rows(overrides={'pdf': ADMIT_OR_FAN_OUT})}\n", encoding="utf-8"
+    )
+    with pytest.raises(FormatPolicyRefusal, match="always containers of pages"):
+        load_format_policy(path)
 
 
 def test_an_unreadable_admission_list_is_a_failed_check_not_an_empty_one(tmp_path):
@@ -117,8 +163,8 @@ def test_the_shipped_decoder_routes_parse_as_the_one_table_they_claim_to_be():
 def test_an_unknown_magic_or_handbuilt_missing_route_gets_a_generic_raster_attempt():
     """Neither case may reintroduce a format-policy refusal path."""
     partial_policy = {name: action for name, action in POLICY.items() if name != "webp"}
-    assert classify_detected_format("webp", partial_policy) == RASTER
-    assert classify_detected_format(None, POLICY) == RASTER
+    assert classify_detected_format("webp", partial_policy) == ADMIT_OR_FAN_OUT
+    assert classify_detected_format(None, POLICY) == ADMIT_OR_FAN_OUT
 
 
 # --- Test 1: admission by bytes, never by extension ------------------------------
@@ -172,15 +218,25 @@ def test_scanner_style_jpeg_suffix_bytes_are_admitted():
     assert outcome == AdmissionOutcome("admitted", None, "jpeg", digest_bytes(data), (5, 4))
 
 
-@pytest.mark.parametrize(
-    ("data", "detected"),
-    [(single_gray_page_pdf(), "pdf"), (tiff(4, 5), "tiff")],
-)
-def test_pdf_and_tiff_are_page_containers_not_single_image_refusals(data, detected):
-    """The door owns their page count and one-time rendering, not `inspect_source`."""
-    assert classify_detected_format(detected, POLICY) == RENDER_PAGES
+def test_pdf_is_a_page_container_not_a_single_image_refusal():
+    """The door owns PDF's page count and one-time rendering, not `inspect_source`."""
+    assert classify_detected_format("pdf", POLICY) == RENDER_PAGES
     with pytest.raises(ValueError, match="page container"):
-        inspect_source(data, declared_sha256=None, policy=POLICY)
+        inspect_source(single_gray_page_pdf(), declared_sha256=None, policy=POLICY)
+
+
+def test_a_single_page_tiff_is_admitted_as_one_image_and_never_re_encoded():
+    """The common TIFF is one image, and its own bytes are what gets sealed.
+
+    Lane B's finding, kept: a PDF is *always* a container, but a TIFF usually is
+    not, and nothing in Tyrel's ruling asks for an ordinary flatbed scan to be
+    decoded and re-encoded on its way in. `inspect_source` decides it here, which
+    is what makes the sealed bytes the submitted bytes.
+    """
+    data = tiff(4, 5)
+    assert classify_detected_format("tiff", POLICY) == ADMIT_OR_FAN_OUT
+    outcome = inspect_source(data, declared_sha256=None, policy=POLICY)
+    assert outcome == AdmissionOutcome("admitted", None, "tiff", digest_bytes(data), (4, 5))
 
 
 # --- Test 2: the refusal vocabulary is closed, and every member is exercised ------

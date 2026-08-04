@@ -42,17 +42,21 @@ same core source rows but not a real filename ledger.
 `config/admitted_formats.toml` names how a detected format is read, never a policy
 decision to decline it:
 
-- `raster`: Pillow decodes the source pixels and a one-frame raster is sealed
-  unchanged. If its decoder reports multiple frames, every frame fans out and is
-  sealed as one lossless PNG page.
-- `render-pages`: the door assigns stable ordinals and seals one lossless PNG per
-  page.
+- `admit-or-fan-out`: Pillow decodes the source pixels and a one-frame raster is
+  sealed unchanged, as its own original bytes. If its decoder reports multiple
+  frames, every frame fans out to its own ordinal and is sealed as one lossless PNG
+  page. This is every raster format, TIFF included.
+- `render-pages`: a format that is always a document of pages — PDF alone, enforced
+  when the routing is loaded. The door assigns stable ordinals and seals one
+  lossless PNG per page.
 
 PNG, JPEG, TIFF, PDF, GIF, BMP, WebP, HEIC and an unknown signature all receive a
 decoder attempt by bytes, not extension. A valid image the installed readers do not
 yet understand becomes a named `unsupported-variant` or `unrecognized-format`
 pipeline alarm, not `refused-format`—that enum member no longer exists. JPEG bytes
-after EOI are retained. TIFF, including ordinary multi-page TIFF, fans out.
+after EOI are retained. TIFF, including ordinary multi-page TIFF and the LZW, Deflate, PackBits and CCITT
+compressions flatbed scanners produce, fans out; a single-page TIFF keeps its own
+bytes and is never re-encoded.
 
 PDF is rendered as a whole page with PDFium at the door. Its visible content stream,
 text, vectors, images, rotation, annotations, and initialized form appearances are

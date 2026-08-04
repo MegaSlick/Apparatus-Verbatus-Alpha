@@ -4,6 +4,23 @@ The door does not keep a list of image formats to reject.  Its configuration say
 whether a decoder reads a source as one raster or fans a container into pages.  A
 real file that the installed decoders cannot read is a named pipeline alarm, never
 a policy decision about the submitter's format.
+
+**There are two actions, and the difference between them is whether the format is
+*always* a container.**  PDF always is: every PDF is a document of pages, and a
+one-page PDF is still a page that has to be painted before there are any pixels at
+all.  Every raster format is *usually* one image and may hold more — multi-page
+TIFF is the case Tyrel named, but APNG, animated GIF, animated WebP and multi-picture
+JPEG are the same shape.  So a raster source is admitted **or** fanned out, and the
+decoder's own frame count decides which: one frame is sealed as its own original
+bytes, unmodified, and more than one is fanned out to per-page ordinals and rendered.
+
+That is why there is no bare `admit`.  An action that seals a source without ever
+asking how many frames it holds is the door defect that lost every page after the
+first of a multi-page TIFF; removing the action removes the failure rather than
+testing for it.  `render-pages` is restricted at load time to PDF alone for the
+mirror-image reason: routing a raster format through it would re-encode every
+ordinary single-page file for nothing, and a single-page TIFF that seals cleanly as
+its own bytes must keep them (GOVERNANCE 4 — the Exemplar is the immutable source).
 """
 
 from __future__ import annotations
@@ -23,9 +40,15 @@ DEFAULT_FORMAT_POLICY_PATH: Final = (
     Path(__file__).resolve().parents[2] / "config" / "admitted_formats.toml"
 )
 
-RASTER: Final = "raster"
+# A raster format: decoded, and then admitted as its own unmodified bytes when the
+# decoder reports one frame, or fanned out to one ordinal per frame when it reports
+# more.  Named for both halves because both really happen; a name that said only
+# "raster" hid the fan-out that keeps page two of a scan.
+ADMIT_OR_FAN_OUT: Final = "admit-or-fan-out"
+# A format that is always a container of pages.  PDF alone, enforced at load.
 RENDER_PAGES: Final = "render-pages"
-ACTIONS: Final = frozenset({RASTER, RENDER_PAGES})
+ALWAYS_A_CONTAINER: Final = frozenset({"pdf"})
+ACTIONS: Final = frozenset({ADMIT_OR_FAN_OUT, RENDER_PAGES})
 SNIFFABLE_FORMATS: Final = image_formats.SNIFFABLE_FORMATS
 
 
@@ -105,6 +128,19 @@ def load_format_policy(path: Path = DEFAULT_FORMAT_POLICY_PATH) -> dict[str, str
                 f"{path} gives format {format_name!r} the action {action!r}, "
                 f"which is not one of {sorted(ACTIONS)}"
             )
+        if (action == RENDER_PAGES) != (format_name in ALWAYS_A_CONTAINER):
+            # Both directions are configuration errors with real costs, so both
+            # refuse rather than being honoured.  A raster format routed through
+            # `render-pages` would re-encode every ordinary one-frame file into
+            # new pixels nobody asked for; a container routed the other way would
+            # be handed to a raster decoder that cannot paint its pages at all.
+            raise FormatPolicyRefusal(
+                f"{path} gives format {format_name!r} the action {action!r}. "
+                f"{sorted(ALWAYS_A_CONTAINER)} are always containers of pages and take "
+                f"{RENDER_PAGES!r}; every other format is usually one image and takes "
+                f"{ADMIT_OR_FAN_OUT!r}, which fans it out only when its decoder reports "
+                "more than one frame"
+            )
     return dict(sorted(table.items()))
 
 
@@ -117,13 +153,13 @@ def classify_detected_format(detected: str | None, policy: dict[str, str]) -> st
     `unrecognized-format` alarm rather than a silent omission.
     """
     if detected is None:
-        return RASTER
+        return ADMIT_OR_FAN_OUT
     try:
         return policy[detected]
     except KeyError:
         # `load_format_policy` prevents this for a shipped policy.  A hand-built
         # caller policy still never gains a policy refusal path.
-        return RASTER
+        return ADMIT_OR_FAN_OUT
 
 
 def inspect_source(

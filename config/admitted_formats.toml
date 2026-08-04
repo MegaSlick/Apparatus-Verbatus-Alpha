@@ -3,23 +3,38 @@
 # policy.  A decoder gap is recorded as an alarm carrying the filename, never as a
 # configuration decision about whether its format may enter.
 #
-# Actions are a closed set:
-#   "raster"       — decode one raster image and retain its original bytes. A
-#                    decoder-reported multi-frame raster is fanned out per frame.
-#   "render-pages" — fan a multi-page container out and rasterise every page once
-#                    at the door, sealing lossless PNG page pixels.
+# Actions are a closed set of two, and the difference between them is whether the
+# format is *always* a container of pages:
 #
-# PDF uses full-page PDFium rasterisation, never embedded-image extraction. TIFF
-# uses the same page-fan-out shape so a multi-page scan cannot lose later pages.
-# Rows cover every format `image_formats.sniff()` can name; a reader absence becomes
-# a named `unsupported-variant` alarm rather than a `refused-format` policy result.
+#   "admit-or-fan-out" — a raster format.  The decoder is asked how many frames the
+#                        source holds.  One frame is admitted as its own original
+#                        bytes, unmodified.  More than one is fanned out to per-page
+#                        ordinals and each frame rasterised once, at the door.
+#                        Multi-page TIFF is the case Tyrel named; APNG, animated GIF
+#                        and animated WebP take the same route, because losing frame
+#                        two is the same defect whatever the container is called.
+#   "render-pages"     — a format that is always a document of pages.  PDF alone:
+#                        every page is painted whole, once, at the door.  Enforced
+#                        at load — a raster format given this action refuses,
+#                        because it would re-encode ordinary single-image files for
+#                        nothing, and a PDF given the other action refuses too.
+#
+# PDF uses full-page PDFium rasterisation, never embedded-image extraction, so text
+# beside an image stays in the sealed pixels.
+#
+# Rows cover every format `image_formats.sniff()` can name, checked at load, so a
+# format can never be routed by omission.  A format the installed decoders cannot
+# read — HEIC in this build — still gets a row here and still gets an ordinal and a
+# filename; what it gets instead of pixels is an `unsupported-variant` alarm saying
+# this pipeline owes it a reader.  That is a defect of ours, not a property of the
+# file, and it is never spelled as a refusal by policy.
 
 [format]
-png = "raster"
-jpeg = "raster"
-tiff = "render-pages"
+png = "admit-or-fan-out"
+jpeg = "admit-or-fan-out"
+tiff = "admit-or-fan-out"
 pdf = "render-pages"
-gif = "raster"
-heic = "raster"
-bmp = "raster"
-webp = "raster"
+gif = "admit-or-fan-out"
+heic = "admit-or-fan-out"
+bmp = "admit-or-fan-out"
+webp = "admit-or-fan-out"
