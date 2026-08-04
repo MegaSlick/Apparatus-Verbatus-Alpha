@@ -51,10 +51,27 @@ from common.stage import (  # noqa: E402
 
 
 def regions_of(context, act_id: str) -> list[dict]:
+    """Every Designator region for this act, its own provenance verified first.
+
+    `pipeline/3_attestatores/run.py::proposed_regions` already validates the
+    identical artifact kind before showing a region to a witness; reading it here
+    unvalidated would let a tampered Designator provenance reach a real reading
+    while the equivalent tamper on a Testimonium is refused. A region always
+    carries a receipt-backed provenance -- `structure_provenance` refuses before
+    any region is cut if the Designator chair is absent or unverifiable -- so
+    every region validated here requires one.
+    """
     records = []
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
         if entry["kind"] == "region" and entry["subject_id"] == act_id:
-            records.append(context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"]))
+            record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+            validate_serving_provenance(
+                context,
+                record["payload"]["provenance"],
+                producer_stage=DESIGNATOR,
+                require_receipt=True,
+            )
+            records.append(record)
     return sorted(records, key=lambda record: record["payload"]["attempt_ordinal"])
 
 

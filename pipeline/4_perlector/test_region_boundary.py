@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from common.chairs.registry import ChairRegistry
+from common.contracts.canonical import canonical_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import region_id
 from common.contracts.stages import DESIGNATOR, EXEMPLAR
@@ -16,6 +18,7 @@ from common.imaging import dimensions
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
+MODELS_CONFIG = ROOT / "config" / "models.toml"
 
 
 def _load_perlector():
@@ -44,6 +47,7 @@ class _Context:
     def __init__(self, tree):
         self.tree = tree
         self.run = tree.read_run()
+        self.registry = ChairRegistry.from_toml(MODELS_CONFIG)
 
 
 @pytest.fixture
@@ -80,6 +84,31 @@ def test_a_region_bound_to_its_actual_exemplar_input_verifies(real_region):
     assert verified["source_page_ordinal"] == region["payload"]["transform"]["source_page_ordinal"]
     assert verified["source_page_id"] == region["payload"]["transform"]["source_page_id"]
     assert verified["transform"] == region["payload"]["transform"]
+
+
+def test_perlector_refuses_a_tampered_designator_region_provenance(real_region):
+    """The mirror of `test_perlector_refuses_a_tampered_testimonium_model_provenance`
+    (pipeline/orchestrator/test_orchestrator_acceptance.py), one join earlier: a
+    region's own GOVERNANCE-6 provenance must be validated before the Perlector
+    treats it as the basis for a real reading, exactly as
+    pipeline/3_attestatores/run.py::proposed_regions already validates the
+    identical artifact kind before showing it to a witness."""
+    context, region = real_region
+    tampered = copy.deepcopy(region)
+    tampered["payload"]["provenance"]["resolved_revision"] = {
+        "kind": "digest-manifest",
+        "value": "0" * 64,
+    }
+    entry = next(
+        entry
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["artifact_id"] == region["artifact_id"]
+    )
+    path = context.tree.resolve(entry["relative_path"])
+    path.write_bytes(canonical_bytes(tampered))
+
+    with pytest.raises(SchemaRefusal, match="resolved revision"):
+        perlector.regions_of(context, region["subject_id"])
 
 
 def test_attestatores_verifies_crop_lineage_before_a_witness_reads_it(real_region, monkeypatch):
@@ -130,9 +159,7 @@ def test_a_crop_relabelled_onto_a_different_act_cannot_pass_as_that_acts_own(rea
         if entry["kind"] == "region"
     ]
     other_act = next(
-        candidate
-        for candidate in regions
-        if candidate["subject_id"] != region["subject_id"]
+        candidate for candidate in regions if candidate["subject_id"] != region["subject_id"]
     )
 
     forged = copy.deepcopy(other_act)
