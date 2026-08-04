@@ -426,8 +426,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> int:
     }
     duplicate = region_id(act_id, transform)
     if any(
-        record["payload"].get("region_id") == duplicate
-        for record in _regions_of(context, act_id)
+        record["payload"].get("region_id") == duplicate for record in _regions_of(context, act_id)
     ):
         raise ContractError(
             f"recovery asked for {act_id}, which already has a recovery region cut "
