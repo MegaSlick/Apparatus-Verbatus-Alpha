@@ -622,7 +622,22 @@ def test_a_submitted_name_that_is_not_valid_utf8_is_a_named_refusal(submission):
     folder = submission["approved"] / "odd-encoding"
     folder.mkdir()
     (folder / "page.png").write_bytes(b"\x89PNG\r\n\x1a\nreal")
-    os.close(os.open(bytes(folder) + b"/LEAK\xff\xfeNAME.png", os.O_CREAT | os.O_WRONLY, 0o600))
+    # Not every filesystem will hold this name. Linux and ext4 — where the chambers
+    # run — accept arbitrary bytes; macOS and APFS reject anything that is not valid
+    # UTF-8 with `OSError: Illegal byte sequence`, so the test cannot construct its
+    # own subject there and dies before reaching the behaviour it is checking.
+    #
+    # Skipping is honest and refusing to run is not a pass: the refusal path this
+    # covers is real on the deployment target, and a machine that cannot even create
+    # the name cannot be reached by it. Written as an attempt rather than a platform
+    # check so it follows the filesystem rather than a guess about which one is
+    # mounted.
+    try:
+        os.close(os.open(bytes(folder) + b"/LEAK\xff\xfeNAME.png", os.O_CREAT | os.O_WRONLY, 0o600))
+    except OSError as error:
+        pytest.skip(
+            f"this filesystem refuses a non-UTF-8 filename, so the case cannot exist here: {error}"
+        )
 
     with pytest.raises(inventory.SubmissionInputError, match="not valid UTF-8"):
         inventory.read_submission(folder, max_bytes=0)
