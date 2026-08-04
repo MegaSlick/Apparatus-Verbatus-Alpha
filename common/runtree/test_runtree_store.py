@@ -351,6 +351,55 @@ def test_every_artifact_read_route_refuses_bytes_from_another_run(tmp_path):
         tree.build_manifest(DESIGNATOR)
 
 
+def test_a_same_named_run_in_another_root_cannot_lend_this_one_its_evidence(tmp_path):
+    """The run id is a name an operator types, and `--run-root` and `--run-id` are
+    independent flags, so two runs may both be called `r1` and a name comparison
+    cannot tell their artifacts apart. A reading produced under one configuration
+    was accepted as the other run's, and that run's manifest, review and export all
+    reconciled around it. A tree restored from a partial backup is enough.
+
+    The config_digest is the run authority's own binding to the source manifest,
+    model roster and adapter recipes it was created with. It is integrity rather
+    than authentication -- anything holding this repository's API can re-seal a
+    forgery, because every input to the hash is inside the record -- but it is the
+    difference between "the same name" and "the same run".
+    """
+    ours = make_run(tmp_path / "a")
+    theirs = make_run(tmp_path / "b", config_digest="d" * 64)
+    foreign = make_envelope()
+    foreign = build_envelope(
+        run_id="r1",
+        artifact_id=foreign["artifact_id"],
+        subject_id=foreign["subject_id"],
+        stage=DESIGNATOR,
+        kind="proposal",
+        outcome="proposed",
+        config_digest="d" * 64,
+        adapter_revision="fake-designator-v0",
+        inputs=[],
+        payload={"proposals": 2},
+    )
+    theirs.publish_artifact(foreign)
+
+    relative = ours.artifact_path(DESIGNATOR, "proposal", foreign["artifact_id"])
+    path = ours.resolve(relative)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = canonical_bytes(foreign)
+    path.write_bytes(data)
+
+    assert foreign["run_id"] == ours.run_id, "the point of the case is that the names match"
+    with pytest.raises(SchemaRefusal, match="two runs may share a name"):
+        ours.read_artifact(DESIGNATOR, "proposal", foreign["artifact_id"])
+    with pytest.raises(SchemaRefusal, match="two runs may share a name"):
+        ours.read_artifact_reference(
+            {"relative_path": relative, "sha256": digest_bytes(data)},
+            stage=DESIGNATOR,
+            kind="proposal",
+        )
+    with pytest.raises(SchemaRefusal, match="two runs may share a name"):
+        ours.build_manifest(DESIGNATOR)
+
+
 def test_a_published_artifact_reads_back_and_revalidates(tmp_path):
     tree = make_run(tmp_path)
     envelope = make_envelope()

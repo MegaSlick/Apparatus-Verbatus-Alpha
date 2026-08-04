@@ -132,6 +132,7 @@ class RunTree:
         # `relative_to` is exact rather than semantic: on macOS a caller passing
         # `/tmp` produces the real `/private/tmp` spelling consistently.
         self.root = resolved
+        self._config_digest: str | None = None
 
     # --- Creation and the run authority ---------------------------------------
 
@@ -576,11 +577,57 @@ class RunTree:
             )
 
     def _verify_artifact_run(self, record: dict[str, Any]) -> None:
-        """Bind every read route to the run tree whose authority is being used."""
+        """Bind every read route to the run tree whose authority is being used.
+
+        The run id alone is not that binding. It is caller-supplied and kept boring
+        on purpose so an operator can type it and find the run again
+        (`identities.validate_run_id`), and `--run-root` and `--run-id` are
+        independent flags — so two runs in two roots may both be `run1` and nothing
+        in a name comparison can tell their artifacts apart. Demonstrated: a
+        `perlectio` from one `run1` dropped into the other `run1` was accepted by
+        every generic read route, and that run's manifest, review and export all
+        reconciled around a reading produced under a different configuration. A tree
+        restored from a partial backup is enough to produce it.
+
+        The `config_digest` is the authority's own binding to the source manifest,
+        model roster and adapter recipes the run was created with, and every stage
+        publishes the one it opened. Comparing it here closes the gap for every
+        artifact rather than only for the Door admissions and Exemplar pages that
+        were already checked against it by hand at their own boundaries.
+
+        This is integrity, not authentication, and the distinction is worth keeping
+        straight: the self-hash and this check together prove a record was not
+        edited by anything unaware of the scheme, and that it belongs to this run's
+        configuration. Neither proves who wrote it — every input to the hash is
+        inside the record, so anything holding this repository's own API can seal a
+        forgery. Nothing here should be read as claiming otherwise.
+        """
         if record["run_id"] != self.run_id:
             raise SchemaRefusal(
                 f"artifact belongs to run {record['run_id']!r}, not {self.run_id!r}"
             )
+        authority = self._run_authority()
+        if authority is not None and record["config_digest"] != authority:
+            raise SchemaRefusal(
+                f"artifact was produced under configuration {record['config_digest']!r} and this "
+                f"run is bound to {authority!r}; two runs may share a name, so the name alone "
+                "does not say an artifact belongs here"
+            )
+
+    def _run_authority(self) -> str | None:
+        """This tree's sealed `config_digest`, or None before `run.json` exists.
+
+        Read once and kept, because it cannot change under a run: `read_run` refuses
+        an authority that fails its own self-hash, and `create` refuses incompatible
+        reuse. None is returned during creation, when the authority genuinely does
+        not exist yet and there is nothing to bind against.
+        """
+        if self._config_digest is None:
+            try:
+                self._config_digest = self.read_run().get("config_digest")
+            except (IncompatibleReuse, SchemaRefusal, OSError):
+                return None
+        return self._config_digest
 
     def _verify_artifact_inputs(self, record: dict[str, Any]) -> None:
         """Verify each direct input before a consumer may reinterpret this artifact.
