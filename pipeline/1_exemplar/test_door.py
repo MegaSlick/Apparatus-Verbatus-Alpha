@@ -825,3 +825,23 @@ def test_the_loud_failure_survives_a_census_it_cannot_read(tmp_path):
     assert "unreadable record" in str(raised.value) or "census could not be read" in str(
         raised.value
     )
+
+
+def test_an_oversized_container_is_refused_for_its_size_not_its_manifest_shape(tmp_path):
+    """`decide` asked the policy before it asked the size, so under a `render-pages`
+    row an over-limit PDF was told "must be declared with a page index" — a statement
+    about a manifest when the measured fact was a size, pointing a reader at the
+    wrong thing to fix."""
+    oversized = two_page_pdf() + b"z" * door.MAX_SOURCE_BYTES
+    sources = [SourceEntry(1, "huge.pdf", None)]
+    tree, context = open_door(tmp_path, sources)
+    assert (
+        process_sources(
+            context, tree, sources, reader({"huge.pdf": oversized}), policy=RENDER_PDF_POLICY
+        )
+        == 0
+    )
+    context.finish(DOOR)
+
+    reason = admissions(tree)[1]["payload"]["reason"]
+    assert reason_code(reason) is RefusalReason.TOO_LARGE

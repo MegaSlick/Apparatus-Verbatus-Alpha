@@ -179,7 +179,12 @@ def decide(
     """
     verdict = admission.classify_detected_format(sniff(data), policy)
     if source.pdf_page_index is None:
-        if verdict == admission.RENDER_PAGES:
+        # The size and emptiness checks live in `inspect_source` and are the first
+        # things it does, so a container that is empty or over the limit falls
+        # through to them rather than being told its manifest shape is wrong. A
+        # 64 MiB-plus PDF used to be refused as "must be declared with a page index",
+        # which is a statement about a manifest when the measured fact was a size.
+        if verdict == admission.RENDER_PAGES and 0 < len(data) <= MAX_SOURCE_BYTES:
             # A multi-page container reaching this branch means a manifest skipped
             # the fan-out `expand_sources` performs; refused rather than guessed at.
             return _Decision(

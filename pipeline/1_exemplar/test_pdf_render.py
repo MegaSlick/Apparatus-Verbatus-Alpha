@@ -470,31 +470,50 @@ def test_zero_entry_cross_reference_subsections_are_bounded():
         count_pages(stuffed)
 
 
+def _xref_only(headers: int, entries: int) -> tuple[bytes, int]:
+    """A cross-reference table with `headers` empty subsections and one real one.
+
+    Built directly rather than through `PdfBuilder`, because the padding has to sit
+    *inside* the xref table: anything spliced earlier in the file shifts every byte
+    offset while `startxref` still names the old one, and the parser then refuses at
+    the first line without reading a single subsection header. That is how the first
+    form of this test came to measure two early refusals and pass with the repair
+    reverted.
+    """
+    out = bytearray(b"%PDF-1.4\n")
+    offset = len(out)
+    out += b"xref\n" + b"0 0\n" * headers
+    out += b"0 %d\n" % entries
+    out += b"0000000100 00000 n \n" * entries
+    out += b"trailer\n<< /Size 1 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF" % offset
+    return bytes(out), offset
+
+
 def test_the_cross_reference_parser_does_not_re_slice_the_file_per_subsection():
     """The bound alone is not the fix. `re.match(pattern, data[pos:])` copies the
     rest of the file every iteration, so the cost is quadratic in (headers x size)
-    below the bound as well as above it. Matching in place is what removes it: a
-    large tail must not change how long a fixed header count takes."""
+    *below* the bound as well as above it. Matching in place is what removes it, and
+    this is the only thing guarding that: at a fixed file size, raising the header
+    count sixteenfold must not raise the time anything like sixteenfold.
+
+    Measured on this machine, at 3 MB and 150,000 entries: in place, 55 ms at 500
+    headers and 60 ms at 8,000 — flat. Re-slicing, 58 ms and 930 ms. The threshold
+    below is generous enough not to be flaky and far tighter than a regression.
+    """
     import time
 
-    def elapsed(tail_bytes: int) -> float:
-        data = single_gray_page_pdf()
-        padding = b"0 0\n" * 2_000
-        stuffed = data.replace(b"xref\n0 ", b"xref\n" + padding + b"0 ", 1)
-        # Padding *after* %%EOF would be refused; this grows the file before the
-        # xref instead, which is the size the old slice-per-iteration copied.
-        stuffed = stuffed.replace(b"%PDF-1.4\n", b"%PDF-1.4\n%" + b"x" * tail_bytes + b"\n", 1)
+    def elapsed(headers: int) -> float:
+        data, offset = _xref_only(headers, 150_000)
         start = time.perf_counter()
-        try:
-            count_pages(stuffed)
-        except PdfRefusal:
-            pass
-        return time.perf_counter() - start
+        table, _trailer = pdf_render._parse_xref_table(data, offset)
+        taken = time.perf_counter() - start
+        # The proof the loop was entered at all, which the first form of this test
+        # did not have: every header and every entry was walked to get here.
+        assert len(table) == 150_000, "the parser did not reach the entries"
+        return taken
 
-    small, large = elapsed(10_000), elapsed(2_000_000)
-    # A 200x larger file, the same 2,000 headers. Quadratic behaviour showed up as
-    # roughly 200x here; a generous ceiling still catches a regression to slicing.
-    assert large < max(0.05, small * 20), (small, large)
+    few, many = elapsed(500), elapsed(8_000)
+    assert many < few * 4, (few, many)
 
 
 def test_a_document_is_parsed_once_however_many_pages_are_rendered():
