@@ -62,6 +62,13 @@ never appear there.
   indices. An export retains those links both in its page census and alongside
   every delivered source region. Terminals are presentation only: they report a
   count and private report location, never image bytes.
+- **What produced a file decides where it goes, never the file's extension.** The
+  old repository ignored personal material by extension and leaked acts as `.md`
+  through the gap; a rule keyed on a suffix is a rule anyone can walk past by
+  renaming. Storage roots are chosen by the stage that wrote the file.
+- **Testimonia sit outside every retention schedule.** They are pipeline records
+  under GOVERNANCE 4 — "testimony is always retained" — and the schedule below
+  governs working copies and exports, never them.
 - Temporary writes are same-directory, flushed and `fsync`ed before atomic
   publication. Retain every run artifact, working copy, export, and ledger until
   the whole run is dead/broken or complete/exported. Only the lifecycle owner may
