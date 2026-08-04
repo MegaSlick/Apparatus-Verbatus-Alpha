@@ -171,6 +171,43 @@ def page_census(context) -> dict[int, dict]:
     return census
 
 
+def pages_marked_out(context) -> dict[str, list[int]]:
+    """Every page ordinal the Designator actually cut a region on, per act.
+
+    The proposal seal names one primary `page_ordinal` per act, and that is not the
+    same question. An act running over a page break is cut on both sides, so its
+    far-side page *was* examined; a continuation page attributed to nobody would be
+    reported as silent when it is the best-covered page in the run. The regions are
+    the record of what was marked out, so they are what the page-coverage question
+    is answered from.
+
+    An act with no region at all — held because its own page never sealed — maps to
+    an empty list rather than being absent. That is a fact about the act, not a gap
+    in the attribution: the page it would have come from is refused in the census
+    and named there.
+    """
+    marked: dict[str, list[int]] = {act["act_id"]: [] for act in expected_acts(context)}
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "region":
+            continue
+        region = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        act_id = region["subject_id"]
+        if act_id not in marked:
+            raise FatalAccounting(
+                f"the Designator cut a region for act {act_id}, which its own proposal seal "
+                "does not expect; a crop of an act nobody declared is invariant #10's imbalance"
+            )
+        ordinal = region["payload"].get("transform", {}).get("source_page_ordinal")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise FatalAccounting(
+                f"the Designator region {entry['artifact_id']} names no integer source page "
+                "ordinal, so the page it examined cannot be reconciled against the census"
+            )
+        if ordinal not in marked[act_id]:
+            marked[act_id].append(ordinal)
+    return {act_id: sorted(ordinals) for act_id, ordinals in marked.items()}
+
+
 def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     records = []
     for entry in context.tree.build_manifest(stage)["artifacts"]:
@@ -379,6 +416,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
     categories: dict[str, ArmariumCategory] = {}
     coverages: dict[str, dict] = {}
+    # The page each act was marked out on, straight from the proposal seal, so the
+    # aggregate can tell a sealed page that produced nothing from one that produced
+    # acts. Without it a silent page reconciles behind its busy neighbours.
+    act_pages: dict[str, list[int]] = {}
+    marked_out_pages = pages_marked_out(context)
     delivered: list[dict] = []
     review_items: list[dict] = []
 
@@ -400,6 +442,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
         categories[act_id] = category
         coverages[act_id] = review["payload"]["coverage"]
+        act_pages[act_id] = marked_out_pages[act["act_id"]]
 
         entry = {
             "act_id": act["act_id"],
@@ -448,6 +491,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         coverages,
         census,
         unaddressed_chairs=unaddressed_chairs(context.registry.config),
+        act_pages=act_pages,
     )
     expected_count = len(expected_acts(context))
     if len(categories) != expected_count:

@@ -16,6 +16,8 @@ import pytest
 from common.contracts import outcomes
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import (
+    NO_ATTRIBUTION_REASON,
+    SILENT_PAGE_REASON,
     ArmariumCategory,
     OutcomeClass,
     check_algebra_is_total,
@@ -243,6 +245,7 @@ def test_a_fully_delivered_well_witnessed_run_is_complete():
             "act_b": witness_coverage({"s1": "genuinely-empty", "s2": "read"}, 2),
         },
         {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1], "act_b": [1]},
     )
     assert aggregate["status"] == "complete"
     assert aggregate["reasons"] == []
@@ -269,10 +272,87 @@ def test_a_sealed_page_carrying_no_acts_is_unresolved_not_inferred_blank():
     """
     aggregate = run_aggregate({}, None, {1: {"outcome": "sealed"}})
     assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == [SILENT_PAGE_REASON.format(ordinal=1)]
+
+
+def test_one_silent_page_beside_a_busy_one_still_forces_partial():
+    """Ruling 15 at page granularity, which is the granularity it was given at.
+
+    The run-level check asked only whether the run produced *any* acts, so a single
+    silent page among busy ones had its proof obligation discharged by its
+    neighbours. At ten thousand pages that is the only shape the defect can take:
+    nobody ships a run where every page is blank, and the one page whose faint ink
+    the Designator missed is exactly the page that reconciled to `complete`.
+    """
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        {"act_a": witness_coverage({"s1": "read"}, 1)},
+        {1: {"outcome": "sealed"}, 2: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
+    )
+    assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == [SILENT_PAGE_REASON.format(ordinal=2)]
+    assert aggregate["by_page_outcome"] == {"sealed": 2}
+
+
+def test_a_run_that_names_no_page_for_its_acts_cannot_check_silence_and_says_so():
+    """Self-enforcement: a caller that supplies no attribution is told, not believed.
+
+    Defaulting to "every page produced something" would have made the check above
+    optional, and an optional conservation check is one a later caller drops.
+    """
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        {"act_a": witness_coverage({"s1": "read"}, 1)},
+        {1: {"outcome": "sealed"}},
+    )
+    assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == [NO_ATTRIBUTION_REASON]
+
+
+def test_an_act_with_no_page_of_its_own_is_named_rather_than_skipped():
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED, "act_b": ArmariumCategory.DELIVERED},
+        {
+            "act_a": witness_coverage({"s1": "read"}, 1),
+            "act_b": witness_coverage({"s1": "read"}, 1),
+        },
+        {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
+    )
+    assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == [
-        "the sealed pages have no diagnosed acts or confirmed-blank evidence; "
-        "silence cannot distinguish a blank page from a detection failure"
+        "act act_b names no page, so the page it came from cannot be checked for coverage"
     ]
+
+
+def test_attribution_naming_an_act_or_a_page_the_run_never_had_is_fatal():
+    with pytest.raises(FatalAccounting, match="attribution names unknown act"):
+        run_aggregate(
+            {"act_a": ArmariumCategory.DELIVERED},
+            {"act_a": witness_coverage({"s1": "read"}, 1)},
+            {1: {"outcome": "sealed"}},
+            act_pages={"act_a": [1], "act_ghost": [1]},
+        )
+    with pytest.raises(FatalAccounting, match="page census does not account for"):
+        run_aggregate(
+            {"act_a": ArmariumCategory.DELIVERED},
+            {"act_a": witness_coverage({"s1": "read"}, 1)},
+            {1: {"outcome": "sealed"}},
+            act_pages={"act_a": [7]},
+        )
+
+
+def test_an_act_marked_out_on_a_page_the_exemplar_never_sealed_is_fatal():
+    """An act cannot exist over pixels that were refused; that is not a partial run,
+    it is a record contradicting itself."""
+    with pytest.raises(FatalAccounting, match="which the Exemplar did not"):
+        run_aggregate(
+            {"act_a": ArmariumCategory.DELIVERED},
+            {"act_a": witness_coverage({"s1": "read"}, 1)},
+            {1: {"outcome": "refused", "reason": "unreadable"}},
+            act_pages={"act_a": [1]},
+        )
 
 
 def test_a_held_act_forces_partial_and_names_itself():
@@ -285,6 +365,7 @@ def test_a_held_act_forces_partial_and_names_itself():
             "act_b": witness_coverage({"s1": "read"}, 1),
         },
         {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1], "act_b": [1]},
     )
     assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == ["act act_b is held-for-review"]
@@ -299,6 +380,7 @@ def test_under_witnessed_coverage_forces_partial_even_when_every_act_delivered()
         {"act_a": ArmariumCategory.DELIVERED},
         {"act_a": witness_coverage({"s1": "read", "s2": "dead", "s3": "dead"}, 3)},
         {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
     )
     assert aggregate["status"] == "partial"
     assert aggregate["by_category"] == {"delivered": 1}
@@ -310,6 +392,7 @@ def test_a_chair_with_no_outcome_yet_forces_partial():
         {"act_a": ArmariumCategory.DELIVERED},
         {"act_a": witness_coverage({"s1": "read", "s2": "read", "s3": "not-run"}, 3)},
         {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
     )
     assert aggregate["status"] == "partial"
     assert "1 chair(s) with no outcome yet" in aggregate["reasons"][-1]
@@ -324,10 +407,17 @@ def test_a_category_that_is_not_a_category_is_fatal():
 
 
 def test_a_fully_sealed_census_leaves_a_complete_run_complete():
+    """Every sealed page produced an act, so nothing is silent and nothing is
+    inferred. This case previously carried only one act across two sealed pages and
+    still read `complete`, which is the blank-by-silence hole one page wide."""
     aggregate = run_aggregate(
-        {"act_a": ArmariumCategory.DELIVERED},
-        {"act_a": witness_coverage({"s1": "read"}, 1)},
+        {"act_a": ArmariumCategory.DELIVERED, "act_b": ArmariumCategory.DELIVERED},
+        {
+            "act_a": witness_coverage({"s1": "read"}, 1),
+            "act_b": witness_coverage({"s1": "read"}, 1),
+        },
         {1: {"outcome": "sealed"}, 2: {"outcome": "sealed"}},
+        act_pages={"act_a": [1], "act_b": [2]},
     )
     assert aggregate["status"] == "complete"
     assert aggregate["reasons"] == []
@@ -345,6 +435,7 @@ def test_a_refused_page_forces_partial_and_names_the_loss():
             1: {"outcome": "sealed"},
             2: {"outcome": "refused", "reason": "digest mismatch at the door"},
         },
+        act_pages={"act_a": [1]},
     )
     assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == ["page 2 was refused: digest mismatch at the door"]
@@ -356,7 +447,8 @@ def test_a_refused_page_with_no_recorded_reason_still_forces_partial():
     aggregate = run_aggregate(
         {"act_a": ArmariumCategory.DELIVERED},
         {"act_a": witness_coverage({"s1": "read"}, 1)},
-        {2: {"outcome": "refused"}},
+        {1: {"outcome": "sealed"}, 2: {"outcome": "refused"}},
+        act_pages={"act_a": [1]},
     )
     assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == ["page 2 was refused: no reason was recorded"]
@@ -381,7 +473,10 @@ def test_a_page_outcome_outside_the_exemplar_vocabulary_is_fatal():
 
 def test_missing_coverage_or_page_census_cannot_look_complete():
     missing_coverage = run_aggregate(
-        {"act_a": ArmariumCategory.DELIVERED}, {}, {1: {"outcome": "sealed"}}
+        {"act_a": ArmariumCategory.DELIVERED},
+        {},
+        {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
     )
     assert missing_coverage["status"] == "partial"
     assert missing_coverage["reasons"] == ["act act_a has no witness-coverage record"]
