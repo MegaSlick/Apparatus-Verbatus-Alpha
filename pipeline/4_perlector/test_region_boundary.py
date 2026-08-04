@@ -11,6 +11,7 @@ import pytest
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import region_id
 from common.contracts.stages import DESIGNATOR, EXEMPLAR
+from common.exemplar_boundary import verify_exemplar_crop_lineage
 from common.imaging import dimensions
 from common.runtree.store import RunTree
 
@@ -113,6 +114,35 @@ def test_a_crop_from_page_one_cannot_claim_another_valid_page(real_region):
 
     with pytest.raises(SchemaRefusal, match="does not trace to its Exemplar page"):
         perlector.verify_region(context, mismatched)
+
+
+def test_a_crop_relabelled_onto_a_different_act_cannot_pass_as_that_acts_own(real_region):
+    """The page-substitution class closed above, one level down: a region whose
+    TRANSFORM genuinely traces to a real sealed page can still be forged onto a
+    different act's identity by relabelling `subject_id` and recomputing only the
+    self-consistent `region_id` — every pixel/page check above stays green,
+    because none of them ever re-derives which act the Designator's own proposal
+    seal actually names for this crop."""
+    context, region = real_region
+    regions = [
+        context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == "region"
+    ]
+    other_act = next(
+        candidate
+        for candidate in regions
+        if candidate["subject_id"] != region["subject_id"]
+    )
+
+    forged = copy.deepcopy(other_act)
+    forged["subject_id"] = region["subject_id"]
+    forged["payload"]["region_id"] = region_id(forged["subject_id"], forged["payload"]["transform"])
+
+    with pytest.raises(ContractError, match="proposal seal's act identity"):
+        verify_exemplar_crop_lineage(context.tree, context.run, forged)
+    with pytest.raises(SchemaRefusal, match="does not trace to its Exemplar page"):
+        perlector.verify_region(context, forged)
 
 
 def test_malformed_exemplar_locators_all_refuse(real_region):

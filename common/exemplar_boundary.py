@@ -278,6 +278,7 @@ def verify_exemplar_crop_lineage(
         raise ContractError("a crop region carries an invalid Exemplar transform")
     if payload.get("region_id") != region_id(region.get("subject_id"), transform):
         raise ContractError("a crop region's identities do not bind its recorded transform")
+    _verify_act_identity_binding(tree, region.get("subject_id"), payload)
     sources = [row for row in run.get("source_manifest", []) if row.get("ordinal") == ordinal]
     if len(sources) != 1:
         raise ContractError("a crop region's source ordinal does not name one submitted page")
@@ -325,6 +326,48 @@ def verify_exemplar_crop_lineage(
         "source_page_id": source_page_id,
         "transform": dict(transform),
     }
+
+
+def _verify_act_identity_binding(tree: RunTree, subject_id: Any, payload: dict[str, Any]) -> None:
+    """Refuse a region whose claimed act does not match the Designator's own seal.
+
+    Everything above proves the region's TRANSFORM traces to a genuine sealed
+    Exemplar page, and that `region_id` is self-consistent with whatever act_id
+    the region already claims as `subject_id` — but nothing before this line ever
+    recomputed that act_id or checked it against the one place act identity is
+    recorded once and never rewritten. A region genuinely cut from a real sealed
+    page, self-consistent under a *relabelled* subject_id, would pass every check
+    above it: pixels that really are act B's crop, filed under act A's identity,
+    with every cryptographic reference still green. That is exactly the class of
+    fault a recent round closed at the page level (a crop carrying the wrong
+    page's identity); this closes its act-level analogue.
+
+    The proposal seal is the downstream expected-act authority (`common/stage.py`'s
+    `expected_acts`) and is emitted once, never rewritten, so a region's `act_key`
+    must name exactly one seal entry, and that entry's own `act_id` — not the
+    region's self-reported one — is what `subject_id` must equal.
+    """
+    act_key = payload.get("act_key")
+    if not isinstance(act_key, str) or not act_key:
+        raise ContractError("a crop region names no act_key to verify its identity against")
+    seal = tree.read_artifact(
+        DESIGNATOR, "proposal-seal", artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
+    )
+    matches = [
+        entry
+        for entry in seal["payload"]["expected_acts"]
+        if entry.get("act_key") == act_key
+    ]
+    if len(matches) != 1:
+        raise ContractError(
+            f"a crop region names act_key {act_key!r}, which the proposal seal does not "
+            "name exactly once"
+        )
+    if matches[0].get("act_id") != subject_id:
+        raise ContractError(
+            "a crop region's subject_id does not match the proposal seal's act identity "
+            "for the act_key it claims"
+        )
 
 
 def _verify_page_source_facts(
