@@ -456,6 +456,36 @@ def test_a_cyclic_ifd_chain_is_still_a_named_decoder_failure():
         count_raster_pages(bytes(data))
 
 
+def test_a_second_page_whose_own_tag_directory_is_unreadable_is_a_named_refusal():
+    """The structural walker above bounds the universal IFD-chain shape only; a
+    later page's per-tag layout is Pillow's to interpret, and Pillow's own internal
+    corruption handling does not always surface as OSError/SyntaxError/ValueError.
+
+    Point the second page's ImageWidth entry at an out-of-line value past EOF.
+    Pillow's `ImageFileDirectory_v2.load()` catches the resulting read failure
+    itself and just warns, leaving that page's tag directory with no ImageWidth at
+    all; establishing that page's dimensions then raises a bare
+    `TypeError("Missing dimensions")` while `n_frames` walks the chain to count
+    pages — deep inside Pillow's plugin code, not this module's. A refusal here is
+    what keeps that one malformed later page from crashing the whole door process
+    over every other source still waiting to be decided (ruling 2)."""
+    data = bytearray(_two_page_tiff())
+    little_endian = data[:2] == b"II"
+    endian = "<" if little_endian else ">"
+    (first_entries,) = struct.unpack_from(endian + "H", data, 8)
+    next_ifd_at = 8 + 2 + first_entries * 12
+    (second_ifd,) = struct.unpack_from(endian + "I", data, next_ifd_at)
+    second_image_width_entry = second_ifd + 2  # entry 0 is always ImageWidth
+    # LONG, count=2 (size 8 > 4) forces an out-of-line read; the offset is garbage.
+    struct.pack_into(endian + "I", data, second_image_width_entry + 4, 2)
+    struct.pack_into(endian + "I", data, second_image_width_entry + 8, len(data) + 999_999)
+
+    with pytest.raises(FormatRefusal):
+        count_raster_pages(bytes(data))
+    with pytest.raises(FormatRefusal):
+        decode_raster(bytes(data), page_index=0)
+
+
 # --- what a TIFF actually stores has to hold the image it declares ----------------
 
 
