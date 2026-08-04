@@ -40,6 +40,7 @@ from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     PERLECTOR_CHAIR,
+    WITNESS_READING_OUTCOMES,
     expected_acts,
     fixture_serving_details,
     open_context,
@@ -57,7 +58,47 @@ def regions_of(context, act_id: str) -> list[dict]:
     return sorted(records, key=lambda record: record["payload"]["attempt_ordinal"])
 
 
-def testimonia_of(context, act_id: str) -> list[dict]:
+def _region_reference(region: dict) -> dict[str, str]:
+    """The exact public region facts a Testimonium may claim it saw."""
+    payload = region["payload"]
+    return {
+        "region_id": payload["region_id"],
+        "image_path": payload["image_path"],
+        "image_sha256": payload["image_sha256"],
+    }
+
+
+def _testimonium_inputs(context, regions: list[dict]) -> list[dict[str, str]]:
+    """The crop blobs that a witness attempt must directly bind."""
+    return sorted(
+        [context.input_ref(region["payload"]["image_path"]) for region in regions],
+        key=lambda reference: (reference["relative_path"], reference["sha256"]),
+    )
+
+
+def validate_testimonium_regions(context, record: dict, proposal_regions: list[dict]) -> None:
+    """Bind a witness's claimed regions to the actual original proposal.
+
+    A Testimonium's direct blob references prove its pixels have not changed, but
+    not by themselves that the `regions` payload names the proposal it was shown.
+    Without this comparison, a resealed record could add a recovery crop and make
+    Perlector mark newly uncovered ink as witnessed.  Recovery must stay visible
+    as recovery, not become retrospective witness coverage.
+    """
+    payload = record["payload"]
+    attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
+    expected_regions = (
+        [_region_reference(region) for region in proposal_regions] if attempted else []
+    )
+    expected_inputs = _testimonium_inputs(context, proposal_regions) if attempted else []
+    if payload.get("regions") != expected_regions or record.get("inputs") != expected_inputs:
+        raise SchemaRefusal(
+            "a Testimonium does not bind exactly the original proposal regions and pixel "
+            "inputs it claims its witness saw"
+        )
+
+
+def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[dict]:
     records = []
     for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] == "testimonium" and entry["subject_id"] == act_id:
@@ -68,6 +109,7 @@ def testimonia_of(context, act_id: str) -> list[dict]:
                 producer_stage=ATTESTATORES,
                 require_receipt=record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES,
             )
+            validate_testimonium_regions(context, record, proposal_regions)
             records.append(record)
     return sorted(records, key=lambda record: record["payload"]["chair"])
 
@@ -102,6 +144,16 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
         reported = record["payload"]["reported"]
         rows.append({"chair": chair, "compared": True, "departed": reported != reading})
     return rows
+
+
+def witnessed_region_ids(testimonia: list[dict]) -> set[str]:
+    """The original regions actually read by at least one completed witness."""
+    return {
+        reference["region_id"]
+        for record in testimonia
+        if record["outcome"] in WITNESS_READING_OUTCOMES
+        for reference in record["payload"]["regions"]
+    }
 
 
 def declared_reading_failure(context, act_key: str) -> str | None:
@@ -246,35 +298,45 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         if not regions:
             raise ContractError(f"act {act_id} reached the Perlector with no region")
 
+        proposal_regions = [
+            region for region in regions if region["payload"].get("origin") == "proposal"
+        ]
+        if not proposal_regions:
+            raise ContractError(
+                f"act {act_id} reached the Perlector with no original proposal region"
+            )
+
         # Every region of the act is verified and read, including a continuation
         # on the next page: an act that ran over the page break and was read only
         # up to the fold would be truncated, which is a failure and not an output.
         bases = [verify_region(context, region) for region in regions]
-        testimonia = testimonia_of(context, act_id)
+        testimonia = testimonia_of(context, act_id, proposal_regions)
         reading = texts[act["act_key"]]
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
         # recrop was never shown to a witness, and saying so is the difference
         # between a gap in the record and a gap nobody can see. It changes nothing
         # about the reading — the Perlector reads the ink either way.
-        witnessed = {
-            reference["region_id"]
-            for record in testimonia
-            if record["outcome"] == "read"
-            for reference in record["payload"]["regions"]
-        }
+        witnessed = witnessed_region_ids(testimonia)
         for basis in bases:
             basis["witness_covered"] = basis["region_id"] in witnessed
 
         # A real reading attempt, so the pinned snapshot is re-verified here, at
         # the moment this reading is produced, and its receipt written.
         provenance = provenance_for(context, chair, attempted=True)
+        testimonium_references = {
+            record["artifact_id"]: context.artifact_ref(
+                ATTESTATORES, "testimonium", record["artifact_id"]
+            )
+            for record in testimonia
+        }
         context.publish(
             kind="perlectio",
             subject_id=act_id,
             outcome=declared_reading_failure(context, act["act_key"]) or "read",
             attempt=attempt_id(act_id, "perlegere", ordinal),
-            inputs=[context.input_ref(basis["image_path"]) for basis in bases],
+            inputs=[context.input_ref(basis["image_path"]) for basis in bases]
+            + list(testimonium_references.values()),
             payload={
                 "act_key": act["act_key"],
                 "attempt_ordinal": ordinal,
@@ -286,6 +348,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                             "chair": record["payload"]["chair"],
                             "artifact_id": record["artifact_id"],
                             "outcome": record["outcome"],
+                            "reference": testimonium_references[record["artifact_id"]],
                         }
                         for record in testimonia
                     ],

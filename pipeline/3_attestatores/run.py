@@ -87,6 +87,15 @@ def declared_failures(context) -> set[tuple[str, str]]:
     }
 
 
+def declared_empty(context) -> set[tuple[str, str]]:
+    """Fixture-declared completed empty readings, distinct from no attempt."""
+    return {
+        (row["act_key"], row["chair"])
+        for row in context.fixture.get("witness_empty", [])
+        if row["scenario"] == context.scenario
+    }
+
+
 def testimony_for(context, act_key: str, chair: str) -> str | None:
     for row in context.fixture["testimony"]:
         if row["act_key"] == act_key and row["chair"] == chair:
@@ -154,6 +163,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
     failures = declared_failures(context)
+    empty = declared_empty(context)
 
     recorded = 0
     for act in expected_acts(context):
@@ -214,6 +224,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 payload = {"reason": f"chair is explicitly absent: {resolved.reason}"}
             elif failed:
                 outcome, payload = "failed", {"reason": "the chair returned no usable report"}
+            elif (act["act_key"], chair) in empty:
+                outcome, payload = "genuinely-empty", {"reported": ""}
             elif reported is None:
                 # Configured, nothing declared for it: not-run, which is an
                 # unresolved unit and forces the run visibly partial. It is not

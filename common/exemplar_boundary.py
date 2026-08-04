@@ -19,8 +19,8 @@ from common.contracts.canonical import digest_bytes, verify_self_hash
 from common.contracts.envelope import validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, page_id, region_id
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
-from common.imaging import dimensions
+from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, RECENSOR
+from common.imaging import crop_png, dimensions
 from common.runtree.store import RunTree
 
 
@@ -303,8 +303,37 @@ def verify_exemplar_crop_lineage(
         or bounds["y"] + bounds["h"] > page_height
     ):
         raise ContractError("a crop region's transform falls outside its Exemplar page")
-    if region.get("inputs") != [{"relative_path": page_path, "sha256": page_digest}]:
-        raise ContractError("a crop region does not input the Exemplar page its transform names")
+    expected_page_ref = {"relative_path": page_path, "sha256": page_digest}
+    inputs = region.get("inputs")
+    origin = payload.get("origin")
+    if origin == "proposal":
+        if inputs != [expected_page_ref]:
+            raise ContractError(
+                "a proposal crop region does not input only the Exemplar page its transform names"
+            )
+    elif origin == "recovery":
+        if not isinstance(inputs, list) or expected_page_ref not in inputs or len(inputs) != 2:
+            raise ContractError(
+                "a recovery crop region does not input its Exemplar page and one recovery request"
+            )
+        request_ref = next(reference for reference in inputs if reference != expected_page_ref)
+        request = tree.read_artifact_reference(
+            request_ref,
+            stage=RECENSOR,
+            kind="recovery-request",
+            subject_id=region["subject_id"],
+        )
+        request_payload = request.get("payload")
+        if (
+            request["outcome"] != "recovery-requested"
+            or not isinstance(request_payload, dict)
+            or request_payload.get("act_key") != payload.get("act_key")
+        ):
+            raise ContractError(
+                "a recovery crop region is not bound to a matching Recensor request"
+            )
+    else:
+        raise ContractError("a crop region has no recognized proposal or recovery origin")
     image_path, image_digest = payload.get("image_path"), payload.get("image_sha256")
     if not isinstance(image_path, str) or not _is_sha256(image_digest):
         raise ContractError("a crop region names no content-addressed crop image")
@@ -313,6 +342,11 @@ def verify_exemplar_crop_lineage(
         {"relative_path": image_path, "sha256": image_digest},
         "the sealed Designator crop",
     )
+    expected_crop = crop_png(page_pixels, bounds)
+    if crop != expected_crop:
+        raise ContractError(
+            "a crop region's pixels are not the exact crop of the Exemplar page its transform names"
+        )
     width, height = dimensions(crop)
     if (width, height) != (bounds["w"], bounds["h"]):
         raise ContractError("a crop region's pixels disagree with its recorded bounds")

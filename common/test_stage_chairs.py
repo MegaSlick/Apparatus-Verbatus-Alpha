@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from common.chairs import ChairIdentity, ChairRegistry
+from common.chairs import ChairIdentity, ChairRegistry, build_receipt
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.runtree.store import RunTree
@@ -228,6 +228,79 @@ def test_a_witness_regime_that_cannot_be_true_is_refused(tmp_path):
         validate_serving_provenance(
             context,
             {**provenance, "adapter_revision": context.adapter_revision, "witness_regime": "named"},
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+
+def test_a_consumed_adapter_receipt_must_retain_the_configured_base_identity(tmp_path):
+    """A structurally valid base role at a different pin is still wrong provenance."""
+    adapter = ChairIdentity(
+        role="attestator_adapter",
+        source="local-repository",
+        repo=None,
+        path="adapter",
+        revision=None,
+        digest_manifest="a" * 64,
+        manifest="manifests/adapter.json",
+        adapter_of="base",
+        serving_recipe="fixture-adapter-v0",
+        license_note="fixture only",
+    )
+    configured_base = ChairIdentity(
+        role="base",
+        source="local-repository",
+        repo=None,
+        path="base",
+        revision=None,
+        digest_manifest="b" * 64,
+        manifest="manifests/base.json",
+        adapter_of=None,
+        serving_recipe="fixture-base-v0",
+        license_note="fixture only",
+    )
+    stale_base = replace(configured_base, digest_manifest="c" * 64)
+
+    class Registry:
+        def resolve(self, role):
+            return {adapter.role: adapter, configured_base.role: configured_base}[role]
+
+    tree = RunTree.create(
+        tmp_path,
+        "adapter-receipt",
+        source_manifest=[],
+        config_digest="d" * 64,
+        adapter_recipes={ATTESTATORES: adapter.serving_recipe},
+        witness_chairs=[],
+    )
+    context = StageContext(
+        tree=tree,
+        run=tree.read_run(),
+        fixture={},
+        scenario="test",
+        stage=ATTESTATORES,
+        adapter_revision=adapter.serving_recipe,
+        args=object(),
+        registry=Registry(),
+    )
+    details = replace(fixture_serving_details(adapter), adapter_identity=stale_base)
+    reference, _ = tree.write_run_receipt(build_receipt(adapter, details))
+    provenance = {
+        "chair": adapter.role,
+        "chair_state": "configured",
+        "resolved_identity": adapter.to_record(),
+        "resolved_revision": {
+            "kind": adapter.receipt_revision_kind,
+            "value": adapter.receipt_revision,
+        },
+        "receipt_ref": reference.to_record(),
+        "adapter_revision": adapter.serving_recipe,
+    }
+
+    with pytest.raises(SchemaRefusal, match="configured base identity"):
+        validate_serving_provenance(
+            context,
+            provenance,
             producer_stage=ATTESTATORES,
             require_receipt=True,
         )

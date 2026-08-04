@@ -14,15 +14,22 @@ from pathlib import Path
 
 from PIL import Image
 
-from common.contracts.canonical import canonical_bytes
+from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.identities import artifact_id
-from common.contracts.stages import DESIGNATOR, EXEMPLAR
+from common.contracts.stages import EXEMPLAR
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, EXIT_HELD
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
+
+
+def snapshot(root: Path) -> dict[str, bytes]:
+    """Raw tree bytes for assertions after deliberately breaking validation."""
+    return {
+        str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()
+    }
 
 
 def populated_run(tmp_path, scenario: str = "happy") -> RunTree:
@@ -68,7 +75,7 @@ def invoke_designator(tmp_path, scenario: str = "happy") -> subprocess.Completed
     )
 
 
-def test_missing_exemplar_page_stops_at_the_first_downstream_boundary_with_its_filename(tmp_path):
+def test_missing_exemplar_page_stops_at_the_first_downstream_boundary(tmp_path):
     tree = populated_run(tmp_path)
     entry = next(
         entry
@@ -76,15 +83,14 @@ def test_missing_exemplar_page_stops_at_the_first_downstream_boundary_with_its_f
         if entry["kind"] == "page"
         and tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])["payload"]["ordinal"] == 2
     )
-    before = tree.build_manifest(DESIGNATOR)
     tree.resolve(entry["relative_path"]).unlink()
-    tree.write_manifest(EXEMPLAR)
+    before = snapshot(tree.root)
 
     result = invoke_designator(tmp_path)
     assert result.returncode == EXIT_FATAL
-    assert "page-2.png" in result.stderr
-    assert "lost submitted page" in result.stderr
-    assert tree.build_manifest(DESIGNATOR) == before
+    assert "artifact input" in result.stderr
+    assert entry["relative_path"] in result.stderr
+    assert snapshot(tree.root) == before
 
 
 def test_a_tampered_corpus_seal_stops_before_the_designator_reads_any_page(tmp_path):
@@ -93,6 +99,7 @@ def test_a_tampered_corpus_seal_stops_before_the_designator_reads_any_page(tmp_p
     path = tree.resolve(tree.artifact_path(EXEMPLAR, "seal", identity))
     record = json.loads(path.read_text(encoding="utf-8"))
     record["payload"]["pages"][0]["declared_path"] = "wrong-name.png"
+    record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
     tree.write_manifest(EXEMPLAR)
 
@@ -118,13 +125,14 @@ def test_a_changed_sealed_pixel_blob_stops_before_designator_crops_or_rehashes_i
         output = BytesIO()
         changed.save(output, format="PNG")
     blob_path.write_bytes(output.getvalue())
-    before = tree.build_manifest(DESIGNATOR)
+    before = snapshot(tree.root)
 
     result = invoke_designator(tmp_path)
 
     assert result.returncode == EXIT_FATAL
-    assert "sealed Exemplar pixel blob" in result.stderr
-    assert tree.build_manifest(DESIGNATOR) == before
+    assert "changed under a sealed reference" in result.stderr
+    assert page["payload"]["image_path"] in result.stderr
+    assert snapshot(tree.root) == before
 
 
 def test_a_missing_sealed_pixel_blob_is_a_named_boundary_failure_not_a_traceback(tmp_path):
@@ -137,14 +145,15 @@ def test_a_missing_sealed_pixel_blob_is_a_named_boundary_failure_not_a_traceback
     )
     page = tree.read_artifact(EXEMPLAR, "page", page_entry["artifact_id"])
     tree.resolve(page["payload"]["image_path"]).unlink()
-    before = tree.build_manifest(DESIGNATOR)
+    before = snapshot(tree.root)
 
     result = invoke_designator(tmp_path)
 
     assert result.returncode == EXIT_FATAL
-    assert "sealed Exemplar pixel blob could not be read" in result.stderr
+    assert "artifact input" in result.stderr
+    assert page["payload"]["image_path"] in result.stderr
     assert "Traceback" not in result.stderr
-    assert tree.build_manifest(DESIGNATOR) == before
+    assert snapshot(tree.root) == before
 
 
 def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary(tmp_path):
@@ -162,4 +171,5 @@ def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary
     result = invoke_designator(tmp_path, "refused-page")
 
     assert result.returncode == EXIT_FATAL
-    assert "refused Door admission could not be read" in result.stderr
+    assert "artifact input" in result.stderr
+    assert admission_path in result.stderr

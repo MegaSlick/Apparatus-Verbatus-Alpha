@@ -1,15 +1,53 @@
 # Attestatores — handoff
 
-**What this stage writes:** one recorded outcome per configured witness per act. A completed
-outcome contains that witness's Testimonium; a non-run or failure is explicit, never an
-absent file that downstream code can mistake for complete coverage.
+The Attestatores records one append-only `kind="testimonium"` outcome for every
+configured witness and every act in the Designator's proposal seal. It writes
+ordinary `skeleton.v1` artifacts under `3_attestatores/artifacts/`; the derived
+manifest is only inventory. A missing record is never a witness outcome.
 
-**Where it writes it:** the run's `{run}/<this stage>/` folder.
+## Input boundary
 
----
+The stage reads the self-hashed proposal denominator and its exact Designator
+evidence. For a proposed act it accepts only `origin="proposal"` regions,
+validates each crop against the exact Exemplar page and transform, and gives all
+configured witnesses that same original proposal set. A recovery crop is not
+silently substituted for what a witness saw. For a Designator-held act, every
+witness receives an explicit `not-run` outcome instead of a partial reading.
 
-Before this stage's implementation is accepted, this document must declare the exact
-schema and invariants of every file it writes, grounded in proof-page evidence.
+The current writer is the deterministic synthetic skeleton. It is a contract
+exercise, not a live witness/model integration; a real run does not reach it
+because System 03 stops before real structural proposal work.
 
-This document is the only thing downstream stages may rely on. They read these
-files; they never import this stage's code.
+## `kind="testimonium"`
+
+Each record is subject-bound to the act and attempt-bound to
+`read:<chair>:<ordinal>`. The current fixture writer emits `read`,
+`genuinely-empty`, `failed`, or `not-run`; all remain visible as history. Its
+payload includes:
+
+```text
+chair, act_key, attempt_ordinal
+regions = [{region_id, image_path, image_sha256}, ...]
+provenance, format_capabilities, content_health
+reported                for read and genuinely-empty outcomes
+reason                  for failed/not-run outcomes
+```
+
+For `read`, `genuinely-empty`, and `failed`, the direct input set is precisely
+the pixel blobs of the proposal regions attempted, and provenance includes the
+resolved chair identity, revision, adapter recipe, and a serving receipt. A
+genuinely-empty report is a completed read of the pixels (`reported=""` and
+`content_health.empty=true`), not an absent attempt; it counts as witness
+coverage. `not-run` carries no invented receipt or region input.
+
+## Consumer obligations
+
+Perlector reads every Testimonium for an act, verifies its direct inputs and
+serving provenance, and requires its `regions` payload to be exactly the current
+original-proposal region set (not a recovery crop added after the witness ran).
+It retains a digest-checked reference to every record it consulted in the
+Perlectio basis. It may record disagreement structurally, but it does not choose
+a witness, count agreement to determine text, or promote a missing/failed result
+to coverage. Recensor derives a current outcome per chair only by the recorded
+attempt ordinal and refuses duplicate ordinals rather than choosing an arbitrary
+record.

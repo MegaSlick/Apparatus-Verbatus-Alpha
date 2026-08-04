@@ -1,11 +1,11 @@
 # contracts
 
-The one executable authority for `skeleton.v0`. Every stage's `HANDOFF.md`
+The one executable authority for `skeleton.v1`. Every stage's `HANDOFF.md`
 describes what that stage owns and links here; none of them carries a second copy
 of the schema, because two copies of a contract is one contract and one thing that
 goes stale.
 
-`skeleton.v0` is disposable on purpose. It exists to prove wiring and bookkeeping
+`skeleton.v1` is disposable on purpose. It exists to prove wiring and bookkeeping
 before any model, GPU, or real page exists, and it proves nothing about reading
 ink. `DATA_CONTRACT.md` is written later, from what specs 01–03 actually taught us.
 

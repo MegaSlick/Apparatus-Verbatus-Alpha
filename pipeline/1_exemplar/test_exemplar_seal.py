@@ -26,7 +26,7 @@ from common.contracts.approval import (
     approval_gated_real_ingress_record,
     synthetic_fixture_ingress_record,
 )
-from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, page_id
 from common.contracts.stages import DOOR, EXEMPLAR
@@ -224,7 +224,7 @@ def test_an_edited_seal_refuses_a_rerun_rather_than_building_on_it(tmp_path):
 
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode != 0
-    assert "fails its own self-hash" in result.stderr
+    assert "fails its self-hash" in result.stderr
 
 
 # --- The reconciliation the seal rests on ----------------------------------------
@@ -254,7 +254,7 @@ def test_an_admitted_blob_whose_bytes_changed_refuses(tmp_path):
 
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode != 0
-    assert "no longer match" in result.stderr
+    assert "changed under a sealed reference" in result.stderr
 
 
 def test_an_admitted_blob_that_is_gone_refuses_by_name_rather_than_crashing(tmp_path):
@@ -270,7 +270,8 @@ def test_an_admitted_blob_that_is_gone_refuses_by_name_rather_than_crashing(tmp_
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode == EXIT_FATAL
     assert "Traceback" not in result.stderr
-    assert "an admitted blob could not be read" in result.stderr
+    assert "artifact input" in result.stderr
+    assert admission["payload"]["stored_at"] in result.stderr
     assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
 
 
@@ -282,6 +283,7 @@ def test_a_door_refusal_carrying_a_free_text_reason_is_refused(tmp_path):
     path = tree.resolve(tree.artifact_path(DOOR, "admission", identity))
     record = json.loads(path.read_text(encoding="utf-8"))
     record["payload"]["reason"] = "page-3.png does not carry a PNG signature"
+    record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
     tree.write_manifest(DOOR)
 
@@ -301,6 +303,7 @@ def test_a_synthetic_run_carrying_approval_evidence_is_refused(tmp_path):
         "relative_path": f"receipts/sha256/{'a' * 64}.json",
         "sha256": "a" * 64,
     }
+    record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
     tree.write_manifest(DOOR)
 
@@ -385,6 +388,7 @@ def test_a_fabricated_render_transform_is_refused_rather_than_sealed_or_crashed(
     path = tree.resolve(tree.artifact_path(DOOR, "admission", identity))
     record = json.loads(path.read_text(encoding="utf-8"))
     record["payload"]["rendered_from"] = {"container_page_index": 0}
+    record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
     tree.write_manifest(DOOR)
 

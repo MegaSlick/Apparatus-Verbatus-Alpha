@@ -36,10 +36,12 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.outcomes import check_algebra_is_total  # noqa: E402
 from common.contracts.stages import DESIGNATOR, RECENSOR  # noqa: E402
+from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH, load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    current_recovery_request,
     latest_attempt,
     load_fixture,
     scenario_for,
@@ -62,12 +64,6 @@ SEQUENCE = (
 
 STAGE_PROGRAMS = dict(SEQUENCE)
 
-# A ceiling on dispatch rounds, independent of the per-act budget the Recensor
-# enforces. Two bounds rather than one because they fail differently: the budget
-# stops an act being reconsidered forever, and this stops the orchestrator looping
-# even if a stage misreports its state.
-MAX_RECOVERY_ROUNDS = 3
-
 
 def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     """Run one stage as a program and return its exit code."""
@@ -86,6 +82,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.models_config),
         "--pdf-render-config",
         str(args.pdf_render_config),
+        "--recovery-config",
+        str(args.recovery_config),
     ]
     if args.pdf_target_dpi is not None:
         command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
@@ -100,19 +98,22 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     return completed.returncode
 
 
-def pending_recoveries(tree: RunTree) -> list[str]:
-    """Acts whose latest Recensor word is a request for a replacement region."""
+def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, str]]:
+    """Checked `(act_id, request_id)` pairs whose latest review asks for recovery."""
     by_subject: dict[str, list[dict]] = {}
     for entry in tree.build_manifest(RECENSOR)["artifacts"]:
         if entry["kind"] != "review":
             continue
         record = tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
         by_subject.setdefault(record["subject_id"], []).append(record)
-    return sorted(
-        subject
-        for subject, records in by_subject.items()
-        if latest_attempt(records, "Recensor review")["outcome"] == "recovery-requested"
-    )
+    outstanding: list[tuple[str, str]] = []
+    for subject, records in by_subject.items():
+        review = latest_attempt(records, f"Recensor review of {subject}")
+        if review["outcome"] != "recovery-requested":
+            continue
+        request = current_recovery_request(tree, subject, recovery_policy)
+        outstanding.append((subject, request["artifact_id"]))
+    return sorted(outstanding)
 
 
 def main() -> int:
@@ -140,6 +141,11 @@ def main() -> int:
         type=int,
         default=None,
         help="override the configured PDF target for this run only",
+    )
+    parser.add_argument(
+        "--recovery-config",
+        default=str(DEFAULT_RECOVERY_CONFIG_PATH),
+        help="the bounded recovery policy sealed into this run",
     )
     args = parser.parse_args()
 
@@ -184,18 +190,26 @@ def drive_recovery(args) -> None:
     its own evidence until it liked it.
     """
     tree = RunTree(Path(args.run_root), args.run_id)
+    recovery_policy = load_recovery_policy(args.recovery_config)
+    maximum_rounds = recovery_policy["absolute_cap"]
 
-    for round_number in range(MAX_RECOVERY_ROUNDS + 1):
-        outstanding = pending_recoveries(tree)
+    for round_number in range(maximum_rounds + 1):
+        outstanding = pending_recoveries(tree, recovery_policy)
         if not outstanding:
             return
-        if round_number == MAX_RECOVERY_ROUNDS:
+        if round_number == maximum_rounds:
             raise ContractError(
                 f"recovery is still outstanding for {outstanding} after "
-                f"{MAX_RECOVERY_ROUNDS} rounds. The loop is bounded and stops"
+                f"{maximum_rounds} rounds. The run-bound policy stops the loop"
             )
-        for act_id in outstanding:
-            invoke(STAGE_PROGRAMS[DESIGNATOR], args, operation="recover", act=act_id)
+        for act_id, request_id in outstanding:
+            invoke(
+                STAGE_PROGRAMS[DESIGNATOR],
+                args,
+                operation="recover",
+                act=act_id,
+                recovery_request=request_id,
+            )
             invoke(STAGE_PROGRAMS["perlector"], args, act=act_id)
         invoke(STAGE_PROGRAMS[RECENSOR], args)
 

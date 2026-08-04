@@ -19,13 +19,12 @@ outcome, and no count of agreeing chairs can change a reading.
 """
 
 import sys
-import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
+from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.outcomes import OutcomeClass, classify, witness_coverage  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
@@ -34,35 +33,23 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
+from common.recovery import load_recovery_policy  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
     expected_acts,
     latest_attempt,
     open_context,
+    reading_basis_regions,
     run_stage,
     scenario_for,
     stage_parser,
 )
 
 
-def recovery_budget(root: str = "config") -> dict:
-    path = Path(root) / "recovery.toml"
-    if not path.exists():
-        raise ContractError(
-            f"no {path}: the recovery loop refuses to run without a tracked, finite "
-            "budget. An unbounded loop is how a system reconsiders itself forever"
-        )
-    with open(path, "rb") as handle:
-        config = tomllib.load(handle)
-    allowed = config["budget"]["fallback_recrop"] + config["budget"]["page_level_reread"]
-    cap = config["absolute_cap"]
-    if allowed > cap:
-        raise ContractError(
-            f"the configured recovery budget of {allowed} exceeds the absolute cap "
-            f"of {cap}. The cap is a ruling, not a default"
-        )
-    return {"allowed": allowed, "absolute_cap": cap}
+def recovery_budget(path: str) -> dict:
+    """The run-bound recovery policy, read through the common validator."""
+    return load_recovery_policy(path)
 
 
 def designator_hold(context, act_id: str) -> tuple[dict, str]:
@@ -96,13 +83,69 @@ def chair_outcomes(context, act_id: str) -> dict[str, str]:
     Derived, never stored as a pointer. A failed attempt 2 over a successful
     attempt 1 therefore reads as `failed`, with attempt 1 intact as history.
     """
-    latest: dict[str, dict] = {}
+    by_chair: dict[str, list[dict]] = {}
     for record in artifacts_for(context, ATTESTATORES, "testimonium", act_id):
         chair = record["payload"]["chair"]
-        ordinal = record["payload"]["attempt_ordinal"]
-        if chair not in latest or ordinal > latest[chair]["payload"]["attempt_ordinal"]:
-            latest[chair] = record
-    return {chair: record["outcome"] for chair, record in latest.items()}
+        by_chair.setdefault(chair, []).append(record)
+    return {
+        chair: latest_attempt(records, f"testimonium from chair {chair!r} for act {act_id}")[
+            "outcome"
+        ]
+        for chair, records in by_chair.items()
+    }
+
+
+def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, object]:
+    """Return one act's coverage after refusing ambiguous witness history.
+
+    This is deliberately callable before Recensor publishes anything.  A bad
+    testimonium for the second act used to leave a review for the first act on
+    disk before the ambiguity was discovered.  That unpublished fragment was
+    not a completed stage, but it was still an easy thing for a later retry to
+    mistake for history.  Validate the entire witness denominator first.
+    """
+    outcomes = chair_outcomes(context, act_id)
+    sealed = set(context.witness_chairs)
+    missing = sealed - set(outcomes)
+    if missing:
+        raise FatalAccounting(
+            f"act {act_id} has no outcome for configured chair(s) {sorted(missing)}. "
+            "Every configured chair gets an explicit outcome for every act"
+        )
+    unsealed = set(outcomes) - sealed
+    if unsealed:
+        raise FatalAccounting(
+            f"act {act_id} carries a testimonium from chair(s) {sorted(unsealed)}, "
+            f"which this run was not sealed with. `run.json` names its witness "
+            "chairs and nothing may add one after the seal"
+        )
+    return witness_coverage(outcomes, floor)
+
+
+def preflight_witness_denominator(context, floor: int) -> None:
+    """Refuse all witness ambiguity before this stage writes its first review."""
+    for act in expected_acts(context):
+        validate_chair_coverage(context, act["act_id"], floor)
+
+
+def preflight_review_evidence(context) -> None:
+    """Validate every readable act before publishing a review for any one of them."""
+    for act in expected_acts(context):
+        act_id = act["act_id"]
+        if act["outcome"] == "held":
+            designator_hold(context, act_id)
+            continue
+        readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
+        if not readings:
+            raise FatalAccounting(
+                f"act {act_id} reached the Recensor with no reading at all. A unit "
+                "in no terminal set is a fatal accounting imbalance (#10)"
+            )
+        latest = latest_attempt(readings, f"reading of {act_id}")
+        context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
+        if classify(PERLECTOR, latest["outcome"]) is OutcomeClass.COMPLETED:
+            for region in reading_basis_regions(latest, f"reading of {act_id}"):
+                context.input_ref(region["image_path"])
 
 
 def recoveries_so_far(context, act_id: str) -> int:
@@ -114,39 +157,23 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, RECENSOR, registry_factory=registry_factory)
-    budget = recovery_budget()
+    budget = recovery_budget(args.recovery_config)
 
     scenario = scenario_for(context.fixture, context.scenario)
     floor = context.witness_floor
+
+    # This pass must precede publication.  `latest_attempt` refuses duplicate
+    # semantic ordinals rather than selecting an arbitrary hash-sorted record;
+    # doing that only as each act is published can leave an earlier act's review
+    # behind when a later act is malformed.
+    preflight_witness_denominator(context, floor)
+    preflight_review_evidence(context)
 
     held = 0
     for act in expected_acts(context):
         act_id, act_key = act["act_id"], act["act_key"]
 
-        outcomes = chair_outcomes(context, act_id)
-        sealed = set(context.witness_chairs)
-        missing = sealed - set(outcomes)
-        if missing:
-            raise FatalAccounting(
-                f"act {act_id} has no outcome for configured chair(s) {sorted(missing)}. "
-                "Every configured chair gets an explicit outcome for every act"
-            )
-        # **And the other direction, which is the one that counts toward the floor.**
-        # `chair_outcomes` reports every role it finds a testimonium for, not every
-        # role the run was sealed with, and `witness_coverage` counts completed-class
-        # outcomes without asking where they came from. So a testimonium under a role
-        # `run.json` never named raised the completed count and satisfied the witness
-        # floor: two real witnesses and one stranger read as three, and
-        # `under_witnessed` came back False. Demonstrated, and found by CodeRabbit on
-        # pull request 16. A witness this run did not configure is not a witness.
-        unsealed = set(outcomes) - sealed
-        if unsealed:
-            raise FatalAccounting(
-                f"act {act_id} carries a testimonium from chair(s) {sorted(unsealed)}, "
-                f"which this run was not sealed with. `run.json` names its witness "
-                "chairs and nothing may add one after the seal"
-            )
-        coverage = witness_coverage(outcomes, floor)
+        coverage = validate_chair_coverage(context, act_id, floor)
 
         if act["outcome"] == "held":
             # The Designator could not mark this act out. There is no reading to
@@ -181,6 +208,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "in no terminal set is a fatal accounting imbalance (#10)"
             )
 
+        # Every review is about one specific Perlectio, not merely the current
+        # object a later stage happens to find.  The reference is both an input
+        # digest and a payload fact so Archetypus can prove it establishes the
+        # exact reading Recensor assessed.
+        latest = latest_attempt(readings, f"reading of {act_id}")
+        reading_class = classify(PERLECTOR, latest["outcome"])
+        reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
+        basis_regions = (
+            reading_basis_regions(latest, f"reading of {act_id}")
+            if reading_class is OutcomeClass.COMPLETED
+            else []
+        )
+
         # The seal's continuation claim against the regions the tree actually
         # holds. A claim with only one proposal region — drift, tampering, or a
         # future bug reintroducing the declared-not-cut gap — may not be
@@ -202,11 +242,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         if not continuation_shortfall and wants_recovery and used < budget["allowed"]:
             # The Recensor asks; the Designator cuts. Recording the request as an
             # artifact is what keeps the loop countable from the tree alone.
-            context.publish(
+            request = context.publish(
                 kind="recovery-request",
                 subject_id=act_id,
                 outcome="recovery-requested",
                 attempt=attempt_id(act_id, "recover", ordinal),
+                inputs=[reading_ref],
                 payload={
                     "act_key": act_key,
                     "attempt_ordinal": ordinal,
@@ -214,17 +255,24 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "budget_allowed": budget["allowed"],
                     "budget_used": used,
                     "coverage": coverage,
+                    "perlectio_ref": reading_ref,
+                    "recovery_policy": budget,
                 },
             )
+            request_ref = context.input_ref(request.relative_path)
             context.publish(
                 kind="review",
                 subject_id=act_id,
                 outcome="recovery-requested",
                 attempt=attempt_id(act_id, "recense", ordinal),
+                inputs=[reading_ref, request_ref],
                 payload={
                     "act_key": act_key,
                     "attempt_ordinal": ordinal,
                     "coverage": coverage,
+                    "perlectio_ref": reading_ref,
+                    "recovery_request_ref": request_ref,
+                    "recovery_policy": budget,
                 },
             )
             continue
@@ -237,9 +285,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # GOALS 2 is accuracy against the ink; text nobody successfully read is
         # not a reading, and GOVERNANCE 2 says it may not vanish behind a
         # successful status either. So it is held, visibly, with the outcome named.
-        latest = latest_attempt(readings, f"reading of {act_id}")
-        reading_class = classify(PERLECTOR, latest["outcome"])
-
         if reading_class is not OutcomeClass.COMPLETED:
             outcome, reason = (
                 "held-for-review",
@@ -282,14 +327,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # failure. A held one need not: a `not-run` Perlectio carries no
             # `basis` key at all, and dereferencing it would turn an honest hold
             # into a traceback — the raw missing-field crash a reviewer filed.
-            inputs=[
-                context.input_ref(reference["image_path"])
-                for reference in (
-                    latest["payload"]["basis"]["regions"]
-                    if reading_class is OutcomeClass.COMPLETED
-                    else latest["payload"].get("basis", {}).get("regions", [])
-                )
-            ],
+            inputs=[reading_ref]
+            + [context.input_ref(reference["image_path"]) for reference in basis_regions],
             payload={
                 "act_key": act_key,
                 "attempt_ordinal": ordinal,
@@ -298,6 +337,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "recoveries_used": used,
                 "budget_allowed": budget["allowed"],
                 "absolute_cap": budget["absolute_cap"],
+                "perlectio_ref": reading_ref,
             },
         )
 

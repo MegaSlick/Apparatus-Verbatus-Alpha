@@ -335,6 +335,45 @@ def test_a_corrupted_artifact_on_disk_is_refused_on_read(tmp_path):
         tree.read_artifact(DESIGNATOR, "proposal", envelope["artifact_id"])
 
 
+def test_a_valid_envelope_copied_to_a_different_artifact_path_is_refused(tmp_path):
+    """The producer directory and filename are part of the artifact's identity."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    result = tree.publish_artifact(envelope)
+    forged_id = "art_" + "0" * 16
+    forged_path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", forged_id))
+    forged_path.parent.mkdir(parents=True, exist_ok=True)
+    forged_path.write_bytes(tree.read_bytes(result.relative_path))
+
+    with pytest.raises(SchemaRefusal, match="contents do not match"):
+        tree.read_artifact(DESIGNATOR, "proposal", forged_id)
+    with pytest.raises(SchemaRefusal, match="derived path"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_reading_an_artifact_rechecks_every_direct_input_bytes(tmp_path):
+    tree = make_run(tmp_path)
+    data = b"the source evidence"
+    digest, blob = tree.put_blob(DESIGNATOR, data)
+    envelope = build_envelope(
+        run_id="r1",
+        artifact_id=artifact_id(DESIGNATOR, "proposal", "pg_0123456789abcdef"),
+        subject_id="pg_0123456789abcdef",
+        stage=DESIGNATOR,
+        kind="proposal",
+        outcome="proposed",
+        config_digest=CONFIG_DIGEST,
+        adapter_revision="fake-designator-v0",
+        inputs=[{"relative_path": blob.relative_path, "sha256": digest}],
+        payload={"proposals": 2},
+    )
+    tree.publish_artifact(envelope)
+    tree.resolve(blob.relative_path).write_bytes(b"altered after publication")
+
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
+        tree.read_artifact(DESIGNATOR, "proposal", envelope["artifact_id"])
+
+
 # --- Blobs ---------------------------------------------------------------------
 
 

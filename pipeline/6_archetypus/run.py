@@ -38,6 +38,7 @@ from common.stage import (  # noqa: E402
     expected_acts,
     latest_attempt,
     open_context,
+    reading_basis_regions,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -57,10 +58,29 @@ def final_review(context, act_id: str) -> dict:
     return latest_attempt(artifacts_for(context, RECENSOR, "review", act_id), f"review of {act_id}")
 
 
-def latest_reading(context, act_id: str) -> dict:
-    return latest_attempt(
-        artifacts_for(context, PERLECTOR, "perlectio", act_id), f"reading of {act_id}"
+def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str, str]]:
+    """Resolve the exact Perlectio the Recensor reviewed, never a newer one.
+
+    `latest_attempt` establishes which review is current.  That review then
+    carries the evidence of the reading it assessed.  Looking up the current
+    Perlectio independently would silently establish a recovery attempt nobody
+    reviewed, which is a reconciliation failure rather than a useful fallback.
+    """
+    payload = review.get("payload")
+    if not isinstance(payload, dict):
+        raise FatalAccounting(f"review of {act_id} has no payload")
+    reference = payload.get("perlectio_ref")
+    if not isinstance(reference, dict) or reference not in review.get("inputs", []):
+        raise FatalAccounting(
+            f"accepted review of {act_id} does not retain its digest-checked Perlectio reference"
+        )
+    reading = context.tree.read_artifact_reference(
+        reference,
+        stage=PERLECTOR,
+        kind="perlectio",
+        subject_id=act_id,
     )
+    return reading, reference
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
@@ -91,7 +111,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # absence is what the Armarium reconciles against.
             continue
 
-        reading = latest_reading(context, act_id)
+        reading, reading_ref = reviewed_reading(context, review, act_id)
         # The Recensor now holds an act whose latest reading did not succeed, so
         # reaching here with a failed one means that check was bypassed or a
         # future edit removed it. This is the last stage before the text exists
@@ -105,6 +125,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "from a reading that succeeded, and a failed one is held, never written"
             )
         payload = reading["payload"]
+        regions = reading_basis_regions(reading, f"accepted reading of {act_id}")
+        if not isinstance(payload.get("text"), str):
+            raise FatalAccounting(f"accepted reading of {act_id} has no text string to establish")
         validate_serving_provenance(
             context,
             payload["provenance"],
@@ -119,12 +142,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # an alternative.
             "text": payload["text"],
             "status": "established",
-            "regions": payload["basis"]["regions"],
+            "regions": regions,
             "provenance": payload["provenance"],
             # Dissent travels by reference rather than by value: the Perlectio
             # holds it, and copying it here would create a second copy to drift.
             "dissent_ref": reading["artifact_id"],
-            "recensor_ref": review["artifact_id"],
+            "perlectio_ref": reading_ref,
+            "recensor_ref": context.artifact_ref(RECENSOR, "review", review["artifact_id"]),
         }
         record["self_hash"] = self_hash(record)
 
@@ -132,9 +156,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             kind="archetypus",
             subject_id=act_id,
             outcome="established",
-            inputs=[
-                context.input_ref(region["image_path"]) for region in payload["basis"]["regions"]
-            ],
+            inputs=[record["recensor_ref"], reading_ref]
+            + [context.input_ref(region["image_path"]) for region in regions],
             payload=record,
         )
 

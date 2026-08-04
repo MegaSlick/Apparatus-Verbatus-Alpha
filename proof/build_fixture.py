@@ -86,6 +86,7 @@ PAGE_REFUSALS = (
     {"scenario": "refused-page", "ordinal": 2},
     {"scenario": "refused-first-page", "ordinal": 1},
 )
+WITNESS_EMPTY = ({"scenario": "genuinely-empty-witness", "act_key": "a1", "chair": "attestator_3"},)
 _UNMATCHABLE_SHA256 = "0" * 64
 
 
@@ -259,6 +260,11 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "recover_acts = []",
         "hold_acts = []",
         "",
+        "[[scenario]]",
+        'name = "genuinely-empty-witness"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
         "# A reading that did not succeed. `truncated` is a failed-class Perlector",
         "# outcome that still carries text, which is the combination that matters: the",
         "# Recensor used to ask only whether a reading existed, and the Archetypus",
@@ -280,10 +286,22 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         'act_key = "a2"',
         'chair = "attestator_3"',
         "",
+        "# A completed empty Testimonium means the chair read the region and found no",
+        "# reportable text. It is deliberately distinct from a missing or failed attempt.",
+        "",
         "# Per-scenario declared digests the checked-in bytes cannot match, so the",
         "# door refuses those pages through its real inspection path. The declared",
         "# digest is all zeros: unmistakably not the digest of anything here.",
     ]
+
+    for row in WITNESS_EMPTY:
+        lines += [
+            "",
+            "[[witness_empty]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"act_key = {toml_string(row['act_key'])}",
+            f"chair = {toml_string(row['chair'])}",
+        ]
 
     for refusal in PAGE_REFUSALS:
         lines += [
