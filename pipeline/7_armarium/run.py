@@ -25,7 +25,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.errors import FatalAccounting  # noqa: E402
+from common.contracts.canonical import verify_self_hash  # noqa: E402
+from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
+from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     ArmariumCategory,
     run_aggregate,
@@ -39,6 +41,7 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
+from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -62,23 +65,74 @@ def page_census(context) -> dict[int, dict]:
     a page with none, or with two, is invariant #10's imbalance at the last
     boundary.
     """
+    declared_rows = context.run["source_manifest"]
+    sources: dict[int, dict] = {}
+    for source in declared_rows:
+        ordinal = source.get("ordinal")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise FatalAccounting("the run declares a source without an integer ordinal")
+        if ordinal in sources:
+            raise FatalAccounting(f"the run declares source ordinal {ordinal} more than once")
+        sources[ordinal] = source
+
+    exemplar_manifest = context.tree.build_manifest(EXEMPLAR)
     census: dict[int, dict] = {}
-    for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]:
+    records: dict[int, dict] = {}
+    entries_by_ordinal: dict[int, dict] = {}
+    for entry in exemplar_manifest["artifacts"]:
         if entry["kind"] != "page":
             continue
         record = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
         ordinal = record["payload"].get("ordinal")
-        if not isinstance(ordinal, int):
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
             raise FatalAccounting(
                 f"page outcome {record['artifact_id']} carries no ordinal and cannot "
                 "be reconciled against the sources that arrived"
             )
         if ordinal in census:
             raise FatalAccounting(f"page {ordinal} carries two Exemplar outcomes")
-        census[ordinal] = {
+        source = sources.get(ordinal)
+        if source is None:
+            raise FatalAccounting(
+                f"the Exemplar produced page ordinal {ordinal}, which run.json never submitted"
+            )
+        payload = record["payload"]
+        if payload.get("declared_path") != source.get("relative_path") or payload.get(
+            "declared_sha256"
+        ) != source.get("sha256"):
+            raise FatalAccounting(
+                f"the Exemplar page for ordinal {ordinal} no longer matches its submitted "
+                "filename and digest"
+            )
+        item = {
             "outcome": record["outcome"],
-            "reason": record["payload"].get("reason", ""),
+            "reason": payload.get("reason", ""),
+            "declared_path": source["relative_path"],
+            "declared_sha256": source["sha256"],
+            "page_id": record["subject_id"] if record["outcome"] == "sealed" else None,
         }
+        if "bytes" in source:
+            item["declared_bytes"] = source["bytes"]
+        if "ledger_sha256" in source:
+            item["ledger_sha256"] = source["ledger_sha256"]
+        if source.get("container_page_index") is not None:
+            if payload.get("container_page_index") != source["container_page_index"]:
+                raise FatalAccounting(
+                    f"the Exemplar page for ordinal {ordinal} no longer matches its submitted "
+                    "container page index"
+                )
+            item["container_page_index"] = source["container_page_index"]
+        census[ordinal] = item
+        records[ordinal] = record
+        entries_by_ordinal[ordinal] = entry
+        if record["outcome"] == "sealed":
+            try:
+                verify_sealed_page_pixels(context.tree, context.run, source, record)
+            except ContractError as error:
+                raise FatalAccounting(
+                    "the final Exemplar pixel boundary is not immutable; no export may be "
+                    "written over altered source bytes"
+                ) from error
 
     # Counted, then compared as a set. `RunTree.create` refuses a manifest that
     # repeats an ordinal, so this should be unreachable — but the census is the
@@ -86,7 +140,7 @@ def page_census(context) -> dict[int, dict]:
     # possibly by an older writer. A set comparison alone cannot see the
     # difference between two pages sharing an ordinal and one page, which is
     # exactly the arithmetic that lets a lost page reconcile.
-    declared_ordinals = [page["ordinal"] for page in context.run["source_manifest"]]
+    declared_ordinals = [page["ordinal"] for page in declared_rows]
     declared = set(declared_ordinals)
     if len(declared) != len(declared_ordinals):
         raise FatalAccounting(
@@ -100,7 +154,75 @@ def page_census(context) -> dict[int, dict]:
             f"accounted for {sorted(census)}; a page in neither the sealed nor the "
             "refused set is a fatal accounting imbalance, never a warning"
         )
+    _verify_exemplar_corpus_seal(context, exemplar_manifest, sources, records, entries_by_ordinal)
     return census
+
+
+def _verify_exemplar_corpus_seal(context, manifest, sources, records, entries_by_ordinal) -> None:
+    """Recheck the sealed source census at the final export boundary.
+
+    Designator verifies this on entry, but a corpus seal can still be damaged after
+    that stage has run. The final export cannot treat page artifacts alone as a
+    substitute for the self-hashed authority that reconciled them.
+    """
+    seals = [entry for entry in manifest["artifacts"] if entry["kind"] == "seal"]
+    expected_id = artifact_id(EXEMPLAR, "seal", "corpus-seal")
+    if len(seals) != 1 or seals[0]["artifact_id"] != expected_id:
+        raise FatalAccounting("the Exemplar carries no single derived corpus seal")
+    seal = context.tree.read_artifact(EXEMPLAR, "seal", expected_id)
+    if seal["run_id"] != context.tree.run_id or seal["stage"] != EXEMPLAR:
+        raise FatalAccounting("the Exemplar corpus seal belongs to a different run or stage")
+    payload = seal["payload"]
+    if set(payload) != {"page_count", "pages", "self_hash"} or not verify_self_hash(payload):
+        raise FatalAccounting("the Exemplar corpus seal does not carry a valid self-hashed census")
+    if payload["page_count"] != len(sources) or not isinstance(payload["pages"], list):
+        raise FatalAccounting(
+            "the Exemplar corpus seal count does not reconcile with submitted sources"
+        )
+
+    seal_rows: dict[int, dict] = {}
+    for row in payload["pages"]:
+        ordinal = row.get("ordinal") if isinstance(row, dict) else None
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise FatalAccounting("the Exemplar corpus seal carries a page row without an ordinal")
+        if ordinal in seal_rows:
+            raise FatalAccounting(
+                f"the Exemplar corpus seal names ordinal {ordinal} more than once"
+            )
+        seal_rows[ordinal] = row
+    if set(seal_rows) != set(sources):
+        raise FatalAccounting("the Exemplar corpus seal page set does not reconcile with run.json")
+
+    expected_refs = {
+        (entry["relative_path"], entry["sha256"]) for entry in entries_by_ordinal.values()
+    }
+    actual_refs = {
+        (reference.get("relative_path"), reference.get("sha256")) for reference in seal["inputs"]
+    }
+    if actual_refs != expected_refs or len(seal["inputs"]) != len(expected_refs):
+        raise FatalAccounting("the Exemplar corpus seal inputs do not name every page outcome once")
+
+    for ordinal, source in sources.items():
+        record = records[ordinal]
+        outcome = record["outcome"]
+        expected = {
+            "ordinal": ordinal,
+            "declared_path": source["relative_path"],
+            "declared_sha256": source["sha256"],
+            "page_id": record["subject_id"] if outcome == "sealed" else None,
+            "outcome": outcome,
+            "source_sha256": record["payload"].get("source_sha256")
+            if outcome == "sealed"
+            else None,
+        }
+        for field in ("bytes", "ledger_sha256", "container_page_index"):
+            if source.get(field) is not None:
+                expected[{"bytes": "declared_bytes"}.get(field, field)] = source[field]
+        if seal_rows[ordinal] != expected:
+            raise FatalAccounting(
+                f"the Exemplar corpus seal row for {source['relative_path']!r} does not match "
+                "the final page outcome and filename ledger"
+            )
 
 
 def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
@@ -109,6 +231,50 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
         if entry["kind"] == kind and entry["subject_id"] == subject:
             records.append(context.tree.read_artifact(stage, kind, entry["artifact_id"]))
     return records
+
+
+def export_source_regions(regions: list[dict], census: dict[int, dict]) -> list[dict]:
+    """Attach every delivered crop to the original filename-ledger page it used.
+
+    A region's image digest proves the crop bytes, but an export needs the other
+    half of the citation link too: which original source file/frame those bytes
+    came from.  The Perlector retains the Designator transform's Exemplar page
+    locator; reconcile it against the final census rather than trusting a bare
+    ordinal in a downstream record.
+    """
+    linked: list[dict] = []
+    for region in regions:
+        if not isinstance(region, dict):
+            raise FatalAccounting("an established reading has a non-object source region")
+        ordinal = region.get("source_page_ordinal")
+        page_id = region.get("source_page_id")
+        if (
+            not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or not isinstance(page_id, str)
+        ):
+            raise FatalAccounting("an established source region has no Exemplar page locator")
+        source = census.get(ordinal)
+        if source is None or source.get("outcome") != "sealed":
+            raise FatalAccounting(
+                "an established source region names a page absent from the final sealed census"
+            )
+        if page_id != source.get("page_id"):
+            raise FatalAccounting(
+                "an established source region's Exemplar page id disagrees with the final census"
+            )
+        entry = dict(region)
+        for field in (
+            "declared_path",
+            "declared_sha256",
+            "declared_bytes",
+            "ledger_sha256",
+            "container_page_index",
+        ):
+            if field in source:
+                entry[field] = source[field]
+        linked.append(entry)
+    return linked
 
 
 def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | None]:
@@ -141,6 +307,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, ARMARIUM, registry_factory=registry_factory)
+    # Verify the source ledger's final boundary before publishing even a reusable
+    # manifest entry. A seal damaged after Designator must stop export at once.
+    census = page_census(context)
 
     categories: dict[str, ArmariumCategory] = {}
     coverages: dict[str, dict] = {}
@@ -190,7 +359,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "provenance": payload["provenance"],
                     # The link back to the exact ink: every region, with the
                     # transform that produced it and the digest of its bytes.
-                    "source_regions": payload["regions"],
+                    "source_regions": export_source_regions(payload["regions"], census),
                     "dissent_ref": payload["dissent_ref"],
                 }
             )
@@ -206,7 +375,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             payload=entry,
         )
 
-    census = page_census(context)
     aggregate = run_aggregate(
         categories,
         coverages,

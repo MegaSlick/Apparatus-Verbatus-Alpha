@@ -49,16 +49,12 @@ FIXTURE = "synthetic-two-page-v0"
 # here is legitimate exactly when a commit deliberately changes what a run
 # writes, and then the new value belongs in that commit and nowhere else.
 #
-# Re-pinned again by spec 03. Three deliberate changes move these together:
-# the Exemplar now writes one additional artifact per run — the corpus seal
-# (`kind="seal"`, one per run, self-hashed), which is the whole of the +1 in each
-# file count; `run.json` now seals the run's ingress record, so the walking
-# skeleton says in the authority itself that it was synthetic; and a sealed page
-# derives its identity from the digest the door actually admitted rather than from
-# the fixture's declaration, which for these fixtures is the same string and so
-# moves nothing on its own. Recomputed against the real orchestrator.
-HAPPY_RUN_TREE_DIGEST = "26e80286723858fa639ab49078c7d9340cd23b90feffbd8734673840a330a219"
-REVIEW_RUN_TREE_DIGEST = "8448f1c1acace43d95c3b2c3f4bec80af9e5f6cbcaa758d347b615a62ec7b880"
+# Re-pinned again for the System 03 rebuild. The file count remains fixed, but door
+# admissions, Exemplar pages/census, and Armarium export rows now retain original
+# filename/digest linkage; the Designator independently verifies that census before
+# it creates proposals. Recomputed against the real orchestrator.
+HAPPY_RUN_TREE_DIGEST = "5ff498f55793e83137376dcd8209ac10c74943f977c93a44e9b4e64b3d8451e8"
+REVIEW_RUN_TREE_DIGEST = "5f935160f99a6d1bd9cd83f6f005c058becbbb29d5bdf6cda051c61b2b806b42"
 
 
 def orchestrate(
@@ -162,6 +158,94 @@ def test_every_expected_act_has_exactly_one_terminal_category(happy_run):
     ]
     assert len(entries) == export["expected_acts"] == 2
     assert len({entry["subject_id"] for entry in entries}) == 2
+
+
+def test_the_final_export_keeps_each_original_filename_and_digest_link(happy_run):
+    """Every exported crop names its original source file/frame, not just the pages list."""
+    _, tree = happy_run
+    export = export_of(tree)
+    source_by_ordinal = {row["ordinal"]: row for row in tree.read_run()["source_manifest"]}
+    assert len(export["pages"]) == len(source_by_ordinal) == 2
+    pages_by_ordinal = {page["ordinal"]: page for page in export["pages"]}
+    for page in export["pages"]:
+        source = source_by_ordinal[page["ordinal"]]
+        assert page["declared_path"] == source["relative_path"]
+        assert page["declared_sha256"] == source["sha256"]
+        assert page["page_id"]
+    for delivered in export["delivered"]:
+        assert delivered["source_regions"]
+        for region in delivered["source_regions"]:
+            source = source_by_ordinal[region["source_page_ordinal"]]
+            page = pages_by_ordinal[region["source_page_ordinal"]]
+            assert region["source_page_id"] == page["page_id"]
+            assert region["declared_path"] == source["relative_path"]
+            assert region["declared_sha256"] == source["sha256"]
+
+
+def test_armarium_rechecks_a_corpus_seal_tampered_after_designator(tmp_path):
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    identity = artifact_id(EXEMPLAR, "seal", "corpus-seal")
+    path = tree.resolve(tree.artifact_path(EXEMPLAR, "seal", identity))
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"]["page_count"] = 999
+    path.write_bytes(canonical_bytes(record))
+    before = snapshot(root)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/7_armarium/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "valid self-hashed census" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_armarium_rechecks_sealed_pixels_tampered_after_designator(tmp_path):
+    """The final export has its own pixel boundary, not only a census boundary."""
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    page = next(
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+        and tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])["outcome"] == "sealed"
+    )
+    tree.resolve(page["payload"]["image_path"]).write_bytes(b"altered after Designator")
+    before = snapshot(root)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/7_armarium/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "final Exemplar pixel boundary" in result.stderr
+    assert snapshot(root) == before
 
 
 def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(happy_run):
@@ -540,11 +624,15 @@ def test_the_failed_chair_is_visible_in_the_export(review_run):
 def test_a_delivered_act_still_links_back_to_the_exact_ink(review_run):
     _, tree = review_run
     delivered = export_of(tree)["delivered"][0]
+    source_by_ordinal = {row["ordinal"]: row for row in tree.read_run()["source_manifest"]}
     assert len(delivered["source_regions"]) == 2
     for region in delivered["source_regions"]:
         assert region["image_sha256"]
         assert region["region_id"].startswith("rgn_")
         assert tree.read_bytes(region["image_path"])
+        source = source_by_ordinal[region["source_page_ordinal"]]
+        assert region["declared_path"] == source["relative_path"]
+        assert region["declared_sha256"] == source["sha256"]
 
 
 # --- 7. Every one of the seven handoffs refuses corruption ---------------------

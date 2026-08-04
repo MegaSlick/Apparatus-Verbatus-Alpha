@@ -92,17 +92,32 @@ def verify_region(context, region: dict) -> dict:
         )
 
     width, height = dimensions(data)
-    bounds = payload["transform"]["bounds"]
+    transform = payload["transform"]
+    bounds = transform["bounds"]
     if (width, height) != (bounds["w"], bounds["h"]):
         raise SchemaRefusal(
             f"region {payload['region_id']} is {width}x{height}, but its transform "
             f"claims {bounds['w']}x{bounds['h']}"
+        )
+    source_ordinal = transform.get("source_page_ordinal")
+    source_page_id = transform.get("source_page_id")
+    if (
+        not isinstance(source_ordinal, int)
+        or isinstance(source_ordinal, bool)
+        or source_ordinal < 0
+        or not isinstance(source_page_id, str)
+        or not source_page_id
+    ):
+        raise SchemaRefusal(
+            f"region {payload['region_id']} has no valid Exemplar page locator in its transform"
         )
     return {
         "region_id": payload["region_id"],
         "image_path": payload["image_path"],
         "image_sha256": actual,
         "verified_dimensions": {"w": width, "h": height},
+        "source_page_ordinal": source_ordinal,
+        "source_page_id": source_page_id,
     }
 
 

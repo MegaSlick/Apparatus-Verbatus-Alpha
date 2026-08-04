@@ -40,15 +40,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.approval import (  # noqa: E402
+    APPROVAL_GATED_REAL_INGRESS,
+    parse_data_gate_ingress_record,
+)
+from common.contracts.canonical import verify_self_hash  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
-from common.contracts.identities import attempt_id, region_id  # noqa: E402
+from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
 from common.contracts.stages import DESIGNATOR, EXEMPLAR  # noqa: E402
+from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.imaging import crop_png  # noqa: E402
+from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
+    StageContext,
     act_bounds,
     act_identity,
+    adapter_recipe_for,
     continuation_for,
     fixture_serving_details,
     open_context,
@@ -94,16 +103,137 @@ def page_records(context) -> dict[int, dict]:
     door refused is a page this stage genuinely does not see as ink. The refused
     records still matter here: they are the evidence a hold rests on.
     """
+    manifest = context.tree.build_manifest(EXEMPLAR)
+    source_rows = _source_rows(context.run)
     records = {}
-    for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]:
+    entries_by_ordinal = {}
+    for entry in manifest["artifacts"]:
         if entry["kind"] != "page":
             continue
         record = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
-        records[record["payload"]["ordinal"]] = {
+        ordinal = record["payload"].get("ordinal")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise ContractError("an Exemplar page carries no integer ordinal")
+        if ordinal in records:
+            raise ContractError(f"the Exemplar carries more than one outcome for ordinal {ordinal}")
+        records[ordinal] = {
             "record": record,
             "relative_path": entry["relative_path"],
         }
+        entries_by_ordinal[ordinal] = entry
+    _verify_exemplar_boundary(context, manifest, source_rows, records, entries_by_ordinal)
     return records
+
+
+def _source_rows(run: dict) -> dict[int, dict]:
+    """The submitted denominator, retaining each filename for a useful failure."""
+    rows = run.get("source_manifest")
+    if not isinstance(rows, list) or not rows:
+        raise ContractError("run.json carries no source manifest for the Exemplar boundary")
+    sources: dict[int, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ContractError("run.json carries a source-manifest row that is not an object")
+        ordinal = row.get("ordinal")
+        path = row.get("relative_path")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise ContractError("run.json carries a source-manifest row without an integer ordinal")
+        if ordinal in sources:
+            raise ContractError(f"run.json repeats source ordinal {ordinal}")
+        if not isinstance(path, str) or not path:
+            raise ContractError(f"run.json source ordinal {ordinal} carries no filename")
+        sources[ordinal] = row
+    return sources
+
+
+def _verify_exemplar_boundary(context, manifest, sources, records, entries_by_ordinal) -> None:
+    """Reconcile the immutable Exemplar census before the Designator reads pixels."""
+    expected_ordinals = set(sources)
+    observed_ordinals = set(records)
+    missing = sorted(expected_ordinals - observed_ordinals)
+    if missing:
+        names = [sources[ordinal]["relative_path"] for ordinal in missing]
+        raise ContractError(
+            "the Exemplar boundary lost submitted page(s) before the Designator: "
+            f"{names}. Every filename ledger entry must have one Exemplar outcome"
+        )
+    extra = sorted(observed_ordinals - expected_ordinals)
+    if extra:
+        raise ContractError(
+            f"the Exemplar boundary names page ordinal(s) {extra} absent from run.json's "
+            "submitted source manifest"
+        )
+
+    seals = [entry for entry in manifest["artifacts"] if entry["kind"] == "seal"]
+    expected_id = artifact_id(EXEMPLAR, "seal", "corpus-seal")
+    if len(seals) != 1 or seals[0]["artifact_id"] != expected_id:
+        raise ContractError("the Exemplar boundary carries no single derived corpus seal")
+    seal = context.tree.read_artifact(EXEMPLAR, "seal", expected_id)
+    if seal["run_id"] != context.tree.run_id or seal["stage"] != EXEMPLAR:
+        raise ContractError("the Exemplar corpus seal belongs to a different run or stage")
+    payload = seal["payload"]
+    if set(payload) != {"page_count", "pages", "self_hash"} or not verify_self_hash(payload):
+        raise ContractError("the Exemplar corpus seal does not carry a valid self-hashed census")
+    if payload["page_count"] != len(sources) or not isinstance(payload["pages"], list):
+        raise ContractError(
+            "the Exemplar corpus seal count does not reconcile with submitted sources"
+        )
+
+    census: dict[int, dict] = {}
+    for row in payload["pages"]:
+        if not isinstance(row, dict) or not isinstance(row.get("ordinal"), int):
+            raise ContractError("the Exemplar corpus seal carries a page row without an ordinal")
+        ordinal = row["ordinal"]
+        if ordinal in census:
+            raise ContractError(f"the Exemplar corpus seal names ordinal {ordinal} more than once")
+        census[ordinal] = row
+    if set(census) != expected_ordinals:
+        missing = sorted(expected_ordinals - set(census))
+        names = [sources[ordinal]["relative_path"] for ordinal in missing]
+        raise ContractError(
+            "the Exemplar corpus seal dropped filename-ledger page(s) before the Designator: "
+            f"{names}"
+        )
+
+    expected_refs = {
+        (entry["relative_path"], entry["sha256"]) for entry in entries_by_ordinal.values()
+    }
+    actual_refs = {
+        (reference.get("relative_path"), reference.get("sha256")) for reference in seal["inputs"]
+    }
+    if actual_refs != expected_refs or len(seal["inputs"]) != len(expected_refs):
+        raise ContractError(
+            "the Exemplar corpus seal inputs do not name every page outcome exactly once"
+        )
+
+    for ordinal, source in sources.items():
+        record = records[ordinal]["record"]
+        page = census[ordinal]
+        outcome = record["outcome"]
+        expected = {
+            "ordinal": ordinal,
+            "declared_path": source["relative_path"],
+            "declared_sha256": source["sha256"],
+            "page_id": record["subject_id"] if outcome == "sealed" else None,
+            "outcome": outcome,
+            "source_sha256": record["payload"].get("source_sha256")
+            if outcome == "sealed"
+            else None,
+        }
+        for field in ("bytes", "ledger_sha256", "container_page_index"):
+            if field in source and source[field] is not None:
+                expected[{"bytes": "declared_bytes"}.get(field, field)] = source[field]
+        if page != expected:
+            raise ContractError(
+                f"the Exemplar corpus seal row for {source['relative_path']!r} does not "
+                "match the page outcome and submitted filename ledger"
+            )
+        if outcome == "sealed":
+            # The census proves the page is accounted for; this additionally
+            # proves the actual pixels we are about to crop are the immutable
+            # Door blob the Exemplar sealed.  Never read and re-hash a changed
+            # blob into a fresh region record.
+            verify_sealed_page_pixels(context.tree, context.run, source, record)
 
 
 def sealed_pages(records: dict[int, dict]) -> dict[int, dict]:
@@ -341,10 +471,46 @@ def _regions_of(context, act_id: str) -> list[dict]:
     return records
 
 
+def _open(args, registry_factory) -> tuple[object, bool]:
+    """Open either a fixture stage context or the honest real-input boundary.
+
+    System 03 owns the Exemplar-to-Designator reconciliation, but it does not own
+    a real structural-proposal model.  A real run therefore reaches that check and
+    then stops; it must not fabricate fixture acts, successful no-op work, or a
+    synthetic hold that could make an unproposed corpus look exported.
+    """
+    tree = RunTree(Path(args.run_root), args.run_id)
+    run = tree.read_run()
+    mode, _policy_hash, _reference = parse_data_gate_ingress_record(run.get("ingress"))
+    if mode != APPROVAL_GATED_REAL_INGRESS:
+        return open_context(args, DESIGNATOR, registry_factory=registry_factory), False
+    return (
+        StageContext(
+            tree=tree,
+            run=run,
+            fixture={},
+            scenario="real-submission",
+            stage=DESIGNATOR,
+            adapter_revision=adapter_recipe_for(run, DESIGNATOR),
+            args=args,
+            registry=None,
+        ),
+        True,
+    )
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run through the explicitly supplied structure-chair implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, DESIGNATOR, registry_factory=registry_factory)
+    context, real_input = _open(args, registry_factory)
+
+    if real_input:
+        page_records(context)
+        raise ContractError(
+            "the Exemplar-to-Designator filename-ledger boundary reconciled, but real "
+            "structural proposal/model work is outside System 03; no proposals or holds "
+            "were fabricated"
+        )
 
     if args.operation == "recover":
         if not args.act:
