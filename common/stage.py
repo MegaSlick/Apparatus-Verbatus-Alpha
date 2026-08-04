@@ -366,6 +366,18 @@ def validate_serving_provenance(
 
     if state != "configured":
         raise SchemaRefusal(f"model provenance has unknown chair state {state!r}")
+    # **The allowlist above says which fields may exist; only here is it known which
+    # may exist *together*.** `absence` is legal provenance — on an absent chair — so
+    # the closed schema admits it, and the absent branch returned before this line.
+    # Without this check a configured chair carried an unread `absence` record beside
+    # a full identity: two contradictory claims about the same chair, sealed into a
+    # reading, and the reading still verified. Found by the Terra review seat, which
+    # reproduced it with a fabricated absence for a chair that never existed.
+    if "absence" in provenance:
+        raise SchemaRefusal(
+            f"configured chair {chair!r} carries an absence record; a chair is configured "
+            "or absent, and provenance claiming both is provenance nothing can trust"
+        )
     record = provenance.get("resolved_identity")
     if not isinstance(record, dict):
         raise SchemaRefusal(f"configured chair {chair!r} has no resolved identity")
