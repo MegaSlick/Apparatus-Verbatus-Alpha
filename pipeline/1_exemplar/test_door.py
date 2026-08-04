@@ -93,6 +93,38 @@ def animated_gif() -> bytes:
     return output.getvalue()
 
 
+def truncated_animated_gif() -> bytes:
+    """A real animated GIF cut off inside its second frame's image descriptor.
+
+    Walk the block structure rather than guessing an offset: the byte that makes
+    Pillow raise a bare `IndexError` out of `n_frames` sits one past the byte that
+    produces an orderly `struct.error`, so a hard-coded length would be a fixture
+    that stops proving anything the moment the encoder changes.
+    """
+    data = animated_gif()
+    position = 13
+    if data[10] & 0x80:
+        position += 3 * (2 ** ((data[10] & 7) + 1))
+    descriptors = []
+    while position < len(data):
+        marker = data[position]
+        if marker == 0x2C:
+            descriptors.append(position)
+            position += 10
+            if data[position - 1] & 0x80:
+                position += 3 * (2 ** ((data[position - 1] & 7) + 1))
+            position += 1
+        elif marker == 0x21:
+            position += 2
+        else:
+            break
+        while position < len(data) and data[position]:
+            position += data[position] + 1
+        position += 1
+    assert len(descriptors) == 2, "the fixture is meant to be a two-frame GIF"
+    return data[: descriptors[1] + 9]
+
+
 def open_door(tmp_path, sources, *, run_id="r1", ingress=None):
     """A real tree/context writing the door's own artifacts."""
     tree = RunTree.create(
@@ -684,6 +716,42 @@ def test_a_corrupt_later_tiff_page_cannot_erase_another_sources_admission(tmp_pa
     assert len(records) == 2
     by_name = {record["payload"]["declared_path"]: record for record in records.values()}
     assert by_name["bad-volume.tiff"]["outcome"] == "refused"
+    assert by_name["good-page.png"]["outcome"] == "admitted"
+
+
+def test_a_truncated_animated_gif_cannot_erase_another_sources_admission(tmp_path, monkeypatch):
+    """The same isolation the corrupt-TIFF regression above proves, for the class of
+    decoder fault that was still escaping after it.
+
+    A round narrowed `decode_raster`'s catch set to exclude `IndexError` on the
+    argument that only this project's own code raises it. Pillow raises it too, from
+    `GifImagePlugin._seek` while `n_frames` counts frames — and this file is counted
+    inside `expand_sources`, before any admission exists, so the escape did not just
+    lose this source: it aborted the expansion and every other source in the
+    submission with it. Two sources in, two records out is the whole assertion."""
+    files = {"broken-animation.gif": truncated_animated_gif(), "good-page.png": png(4, 3)}
+    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+        tmp_path, files
+    )
+    run_root = approved / "runs"
+
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            approval_path=approval,
+            ledger_path=ledger_path,
+            run_id="truncated-gif-isolated",
+        )
+        == 0
+    )
+
+    records = admissions(RunTree(run_root, "truncated-gif-isolated"))
+    assert len(records) == 2
+    by_name = {record["payload"]["declared_path"]: record for record in records.values()}
+    assert by_name["broken-animation.gif"]["outcome"] == "refused"
     assert by_name["good-page.png"]["outcome"] == "admitted"
 
 

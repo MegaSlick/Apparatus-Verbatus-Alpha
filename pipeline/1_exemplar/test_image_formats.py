@@ -486,6 +486,61 @@ def test_a_second_page_whose_own_tag_directory_is_unreadable_is_a_named_refusal(
         decode_raster(bytes(data), page_index=0)
 
 
+# --- the decoder boundary: whose code raised it, not which class it was -----------
+
+
+def _two_frame_gif() -> bytes:
+    """A real animated GIF, written by the encoder rather than hand-assembled."""
+    first, second = Image.new("P", (16, 16), 0), Image.new("P", (16, 16), 0)
+    for x in range(16):
+        for y in range(16):
+            first.putpixel((x, y), (x + y) % 8)
+            second.putpixel((x, y), (x * y) % 8)
+    output = BytesIO()
+    first.save(output, "GIF", save_all=True, append_images=[second])
+    return output.getvalue()
+
+
+def test_no_truncation_of_an_animated_gif_escapes_as_a_bare_python_exception():
+    """The whole-Door crash, one byte along from where it was closed.
+
+    A previous round widened this module's catch set to the classes Pillow had been
+    seen to raise; the next narrowed it by removing `KeyError`, `IndexError` and
+    `AttributeError`, reasoning that the guarded block also held project-owned
+    routing and geometry code and a programming defect must not be relabelled as a
+    corrupt image. The reasoning was right and its premise was false: Pillow raises
+    `IndexError` on ordinary malformed input. Cut this GIF inside its second image
+    descriptor and `n_frames` fails at `GifImagePlugin._seek` with a bare
+    `IndexError` — which escaped `decode_raster`, escaped `expand_sources`, and took
+    down every other source in the submission before any admission could be written.
+
+    Sweeping every truncation rather than pinning the one offset is deliberate: the
+    escaping byte was one past the offset that produced a clean refusal, so a single
+    crafted cut proves nothing about its neighbours."""
+    data = _two_frame_gif()
+    escaped = []
+    for cut in range(1, len(data)):
+        try:
+            decode_raster(data[:cut])
+        except FormatRefusal:
+            continue
+        except Exception as error:  # noqa: BLE001 - the point of the test
+            escaped.append((cut, type(error).__name__))
+    assert escaped == []
+
+
+def test_a_project_corruption_verdict_is_not_relabelled_as_a_decoder_gap():
+    """`FormatRefusal` subclasses `ValueError`, and the broad clause used to catch
+    it: a `corrupt` verdict this module raised itself came back out as
+    `unsupported`, with its real reason inside a parenthesis. Ruling 2 makes those
+    two different sentences to write — damaged bytes, or a reader this build owes —
+    so collapsing them into the wrong one loses the alarm's meaning."""
+    with pytest.raises(FormatRefusal) as caught:
+        decode_raster(_two_frame_gif(), page_index=7)
+    assert caught.value.verdict is image_formats.FormatVerdict.CORRUPT
+    assert "page index 7 is outside" in str(caught.value)
+
+
 # --- what a TIFF actually stores has to hold the image it declares ----------------
 
 

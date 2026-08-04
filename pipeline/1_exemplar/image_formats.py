@@ -28,6 +28,7 @@ this stage imports it, so structural inspection only ever happens once, at admis
 import struct
 import warnings
 import zlib
+from contextlib import contextmanager
 from enum import Enum
 from io import BytesIO
 from typing import Any, Final, NamedTuple
@@ -1045,6 +1046,47 @@ def _structural_corruption_check(format_name: str | None, data: bytes) -> None:
             raise
 
 
+@contextmanager
+def _decoder_only(detail: str):
+    """Guard a region that contains nothing but the installed decoder's own work.
+
+    A previous round widened this module's catch set to whatever classes Pillow had
+    been *seen* to raise, and a later one narrowed it back by removing
+    `KeyError`, `IndexError` and `AttributeError` — on the reasoning that the
+    protected block also contained this project's routing and geometry code, so
+    catching those would mislabel a programming defect as image corruption. The
+    reasoning was right and its premise was wrong: Pillow raises `IndexError` on
+    ordinary malformed input. A two-frame GIF truncated inside its second image
+    descriptor makes `n_frames` fail at `GifImagePlugin._seek` with a bare
+    `IndexError`, which escaped `decode_raster` entirely and took the whole
+    submission's expansion down with it — the exact whole-Door crash the
+    `TypeError` arm exists to prevent, reopened one byte along.
+
+    An exception class cannot carry the distinction that argument needs, because
+    the question is *whose code raised it*. A region can. Everything inside this
+    guard is Pillow's, so any exception from it is about the bytes; this project's
+    own checks stay outside, where a defect in them still surfaces as itself.
+
+    `FormatRefusal` subclasses `ValueError`, so it is re-raised explicitly ahead of
+    the broad clause. Without that, a `corrupt` verdict raised by this module came
+    back out relabelled `unsupported`, with the real reason buried in a
+    parenthesis — two different sentences to write to Tyrel (ruling 2), collapsed
+    into the wrong one.
+    """
+    try:
+        yield
+    except (FormatRefusal, UnidentifiedImageError, Image.DecompressionBombError):
+        raise
+    except (Image.DecompressionBombWarning, MemoryError):
+        # A bomb warning has its own named arm at the call site, and a MemoryError
+        # is about this machine rather than about these bytes.
+        raise
+    except Exception as error:
+        raise unsupported(
+            f"image variant: the installed decoder could not {detail} ({error})"
+        ) from error
+
+
 def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
     """Decode one page through Pillow without trusting a filename or extension.
 
@@ -1072,8 +1114,10 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(data)) as image:
-                detected = _pillow_format_name(image.format)
-                frames = getattr(image, "n_frames", 1)
+                with _decoder_only("read what these bytes contain"):
+                    reported_format = image.format
+                    frames = getattr(image, "n_frames", 1)
+                detected = _pillow_format_name(reported_format)
                 if not isinstance(frames, int) or frames < 1:
                     raise corrupt("image: decoder returned no frames")
                 # The fan-out bound, checked on whatever the decoder reports rather
@@ -1093,10 +1137,20 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                 # Seeking chooses the frame but does not ask Pillow to decode its
                 # pixels.  Bound that frame's declared dimensions before `load()`
                 # can inflate attacker-controlled data into memory.
-                image.seek(page_index)
-                geometry = _geometry(detected, image.width, image.height)
-                image.load()
+                with _decoder_only(f"reach page {page_index}"):
+                    image.seek(page_index)
+                    declared = (image.width, image.height)
+                geometry = _geometry(detected, *declared)
+                with _decoder_only(f"decode page {page_index}"):
+                    image.load()
                 return DecodedRaster(detected, geometry.width, geometry.height, frames)
+    except FormatRefusal:
+        # This module's own verdicts, raised by the project-owned checks between the
+        # guarded regions. `FormatRefusal` subclasses `ValueError`, so without this
+        # arm the clause below relabelled every one of them `unsupported` and buried
+        # the real reason in a parenthesis — a `corrupt` page, which says the bytes
+        # are damaged, arriving as a statement about a decoder this build lacks.
+        raise
     except UnidentifiedImageError as error:
         if detected_by_signature is not None:
             raise unsupported(missing_reader_detail(detected_by_signature)) from error
@@ -1105,34 +1159,17 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         raise unsupported(
             f"image variant: decoder rejected unsafe pixel dimensions ({error})"
         ) from error
-    except (
-        OSError,
-        SyntaxError,
-        ValueError,
-        TypeError,
-        EOFError,
-        struct.error,
-        zlib.error,
-    ) as error:
-        # A later frame's internal tag directory can be corrupt in a way the
-        # structural walker above does not interpret (that walker bounds only the
-        # universal IFD-chain shape; Pillow owns the per-tag layout). Reading that
-        # frame's dimensions then fails deep inside Pillow's own plugin code, which
-        # does not raise one of the three exception types above — a real, crafted
-        # multi-page TIFF whose second page's ImageWidth entry points its out-of-line
-        # value past EOF makes Pillow's TiffImagePlugin._setup() raise a bare
-        # TypeError("Missing dimensions") while `n_frames` walks the chain to count
-        # pages. Ruling 2 ("nothing is rejected... a refusal is an alarm, never a
-        # routine outcome") and this module's own per-file isolation (`corrupt`
-        # detail on _tiff_dimension: "a bare struct.error is not a named refusal")
-        # both mean this has to become a closed-taxonomy refusal, not a process
-        # crash that would abort every other source still waiting to be decided.
-        # KeyError, IndexError, and AttributeError deliberately remain uncaught:
-        # the project-owned routing and geometry code in this block can raise those
-        # when it is broken, and a programming defect must not be mislabeled as a
-        # corrupt image merely because it happened while Pillow was open.
+    except (OSError, SyntaxError, ValueError) as error:
+        # `Image.open` itself is the one decoder call outside a `_decoder_only`
+        # region — it has to be, because its two named arms above want their own
+        # wording and its return value owns the context manager that closes the
+        # file. Its plugins convert most of their own faults to
+        # UnidentifiedImageError; these three are what an eager header read can
+        # still raise before a plugin has been chosen. Everything after it is
+        # guarded by region, so no class list here has to guess at Pillow's
+        # internals again.
         raise unsupported(
-            f"image variant: the installed decoder could not read it ({error})"
+            f"image variant: the installed decoder could not open it ({error})"
         ) from error
 
 
@@ -1213,21 +1250,28 @@ def render_raster_page(data: bytes, page_index: int) -> tuple[bytes, ImageGeomet
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(data)) as image:
-                image.seek(page_index)
-                # `decode_raster()` above already made this exact source/frame
-                # pass the project geometry bound before loading it.
-                image.load()
-                source_mode = image.mode
-                source_bands = list(image.getbands())
-                if source_mode in {"1", "L", "LA", "RGB", "RGBA", "I;16"}:
-                    rendered = image.copy()
-                    mode_transform = "identity"
-                else:
-                    target_mode = "RGBA" if "A" in source_bands else "RGB"
-                    rendered = image.convert(target_mode)
-                    mode_transform = f"convert-to-{target_mode.lower()}"
-                output = BytesIO()
-                rendered.save(output, format="PNG", optimize=False, compress_level=9)
+                # Every call here is Pillow's, so the whole body is one guarded
+                # region: this stage owns the mode policy below, not the decoding,
+                # and a decoder fault on a frame `decode_raster` already accepted
+                # is still a statement about the bytes rather than about us.
+                with _decoder_only(f"rasterise page {page_index}"):
+                    image.seek(page_index)
+                    # `decode_raster()` above already made this exact source/frame
+                    # pass the project geometry bound before loading it.
+                    image.load()
+                    source_mode = image.mode
+                    source_bands = list(image.getbands())
+                    if source_mode in {"1", "L", "LA", "RGB", "RGBA", "I;16"}:
+                        rendered = image.copy()
+                        mode_transform = "identity"
+                    else:
+                        target_mode = "RGBA" if "A" in source_bands else "RGB"
+                        rendered = image.convert(target_mode)
+                        mode_transform = f"convert-to-{target_mode.lower()}"
+                    output = BytesIO()
+                    rendered.save(output, format="PNG", optimize=False, compress_level=9)
+    except FormatRefusal:
+        raise
     except (
         UnidentifiedImageError,
         Image.DecompressionBombError,
