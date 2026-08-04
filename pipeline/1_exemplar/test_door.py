@@ -6,6 +6,7 @@ read or checked in.
 """
 
 import json
+import struct
 import subprocess
 import sys
 from io import BytesIO
@@ -60,6 +61,20 @@ def multipage_tiff() -> bytes:
     second = Image.new("L", (2, 5), 231)
     first.save(output, format="TIFF", save_all=True, append_images=[second])
     return output.getvalue()
+
+
+def corrupt_later_tiff_page() -> bytes:
+    """A real two-page TIFF whose second ImageWidth value points past EOF."""
+    data = bytearray(multipage_tiff())
+    endian = "<" if data[:2] == b"II" else ">"
+    (first_ifd,) = struct.unpack_from(endian + "I", data, 4)
+    (first_entries,) = struct.unpack_from(endian + "H", data, first_ifd)
+    next_ifd_at = first_ifd + 2 + first_entries * 12
+    (second_ifd,) = struct.unpack_from(endian + "I", data, next_ifd_at)
+    second_image_width_entry = second_ifd + 2
+    struct.pack_into(endian + "I", data, second_image_width_entry + 4, 2)
+    struct.pack_into(endian + "I", data, second_image_width_entry + 8, len(data) + 999_999)
+    return bytes(data)
 
 
 def animated_gif() -> bytes:
@@ -643,6 +658,33 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     assert boundary.returncode == 2
     assert "filename-ledger boundary reconciled" in boundary.stderr
     assert tree.build_manifest(DESIGNATOR) == before_designator
+
+
+def test_a_corrupt_later_tiff_page_cannot_erase_another_sources_admission(tmp_path, monkeypatch):
+    files = {"bad-volume.tiff": corrupt_later_tiff_page(), "good-page.png": png(4, 3)}
+    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+        tmp_path, files
+    )
+    run_root = approved / "runs"
+
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            approval_path=approval,
+            ledger_path=ledger_path,
+            run_id="corrupt-tiff-isolated",
+        )
+        == 0
+    )
+
+    records = admissions(RunTree(run_root, "corrupt-tiff-isolated"))
+    assert len(records) == 2
+    by_name = {record["payload"]["declared_path"]: record for record in records.values()}
+    assert by_name["bad-volume.tiff"]["outcome"] == "refused"
+    assert by_name["good-page.png"]["outcome"] == "admitted"
 
 
 def test_changed_transfer_bytes_raise_a_digest_alarm_under_the_original_filename(

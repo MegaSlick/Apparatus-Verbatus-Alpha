@@ -1111,9 +1111,6 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         ValueError,
         TypeError,
         EOFError,
-        KeyError,
-        IndexError,
-        AttributeError,
         struct.error,
         zlib.error,
     ) as error:
@@ -1130,6 +1127,10 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         # detail on _tiff_dimension: "a bare struct.error is not a named refusal")
         # both mean this has to become a closed-taxonomy refusal, not a process
         # crash that would abort every other source still waiting to be decided.
+        # KeyError, IndexError, and AttributeError deliberately remain uncaught:
+        # the project-owned routing and geometry code in this block can raise those
+        # when it is broken, and a programming defect must not be mislabeled as a
+        # corrupt image merely because it happened while Pillow was open.
         raise unsupported(
             f"image variant: the installed decoder could not read it ({error})"
         ) from error
