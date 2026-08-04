@@ -7,6 +7,12 @@ dependencies = [
     # Hugging Face snapshot metadata/download client used by common.chairs.  It is
     # pinned so a configured model identity is resolved by a reproducible client.
     "huggingface_hub==1.26.0",
+    # PDFium bindings, used door-private by pipeline/1_exemplar/pdf_render.py to
+    # rasterise PDF pages. Ruling 2026-08-04, item 9: "zero dependencies" is about
+    # VLM models and major tools, never ordinary libraries; this is the library
+    # the old pipeline rasterised PDF with, read through the window as
+    # understanding rather than copied.
+    "pypdfium2==5.12.1",
 ]
 
 # Dependencies are pinned from the first line rather than retrofitted.
