@@ -140,17 +140,34 @@ def open_document(data: bytes) -> OpenPdf:
     return OpenPdf(document, pages)
 
 
+# PDFium's own load-error codes for the two cases that mean "locked", not "broken":
+# an incorrect or absent password, and a security handler PDFium does not implement.
+# `pypdfium2` puts the code on the exception, so this is read rather than inferred.
+PDFIUM_INCORRECT_PASSWORD: Final = 4
+PDFIUM_UNSUPPORTED_SECURITY_SCHEME: Final = 5
+LOCKED_NOT_BROKEN: Final = frozenset(
+    {PDFIUM_INCORRECT_PASSWORD, PDFIUM_UNSUPPORTED_SECURITY_SCHEME}
+)
+
+
 def _open_failure_code(error: Exception) -> RefusalReason:
     """An encrypted PDF is a gap we own; anything else PDFium refuses is damage.
 
-    Lane B's distinction, kept. Nothing in this pipeline can prompt for or supply a
-    password, so a password-protected scan is a real, named thing this project
-    cannot yet read — the same shape as a format with no reader. Calling it
-    `CORRUPT` would tell Tyrel his original was damaged when it is intact and
-    merely locked, which is a different decision for him entirely.
+    Lane B's distinction, kept — nothing in this pipeline can prompt for or supply
+    a password, so a password-protected scan is a real, named thing this project
+    cannot yet read, the same shape as a format with no reader. Calling it `CORRUPT`
+    would tell Tyrel his original was damaged when it is intact and merely locked,
+    which is a different decision for him entirely.
+
+    **Read from the error code, not from the error text.** Lane B matched the words
+    "password" or "encrypt" in the message. PDFium has two locked-document codes and
+    only one of them says "password": the other renders as "Unsupported security
+    scheme error", which contains neither word, so an AES-256 or otherwise
+    unimplemented handler — an intact file — was being reported as damaged. The code
+    is on the exception and says which case it is without a guess.
     """
-    text = str(error).lower()
-    if "password" in text or "encrypt" in text:
+    code = getattr(error, "err_code", None)
+    if code in LOCKED_NOT_BROKEN:
         return RefusalReason.UNSUPPORTED_VARIANT
     return RefusalReason.CORRUPT
 

@@ -16,6 +16,7 @@ import tracemalloc
 import zlib
 from io import BytesIO
 
+import image_formats
 import pytest
 from image_formats import (
     MAX_DIMENSION,
@@ -612,3 +613,37 @@ def _tiff_tag_value_offset(data: bytes, tag: int) -> int:
         if found == tag:
             return entry + 8
     raise AssertionError(f"the synthetic TIFF carries no tag {tag}")
+
+
+def test_a_frame_count_past_the_fan_out_limit_is_refused_by_a_named_bound(monkeypatch):
+    """A page count read out of an untrusted file is a loop bound somebody else wrote.
+
+    The limit is monkeypatched down rather than building five thousand pages: the
+    property is that the bound is applied to whatever the decoder reports, and
+    building the real thing would test the machine's patience instead.
+
+    It is checked on the decoder's own frame count, not only on a classic TIFF's
+    directory chain, because BigTIFF, animated GIF and animated WebP all reach the
+    fan-out without ever passing that chain walker.
+    """
+    monkeypatch.setattr(image_formats, "MAX_RASTER_FRAMES", 1)
+
+    with pytest.raises(FormatRefusal, match="frames exceed the 1-frame fan-out limit"):
+        decode_raster(_two_page_tiff())
+
+
+def test_the_frame_bound_reaches_a_container_the_directory_walker_never_sees():
+    """BigTIFF's chain is 64-bit, so the classic walker returns without counting it.
+
+    Without the decoder-side bound this file's page count would be unbounded — the
+    exact hole the classic-only check left. One page here, and the limit is proved
+    to be the thing that would stop a large one.
+    """
+    output = BytesIO()
+    first = Image.new("L", (4, 3), 19)
+    second = Image.new("L", (2, 5), 231)
+    first.save(output, format="TIFF", save_all=True, append_images=[second], big_tiff=True)
+    data = output.getvalue()
+
+    assert sniff(data) == "tiff"
+    assert count_raster_pages(data) == 2

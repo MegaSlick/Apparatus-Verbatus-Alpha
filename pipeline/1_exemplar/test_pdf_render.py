@@ -10,6 +10,8 @@ from io import BytesIO
 from math import ceil
 
 import pdf_render
+import pypdfium2
+import pypdfium2.internal
 import pytest
 from admission import RefusalReason
 from image_formats import MAX_DIMENSION, MAX_PIXELS, validate_png
@@ -282,3 +284,50 @@ def test_counting_a_page_does_not_rasterise_it(monkeypatch):
     monkeypatch.setattr(pdf_render, "render_page", unexpected_render)
     assert count_pages(single_gray_page_pdf()) == 1
     assert renders == 0
+
+
+# --- A locked document is not a damaged one -------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        pytest.param(4, RefusalReason.UNSUPPORTED_VARIANT, id="incorrect-password"),
+        pytest.param(5, RefusalReason.UNSUPPORTED_VARIANT, id="unsupported-security-scheme"),
+        pytest.param(3, RefusalReason.CORRUPT, id="data-format-error"),
+        pytest.param(2, RefusalReason.CORRUPT, id="file-access-error"),
+        pytest.param(1, RefusalReason.CORRUPT, id="unknown-error"),
+        pytest.param(None, RefusalReason.CORRUPT, id="no-code-at-all"),
+    ],
+)
+def test_a_locked_pdf_is_a_gap_we_own_and_a_broken_one_is_damage(code, expected):
+    """The two facts a failed open can carry, and they are different decisions.
+
+    Nothing here can supply a password, so a locked document is work this project
+    owes rather than a damaged original — telling Tyrel an intact scan is corrupt
+    is the wrong sentence about his own file.
+
+    Both locked codes are checked because only one of them says "password":
+    PDFium renders code 5 as "Unsupported security scheme error", which contains
+    neither "password" nor "encrypt". A classification matching the message text
+    reported that intact file as damaged.
+    """
+    error = pypdfium2.PdfiumError("Failed to load document.")
+    if code is not None:
+        error.err_code = code
+
+    assert pdf_render._open_failure_code(error) is expected
+
+
+def test_pdfiums_own_error_table_still_names_the_two_locked_codes():
+    """The codes above are PDFium's, so they are read back from PDFium.
+
+    Two integers written into this repository are two integers that can drift from
+    the library that defines them. This is what notices if a version bump renumbers
+    them — without it, the classification would keep returning `CORRUPT` forever and
+    nothing would say so.
+    """
+    table = dict(pypdfium2.internal.ErrorToStr)
+
+    assert "password" in table[pdf_render.PDFIUM_INCORRECT_PASSWORD].lower()
+    assert "security" in table[pdf_render.PDFIUM_UNSUPPORTED_SECURITY_SCHEME].lower()

@@ -15,9 +15,15 @@ import door
 import pytest
 from admission import RefusalReason, load_format_policy, reason_code
 from door import SourceEntry, expand_sources, process_sources
-from image_formats import validate_png
+from image_formats import MAX_SOURCE_BYTES, validate_png
 from PIL import Image
-from synthetic_sources import png, single_gray_page_pdf, tiff, two_page_pdf
+from synthetic_sources import (
+    blank_pages_pdf,
+    png,
+    single_gray_page_pdf,
+    tiff,
+    two_page_pdf,
+)
 
 from common.contracts.approval import (
     ApprovalRecordReference,
@@ -25,7 +31,7 @@ from common.contracts.approval import (
     build_approval_record,
     synthetic_fixture_ingress_record,
 )
-from common.contracts.canonical import digest_bytes, verify_self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
 from common.contracts.errors import ApprovalRefusal, ContractError
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
 from common.runtree.store import RunTree
@@ -783,3 +789,342 @@ def test_a_real_submission_requires_the_local_filename_ledger(tmp_path, monkeypa
     )
     with pytest.raises(ContractError, match="requires --submission-manifest"):
         door.main()
+
+
+def test_two_byte_identical_pages_inside_one_container_are_both_kept(tmp_path):
+    """Two blank pages of a scanned book are two pages, not one page and a duplicate.
+
+    The duplicate rule and the fan-out rule meet here and could contradict each
+    other: a scanned volume routinely holds several byte-identical blank or ruled
+    pages, and collapsing the second into "already admitted as source-1" loses a
+    page that genuinely exists — GOALS 1, in the place the old door failed.
+
+    The test beside this one is named for this case and never exercised it: its body
+    submits two identical PNG *files* and stops there, so the half of its name about
+    pages inside one container was covered by nothing.
+    """
+    data = blank_pages_pdf(2, width=8, height=6)
+    files = {"scanned-volume.pdf": data}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
+            for path in files
+        ],
+        reader(files),
+        POLICY,
+    )
+    assert [source.container_page_index for source in sources] == [0, 1]
+
+    tree, context = open_door(tmp_path, sources)
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 2
+    context.finish(DOOR)
+
+    records = admissions(tree)
+    assert {record["outcome"] for record in records.values()} == {"admitted"}
+    # The two pages render to identical pixels, deliberately: blobs are
+    # content-addressed, so both admissions reference one stored blob. Two
+    # ordinals, two admissions, one blob — and no duplicate refusal anywhere.
+    assert records[1]["payload"]["sha256"] == records[2]["payload"]["sha256"]
+
+
+def test_a_second_copy_of_one_container_is_a_duplicate_file_not_two_lost_pages(tmp_path):
+    """The same two rules meeting from the other side.
+
+    Pages of one file are never duplicates of each other; two copies of one file
+    under different names are. A two-page PDF submitted twice produces four slots:
+    two admitted pages and two named duplicates. Neither rule may quietly become
+    the other.
+    """
+    data = two_page_pdf()
+    files = {"scan-1.pdf": data, "scan-2.pdf": data}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
+            for path, payload in files.items()
+        ],
+        reader(files),
+        POLICY,
+    )
+    assert len(sources) == 4
+
+    tree, context = open_door(tmp_path, sources)
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 2
+    context.finish(DOOR)
+
+    records = admissions(tree)
+    assert [records[ordinal]["outcome"] for ordinal in sorted(records)] == [
+        "admitted",
+        "admitted",
+        "refused",
+        "refused",
+    ]
+    for ordinal in (3, 4):
+        assert reason_code(records[ordinal]["payload"]["reason"]) is RefusalReason.DUPLICATE
+        assert records[ordinal]["payload"]["declared_path"] == "scan-2.pdf"
+
+
+def test_two_identical_broken_sources_are_each_told_the_truth_about_themselves(tmp_path):
+    """A refused source is never the "first admission" a later duplicate names.
+
+    The duplicate reason says "identical content already admitted as source-N". If a
+    second copy of a corrupt file were given that reason, the record would assert an
+    admission that never happened (GOVERNANCE 10), and the census would read "one
+    corrupt file, one duplicate" when the truth is two corrupt files, each needing
+    the same fix.
+
+    **What actually protects this is the order of the two checks**, not the line that
+    registers the digest — both were broken in turn to find out, and only reordering
+    the duplicate check above the refusal check changed this test's outcome. Refusing
+    a source on its own merits before ever consulting `seen_sources` is the property
+    being asserted here.
+    """
+    data = b"not an image at all"
+    sources = [
+        SourceEntry(1, "broken-a.png", digest_bytes(data)),
+        SourceEntry(2, "broken-b.png", digest_bytes(data)),
+    ]
+    tree, context = open_door(tmp_path, sources)
+    assert (
+        process_sources(
+            context,
+            tree,
+            sources,
+            reader({"broken-a.png": data, "broken-b.png": data}),
+            policy=POLICY,
+        )
+        == 0
+    )
+    context.finish(DOOR)
+
+    records = admissions(tree)
+    for ordinal in (1, 2):
+        assert (
+            reason_code(records[ordinal]["payload"]["reason"]) is RefusalReason.UNRECOGNIZED_FORMAT
+        )
+
+
+def test_an_oversized_source_is_named_too_large_without_ever_being_read(tmp_path):
+    """A file past the admission limit is refused from its recorded size alone.
+
+    The real submission path keeps an over-size file's digest and byte count and
+    deliberately drops its bytes, so this branch is what stands between a four-
+    gigabyte file and an attempt to hold it in memory. The reader here raises if it
+    is called at all, which is the assertion that matters.
+    """
+
+    def refuse_to_read(relative_path: str) -> bytes:
+        raise AssertionError(f"{relative_path} was read despite its recorded size")
+
+    source = SourceEntry(1, "enormous.tif", "0" * 64, None, MAX_SOURCE_BYTES + 1, None)
+    tree, context = open_door(tmp_path, [source])
+
+    assert process_sources(context, tree, [source], refuse_to_read, policy=POLICY) == 0
+    context.finish(DOOR)
+
+    payload = admissions(tree)[1]["payload"]
+    assert reason_code(payload["reason"]) is RefusalReason.TOO_LARGE
+    assert payload["declared_path"] == "enormous.tif"
+
+
+def test_a_page_container_declared_without_a_page_index_is_refused_not_guessed_at(tmp_path):
+    """A stale or hand-built manifest must not silently seal page one of a document.
+
+    A PDF reaching `decide` with no page index means the expansion that assigns one
+    ordinal per page did not happen for it. Guessing page zero would seal the first
+    page of a document and lose the rest with nothing to show for them.
+    """
+    data = two_page_pdf()
+    source = SourceEntry(1, "iphone-scan.pdf", digest_bytes(data))
+
+    decision = door.decide(data, source, POLICY)
+
+    assert decision.outcome == "refused"
+    assert reason_code(decision.reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "must be declared with a page index" in decision.reason
+
+
+def test_a_page_index_on_a_one_frame_image_refuses_without_asserting_a_falsehood(tmp_path):
+    """The mirror case, and the wording is the point.
+
+    An ordinary PNG carrying a page index is a manifest that disagrees with the
+    file. The refusal says what was actually observed — declared with a page index,
+    decoder reports one frame — rather than claiming the file is damaged, which it
+    is not.
+    """
+    data = png(3, 2)
+    source = SourceEntry(1, "register-page.png", digest_bytes(data), container_page_index=0)
+
+    decision = door.decide(data, source, POLICY)
+
+    assert decision.outcome == "refused"
+    assert reason_code(decision.reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "decoder reports one frame" in decision.reason
+
+
+def test_a_container_page_whose_bytes_changed_in_transfer_is_a_digest_alarm(tmp_path):
+    """`decide` re-checks the ledger digest itself, before it renders anything.
+
+    `process_sources` checks it first, so this is defence in depth — and the kind
+    that is worth having, because `decide` is the function that turns bytes into
+    sealed pixels. A caller reaching it directly with a changed copy must be told
+    the copy changed, not handed a page rendered from it.
+    """
+    data = two_page_pdf()
+    source = SourceEntry(1, "iphone-scan.pdf", "0" * 64, container_page_index=0)
+
+    decision = door.decide(data, source, POLICY)
+
+    assert decision.outcome == "refused"
+    assert reason_code(decision.reason) is RefusalReason.DIGEST_MISMATCH
+
+
+def test_a_caller_owned_folder_is_never_the_declared_synthetic_fixture_root(tmp_path):
+    """`--fixture-root` may not be the flag that turns the data-handling gate off.
+
+    Ruling 2026-08-04, item 1: fixture status comes from the declared fixture
+    manifest, never from a caller flag, a filename suffix or a folder name. The
+    accepting half of this guard is exercised by every fixture run in the suite;
+    the refusing half — the half that is the guard — was exercised by nothing.
+    """
+    caller_owned = tmp_path / "definitely-synthetic"
+    caller_owned.mkdir()
+
+    with pytest.raises(ContractError, match="not the declared synthetic fixture root"):
+        door.declared_synthetic_fixture_root(str(caller_owned))
+
+    assert door.declared_synthetic_fixture_root(str(ROOT / "proof")) == (ROOT / "proof").resolve()
+
+
+def test_the_loud_failure_names_the_reasons_rather_than_counting_anonymously(tmp_path):
+    """An anonymous "unsupported" counter is the door defect this replaced.
+
+    The terminal may not carry filenames — that is the data-handling policy, and
+    the private report is where the names are. What it must carry is *which* alarms
+    fired and how many of each, because "3 refused" tells an operator nothing about
+    whether the pipeline is broken or the transfer was.
+    """
+    broken = b"not an image at all"
+    sources = [
+        SourceEntry(1, "one.png", digest_bytes(broken)),
+        SourceEntry(2, "two.tif", "0" * 64),
+    ]
+    tree, context = open_door(tmp_path, sources)
+    assert process_sources(context, tree, sources, reader({"one.png": broken}), policy=POLICY) == 0
+    report = door.publish_refusal_report(context)
+    context.finish(DOOR)
+
+    with pytest.raises(ContractError) as caught:
+        door.require_some_admitted(0, tree, report)
+
+    message = str(caught.value)
+    assert "unrecognized-format: 1" in message
+    assert "unreadable: 1" in message
+    assert "2 source(s) submitted" in message
+    assert "one.png" not in message and "two.tif" not in message
+
+
+def test_the_loud_failure_survives_a_census_it_cannot_read(tmp_path):
+    """A damaged record may not replace the failure with a complaint about JSON.
+
+    This path runs only on a bad day, to describe a failure that already happened.
+    Masking the primary failure with a secondary one is a worse answer to
+    GOVERNANCE 2 than a partial census, so an unreadable record is counted under a
+    name that says so and the loud failure still says what it is.
+    """
+    broken = b"not an image at all"
+    source = SourceEntry(1, "one.png", digest_bytes(broken))
+    tree, context = open_door(tmp_path, [source])
+    assert process_sources(context, tree, [source], reader({"one.png": broken}), policy=POLICY) == 0
+    report = door.publish_refusal_report(context)
+    context.finish(DOOR)
+    entry = next(
+        entry for entry in tree.build_manifest(DOOR)["artifacts"] if entry["kind"] == "admission"
+    )
+    tree.resolve(entry["relative_path"]).write_bytes(b"{ this is not json")
+
+    with pytest.raises(ContractError) as caught:
+        door.require_some_admitted(0, tree, report)
+
+    message = str(caught.value)
+    assert "the door admitted nothing" in message
+    assert "the door's own census could not be read" in message
+    assert "Traceback" not in message
+
+
+def test_the_loud_failure_survives_one_record_it_cannot_make_sense_of(tmp_path):
+    """The inner half of the same fallback: the census is read, one row is not.
+
+    Damaging the bytes takes out the whole manifest, so it exercises the outer
+    fallback above. This takes out one *record's meaning* while leaving the tree
+    structurally sound — a reason outside the closed set, which is precisely the
+    free-text refusal this spec replaced. The row is counted under a name that says
+    it could not be read, and the other rows still count normally.
+    """
+    broken = b"not an image at all"
+    sources = [
+        SourceEntry(1, "one.png", digest_bytes(broken)),
+        SourceEntry(2, "two.png", digest_bytes(b"also not an image")),
+    ]
+    tree, context = open_door(tmp_path, sources)
+    assert (
+        process_sources(
+            context,
+            tree,
+            sources,
+            reader({"one.png": broken, "two.png": b"also not an image"}),
+            policy=POLICY,
+        )
+        == 0
+    )
+    report = door.publish_refusal_report(context)
+    context.finish(DOOR)
+    entry = next(
+        entry
+        for entry in tree.build_manifest(DOOR)["artifacts"]
+        if entry["kind"] == "admission" and entry["subject_id"] == "source-1"
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"]["reason"] = "just some free text nobody closed"
+    path.write_bytes(canonical_bytes(record))
+
+    with pytest.raises(ContractError) as caught:
+        door.require_some_admitted(0, tree, report)
+
+    message = str(caught.value)
+    assert "unreadable record: 1" in message
+    assert "unrecognized-format: 1" in message
+
+
+def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(tmp_path):
+    """A file that vanishes at expansion time never gets a refusal record at all.
+
+    GOVERNANCE 2: nothing is lost silently. A PDF too damaged to count pages cannot
+    be fanned out, so it takes one slot and is refused by name in it — the
+    alternative is a submitted file with no outcome anywhere in the run.
+    """
+    broken_pdf = b"%PDF-1.4\nthis is not a document\n"
+    files = {"damaged-scan.pdf": broken_pdf}
+    sources = expand_sources(
+        [
+            {
+                "relative_path": path,
+                "sha256": digest_bytes(broken_pdf),
+                "bytes": len(broken_pdf),
+            }
+            for path in files
+        ],
+        reader(files),
+        POLICY,
+    )
+    assert [(source.ordinal, source.declared_path) for source in sources] == [
+        (1, "damaged-scan.pdf")
+    ]
+
+    tree, context = open_door(tmp_path, sources)
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 0
+    context.finish(DOOR)
+
+    payload = admissions(tree)[1]["payload"]
+    assert payload["declared_path"] == "damaged-scan.pdf"
+    assert reason_code(payload["reason"]) is RefusalReason.CORRUPT

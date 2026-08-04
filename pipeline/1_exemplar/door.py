@@ -444,6 +444,15 @@ def process_sources(
         # a refused source the "first", so a second copy of two corrupt files was
         # told its twin had been admitted, and the census read "one corrupt file,
         # one duplicate" when the truth was two corrupt files.
+        #
+        # **The order of the two checks above carries the same weight, and this
+        # comment used to give all the credit to the line below.** Refusing on the
+        # source's own merits *before* consulting `seen_sources` is what makes the
+        # registration point survivable either way; move the duplicate check above
+        # the refusal check and a second broken file is told it duplicates the
+        # first no matter when the digest was registered. Both were confirmed by
+        # breaking each in turn — only the reordering changed a test's outcome, so
+        # the ordering is the load-bearing half and it is written down here now.
         seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
         _, published = tree.put_blob(DOOR, decision.store_bytes)
         extra: dict[str, Any] = {
