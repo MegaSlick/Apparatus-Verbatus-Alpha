@@ -373,10 +373,31 @@ def recovery_pass(context, act_id: str) -> int:
 
     pages = sealed_pages(page_records(context))
     bounds = {key: recovery[0][key] for key in ("x", "y", "w", "h")}
+    page_record = pages[act["page_ordinal"]]
+    transform = {
+        "operation": "crop",
+        "source_page_ordinal": act["page_ordinal"],
+        "source_page_id": page_record["subject_id"],
+        "bounds": bounds,
+    }
+    # The fixture declares one recovery row per act, so a second invocation for an
+    # already-fulfilled request would cut byte-identical bounds again: same
+    # region_id (derived only from act_id+transform, never the attempt ordinal),
+    # under a fresh artifact identity, growing a second author for the same crop —
+    # exactly what this stage's own docstring says the ownership split exists to
+    # prevent. Refused here rather than trusted to the caller, because "the
+    # Recensor asked; the Designator cuts" only stops a second author if the
+    # Designator itself refuses to cut the same crop twice.
+    duplicate = region_id(act_id, transform)
+    if any(
+        record["payload"].get("region_id") == duplicate for record in _regions_of(context, act_id)
+    ):
+        raise ContractError(
+            f"recovery asked for {act_id}, which already has a recovery region cut "
+            "for this exact transform; a fulfilled recovery request may not be cut again"
+        )
     ordinal = _next_region_ordinal(context, act_id)
-    cut_region(
-        context, act, pages[act["page_ordinal"]], bounds, ordinal, act["page_ordinal"], "recovery"
-    )
+    cut_region(context, act, page_record, bounds, ordinal, act["page_ordinal"], "recovery")
     return 1
 
 
