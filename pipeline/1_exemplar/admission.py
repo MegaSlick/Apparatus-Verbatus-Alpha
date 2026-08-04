@@ -347,7 +347,11 @@ def inspect_source(
         geometry = validate(detected, data)
     except FormatRefusal as error:
         return AdmissionOutcome(
-            "refused", reason(refusal_code_for_format_error(error), str(error)), detected, digest, None
+            "refused",
+            reason(refusal_code_for_format_error(error), str(error)),
+            detected,
+            digest,
+            None,
         )
 
     if declared_sha256 is not None and digest != declared_sha256:

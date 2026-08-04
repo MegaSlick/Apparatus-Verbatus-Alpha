@@ -22,18 +22,25 @@ from image_formats import (
     MAX_DIMENSION,
     FormatRefusal,
     ImageGeometry,
+    TiffSampleStorage,
     _tiff_unsigned_values,
+    encode_png,
+    read_tiff_directory,
+    read_tiff_header,
     sniff,
+    tiff_directory_offsets,
     validate,
     validate_jpeg,
     validate_png,
     validate_tiff,
+    validate_tiff_directory,
 )
 from synthetic_sources import (
     PNG_MAGIC,
     gif,
     heic,
     jpeg,
+    multi_page_tiff,
     png,
     png_chunk,
     png_container,
@@ -239,11 +246,15 @@ def test_validate_jpeg_refuses_a_missing_eoi():
         validate_jpeg(jpeg(eoi=False))
 
 
-def test_validate_jpeg_refuses_bytes_appended_after_eoi():
-    """Two concatenated images, or an appended payload. Either way the file is not
-    the single page the door would believe it admitted."""
-    with pytest.raises(FormatRefusal, match="trailing bytes after EOI"):
-        validate_jpeg(jpeg(trailing=b"a second document entirely"))
+def test_validate_jpeg_admits_bytes_appended_after_eoi():
+    """Ruling 2026-08-04, item 2's second reversal: a concatenated thumbnail or
+    appended padding is ordinary scanner output, not damage. The walking skeleton
+    refused this as corrupt, telling Tyrel a real photograph was broken when it
+    was not. Geometry is read off the one frame this validator walks; whatever
+    follows EOI plays no part in it."""
+    assert validate_jpeg(jpeg(trailing=b"a second document entirely")) == ImageGeometry(
+        "jpeg", 5, 4
+    )
 
 
 def test_validate_jpeg_refuses_no_start_of_frame():
@@ -405,8 +416,11 @@ def test_validate_tiff_refuses_a_geometry_tag_with_a_zero_count_rather_than_cras
     ],
 )
 def test_validate_tiff_refuses_any_second_image_directory(label, second_directory):
-    """Multi-page TIFF: the door assigns one ordinal per page, so silently sealing
-    only the first would lose every page after it without a refusal to show."""
+    """`validate_tiff` proves a *single* image; a file chaining a second directory
+    of any shape is refused here rather than silently sealed as one page — the
+    fan-out that turns it into two pages is `tiff_directory_offsets` and
+    `tiff_render.py`'s job, exercised in `test_tiff_render.py`, not this
+    function's."""
     first = tiff(4, 3)
     data = bytearray(first)
     struct.pack_into("<I", data, tiff_next_ifd_offset(first), len(first))
@@ -416,19 +430,118 @@ def test_validate_tiff_refuses_any_second_image_directory(label, second_director
         for tag, field_type, value in second_directory
     )
     data += struct.pack("<H", len(second_directory)) + entries + struct.pack("<I", 0)
-    with pytest.raises(FormatRefusal, match="multi-page TIFF is a documented limit"):
+    with pytest.raises(FormatRefusal, match="chains more than one image directory"):
         validate_tiff(bytes(data)), label
 
 
-def test_a_cyclic_ifd_chain_cannot_be_entered_at_all():
+def test_a_cyclic_ifd_chain_cannot_be_entered_at_all_by_validate_tiff():
     """A chain pointing back at its own first directory is refused at the first
-    link, by the same rule that refuses an honest second page. There is no IFD
-    walk left to bound, which is a tighter bound than the count this replaced."""
+    link: `validate_tiff` only ever reads directory zero's own next-offset field,
+    so it never visits offset 8 a second time to notice the cycle — a tighter
+    bound than a walk would need."""
     first = tiff()
     data = bytearray(first)
     struct.pack_into("<I", data, tiff_next_ifd_offset(first), 8)
-    with pytest.raises(FormatRefusal, match="multi-page TIFF is a documented limit"):
+    with pytest.raises(FormatRefusal, match="chains more than one image directory"):
         validate_tiff(bytes(data))
+
+
+# --- the multi-page chain: enumeration and per-directory reading ------------------
+
+
+def test_tiff_directory_offsets_walks_a_genuine_chain_in_order():
+    data = multi_page_tiff(((6, 5), (4, 3), (2, 2)))
+    offsets = tiff_directory_offsets(data)
+    assert len(offsets) == 3
+    assert offsets == sorted(offsets)
+    geometries = [validate_tiff_directory(data, "<", offset)[0] for offset in offsets]
+    assert geometries == [
+        ImageGeometry("tiff", 6, 5),
+        ImageGeometry("tiff", 4, 3),
+        ImageGeometry("tiff", 2, 2),
+    ]
+
+
+def test_tiff_directory_offsets_of_a_single_page_file_is_one_entry():
+    assert len(tiff_directory_offsets(tiff(6, 5))) == 1
+
+
+def test_a_cyclic_directory_chain_is_refused_by_tiff_directory_offsets():
+    """Unlike `validate_tiff`, this function actually walks the chain, so it is
+    the one that has to notice a cycle rather than merely refuse a second link."""
+    first = tiff()
+    data = bytearray(first)
+    struct.pack_into("<I", data, tiff_next_ifd_offset(first), 8)
+    with pytest.raises(FormatRefusal, match="cycles back on itself"):
+        tiff_directory_offsets(bytes(data))
+
+
+def test_a_directory_chain_past_the_admission_limit_is_refused(monkeypatch):
+    """`MAX_TIFF_DIRECTORIES` is 5,000 in production; lowered here so the test does
+    not have to build thousands of directories to prove the bound is enforced."""
+    monkeypatch.setattr("image_formats.MAX_TIFF_DIRECTORIES", 2)
+    data = multi_page_tiff(((2, 2), (2, 2), (2, 2)))
+    with pytest.raises(FormatRefusal, match="more than 2"):
+        tiff_directory_offsets(data)
+
+
+def test_read_tiff_header_reads_endian_and_first_offset():
+    assert read_tiff_header(tiff(6, 5)) == ("<", 8)
+    assert read_tiff_header(tiff(6, 5, little_endian=False)) == (">", 8)
+
+
+def test_read_tiff_directory_reads_the_next_offset_field():
+    data = multi_page_tiff(((6, 5), (4, 3)))
+    endian, offset = read_tiff_header(data)
+    _width, _height, _image_data, _layout, next_offset = read_tiff_directory(data, endian, offset)
+    assert next_offset == tiff_directory_offsets(data)[1]
+
+
+def test_validate_tiff_directory_returns_reconciled_sample_storage():
+    data = tiff(6, 5)
+    geometry, storage = validate_tiff_directory(data, "<", 8)
+    assert geometry == ImageGeometry("tiff", 6, 5)
+    assert storage == TiffSampleStorage(
+        compression=1,
+        photometric=1,
+        samples_per_pixel=1,
+        bits_per_sample=(8,),
+        is_tiled=False,
+        offsets=storage.offsets,
+        counts=storage.counts,
+        row_bytes=6,
+    )
+    assert len(storage.offsets) == len(storage.counts) == 1
+
+
+def test_validate_tiff_directory_does_not_refuse_a_multi_directory_file():
+    """The opposite of `validate_tiff`'s own contract: a caller who already knows
+    the chain's shape (via `tiff_directory_offsets`) may ask about one directory
+    in it without being refused for the file having more than one."""
+    data = multi_page_tiff(((6, 5), (4, 3)))
+    offsets = tiff_directory_offsets(data)
+    geometry, _storage = validate_tiff_directory(data, "<", offsets[1])
+    assert geometry == ImageGeometry("tiff", 4, 3)
+
+
+# --- encode_png: the shared encoder every door-private renderer uses --------------
+
+
+def test_encode_png_round_trips_grayscale_samples():
+    samples = bytes(range(6)) * 5  # 6x5, one byte per pixel
+    encoded = encode_png(6, 5, 0, 1, samples)
+    assert validate_png(encoded) == ImageGeometry("png", 6, 5)
+
+
+def test_encode_png_round_trips_rgb_samples():
+    samples = bytes([10, 20, 30]) * (4 * 3)  # 4x3, three bytes per pixel
+    encoded = encode_png(4, 3, 2, 3, samples)
+    assert validate_png(encoded) == ImageGeometry("png", 4, 3)
+
+
+def test_encode_png_refuses_a_sample_count_that_disagrees_with_the_declared_geometry():
+    with pytest.raises(ValueError, match="expected"):
+        encode_png(4, 3, 0, 1, bytes(11))  # 4x3 needs 12 bytes at 1 channel
 
 
 # --- what a TIFF actually stores has to hold the image it declares ----------------

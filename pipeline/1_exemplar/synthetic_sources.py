@@ -272,7 +272,9 @@ def multi_page_tiff(
         ifd_offset, strip_offset, stored = layout[index]
         next_ifd = layout[index + 1][0] if index + 1 < len(layout) else 0
         entries = struct.pack(endian + "H", entry_count)
-        entries += struct.pack(endian + "HHI", 256, 3, 1) + struct.pack(endian + "H", width) + b"\x00\x00"
+        entries += (
+            struct.pack(endian + "HHI", 256, 3, 1) + struct.pack(endian + "H", width) + b"\x00\x00"
+        )
         entries += (
             struct.pack(endian + "HHI", 257, 3, 1) + struct.pack(endian + "H", height) + b"\x00\x00"
         )

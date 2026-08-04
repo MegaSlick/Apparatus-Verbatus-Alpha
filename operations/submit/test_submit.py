@@ -387,9 +387,33 @@ def test_the_refusal_still_says_what_went_wrong(submission):
     (linked / "page.png").write_bytes(b"\x89PNG\r\n\x1a\nreal")
     (linked / "elsewhere.png").symlink_to("/etc/passwd")
 
-    result = run_cli(submission, linked, manifest_out=submission["approved"] / "m.json")
+    manifest_out = submission["approved"] / "m.json"
+    result = run_cli(submission, linked, manifest_out=manifest_out)
     assert "symlink" in result.stderr
-    assert "withheld from this channel" in result.stderr
+    assert "named in" in result.stderr
+
+
+def test_the_refusal_report_names_the_entry_the_terminal_withholds(submission):
+    """Ruling 2026-08-04, item 1: the terminal never repeats a submitted name, but
+    the name is not lost — it is written to a private report inside the same
+    approved storage root the manifest itself would have used, and the terminal
+    points at that report rather than saying the name is merely withheld with no
+    way to ever find it."""
+    linked = submission["approved"] / "with-a-link-2"
+    linked.mkdir()
+    (linked / "page.png").write_bytes(b"\x89PNG\r\n\x1a\nreal")
+    (linked / "elsewhere.png").symlink_to("/etc/passwd")
+
+    manifest_out = submission["approved"] / "m2.json"
+    result = run_cli(submission, linked, manifest_out=manifest_out)
+    assert result.returncode == 2
+    report_path = manifest_out.parent / f"{manifest_out.name}.refusal.json"
+    assert str(report_path) in result.stderr
+    assert "elsewhere.png" not in result.stderr
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["entries"][0]["entry"] == "elsewhere.png"
+    assert "symlink" in report["entries"][0]["reason"]
 
 
 def test_a_refusal_still_carries_the_name_for_a_caller_allowed_to_see_one(submission):

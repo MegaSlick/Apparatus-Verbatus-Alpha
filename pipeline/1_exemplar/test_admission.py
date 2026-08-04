@@ -13,7 +13,8 @@ import tomllib
 import pytest
 from admission import (
     ADMIT,
-    REFUSE,
+    ADMIT_OR_FAN_OUT,
+    GAP,
     RENDER_PAGES,
     SNIFFABLE_FORMATS,
     AdmissionOutcome,
@@ -21,6 +22,7 @@ from admission import (
     RefusalReason,
     classify_detected_format,
     duplicate_reason,
+    gap_detail,
     inspect_source,
     load_format_policy,
     reason,
@@ -31,6 +33,7 @@ from synthetic_sources import (
     gif,
     heic,
     jpeg,
+    multi_page_tiff,
     png,
     png_container,
     single_gray_page_pdf,
@@ -47,20 +50,21 @@ POLICY = load_format_policy()
 
 
 def test_the_shipped_admission_list_says_what_the_ledger_says_it_says():
-    """Tyrel's two open ledger items are one line each in `config/admitted_formats.toml`,
-    and this is what would notice if a code change quietly moved either of them."""
-    assert POLICY["png"] == POLICY["jpeg"] == POLICY["tiff"] == ADMIT
-    assert POLICY["gif"] == REFUSE
-    assert POLICY["heic"] == REFUSE, "the .heic ruling is Tyrel's; until he makes it, refused"
-    assert POLICY["pdf"] == REFUSE, (
-        "PDF is held behind this row until the renderer proves the pixels it returns are "
-        "the page's complete visible content; it reads one image XObject and never "
-        "interprets /Contents, so a page carrying text beside that image would lose it"
-    )
+    """Ruling 2026-08-04, item 2 rewrote the whole ledger: nothing is rejected, so
+    there is no `refuse` action left to check. PNG/JPEG are single-image rasters;
+    TIFF is usually one but can structurally hold more, so it is fanned out
+    on-demand; PDF is a container of pages, always fanned out and rasterised. GIF
+    and HEIC are sniffable with no reader built yet — a named gap, never a
+    decision about the file."""
+    assert POLICY["png"] == POLICY["jpeg"] == ADMIT
+    assert POLICY["tiff"] == ADMIT_OR_FAN_OUT
+    assert POLICY["pdf"] == RENDER_PAGES
+    assert POLICY["gif"] == GAP
+    assert POLICY["heic"] == GAP
 
 
 def test_the_admission_list_covers_exactly_the_formats_the_door_can_detect(tmp_path):
-    """A format with no row would be admitted or refused by omission — the silent
+    """A format with no row would be admitted or gapped by omission — the silent
     drift that let the old door accept `.gif` on one path and refuse it on another."""
     assert set(POLICY) == SNIFFABLE_FORMATS
     short = tmp_path / "short.toml"
@@ -70,16 +74,16 @@ def test_the_admission_list_covers_exactly_the_formats_the_door_can_detect(tmp_p
 
 
 def test_the_admission_list_refuses_a_format_it_cannot_detect(tmp_path):
-    rows = "\n".join(f'{name} = "refuse"' for name in sorted(SNIFFABLE_FORMATS))
+    rows = "\n".join(f'{name} = "gap"' for name in sorted(SNIFFABLE_FORMATS))
     path = tmp_path / "extra.toml"
-    path.write_text(f'[format]\n{rows}\nwebp = "refuse"\n', encoding="utf-8")
+    path.write_text(f'[format]\n{rows}\nwebp = "gap"\n', encoding="utf-8")
     with pytest.raises(FormatPolicyRefusal, match="Unknown"):
         load_format_policy(path)
 
 
 def test_the_admission_list_refuses_an_action_outside_its_closed_set(tmp_path):
     rows = "\n".join(
-        f'{name} = "{"maybe" if name == "png" else "refuse"}"' for name in sorted(SNIFFABLE_FORMATS)
+        f'{name} = "{"maybe" if name == "png" else "gap"}"' for name in sorted(SNIFFABLE_FORMATS)
     )
     path = tmp_path / "bad-action.toml"
     path.write_text(f"[format]\n{rows}\n", encoding="utf-8")
@@ -87,8 +91,22 @@ def test_the_admission_list_refuses_an_action_outside_its_closed_set(tmp_path):
         load_format_policy(path)
 
 
+def test_the_admission_list_no_longer_accepts_the_retired_refuse_action(tmp_path):
+    """Ruling 2026-08-04, item 2 deleted `refuse` outright — a format nothing here
+    can read gets `gap` instead. A policy file still spelling the retired word is
+    exactly the same shape of error as an invented one."""
+    rows = "\n".join(
+        f'{name} = "{"refuse" if name == "gif" else POLICY[name]}"'
+        for name in sorted(SNIFFABLE_FORMATS)
+    )
+    path = tmp_path / "retired-refuse.toml"
+    path.write_text(f"[format]\n{rows}\n", encoding="utf-8")
+    with pytest.raises(FormatPolicyRefusal, match="not one of"):
+        load_format_policy(path)
+
+
 def test_admitting_a_format_nothing_can_verify_is_refused_at_load(tmp_path):
-    """The honest cost of the `.heic` ruling. Turning that line to "admit" is one
+    """The honest cost of the `.heic` gap. Turning that line to "admit" is one
     edit, and on its own it would admit unverified bytes under a name claiming they
     were checked — so it refuses, and says what is actually missing."""
     rows = "\n".join(
@@ -98,6 +116,31 @@ def test_admitting_a_format_nothing_can_verify_is_refused_at_load(tmp_path):
     path = tmp_path / "heic-admitted.toml"
     path.write_text(f"[format]\n{rows}\n", encoding="utf-8")
     with pytest.raises(FormatPolicyRefusal, match="no structural validator"):
+        load_format_policy(path)
+
+
+def test_admit_or_fan_out_is_refused_for_a_format_other_than_tiff(tmp_path):
+    """Only TIFF can structurally hold more than one image under one file; giving
+    another admitted format this action would ask the door for a renderer that
+    does not exist and never will for a single-image format."""
+    rows = "\n".join(
+        f'{name} = "{"admit-or-fan-out" if name == "png" else POLICY[name]}"'
+        for name in sorted(SNIFFABLE_FORMATS)
+    )
+    path = tmp_path / "png-admit-or-fan-out.toml"
+    path.write_text(f"[format]\n{rows}\n", encoding="utf-8")
+    with pytest.raises(FormatPolicyRefusal, match="only TIFF"):
+        load_format_policy(path)
+
+
+def test_render_pages_is_refused_for_a_format_other_than_pdf(tmp_path):
+    rows = "\n".join(
+        f'{name} = "{"render-pages" if name == "png" else POLICY[name]}"'
+        for name in sorted(SNIFFABLE_FORMATS)
+    )
+    path = tmp_path / "png-render-pages.toml"
+    path.write_text(f"[format]\n{rows}\n", encoding="utf-8")
+    with pytest.raises(FormatPolicyRefusal, match="renders pages unconditionally"):
         load_format_policy(path)
 
 
@@ -114,9 +157,19 @@ def test_the_shipped_admission_list_parses_as_the_one_table_it_claims_to_be():
 
 def test_a_format_the_table_has_no_opinion_on_is_refused_rather_than_admitted():
     """Unreachable while `load_format_policy` requires full coverage, and kept as
-    the fail-closed catch. Unknown is never "fine"."""
-    assert classify_detected_format("webp", POLICY) is RefusalReason.REFUSED_FORMAT
+    the fail-closed catch. Unknown is never "fine" — but it is no longer named
+    `REFUSED_FORMAT` either, since that whole category is retired; it reads as the
+    same `UNSUPPORTED_VARIANT` a genuine pipeline gap does."""
+    assert classify_detected_format("webp", POLICY) is RefusalReason.UNSUPPORTED_VARIANT
     assert classify_detected_format(None, POLICY) is RefusalReason.UNRECOGNIZED_FORMAT
+
+
+def test_a_gap_format_classifies_as_the_gap_action_itself():
+    """`classify_detected_format` hands back the literal `gap` action — like
+    `render-pages` and `admit-or-fan-out` — so the caller decides how to word the
+    refusal; `inspect_source` is what actually turns it into `UNSUPPORTED_VARIANT`."""
+    assert classify_detected_format("gif", POLICY) == GAP
+    assert classify_detected_format("heic", POLICY) == GAP
 
 
 # --- Test 1: admission by bytes, never by extension ------------------------------
@@ -152,17 +205,38 @@ def test_a_declared_digest_that_does_not_match_the_bytes_is_refused_and_named():
     assert outcome.digest == digest_bytes(png())
 
 
+def test_a_single_directory_tiff_is_admitted_directly_unlike_a_multi_page_container():
+    """`admit-or-fan-out` behaves exactly like `admit` for the common case — a
+    single-directory TIFF is decided here, not fanned out — but a file that
+    actually holds more than one directory refuses here rather than being asked
+    for as one image, the same shape `test_a_pdf_is_never_admitted_as_one_image_here`
+    proves for `render-pages`, just without the `ValueError`: this action's
+    common case is the ordinary single-file path, so reaching it with the wrong
+    shape of bytes is a refusal, not a caller's programming error."""
+    outcome = inspect_source(tiff(6, 5), declared_sha256=None, policy=POLICY)
+    assert outcome.outcome == "admitted"
+    assert outcome.detected_format == "tiff"
+
+    multi = multi_page_tiff(((6, 5), (4, 3)))
+    outcome = inspect_source(multi, declared_sha256=None, policy=POLICY)
+    assert outcome.outcome == "refused"
+    assert reason_code(outcome.reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "chains more than one image directory" in outcome.reason
+
+
 def test_a_pdf_is_never_admitted_as_one_image_here():
     """A container of pages is not one image; the door fans it out. Asking this
-    function to decide one is a programming error, not a refusal — but only while
-    the list actually asks for the fan-out. Under the shipped list, which refuses
-    PDF, the same call is an ordinary named refusal."""
-    render_pages = {**POLICY, "pdf": RENDER_PAGES}
+    function to decide one is a programming error under the shipped list, which
+    always fans PDF out — but only while the list actually asks for the fan-out.
+    A list that has no reader for PDF at all still refuses it as an ordinary named
+    gap, the same as any other unsupported format."""
     with pytest.raises(ValueError, match="multi-page container"):
-        inspect_source(single_gray_page_pdf(), declared_sha256=None, policy=render_pages)
+        inspect_source(single_gray_page_pdf(), declared_sha256=None, policy=POLICY)
 
-    outcome = inspect_source(single_gray_page_pdf(), declared_sha256=None, policy=POLICY)
-    assert reason_code(outcome.reason) is RefusalReason.REFUSED_FORMAT
+    gapped = {**POLICY, "pdf": GAP}
+    outcome = inspect_source(single_gray_page_pdf(), declared_sha256=None, policy=gapped)
+    assert reason_code(outcome.reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "pdf" in outcome.reason
 
 
 def test_the_pdf_row_is_the_whole_of_the_pdf_decision():
@@ -170,9 +244,7 @@ def test_the_pdf_row_is_the_whole_of_the_pdf_decision():
     than naming a format itself. Three of four reviewing seats found the same bypass
     — a hardcoded `sniff(data) == "pdf"` fan-out that never consulted this — so this
     pins the table's answer for every action the row can carry."""
-    assert (
-        classify_detected_format("pdf", {**POLICY, "pdf": REFUSE}) is RefusalReason.REFUSED_FORMAT
-    )
+    assert classify_detected_format("pdf", {**POLICY, "pdf": GAP}) == GAP
     assert classify_detected_format("pdf", {**POLICY, "pdf": RENDER_PAGES}) == RENDER_PAGES
 
 
@@ -204,9 +276,6 @@ def _exercised() -> dict[RefusalReason, str]:
         ).reason,
         RefusalReason.UNRECOGNIZED_FORMAT: inspect_source(
             b"plain text", declared_sha256=None, policy=POLICY
-        ).reason,
-        RefusalReason.REFUSED_FORMAT: inspect_source(
-            gif(), declared_sha256=None, policy=POLICY
         ).reason,
         RefusalReason.CORRUPT: inspect_source(
             png()[:-4], declared_sha256=None, policy=POLICY
@@ -241,14 +310,17 @@ def test_the_two_refusal_voices_stay_apart():
     assert reason_code(unsupported.reason) is RefusalReason.UNSUPPORTED_VARIANT
 
 
-def test_a_refused_format_names_the_format_rather_than_counting_anonymously():
+def test_a_gapped_format_names_the_format_rather_than_counting_anonymously():
     """Audit Q14's actual defect was an anonymous "unsupported" counter. Both
-    disputed formats are refused *by name*, whatever Tyrel rules about `.heic`."""
+    formats with no reader yet are refused *by name* — and, per ruling
+    2026-08-04, item 2, worded as a pipeline gap rather than a decision about the
+    file, which `gap_detail` states explicitly."""
     for data, detected in ((gif(), "gif"), (heic(), "heic")):
         outcome = inspect_source(data, declared_sha256=None, policy=POLICY)
-        assert reason_code(outcome.reason) is RefusalReason.REFUSED_FORMAT
+        assert reason_code(outcome.reason) is RefusalReason.UNSUPPORTED_VARIANT
         assert detected in outcome.reason
         assert outcome.detected_format == detected
+        assert reason(RefusalReason.UNSUPPORTED_VARIANT, gap_detail(detected)) == outcome.reason
 
 
 def test_a_reason_outside_the_closed_set_is_refused_when_it_is_read_back():

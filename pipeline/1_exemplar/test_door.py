@@ -13,11 +13,20 @@ stand-in, because what is under test is what actually lands on disk.
 import json
 
 import door
+import image_formats
 import pdf_render
 import pytest
-from admission import REFUSE, RefusalReason, load_format_policy, reason_code
+from admission import GAP, RefusalReason, load_format_policy, reason_code
 from door import SourceEntry, expand_sources, process_sources
-from synthetic_sources import gif, jpeg, png, single_gray_page_pdf, tiff, two_page_pdf
+from synthetic_sources import (
+    gif,
+    jpeg,
+    multi_page_tiff,
+    png,
+    single_gray_page_pdf,
+    tiff,
+    two_page_pdf,
+)
 
 from common.contracts.approval import (
     ApprovalRecordReference,
@@ -33,13 +42,11 @@ from common.stage import StageContext
 from operations.submit import gate
 
 POLICY = load_format_policy()
-# The shipped list refuses PDF. Every test below that exercises the fan-out and the
-# renderer says so by handing the door a policy that asks for it, rather than by
-# reading whatever `config/admitted_formats.toml` currently says — which is the
-# point: the door's behaviour follows the table it is given, and the table it is
-# given by default refuses. `test_the_shipped_policy_refusing_pdf_actually_refuses`
-# below is the other half, and it is the test whose absence let the bypass through.
-RENDER_PDF_POLICY = {**POLICY, "pdf": "render-pages"}
+# The shipped list fans PDF and multi-page TIFF out unconditionally/on-demand.
+# `GAPPED_PDF_POLICY` stands in for what the shipped list used to be (PDF refused
+# by name) so the tests that exercise "the admission list decided, and this door
+# never second-guesses it" still have a policy that actually says no to PDF.
+GAPPED_PDF_POLICY = {**POLICY, "pdf": GAP}
 RECIPES = {"door": "fake-door-v0", "exemplar": "fake-exemplar-v0"}
 CHAIRS = ["attestator_1", "attestator_2", "attestator_3"]
 
@@ -191,7 +198,7 @@ def test_the_loud_failure_names_the_reasons_rather_than_counting_anonymously(tmp
     message = str(raised.value)
     assert "3 source(s) submitted, 3 refused" in message
     assert "corrupt: 1" in message
-    assert "refused-format: 1" in message
+    assert "unsupported-variant: 1" in message  # animation.gif — a named pipeline gap
     assert "unrecognized-format: 1" in message
     assert not any(name in message for name in files), (
         "the loud failure may not carry a declared filename; the per-source record does"
@@ -210,46 +217,46 @@ def test_the_repository_fixture_root_is_the_only_folder_called_synthetic(tmp_pat
 
 # --- The admission list decides, including for the multi-page formats ------------
 #
-# Four seats reviewing this branch found the same bypass independently: the door
-# fanned a source out on `sniff(data) == "pdf"` and rendered its pages without ever
-# asking the policy, so `pdf = "refuse"` — the reversal route `config/README.md`
-# offers Tyrel — admitted and sealed pages anyway. These are the tests whose absence
-# let that through, and they drive the *shipped* list rather than a constructed one.
+# Four seats reviewing the walking skeleton found the same bypass independently: the
+# door fanned a source out on `sniff(data) == "pdf"` and rendered its pages without
+# ever asking the policy, so a policy refusing a format admitted and sealed pages
+# anyway. These are the tests whose absence let that through. Ruling 2026-08-04
+# deleted the `refuse` action itself — nothing is refused by policy any more, only
+# gapped for want of a reader — so the regression guard now drives a *constructed*
+# gapped policy standing in for what the shipped list used to be, and a separate
+# test proves the shipped list genuinely renders PDF end to end.
 
 
-def test_the_shipped_policy_refusing_pdf_actually_refuses(tmp_path):
-    """End to end, on the real `config/admitted_formats.toml`: a multi-page PDF
-    submitted under the shipped list produces exactly one refused ordinal, no blob,
-    and no render at all."""
-    assert POLICY["pdf"] == REFUSE, "the shipped list refuses PDF; this test is about that"
+def test_the_shipped_policy_genuinely_rasterises_pdf_end_to_end(tmp_path):
+    """The reversal this spec exists for, proven on the real
+    `config/admitted_formats.toml` rather than a constructed policy: a PDF
+    submitted under the shipped list is fanned out, rendered, and sealed —
+    never refused by name."""
+    assert POLICY["pdf"] == "render-pages", "the shipped list renders PDF; this test is about that"
     data = two_page_pdf()
     files = {"book.pdf": data}
     rows = [{"relative_path": "book.pdf", "sha256": digest_bytes(data)}]
 
     sources = expand_sources(rows, reader(files), POLICY)
-    assert [(entry.ordinal, entry.pdf_page_index) for entry in sources] == [(1, None)], (
-        "a refused format is one declared source, not one ordinal per page inside it"
-    )
+    assert [(entry.ordinal, entry.container_page_index) for entry in sources] == [(1, 0), (2, 1)]
 
     tree, context = open_door(tmp_path, sources)
     admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
     context.finish(DOOR)
 
-    assert admitted == 0
-    record = admissions(tree)[1]
-    assert record["outcome"] == "refused"
-    assert reason_code(record["payload"]["reason"]) is RefusalReason.REFUSED_FORMAT
-    assert "pdf" in record["payload"]["reason"]
-    assert not (tree.root / "1_exemplar" / "blobs").exists(), "a refused source seals no bytes"
+    assert admitted == 2
+    for record in admissions(tree).values():
+        assert record["outcome"] == "admitted"
+        assert record["payload"]["container_sha256"] == digest_bytes(data)
 
 
-def test_a_refused_format_never_reaches_the_renderer_at_all(monkeypatch, tmp_path):
+def test_a_gapped_format_never_reaches_the_renderer_at_all(monkeypatch, tmp_path):
     """Not merely "the pages are not sealed" — the door-private renderer is never
     called. A refusal that still parsed the container would leave the decode surface
     the configuration was turned off to close."""
 
     def refuse_to_be_called(*_args, **_kwargs):
-        raise AssertionError("the renderer was reached under a policy that refuses this format")
+        raise AssertionError("the renderer was reached under a policy that gaps this format")
 
     monkeypatch.setattr(pdf_render, "count_pages", refuse_to_be_called)
     monkeypatch.setattr(pdf_render, "render_page", refuse_to_be_called)
@@ -257,10 +264,12 @@ def test_a_refused_format_never_reaches_the_renderer_at_all(monkeypatch, tmp_pat
     data = two_page_pdf()
     files = {"book.pdf": data}
     sources = expand_sources(
-        [{"relative_path": "book.pdf", "sha256": digest_bytes(data)}], reader(files), POLICY
+        [{"relative_path": "book.pdf", "sha256": digest_bytes(data)}],
+        reader(files),
+        GAPPED_PDF_POLICY,
     )
     tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 0
+    assert process_sources(context, tree, sources, reader(files), policy=GAPPED_PDF_POLICY) == 0
 
 
 def test_a_page_index_is_not_permission_to_skip_the_admission_list(tmp_path):
@@ -273,12 +282,15 @@ def test_a_page_index_is_not_permission_to_skip_the_admission_list(tmp_path):
         SourceEntry(2, "book.pdf", digest_bytes(data), 1),
     ]
     tree, context = open_door(tmp_path, sources)
-    admitted = process_sources(context, tree, sources, reader({"book.pdf": data}), policy=POLICY)
+    admitted = process_sources(
+        context, tree, sources, reader({"book.pdf": data}), policy=GAPPED_PDF_POLICY
+    )
     context.finish(DOOR)
 
     assert admitted == 0
     for record in admissions(tree).values():
-        assert reason_code(record["payload"]["reason"]) is RefusalReason.REFUSED_FORMAT
+        assert reason_code(record["payload"]["reason"]) is RefusalReason.UNSUPPORTED_VARIANT
+        assert "gap in the pipeline" in record["payload"]["reason"]
 
 
 def test_a_page_index_on_an_admitted_format_is_refused_without_asserting_a_falsehood(tmp_path):
@@ -298,19 +310,35 @@ def test_a_page_index_on_an_admitted_format_is_refused_without_asserting_a_false
     assert "refuses by name" not in reason
 
 
-def test_turning_the_pdf_row_back_on_is_the_only_change_it_takes(tmp_path):
-    """The reversal route `config/README.md` promises Tyrel is one line, and this is
-    what proves it stayed true: the same bytes, the same door, one changed row."""
-    data = two_page_pdf()
-    files = {"book.pdf": data}
-    rows = [{"relative_path": "book.pdf", "sha256": digest_bytes(data)}]
+def test_the_tiff_action_alone_decides_whether_a_multi_page_file_fans_out(tmp_path):
+    """`admit-or-fan-out` is what makes a multi-directory TIFF fan out into one
+    ordinal per page at all. A bare `admit` row never even probes the directory
+    count, so the same bytes stay one declared source — and `validate_tiff`'s own
+    refusal for a chained second directory (proven in `test_image_formats.py`)
+    means it is refused as a whole rather than silently sealed as one page, which
+    is a second, independent guard against the exact defect ruling 2026-08-04
+    reverses: a multi-page TIFF losing every page after the first with nothing to
+    show for it."""
+    data = multi_page_tiff(((6, 5), (4, 3)))
+    files = {"book.tiff": data}
+    rows = [{"relative_path": "book.tiff", "sha256": digest_bytes(data)}]
 
-    refused = expand_sources(rows, reader(files), POLICY)
-    rendered = expand_sources(rows, reader(files), RENDER_PDF_POLICY)
-    assert len(refused) == 1 and len(rendered) == 2
+    not_fanned = expand_sources(rows, reader(files), {**POLICY, "tiff": "admit"})
+    fanned = expand_sources(rows, reader(files), POLICY)
+    assert len(not_fanned) == 1 and len(fanned) == 2
 
-    tree, context = open_door(tmp_path, rendered)
-    assert process_sources(context, tree, rendered, reader(files), policy=RENDER_PDF_POLICY) == 2
+    tree, context = open_door(tmp_path, not_fanned)
+    admitted = process_sources(
+        context, tree, not_fanned, reader(files), policy={**POLICY, "tiff": "admit"}
+    )
+    context.finish(DOOR)
+    assert admitted == 0
+    assert (
+        reason_code(admissions(tree)[1]["payload"]["reason"]) is RefusalReason.UNSUPPORTED_VARIANT
+    )
+
+    tree2, context2 = open_door(tmp_path, fanned, run_id="r2")
+    assert process_sources(context2, tree2, fanned, reader(files), policy=POLICY) == 2
 
 
 # --- Test 4: the PDF path, rendered once and sealed ------------------------------
@@ -322,17 +350,17 @@ def test_a_pdf_fans_out_into_one_ordinal_per_page(tmp_path):
     sources = expand_sources(
         [{"relative_path": "book.pdf", "sha256": digest_bytes(data)}],
         reader(files),
-        RENDER_PDF_POLICY,
+        POLICY,
     )
-    assert [(entry.ordinal, entry.pdf_page_index) for entry in sources] == [(1, 0), (2, 1)]
+    assert [(entry.ordinal, entry.container_page_index) for entry in sources] == [(1, 0), (2, 1)]
 
     tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader(files), policy=RENDER_PDF_POLICY) == 2
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 2
     context.finish(DOOR)
 
     published = admissions(tree)
     assert {
-        ordinal: record["payload"]["pdf_page_index"] for ordinal, record in published.items()
+        ordinal: record["payload"]["container_page_index"] for ordinal, record in published.items()
     } == {
         1: 0,
         2: 1,
@@ -344,7 +372,7 @@ def test_a_pdf_fans_out_into_one_ordinal_per_page(tmp_path):
         assert payload["container_sha256"] == digest_bytes(data)
         assert payload["sha256"] != digest_bytes(data)
         rendered, _ = pdf_render.render_page(
-            pdf_render.open_document(data), payload["pdf_page_index"]
+            pdf_render.open_document(data), payload["container_page_index"]
         )
         assert tree.read_bytes(payload["stored_at"]) == rendered
         assert payload["stored_at"] == tree.blob_path(DOOR, digest_bytes(rendered))
@@ -360,15 +388,15 @@ def test_a_pdf_page_is_rendered_at_the_door_and_never_again(tmp_path):
     sources = expand_sources(
         [{"relative_path": "scan.pdf", "sha256": digest_bytes(data)}],
         reader(files),
-        RENDER_PDF_POLICY,
+        POLICY,
     )
     tree, context = open_door(tmp_path, sources)
-    process_sources(context, tree, sources, reader(files), policy=RENDER_PDF_POLICY)
+    process_sources(context, tree, sources, reader(files), policy=POLICY)
     context.finish(DOOR)
     first = {path: path.read_bytes() for path in sorted((tree.root).rglob("*")) if path.is_file()}
 
     tree_again, context_again = open_door(tmp_path, sources)
-    process_sources(context_again, tree_again, sources, reader(files), policy=RENDER_PDF_POLICY)
+    process_sources(context_again, tree_again, sources, reader(files), policy=POLICY)
     context_again.finish(DOOR)
     second = {
         path: path.read_bytes() for path in sorted((tree_again.root).rglob("*")) if path.is_file()
@@ -377,15 +405,19 @@ def test_a_pdf_page_is_rendered_at_the_door_and_never_again(tmp_path):
 
 
 def test_an_unrenderable_pdf_page_is_refused_and_still_holds_its_ordinal(tmp_path):
-    data = single_gray_page_pdf(rotate=90)
-    files = {"rotated.pdf": data}
+    """Rasterisation removes rotation as a documented limit (proven in
+    `test_pdf_render.py`), so what makes a page genuinely unrenderable now is a
+    declared size this project's admission bounds cannot accommodate even at the
+    renderer's own resolution floor."""
+    huge = single_gray_page_pdf().replace(b"[0 0 4 3]", b"[0 0 20000000 20000000]")
+    files = {"degenerate.pdf": huge}
     sources = expand_sources(
-        [{"relative_path": "rotated.pdf", "sha256": digest_bytes(data)}],
+        [{"relative_path": "degenerate.pdf", "sha256": digest_bytes(huge)}],
         reader(files),
-        RENDER_PDF_POLICY,
+        POLICY,
     )
     tree, context = open_door(tmp_path, sources)
-    admitted = process_sources(context, tree, sources, reader(files), policy=RENDER_PDF_POLICY)
+    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
     context.finish(DOOR)
 
     assert admitted == 0
@@ -399,16 +431,16 @@ def test_an_unopenable_pdf_occupies_exactly_one_ordinal(tmp_path):
     sources = expand_sources(
         [{"relative_path": "broken.pdf", "sha256": digest_bytes(broken)}],
         reader({"broken.pdf": broken}),
-        RENDER_PDF_POLICY,
+        POLICY,
     )
-    assert len(sources) == 1 and sources[0].pdf_page_index == 0
+    assert len(sources) == 1 and sources[0].container_page_index == 0
 
 
 def test_a_pdf_declared_without_a_page_index_is_refused_rather_than_guessed_at(tmp_path):
     data = single_gray_page_pdf()
     sources = [SourceEntry(1, "scan.pdf", digest_bytes(data), None)]
     tree, context = open_door(tmp_path, sources)
-    process_sources(context, tree, sources, reader({"scan.pdf": data}), policy=RENDER_PDF_POLICY)
+    process_sources(context, tree, sources, reader({"scan.pdf": data}), policy=POLICY)
     context.finish(DOOR)
 
     record = admissions(tree)[1]
@@ -425,7 +457,107 @@ def test_a_pdf_whose_container_digest_disagrees_with_its_declaration_is_refused(
         SourceEntry(2, "book.pdf", "0" * 64, 1),
     ]
     tree, context = open_door(tmp_path, sources)
-    process_sources(context, tree, sources, reader({"book.pdf": data}), policy=RENDER_PDF_POLICY)
+    process_sources(context, tree, sources, reader({"book.pdf": data}), policy=POLICY)
+    context.finish(DOOR)
+
+    for record in admissions(tree).values():
+        assert reason_code(record["payload"]["reason"]) is RefusalReason.DIGEST_MISMATCH
+
+
+# --- The TIFF path, the same shape as PDF's, once it actually fans out ----------
+
+
+def test_a_multi_page_tiff_fans_out_into_one_ordinal_per_page(tmp_path):
+    data = multi_page_tiff(((6, 5), (4, 3)))
+    files = {"book.tiff": data}
+    sources = expand_sources(
+        [{"relative_path": "book.tiff", "sha256": digest_bytes(data)}], reader(files), POLICY
+    )
+    assert [(entry.ordinal, entry.container_page_index) for entry in sources] == [(1, 0), (2, 1)]
+
+    tree, context = open_door(tmp_path, sources)
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 2
+    context.finish(DOOR)
+
+    published = admissions(tree)
+    assert {
+        ordinal: record["payload"]["container_page_index"] for ordinal, record in published.items()
+    } == {1: 0, 2: 1}
+    # The sealed bytes are the rendered page, never the container, and the digest
+    # of the container travels beside them as the recorded transform's source —
+    # exactly the same shape a fanned-out PDF page carries.
+    for record in published.values():
+        payload = record["payload"]
+        assert payload["container_sha256"] == digest_bytes(data)
+        assert payload["sha256"] != digest_bytes(data)
+
+
+def test_a_tiff_page_is_rendered_at_the_door_and_never_again(tmp_path):
+    data = multi_page_tiff(((6, 5), (4, 3)))
+    files = {"scan.tiff": data}
+    sources = expand_sources(
+        [{"relative_path": "scan.tiff", "sha256": digest_bytes(data)}], reader(files), POLICY
+    )
+    tree, context = open_door(tmp_path, sources)
+    process_sources(context, tree, sources, reader(files), policy=POLICY)
+    context.finish(DOOR)
+    first = {path: path.read_bytes() for path in sorted((tree.root).rglob("*")) if path.is_file()}
+
+    tree_again, context_again = open_door(tmp_path, sources)
+    process_sources(context_again, tree_again, sources, reader(files), policy=POLICY)
+    context_again.finish(DOOR)
+    second = {
+        path: path.read_bytes() for path in sorted((tree_again.root).rglob("*")) if path.is_file()
+    }
+    assert first == second
+
+
+def test_a_tiff_directory_this_project_cannot_decode_is_refused_and_still_holds_its_ordinal(
+    tmp_path,
+):
+    """A compressed directory is a named gap (proven directly in
+    `test_tiff_render.py`); this is the same shape `test_an_unrenderable_pdf_page_...`
+    proves for PDF — refused, but still one accounted-for ordinal, never a hole."""
+    good = multi_page_tiff(((6, 5), (4, 3)))
+    # Patch the second directory's Compression tag (259) to an unhandled codec.
+    # `tiff_directory_offsets` finds the second directory at a fixed offset for
+    # this fixture shape (proven in test_image_formats.py); its tags are laid out
+    # in the same fixed order `synthetic_sources.multi_page_tiff` always uses.
+    import struct
+
+    offsets = image_formats.tiff_directory_offsets(good)
+    second_offset = offsets[1]
+    compression_entry = second_offset + 2 + 12 * 3  # header count + 256, 257, 258
+    patched = bytearray(good)
+    struct.pack_into("<H", patched, compression_entry + 8, 5)  # LZW
+    data = bytes(patched)
+
+    files = {"mixed.tiff": data}
+    sources = expand_sources(
+        [{"relative_path": "mixed.tiff", "sha256": digest_bytes(data)}], reader(files), POLICY
+    )
+    assert len(sources) == 2, "both directories still occupy their own ordinal"
+
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
+    context.finish(DOOR)
+
+    assert admitted == 1
+    published = admissions(tree)
+    assert published[1]["outcome"] == "admitted"
+    assert published[2]["outcome"] == "refused"
+    assert reason_code(published[2]["payload"]["reason"]) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "gap in this pipeline" in published[2]["payload"]["reason"]
+
+
+def test_a_tiff_whose_container_digest_disagrees_with_its_declaration_is_refused(tmp_path):
+    data = multi_page_tiff(((6, 5), (4, 3)))
+    sources = [
+        SourceEntry(1, "book.tiff", "0" * 64, 0),
+        SourceEntry(2, "book.tiff", "0" * 64, 1),
+    ]
+    tree, context = open_door(tmp_path, sources)
+    process_sources(context, tree, sources, reader({"book.tiff": data}), policy=POLICY)
     context.finish(DOOR)
 
     for record in admissions(tree).values():
@@ -438,8 +570,8 @@ def test_a_pdf_whose_container_digest_disagrees_with_its_declaration_is_refused(
 def test_ordinals_are_assigned_deterministically_by_path(tmp_path):
     files = {"b.png": png(2, 2), "a.pdf": two_page_pdf(), "c.tif": tiff(3, 3)}
     rows = [{"relative_path": name, "sha256": digest_bytes(data)} for name, data in files.items()]
-    first = expand_sources(rows, reader(files), RENDER_PDF_POLICY)
-    second = expand_sources(list(reversed(rows)), reader(files), RENDER_PDF_POLICY)
+    first = expand_sources(rows, reader(files), POLICY)
+    second = expand_sources(list(reversed(rows)), reader(files), POLICY)
     assert first == second
     assert [(entry.ordinal, entry.declared_path) for entry in first] == [
         (1, "a.pdf"),
@@ -518,10 +650,10 @@ def test_a_duplicate_pdf_file_is_refused_without_losing_identical_pages_within_o
     data = two_page_pdf()
     files = {"book.pdf": data, "book-copy.pdf": data}
     rows = [{"relative_path": name, "sha256": digest_bytes(value)} for name, value in files.items()]
-    sources = expand_sources(rows, reader(files), RENDER_PDF_POLICY)
+    sources = expand_sources(rows, reader(files), POLICY)
     tree, context = open_door(tmp_path, sources)
 
-    admitted = process_sources(context, tree, sources, reader(files), policy=RENDER_PDF_POLICY)
+    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
     context.finish(DOOR)
 
     assert admitted == 2
@@ -576,10 +708,10 @@ def test_two_byte_identical_pdf_pages_are_both_admitted(tmp_path):
     sources = expand_sources(
         [{"relative_path": "blank.pdf", "sha256": digest_bytes(data)}],
         reader(files),
-        RENDER_PDF_POLICY,
+        POLICY,
     )
     tree, context = open_door(tmp_path, sources)
-    admitted = process_sources(context, tree, sources, reader(files), policy=RENDER_PDF_POLICY)
+    admitted = process_sources(context, tree, sources, reader(files), policy=POLICY)
     context.finish(DOOR)
 
     assert admitted == 2
@@ -836,10 +968,7 @@ def test_an_oversized_container_is_refused_for_its_size_not_its_manifest_shape(t
     sources = [SourceEntry(1, "huge.pdf", None)]
     tree, context = open_door(tmp_path, sources)
     assert (
-        process_sources(
-            context, tree, sources, reader({"huge.pdf": oversized}), policy=RENDER_PDF_POLICY
-        )
-        == 0
+        process_sources(context, tree, sources, reader({"huge.pdf": oversized}), policy=POLICY) == 0
     )
     context.finish(DOOR)
 

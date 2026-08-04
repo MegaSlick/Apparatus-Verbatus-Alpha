@@ -52,14 +52,23 @@ DOOR_PRIVATE_MODULES = {
             "pipeline/1_exemplar/test_door.py",
         }
     ),
+    "tiff_render": frozenset(
+        {
+            "pipeline/1_exemplar/door.py",
+            "pipeline/1_exemplar/test_tiff_render.py",
+        }
+    ),
     "image_formats": frozenset(
         {
             "pipeline/1_exemplar/admission.py",
             "pipeline/1_exemplar/door.py",
             "pipeline/1_exemplar/pdf_render.py",
+            "pipeline/1_exemplar/tiff_render.py",
             "pipeline/1_exemplar/test_admission.py",
             "pipeline/1_exemplar/test_image_formats.py",
             "pipeline/1_exemplar/test_pdf_render.py",
+            "pipeline/1_exemplar/test_tiff_render.py",
+            "pipeline/1_exemplar/test_door.py",
         }
     ),
 }

@@ -65,9 +65,8 @@ construction rather than by convention (spec 03, test 4).
 
 from typing import Final, NamedTuple
 
-import pypdfium2 as pdfium
-
 import image_formats
+import pypdfium2 as pdfium
 from admission import RefusalReason, RenderRefusal
 
 # One scanned register volume is hundreds of pages, not hundreds of thousands. A
@@ -172,6 +171,24 @@ def _bounded_scale(width_pt: float, height_pt: float, page_index: int) -> float:
     its aspect ratio rather than being refused; refused only when even the
     `MIN_DPI` floor would still exceed the bounds, which means the page's own
     declared size is degenerate rather than merely large.
+
+    `pixel_cap` is computed against a slightly reduced, and doubly-capped,
+    budget rather than `MAX_PIXELS` alone:
+
+    - pdfium rounds the *width* and *height* it actually renders independently,
+      so the true pixel count can land a little above the exact analytic
+      product even when the scale was chosen to land exactly on the limit.
+    - The render is always RGB (three bytes per pixel, see `render_page`), so
+      the PNG it becomes is bound by `image_formats.MAX_PNG_DECODED_BYTES` —
+      tighter than `MAX_PIXELS` at three channels — and `admission.inspect_source`
+      re-validates exactly that PNG once it is "inspected as though submitted".
+      Capping only against `MAX_PIXELS` here would pass a page through this
+      function that then refuses one step later, which is a worse answer than
+      choosing the smaller resolution up front.
+
+    A margin comfortably larger than either effect (independent rounding of two
+    dimensions each bounded by `MAX_DIMENSION`; one filter byte per scanline)
+    keeps the bitmap this module actually asks for under both limits.
     """
     if width_pt <= 0 or height_pt <= 0:
         raise PdfRefusal(
@@ -180,7 +197,9 @@ def _bounded_scale(width_pt: float, height_pt: float, page_index: int) -> float:
         )
     target = TARGET_DPI / 72
     dimension_cap = image_formats.MAX_DIMENSION / max(width_pt, height_pt)
-    pixel_cap = (image_formats.MAX_PIXELS / (width_pt * height_pt)) ** 0.5
+    max_rgb_pixels = min(image_formats.MAX_PIXELS, image_formats.MAX_PNG_DECODED_BYTES // 3)
+    pixel_budget = max_rgb_pixels * 0.99
+    pixel_cap = (pixel_budget / (width_pt * height_pt)) ** 0.5
     scale = min(target, dimension_cap, pixel_cap)
     if scale * 72 < MIN_DPI:
         raise PdfRefusal(
@@ -224,8 +243,7 @@ def render_page(document: PdfDocument, page_index: int) -> tuple[bytes, str]:
             if bitmap.mode != "RGB":
                 raise PdfRefusal(
                     RefusalReason.CORRUPT,
-                    f"page {page_index} rendered as pixel mode {bitmap.mode!r} rather "
-                    "than RGB",
+                    f"page {page_index} rendered as pixel mode {bitmap.mode!r} rather than RGB",
                 )
             png_bytes = image_formats.encode_png(
                 bitmap.width, bitmap.height, 2, 3, bytes(bitmap.buffer)
