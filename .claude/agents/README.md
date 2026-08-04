@@ -161,6 +161,40 @@ bookkeeping that the chamber does for free.
 mechanical sweep, a question with one answer. Reach for an orchestrator when the unit is a
 system, a stage, a spec, or anything that will take more than one pass.
 
+## The two-lane build — the default shape for a section
+
+**Tyrel ruled, 2026-08-04:** this is how a section gets built from now on, without asking.
+
+| # | Step | Seat | Effort |
+|---|---|---|---|
+| 1 | **Lane A** — builds the section | GPT-5.6 Terra | `ultra` |
+| 2 | **Lane B** — builds it blind to lane A | Claude Sonnet 5 | `ultracode` |
+| 3 | **Merge** — combines both lanes and fixes what neither got right | Claude Opus 5 | `medium`–`high` |
+| 4 | **Check** — reads, fixes and edits the merge | GPT-5.6 Sol | `medium`–`high` |
+
+**Both lanes get the same prompt, byte for byte, and neither is told the other exists.**
+That is the whole mechanism: two independent answers to one question, from different
+vendors, so the places they diverge are the places the spec was unclear or the problem was
+hard. Agreement is evidence; divergence is where to look. It has already earned its keep —
+one lane found a policy bypass the other missed, and the other solved a decoder problem the
+first declared a blocker.
+
+**Terra and Sonnet are the lanes, and they are the only orchestrating seats by default.**
+Tyrel's words: "Terra and Sonnet ultra settings are fine to use they are cheap." **Opus at
+`ultracode` is not to be used** unless he says so in that session — its sub-agents are all
+Opus and it burns the budget too fast. That is a cost rule, not a capability one.
+
+The merge and check seats sit at `medium`–`high` because they are judging rather than
+producing, and the matrix says effort buys nothing on well-specified building work.
+
+**A repair against a written findings list is the host session's own work on the branch**,
+not another lane. Tyrel ruled that the same day, after a session spawned a seventh chamber
+to do what it could have done itself.
+
+Chambers open with the airlock onto the old pipeline mounted — see
+[operations/autoclave/README.md](../../operations/autoclave/README.md). Tell every lane to
+read it, and tell every lane that what crosses is understanding and never a line of code.
+
 And **no seat gets a deadline** — see Effort rules below.
 
 ## Choosing between the vendors
