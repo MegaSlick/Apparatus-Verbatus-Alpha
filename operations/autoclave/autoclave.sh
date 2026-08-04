@@ -509,6 +509,34 @@ cmd_new() {
     fi
 
     outdir=$(outdir_of "$task")
+
+    # A drawer that already holds a report belongs to a dispatch that already
+    # happened, and `rm` deliberately keeps it — the drawer is the only surviving
+    # evidence that a chamber ran. Reusing the task name therefore overwrites that
+    # evidence the moment the new seat finishes, silently and with no way back:
+    # `workbench/` is gitignored, so there is no history to recover it from.
+    #
+    # That is not hypothetical. On 2026-08-04 a session dispatched a four-seat
+    # review into `rev-terra`, `rev-sonnet`, `rev-opus` and `rev-sol` — names used
+    # for a different review the night before — and destroyed GPT-5.6 Terra's seat
+    # from the System 02 review. The other three were rescued only because their
+    # seats had not finished writing yet. Recorded in
+    # `workbench/archive/2026-08-03_reviews-preserved/LOST.md`.
+    #
+    # CLAUDE.md hard rule 7: nothing is lost silently. So this refuses rather than
+    # warns — a warning printed at the top of a dispatch that then runs for two
+    # hours is a warning nobody reads.
+    if [ -f "${outdir}/report.md" ]; then
+        die "chamber '${task}' would reuse an output drawer that already holds a report:
+    ${outdir}/report.md
+    written $(date -r "${outdir}/report.md" '+%Y-%m-%d %H:%M' 2>/dev/null || echo 'at an unknown time')
+
+  That report is the only surviving evidence of an earlier dispatch, and creating
+  this chamber would overwrite it with no way back — workbench/ is gitignored.
+
+  Pick a different task name, or move the old report aside first."
+    fi
+
     mkdir -p "$outdir"
 
     # --network none would be the honest default, but the agent CLIs need to

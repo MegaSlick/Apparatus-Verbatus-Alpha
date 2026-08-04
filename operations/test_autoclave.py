@@ -391,6 +391,41 @@ class TestTaskNames:
         # Past validation and into the real work: it is looking for the report.
         assert "report.md" in result.stderr
 
+    def test_a_drawer_holding_a_report_refuses_a_new_chamber(self, tmp_path):
+        """Reusing a task name would overwrite the only evidence a dispatch ran.
+
+        `rm` keeps the output drawer deliberately — it is the sole surviving record
+        of a chamber. So a second `new` under the same task name silently destroys
+        the first one's report the moment the new seat finishes, and `workbench/` is
+        gitignored, so there is no history to recover it from.
+
+        This happened on 2026-08-04: a four-seat review was dispatched into
+        `rev-terra`, `rev-sonnet`, `rev-opus` and `rev-sol`, the names a different
+        review had used the night before, and GPT-5.6 Terra's System 02 review report
+        was destroyed. The other three survived only because their seats had not
+        finished writing when it was noticed. See
+        `workbench/archive/2026-08-03_reviews-preserved/LOST.md`.
+
+        It refuses rather than warns, per CLAUDE.md hard rule 7: a warning printed at
+        the top of a dispatch that then runs for two hours is a warning nobody reads.
+        Asserted to happen before the engine is touched, so the refusal cannot leave
+        a half-made chamber behind.
+        """
+        script = elsewhere(tmp_path)
+        drawer = tmp_path / "workbench" / "autoclave" / "a-finished-review"
+        drawer.mkdir(parents=True)
+        (drawer / "report.md").write_text("an earlier seat's findings\n")
+
+        result = run("new", "a-finished-review", script=script)
+
+        assert result.returncode != 0
+        assert "report.md" in result.stderr
+        assert "a-finished-review" in result.stderr
+        # The old report is still there, untouched.
+        assert (drawer / "report.md").read_text() == "an earlier seat's findings\n"
+        # And nothing reached the engine.
+        assert "docker" not in result.stderr.lower()
+
     def test_validation_happens_before_anything_is_created(self):
         """A rejected name must not reach the engine at all.
 
