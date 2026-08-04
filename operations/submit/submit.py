@@ -366,6 +366,47 @@ def purge(manifest_out: Path, approved_roots: tuple[Path, ...]) -> CleanupReport
     return report
 
 
+def _write_refusal_report(
+    manifest_out: Path, policy_path: Path, entry: str, detail: str
+) -> Path | None:
+    """The private refusal report ruling 2026-08-04 asks for.
+
+    "We literally need the file name. That is how we link it." The terminal says
+    how many entries failed and where the report is; the report names every one
+    of them. This used to end at "withheld by the logging rule" — true of the
+    terminal, but nothing then *wrote* the name anywhere, so an operator had no
+    way to learn which of their files failed at all. The report lives beside the
+    manifest, inside the same approved storage root `submit()` already checked,
+    so the split ruling 1 draws — the record always carries the name, the
+    terminal never repeats it — is exactly what this makes true.
+
+    Returns `None` (never raising past the caller) when even the report cannot
+    be written: the reason is still on stderr either way, and a diagnostic that
+    cannot be filed is not a reason to lose the original error.
+    """
+    try:
+        policy = gate.load_policy(policy_path)
+        roots = gate.approved_storage_roots(policy)
+        directory = gate.require_approved_storage_location(
+            manifest_out.parent, roots, "refusal report directory"
+        )
+    except ContractError:
+        return None
+    report_path = directory / f"{manifest_out.name}.refusal.json"
+    payload = {
+        "schema": "submission-refusal-report.v0",
+        "entries": [{"entry": entry, "reason": detail}],
+    }
+    try:
+        _atomic_create(report_path, canonical_bytes(payload))
+    except SubmitRefusal:
+        # A differing report from an earlier failed attempt already holds this
+        # path. Evidence is never overwritten (GOVERNANCE 4) even for a
+        # diagnostic; the reason is still on stderr regardless.
+        return None
+    return report_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", required=True)
@@ -385,20 +426,27 @@ def main() -> int:
             policy_path=Path(args.policy),
         )
     except ContractError as error:
-        # The reason, never the name. Every refusal that knows a submitted path
-        # carries it as `entry` rather than in its message, because this line is
-        # what a shell runner, a CI job or a service manager captures — and the
-        # data-handling policy's logging rule excludes a declared filename or path
-        # from exactly that. **What is missing is the operator's ability to see
-        # which entry was rejected**, and there is no approved place to put it yet;
-        # that is an open question in the gate package, not a decision made here.
+        # The reason, never the name, on this channel. Every refusal that knows a
+        # submitted path carries it as `entry` rather than in its message,
+        # because this line is what a shell runner, a CI job or a service manager
+        # captures — and the data-handling policy's logging rule excludes a
+        # declared filename or path from exactly that. The name itself is not
+        # lost: it is written to the refusal report below, in the record, where
+        # ruling 1 says it belongs.
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
-        if getattr(error, "entry", None) is not None:
-            print(
-                "the offending entry's submitted path is withheld from this channel by "
-                "the data-handling policy's logging rule",
-                file=sys.stderr,
+        entry = getattr(error, "entry", None)
+        if entry is not None:
+            report_path = _write_refusal_report(
+                Path(args.manifest_out), Path(args.policy), entry, str(error)
             )
+            if report_path is not None:
+                print(f"1 submitted entry failed; named in {report_path}", file=sys.stderr)
+            else:
+                print(
+                    "the failing entry's name could not be written to a refusal report; "
+                    "see the reason above",
+                    file=sys.stderr,
+                )
         return 2
     return 0
 

@@ -14,9 +14,18 @@ bookkeeping on synthetic input, and a codec that quietly half-handled a real
 photograph would be worse than one that says no. Spec 03 brings a real decoder in
 at the door, where decoding is the point.
 
-No dependency. Pillow and numpy are both the obvious answer and the wrong one for
-drawing rectangles into a project that has zero dependencies and intends to keep
-its list short.
+**Correction, ruling 2026-08-04, item 9.** This docstring used to read "zero
+dependencies" as a ban on any library and refuse Pillow and numpy on that
+authority — and a previous session read that the same way and shipped PDF
+support that refused every real PDF rather than add a library to read one. That
+was never Tyrel's rule: "Zero dependencies is about the vlm models and major
+tools. I expect you to be using basic tools and stuff as needed otherwise." This
+module stays a narrow, dependency-free codec because two stages only need a
+minimal synthetic grayscale codec on fixture input, not because a real one is
+forbidden — `pypdfium2` is exactly such a basic tool, cleared to enter by name,
+and it is what `pipeline/1_exemplar/pdf_render.py` rasterises PDF pages with.
+Judge a dependency on whether it is a basic tool doing ordinary work or a major
+one this pipeline would depend on to *think*, never on the count.
 """
 
 import struct

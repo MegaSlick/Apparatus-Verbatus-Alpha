@@ -3,8 +3,11 @@
 Spec 03's ruling (settled 2026-08-04, item 5): the door brings a real decoder in,
 where decoding is the point, and `common/imaging.py` stays the narrow synthetic-only
 codec it always was — it says so in its own docstring, naming this spec as the place
-a real one is answered. Pillow and numpy are both the obvious answer and the wrong
-one for a project with zero dependencies.
+a real one is answered. This module stays standard-library-only on its own merits —
+proving PNG/JPEG/TIFF structure needs no library — not because a dependency is
+banned project-wide: ruling 2026-08-04, item 9 corrects that reading, and
+`pipeline/1_exemplar/pdf_render.py`'s door-private renderer uses `pypdfium2` for
+exactly the same class of work this module does for the other three formats.
 
 **"Real" here means structural, not photometric.** Each validator walks the real
 container far enough to prove the bytes are a genuine, uncorrupted instance of the
