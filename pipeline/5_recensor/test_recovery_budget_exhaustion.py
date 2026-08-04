@@ -14,31 +14,25 @@ only proves the branch that names a spent budget actually behaves as its own
 message claims when a budget genuinely is spent.
 """
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from common.chairs.registry import ChairRegistry
 from common.contracts.stages import RECENSOR
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
-MODELS_CONFIG = ROOT / "config" / "models.toml"
 
 
-def _load_recensor():
-    path = Path(__file__).resolve().parent / "run.py"
-    spec = importlib.util.spec_from_file_location("recensor_budget_exhaustion_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_a_genuinely_zero_budget_holds_the_act_and_names_it_spent(tmp_path, monkeypatch):
+def test_a_genuinely_zero_budget_holds_the_act_and_names_it_spent(tmp_path):
     root = tmp_path / "runs"
+    recovery_config = tmp_path / "zero-recovery.toml"
+    recovery_config.write_text(
+        "absolute_cap = 3\n[budget]\nfallback_recrop = 0\npage_level_reread = 0\n",
+        encoding="utf-8",
+    )
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
@@ -56,6 +50,8 @@ def test_a_genuinely_zero_budget_holds_the_act_and_names_it_spent(tmp_path, monk
                 "r",
                 "--scenario",
                 "review",
+                "--recovery-config",
+                str(recovery_config),
             ],
             cwd=ROOT,
             capture_output=True,
@@ -63,25 +59,24 @@ def test_a_genuinely_zero_budget_holds_the_act_and_names_it_spent(tmp_path, monk
         )
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
-    recensor = _load_recensor()
-    monkeypatch.setattr(
-        recensor, "recovery_budget", lambda root="config": {"allowed": 0, "absolute_cap": 3}
-    )
-    monkeypatch.setattr(
-        sys,
-        "argv",
+    result = subprocess.run(
         [
-            str(recensor.__file__),
+            sys.executable,
+            str(ROOT / "pipeline/5_recensor/run.py"),
             "--run-root",
             str(root),
             "--run-id",
             "r",
             "--scenario",
             "review",
+            "--recovery-config",
+            str(recovery_config),
         ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
     )
-    exit_code = recensor.main(registry_factory=ChairRegistry.from_toml)
-    assert exit_code == 3  # EXIT_HELD
+    assert result.returncode == 3, result.stderr
 
     tree = RunTree(root, "r")
     reviews = [
