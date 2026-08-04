@@ -119,7 +119,13 @@ def test_an_approval_edited_after_sealing_is_refused():
 
 
 def test_an_approval_must_name_what_it_approved():
-    for bad in ({"subject_ids": []}, {"reason": "   "}, {"target_version_hash": ""}):
+    for bad in (
+        {"subject_ids": []},
+        {"subject_ids": [""]},
+        {"reason": "   "},
+        {"target_version_hash": ""},
+        {"target_version_hash": "not-a-policy-hash"},
+    ):
         kwargs = {
             "subject_ids": ["act_0123456789abcdef"],
             "action": "exclusion",
@@ -178,6 +184,19 @@ def test_a_hand_written_record_with_blank_fields_is_refused():
         assert field in str(caught.value)
         checked += 1
     assert checked == 3
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("subject_ids", [""]), ("target_version_hash", "not-a-policy-hash")],
+)
+def test_a_hand_written_record_with_an_uncheckable_target_is_refused(field, value):
+    record = sound_approval()
+    record[field] = value
+    record["self_hash"] = self_hash(record)
+
+    with pytest.raises(ApprovalRefusal):
+        validate_approval_record(record)
 
 
 def test_subject_ids_are_stored_sorted():

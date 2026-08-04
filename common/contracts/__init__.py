@@ -12,8 +12,17 @@ reading ink.
 """
 
 from .approval import (
+    APPROVAL_GATED_REAL_INGRESS,
     APPROVER,
+    SYNTHETIC_FIXTURE_INGRESS,
+    ApprovalRecordReference,
+    approval_gated_real_ingress_record,
+    approval_record_reference_from_record,
     build_approval_record,
+    data_gate_policy_hash,
+    parse_data_gate_ingress_record,
+    require_current_data_gate_approval,
+    synthetic_fixture_ingress_record,
     validate_approval_record,
 )
 from .canonical import (
@@ -62,8 +71,10 @@ from .outcomes import (
 from .stages import HANDOFFS, STAGES, stage_directory
 
 __all__ = [
+    "APPROVAL_GATED_REAL_INGRESS",
     "APPROVER",
     "ArmariumCategory",
+    "ApprovalRecordReference",
     "ApprovalRefusal",
     "ContractError",
     "FatalAccounting",
@@ -74,7 +85,10 @@ __all__ = [
     "SCHEMA_LABEL",
     "STAGES",
     "SchemaRefusal",
+    "SYNTHETIC_FIXTURE_INGRESS",
     "act_id",
+    "approval_gated_real_ingress_record",
+    "approval_record_reference_from_record",
     "artifact_id",
     "attempt_id",
     "build_approval_record",
@@ -83,16 +97,20 @@ __all__ = [
     "canonical_text",
     "check_algebra_is_total",
     "classify",
+    "data_gate_policy_hash",
     "digest_bytes",
     "digest_of",
     "is_well_formed",
     "page_id",
+    "parse_data_gate_ingress_record",
     "region_id",
     "require_approval",
+    "require_current_data_gate_approval",
     "run_aggregate",
     "self_hash",
     "stage_directory",
     "terminal_category",
+    "synthetic_fixture_ingress_record",
     "validate_approval_record",
     "validate_envelope",
     "validate_input_refs",

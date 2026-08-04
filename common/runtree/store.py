@@ -25,27 +25,29 @@ Reusing a run id whose source, configuration, or adapter recipes have changed fa
 before any write. That is spec 01's third test, and it is the difference between a
 resumed run and a corrupted one.
 
-`receipts/sha256/` is the one thing here that is not a stage artifact. A serving
-receipt records which model actually answered, and it carries a live endpoint and a
-real moment — `envelope.py`'s docstring already rules that out of a stage artifact,
-and publishing one would break "repeating the identical command leaves every byte
-unchanged". So it is written content-addressed under the run root, outside every
-stage's directory and out of every stage manifest, and a stage payload carries only
-its digest-checked reference plus the immutable resolved identity and revision.
+`receipts/sha256/` is the one thing here that is not a stage artifact. Serving receipts
+and approval records both carry a real moment, so `envelope.py`'s docstring already
+rules them out of a stage artifact; publishing either one there would break "repeating
+the identical command leaves every byte unchanged". They are written content-addressed
+under the run root, outside every stage's directory and out of every stage manifest,
+and a stage payload carries only its digest-checked reference plus the immutable facts
+it needs.
 """
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Final
 
-# At module level, not deferred inside the two receipt methods. The dependency is
-# real — the store is the one writer and the one reader of a run receipt, and it
-# refuses an invalid one at both ends — so it belongs where a reader of the
-# imports can see it. `common/chairs/` imports nothing from here, so there is no
-# cycle to dodge, and a deferred import that exists only to hide a layer from the
-# eye is a layer nobody can check.
+# At module level, not deferred inside the receipt-backed record methods. The
+# dependencies are real — the store is the one writer and reader for these records,
+# refusing invalid values at both ends — so they belong where a reader of the imports
+# can see them. Neither contract imports this module, so there is no cycle to dodge,
+# and a deferred import that exists only to hide a layer from the eye is a layer nobody
+# can check.
 from common.chairs.receipts import receipt_record, validate_receipt
+from common.contracts.approval import ApprovalRecordReference, validate_approval_record
 from common.contracts.canonical import (
     SCHEMA_LABEL,
     canonical_bytes,
@@ -54,7 +56,7 @@ from common.contracts.canonical import (
     verify_self_hash,
 )
 from common.contracts.envelope import validate_envelope
-from common.contracts.errors import IncompatibleReuse, SchemaRefusal
+from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import writing_directory
 
@@ -67,6 +69,7 @@ RECEIPTS_DIR: Final = "receipts/sha256"
 # The facts a run id is bound to. Changing any of them means this is a different
 # run wearing an old name, and reuse is refused rather than resumed.
 _BOUND_FIELDS: Final = ("source_manifest", "config_digest", "adapter_recipes", "witness_chairs")
+_INGRESS_FIELD: Final = "ingress"
 
 
 class PublishResult:
@@ -112,12 +115,22 @@ class RunTree:
 
     def __init__(self, root: Path, run_id: str):
         self.run_id = validate_run_id(run_id)
+        # Resolve the requested base separately from its run-id child.  A run-id
+        # symlink must not redirect a new run outside the caller's approved root:
+        # once that escape became ``self.root``, every later containment check
+        # would faithfully protect the wrong tree.
+        requested_root = Path(root).resolve()
+        candidate = requested_root / self.run_id
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(requested_root):
+            raise SchemaRefusal(
+                "run id resolves outside the requested run root; a run tree may not be "
+                "redirected through a symlink"
+            )
         # Resolved once, here, so every later comparison is against one spelling.
-        # `resolve()` returns a realpath, and `relative_to` is exact rather than
-        # semantic: on macOS a caller passing `/tmp` produced a root of `/tmp/<id>`
-        # and artifact paths under `/private/tmp/<id>`, so the manifest's
-        # `relative_to(self.root)` raised and the run died on a symlink nobody chose.
-        self.root = (Path(root) / run_id).resolve()
+        # `relative_to` is exact rather than semantic: on macOS a caller passing
+        # `/tmp` produces the real `/private/tmp` spelling consistently.
+        self.root = resolved
 
     # --- Creation and the run authority ---------------------------------------
 
@@ -131,6 +144,7 @@ class RunTree:
         config_digest: str,
         adapter_recipes: dict[str, str],
         witness_chairs: list[str],
+        ingress: dict[str, Any] | None = None,
     ) -> "RunTree":
         """Open a run, creating it if new and refusing an incompatible reuse.
 
@@ -172,10 +186,15 @@ class RunTree:
             "adapter_recipes": dict(sorted(adapter_recipes.items())),
             "witness_chairs": sorted(witness_chairs),
         }
+        if ingress is not None:
+            authority[_INGRESS_FIELD] = ingress
         authority["self_hash"] = self_hash(authority)
 
         run_file = tree.root / RUN_FILE
-        if run_file.exists():
+        tree.root.mkdir(parents=True, exist_ok=True)
+        try:
+            _atomic_create(run_file, canonical_bytes(authority))
+        except FileExistsError:
             existing = tree.read_run()
             # `.get`, not `[...]`: a run.json missing a bound field used to raise a
             # bare KeyError out of the reuse check, which is a traceback and an
@@ -187,10 +206,15 @@ class RunTree:
                     f"run {run_id!r} was written under schema "
                     f"{existing.get('schema')!r} and this is {authority['schema']!r}; "
                     "the two describe different shapes and cannot share a tree"
-                )
+                ) from None
+            bound_fields = _BOUND_FIELDS + (
+                (_INGRESS_FIELD,)
+                if _INGRESS_FIELD in authority or _INGRESS_FIELD in existing
+                else ()
+            )
             differing = [
                 field
-                for field in _BOUND_FIELDS
+                for field in bound_fields
                 if field not in existing or existing[field] != authority[field]
             ]
             if differing:
@@ -199,11 +223,8 @@ class RunTree:
                     f"{', '.join(differing)}; a run id names one set of inputs and "
                     "one configuration, so this is a different run wearing an old "
                     "name. Nothing was written"
-                )
+                ) from None
             return tree
-
-        tree.root.mkdir(parents=True, exist_ok=True)
-        _atomic_write(run_file, canonical_bytes(authority))
         return tree
 
     def read_run(self) -> dict[str, Any]:
@@ -237,7 +258,7 @@ class RunTree:
         return f"{writing_directory(stage)}/{MANIFEST_FILE}"
 
     def receipt_path(self, digest: str) -> str:
-        """The one content-addressed location for a validated serving receipt."""
+        """The one content-addressed location for a validated receipt-backed record."""
         if not _is_sha256(digest):
             raise SchemaRefusal(f"receipt digest {digest!r} is not a lowercase sha256")
         return f"{RECEIPTS_DIR}/{digest}.json"
@@ -293,6 +314,24 @@ class RunTree:
         result = self._publish_bytes(self.receipt_path(digest), data)
         return RunReceiptReference(result.relative_path, digest), result
 
+    def write_approval_record(
+        self, record: dict[str, Any]
+    ) -> tuple[ApprovalRecordReference, PublishResult]:
+        """Store one validated approval record outside stage artifacts.
+
+        An approval records a human act at a moment, so it has the same receipt
+        shape as a serving receipt rather than a stage artifact.  The contract
+        validator checks both the declared approval-record schema and its own
+        hash before any path is made; canonical bytes and the existing immutable
+        writer then make an identical record reuse its receipt and a changed one
+        receive a different content-addressed reference.
+        """
+        validated = validate_approval_record(record)
+        data = canonical_bytes(validated)
+        digest = digest_bytes(data)
+        result = self._publish_bytes(self.receipt_path(digest), data)
+        return ApprovalRecordReference(result.relative_path, digest), result
+
     def read_run_receipt(self, reference: RunReceiptReference | dict[str, str]) -> dict[str, Any]:
         """Read a receipt only when both its reference and bytes still verify.
 
@@ -332,19 +371,62 @@ class RunTree:
                 f"run receipt {parsed.relative_path} could not be read: {error}"
             ) from error
 
+    def read_approval_record(self, reference: ApprovalRecordReference) -> dict[str, Any]:
+        """Read an approval only through its typed, checked receipt reference.
+
+        The content address verifies that the bytes remain the exact record named
+        by the caller; the approval validator then verifies the record's schema
+        and self-hash.  Both are necessary: a valid digest proves only that the
+        bytes were not changed after this reference was made, not that they ever
+        formed an approval record.
+        """
+        parsed = _approval_record_reference(reference)
+        expected_path = self.receipt_path(parsed.sha256)
+        if parsed.relative_path != expected_path:
+            raise ApprovalRefusal(
+                f"approval record reference {parsed.relative_path!r} is not its content-addressed "
+                f"path {expected_path!r}"
+            )
+        try:
+            data = self.read_bytes(parsed.relative_path)
+        except OSError as error:
+            raise ApprovalRefusal(
+                f"approval record {parsed.relative_path} could not be read: {error}"
+            ) from error
+        actual = digest_bytes(data)
+        if actual != parsed.sha256:
+            raise ApprovalRefusal(
+                f"approval record {parsed.relative_path} has digest {actual}, not the reference "
+                f"digest {parsed.sha256}"
+            )
+        try:
+            decoded = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ApprovalRefusal(
+                f"approval record {parsed.relative_path} could not be read: {error}"
+            ) from error
+        return validate_approval_record(decoded)
+
     def _publish_bytes(self, relative: str, data: bytes) -> PublishResult:
         target = self.resolve(relative)
-        if target.exists():
-            existing = target.read_bytes()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            _atomic_create(target, data)
+        except FileExistsError:
+            try:
+                existing = target.read_bytes()
+            except OSError as error:
+                raise IncompatibleReuse(
+                    f"{relative} appeared while it was being published and could not be read; "
+                    "the immutable write was not replaced"
+                ) from error
             if existing == data:
                 return PublishResult(relative, reused=True)
             raise IncompatibleReuse(
                 f"{relative} already holds different bytes. Artifacts are immutable: "
                 "the same identity may not describe two different things, and the "
                 "existing file was not touched"
-            )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(target, data)
+            ) from None
         return PublishResult(relative, reused=False)
 
     # --- Reading ----------------------------------------------------------------
@@ -447,16 +529,43 @@ def _atomic_write(target: Path, data: bytes) -> None:
     death, which matters because a half-written artifact that a resume trusts is
     exactly the failure the sealed tree exists to prevent.
     """
-    temporary = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+    temporary = _write_temporary(target, data)
     try:
-        with open(temporary, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
         os.replace(temporary, target)
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def _atomic_create(target: Path, data: bytes) -> None:
+    """Publish immutable bytes only when their final name does not yet exist.
+
+    A hard link is an atomic create on the target filesystem.  The temporary is
+    fully written and synced first, then either acquires the final name or raises
+    ``FileExistsError`` without replacing the competing writer's bytes.
+    """
+    temporary = _write_temporary(target, data)
+    try:
+        os.link(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _write_temporary(target: Path, data: bytes) -> Path:
+    """Write one unique, synced same-directory temporary and return its path."""
+    descriptor, raw_path = tempfile.mkstemp(prefix=f".{target.name}.tmp-", dir=target.parent)
+    temporary = Path(raw_path)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        if temporary.exists():
+            temporary.unlink()
+        raise
+    return temporary
 
 
 def _read_json(path: Path) -> Any:
@@ -485,6 +594,19 @@ def _receipt_reference(value: RunReceiptReference | dict[str, str]) -> RunReceip
     if not _is_sha256(digest):
         raise SchemaRefusal("run receipt reference has no lowercase sha256")
     return RunReceiptReference(relative, digest)
+
+
+def _approval_record_reference(value: ApprovalRecordReference) -> ApprovalRecordReference:
+    """Validate the typed boundary before using an approval receipt reference."""
+    if not isinstance(value, ApprovalRecordReference):
+        raise ApprovalRefusal(
+            "approval record reference must be an ApprovalRecordReference, not an untyped record"
+        )
+    if not isinstance(value.relative_path, str) or not value.relative_path:
+        raise ApprovalRefusal("approval record reference has no relative_path")
+    if not _is_sha256(value.sha256):
+        raise ApprovalRefusal("approval record reference has no lowercase sha256")
+    return value
 
 
 def _refuse_path_component(value: Any, what: str) -> None:
