@@ -173,3 +173,47 @@ def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary
     assert result.returncode == EXIT_FATAL
     assert "artifact input" in result.stderr
     assert admission_path in result.stderr
+
+
+def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(tmp_path):
+    """The reconciliation branch at `common/exemplar_boundary.py`, which had no test
+    at all: replacing its condition with `if False` left the whole suite green.
+
+    Deleting the page artifact alone does not reach it — the corpus seal still
+    inputs that artifact, so the run tree refuses at the input-reference check one
+    layer earlier, which is what the neighbouring test exercises. Reaching this
+    branch means removing the page *and* the seal's reference to it, which is
+    exactly the shape a producer bug would leave behind: an Exemplar that no longer
+    accounts for a page `run.json` says arrived, with nothing dangling to notice.
+
+    The refusal names ordinals rather than submitted filenames on purpose. Every
+    ContractError reaches stderr through `run_stage`, and the data-handling
+    policy's logging rule keeps a declared path out of that channel — the same
+    reason `operations/submit/inventory.py` names its refusals by entry. The
+    message used to interpolate `relative_path`, and nothing tested it either way.
+    """
+    tree = populated_run(tmp_path)
+    page = next(
+        entry
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+        and tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])["payload"]["ordinal"] == 2
+    )
+    seal_id = artifact_id(EXEMPLAR, "seal", "corpus-seal")
+    seal_path = tree.resolve(tree.artifact_path(EXEMPLAR, "seal", seal_id))
+    seal = json.loads(seal_path.read_text(encoding="utf-8"))
+    seal["inputs"] = [
+        reference
+        for reference in seal["inputs"]
+        if reference["relative_path"] != page["relative_path"]
+    ]
+    seal["self_hash"] = self_hash(seal)
+    seal_path.write_bytes(canonical_bytes(seal))
+    tree.resolve(page["relative_path"]).unlink()
+    before = snapshot(tree.root)
+
+    result = invoke_designator(tmp_path)
+    assert result.returncode == EXIT_FATAL
+    assert "lost submitted page ordinal(s) [2]" in result.stderr
+    assert "page-2.png" not in result.stderr
+    assert snapshot(tree.root) == before

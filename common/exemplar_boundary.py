@@ -158,11 +158,19 @@ def verify_exemplar_corpus_seal(
     """Verify the one Exemplar corpus seal against run authority and page outcomes."""
     expected_ordinals = set(sources)
     if set(records) != expected_ordinals or set(entries_by_ordinal) != expected_ordinals:
+        # By ordinal, never by submitted filename. `run_stage` prints every
+        # ContractError to stderr, and the data-handling policy's logging rule
+        # excludes a declared path from exactly that channel — the same reason
+        # `operations/submit/inventory.py` and `pipeline/1_exemplar/door.py` name
+        # their refusals by ordinal. Ruling 1 puts the filename in the hashed
+        # ledger and in the sealed record, which is where an operator reads it
+        # back; a captured terminal stream is not one of those places.
         missing = sorted(expected_ordinals - set(records))
-        names = [sources[ordinal].get("relative_path") for ordinal in missing]
+        unexpected = sorted(set(records) - expected_ordinals)
         raise ContractError(
             "the Exemplar page outcomes do not reconcile with run.json; lost submitted "
-            f"page(s) {names}"
+            f"page ordinal(s) {missing}, unexpected {unexpected}. The run's own source "
+            "manifest names each one, and no page may be lost between them"
         )
 
     seals = [entry for entry in manifest.get("artifacts", []) if entry.get("kind") == "seal"]
