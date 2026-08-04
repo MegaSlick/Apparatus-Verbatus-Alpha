@@ -557,3 +557,76 @@ def test_the_submit_tool_retains_no_file_content_at_all(submission):
     sources = inventory.read_submission(submission["folder"], max_bytes=submit.RETAIN_NO_BYTES)
     assert sources and all(source.data is None for source in sources)
     assert all(len(source.sha256) == 64 and source.size > 0 for source in sources)
+
+
+# --- what an adversarial pass over the repair itself found -----------------------
+
+
+def test_the_manifest_is_not_written_through_a_symlink_planted_at_its_temp_path(submission):
+    """The temp name is derived from the manifest name and the pid, so it is
+    guessable. `open(temporary, "wb")` followed a link planted there: the manifest
+    bytes went wherever it pointed — outside every approved storage root — with
+    `os.link` then failing and the write already done."""
+    victim = submission["approved"].parent / "victim-outside-the-approved-roots.json"
+    target = submission["approved"] / "sealed.json"
+    (submission["approved"] / f".{target.name}.tmp-{os.getpid()}").symlink_to(victim)
+
+    with pytest.raises(submit.SubmitRefusal, match="could not be written"):
+        submit.submit(
+            submission["folder"],
+            target,
+            approval_record=submission["approval"],
+            policy_path=submission["policy_path"],
+        )
+    assert not victim.exists(), "nothing was written through the link"
+    assert not target.exists(), "and nothing was sealed"
+
+
+def test_a_manifest_name_at_the_filesystem_limit_refuses_rather_than_crashing(submission):
+    """The temp name adds twelve bytes, so a legal 250-byte manifest name overflows
+    NAME_MAX. The `except OSError` caught that — and then the `finally` called
+    `is_symlink()` on the same over-length name, which raises rather than returning
+    False, and an exception from a `finally` supersedes the one in flight. The named
+    refusal was demoted to `__context__` and a raw OSError escaped as a traceback."""
+    result = run_cli(
+        submission,
+        submission["folder"],
+        manifest_out=submission["approved"] / ("N" * 245 + ".json"),
+    )
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+
+
+def test_purge_sweeps_the_temp_files_of_a_manifest_whose_name_holds_glob_syntax(submission):
+    """`Ledger [1948].json` is an ordinary archival name and `[1948]` is a character
+    class. The writer names the temp file literally and the sweeper globbed it, so
+    they disagreed: a temp file holding real page bytes survived, and
+    `remaining_temp_files` recomputed with the same broken pattern and reported
+    `()` — a clean drill that never happened."""
+    target = submission["approved"] / "Ledger [1948].json"
+    target.write_text("{}", encoding="utf-8")
+    stray = submission["approved"] / f".{target.name}.tmp-31337"
+    stray.write_bytes(b"\x89PNG crashed write holding real page bytes")
+
+    report = submit.purge(target, gate.approved_storage_roots(submission["policy"]))
+    assert report.temp_files_removed == 1
+    assert not stray.exists()
+    assert report.remaining_temp_files == ()
+
+
+def test_a_submitted_name_that_is_not_valid_utf8_is_a_named_refusal(submission):
+    """`os.listdir` surrogate-escapes bytes that are not valid UTF-8, and a
+    surrogate cannot be encoded again — so the name reached the manifest's canonical
+    encoding and escaped as a UnicodeEncodeError traceback, exit 1, printing the
+    path on the way out."""
+    folder = submission["approved"] / "odd-encoding"
+    folder.mkdir()
+    (folder / "page.png").write_bytes(b"\x89PNG\r\n\x1a\nreal")
+    os.close(os.open(bytes(folder) + b"/LEAK\xff\xfeNAME.png", os.O_CREAT | os.O_WRONLY, 0o600))
+
+    with pytest.raises(inventory.SubmissionInputError, match="not valid UTF-8"):
+        inventory.read_submission(folder, max_bytes=0)
+
+    result = run_cli(submission, folder, manifest_out=submission["approved"] / "m.json")
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr

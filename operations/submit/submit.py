@@ -229,8 +229,17 @@ def _atomic_create(target: Path, data: bytes) -> bool:
             "the submission manifest could not be written; nothing was sealed"
         ) from error
     finally:
-        if temporary.is_symlink() or temporary.exists():
-            temporary.unlink()
+        # Nothing in here may raise. `is_symlink()` on an over-length name raises
+        # ENAMETOOLONG rather than reporting False, and an exception from a `finally`
+        # supersedes the one in flight — so the named `SubmitRefusal` above was
+        # demoted to `__context__` and a raw OSError escaped `main()`'s handler as a
+        # traceback with exit 1. A cleanup that can destroy its own error report is
+        # worse than no cleanup.
+        try:
+            if temporary.is_symlink() or temporary.exists():
+                temporary.unlink()
+        except OSError:
+            pass
 
 
 def _read_or_none(path: Path) -> bytes | None:
