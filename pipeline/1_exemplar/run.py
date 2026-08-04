@@ -554,6 +554,8 @@ def _verify_render_contract(
         required_pdf = required | {
             "pdfium_version",
             "dpi",
+            "min_dpi",
+            "effective_dpi",
             "scale",
             "background",
             "draw_annotations",
@@ -561,16 +563,35 @@ def _verify_render_contract(
         }
         if set(contract) != required_pdf:
             raise ContractError("a PDF page's render contract omits or adds pixel-affecting facts")
+        # These numbers are written out rather than imported from `pdf_render`.
+        # That is the point of the check: the Exemplar is confirming what the door
+        # claims it did, and a check that reads its expectation from the module it
+        # is checking would agree with any change that module ever makes. Changing
+        # the render recipe has to change this line too, deliberately.
         if (
             not isinstance(contract["pdfium_version"], str)
             or not contract["pdfium_version"]
-            or contract["dpi"] != 300
-            or contract["scale"] != {"numerator": 300, "denominator": 72}
+            or contract["dpi"] != 400
+            or contract["min_dpi"] != 72
+            or contract["scale"] != {"numerator": 400, "denominator": 72}
             or contract["background"] != "white"
             or contract["draw_annotations"] is not True
             or contract["draw_forms"] is not True
         ):
             raise ContractError("a PDF page's render contract changes the sealed pixel recipe")
+        effective = contract["effective_dpi"]
+        # A page too large for the target renders at a lower whole DPI, and the
+        # contract has to say which. Outside the floor-to-target band it is not a
+        # capped render at all, and pixels nobody can reproduce are not sealable.
+        if (
+            not isinstance(effective, int)
+            or isinstance(effective, bool)
+            or not contract["min_dpi"] <= effective <= contract["dpi"]
+        ):
+            raise ContractError(
+                "a PDF page's render contract does not name the whole DPI it was "
+                "actually rendered at, inside the recipe's own floor and target"
+            )
     elif contract["renderer"] == "Pillow":
         if container_format == "pdf":
             raise ContractError("a PDF container must use the PDFium whole-page renderer")

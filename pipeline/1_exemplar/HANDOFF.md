@@ -62,6 +62,15 @@ PDF is rendered as a whole page with PDFium at the door. Its visible content str
 text, vectors, images, rotation, annotations, and initialized form appearances are
 painted into the sealed pixels; embedded-image extraction is not used.
 
+The render targets **400 DPI**, capped downward to a whole DPI — never below 72 —
+when a page's declared size would otherwise exceed the admission pixel bounds, so a
+large page is captured at reduced resolution rather than refused. Each page's
+`render_contract` records the DPI it was *actually* rendered at alongside the
+target, because the target alone does not describe a capped page's pixels. **400 is
+an unmeasured choice standing in for a measurement**: no real sample has been
+rendered at either 400 or 300, and the number should be checked against Tyrel's own
+iPhone-to-PDF output once the data-handling gate is approved.
+
 ## Door `kind="admission"`
 
 There is one admission artifact per source ordinal, whether its outcome is

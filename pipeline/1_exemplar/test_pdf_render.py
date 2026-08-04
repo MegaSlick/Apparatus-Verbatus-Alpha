@@ -12,7 +12,7 @@ from math import ceil
 import pdf_render
 import pytest
 from admission import RefusalReason
-from image_formats import validate_png
+from image_formats import MAX_DIMENSION, MAX_PIXELS, validate_png
 from pdf_render import MAX_PAGES, PdfRefusal, close_document, count_pages, open_document
 from PIL import Image
 from synthetic_sources import (
@@ -85,7 +85,11 @@ def test_text_beside_a_separately_painted_image_survives_the_same_page_render():
     page = render_page(content_page_pdf(content, images=[gray_image(4, 4, 0)]))
     image = rendered_image(page)
 
-    assert image.size == (600, 300), "the sealed pixels are the page canvas, not the 4x4 XObject"
+    canvas = (
+        ceil(144 * pdf_render.RENDER_SCALE),
+        ceil(72 * pdf_render.RENDER_SCALE),
+    )
+    assert image.size == canvas, "the sealed pixels are the page canvas, not the 4x4 XObject"
     assert dark_pixels(image, point_box(8, 12, 48, 52)) > 20_000
     assert dark_pixels(image, point_box(76, 20, 140, 48)) > 100
 
@@ -143,7 +147,10 @@ def test_normal_page_rotation_is_rendered_and_swaps_the_canvas_dimensions():
     )
     image = rendered_image(page)
 
-    assert (page.width, page.height) == (300, 600)
+    assert (page.width, page.height) == (
+        ceil(72 * pdf_render.RENDER_SCALE),
+        ceil(144 * pdf_render.RENDER_SCALE),
+    )
     assert (
         sum(
             1
@@ -177,7 +184,9 @@ def test_the_render_contract_records_every_pixel_affecting_choice():
     assert contract["renderer_version"]
     assert contract["pdfium_version"]
     assert contract["container_page_index"] == 0
-    assert contract["dpi"] == pdf_render.RENDER_DPI == 300
+    assert contract["dpi"] == pdf_render.RENDER_DPI == 400
+    assert contract["min_dpi"] == pdf_render.MIN_RENDER_DPI == 72
+    assert contract["effective_dpi"] == 400
     assert contract["scale"] == pdf_render.RENDER_SCALE_RECORD
     assert contract["output"] == {"codec": "png", "color_mode": "RGB"}
     assert contract["background"] == "white"
@@ -188,12 +197,31 @@ def test_the_render_contract_records_every_pixel_affecting_choice():
 
 
 def test_an_oversized_page_is_an_alarm_before_a_bitmap_is_returned():
+    """Only a page degenerate even at the floor DPI refuses; large is not enough."""
     data = content_page_pdf(b"", width=100_000, height=100_000)
     with pytest.raises(PdfRefusal) as caught:
         render_page(data)
 
     assert caught.value.reason is RefusalReason.UNSUPPORTED_VARIANT
-    assert "above" in str(caught.value)
+    assert "floor" in str(caught.value)
+
+
+def test_a_large_legitimate_page_renders_at_reduced_resolution_rather_than_refusing():
+    """A page too big for the target DPI is captured, not lost.
+
+    GOALS 1: a poorly read act can be corrected later, a missed one cannot. So the
+    resolution is capped downward toward the floor and the page still seals, and
+    the contract records what it was actually rendered at — a recipe naming only
+    the target would describe pixels these are not.
+    """
+    # An A0-sized page: legitimate, and far past what 400 DPI would fit inside the
+    # project's pixel bounds.
+    rendered = render_page(content_page_pdf(b"", width=2384, height=3370))
+
+    assert 72 <= rendered.contract["effective_dpi"] < pdf_render.RENDER_DPI
+    assert rendered.width * rendered.height <= MAX_PIXELS
+    assert max(rendered.width, rendered.height) <= MAX_DIMENSION
+    assert validate_png(rendered.png_bytes).width == rendered.width
 
 
 @pytest.mark.parametrize(
