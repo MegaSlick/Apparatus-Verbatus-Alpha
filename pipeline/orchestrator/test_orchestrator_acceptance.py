@@ -1135,3 +1135,48 @@ def test_the_recensor_refuses_a_testimonium_from_a_chair_the_run_never_sealed(tm
     assert result.returncode != 0, "an unsealed chair was accepted into the coverage count"
     assert "attestator_9" in result.stderr
     assert "not sealed with" in result.stderr
+
+
+def test_armarium_rechecks_the_filename_a_page_was_sealed_under(tmp_path):
+    """The last boundary compares each page against `run.json`'s ledger row itself.
+
+    Distinct from the pixel recheck above, and from the corpus-seal recheck: those
+    two cover a sealed page's bytes and the census as a whole. This covers the
+    filename and digest a page artifact says it came from, which is the link ruling
+    1 is about — "we literally need the file name. That is how we link it." A page
+    that reaches the export naming a different source than the one submitted is an
+    export nobody can trace back, and it is the *refused* pages that nothing else
+    would catch: they carry no pixels for the pixel boundary to check.
+    """
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    entry = next(
+        entry for entry in tree.build_manifest(EXEMPLAR)["artifacts"] if entry["kind"] == "page"
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"]["declared_path"] = "some-other-scan.png"
+    path.write_bytes(canonical_bytes(record))
+    tree.write_manifest(EXEMPLAR)
+    before = snapshot(root)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/7_armarium/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "no longer matches its submitted filename and digest" in result.stderr
+    assert snapshot(root) == before
