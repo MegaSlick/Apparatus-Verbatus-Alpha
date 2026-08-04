@@ -338,10 +338,26 @@ def run_aggregate(
     # GOVERNANCE 2 refuses "complete" unless everything reconciles, and an empty
     # population reconciles vacuously rather than actually.
     #
-    # Acts alone being empty is deliberately *not* the trigger: a sealed page
-    # carrying no acts is a blank page, which is a real and correct outcome.
     if not act_categories and not (page_census or {}):
         reasons.append("the run accounted for no acts and no pages, so nothing was reconciled")
+    elif not act_categories:
+        reasons.append(
+            "the sealed pages have no diagnosed acts or confirmed-blank evidence; "
+            "silence cannot distinguish a blank page from a detection failure"
+        )
+
+    coverage = coverage_records or {}
+    unexpected_coverage = sorted(set(coverage) - set(act_categories))
+    if unexpected_coverage:
+        raise FatalAccounting(
+            f"witness coverage names unknown act(s) {unexpected_coverage}; coverage and terminal "
+            "categories must describe the same act denominator"
+        )
+    for act in sorted(set(act_categories) - set(coverage)):
+        reasons.append(f"act {act} has no witness-coverage record")
+
+    if act_categories and not page_census:
+        reasons.append("the run has acts but no page census, so page conservation was not checked")
 
     # "Every configured chair reconciled against the configuration it was run
     # under" was in this docstring before anything checked it. A configured chair
@@ -361,15 +377,15 @@ def run_aggregate(
         if VOCABULARIES[ARMARIUM][category.value] is not OutcomeClass.COMPLETED:
             reasons.append(f"act {act} is {category.value}")
 
-    for act, coverage in (coverage_records or {}).items():
-        if coverage.get("under_witnessed"):
+    for act, record in coverage.items():
+        if record.get("under_witnessed"):
             reasons.append(
                 f"act {act} is under-witnessed "
-                f"({coverage['by_class']['completed']} of a floor of {coverage['floor']})"
+                f"({record['by_class']['completed']} of a floor of {record['floor']})"
             )
-        if coverage.get("unresolved_chairs"):
+        if record.get("unresolved_chairs"):
             reasons.append(
-                f"act {act} has {coverage['unresolved_chairs']} chair(s) with no outcome yet"
+                f"act {act} has {record['unresolved_chairs']} chair(s) with no outcome yet"
             )
 
     by_page_outcome: dict[str, int] = {}
