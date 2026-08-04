@@ -333,18 +333,37 @@ def _verify_admitted_blob(
         raise ContractError("an admitted source records no lowercase sha256 for its bytes")
     if stored_at != tree.blob_path(DOOR, sealed_digest):
         raise ContractError("an admission's stored_at is not the content-addressed blob path")
-    if sealed_digest != source["sha256"]:
-        if "pdf_page_index" not in payload:
+    # The recorded transform is checked whenever one is *claimed*, not only when the
+    # digests happen to differ. For a standalone raster they are equal, so the whole
+    # branch used to be skipped and a fabricated `pdf_page_index` was never looked
+    # at — then `_page_payload` read `container_sha256` beside it and died with a
+    # bare KeyError. A record claiming a transform that did not happen is the same
+    # class of untruth as a duplicate reason claiming an admission that did not.
+    claims_transform = "pdf_page_index" in payload or "container_sha256" in payload
+    if sealed_digest != source["sha256"] and not claims_transform:
+        raise ContractError(
+            "an admitted source's sealed bytes differ from the bytes that were "
+            "submitted, and no transform is recorded to explain it"
+        )
+    if claims_transform:
+        if "pdf_page_index" not in payload or "container_sha256" not in payload:
             raise ContractError(
-                "an admitted source's sealed bytes differ from the bytes that were "
-                "submitted, and no transform is recorded to explain it"
+                "an admitted source records half a transform; a page rendered out of a "
+                "container names both which container and which page of it"
             )
-        if payload.get("container_sha256") != source["sha256"]:
+        if payload["container_sha256"] != source["sha256"]:
             raise ContractError(
                 "a rendered page names a container digest the run authority did not submit"
             )
-        if not isinstance(payload["pdf_page_index"], int) or payload["pdf_page_index"] < 0:
-            raise ContractError("a rendered page records no non-negative PDF page index")
+        index = payload["pdf_page_index"]
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            raise ContractError("a rendered page records no non-negative page index")
+        if sealed_digest == source["sha256"]:
+            raise ContractError(
+                "an admitted source records a render transform, but its sealed bytes are "
+                "the submitted bytes unchanged; a transform that changed nothing was "
+                "not performed"
+            )
     if len(admission["inputs"]) != 1:
         raise ContractError("an admitted source must carry exactly one admitted-blob input")
     input_ref = admission["inputs"][0]

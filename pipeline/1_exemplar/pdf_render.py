@@ -32,8 +32,9 @@ encrypted, declares no page rotation, and its `/Resources/XObject` dictionary ho
 **exactly one** entry, an `/Image` XObject in `DeviceGray` or `DeviceRGB` with no
 sample-remapping `/Decode` array, compressed with `DCTDecode` (embedded JPEG,
 structurally validated by `image_formats.validate_jpeg` against the colour space
-the dictionary declares, and stored as-is) or `FlateDecode` (raw 8-bit samples,
-re-encoded as a PNG through this module's own minimal encoder). Anything else —
+the dictionary declares, and stored as-is), or `FlateDecode`, or carrying no
+`/Filter` key at all — the last two being raw 8-bit samples, re-encoded as a PNG
+through this module's own minimal encoder. Anything else —
 vector content, multiple images, CCITT/JBIG2/JPX filters, indexed or CMYK colour,
 a `/Decode` array, incremental updates, encryption, rotation — is refused **by
 name**, never guessed at. A page that fails this test is not a page this door can

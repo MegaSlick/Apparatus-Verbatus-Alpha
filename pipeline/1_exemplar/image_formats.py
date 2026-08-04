@@ -365,13 +365,20 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
     **What is proven, exactly.** The file is framed by SOI and a terminating EOI at
     the very end; every marker segment's declared length lies inside the file; there
     is exactly one start-of-frame, whose component count agrees with its own segment
-    length; and — the part this validator used to claim and not perform — **every
-    table each scan selects has actually been defined by a preceding DQT, DHT or
-    DAC**. A frame whose components name a quantization table nobody defined, or a
+    length; every DQT, DHT and DAC segment's own internal lengths add up; and — the
+    part this validator used to claim and not perform — **every quantization and
+    Huffman table a scan selects has actually been defined by a preceding DQT or
+    DHT**. A frame whose components name a quantization table nobody defined, or a
     scan whose components name a Huffman table nobody defined, is not a decodable
     JPEG and is refused. Before that check, the project's own synthetic "genuine"
     JPEG — SOI, SOF, SOS, three arbitrary bytes, EOI, no tables at all — was admitted
     as a 5x4 image, which no decoder on earth could have turned into pixels.
+
+    **An arithmetic-coded frame's conditioning is checked for shape and not
+    reconciled**, because a DAC segment is optional — the default conditioning is
+    legal — so there is no selector that must have been defined. Saying "DQT, DHT or
+    DAC" here would be claiming a reconciliation that does not happen, which is the
+    defect this docstring exists downstream of.
 
     **What is not proven.** The entropy-coded scan data is skipped by scanning for
     the next unstuffed marker rather than Huffman-decoded, because that is pixel
@@ -431,8 +438,18 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
             if len(payload) < 6:
                 raise FormatRefusal("corrupt JPEG: SOF segment too short to carry geometry")
             height, width, components = struct.unpack_from(">HHB", payload, 1)
-            if not 1 <= components <= 4:
-                raise FormatRefusal("corrupt JPEG: SOF declares no usable component count")
+            if components < 1:
+                raise FormatRefusal("corrupt JPEG: SOF declares no component at all")
+            if components > 4:
+                # T.81 permits up to 255; four is the baseline/JFIF convention and
+                # the limit of what anything downstream here handles. A genuine
+                # instance of a variant this door does not decode is "unsupported",
+                # not "corrupt" — the two words are different facts and
+                # `admission._refusal_code` turns them into different reasons.
+                raise FormatRefusal(
+                    f"unsupported JPEG: {components} components is past the four this "
+                    "door decodes; more is a documented limit"
+                )
             if len(payload) != 6 + 3 * components:
                 raise FormatRefusal("corrupt JPEG: SOF component count disagrees with its length")
             if expected_components is not None and components != expected_components:
@@ -560,8 +577,13 @@ def _validate_jpeg_scan(
         selectors = payload[2 + 2 * index]
         if component_id not in by_id:
             raise FormatRefusal("corrupt JPEG: a scan names a component the frame does not declare")
+        # A lossless frame does not quantize, so it legally carries no DQT at all
+        # and its Tq field is required to be zero. Demanding one refused a conforming
+        # file — and the first form of this repair did exactly that while believing
+        # it had exempted lossless frames, because it exempted only the *Huffman*
+        # check. An adversarial read caught it; the test below is the other half.
         quantization_id = by_id[component_id]
-        if quantization_id not in quantization_tables:
+        if not lossless and quantization_id not in quantization_tables:
             raise FormatRefusal(
                 f"corrupt JPEG: a scanned component selects quantization table "
                 f"{quantization_id}, which no DQT defined"
@@ -719,9 +741,25 @@ def validate_tiff(data: bytes) -> ImageGeometry:
     for index in range(count):
         entry = offset + 2 + index * 12
         tag, field_type, value_count = struct.unpack_from(endian + "HHI", data, entry)
+        interpreted = (
+            tag in (_TIFF_TAG_IMAGE_WIDTH, _TIFF_TAG_IMAGE_LENGTH)
+            or tag in _TIFF_DATA_TAGS
+            or tag in _TIFF_LAYOUT_TAGS
+        )
         size = _TIFF_TYPE_SIZES.get(field_type)
         if size is None:
-            raise FormatRefusal(f"corrupt TIFF: entry names unknown field type {field_type}")
+            # TIFF 6.0 tells a reader to skip a field whose type it does not
+            # recognise rather than reject the file. Refusing the whole image over an
+            # unknown type in a tag this validator never reads would refuse a
+            # conforming file for a field nobody here touches — a page nobody reads,
+            # GOALS 1. A tag we *do* interpret is a different matter: an unreadable
+            # value there is a check that cannot run, which is a failure.
+            if interpreted:
+                raise FormatRefusal(
+                    f"corrupt TIFF: tag {tag} carries unknown field type {field_type}, and "
+                    "this validator has to read that tag"
+                )
+            continue
         if value_count > len(data) // size:
             raise FormatRefusal(f"corrupt TIFF: tag {tag} declares more values than the file")
         value_size = value_count * size

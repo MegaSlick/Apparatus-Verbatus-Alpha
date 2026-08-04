@@ -33,15 +33,22 @@ excludes, into the channel a shell runner, a CI job or a service manager capture
 by default. Three seats found it independently and it reproduced on an empty
 folder, a symlink and a FIFO. The refusal *reason* is what an operator needs and
 it is what they get; the name belongs in the accounted record, not in the log.
-`redact()` below is the one place that distinction is made, and
-`SubmitRefusal.operator_detail` is how a message carries a name for a caller that
-is allowed to see one.
+`inventory.SubmissionInputError.entry` is how a refusal still carries the name for
+a caller with an approved place to write it — nothing here has one yet, which is a
+question in the gate package rather than a decision made here.
+
+**The distinction is submitted material, not every path.** A message naming
+`config/data_handling_policy.json` or the approval record the *operator* passed on
+the command line is naming their own configuration, not a declared filename out of
+a submission, and redacting it would leave an operator unable to tell which of
+their own files failed to load. The rule is about the material that arrived.
 
     python operations/submit/submit.py --source <folder> --manifest-out <path> \
         --approval-record <path>
 """
 
 import argparse
+import glob
 import os
 import sys
 from pathlib import Path
@@ -191,7 +198,15 @@ def _atomic_create(target: Path, data: bytes) -> bool:
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.tmp-{os.getpid()}")
     try:
-        with open(temporary, "wb") as handle:
+        # `open(temporary, "wb")` followed a symlink. The temp name is derived from
+        # the manifest name and the pid, so it is guessable, and a link planted at it
+        # would have taken the manifest bytes wherever it pointed — outside every
+        # approved storage root, with `os.link` then failing and the write already
+        # done. O_EXCL refuses a name that exists at all; O_NOFOLLOW refuses to
+        # follow one that is a link.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temporary, flags, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
@@ -206,6 +221,13 @@ def _atomic_create(target: Path, data: bytes) -> bool:
                 "record was not touched, and a changed submission needs its own path"
             ) from None
         return True
+    except OSError as error:
+        # A name too long for the filesystem, a full disk, a temp path already taken.
+        # Each escaped as a traceback and CPython's exit 1 past `main()`'s handler,
+        # printing the manifest path on the way out.
+        raise SubmitRefusal(
+            "the submission manifest could not be written; nothing was sealed"
+        ) from error
     finally:
         if temporary.is_symlink() or temporary.exists():
             temporary.unlink()
@@ -274,7 +296,7 @@ def _entry_exists(path: Path) -> bool:
     return path.is_symlink() or path.exists()
 
 
-def purge(manifest_out: Path, approved_roots: tuple[Path, ...] | None = None) -> CleanupReport:
+def purge(manifest_out: Path, approved_roots: tuple[Path, ...]) -> CleanupReport:
     """The cleanup drill's removal half: remove the sealed manifest and any stray
     temp file beside it, then report what the filesystem actually shows afterward.
 
@@ -284,23 +306,38 @@ def purge(manifest_out: Path, approved_roots: tuple[Path, ...] | None = None) ->
     `cleanup.verify_synthetic_cleanup` is what turns that report into a pass or a
     failure against declared, measurable bounds.
     """
-    if approved_roots is not None:
-        # `submit()` refuses to *write* outside the approved storage roots; deleting
-        # outside them was never checked, because nothing reaches `purge` from the
-        # CLI today. A removal path that trusts its argument is the one to bound
-        # before something starts calling it.
-        gate.require_approved_storage_location(manifest_out, approved_roots, "cleanup target")
+    # `submit()` refuses to *write* outside the approved storage roots; deleting
+    # outside them was never checked at all. Required rather than optional: a
+    # removal path whose safety check is off by default fails open, which is the
+    # wrong direction for the one operation that cannot be undone.
+    #
+    # **The containment check is on the parent directory, not the entry.** Checking
+    # the entry would resolve it, and `require_approved_storage_location` refuses a
+    # symlink outright — which would refuse to clean up the one case this function
+    # was repaired for, a dangling manifest symlink that `cleanup._is_absent` calls
+    # a failure. Unlinking a name inside an approved directory removes that name and
+    # nothing else; it does not follow the link, and it cannot reach the link's
+    # victim. So the question is where the *entry lives*, and that is what is asked.
+    directory = gate.require_approved_storage_location(
+        manifest_out.parent, approved_roots, "cleanup target directory"
+    )
+    manifest_out = directory / manifest_out.name
 
+    # Escaped, because a manifest named `batch[1].json` turns `.batch[1].json.tmp-*`
+    # into a character class: the glob then matches temp files belonging to some
+    # other manifest and misses its own, so `purge` would delete the wrong files and
+    # report a drill it did not perform.
+    temporary = f".{glob.escape(manifest_out.name)}.tmp-*"
     removed_temp = 0
     if manifest_out.parent.exists():
-        for candidate in manifest_out.parent.glob(f".{manifest_out.name}.tmp-*"):
+        for candidate in manifest_out.parent.glob(temporary):
             candidate.unlink()
             removed_temp += 1
     if _entry_exists(manifest_out):
         manifest_out.unlink()
 
     remaining = (
-        tuple(sorted(str(path) for path in manifest_out.parent.glob(f".{manifest_out.name}.tmp-*")))
+        tuple(sorted(str(path) for path in manifest_out.parent.glob(temporary)))
         if manifest_out.parent.exists()
         else ()
     )

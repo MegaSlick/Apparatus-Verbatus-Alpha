@@ -327,3 +327,25 @@ def test_a_run_with_no_submitted_source_manifest_cannot_be_reconciled_at_all():
 
     with pytest.raises(ContractError, match="no submitted source manifest"):
         exemplar._submitted_sources({"source_manifest": []})
+
+
+def test_a_fabricated_render_transform_is_refused_rather_than_sealed_or_crashed(tmp_path):
+    """The transform was only inspected when the sealed and submitted digests
+    differed — which for a standalone raster they never do. So a raster admission
+    carrying a fabricated `pdf_page_index` was never checked, and the payload builder
+    then read `container_sha256` beside it and died with a bare KeyError. A record
+    claiming a transform that did not happen is the same untruth as a duplicate
+    reason claiming an admission that did not."""
+    tree, _ = build_door_run(tmp_path / "runs")
+    identity = artifact_id(DOOR, "admission", "source-1")
+    path = tree.resolve(tree.artifact_path(DOOR, "admission", identity))
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"]["pdf_page_index"] = 0
+    path.write_bytes(canonical_bytes(record))
+    tree.write_manifest(DOOR)
+
+    result = run_exemplar(tmp_path / "runs")
+    assert result.returncode == EXIT_FATAL
+    assert "Traceback" not in result.stderr
+    assert "half a transform" in result.stderr
+    assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()

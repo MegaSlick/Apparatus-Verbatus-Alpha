@@ -519,3 +519,44 @@ def test_an_arithmetic_coded_frame_needs_no_huffman_table_at_all():
     assert validate_jpeg(jpeg(sof_marker=0xC9, huffman_tables=None)) == ImageGeometry("jpeg", 5, 4)
     with pytest.raises(FormatRefusal, match="quantization table 0"):
         validate_jpeg(jpeg(sof_marker=0xC9, huffman_tables=None, quantization_tables=None))
+
+
+def test_a_conforming_lossless_jpeg_carries_no_quantization_table_and_is_admitted():
+    """A lossless frame does not quantize, so it legally carries no DQT and its Tq
+    field is zero. The first form of this repair exempted lossless frames from the
+    *Huffman* check and not the *quantization* one, so it still refused every
+    conforming lossless JPEG while its own test passed — because the builder emitted
+    a DQT no real lossless encoder would."""
+    for marker in (0xC3, 0xC7, 0xCB, 0xCF):
+        assert validate_jpeg(
+            jpeg(
+                sof_marker=marker,
+                quantization_tables=None,
+                huffman_tables=((0, 0),),
+                spectral_start=1,
+            )
+        ) == ImageGeometry("jpeg", 5, 4)
+
+
+def test_a_frame_with_more_components_than_this_door_decodes_is_unsupported_not_corrupt():
+    """T.81 permits up to 255 components; four is the baseline convention and the
+    limit of what anything here handles. A genuine instance of a variant this door
+    does not decode is "unsupported"; calling it corruption would tell Tyrel a real
+    scan was damaged when the truth is that we cannot read that flavour of it."""
+    with pytest.raises(FormatRefusal, match="unsupported JPEG: 5 components"):
+        validate_jpeg(jpeg(components=5))
+
+
+def test_an_unknown_field_type_in_a_tag_this_validator_never_reads_is_skipped():
+    """TIFF 6.0 tells a reader to skip a field whose type it does not recognise
+    rather than reject the file. Refusing the whole image over an unknown type in a
+    tag nobody here touches is a page nobody reads for a field nobody read."""
+    unknown_type = struct.pack("<HHI", 700, 129, 1) + b"\x00\x00\x00\x00"
+    assert validate_tiff(
+        tiff(6, 5, extra_entries=unknown_type, extra_entry_count=1)
+    ) == ImageGeometry("tiff", 6, 5)
+
+    # But a tag this validator has to read is a check that cannot run, which fails.
+    unreadable_width = struct.pack("<HHI", 278, 129, 1) + b"\x00\x00\x00\x00"
+    with pytest.raises(FormatRefusal, match="has to read that tag"):
+        validate_tiff(tiff(6, 5, extra_entries=unreadable_width, extra_entry_count=1))

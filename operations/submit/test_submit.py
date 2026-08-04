@@ -266,7 +266,9 @@ def test_the_cleanup_drill_removes_its_target_and_verifies_declared_bounds(submi
     log_path = tmp_path / "run.log"
     log_path.write_bytes(b"submission sealed: digest=abc files=2\n")
 
-    report = submit.purge(submission["manifest_out"])
+    report = submit.purge(
+        submission["manifest_out"], gate.approved_storage_roots(submission["policy"])
+    )
 
     assert report.target_removed is True
     assert report.temp_files_removed == 1
@@ -458,7 +460,7 @@ def test_purge_reports_a_dangling_symlink_as_present_because_it_is(submission, t
     target.symlink_to(submission["approved"] / "never-existed.json")
     assert not target.exists() and target.is_symlink()
 
-    report = submit.purge(target)
+    report = submit.purge(target, gate.approved_storage_roots(submission["policy"]))
     assert report.target_removed is True
     assert not target.is_symlink(), "the directory entry itself was removed"
     cleanup.verify_synthetic_cleanup(
@@ -472,13 +474,28 @@ def test_purge_reports_a_dangling_symlink_as_present_because_it_is(submission, t
 
 def test_purge_refuses_a_target_outside_the_approved_storage_roots(submission, tmp_path):
     """`submit()` refuses to *write* outside them; deleting outside them was never
-    checked at all."""
+    checked at all, and the check may not be one a caller can decline to pass."""
     stray = tmp_path / "somewhere-else.json"
     stray.write_text("{}", encoding="utf-8")
     roots = gate.approved_storage_roots(submission["policy"])
     with pytest.raises(gate.GateRefusal, match="outside every approved storage root"):
         submit.purge(stray, roots)
     assert stray.exists(), "a refused cleanup removes nothing"
+
+
+def test_purge_removing_a_link_is_not_entering_through_one(submission):
+    """The containment check is on the parent directory, not the entry. Resolving
+    the entry would refuse a symlink outright — and refuse to clean up the exact
+    case this function was repaired for. Unlinking a name inside an approved
+    directory removes that name and cannot reach what it pointed at."""
+    victim = submission["approved"] / "keep-me.json"
+    victim.write_text("{}", encoding="utf-8")
+    link = submission["approved"] / "submission.json"
+    link.symlink_to(victim)
+
+    submit.purge(link, gate.approved_storage_roots(submission["policy"]))
+    assert not link.is_symlink(), "the link entry was removed"
+    assert victim.exists(), "and what it pointed at was not touched"
 
 
 def _scratch_log(tmp_path):

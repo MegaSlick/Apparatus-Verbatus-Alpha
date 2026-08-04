@@ -208,6 +208,19 @@ def _walk(
     for name in names:
         relative_path = f"{prefix}/{name}" if prefix else name
         try:
+            # `os.listdir` surrogate-escapes bytes that are not valid UTF-8, and a
+            # surrogate cannot be encoded again — so a submitted name in some other
+            # encoding reached `canonical_bytes` and escaped as a UnicodeEncodeError
+            # traceback past the ContractError handler, exit 1, with the path
+            # printed on the way out. Refused by name instead, and the name itself
+            # is not repeated into the message.
+            relative_path.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise SubmissionInputError(
+                "a submitted name is not valid UTF-8; the manifest is canonical JSON "
+                "and cannot record a name it cannot encode"
+            ) from error
+        try:
             details = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
         except OSError as error:
             raise SubmissionInputError(

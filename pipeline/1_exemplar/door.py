@@ -302,7 +302,13 @@ def expand_sources(
             or isinstance(declared_size, bool)
             or declared_size < 0
         ):
-            raise ContractError(f"submitted source {path!r} has no non-negative byte count")
+            # No `path` in the message: `run_stage` prints every ContractError to
+            # stderr, and a declared path is what the data-handling policy's logging
+            # rule keeps out of exactly that channel.
+            raise ContractError(
+                "a submitted source declares no non-negative byte count; the source "
+                "manifest names it by ordinal"
+            )
         try:
             data = read_bytes(path)
         except OSError:
@@ -676,11 +682,16 @@ def real_submission(args, registry) -> int:
     approval, reference = gate.read_external_approval(Path(args.approval_record), data_policy)
 
     roots = gate.approved_storage_roots(data_policy)
-    gate.require_approved_storage_location(Path(args.submission_folder), roots, "submitted folder")
+    # The *resolved* paths are used from here on, as `submit.py` does and for the
+    # same reason: checking one path and then opening another is where a
+    # check-then-use race lives, and the resolved values are already in hand.
+    submission_folder = gate.require_approved_storage_location(
+        Path(args.submission_folder), roots, "submitted folder"
+    )
     gate.require_approved_storage_location(Path(args.run_root), roots, "run root")
 
     format_policy = admission.load_format_policy(Path(args.format_policy))
-    found = inventory.read_submission(Path(args.submission_folder), max_bytes=MAX_SOURCE_BYTES)
+    found = inventory.read_submission(submission_folder, max_bytes=MAX_SOURCE_BYTES)
     if not found:
         raise ContractError(
             "the submit door found no files to admit; an empty folder is a loud failure, "

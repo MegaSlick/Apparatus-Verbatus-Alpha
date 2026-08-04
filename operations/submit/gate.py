@@ -69,8 +69,10 @@ GATE_ACTION: Final = "data-gate"
 # `"x"` and load; every prose clause but `storage_roots` could be replaced by a
 # boolean and the policy still hashed, loaded and gated. A clause that says nothing
 # is not a shorter policy either.
+# `policy_version` is deliberately not here: it is a label, not a rule, and holding
+# it to the prose floor would refuse an ordinary short version string with a message
+# about truthiness checks that has nothing to do with it.
 _REQUIRED_PROSE_CLAUSES: Final = (
-    "policy_version",
     "storage_roots_note",
     "logging_rule",
     "temp_file_handling",
@@ -80,7 +82,7 @@ _REQUIRED_PROSE_CLAUSES: Final = (
     "cleanup_drill",
     "alpha_shortcuts_ledger",
 )
-_POLICY_FIELDS: Final = frozenset({*_REQUIRED_PROSE_CLAUSES, "storage_roots"})
+_POLICY_FIELDS: Final = frozenset({*_REQUIRED_PROSE_CLAUSES, "storage_roots", "policy_version"})
 # Short enough to be a placeholder rather than a clause. Not a quality judgement —
 # nothing here reads what a clause says — only a floor under "present".
 _MINIMUM_CLAUSE_LENGTH: Final = 8
@@ -145,6 +147,9 @@ def load_policy(path: Path = DEFAULT_POLICY_PATH) -> dict[str, Any]:
                 f"({type(value).__name__}); a truthiness check accepted `true`, `1` and "
                 "`{...}` here, which is a policy that says nothing passing as one that does"
             )
+    version = record["policy_version"]
+    if not isinstance(version, str) or not version.strip():
+        raise GateRefusal(f"{path} gives no policy version to name an approval against")
     roots = record["storage_roots"]
     if not isinstance(roots, list) or not roots:
         raise GateRefusal(f"{path} names no approved storage roots")

@@ -462,6 +462,10 @@ def test_zero_entry_cross_reference_subsections_are_bounded():
     data = single_gray_page_pdf()
     padding = b"0 0\n" * (pdf_render.MAX_XREF_SUBSECTIONS + 1)
     stuffed = data.replace(b"xref\n0 ", b"xref\n" + padding + b"0 ", 1)
+    # The padding goes *inside* the xref table, so the file still ends at its own
+    # `%%EOF`: what refuses it is this bound and not the trailing-bytes rule added
+    # beside it. A check that fires for the wrong reason is a check nobody has seen.
+    assert stuffed.endswith(b"%%EOF")
     with pytest.raises(PdfRefusal, match="subsection"):
         count_pages(stuffed)
 
@@ -548,11 +552,12 @@ def test_the_page_tree_bounds_its_branches_and_not_only_its_leaves():
         count_pages(builder.build(catalog))
 
 
-def test_the_subsection_bound_fires_on_a_file_that_is_otherwise_well_formed():
-    """Same discipline for the cross-reference bound: the padding goes *inside* the
-    xref table, so the file still ends at its own `%%EOF` and the refusal is the
-    subsection limit rather than the trailing-bytes rule."""
+def test_a_few_empty_cross_reference_subsections_are_legal_and_parse():
+    """The control for the bound above, and the reason the bound is a bound rather
+    than a ban: a subsection declaring zero entries is legal PDF. Twenty of them,
+    against a limit of ten thousand, must still parse — otherwise the fix for a
+    cost problem would have become a refusal of conforming files."""
     data = single_gray_page_pdf()
     stuffed = data.replace(b"xref\n0 ", b"xref\n" + b"0 0\n" * 20 + b"0 ", 1)
     assert stuffed.endswith(b"%%EOF")
-    assert count_pages(stuffed) == 1, "twenty empty subsections are legal and parse"
+    assert count_pages(stuffed) == 1
