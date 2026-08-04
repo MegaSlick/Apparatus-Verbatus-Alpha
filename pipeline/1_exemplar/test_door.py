@@ -326,7 +326,9 @@ def test_a_pdf_fans_out_into_one_ordinal_per_page(tmp_path):
         payload = record["payload"]
         assert payload["source_sha256"] == digest_bytes(data)
         assert payload["sha256"] != digest_bytes(data)
-        rendered, _ = pdf_render.render_page(data, payload["pdf_page_index"])
+        rendered, _ = pdf_render.render_page(
+            pdf_render.open_document(data), payload["pdf_page_index"]
+        )
         assert tree.read_bytes(payload["stored_at"]) == rendered
         assert payload["stored_at"] == tree.blob_path(DOOR, digest_bytes(rendered))
         assert ordinal in (1, 2)

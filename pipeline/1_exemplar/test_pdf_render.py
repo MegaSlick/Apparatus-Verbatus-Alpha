@@ -13,10 +13,11 @@ one asserts which closed-set code it produced rather than only that it raised.
 import re
 import zlib
 
+import pdf_render
 import pytest
 from admission import RefusalReason
 from image_formats import validate_png
-from pdf_render import MAX_PAGES, PdfRefusal, count_pages, parse_object, render_page
+from pdf_render import MAX_PAGES, PdfRefusal, count_pages, open_document, parse_object
 from synthetic_sources import (
     PdfBuilder,
     custom_image,
@@ -25,8 +26,21 @@ from synthetic_sources import (
     jpeg,
     jpeg_image,
     single_gray_page_pdf,
+    stream_object,
     two_page_pdf,
 )
+
+
+def render_page(data: bytes, page_index: int):
+    """Render one page straight from bytes, the way these tests read best.
+
+    The module's own `render_page` takes a document parsed by `open_document`,
+    because the door calls it once per page and re-parsing the whole
+    cross-reference table and page tree each time was cleanly quadratic. That is
+    the caller's saving to make; a test naming one page wants one call.
+    """
+    return pdf_render.render_page(open_document(data), page_index)
+
 
 # --- happy paths -----------------------------------------------------------------
 
@@ -330,3 +344,197 @@ def test_a_non_numeric_cross_reference_offset_refuses_rather_than_crashes():
     data[match.start() : match.start() + 10] = b"XXXXXXXXXX"
     with pytest.raises(PdfRefusal, match="not numeric"):
         count_pages(bytes(data))
+
+
+# --- what four reviewing seats found, each with the case that would have caught it -
+#
+# Every one of these was reproduced against this branch before it was repaired: a
+# crash that took a healthy source down with it, a quadratic parse an attacker sizes,
+# a transform silently dropped, a colour space claimed and never checked, and a
+# payload riding inside a sealed digest nothing had inspected.
+
+
+def test_an_array_colorspace_is_a_named_refusal_and_never_a_crash():
+    """`/ColorSpace [/ICCBased 5 0 R]` and `[/Indexed ...]` are ordinary scanner
+    output. A list is unhashable, so testing it against a dict raised a bare
+    TypeError that `door.decide`'s `except PdfRefusal` could not catch — aborting the
+    whole run, so a healthy source later in the same submission got no decision at
+    all. That is invariant #3 failing, not merely a missing refusal name."""
+    for colorspace in ("[/ICCBased 5 0 R]", "[/Indexed /DeviceRGB 1 <000000FFFFFF>]"):
+        entry = gray_image(2, 2, 0)
+        entry["dictionary"] = entry["dictionary"].replace(
+            "/ColorSpace /DeviceGray", f"/ColorSpace {colorspace}"
+        )
+        with pytest.raises(PdfRefusal) as caught:
+            render_page(image_page_pdf([entry]), 0)
+        assert caught.value.reason is RefusalReason.UNSUPPORTED_VARIANT
+        assert "not a plain device name" in str(caught.value)
+
+
+def test_a_decode_array_that_remaps_samples_is_refused_rather_than_dropped():
+    """`/Decode [1 0]` on a DeviceGray image declares that sample 0 renders white.
+    Dropping it sealed a black page where the source declares a white one — no
+    error, no refusal, no signal at all. The identity array is legal and passes."""
+
+    def with_decode(decode: str) -> bytes:
+        entry = gray_image(2, 2, 0)
+        entry["dictionary"] += f" /Decode {decode}"
+        return image_page_pdf([entry])
+
+    with pytest.raises(PdfRefusal) as caught:
+        render_page(with_decode("[1 0]"), 0)
+    assert caught.value.reason is RefusalReason.UNSUPPORTED_VARIANT
+    assert "remaps its samples" in str(caught.value)
+    assert render_page(with_decode("[0 1]"), 0)[1] == "png"
+
+
+@pytest.mark.parametrize("key", ["ImageMask", "Mask", "SMask", "DecodeParms", "Intent"])
+def test_every_key_that_changes_what_a_page_shows_is_refused_by_name(key):
+    entry = gray_image(2, 2, 0)
+    entry["dictionary"] += f" /{key} true"
+    with pytest.raises(PdfRefusal) as caught:
+        render_page(image_page_pdf([entry]), 0)
+    assert caught.value.reason is RefusalReason.UNSUPPORTED_VARIANT
+    assert key in str(caught.value)
+
+
+def test_a_dct_page_is_checked_against_the_colour_space_its_dictionary_declares():
+    """The DCTDecode branch never read /ColorSpace, so a page declaring DeviceCMYK
+    with a four-component embedded JPEG rendered and would have been sealed — while
+    this module's docstring said CMYK was refused by name."""
+    cmyk = custom_image(
+        5, 4, colorspace="DeviceCMYK", filter_name="DCTDecode", raw=jpeg(5, 4, components=4)
+    )
+    with pytest.raises(PdfRefusal) as caught:
+        render_page(image_page_pdf([cmyk]), 0)
+    assert caught.value.reason is RefusalReason.UNSUPPORTED_VARIANT
+
+    # And a component count that disagrees with a *supported* colour space is corrupt
+    # rather than unsupported: the container and the stream contradict each other.
+    mismatch = custom_image(
+        5, 4, colorspace="DeviceGray", filter_name="DCTDecode", raw=jpeg(5, 4, components=3)
+    )
+    with pytest.raises(PdfRefusal) as caught:
+        render_page(image_page_pdf([mismatch]), 0)
+    assert caught.value.reason is RefusalReason.CORRUPT
+
+
+def test_rotate_false_is_refused_rather_than_read_as_unrotated():
+    """`False == 0` in Python, so `/Rotate false` passed a `not in (0, None)` test."""
+    with pytest.raises(PdfRefusal) as caught:
+        render_page(single_gray_page_pdf(extra_page=" /Rotate false"), 0)
+    assert caught.value.reason is RefusalReason.UNSUPPORTED_VARIANT
+    assert "Rotate" in str(caught.value)
+
+
+def test_bytes_appended_after_the_trailer_are_refused():
+    """`validate_jpeg` refuses trailing bytes after EOI for exactly this reason and
+    said so; the PDF path read back from the last `startxref` and never looked at
+    what followed, so a payload rode inside the digest the run authority seals."""
+    with pytest.raises(PdfRefusal, match="does not end at its own startxref"):
+        count_pages(single_gray_page_pdf() + b"APPENDED NON-PDF PAYLOAD")
+    with pytest.raises(PdfRefusal, match="does not end at its own startxref"):
+        count_pages(single_gray_page_pdf().replace(b"%%EOF", b""))
+
+
+def test_zero_entry_cross_reference_subsections_are_bounded():
+    """A subsection may legally declare zero entries, so it costs nothing against
+    MAX_XREF_ENTRIES. Two seats measured the resulting quadratic blow-up: unbounded
+    header count, times an O(file) slice per header."""
+    data = single_gray_page_pdf()
+    padding = b"0 0\n" * (pdf_render.MAX_XREF_SUBSECTIONS + 1)
+    stuffed = data.replace(b"xref\n0 ", b"xref\n" + padding + b"0 ", 1)
+    with pytest.raises(PdfRefusal, match="subsection"):
+        count_pages(stuffed)
+
+
+def test_the_cross_reference_parser_does_not_re_slice_the_file_per_subsection():
+    """The bound alone is not the fix. `re.match(pattern, data[pos:])` copies the
+    rest of the file every iteration, so the cost is quadratic in (headers x size)
+    below the bound as well as above it. Matching in place is what removes it: a
+    large tail must not change how long a fixed header count takes."""
+    import time
+
+    def elapsed(tail_bytes: int) -> float:
+        data = single_gray_page_pdf()
+        padding = b"0 0\n" * 2_000
+        stuffed = data.replace(b"xref\n0 ", b"xref\n" + padding + b"0 ", 1)
+        # Padding *after* %%EOF would be refused; this grows the file before the
+        # xref instead, which is the size the old slice-per-iteration copied.
+        stuffed = stuffed.replace(b"%PDF-1.4\n", b"%PDF-1.4\n%" + b"x" * tail_bytes + b"\n", 1)
+        start = time.perf_counter()
+        try:
+            count_pages(stuffed)
+        except PdfRefusal:
+            pass
+        return time.perf_counter() - start
+
+    small, large = elapsed(10_000), elapsed(2_000_000)
+    # A 200x larger file, the same 2,000 headers. Quadratic behaviour showed up as
+    # roughly 200x here; a generous ceiling still catches a regression to slicing.
+    assert large < max(0.05, small * 20), (small, large)
+
+
+def test_a_document_is_parsed_once_however_many_pages_are_rendered():
+    """`render_page` used to re-parse the whole cross-reference table and page tree
+    per call, and the door calls it once per page, so an N-page scan paid it N+1
+    times — which made the declared MAX_PAGES limit unreachable in practice."""
+    parses = 0
+    real_parse = pdf_render._parse_xref_table
+
+    def counting(*args, **kwargs):
+        nonlocal parses
+        parses += 1
+        return real_parse(*args, **kwargs)
+
+    data = image_page_pdf([gray_image(2, 2, value) for value in range(8)])
+    document = open_document(data)
+    pdf_render._parse_xref_table = counting
+    try:
+        for index in range(len(document.pages)):
+            pdf_render.render_page(document, index)
+    finally:
+        pdf_render._parse_xref_table = real_parse
+    assert parses == 0, "rendering out of a prepared document re-parses nothing"
+
+
+def test_the_page_tree_bounds_its_branches_and_not_only_its_leaves():
+    """MAX_PAGES bounds the leaves; each intermediate node costs its own object
+    lookup, and nothing bounded how many of those a file could declare. A verifying
+    seat built a *valid, renderable, one-page* PDF with 80,000 empty `/Pages` nodes
+    and measured 87 seconds for the door's two walks over it.
+
+    Built with a proper trailer and a real page, so what refuses it is this bound and
+    not the trailing-bytes rule added beside it — a check that fires for the wrong
+    reason is a check nobody has seen work.
+    """
+    builder = PdfBuilder()
+    image = builder.add(
+        stream_object(gray_image(2, 2, 7)["dictionary"], gray_image(2, 2, 7)["raw"])
+    )
+    catalog, root = builder.add(), builder.add()
+    page = builder.add(
+        f"<< /Type /Page /Parent {root} 0 R /Resources << /XObject << /Im0 {image} 0 R >> >> "
+        "/MediaBox [0 0 2 2] >>".encode()
+    )
+    groups = []
+    for _ in range(3):
+        empties = [builder.add(b"<< /Type /Pages /Kids [] /Count 0 >>") for _ in range(4_000)]
+        kids = " ".join(f"{number} 0 R" for number in empties)
+        groups.append(builder.add(f"<< /Type /Pages /Kids [{kids}] /Count 0 >>".encode()))
+    branches = " ".join(f"{number} 0 R" for number in groups)
+    builder.objects[root] = f"<< /Type /Pages /Kids [{page} 0 R {branches}] /Count 1 >>".encode()
+    builder.objects[catalog] = f"<< /Type /Catalog /Pages {root} 0 R >>".encode()
+
+    with pytest.raises(PdfRefusal, match="page tree visits more than"):
+        count_pages(builder.build(catalog))
+
+
+def test_the_subsection_bound_fires_on_a_file_that_is_otherwise_well_formed():
+    """Same discipline for the cross-reference bound: the padding goes *inside* the
+    xref table, so the file still ends at its own `%%EOF` and the refusal is the
+    subsection limit rather than the trailing-bytes rule."""
+    data = single_gray_page_pdf()
+    stuffed = data.replace(b"xref\n0 ", b"xref\n" + b"0 0\n" * 20 + b"0 ", 1)
+    assert stuffed.endswith(b"%%EOF")
+    assert count_pages(stuffed) == 1, "twenty empty subsections are legal and parse"

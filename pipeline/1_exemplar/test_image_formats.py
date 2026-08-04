@@ -20,7 +20,6 @@ import zlib
 import pytest
 from image_formats import (
     MAX_DIMENSION,
-    MAX_TIFF_IFDS,
     FormatRefusal,
     ImageGeometry,
     _tiff_unsigned_values,
@@ -30,7 +29,18 @@ from image_formats import (
     validate_png,
     validate_tiff,
 )
-from synthetic_sources import PNG_MAGIC, gif, heic, jpeg, png, png_chunk, png_container, tiff
+from synthetic_sources import (
+    PNG_MAGIC,
+    gif,
+    heic,
+    jpeg,
+    png,
+    png_chunk,
+    png_container,
+    tiff,
+    tiff_ifd_entry_offset,
+    tiff_next_ifd_offset,
+)
 
 # --- sniff -----------------------------------------------------------------------
 
@@ -173,6 +183,16 @@ def test_validate_png_accepts_an_unknown_ancillary_chunk():
     assert validate_png(png(extra_chunks=png_chunk(b"tEXt", b"note\x00hello"))).width == 4
 
 
+def test_validate_png_refuses_a_chunk_type_with_the_reserved_bit_set():
+    """Byte 3's case is PNG's reserved bit and the format requires it clear. A chunk
+    typed `abcd` with a valid CRC is a name no conforming encoder can emit, and
+    "four ASCII letters" waved it through as an ordinary ancillary chunk."""
+    with pytest.raises(FormatRefusal, match="reserved bit"):
+        validate_png(png(extra_chunks=png_chunk(b"abcd", b"reserved-bit-set")))
+    # The control: the same chunk with the reserved bit clear is legal and skipped.
+    assert validate_png(png(extra_chunks=png_chunk(b"abCd", b"reserved-bit-set"))).width == 4
+
+
 def test_validate_png_refuses_trailing_bytes_after_iend():
     with pytest.raises(FormatRefusal, match="IEND"):
         validate_png(png() + b"appended payload")
@@ -251,6 +271,64 @@ def test_validate_jpeg_refuses_non_jpeg_bytes():
         validate_jpeg(b"definitely not a jpeg")
 
 
+# --- the tables a scan selects have to exist ---------------------------------------
+#
+# The validator claimed to prove "a genuine, uncorrupted instance of the format".
+# It checked no quantization or Huffman table at all, and the project's own
+# "genuine" JPEG builder emitted neither: thirty bytes, four markers, three
+# arbitrary scan bytes, admitted as a 5x4 image no decoder could have read.
+
+
+def test_validate_jpeg_refuses_a_frame_whose_quantization_table_was_never_defined():
+    with pytest.raises(FormatRefusal, match="quantization table 0, which no DQT defined"):
+        validate_jpeg(jpeg(quantization_tables=None))
+
+
+def test_validate_jpeg_refuses_a_scan_whose_huffman_tables_were_never_defined():
+    with pytest.raises(FormatRefusal, match="Huffman table 0, which no DHT defined"):
+        validate_jpeg(jpeg(huffman_tables=None))
+
+
+def test_validate_jpeg_refuses_a_scan_selecting_only_half_the_tables_it_needs():
+    """A sequential scan uses both a DC and an AC table. Defining one is not enough,
+    and refusing on "no tables at all" alone would miss this."""
+    with pytest.raises(FormatRefusal, match="AC Huffman table 0"):
+        validate_jpeg(jpeg(huffman_tables=((0, 0),)))
+
+
+def test_a_progressive_ac_scan_needs_only_its_ac_table():
+    """Which tables a scan needs depends on what kind of scan it is, and demanding
+    both of a progressive scan would refuse ordinary progressive JPEGs — a page
+    nobody reads, for a check that was never owed."""
+    assert validate_jpeg(
+        jpeg(sof_marker=0xC2, spectral_start=1, huffman_tables=((1, 0),))
+    ) == ImageGeometry("jpeg", 5, 4)
+    with pytest.raises(FormatRefusal, match="DC Huffman table 0"):
+        validate_jpeg(jpeg(sof_marker=0xC2, spectral_start=0, huffman_tables=((1, 0),)))
+
+
+def test_validate_jpeg_refuses_a_dht_segment_that_runs_past_its_own_length():
+    """A table declaring more codes than it carries leaves a scan pointing at
+    something never fully written."""
+    truncated = bytes([0x00]) + bytes([9] + [0] * 15) + bytes([0])
+    with pytest.raises(FormatRefusal, match="DHT table runs past its own segment"):
+        validate_jpeg(
+            jpeg(huffman_tables=None, quantization_tables=(0,)).replace(
+                b"\xff\xc0",
+                b"\xff\xc4" + struct.pack(">H", len(truncated) + 2) + truncated + b"\xff\xc0",
+            )
+        )
+
+
+def test_the_container_around_an_embedded_jpeg_can_pin_its_component_count():
+    """What the PDF renderer needs to stop guessing: a page declaring one colour
+    space and embedding a JPEG with a different number of components is not the
+    image its own dictionary describes."""
+    assert validate_jpeg(jpeg(components=3), expected_components=3).width == 5
+    with pytest.raises(FormatRefusal, match="the container around it declares 1"):
+        validate_jpeg(jpeg(components=4), expected_components=1)
+
+
 # --- TIFF ------------------------------------------------------------------------
 
 
@@ -290,7 +368,8 @@ def test_validate_tiff_refuses_an_image_data_range_outside_the_file():
 
 def test_validate_tiff_refuses_a_value_offset_outside_the_file():
     data = bytearray(tiff())
-    struct.pack_into("<I", data, 14, 100)  # count 100 forces an out-of-line value
+    # Entry 0 is ImageWidth; a count of 100 forces its value out of line.
+    struct.pack_into("<I", data, tiff_ifd_entry_offset(0) + 4, 100)
     with pytest.raises(FormatRefusal, match="escapes the file bounds|more values than the file"):
         validate_tiff(bytes(data))
 
@@ -307,37 +386,98 @@ def test_validate_tiff_refuses_a_geometry_tag_with_a_zero_count_rather_than_cras
     fail-closed check: a named refusal rather than a bare `struct.error` escaping
     uncaught and aborting every other source still waiting to be decided."""
     data = bytearray(tiff())
-    struct.pack_into("<I", data, 14, 0)
+    struct.pack_into("<I", data, tiff_ifd_entry_offset(0) + 4, 0)
     with pytest.raises(FormatRefusal, match="not one SHORT or LONG"):
         validate_tiff(bytes(data))
 
 
-def test_validate_tiff_refuses_a_second_image_directory_as_a_documented_limit():
+@pytest.mark.parametrize(
+    ("label", "second_directory"),
+    [
+        # Every shape of second directory, including the three that used to be
+        # admitted as a one-page image because the old check keyed on a *duplicate
+        # geometry tag* rather than on the chain having a second link. A two-page
+        # TIFF sealed as one page loses a page with no refusal to show for it.
+        ("declaring its own geometry", [(256, 3, 4), (257, 3, 3)]),
+        ("carrying strip tags only", [(273, 4, 8), (279, 4, 1)]),
+        ("carrying one unrelated tag", [(259, 3, 1)]),
+        ("carrying nothing at all", []),
+    ],
+)
+def test_validate_tiff_refuses_any_second_image_directory(label, second_directory):
     """Multi-page TIFF: the door assigns one ordinal per page, so silently sealing
     only the first would lose every page after it without a refusal to show."""
     first = tiff(4, 3)
-    # Point the first IFD's "next IFD" pointer back at itself minus nothing: build a
-    # second directory after the first, declaring its own geometry.
-    endian = "<"
-    second_offset = len(first)
     data = bytearray(first)
-    struct.pack_into(endian + "I", data, 8 + 2 + 4 * 12, second_offset)
-    entries = struct.pack(endian + "HHI", 256, 3, 1) + struct.pack(endian + "H", 4) + b"\x00\x00"
-    entries += struct.pack(endian + "HHI", 257, 3, 1) + struct.pack(endian + "H", 3) + b"\x00\x00"
-    data += struct.pack(endian + "H", 2) + entries + struct.pack(endian + "I", 0)
+    struct.pack_into("<I", data, tiff_next_ifd_offset(first), len(first))
+    entries = b"".join(
+        struct.pack("<HHI", tag, field_type, 1)
+        + (struct.pack("<H", value) + b"\x00\x00" if field_type == 3 else struct.pack("<I", value))
+        for tag, field_type, value in second_directory
+    )
+    data += struct.pack("<H", len(second_directory)) + entries + struct.pack("<I", 0)
+    with pytest.raises(FormatRefusal, match="multi-page TIFF is a documented limit"):
+        validate_tiff(bytes(data)), label
+
+
+def test_a_cyclic_ifd_chain_cannot_be_entered_at_all():
+    """A chain pointing back at its own first directory is refused at the first
+    link, by the same rule that refuses an honest second page. There is no IFD
+    walk left to bound, which is a tighter bound than the count this replaced."""
+    first = tiff()
+    data = bytearray(first)
+    struct.pack_into("<I", data, tiff_next_ifd_offset(first), 8)
     with pytest.raises(FormatRefusal, match="multi-page TIFF is a documented limit"):
         validate_tiff(bytes(data))
 
 
-def test_validate_tiff_refuses_a_cyclic_ifd_chain():
-    data = bytearray(tiff())
-    struct.pack_into("<I", data, 8 + 2 + 4 * 12, 8)  # next IFD points at the first
-    with pytest.raises(FormatRefusal, match="cycle"):
-        validate_tiff(bytes(data))
+# --- what a TIFF actually stores has to hold the image it declares ----------------
 
 
-def test_the_tiff_ifd_walk_is_bounded_before_it_begins():
-    assert MAX_TIFF_IFDS == 64
+def test_validate_tiff_refuses_a_strip_too_small_for_the_geometry_it_declares():
+    """The shipped fixture used to declare 6x5 pixels behind a one-byte strip, and
+    "the strip is inside the file" was the whole of the check. An uncompressed image
+    stores exactly what its rows occupy or it is not that image."""
+    with pytest.raises(FormatRefusal, match="needs 30"):
+        validate_tiff(tiff(6, 5, strip_bytes=1))
+
+
+def test_validate_tiff_refuses_a_header_declaring_far_more_pixels_than_it_stores():
+    """The sharper form: a 123-byte file declaring a million pixels, which the old
+    validator accepted because the one stored byte was technically inside it."""
+    with pytest.raises(FormatRefusal, match=r"stores 1 byte\(s\) where .* needs 1000000"):
+        validate_tiff(tiff(1000, 1000, strip_bytes=1))
+
+
+def test_validate_tiff_counts_the_strips_the_geometry_requires():
+    """Three rows at one row per strip is three strips. Declaring one is a file that
+    does not carry the image its own header describes."""
+    data = tiff(4, 3)
+    rows_per_strip = data.find(struct.pack("<HHI", 278, 4, 1)) + 8
+    patched = bytearray(data)
+    struct.pack_into("<I", patched, rows_per_strip, 1)
+    with pytest.raises(FormatRefusal, match="needs 3"):
+        validate_tiff(bytes(patched))
+
+
+def test_validate_tiff_refuses_a_baseline_image_with_no_photometric_tag():
+    """`PhotometricInterpretation` says what the stored samples mean. A baseline IFD
+    is required to carry it, and defaulting it would be inventing the answer."""
+    with pytest.raises(FormatRefusal, match="PhotometricInterpretation"):
+        validate_tiff(tiff(photometric=None))
+
+
+def test_a_compressed_tiff_reconciles_its_segment_count_and_not_its_byte_counts():
+    """The named limit, stated as a test rather than only as prose: byte counts are
+    whatever the codec produced and reconciling them would mean decompressing, so a
+    compressed strip of any size passes — while the *number* of strips is still the
+    number the geometry requires."""
+    assert validate_tiff(tiff(6, 5, compression=5, strip_bytes=3)) == ImageGeometry("tiff", 6, 5)
+    data = tiff(4, 3, compression=5)
+    patched = bytearray(data)
+    struct.pack_into("<I", patched, data.find(struct.pack("<HHI", 278, 4, 1)) + 8, 1)
+    with pytest.raises(FormatRefusal, match="needs 3"):
+        validate_tiff(bytes(patched))
 
 
 def test_validate_tiff_refuses_non_tiff_bytes():

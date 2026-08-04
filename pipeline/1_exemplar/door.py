@@ -141,7 +141,30 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     return declared
 
 
-def decide(data: bytes, source: SourceEntry, policy: dict[str, str]) -> _Decision:
+def _prepared_document(data: bytes, declared_path: str, documents: dict[str, Any] | None) -> Any:
+    """The parsed container for this source, parsed once however many pages it has.
+
+    `render_page` used to take raw bytes and re-parse the whole cross-reference
+    table and page tree per call, so an N-page source paid it N+1 times. The cache
+    is per `process_sources` call and keyed by declared path, which is the same
+    scope the byte cache beside it uses.
+    """
+    if documents is None:
+        return pdf_render.open_document(data)
+    prepared = documents.get(declared_path)
+    if prepared is None:
+        prepared = pdf_render.open_document(data)
+        documents[declared_path] = prepared
+    return prepared
+
+
+def decide(
+    data: bytes,
+    source: SourceEntry,
+    policy: dict[str, str],
+    *,
+    documents: dict[str, Any] | None = None,
+) -> _Decision:
     """One source's admission decision. PDF pages and standalone rasters alike.
 
     **The policy decides first, for every source, whatever shape it has.** A page
@@ -150,6 +173,9 @@ def decide(data: bytes, source: SourceEntry, policy: dict[str, str]) -> _Decisio
     before it counts a page and this asks it again before it renders one, so a
     `render-pages` row turned to `refuse` refuses at both boundaries rather than at
     neither.
+
+    `documents` is the caller's per-run cache of parsed containers, so a source is
+    parsed once rather than once per page inside it.
     """
     verdict = admission.classify_detected_format(sniff(data), policy)
     if source.pdf_page_index is None:
@@ -212,7 +238,9 @@ def decide(data: bytes, source: SourceEntry, policy: dict[str, str]) -> _Decisio
             None,
         )
     try:
-        page_bytes, page_format = pdf_render.render_page(data, source.pdf_page_index)
+        page_bytes, page_format = pdf_render.render_page(
+            _prepared_document(data, source.declared_path, documents), source.pdf_page_index
+        )
     except pdf_render.PdfRefusal as error:
         return _Decision("refused", str(error), None, None, None)
 
@@ -333,6 +361,10 @@ def process_sources(
     admitted = 0
     seen_sources: dict[str, tuple[str, int]] = {}
     cache: dict[str, bytes] = {}
+    # Parsed containers, alongside the bytes they were parsed from: a multi-page
+    # source is read once and parsed once, and every one of its pages is rendered
+    # out of that single parse.
+    documents: dict[str, Any] = {}
 
     for source in sorted(sources, key=lambda item: item.ordinal):
         if source.declared_size is not None and source.declared_size > MAX_SOURCE_BYTES:
@@ -377,7 +409,7 @@ def process_sources(
                 approval_reference=approval_reference,
             )
             continue
-        decision = decide(data, source, policy)
+        decision = decide(data, source, policy, documents=documents)
 
         if decision.outcome == "refused":
             _publish(

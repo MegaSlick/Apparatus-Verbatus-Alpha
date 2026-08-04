@@ -28,6 +28,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Final, NamedTuple
 
+import image_formats
 from image_formats import MAX_SOURCE_BYTES, FormatRefusal, sniff, validate
 
 from common.contracts.canonical import digest_bytes
@@ -44,15 +45,20 @@ RENDER_PAGES: Final = "render-pages"
 REFUSE: Final = "refuse"
 ACTIONS: Final = frozenset({ADMIT, RENDER_PAGES, REFUSE})
 
-# Every format name `image_formats.sniff()` can return. The policy must cover this
-# set exactly: a format missing from the file could otherwise be admitted by
-# omission, and a format named in the file that nothing can sniff is a rule nobody
-# will ever reach — the silent drift this module exists to prevent.
-SNIFFABLE_FORMATS: Final = frozenset({"png", "jpeg", "tiff", "pdf", "gif", "heic"})
-
-# The formats a structural validator exists for. `render-pages` formats are not
-# here: a container is proved by rendering it, not by a raster validator.
-STRUCTURALLY_VALIDATED: Final = frozenset({"png", "jpeg", "tiff"})
+# Every format name `image_formats.sniff()` can return, and every format a
+# structural validator exists for. The policy must cover the first set exactly: a
+# format missing from the file could otherwise be admitted by omission, and a format
+# named in the file that nothing can sniff is a rule nobody will ever reach — the
+# silent drift this module exists to prevent.
+#
+# **Both are imported, never restated.** They used to be hand-written copies of the
+# sniffer's return values and the validator table's keys, so the coverage check
+# compared one copy against another and would have agreed however far either had
+# drifted from the code that actually runs. `render-pages` formats are absent from
+# the second set on purpose: a container is proved by rendering it, not by a raster
+# validator.
+STRUCTURALLY_VALIDATED: Final = image_formats.STRUCTURALLY_VALIDATED
+SNIFFABLE_FORMATS: Final = image_formats.SNIFFABLE_FORMATS
 
 
 class FormatPolicyRefusal(ContractError):

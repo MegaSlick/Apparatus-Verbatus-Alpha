@@ -93,6 +93,31 @@ def _png_scanlines(
     return bytes(out)
 
 
+def jpeg_segment(marker: int, payload: bytes) -> bytes:
+    return bytes([0xFF, marker]) + struct.pack(">H", len(payload) + 2) + payload
+
+
+def jpeg_dqt(*table_ids: int) -> bytes:
+    """A DQT segment defining one 8-bit quantization table per id given."""
+    return jpeg_segment(
+        0xDB, b"".join(bytes([identifier]) + bytes([16]) * 64 for identifier in table_ids)
+    )
+
+
+def jpeg_dht(*tables: tuple[int, int]) -> bytes:
+    """A DHT segment defining one minimal Huffman table per (class, id) given.
+
+    One code of length one and one symbol: structurally complete, which is exactly
+    what `validate_jpeg` proves and the limit of what it claims — the entropy stream
+    is not decoded, here or there.
+    """
+    payload = b"".join(
+        bytes([(table_class << 4) | identifier]) + bytes([1] + [0] * 15) + bytes([0])
+        for table_class, identifier in tables
+    )
+    return jpeg_segment(0xC4, payload)
+
+
 def jpeg(
     width: int = 5,
     height: int = 4,
@@ -101,13 +126,38 @@ def jpeg(
     scan: bytes = b"\x12\x34\x56",
     eoi: bool = True,
     trailing: bytes = b"",
+    components: int = 1,
+    quantization_tables: tuple[int, ...] | None = (0,),
+    huffman_tables: tuple[tuple[int, int], ...] | None = ((0, 0), (1, 0)),
+    spectral_start: int = 0,
 ) -> bytes:
-    """A structurally complete JPEG: SOI, SOF, SOS, entropy data, EOI."""
-    sof_content = struct.pack(">BHHB", 8, height, width, 1) + bytes([1, 0x11, 0])
-    sof = bytes([0xFF, sof_marker]) + struct.pack(">H", len(sof_content) + 2) + sof_content
-    sos_content = bytes([1, 1, 0]) + bytes([0, 63, 0])
-    sos = b"\xff\xda" + struct.pack(">H", len(sos_content) + 2) + sos_content
-    return b"\xff\xd8" + sof + sos + scan + (b"\xff\xd9" if eoi else b"") + trailing
+    """A structurally complete JPEG: SOI, DQT, DHT, SOF, SOS, entropy data, EOI.
+
+    The tables are parameters so a test can build a JPEG *missing* one and prove the
+    refusal. They default to present because a JPEG without them is not a file any
+    decoder could read, and this builder is what the suite means by "genuine": it
+    used to emit SOI/SOF/SOS/EOI and three arbitrary bytes, and the validator
+    admitted those 30 bytes as a 5x4 image.
+    """
+    tables = b""
+    if quantization_tables:
+        tables += jpeg_dqt(*quantization_tables)
+    if huffman_tables:
+        tables += jpeg_dht(*huffman_tables)
+    frame = struct.pack(">BHHB", 8, height, width, components)
+    frame += b"".join(bytes([index + 1, 0x11, 0]) for index in range(components))
+    sos_payload = bytes([components])
+    sos_payload += b"".join(bytes([index + 1, 0x00]) for index in range(components))
+    sos_payload += bytes([spectral_start, 63, 0])
+    return (
+        b"\xff\xd8"
+        + tables
+        + jpeg_segment(sof_marker, frame)
+        + jpeg_segment(0xDA, sos_payload)
+        + scan
+        + (b"\xff\xd9" if eoi else b"")
+        + trailing
+    )
 
 
 def tiff(
@@ -120,8 +170,24 @@ def tiff(
     magic: int = 42,
     extra_entries: bytes = b"",
     extra_entry_count: int = 0,
+    bits_per_sample: int = 8,
+    compression: int = 1,
+    photometric: int | None = 1,
+    strip_bytes: int | None = None,
+    next_ifd: int = 0,
 ) -> bytes:
-    """A classic TIFF with a bounded, in-file strip inventory for its image data."""
+    """A classic single-page TIFF whose stored strip really holds its own image.
+
+    One strip covering every row, sized `height * ceil(width * bits / 8)` and
+    actually present in the file. The shipped fixture used to declare 6x5 pixels
+    behind a **one-byte** strip and be admitted as genuine, so "the strip is in the
+    file" was the whole of what the validator could check. `strip_bytes` overrides
+    the size so a test can build the mismatch and prove the refusal.
+
+    Entries are emitted in ascending tag order, as TIFF requires, and ImageWidth is
+    always first — `tiff_ifd_entry_offset` and `tiff_next_ifd_offset` give a test
+    the two positions it needs without hard-coding an entry count that moves.
+    """
     endian = "<" if little_endian else ">"
     order = b"II" if little_endian else b"MM"
 
@@ -130,16 +196,46 @@ def tiff(
             return struct.pack(endian + "H", value) + b"\x00\x00"
         return struct.pack(endian + "I", value)
 
+    def short(tag: int, value: int) -> bytes:
+        return (
+            struct.pack(endian + "HHI", tag, 3, 1) + struct.pack(endian + "H", value) + b"\x00\x00"
+        )
+
     inventory_tags = (273, 279) if strips else ()
-    entry_count = 2 + len(inventory_tags) + extra_entry_count
+    baseline = [(258, bits_per_sample), (259, compression)]
+    if photometric is not None:
+        baseline.append((262, photometric))
+    entry_count = 2 + len(baseline) + len(inventory_tags) + 2 + extra_entry_count
     image_offset = 8 + 2 + entry_count * 12 + 4
+    stored = height * ((width * bits_per_sample + 7) // 8) if strip_bytes is None else strip_bytes
+
     entries = struct.pack(endian + "HHI", 256, tag_type, 1) + dimension(width)
     entries += struct.pack(endian + "HHI", 257, tag_type, 1) + dimension(height)
-    for tag, value in zip(inventory_tags, (image_offset, 1), strict=False):
-        entries += struct.pack(endian + "HHI", tag, 4, 1) + struct.pack(endian + "I", value)
+    for tag, value in baseline:
+        entries += short(tag, value)
+    if strips:
+        entries += struct.pack(endian + "HHI", 273, 4, 1) + struct.pack(endian + "I", image_offset)
+    # 277 SamplesPerPixel and 278 RowsPerStrip sit between 273 and 279 in tag order.
+    entries += short(277, 1)
+    entries += struct.pack(endian + "HHI", 278, 4, 1) + struct.pack(endian + "I", height)
+    if strips:
+        entries += struct.pack(endian + "HHI", 279, 4, 1) + struct.pack(endian + "I", stored)
     entries += extra_entries
-    body = struct.pack(endian + "H", entry_count) + entries + struct.pack(endian + "I", 0)
-    return order + struct.pack(endian + "H", magic) + struct.pack(endian + "I", 8) + body + b"\x00"
+    body = struct.pack(endian + "H", entry_count) + entries + struct.pack(endian + "I", next_ifd)
+    header = order + struct.pack(endian + "H", magic) + struct.pack(endian + "I", 8)
+    return header + body + bytes(max(1, stored))
+
+
+def tiff_ifd_entry_offset(index: int) -> int:
+    """Where entry `index` of the first IFD starts. Entry 0 is always ImageWidth."""
+    return 8 + 2 + index * 12
+
+
+def tiff_next_ifd_offset(data: bytes, *, little_endian: bool = True) -> int:
+    """Where the first IFD's next-directory pointer sits, whatever its entry count."""
+    endian = "<" if little_endian else ">"
+    (count,) = struct.unpack_from(endian + "H", data, 8)
+    return 8 + 2 + count * 12
 
 
 def gif() -> bytes:

@@ -38,8 +38,11 @@ MAX_DIMENSION: Final = 100_000
 MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
-MAX_TIFF_IFDS: Final = 64
 MAX_TIFF_DATA_SEGMENTS: Final = 100_000
+# There is no bound on the number of TIFF image directories, because more than one
+# is refused by name: `validate_tiff` reads directory zero and refuses a non-zero
+# next-directory offset. A walk of exactly one is the tightest bound there is, and
+# an IFD-count cap was a bound on a chain that is no longer entered.
 
 
 class ImageGeometry(NamedTuple):
@@ -65,6 +68,18 @@ TIFF_SIGNATURES: Final = (b"II*\x00", b"MM\x00*")
 PDF_SIGNATURE: Final = b"%PDF-"
 GIF_SIGNATURES: Final = (b"GIF87a", b"GIF89a")
 
+# The one table `sniff()` walks, so the list of formats the door can detect is
+# *derived* from what the sniffer executes rather than hand-copied beside it. A
+# second hand-kept list is the same shape of drift as two admission tables: the
+# policy-coverage check would compare the copy against the copy and agree.
+_SIGNATURES: Final = (
+    ("png", (PNG_SIGNATURE,)),
+    ("jpeg", (JPEG_SIGNATURE,)),
+    ("tiff", TIFF_SIGNATURES),
+    ("pdf", (PDF_SIGNATURE,)),
+    ("gif", GIF_SIGNATURES),
+)
+
 # ISO base media file format "brand" codes that mark a file as HEIC/HEIF. Detected
 # from the `ftyp` box that opens every such container, never from a `.heic` file
 # extension — admission is by bytes, and the extension plays no part in what a file
@@ -81,16 +96,9 @@ def sniff(data: bytes) -> str | None:
     the bytes are a valid instance of it. `admission.py` calls the matching
     validator before ever admitting anything.
     """
-    if data.startswith(PNG_SIGNATURE):
-        return "png"
-    if data.startswith(JPEG_SIGNATURE):
-        return "jpeg"
-    if data[:4] in TIFF_SIGNATURES:
-        return "tiff"
-    if data.startswith(PDF_SIGNATURE):
-        return "pdf"
-    if data[:6] in GIF_SIGNATURES:
-        return "gif"
+    for name, signatures in _SIGNATURES:
+        if any(data.startswith(signature) for signature in signatures):
+            return name
     if _is_heic(data):
         return "heic"
     return None
@@ -178,7 +186,9 @@ def validate_png(data: bytes) -> ImageGeometry:
         chunk_data = data[offset + 8 : offset + 8 + length]
         (stored_crc,) = struct.unpack_from(">I", data, offset + 8 + length)
         if not _is_png_chunk_type(chunk_type):
-            raise FormatRefusal("corrupt PNG: chunk type is not four ASCII letters")
+            raise FormatRefusal(
+                "corrupt PNG: chunk type is not four ASCII letters with the reserved bit clear"
+            )
         if zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF != stored_crc:
             raise FormatRefusal(f"corrupt PNG: chunk {chunk_type!r} fails its own CRC")
         chunks += 1
@@ -312,7 +322,17 @@ def _validate_png_palette(payload: bytes, color_type: int | None, bit_depth: int
 
 
 def _is_png_chunk_type(kind: bytes) -> bool:
-    return len(kind) == 4 and all(65 <= byte <= 90 or 97 <= byte <= 122 for byte in kind)
+    """Four ASCII letters, with PNG's reserved bit clear.
+
+    Byte 3's case is the *reserved* bit, and the specification requires it to be
+    uppercase in this version of the format. Checking only "four letters" accepted a
+    chunk typed `abcd` — a name no conforming encoder can emit — as an ordinary
+    ancillary chunk to be skipped, which is a claim of "genuine, uncorrupted
+    instance" this module makes and was not performing.
+    """
+    if len(kind) != 4 or not all(65 <= byte <= 90 or 97 <= byte <= 122 for byte in kind):
+        return False
+    return not kind[2] & 0x20
 
 
 def _is_png_critical(kind: bytes) -> bool:
@@ -327,23 +347,51 @@ def _is_png_critical(kind: bytes) -> bool:
 _JPEG_SOF_MARKERS: Final = frozenset(
     {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
 )
+# Which of those code progressively, and which replace the Huffman tables with
+# arithmetic conditioning. Both change *which* tables a scan is required to have
+# defined, so the scan check has to know them apart rather than demanding one shape.
+_JPEG_PROGRESSIVE_MARKERS: Final = frozenset({0xC2, 0xC6, 0xCA, 0xCE})
+_JPEG_ARITHMETIC_MARKERS: Final = frozenset({0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
 
 
-def validate_jpeg(data: bytes) -> ImageGeometry:
+def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> ImageGeometry:
     """Walk marker segments to an EOI that ends the file, reading geometry off SOF.
 
-    Entropy-coded scan data is skipped by scanning for the next unstuffed marker
-    rather than parsed, because Huffman decoding is pixel reconstruction and this
-    validator's job stops at "well-formed, framed, scanned, and terminating in
-    EOI at the end of the file". Trailing bytes after EOI are refused: they are
-    either a second concatenated image or an appended payload, and neither is the
-    single page the door believes it admitted.
+    **What is proven, exactly.** The file is framed by SOI and a terminating EOI at
+    the very end; every marker segment's declared length lies inside the file; there
+    is exactly one start-of-frame, whose component count agrees with its own segment
+    length; and — the part this validator used to claim and not perform — **every
+    table each scan selects has actually been defined by a preceding DQT, DHT or
+    DAC**. A frame whose components name a quantization table nobody defined, or a
+    scan whose components name a Huffman table nobody defined, is not a decodable
+    JPEG and is refused. Before that check, the project's own synthetic "genuine"
+    JPEG — SOI, SOF, SOS, three arbitrary bytes, EOI, no tables at all — was admitted
+    as a 5x4 image, which no decoder on earth could have turned into pixels.
+
+    **What is not proven.** The entropy-coded scan data is skipped by scanning for
+    the next unstuffed marker rather than Huffman-decoded, because that is pixel
+    reconstruction. So this proves the container and its table references are whole
+    and mutually consistent; it does not prove the compressed samples decode, and it
+    does not claim to. That is the same named, documented limit the module docstring
+    states for all three formats.
+
+    Trailing bytes after EOI are refused: they are either a second concatenated
+    image or an appended payload, and neither is the single page the door believes
+    it admitted.
+
+    `expected_components` is the colour-space reconciliation the PDF renderer needs —
+    the number of components the *container around this JPEG* declares. A mismatch
+    means the embedded stream is not the image its dictionary describes.
     """
     if not data.startswith(JPEG_SIGNATURE):
         raise FormatRefusal("not a JPEG: missing SOI")
 
     geometry: ImageGeometry | None = None
-    frame_components: int | None = None
+    frame_components: list[tuple[int, int]] = []  # (component id, quantization table id)
+    progressive = arithmetic = False
+    quantization_tables: set[int] = set()
+    huffman_tables: set[tuple[int, int]] = set()  # (class, id): class 0 = DC, 1 = AC
+    arithmetic_conditioning: set[tuple[int, int]] = set()
     saw_sos = False
     marker, cursor = _jpeg_marker_at(data, 2)
 
@@ -366,7 +414,13 @@ def validate_jpeg(data: bytes) -> ImageGeometry:
         payload = data[cursor + 2 : cursor + length]
         cursor += length
 
-        if marker in _JPEG_SOF_MARKERS:
+        if marker == 0xDB:  # DQT
+            quantization_tables |= _jpeg_quantization_tables(payload)
+        elif marker == 0xC4:  # DHT
+            huffman_tables |= _jpeg_huffman_tables(payload)
+        elif marker == 0xCC:  # DAC: arithmetic coding replaces the Huffman tables
+            arithmetic_conditioning |= _jpeg_arithmetic_conditioning(payload)
+        elif marker in _JPEG_SOF_MARKERS:
             if geometry is not None:
                 raise FormatRefusal("corrupt JPEG: a second start-of-frame marker")
             if len(payload) < 6:
@@ -376,22 +430,147 @@ def validate_jpeg(data: bytes) -> ImageGeometry:
                 raise FormatRefusal("corrupt JPEG: SOF declares no usable component count")
             if len(payload) != 6 + 3 * components:
                 raise FormatRefusal("corrupt JPEG: SOF component count disagrees with its length")
+            if expected_components is not None and components != expected_components:
+                raise FormatRefusal(
+                    f"corrupt JPEG: the frame declares {components} component(s), but the "
+                    f"container around it declares {expected_components}"
+                )
             geometry = _geometry("jpeg", width, height)
-            frame_components = components
+            progressive = marker in _JPEG_PROGRESSIVE_MARKERS
+            arithmetic = marker in _JPEG_ARITHMETIC_MARKERS
+            frame_components = [
+                (payload[6 + 3 * index], payload[8 + 3 * index]) for index in range(components)
+            ]
 
         if marker == 0xDA:  # SOS: entropy-coded data follows, scan past it
-            if geometry is None or frame_components is None:
+            if geometry is None or not frame_components:
                 raise FormatRefusal("corrupt JPEG: a scan precedes its frame header")
-            scan_components = payload[0] if payload else 0
-            if (
-                not 1 <= scan_components <= frame_components
-                or len(payload) != 1 + 2 * scan_components + 3
-            ):
-                raise FormatRefusal("corrupt JPEG: scan components disagree with the segment")
+            _validate_jpeg_scan(
+                payload,
+                frame_components=frame_components,
+                progressive=progressive,
+                arithmetic=arithmetic,
+                quantization_tables=quantization_tables,
+                huffman_tables=huffman_tables,
+                arithmetic_conditioning=arithmetic_conditioning,
+            )
             saw_sos = True
             marker, cursor = _jpeg_marker_after_entropy(data, cursor)
         else:
             marker, cursor = _jpeg_marker_at(data, cursor)
+
+
+def _jpeg_quantization_tables(payload: bytes) -> set[int]:
+    """Every quantization table id this DQT segment actually defines."""
+    defined: set[int] = set()
+    cursor = 0
+    while cursor < len(payload):
+        precision, identifier = payload[cursor] >> 4, payload[cursor] & 0x0F
+        if precision not in (0, 1) or identifier > 3:
+            raise FormatRefusal("corrupt JPEG: DQT declares an out-of-range precision or table id")
+        cursor += 1 + 64 * (2 if precision else 1)
+        if cursor > len(payload):
+            raise FormatRefusal("corrupt JPEG: a DQT table runs past its own segment")
+        defined.add(identifier)
+    return defined
+
+
+def _jpeg_huffman_tables(payload: bytes) -> set[tuple[int, int]]:
+    """Every (class, id) Huffman table this DHT segment actually defines.
+
+    The 16 code-length counts are summed to find where the table ends, so a segment
+    that declares more codes than it carries is refused here rather than leaving a
+    scan pointing at a table that was never fully written.
+    """
+    defined: set[tuple[int, int]] = set()
+    cursor = 0
+    while cursor < len(payload):
+        if cursor + 17 > len(payload):
+            raise FormatRefusal("corrupt JPEG: a DHT table header runs past its own segment")
+        table_class, identifier = payload[cursor] >> 4, payload[cursor] & 0x0F
+        if table_class not in (0, 1) or identifier > 3:
+            raise FormatRefusal("corrupt JPEG: DHT declares an out-of-range table class or id")
+        symbols = sum(payload[cursor + 1 : cursor + 17])
+        cursor += 17 + symbols
+        if cursor > len(payload):
+            raise FormatRefusal("corrupt JPEG: a DHT table runs past its own segment")
+        defined.add((table_class, identifier))
+    return defined
+
+
+def _jpeg_arithmetic_conditioning(payload: bytes) -> set[tuple[int, int]]:
+    """Every (class, id) conditioning slot this DAC segment defines."""
+    if len(payload) % 2:
+        raise FormatRefusal("corrupt JPEG: DAC segment is not a whole number of entries")
+    defined: set[tuple[int, int]] = set()
+    for cursor in range(0, len(payload), 2):
+        table_class, identifier = payload[cursor] >> 4, payload[cursor] & 0x0F
+        if table_class not in (0, 1) or identifier > 3:
+            raise FormatRefusal("corrupt JPEG: DAC declares an out-of-range table class or id")
+        defined.add((table_class, identifier))
+    return defined
+
+
+def _validate_jpeg_scan(
+    payload: bytes,
+    *,
+    frame_components: list[tuple[int, int]],
+    progressive: bool,
+    arithmetic: bool,
+    quantization_tables: set[int],
+    huffman_tables: set[tuple[int, int]],
+    arithmetic_conditioning: set[tuple[int, int]],
+) -> None:
+    """Reconcile one scan header against the tables defined before it.
+
+    Which entropy tables a scan needs depends on what kind of scan it is, and
+    getting that wrong in either direction is a real cost: demanding both DC and AC
+    tables of a progressive scan would refuse ordinary progressive JPEGs, and
+    demanding neither is the hole this closes. In a sequential frame every scanned
+    component uses both. In a progressive frame a first DC scan uses its DC table,
+    a DC *refinement* scan (`Ah > 0`) is coded as raw bits and uses no table at all,
+    and an AC scan uses only its AC table.
+    """
+    scan_components = payload[0] if payload else 0
+    if (
+        not 1 <= scan_components <= len(frame_components)
+        or len(payload) != 1 + 2 * scan_components + 3
+    ):
+        raise FormatRefusal("corrupt JPEG: scan components disagree with the segment")
+
+    spectral_start, _spectral_end, approximation = payload[-3], payload[-2], payload[-1]
+    high_approximation = approximation >> 4
+    by_id = dict(frame_components)
+
+    for index in range(scan_components):
+        component_id = payload[1 + 2 * index]
+        selectors = payload[2 + 2 * index]
+        if component_id not in by_id:
+            raise FormatRefusal("corrupt JPEG: a scan names a component the frame does not declare")
+        quantization_id = by_id[component_id]
+        if quantization_id not in quantization_tables:
+            raise FormatRefusal(
+                f"corrupt JPEG: a scanned component selects quantization table "
+                f"{quantization_id}, which no DQT defined"
+            )
+        needed: list[tuple[int, int]] = []
+        if not progressive:
+            needed = [(0, selectors >> 4), (1, selectors & 0x0F)]
+        elif spectral_start == 0:
+            # A DC refinement scan carries one raw bit per coefficient, no table.
+            needed = [] if high_approximation else [(0, selectors >> 4)]
+        else:
+            needed = [(1, selectors & 0x0F)]
+        defined = arithmetic_conditioning if arithmetic else huffman_tables
+        for table in needed:
+            # An arithmetic-coded scan may legally use the default conditioning, so
+            # only a Huffman-coded scan's selector must have been defined.
+            if not arithmetic and table not in defined:
+                kind = "DC" if table[0] == 0 else "AC"
+                raise FormatRefusal(
+                    f"corrupt JPEG: a scan selects the {kind} Huffman table {table[1]}, "
+                    "which no DHT defined"
+                )
 
 
 def _jpeg_marker_at(data: bytes, cursor: int) -> tuple[int, int]:
@@ -440,21 +619,63 @@ _TIFF_TYPE_SIZES: Final = {
 }
 _TIFF_TAG_IMAGE_WIDTH: Final = 256
 _TIFF_TAG_IMAGE_LENGTH: Final = 257
+_TIFF_TAG_BITS_PER_SAMPLE: Final = 258
+_TIFF_TAG_COMPRESSION: Final = 259
+_TIFF_TAG_PHOTOMETRIC: Final = 262
+_TIFF_TAG_SAMPLES_PER_PIXEL: Final = 277
+_TIFF_TAG_ROWS_PER_STRIP: Final = 278
+_TIFF_TAG_PLANAR_CONFIGURATION: Final = 284
+_TIFF_TAG_TILE_WIDTH: Final = 322
+_TIFF_TAG_TILE_LENGTH: Final = 323
+_TIFF_UNCOMPRESSED: Final = 1
 # Where the actual samples live. A TIFF that names none of these declares an image
 # with no image data, and one whose ranges leave the file is not an instance of the
 # format it claims however tidy its header looks.
 _TIFF_STRIP_TAGS: Final = (273, 279)
 _TIFF_TILE_TAGS: Final = (324, 325)
 _TIFF_DATA_TAGS: Final = frozenset(_TIFF_STRIP_TAGS + _TIFF_TILE_TAGS)
+# The sample-layout tags this validator interprets. Everything else in an IFD is
+# still bounds-checked as an entry, but its meaning is not this module's business.
+_TIFF_LAYOUT_TAGS: Final = (
+    _TIFF_TAG_BITS_PER_SAMPLE,
+    _TIFF_TAG_COMPRESSION,
+    _TIFF_TAG_PHOTOMETRIC,
+    _TIFF_TAG_SAMPLES_PER_PIXEL,
+    _TIFF_TAG_ROWS_PER_STRIP,
+    _TIFF_TAG_PLANAR_CONFIGURATION,
+    _TIFF_TAG_TILE_WIDTH,
+    _TIFF_TAG_TILE_LENGTH,
+)
 
 
 def validate_tiff(data: bytes) -> ImageGeometry:
-    """Walk the IFD chain, refusing an entry whose value escapes the file.
+    """Prove one image directory whose stored samples reconcile with its geometry.
 
-    Classic (32-bit offset) TIFF only: BigTIFF is a documented limit, refused by
-    name. So is multi-page TIFF — a second image directory declaring its own
-    geometry is more than one page in one file, and the door assigns one ordinal
-    per page, so it must not silently seal only the first.
+    **What is proven, exactly.** Classic (32-bit offset) little- or big-endian TIFF;
+    one image directory, every entry's value inside the file; the baseline tags a
+    reader needs to know what the samples *are* — `PhotometricInterpretation`,
+    `Compression`, `BitsPerSample`, `SamplesPerPixel`; and the strip or tile
+    inventory reconciled against the declared geometry, so the number of segments is
+    the number the image's own rows and tiles require. For an **uncompressed** image
+    the byte counts are checked exactly, row by row: a 6x5 8-bit image must carry 30
+    bytes and not one. Before that check, a 63-byte file could declare a 1000x1000
+    image behind a single stored byte and be admitted as genuine.
+
+    **What is not proven.** For a *compressed* image the stored byte counts cannot be
+    reconciled without decompressing, which is pixel reconstruction — so the segment
+    count is checked against the geometry and the byte counts are not. That is a
+    named, documented limit, not a shortcut, and it is why this module says a file
+    that passes here is provably the format it claims rather than provably intact.
+
+    **Multi-page TIFF is refused by name at the first link of the chain.** The door
+    assigns one ordinal per page, and this module cannot extract page N as its own
+    image, so sealing only the first page would lose every page after it without a
+    refusal to show — GOALS 1, in the place the old door failed. Keying that refusal
+    on a *duplicate geometry tag*, as this used to, missed a second directory that
+    declared no geometry: three separate shapes of two-page TIFF were admitted as one
+    page. A non-zero next-directory offset is the whole test now, and because the
+    chain is never entered, the walk is bounded at one directory rather than at a
+    constant nobody could reach.
     """
     if len(data) < 8 or data[:2] not in (b"II", b"MM"):
         raise FormatRefusal("not a TIFF: missing byte-order header")
@@ -465,71 +686,78 @@ def validate_tiff(data: bytes) -> ImageGeometry:
             "unsupported TIFF: not classic TIFF (BigTIFF or an unknown magic is a documented limit)"
         )
     (offset,) = struct.unpack_from(endian + "I", data, 4)
+    if offset == 0:
+        raise FormatRefusal("corrupt TIFF: the header names no image directory")
+    if offset + 2 > len(data):
+        raise FormatRefusal("corrupt TIFF: IFD offset falls outside the file")
 
-    seen_offsets: set[int] = set()
     width = height = None
     image_data: dict[int, list[int]] = {}
-    for _ in range(MAX_TIFF_IFDS):
-        if offset == 0:
-            break
-        if offset in seen_offsets:
-            raise FormatRefusal("corrupt TIFF: the IFD chain contains a cycle")
-        if offset + 2 > len(data):
-            raise FormatRefusal("corrupt TIFF: IFD offset falls outside the file")
-        seen_offsets.add(offset)
-        (count,) = struct.unpack_from(endian + "H", data, offset)
-        table_end = offset + 2 + count * 12 + 4
-        if table_end > len(data):
-            raise FormatRefusal("corrupt TIFF: IFD entries run past the end of the file")
+    layout: dict[int, list[int]] = {}
+    (count,) = struct.unpack_from(endian + "H", data, offset)
+    table_end = offset + 2 + count * 12 + 4
+    if table_end > len(data):
+        raise FormatRefusal("corrupt TIFF: IFD entries run past the end of the file")
 
-        for index in range(count):
-            entry = offset + 2 + index * 12
-            tag, field_type, value_count = struct.unpack_from(endian + "HHI", data, entry)
-            size = _TIFF_TYPE_SIZES.get(field_type)
-            if size is None:
-                raise FormatRefusal(f"corrupt TIFF: entry names unknown field type {field_type}")
-            if value_count > len(data) // size:
-                raise FormatRefusal(f"corrupt TIFF: tag {tag} declares more values than the file")
-            value_size = value_count * size
-            value_field = data[entry + 8 : entry + 12]
-            if value_size > 4:
-                (value_offset,) = struct.unpack(endian + "I", value_field)
-                if value_offset + value_size > len(data):
-                    raise FormatRefusal(f"corrupt TIFF: tag {tag} value escapes the file bounds")
-                value_bytes = data[value_offset : value_offset + value_size]
+    for index in range(count):
+        entry = offset + 2 + index * 12
+        tag, field_type, value_count = struct.unpack_from(endian + "HHI", data, entry)
+        size = _TIFF_TYPE_SIZES.get(field_type)
+        if size is None:
+            raise FormatRefusal(f"corrupt TIFF: entry names unknown field type {field_type}")
+        if value_count > len(data) // size:
+            raise FormatRefusal(f"corrupt TIFF: tag {tag} declares more values than the file")
+        value_size = value_count * size
+        value_field = data[entry + 8 : entry + 12]
+        if value_size > 4:
+            (value_offset,) = struct.unpack(endian + "I", value_field)
+            if value_offset + value_size > len(data):
+                raise FormatRefusal(f"corrupt TIFF: tag {tag} value escapes the file bounds")
+            value_bytes = data[value_offset : value_offset + value_size]
+        else:
+            value_bytes = value_field[:value_size]
+
+        if tag in (_TIFF_TAG_IMAGE_WIDTH, _TIFF_TAG_IMAGE_LENGTH):
+            value = _tiff_dimension(tag, value_bytes, field_type, value_count, endian)
+            if tag == _TIFF_TAG_IMAGE_WIDTH:
+                if width is not None:
+                    raise FormatRefusal(f"corrupt TIFF: tag {tag} appears twice in one directory")
+                width = value
             else:
-                value_bytes = value_field[:value_size]
+                if height is not None:
+                    raise FormatRefusal(f"corrupt TIFF: tag {tag} appears twice in one directory")
+                height = value
+        elif tag in _TIFF_DATA_TAGS or tag in _TIFF_LAYOUT_TAGS:
+            target = image_data if tag in _TIFF_DATA_TAGS else layout
+            if tag in target:
+                raise FormatRefusal(f"corrupt TIFF: tag {tag} appears twice in one directory")
+            target[tag] = _tiff_unsigned_values(value_bytes, field_type, value_count, endian, tag)
 
-            if tag in (_TIFF_TAG_IMAGE_WIDTH, _TIFF_TAG_IMAGE_LENGTH):
-                value = _tiff_dimension(tag, value_bytes, field_type, value_count, endian)
-                if tag == _TIFF_TAG_IMAGE_WIDTH:
-                    if width is not None:
-                        raise FormatRefusal(
-                            "unsupported TIFF: a second image directory declares its own "
-                            "geometry; multi-page TIFF is a documented limit"
-                        )
-                    width = value
-                else:
-                    if height is not None:
-                        raise FormatRefusal(
-                            "unsupported TIFF: a second image directory declares its own "
-                            "geometry; multi-page TIFF is a documented limit"
-                        )
-                    height = value
-            if tag in _TIFF_DATA_TAGS:
-                if tag in image_data:
-                    raise FormatRefusal(f"corrupt TIFF: image-data tag {tag} appears twice")
-                image_data[tag] = _tiff_unsigned_values(
-                    value_bytes, field_type, value_count, endian
-                )
-        (offset,) = struct.unpack_from(endian + "I", data, table_end - 4)
-    else:
-        raise FormatRefusal(f"unsupported TIFF: more than {MAX_TIFF_IFDS} image directories")
+    (next_offset,) = struct.unpack_from(endian + "I", data, table_end - 4)
+    if next_offset != 0:
+        raise FormatRefusal(
+            "unsupported TIFF: the file chains a second image directory; multi-page TIFF "
+            "is a documented limit, because the door assigns one ordinal per page and "
+            "this validator cannot hand it page two"
+        )
 
     if width is None or height is None:
         raise FormatRefusal("corrupt TIFF: no ImageWidth/ImageLength tag")
-    _validate_tiff_image_data_ranges(data, image_data)
-    return _geometry("tiff", width, height)
+    geometry = _geometry("tiff", width, height)
+    _validate_tiff_sample_storage(data, geometry, image_data, layout)
+    return geometry
+
+
+def _tiff_single(layout: dict[int, list[int]], tag: int, default: int | None, name: str) -> int:
+    """One tag that must carry exactly one value, or its baseline default."""
+    values = layout.get(tag)
+    if values is None:
+        if default is None:
+            raise FormatRefusal(f"corrupt TIFF: no {name} tag; a baseline image declares one")
+        return default
+    if len(values) != 1:
+        raise FormatRefusal(f"corrupt TIFF: {name} declares {len(values)} values, not one")
+    return values[0]
 
 
 def _tiff_dimension(tag: int, value: bytes, field_type: int, count: int, endian: str) -> int:
@@ -543,10 +771,14 @@ def _tiff_dimension(tag: int, value: bytes, field_type: int, count: int, endian:
     return struct.unpack(endian + ("H" if field_type == 3 else "I"), value)[0]
 
 
-def _tiff_unsigned_values(value: bytes, field_type: int, count: int, endian: str) -> list[int]:
-    """Decode strip/tile positions without touching a byte of pixel data."""
+def _tiff_unsigned_values(
+    value: bytes, field_type: int, count: int, endian: str, tag: int = 0
+) -> list[int]:
+    """Decode a SHORT/LONG tag's values without touching a byte of pixel data."""
     if not count or field_type not in (3, 4):
-        raise FormatRefusal("corrupt TIFF: image-data offsets or counts are not unsigned integers")
+        raise FormatRefusal(
+            f"corrupt TIFF: tag {tag} values are not a non-empty list of unsigned integers"
+        )
     if count > MAX_TIFF_DATA_SEGMENTS:
         raise FormatRefusal(
             f"unsupported TIFF: {count} image-data segments exceed the "
@@ -558,23 +790,115 @@ def _tiff_unsigned_values(value: bytes, field_type: int, count: int, endian: str
     return list(struct.unpack(endian + ("H" if field_type == 3 else "I") * count, value))
 
 
-def _validate_tiff_image_data_ranges(data: bytes, image_data: dict[int, list[int]]) -> None:
-    """Require one complete, in-file strip or tile inventory for the image."""
+def _validate_tiff_sample_storage(
+    data: bytes,
+    geometry: ImageGeometry,
+    image_data: dict[int, list[int]],
+    layout: dict[int, list[int]],
+) -> None:
+    """Reconcile the stored strip or tile inventory against the declared image.
+
+    The inventory being *in the file* was the whole of the old check, which let a
+    63-byte file declare a million pixels behind one stored byte. Here the number of
+    segments must be the number the geometry requires, and for an uncompressed image
+    each segment's byte count must be exactly what its rows occupy.
+    """
+    samples = _tiff_single(layout, _TIFF_TAG_SAMPLES_PER_PIXEL, 1, "SamplesPerPixel")
+    if not 1 <= samples <= 8:
+        raise FormatRefusal(f"unsupported TIFF: {samples} samples per pixel is a documented limit")
+    compression = _tiff_single(layout, _TIFF_TAG_COMPRESSION, _TIFF_UNCOMPRESSED, "Compression")
+    # Refused rather than defaulted: it is the tag that says what the samples *mean*,
+    # a baseline IFD is required to carry it, and a file omitting it is not one.
+    _tiff_single(layout, _TIFF_TAG_PHOTOMETRIC, None, "PhotometricInterpretation")
+    planar = _tiff_single(layout, _TIFF_TAG_PLANAR_CONFIGURATION, 1, "PlanarConfiguration")
+    if planar != 1:
+        raise FormatRefusal(
+            "unsupported TIFF: planar (component-separated) storage is a documented limit; "
+            "its strip arithmetic is not the chunky one this reconciles"
+        )
+    bits = layout.get(_TIFF_TAG_BITS_PER_SAMPLE, [1] * samples)
+    if len(bits) != samples or any(not 1 <= bit <= 64 for bit in bits):
+        raise FormatRefusal(
+            "corrupt TIFF: BitsPerSample does not carry one usable width per sample"
+        )
+    row_bytes = (geometry.width * sum(bits) + 7) // 8
+
     strips = [image_data.get(tag) for tag in _TIFF_STRIP_TAGS]
     tiles = [image_data.get(tag) for tag in _TIFF_TILE_TAGS]
-    if any(part is not None for part in strips) and any(part is not None for part in tiles):
+    has_strips = any(part is not None for part in strips)
+    has_tiles = any(part is not None for part in tiles)
+    if has_strips and has_tiles:
         raise FormatRefusal("corrupt TIFF: both strip and tile image-data inventories are named")
-    offsets, counts = strips if any(part is not None for part in strips) else tiles
+    offsets, counts = strips if has_strips else tiles
     if offsets is None and counts is None:
         raise FormatRefusal("corrupt TIFF: no strip or tile image-data inventory")
     if offsets is None or counts is None or len(offsets) != len(counts):
         raise FormatRefusal("corrupt TIFF: image-data offsets and byte counts do not reconcile")
-    for offset, count in zip(offsets, counts, strict=True):
+
+    expected = (
+        _tiff_expected_tile_sizes(geometry, layout, bits)
+        if has_tiles
+        else _tiff_expected_strip_sizes(geometry, layout, row_bytes)
+    )
+    if len(offsets) != len(expected):
+        raise FormatRefusal(
+            f"corrupt TIFF: the image declares {len(offsets)} image-data segment(s), but its "
+            f"{geometry.width}x{geometry.height} geometry needs {len(expected)}"
+        )
+    for offset, count, needed in zip(offsets, counts, expected, strict=True):
         if offset < 8 or count <= 0 or offset + count > len(data):
             raise FormatRefusal("corrupt TIFF: an image-data range falls outside the file")
+        # Only an uncompressed segment's size is derivable from the geometry. For a
+        # compressed one the count is whatever the codec produced, and reconciling it
+        # would mean decompressing — the named limit this module keeps.
+        if compression == _TIFF_UNCOMPRESSED and count != needed:
+            raise FormatRefusal(
+                f"corrupt TIFF: an uncompressed image-data segment stores {count} byte(s) "
+                f"where its share of a {geometry.width}x{geometry.height} image needs {needed}"
+            )
+
+
+def _tiff_expected_strip_sizes(
+    geometry: ImageGeometry, layout: dict[int, list[int]], row_bytes: int
+) -> list[int]:
+    """The byte count each strip would occupy uncompressed, in order."""
+    rows_per_strip = _tiff_single(layout, _TIFF_TAG_ROWS_PER_STRIP, geometry.height, "RowsPerStrip")
+    if rows_per_strip <= 0:
+        raise FormatRefusal("corrupt TIFF: RowsPerStrip is not a positive row count")
+    rows_per_strip = min(rows_per_strip, geometry.height)
+    whole, remainder = divmod(geometry.height, rows_per_strip)
+    return [rows_per_strip * row_bytes] * whole + ([remainder * row_bytes] if remainder else [])
+
+
+def _tiff_expected_tile_sizes(
+    geometry: ImageGeometry, layout: dict[int, list[int]], bits: list[int]
+) -> list[int]:
+    """The byte count each tile would occupy uncompressed. Tiles are padded, so
+    every tile is the same size regardless of where the image edge falls."""
+    tile_width = _tiff_single(layout, _TIFF_TAG_TILE_WIDTH, None, "TileWidth")
+    tile_length = _tiff_single(layout, _TIFF_TAG_TILE_LENGTH, None, "TileLength")
+    if tile_width <= 0 or tile_length <= 0:
+        raise FormatRefusal("corrupt TIFF: a tile dimension is not positive")
+    across = -(-geometry.width // tile_width)
+    down = -(-geometry.height // tile_length)
+    if across * down > MAX_TIFF_DATA_SEGMENTS:
+        raise FormatRefusal(
+            f"unsupported TIFF: {across * down} tiles exceed the "
+            f"{MAX_TIFF_DATA_SEGMENTS}-segment limit"
+        )
+    return [tile_length * ((tile_width * sum(bits) + 7) // 8)] * (across * down)
 
 
 VALIDATORS: Final = {"png": validate_png, "jpeg": validate_jpeg, "tiff": validate_tiff}
+
+# Both derived from what this module can actually do, never written out a second
+# time: `SNIFFABLE_FORMATS` from the table `sniff()` walks (plus HEIC, whose
+# detection is a brand check rather than a prefix), and `STRUCTURALLY_VALIDATED`
+# from the dispatch table `validate()` uses. `admission.py` reads these to check
+# the policy's coverage, and a hand-kept copy there would only ever agree with
+# another hand-kept copy.
+SNIFFABLE_FORMATS: Final = frozenset({name for name, _ in _SIGNATURES} | {"heic"})
+STRUCTURALLY_VALIDATED: Final = frozenset(VALIDATORS)
 
 
 def validate(format_name: str, data: bytes) -> ImageGeometry:

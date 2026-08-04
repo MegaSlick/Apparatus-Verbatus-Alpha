@@ -1,23 +1,53 @@
 """A bounded, door-private PDF page renderer. Standard library only.
 
-**Named limit, stated up front, the same shape of decision `image_formats.py`
-makes for interlaced PNG and BigTIFF.** This module does not render arbitrary PDF
-content — that is a document layout engine, fonts, content-stream interpretation,
-and colour management, and building one from `zlib`/`struct` would be exactly the
-kind of half-handling `common/imaging.py`'s docstring already refuses. What it
-does handle, honestly and completely within its scope, is the case this project's
+**This module is not reachable under the shipped admission list, and that is
+deliberate.** `config/admitted_formats.toml` ships `pdf = "refuse"`, so nothing
+here runs until Tyrel turns that row to `render-pages`. It stays in the tree,
+tested, because the work is not wasted — it is not yet trustworthy. Read the next
+paragraph before turning the row.
+
+**What this module does not do, stated first because it is the important part.**
+It does not interpret a page's content stream. `_page_image_object` accepts a page
+whose `/Resources/XObject` dictionary holds exactly one `/Image` entry, and
+`render_page` returns that object's decoded bytes — it never opens `/Contents`,
+never verifies that a `Do` operator paints that image, never reads the graphics
+state, the transformation matrix, or any clip. So it cannot tell a scanned page
+apart from a page that draws text and vector marks *beside* the one image it
+carries, and on such a page it would seal the image and lose everything else. That
+is GOALS 1 — a missed act is worse than a poorly read act — failing in the one
+place it must not, which is why the admission list refuses PDF rather than this
+module pretending otherwise. Proving that exactly one image is painted exactly as
+recorded, with no other visible content, is its own spec and is not built here.
+
+**Named limits, the same shape of decision `image_formats.py` makes for interlaced
+PNG and BigTIFF.** Rendering arbitrary PDF content is a document layout engine,
+fonts, content-stream interpretation and colour management, and building one from
+`zlib`/`struct` would be exactly the half-handling `common/imaging.py`'s docstring
+already refuses. What this handles, within that scope, is the shape this project's
 sources actually are: **a flatbed scan saved as PDF, one image per page.**
 
 A page renders here only when: the PDF uses a classic (non-stream) cross-reference
-table with no `/Prev` chain, is not encrypted, declares no page rotation, and its
-`/Resources/XObject` dictionary holds **exactly one** entry, an `/Image` XObject
-compressed with `DCTDecode` (embedded JPEG, decoded by `image_formats.validate_jpeg`
-and stored as-is) or `FlateDecode` (raw 8-bit `DeviceGray`/`DeviceRGB` samples,
+table with no `/Prev` chain, ends at its own `%%EOF` with nothing appended, is not
+encrypted, declares no page rotation, and its `/Resources/XObject` dictionary holds
+**exactly one** entry, an `/Image` XObject in `DeviceGray` or `DeviceRGB` with no
+sample-remapping `/Decode` array, compressed with `DCTDecode` (embedded JPEG,
+structurally validated by `image_formats.validate_jpeg` against the colour space
+the dictionary declares, and stored as-is) or `FlateDecode` (raw 8-bit samples,
 re-encoded as a PNG through this module's own minimal encoder). Anything else —
 vector content, multiple images, CCITT/JBIG2/JPX filters, indexed or CMYK colour,
-incremental updates, encryption, rotation — is refused **by name**, never guessed
-at. A page that fails this test is not a page this door can seal; it is held for a
-human to look at, exactly like any other refusal.
+a `/Decode` array, incremental updates, encryption, rotation — is refused **by
+name**, never guessed at. A page that fails this test is not a page this door can
+seal; it is held for a human to look at, exactly like any other refusal.
+
+**Every walk is bounded before it begins, including the ones an attacker sizes.**
+The cross-reference parser bounds declared entries *and* subsection headers, and
+matches in place rather than re-slicing the file per iteration — a subsection may
+legally declare zero entries, so an entry cap alone leaves the header count
+unbounded and each fresh `data[pos:]` copy turns that into quadratic work on a file
+well under the admission ceiling. The page-tree walk bounds intermediate nodes as
+well as leaf pages. And the document is parsed **once per file**, by
+`open_document`, rather than once per page: `render_page` takes the prepared
+document, so admitting an N-page scan costs one parse rather than N.
 
 **Door-private by design.** Nothing outside `pipeline/1_exemplar/door.py` imports
 this module. Rendering happens once, at admission, and the render module having no
@@ -50,6 +80,15 @@ MAX_PAGES: Final = 5_000
 # separate xref bound, a 64 MiB source can still allocate millions of dictionary
 # entries before page counting begins.
 MAX_XREF_ENTRIES: Final = 200_000
+# And a separate bound on the number of *subsection headers*, because a subsection
+# may legally declare zero entries: `MAX_XREF_ENTRIES` counts entries, so a file of
+# `0 0` headers never reaches it and the header loop is bounded only by the
+# remaining bytes. Two seats measured the resulting blow-up independently.
+MAX_XREF_SUBSECTIONS: Final = 10_000
+# Leaf pages are bounded by MAX_PAGES; the intermediate /Pages nodes between them
+# are not, and each one costs an object lookup. A page tree with more nodes than
+# twice its own page limit is not a tree a scanner produced.
+MAX_PAGE_TREE_NODES: Final = 2 * MAX_PAGES
 
 _WHITESPACE: Final = b"\x00\t\n\x0c\r "
 _DELIMITER_BYTES: Final = b"()<>[]{}/%"
@@ -281,13 +320,31 @@ def parse_object(data: bytes, pos: int, depth: int = 0) -> tuple[Any, int]:
 # --- Cross-reference table and object lookup ------------------------------------
 
 
+_XREF_HEADER_RE: Final = re.compile(rb"xref\s*")
+_XREF_SUBSECTION_RE: Final = re.compile(rb"(\d+)\s+(\d+)\s*[\r\n]+")
+_TRAILER_KEYWORD_RE: Final = re.compile(rb"\s*trailer\s*")
+_INDIRECT_HEADER_RE: Final = re.compile(rb"(\d+)\s+(\d+)\s+obj\s*")
+# The file must *end* at its own trailer. `image_formats.validate_jpeg` refuses
+# trailing bytes after EOI for the same reason and says so in the same words: they
+# are either a second document or an appended payload, and neither is the single
+# page the door believes it admitted. Without this the parser reads back from the
+# last `startxref` and never looks at what follows, so an arbitrary payload rides
+# inside the digest the run authority seals while nothing ever inspected it.
+_STARTXREF_TAIL_RE: Final = re.compile(rb"startxref\s+(\d+)\s*%%EOF\s*\Z")
+
+
 def _find_startxref(data: bytes) -> int:
     index = data.rfind(b"startxref")
     if index == -1:
         raise PdfRefusal(RefusalReason.CORRUPT, "no startxref keyword")
-    match = re.search(rb"startxref\s+(\d+)", data[index:])
+    match = _STARTXREF_TAIL_RE.match(data, index)
     if not match:
-        raise PdfRefusal(RefusalReason.CORRUPT, "startxref names no offset")
+        raise PdfRefusal(
+            RefusalReason.CORRUPT,
+            "the file does not end at its own startxref/%%EOF trailer; bytes after a "
+            "PDF's end are either a second document or an appended payload, and the "
+            "digest sealed for this source would cover bytes nothing inspected",
+        )
     try:
         return int(match.group(1))
     except ValueError as error:
@@ -305,19 +362,31 @@ def _parse_xref_table(data: bytes, offset: int) -> tuple[dict[int, int], dict[st
     """
     if offset < 0 or offset >= len(data):
         raise PdfRefusal(RefusalReason.CORRUPT, "startxref offset falls outside the file")
-    match = re.match(rb"xref\s*", data[offset:])
+    match = _XREF_HEADER_RE.match(data, offset)
     if not match:
         raise PdfRefusal(
             RefusalReason.UNSUPPORTED_VARIANT,
             "only classic (non-stream) cross-reference tables are decodable here",
         )
-    pos = offset + match.end()
+    pos = match.end()
     entries: dict[int, int] = {}
     declared_entries = 0
+    subsections = 0
     while True:
-        sub_match = re.match(rb"(\d+)\s+(\d+)\s*[\r\n]+", data[pos:])
+        # Matched in place. `re.match(pattern, data[pos:])` copies the rest of the
+        # file on every iteration, which is what turns an unbounded header count
+        # into quadratic work rather than merely a long loop.
+        sub_match = _XREF_SUBSECTION_RE.match(data, pos)
         if not sub_match:
             break
+        subsections += 1
+        if subsections > MAX_XREF_SUBSECTIONS:
+            raise PdfRefusal(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"the PDF declares more than the {MAX_XREF_SUBSECTIONS}-subsection "
+                "cross-reference limit; a subsection declaring no entries costs "
+                "nothing against the entry limit and everything against this one",
+            )
         try:
             start_num, count = int(sub_match.group(1)), int(sub_match.group(2))
         except ValueError as error:
@@ -332,7 +401,7 @@ def _parse_xref_table(data: bytes, offset: int) -> tuple[dict[int, int], dict[st
                 f"the PDF declares more than the {MAX_XREF_ENTRIES}-entry "
                 "cross-reference entry limit",
             )
-        pos += sub_match.end()
+        pos = sub_match.end()
         for i in range(count):
             row = data[pos : pos + 20]
             if len(row) < 18:
@@ -351,10 +420,10 @@ def _parse_xref_table(data: bytes, offset: int) -> tuple[dict[int, int], dict[st
                 raise PdfRefusal(RefusalReason.CORRUPT, "cross-reference entry is neither n nor f")
             pos += 20
 
-    trailer_match = re.match(rb"\s*trailer\s*", data[pos:])
+    trailer_match = _TRAILER_KEYWORD_RE.match(data, pos)
     if not trailer_match:
         raise PdfRefusal(RefusalReason.CORRUPT, "xref table has no trailer")
-    pos = pos + trailer_match.end()
+    pos = trailer_match.end()
     trailer, _ = parse_object(data, pos)
     if not isinstance(trailer, dict):
         raise PdfRefusal(RefusalReason.CORRUPT, "trailer is not a dictionary")
@@ -372,10 +441,10 @@ def _get_object(data: bytes, xref: dict[int, int], num: int) -> Any:
     offset = xref[num]
     if offset < 0 or offset >= len(data):
         raise PdfRefusal(RefusalReason.CORRUPT, f"object {num} offset falls outside the file")
-    header = re.match(rb"(\d+)\s+(\d+)\s+obj\s*", data[offset:])
+    header = _INDIRECT_HEADER_RE.match(data, offset)
     if not header or int(header.group(1)) != num:
         raise PdfRefusal(RefusalReason.CORRUPT, f"object {num} has no valid indirect-object header")
-    pos = offset + header.end()
+    pos = header.end()
     value, pos = parse_object(data, pos)
 
     stream_probe = _skip_ws_comments(data, pos)
@@ -505,6 +574,13 @@ def _walk_pages(
                     "page tree references one page or page-tree object more than once",
                 )
             visited.add(key)
+            if len(visited) > MAX_PAGE_TREE_NODES:
+                raise PdfRefusal(
+                    RefusalReason.UNSUPPORTED_VARIANT,
+                    f"the page tree visits more than {MAX_PAGE_TREE_NODES} nodes; "
+                    "MAX_PAGES bounds the leaves, and this bounds the branches "
+                    "between them, each of which costs its own object lookup",
+                )
             kid = resolve(kid_ref, data, xref)
             _walk_pages(
                 kid,
@@ -536,10 +612,14 @@ def _walk_pages(
 
 def _page_image_object(page: dict[str, Any], data: bytes, xref: dict[int, int]) -> PdfStream:
     rotate = page.get("Rotate", 0)
-    if rotate not in (0, None):
+    # `rotate is not None and rotate != 0` would pass `/Rotate false`, because
+    # `False == 0` in Python. `/Rotate` is defined as an integer, so a boolean
+    # there is malformed and is refused rather than read as "unrotated".
+    if rotate is not None and (isinstance(rotate, bool) or not isinstance(rotate, int) or rotate):
         raise PdfRefusal(
             RefusalReason.UNSUPPORTED_VARIANT,
-            f"page declares /Rotate {rotate}; rendering a rotated page is a documented limit",
+            f"page declares /Rotate {rotate!r}; rendering a rotated page is a documented "
+            "limit, and a /Rotate that is not an integer is not a rotation this can read",
         )
     resources = resolve(page.get("Resources"), data, xref)
     if not isinstance(resources, dict):
@@ -565,6 +645,39 @@ def _page_image_object(page: dict[str, Any], data: bytes, xref: dict[int, int]) 
 # --- Decoding the one image XObject a page may carry ----------------------------
 
 _RAW_COLORSPACES: Final = {"DeviceGray": (1, 0), "DeviceRGB": (3, 2)}
+# The keys that change what a page's pixels *look like* and that this module does
+# not apply. A page carrying one of them renders to something other than what the
+# PDF declares, so it is refused by name rather than rendered with the key dropped.
+# `/Decode` is handled separately because its identity value is legal and harmless.
+_APPEARANCE_KEYS: Final = ("ImageMask", "Mask", "SMask", "DecodeParms", "Intent")
+
+
+def _refuse_sample_remapping(fields: dict[str, Any], channels: int) -> None:
+    """Refuse a page whose samples do not mean what their raw values say.
+
+    `/Decode [1 0]` on a DeviceGray image declares that sample 0 renders as maximum
+    intensity — an ordinary way to store an inverted scan. Dropping it silently
+    seals a black page where the source declares a white one: no error, no refusal,
+    no signal of any kind, and an unrecorded transform is exactly what
+    ARCHITECTURE's third invariant cannot survive. The identity array is legal and
+    means nothing, so it passes; anything else is a documented limit.
+    """
+    decode = fields.get("Decode")
+    if decode is not None and list(decode or ()) != [0, 1] * channels:
+        raise PdfRefusal(
+            RefusalReason.UNSUPPORTED_VARIANT,
+            f"the image declares /Decode {decode!r}, which remaps its samples; this "
+            "module does not apply it, and rendering the raw values would seal a page "
+            "the source says is a different one",
+        )
+    for key in _APPEARANCE_KEYS:
+        if key in fields:
+            raise PdfRefusal(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"the image declares /{key}, which changes what the page shows; "
+                "applying it is a documented limit and ignoring it would seal a page "
+                "that is not the one the source declares",
+            )
 
 
 def _decode_image_xobject(xobj: PdfStream, data: bytes, xref: dict[int, int]) -> tuple[bytes, str]:
@@ -592,9 +705,36 @@ def _decode_image_xobject(xobj: PdfStream, data: bytes, xref: dict[int, int]) ->
             )
         image_filter = image_filter[0]
 
+    # Read once, for every filter, before either branch. `/ColorSpace` is legally an
+    # array — `[/ICCBased 5 0 R]` and `[/Indexed ...]` are ordinary scanner output —
+    # and a list is unhashable, so testing membership against a dict raised a bare
+    # `TypeError` out of this module rather than the `PdfRefusal` the door catches.
+    # That aborted the whole run: a healthy source later in the same submission got
+    # no decision at all, which is invariant #3 failing, not merely a missing name.
+    if colorspace is not None and not isinstance(colorspace, str):
+        raise PdfRefusal(
+            RefusalReason.UNSUPPORTED_VARIANT,
+            "the image declares a /ColorSpace that is not a plain device name "
+            f"({type(colorspace).__name__}); ICCBased, Indexed and every other "
+            "array colour space is a documented limit",
+        )
+    if colorspace not in _RAW_COLORSPACES:
+        raise PdfRefusal(
+            RefusalReason.UNSUPPORTED_VARIANT,
+            f"colorspace {colorspace!r} is a documented limit; only DeviceGray/DeviceRGB "
+            "are decodable here",
+        )
+    channels, color_type = _RAW_COLORSPACES[colorspace]
+    _refuse_sample_remapping(fields, channels)
+
     if image_filter == "DCTDecode":
         try:
-            geometry = validate_jpeg(xobj.raw)
+            # The colour space the dictionary declares is checked *against the
+            # embedded JPEG's own frame*, not merely alongside it. Without this the
+            # DCT branch never consulted /ColorSpace at all, so a page declaring
+            # /DeviceCMYK with a four-component JPEG rendered and would have been
+            # sealed — while this module's docstring said CMYK was refused by name.
+            geometry = validate_jpeg(xobj.raw, expected_components=channels)
         except FormatRefusal as error:
             raise PdfRefusal(
                 RefusalReason.CORRUPT, f"embedded JPEG failed to validate: {error}"
@@ -616,12 +756,6 @@ def _decode_image_xobject(xobj: PdfStream, data: bytes, xref: dict[int, int]) ->
                 RefusalReason.UNSUPPORTED_VARIANT,
                 f"{bits}-bit-per-component raw samples are a documented limit; only 8-bit is decodable here",
             )
-        if colorspace not in _RAW_COLORSPACES:
-            raise PdfRefusal(
-                RefusalReason.UNSUPPORTED_VARIANT,
-                f"colorspace {colorspace!r} is a documented limit; only DeviceGray/DeviceRGB are decodable here",
-            )
-        channels, color_type = _RAW_COLORSPACES[colorspace]
         expected = width * height * channels
         if expected > MAX_PNG_DECODED_BYTES:
             raise PdfRefusal(
@@ -701,29 +835,50 @@ def _encode_png(width: int, height: int, color_type: int, channels: int, samples
 # --- Public surface: door.py is the only caller ---------------------------------
 
 
-def _prepare(data: bytes) -> tuple[dict[int, int], dict[str, Any]]:
+class PdfDocument(NamedTuple):
+    """One PDF parsed once: its cross-reference table, trailer, and page list.
+
+    `render_page` takes one of these rather than raw bytes, because it used to
+    re-parse the whole cross-reference table and re-walk the whole page tree on
+    every call and the door calls it once per page. An N-page scan therefore paid
+    the parse N+1 times, which two seats measured as cleanly quadratic and which
+    made the declared `MAX_PAGES` limit unreachable in practice — a bound the
+    implementation cannot serve is a bound in name only.
+    """
+
+    data: bytes
+    xref: dict[int, int]
+    trailer: dict[str, Any]
+    pages: list[dict[str, Any]]
+
+
+def open_document(data: bytes) -> PdfDocument:
+    """Parse one PDF's structure, once. Raises `PdfRefusal` naming why if it will not."""
     if not data.startswith(PDF_SIGNATURE):
         raise PdfRefusal(RefusalReason.CORRUPT, "not a PDF: missing header")
-    return _parse_xref_table(data, _find_startxref(data))
+    xref, trailer = _parse_xref_table(data, _find_startxref(data))
+    return PdfDocument(data, xref, trailer, _page_list(data, xref, trailer))
 
 
 def count_pages(data: bytes) -> int:
     """How many pages this PDF declares, without rendering any of them."""
-    xref, trailer = _prepare(data)
-    return len(_page_list(data, xref, trailer))
+    return len(open_document(data).pages)
 
 
-def render_page(data: bytes, page_index: int) -> tuple[bytes, str]:
+def render_page(document: PdfDocument, page_index: int) -> tuple[bytes, str]:
     """Render one page (0-based) to standalone image bytes and their format name.
 
     Raises `PdfRefusal` naming exactly why when the page is not the single-image
     scanned shape this module handles — never a guess, never a partial image.
+
+    **It does not read the page's content stream**, so "the page carries exactly one
+    image" is a claim about the page's *resources*, not about what the page paints.
+    See this module's docstring; that gap is why the admission list refuses PDF.
     """
-    xref, trailer = _prepare(data)
-    pages = _page_list(data, xref, trailer)
-    if not (0 <= page_index < len(pages)):
+    if not (0 <= page_index < len(document.pages)):
         raise PdfRefusal(
-            RefusalReason.CORRUPT, f"page index {page_index} is out of range for {len(pages)} pages"
+            RefusalReason.CORRUPT,
+            f"page index {page_index} is out of range for {len(document.pages)} pages",
         )
-    xobj = _page_image_object(pages[page_index], data, xref)
-    return _decode_image_xobject(xobj, data, xref)
+    xobj = _page_image_object(document.pages[page_index], document.data, document.xref)
+    return _decode_image_xobject(xobj, document.data, document.xref)
