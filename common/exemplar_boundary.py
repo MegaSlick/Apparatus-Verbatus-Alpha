@@ -354,9 +354,7 @@ def _verify_act_identity_binding(tree: RunTree, subject_id: Any, payload: dict[s
         DESIGNATOR, "proposal-seal", artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
     )
     matches = [
-        entry
-        for entry in seal["payload"]["expected_acts"]
-        if entry.get("act_key") == act_key
+        entry for entry in seal["payload"]["expected_acts"] if entry.get("act_key") == act_key
     ]
     if len(matches) != 1:
         raise ContractError(
