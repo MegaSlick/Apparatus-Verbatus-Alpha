@@ -12,9 +12,10 @@ Static, for the same reason `common/chairs/test_chairs_import_boundary.py` is:
 the numbered directories already make `import 4_perlector` invalid Python,
 "a useful deterrent... but not a complete boundary: dynamic imports and path
 manipulation can still cross it." This walks `ast.Import`/`ast.ImportFrom`
-nodes, so it sees a deferred import inside a function exactly like a top-level
-one, but it does NOT see a dynamic `importlib.util.spec_from_file_location(...)`
-call -- that is an `ast.Call`, invisible to this walker. Every stage's own test
+nodes and literal `import_module("...")` calls, so it sees a deferred import
+inside a function exactly like a top-level one. It does NOT decide a nonliteral
+dynamic module name or an `importlib.util.spec_from_file_location(...)` call.
+Every stage's own test
 suite already uses exactly that mechanism, under a synthetic module name, to
 load a sibling stage's `run.py` for cross-stage boundary testing (e.g.
 `pipeline/4_perlector/test_region_boundary.py` loading Attestatores) -- a
@@ -105,7 +106,7 @@ def _own_module_names(stage: str) -> set[str]:
 
 
 def _imports_in(path: Path) -> list[tuple[str, str]]:
-    """`(root_module, full_module)` for every absolute import anywhere in a file."""
+    """`(root_module, full_module)` for every statically knowable absolute import."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: list[tuple[str, str]] = []
     for node in ast.walk(tree):
@@ -115,7 +116,27 @@ def _imports_in(path: Path) -> list[tuple[str, str]]:
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             module = node.module or ""
             found.append((module.split(".")[0], module))
+        elif isinstance(node, ast.Call) and (module := _literal_import_module(node)) is not None:
+            found.append((module.split(".")[0], module))
     return found
+
+
+def _literal_import_module(node: ast.Call) -> str | None:
+    function = node.func
+    is_import_module = (
+        isinstance(function, ast.Name)
+        and function.id == "import_module"
+        or isinstance(function, ast.Attribute)
+        and function.attr == "import_module"
+    )
+    if (
+        is_import_module
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ):
+        return node.args[0].value
+    return None
 
 
 def test_the_population_covers_every_stage_directory():
@@ -180,3 +201,19 @@ def test_no_stage_imports_pipeline_by_its_dotted_path():
     assert not violations, "a stage imported pipeline/ by its dotted path:\n" + "\n".join(
         violations
     )
+
+
+def test_literal_dynamic_pipeline_imports_are_visible_to_the_guard(tmp_path):
+    source = tmp_path / "dynamic_import.py"
+    source.write_text(
+        "import importlib\nfrom importlib import import_module\n"
+        "importlib.import_module('pipeline.7_armarium.run')\n"
+        "import_module('pipeline.2_designator.run')\n",
+        encoding="utf-8",
+    )
+    assert _imports_in(source) == [
+        ("importlib", "importlib"),
+        ("importlib", "importlib"),
+        ("pipeline", "pipeline.7_armarium.run"),
+        ("pipeline", "pipeline.2_designator.run"),
+    ]
