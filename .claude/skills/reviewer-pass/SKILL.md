@@ -10,6 +10,12 @@ This procedure prepares evidence for Tyrel's pull-request decision. It never
 pushes, merges, edits the reviewed commit, or treats reviewer agreement as
 authority.
 
+**"Seat" here means a model chosen to read something — not a host agent, and not
+`operations/codex/seat.sh`.** Every reviewer in this procedure runs in a chamber unless
+step 1 says otherwise. The word appears dozens of times below, and on 2026-08-03 a session
+read that repetition as an instruction to reach for the host script; it is not.
+See [.claude/agents/README.md](../../agents/README.md), "The word seat".
+
 ## 1. Triage and freeze
 
 Review is a standard, not a gate: it happens by default before an initial push,

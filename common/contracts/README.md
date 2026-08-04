@@ -26,9 +26,9 @@ so a recrop cannot change it; a `region_id` hashes the act *and* the transform, 
 a recrop must. "Act identity survives recropping" is therefore the only thing the
 derivation is able to do, rather than something code has to remember.
 
-**Witness outcomes terminate nothing.** Seat results aggregate into a coverage
+**Witness outcomes terminate nothing.** Chair results aggregate into a coverage
 record and never into a manifest category or a character of text. An act whose
-every seat is `failed` still reaches the Perlector, which reads the ink. If you
+every chair is `failed` still reaches the Perlector, which reads the ink. If you
 ever find yourself giving a witness outcome a terminal category, you are building a
 picker under an accounting name — GOVERNANCE 3, and CLAUDE.md's eighth hard rule.
 

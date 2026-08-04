@@ -109,7 +109,7 @@ def test_witness_outcome_classes_are_pinned():
 def test_no_witness_outcome_terminates_an_act():
     """GOVERNANCE 3 — the Perlector never picks, and no stage selects a winner
     among witnesses. If any witness outcome ever mapped to a terminal category,
-    seat results would decide an act's fate: a picker wearing an accounting name.
+    chair results would decide an act's fate: a picker wearing an accounting name.
 
     CLAUDE.md hard rule 8: "Do not build a picker... the one an agent rebuilds by
     accident." This test is where that accident would be caught.
@@ -200,7 +200,7 @@ def test_coverage_counts_classes_and_flags_below_floor():
     assert coverage["by_class"] == {"completed": 1, "unresolved": 0, "failed": 2}
     assert coverage["by_outcome"] == {"read": 1, "failed": 1, "dead": 1}
     assert coverage["under_witnessed"] is True
-    assert coverage["unresolved_seats"] == 0
+    assert coverage["unresolved_chairs"] == 0
 
 
 def test_coverage_at_floor_is_not_under_witnessed():
@@ -214,7 +214,7 @@ def test_coverage_at_floor_is_not_under_witnessed():
 
 def test_a_genuinely_empty_reading_counts_as_a_reading():
     """Spec 07: the old stage collapsed every absence into one indistinguishable
-    empty file. A seat that looked and found nothing has read; a seat that never
+    empty file. A chair that looked and found nothing has read; a chair that never
     looked has not, and the two may never be the same number."""
     looked = witness_coverage({"attestator_1": "genuinely-empty"}, configured_floor=1)
     never_looked = witness_coverage({"attestator_1": "not-run"}, configured_floor=1)
@@ -222,12 +222,12 @@ def test_a_genuinely_empty_reading_counts_as_a_reading():
     assert never_looked["under_witnessed"] is True
 
 
-def test_an_unnamed_seat_is_fatal():
+def test_an_unnamed_chair_is_fatal():
     with pytest.raises(FatalAccounting):
         witness_coverage({"": "read"}, configured_floor=1)
 
 
-def test_an_unknown_seat_outcome_is_fatal():
+def test_an_unknown_chair_outcome_is_fatal():
     with pytest.raises(FatalAccounting):
         witness_coverage({"attestator_1": "probably-read"}, configured_floor=1)
 
@@ -278,7 +278,7 @@ def test_a_held_act_forces_partial_and_names_itself():
 
 def test_under_witnessed_coverage_forces_partial_even_when_every_act_delivered():
     """The strict reading of GOVERNANCE 2, and queued for Tyrel in spec 01: an act
-    delivered on two live seats against a floor of three stays `delivered`, and
+    delivered on two live chairs against a floor of three stays `delivered`, and
     the run says partial with the shortfall named. The act's own category is
     untouched — witness coverage never demotes text."""
     aggregate = run_aggregate(
@@ -290,13 +290,13 @@ def test_under_witnessed_coverage_forces_partial_even_when_every_act_delivered()
     assert aggregate["reasons"] == ["act act_a is under-witnessed (1 of a floor of 3)"]
 
 
-def test_a_seat_with_no_outcome_yet_forces_partial():
+def test_a_chair_with_no_outcome_yet_forces_partial():
     aggregate = run_aggregate(
         {"act_a": ArmariumCategory.DELIVERED},
         {"act_a": witness_coverage({"s1": "read", "s2": "read", "s3": "not-run"}, 3)},
     )
     assert aggregate["status"] == "partial"
-    assert "1 seat(s) with no outcome yet" in aggregate["reasons"][-1]
+    assert "1 chair(s) with no outcome yet" in aggregate["reasons"][-1]
 
 
 def test_a_category_that_is_not_a_category_is_fatal():

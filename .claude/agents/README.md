@@ -8,6 +8,20 @@ measured on this machine, and the bounds.
 **Do not choose a model or an effort from memory.** The table below was measured; your
 recollection was not.
 
+## The word "seat", before it misleads you again
+
+**A "seat" in this repository means a model chosen for a job — nothing more.** It does
+**not** mean a host agent, and it does not mean `operations/codex/seat.sh`. That script is
+a narrow leftover for reading things a container cannot see, and most sessions never touch
+it.
+
+This matters because the word is everywhere in these files, and a session that boots,
+reads sixty uses of "seat" and reaches for `seat.sh` has been led there by the wording
+rather than by the design. That happened on 2026-08-03 and cost most of a session.
+**Agents run wherever the roles table below says they run.** Anything whose subject is
+this repository goes in a container; the three reading roles are host seats and hold no
+shell. Read every "seat" below as "the model doing this job".
+
 ## The two kinds, and the only line that matters
 
 Capability is a property of **where** an agent runs, not of what it is called.
@@ -96,9 +110,58 @@ Three things follow, and each contradicts something obvious:
 - **Luna is slower than its price suggests**, and this task played to its strengths — one
   page of context. Its published long-context weakness is real and untested here.
 
-**Reachability, which is not negotiable:** `minimal` is rejected by every Codex model.
-`gpt-5.3-codex-spark` also rejects `none` and `max`; its usable range is `low`–`xhigh`.
-Claude accepts `low`, `medium`, `high`, `xhigh`, `max` and nothing else.
+## The effort levels, measured against the CLIs rather than their help text
+
+**Two orchestrating levels exist, one per vendor, and neither is in `--help`.** Both were
+found the hard way on 2026-08-03, after a session spent an hour arguing from a web search
+that they do not exist. Do not take either on trust from documentation again — the
+commands that settle it are here.
+
+| Vendor | The orchestrating level | How it was verified |
+|---|---|---|
+| Claude | **`ultracode`** | `claude --effort ultracode` is accepted **silently**, while `--effort ultra` and `--effort banana` both print `Unknown --effort value … ignoring it`. The CLI tells it apart from a typo; `--help` lists only `low, medium, high, xhigh, max`. |
+| Codex | **`ultra`**, on `gpt-5.6-sol` and `gpt-5.6-terra` only | `~/.codex/models_cache.json` lists `ultra` for exactly those two, described as "Maximum reasoning with automatic task delegation". No other Codex model offers it, and Claude rejects the spelling outright. |
+
+**Reachability, which is not negotiable:**
+
+- **Claude:** `low`, `medium`, `high`, `xhigh`, `max`, and **`ultracode`**. Nothing else —
+  `ultra` is refused, and refused *loudly enough to miss*, because a Claude chamber
+  buffers its output until it exits: the warning surfaces hours later, beside work that
+  quietly ran at the **default** effort the whole time.
+- **Codex:** `none`, `low`, `medium`, `high`, `xhigh`, `max`, plus **`ultra` for Sol and
+  Terra**. `minimal` is rejected by every Codex model. `gpt-5.3-codex-spark` also rejects
+  `none`, `max` and `ultra`; its usable range is `low`–`xhigh`.
+
+`autoclave.sh dispatch` checks a value against the vendor *and the model* before Docker is
+touched, so a wrong level costs a line of output rather than a chamber and an hour.
+
+**`ultracode` is an effort value, not a keyword you write in a brief.** Saying the word in
+the prompt is a separate and weaker thing — it opts a session into orchestration but sets
+no depth. Pass it on the dispatch:
+
+```sh
+sh operations/autoclave/autoclave.sh dispatch <task> claude <brief> opus ultracode
+sh operations/autoclave/autoclave.sh dispatch <task> codex  <brief> gpt-5.6-terra ultra
+```
+
+## Orchestrated is the default for building a system or a stage
+
+**Tyrel ruled, 2026-08-03:** for build and stage work, reach for an orchestrating chamber
+agent — `ultracode` for Claude, `ultra` for Sol or Terra — rather than a series of solo
+agents on separate branches. His reason, in his words: it "just seems so much easier and
+efficient than back and forth solo agents in branches".
+
+That is a change of default, not a permission to be asked for. One chamber at `ultracode`
+or `ultra` fans out across its own clone, integrates its own sub-agents, runs the gate and
+hands back one branch. The alternative — many small agents, each on its own branch, each
+needing collection and reconciliation by the session — spends the session's context on
+bookkeeping that the chamber does for free.
+
+**Reach for a solo bounded agent when the unit genuinely is small**: a single file, a
+mechanical sweep, a question with one answer. Reach for an orchestrator when the unit is a
+system, a stage, a spec, or anything that will take more than one pass.
+
+And **an orchestrating seat gets no deadline** — see Effort rules below.
 
 ## Choosing between the vendors
 

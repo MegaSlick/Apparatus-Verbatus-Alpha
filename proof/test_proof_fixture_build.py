@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from common.chairs.config import load_models_toml
+from common.chairs.models import ChairIdentity
 from common.contracts.outcomes import OutcomeClass, classify
 from common.contracts.stages import PERLECTOR
 from common.imaging import decode_grayscale_png
@@ -27,7 +29,6 @@ from proof.build_fixture import (
     ACTS,
     RECOVERY_BOUNDS,
     TESTIMONY,
-    WITNESS_SEATS,
     act_descriptor,
     build_ingress_manifest,
     build_skeleton_fixture,
@@ -36,6 +37,7 @@ from proof.build_fixture import (
 from proof.synthetic_pages import FIXTURE_ID, PAGES, render_page
 
 PROOF_ROOT = Path(__file__).resolve().parent
+MODELS_CONFIG = PROOF_ROOT.parent / "config" / "models.toml"
 
 
 def load(name: str) -> dict:
@@ -51,6 +53,21 @@ def ingress():
 @pytest.fixture(scope="module")
 def skeleton():
     return load("skeleton_fixture.toml")
+
+
+@pytest.fixture(scope="module")
+def models_config():
+    return load_models_toml(MODELS_CONFIG)
+
+
+def configured_witness_chairs(models_config: dict) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            role
+            for role, chair in models_config.chairs.items()
+            if role.startswith("attestator_") and isinstance(chair, ChairIdentity)
+        )
+    )
 
 
 # --- The bytes are really there, and are really what is declared ---------------
@@ -164,19 +181,37 @@ def test_the_recovery_region_differs_from_the_original_proposal(skeleton):
 # --- Witness declarations leave no silent gap ----------------------------------
 
 
-def test_every_seat_has_testimony_declared_for_every_act(skeleton):
-    """A seat with no declared testimony would silently become an absence the
+def test_every_chair_has_testimony_declared_for_every_act(skeleton, models_config):
+    """A chair with no declared testimony would silently become an absence the
     fixture never meant to describe."""
-    declared = {(row["act_key"], row["seat"]) for row in skeleton["testimony"]}
-    expected = {(act["key"], seat) for act in ACTS for seat in WITNESS_SEATS}
+    declared = {(row["act_key"], row["chair"]) for row in skeleton["testimony"]}
+    chairs = configured_witness_chairs(models_config)
+    expected = {(act["key"], chair) for act in ACTS for chair in chairs}
     assert declared == expected
     assert len(declared) == 6
 
 
-def test_the_declared_seats_and_floor_are_the_configured_three(skeleton):
-    assert skeleton["witness_seats"] == list(WITNESS_SEATS)
-    assert skeleton["witness_floor"] == 3
-    assert len(WITNESS_SEATS) == 3
+def test_models_config_owns_the_live_chairs_floor_and_recipes(skeleton, models_config):
+    """Fixture data does not decide which model chairs a run invokes."""
+    assert "witness_chairs" not in skeleton
+    assert "witness_floor" not in skeleton
+    assert "adapter_recipes" not in skeleton
+    assert models_config.witness_floor == 3
+    assert configured_witness_chairs(models_config) == (
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+    )
+    assert set(models_config.adapter_recipes) == {
+        "door",
+        "exemplar",
+        "designator",
+        "attestatores",
+        "perlector",
+        "recensor",
+        "archetypus",
+        "armarium",
+    }
 
 
 def test_testimony_differs_from_the_established_text_somewhere(skeleton):
@@ -187,13 +222,13 @@ def test_testimony_differs_from_the_established_text_somewhere(skeleton):
     assert len(disagreeing) == 4
 
 
-def test_the_review_scenario_exercises_the_repaired_failed_state(skeleton):
+def test_the_review_scenario_exercises_the_repaired_failed_state(skeleton, models_config):
     """Sol B-2 / blocker 4: `failed` is a member of the witness vocabulary. The
     fixture drives it end to end rather than leaving it only unit-tested."""
     failures = skeleton["witness_failure"]
     assert len(failures) == 1
     assert failures[0]["scenario"] == "review"
-    assert failures[0]["seat"] in WITNESS_SEATS
+    assert failures[0]["chair"] in configured_witness_chairs(models_config)
 
 
 def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
@@ -252,7 +287,7 @@ def test_the_refusal_scenarios_lose_the_declared_pages(skeleton):
     assert by_scenario == {"refused-page": 2, "refused-first-page": 1}
 
 
-def test_the_testimony_table_carries_no_seat_the_run_does_not_configure(skeleton):
+def test_the_testimony_table_carries_no_chair_the_run_does_not_configure(skeleton, models_config):
     for row in skeleton["testimony"]:
-        assert row["seat"] in skeleton["witness_seats"]
+        assert row["chair"] in configured_witness_chairs(models_config)
     assert set(TESTIMONY) == {act["key"] for act in ACTS}

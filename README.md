@@ -5,9 +5,9 @@ civil registers, using imperfect witnesses. Several vision models report on each
 second hand; a trained reader, the **Perlector**, reads the ink itself and establishes
 the text.
 
-**Status — 2026-08-02:** alpha. Governance and architectural *direction* settled; the
-Spec 01 walking skeleton is landed and is not yet proven. Implementation is discovered
-during alpha. **GitHub enforces
+**Status:** alpha. Governance and architectural *direction* settled; the Spec 01 walking
+skeleton is landed and is not yet proven, and agents build inside a sealed container
+rather than on this machine. Implementation is discovered during alpha. **GitHub enforces
 four things on `main`**, and only these four: a change arrives by pull request, the
 automated checks must pass before it can be merged, `main` cannot be force-pushed or
 deleted, and these apply to the owner as well. Everything else in this repository is a
@@ -90,6 +90,16 @@ do not tell you what to do. Only the files above do that.
 
 **Status lives in one place.** The line under the title. If you find a status claim
 anywhere else in this repository, it is wrong by construction.
+
+**And it carries no date, by Tyrel's ruling.** This document states no date at all, and
+`check-documents.sh` refuses one. A dated status line goes stale in silence: the line
+above once named a day that had already passed the thing it described, in the very
+document claiming to be the only place status lives. Undated, it can only be wrong about
+the substance — and substance is what a reader notices. Dated state belongs in `history/`
+and in the standing ledgers under `workbench/`, both of which are read as records rather
+than as instructions. **Provenance is a different thing** and survives in the documents
+that carry procedure — when a ruling was made, when something was measured — because the
+attribution discipline in CLAUDE.md depends on it and a ruling's date never goes stale.
 
 ## Versions
 

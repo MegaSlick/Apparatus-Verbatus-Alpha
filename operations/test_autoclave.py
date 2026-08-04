@@ -488,6 +488,61 @@ class TestLogin:
         for drawer in ("private", "workbench", "scriptorium"):
             assert f"--tmpfs /src/{drawer}:ro" in runnable, f"{drawer} is exposed to every chamber"
 
+    def test_the_specs_reach_a_chamber_and_the_chamber_may_write_them(self):
+        """`workbench/design/` is gitignored *and* inside the masked drawer, so the
+        specs were absent from a chamber twice over and a brief had to carry a whole
+        spec as prose. They arrive as their own mount.
+
+        Writable, and the asymmetry with `/src` and `/window` is the point: those two
+        are really this machine's tree and really the old repository, so writing them
+        would change the host with no diff. This is a per-chamber copy `rm` deletes.
+        It was read-only for one sitting and that cost a dispatch — a builder told by
+        its spec to record resolved revisions in the bench memo could not.
+        """
+        runnable = " ".join(code_lines())
+        assert '--volume "${specs_stage}:/specs"' in runnable, "specs are not mounted"
+        assert "${specs_stage}:/specs:ro" not in runnable, "the specs mount is read-only again"
+
+    def test_the_staged_specs_are_a_frozen_copy_not_a_live_bind(self):
+        """Same reason `/src` is a snapshot: a session repairing a spec while a
+        chamber reads it would change the tree underneath the agent. The stage is
+        copied at `new`, so `/specs` cannot move while the chamber lives.
+        """
+        runnable = "\n".join(code_lines())
+        assert 'cp -R "${REPO_ROOT}/workbench/design/."' in runnable, "specs are not copied"
+        copied = runnable.index('cp -R "${REPO_ROOT}/workbench/design/."')
+        assert copied < runnable.index("${specs_stage}:/specs"), "staged after the bind"
+
+    def test_the_window_onto_the_old_code_is_opt_in_and_read_only(self):
+        """A chamber that can read the old repository can copy old bytes into its
+        branch, and the only control on that is the operator reading the diff. So the
+        window is off unless `AUTOCLAVE_WINDOW` names one — a default-on window would
+        make the risk invisible — and read-only when it is open.
+        """
+        runnable = "\n".join(code_lines())
+        assert 'window_mount=""' in runnable, "the window has no closed default"
+        assert 'window_mount="--volume ${AUTOCLAVE_WINDOW}:/window:ro"' in runnable
+        assert ":/window:rw" not in runnable, "the window is writable"
+
+    def test_the_window_path_cannot_forge_a_volume_spec(self):
+        """`window_mount` is word-split into the flag list, and Docker's short volume
+        form is `src:dst:opts`. So the two characters that could make one path read as
+        several fields — whitespace and a colon — are refused before the flag is built.
+        A path with a colon in it produced an invalid-volume-specification error naming
+        a mount the operator never wrote.
+        """
+        runnable = "\n".join(code_lines())
+        assert "*[[:space:]]*) die " in runnable, "whitespace is not refused"
+        assert "*:*) die " in runnable, "a colon is not refused"
+
+    def test_an_unset_window_mounts_nothing(self):
+        """The flag is empty unless the variable is set, and it word-splits into the
+        `docker run` line beside the auth mounts. An empty string must contribute no
+        argument at all — a stray quote here would pass Docker an empty operand.
+        """
+        runnable = " ".join(code_lines())
+        assert "$auth_mounts $window_mount \\" in runnable, "the window flag is quoted or absent"
+
 
 class TestDispatch:
     """Running an agent inside a chamber, against a brief written to a file."""

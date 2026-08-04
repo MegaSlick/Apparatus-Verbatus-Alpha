@@ -24,7 +24,9 @@ What crosses is a branch, and a branch is read before it lands.
 |---|---|---|
 | `/src` | this repository, mounted in | **no** — read-only mount |
 | `/work` | the agent's own clone, on its own branch | yes, and it is the agent's |
-| `/out` | scratch drawer shared with the host | yes — the only writable host path |
+| `/out` | scratch drawer shared with the host | yes — how work leaves |
+| `/specs` | a frozen copy of `workbench/design/`, staged per chamber | yes — a copy, not the original |
+| `/window` | the old repository, present only when `AUTOCLAVE_WINDOW` names one | **no** — read-only mount |
 
 `/out` maps to `workbench/autoclave/<task>/`, which is gitignored, so nothing an
 agent produces can appear in `git status` by accident.
@@ -208,6 +210,15 @@ bearer topic; `workbench/`, which holds every handoff, note and reviewer
 transcript, and which the guard's own `SECRET_DRAWERS` names as a place secrets
 may live; and `scriptorium/`. Everything else in the repository is readable,
 including `.claude/settings.local.json`. Say so rather than assuming otherwise.
+
+**`workbench/design/` is the one documented exception to that mask,** and it is an
+exception rather than an oversight: it arrives at `/specs` because the specs are the
+thing a builder is asked to build from, and a chamber that cannot read its own spec
+had every brief carrying one as prose. The whole subtree is copied, not only
+`spec_NN_*.md` — so a note dropped in there reaches every chamber, and with egress
+open, reaches a model provider. Nothing in it today is secret. Keep it that way:
+anything dated, private or credential-bearing belongs in `workbench/active/` or
+`workbench/standing/`, which stay masked.
 
 **The masks cover the working tree, not `/src/.git`,** which the clone reads in
 full. They hold because all three drawers are gitignored and nothing secret is

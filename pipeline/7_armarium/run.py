@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     ArmariumCategory,
@@ -35,6 +36,7 @@ from common.contracts.stages import (  # noqa: E402
     ARMARIUM,
     DESIGNATOR,
     EXEMPLAR,
+    PERLECTOR,
     RECENSOR,
 )
 from common.stage import (  # noqa: E402
@@ -45,9 +47,9 @@ from common.stage import (  # noqa: E402
     open_context,
     run_stage,
     stage_parser,
+    unaddressed_chairs,
+    validate_serving_provenance,
 )
-
-ADAPTER_REVISION = "fake-armarium-v0"
 
 
 def page_census(context) -> dict[int, dict]:
@@ -135,9 +137,10 @@ def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | Non
     return terminal_category(ARCHETYPUS, record["outcome"]), review, record
 
 
-def main() -> int:
+def main(registry_factory=ChairRegistry.from_toml) -> int:
+    """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, ARMARIUM, ADAPTER_REVISION)
+    context = open_context(args, ARMARIUM, registry_factory=registry_factory)
 
     categories: dict[str, ArmariumCategory] = {}
     coverages: dict[str, dict] = {}
@@ -173,6 +176,12 @@ def main() -> int:
 
         if established is not None:
             payload = established["payload"]
+            validate_serving_provenance(
+                context,
+                payload["provenance"],
+                producer_stage=PERLECTOR,
+                require_receipt=True,
+            )
             entry.update(
                 {
                     # The established reading, and nothing else. No witness text
@@ -198,7 +207,12 @@ def main() -> int:
         )
 
     census = page_census(context)
-    aggregate = run_aggregate(categories, coverages, census)
+    aggregate = run_aggregate(
+        categories,
+        coverages,
+        census,
+        unaddressed_chairs=unaddressed_chairs(context.registry.config),
+    )
     expected_count = len(expected_acts(context))
     if len(categories) != expected_count:
         raise FatalAccounting(
@@ -226,8 +240,8 @@ def main() -> int:
             # refused is named here and in the aggregate's reasons, never only
             # implied by an act count that came up short.
             "pages": [{"ordinal": ordinal, **census[ordinal]} for ordinal in sorted(census)],
-            "witness_seats": context.witness_seats,
-            "witness_floor": context.fixture["witness_floor"],
+            "witness_chairs": context.witness_chairs,
+            "witness_floor": context.witness_floor,
         },
     )
 

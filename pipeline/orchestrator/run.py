@@ -82,6 +82,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         args.scenario,
         "--fixture-root",
         str(args.fixture_root),
+        "--models-config",
+        str(args.models_config),
     ]
     for key, value in extra.items():
         command += [f"--{key.replace('_', '-')}", str(value)]
@@ -119,6 +121,11 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--fixture-root", default="proof")
+    parser.add_argument(
+        "--models-config",
+        default="config/models.toml",
+        help="the sealed model-chair roster and recipes for this run",
+    )
     args = parser.parse_args()
 
     # Prove the algebra total before anything runs. A stage added later without a

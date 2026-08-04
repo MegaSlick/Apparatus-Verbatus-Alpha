@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
@@ -29,14 +30,14 @@ from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     StageContext,
-    fixture_config_digest,
+    adapter_recipe_for,
     load_fixture,
+    run_config_bindings,
     run_stage,
     scenario_for,
     stage_parser,
 )
 
-ADAPTER_REVISION = "fake-door-v0"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -60,12 +61,20 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     return declared
 
 
-def main() -> int:
+def main(registry_factory=ChairRegistry.from_toml) -> int:
+    """Create the run with an explicitly supplied chair implementation.
+
+    The command-line default is the production registry. Tests supply an
+    independent deterministic implementation through this seam; no command-line
+    option chooses among implementations, chairs, revisions, recipes, or caches.
+    """
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     fixture = load_fixture(args.fixture_root)
     scenario_for(fixture, args.scenario)
     fixture_root = Path(args.fixture_root)
     declared = declared_digests(fixture, args.scenario)
+    registry = registry_factory(args.models_config)
+    bindings = run_config_bindings(registry.config, fixture, args.scenario)
 
     # The door creates the run: it is the first thing that knows what arrived, so
     # it is the only stage that can bind a run id to its inputs. The manifest
@@ -82,18 +91,20 @@ def main() -> int:
             }
             for page in fixture["page"]
         ],
-        config_digest=fixture_config_digest(fixture, args.scenario),
-        adapter_recipes=dict(fixture["adapter_recipes"]),
-        witness_seats=list(fixture["witness_seats"]),
+        config_digest=bindings["config_digest"],
+        adapter_recipes=bindings["adapter_recipes"],
+        witness_chairs=bindings["witness_chairs"],
     )
+    run = tree.read_run()
     context = StageContext(
         tree=tree,
-        run=tree.read_run(),
+        run=run,
         fixture=fixture,
         scenario=args.scenario,
         stage=DOOR,
-        adapter_revision=ADAPTER_REVISION,
+        adapter_revision=adapter_recipe_for(run, DOOR),
         args=args,
+        registry=registry,
     )
 
     admitted = 0

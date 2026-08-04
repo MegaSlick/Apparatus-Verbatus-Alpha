@@ -13,7 +13,7 @@ artifact, so nothing can disappear inside a loop.
 **It does not select among witnesses.** Witness outcomes are aggregated into a
 coverage record and used for exactly two things: marking an act under-witnessed,
 and forcing the run's aggregate visibly partial. They never decide an act's
-outcome, and no count of agreeing seats can change a reading.
+outcome, and no count of agreeing chairs can change a reading.
 
     python pipeline/5_recensor/run.py --run-root <dir> --run-id <id>
 """
@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.outcomes import OutcomeClass, classify, witness_coverage  # noqa: E402
@@ -43,8 +44,6 @@ from common.stage import (  # noqa: E402
     scenario_for,
     stage_parser,
 )
-
-ADAPTER_REVISION = "fake-recensor-v0"
 
 
 def recovery_budget(root: str = "config") -> dict:
@@ -91,19 +90,19 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     return records
 
 
-def seat_outcomes(context, act_id: str) -> dict[str, str]:
-    """The current outcome per seat: the latest attempt, with its honest status.
+def chair_outcomes(context, act_id: str) -> dict[str, str]:
+    """The current outcome per chair: the latest attempt, with its honest status.
 
     Derived, never stored as a pointer. A failed attempt 2 over a successful
     attempt 1 therefore reads as `failed`, with attempt 1 intact as history.
     """
     latest: dict[str, dict] = {}
     for record in artifacts_for(context, ATTESTATORES, "testimonium", act_id):
-        seat = record["payload"]["seat"]
+        chair = record["payload"]["chair"]
         ordinal = record["payload"]["attempt_ordinal"]
-        if seat not in latest or ordinal > latest[seat]["payload"]["attempt_ordinal"]:
-            latest[seat] = record
-    return {seat: record["outcome"] for seat, record in latest.items()}
+        if chair not in latest or ordinal > latest[chair]["payload"]["attempt_ordinal"]:
+            latest[chair] = record
+    return {chair: record["outcome"] for chair, record in latest.items()}
 
 
 def recoveries_so_far(context, act_id: str) -> int:
@@ -111,24 +110,41 @@ def recoveries_so_far(context, act_id: str) -> int:
     return len(artifacts_for(context, RECENSOR, "recovery-request", act_id))
 
 
-def main() -> int:
+def main(registry_factory=ChairRegistry.from_toml) -> int:
+    """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
-    context = open_context(args, RECENSOR, ADAPTER_REVISION)
+    context = open_context(args, RECENSOR, registry_factory=registry_factory)
     budget = recovery_budget()
 
     scenario = scenario_for(context.fixture, context.scenario)
-    floor = context.fixture["witness_floor"]
+    floor = context.witness_floor
 
     held = 0
     for act in expected_acts(context):
         act_id, act_key = act["act_id"], act["act_key"]
 
-        outcomes = seat_outcomes(context, act_id)
-        missing = set(context.witness_seats) - set(outcomes)
+        outcomes = chair_outcomes(context, act_id)
+        sealed = set(context.witness_chairs)
+        missing = sealed - set(outcomes)
         if missing:
             raise FatalAccounting(
-                f"act {act_id} has no outcome for configured seat(s) {sorted(missing)}. "
-                "Every configured seat gets an explicit outcome for every act"
+                f"act {act_id} has no outcome for configured chair(s) {sorted(missing)}. "
+                "Every configured chair gets an explicit outcome for every act"
+            )
+        # **And the other direction, which is the one that counts toward the floor.**
+        # `chair_outcomes` reports every role it finds a testimonium for, not every
+        # role the run was sealed with, and `witness_coverage` counts completed-class
+        # outcomes without asking where they came from. So a testimonium under a role
+        # `run.json` never named raised the completed count and satisfied the witness
+        # floor: two real witnesses and one stranger read as three, and
+        # `under_witnessed` came back False. Demonstrated, and found by CodeRabbit on
+        # pull request 16. A witness this run did not configure is not a witness.
+        unsealed = set(outcomes) - sealed
+        if unsealed:
+            raise FatalAccounting(
+                f"act {act_id} carries a testimonium from chair(s) {sorted(unsealed)}, "
+                f"which this run was not sealed with. `run.json` names its witness "
+                "chairs and nothing may add one after the seal"
             )
         coverage = witness_coverage(outcomes, floor)
 

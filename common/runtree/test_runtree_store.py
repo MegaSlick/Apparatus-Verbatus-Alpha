@@ -15,18 +15,20 @@ import json
 
 import pytest
 
+from common.chairs.models import ChairIdentity, ServingDetails
+from common.chairs.receipts import build_receipt
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
-from common.runtree.store import RUN_FILE, RunTree
+from common.runtree.store import RECEIPTS_DIR, RUN_FILE, RunTree
 
 PAGE_BYTES = b"synthetic page one"
 SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTES), "ordinal": 1}]
 CONFIG_DIGEST = "c" * 64
 RECIPES = {"designator": "fake-designator-v0"}
-SEATS = ["attestator_1", "attestator_2", "attestator_3"]
+CHAIRS = ["attestator_1", "attestator_2", "attestator_3"]
 
 
 def make_run(tmp_path, run_id="r1", **overrides):
@@ -34,7 +36,7 @@ def make_run(tmp_path, run_id="r1", **overrides):
         "source_manifest": SOURCE,
         "config_digest": CONFIG_DIGEST,
         "adapter_recipes": RECIPES,
-        "witness_seats": SEATS,
+        "witness_chairs": CHAIRS,
     }
     kwargs.update(overrides)
     return RunTree.create(tmp_path, run_id, **kwargs)
@@ -55,6 +57,36 @@ def make_envelope(run_id="r1", subject="pg_0123456789abcdef", outcome="proposed"
     )
 
 
+def make_receipt(*, endpoint="http://fixture.invalid/seat", started_at="2026-08-03T00:00:00Z"):
+    identity = ChairIdentity(
+        role="attestator_1",
+        source="local-repository",
+        repo=None,
+        path="fixture/attestator_1",
+        revision=None,
+        digest_manifest="a" * 64,
+        manifest="manifests/attestator_1.json",
+        adapter_of=None,
+        serving_recipe="fake-attestator-v0",
+        license_note="fixture only",
+    )
+    details = ServingDetails(
+        # A pin, not a label: `receipts.py` refuses a mutable name here on the same
+        # grounds `config.py` refuses a branch name for the model revision.
+        tokenizer_revision="a" * 64,
+        seed=0,
+        context_cap=4096,
+        pixel_cap=1_000_000,
+        engine="fixture-engine",
+        engine_version="v0",
+        dtype="float32",
+        adapter_identity=None,
+        endpoint=endpoint,
+        started_at=started_at,
+    )
+    return build_receipt(identity, details)
+
+
 # --- The run authority ---------------------------------------------------------
 
 
@@ -62,7 +94,7 @@ def test_creating_a_run_writes_a_self_hashed_authority(tmp_path):
     tree = make_run(tmp_path)
     record = tree.read_run()
     assert record["run_id"] == "r1"
-    assert record["witness_seats"] == SEATS
+    assert record["witness_chairs"] == CHAIRS
     assert record["source_manifest"] == SOURCE
     assert (tmp_path / "r1" / RUN_FILE).exists()
 
@@ -146,12 +178,12 @@ def test_reusing_a_run_id_with_changed_adapter_recipes_is_refused(tmp_path):
         make_run(tmp_path, adapter_recipes={"designator": "fake-designator-v1"})
 
 
-def test_reusing_a_run_id_with_a_changed_seat_roster_is_refused(tmp_path):
-    """A run that silently dropped a configured seat would under-witness every act
+def test_reusing_a_run_id_with_a_changed_chair_roster_is_refused(tmp_path):
+    """A run that silently dropped a configured chair would under-witness every act
     in it while looking like the run that was authorized."""
     make_run(tmp_path)
     with pytest.raises(IncompatibleReuse):
-        make_run(tmp_path, witness_seats=["attestator_1", "attestator_2"])
+        make_run(tmp_path, witness_chairs=["attestator_1", "attestator_2"])
 
 
 def test_an_incompatible_reuse_writes_nothing(tmp_path):
@@ -262,6 +294,55 @@ def test_different_blobs_do_not_collide(tmp_path):
     _, first = tree.put_blob(EXEMPLAR, b"one")
     _, second = tree.put_blob(EXEMPLAR, b"two")
     assert first.relative_path != second.relative_path
+
+
+# --- Run receipts are moments, never stage artifacts --------------------------
+
+
+def test_a_run_receipt_is_content_addressed_and_reads_back(tmp_path):
+    tree = make_run(tmp_path)
+    reference, result = tree.write_run_receipt(make_receipt())
+
+    assert result.reused is False
+    assert reference.relative_path.startswith(f"{RECEIPTS_DIR}/")
+    assert reference.relative_path.endswith(f"{reference.sha256}.json")
+    record = tree.read_run_receipt(reference)
+    assert record["chair"] == "attestator_1"
+    assert record["revision"] == "a" * 64
+    assert tree.build_manifest(DESIGNATOR)["artifacts"] == []
+
+
+def test_identical_run_receipt_reuses_its_immutable_bytes(tmp_path):
+    tree = make_run(tmp_path)
+    receipt = make_receipt()
+    first, first_result = tree.write_run_receipt(receipt)
+    second, second_result = tree.write_run_receipt(receipt)
+
+    assert first_result.reused is False
+    assert second_result.reused is True
+    assert second.to_record() == first.to_record()
+
+
+def test_a_tampered_run_receipt_is_refused_when_its_reference_is_read(tmp_path):
+    tree = make_run(tmp_path)
+    reference, _ = tree.write_run_receipt(make_receipt())
+    tree.resolve(reference.relative_path).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(SchemaRefusal) as caught:
+        tree.read_run_receipt(reference)
+    assert "digest" in str(caught.value)
+
+
+def test_distinct_serving_moments_are_not_collapsed_by_model_identity(tmp_path):
+    tree = make_run(tmp_path)
+    first, _ = tree.write_run_receipt(make_receipt())
+    second, _ = tree.write_run_receipt(
+        make_receipt(endpoint="http://fixture.invalid/seat-2", started_at="2026-08-03T00:01:00Z")
+    )
+
+    assert first.to_record() != second.to_record()
+    assert tree.read_run_receipt(first)["endpoint"] == "http://fixture.invalid/seat"
+    assert tree.read_run_receipt(second)["endpoint"] == "http://fixture.invalid/seat-2"
 
 
 # --- The door writes into the Exemplar's directory ----------------------------
@@ -391,8 +472,9 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
     written.append(tree.publish_artifact(make_envelope()).relative_path)
     written.append(tree.put_blob(DESIGNATOR, b"a crop")[1].relative_path)
     written.append(tree.write_manifest(DESIGNATOR).relative_path)
+    written.append(tree.write_run_receipt(make_receipt())[0].relative_path)
 
-    assert len(written) == 4
+    assert len(written) == 5
     for path in written:
         assert any(path == prefix or path.startswith(prefix) for prefix in scope), (
             f"{path} is written by the store but falls outside the inventory scope"
