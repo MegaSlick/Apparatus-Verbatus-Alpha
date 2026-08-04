@@ -563,12 +563,23 @@ cmd_new() {
     # record resolved model revisions in the bench memo could not, because this mount
     # refused a write nothing needed refused. A chamber has free rein over what is its
     # own; the boundary is the host, not the agent's judgement.
+    #
+    # A failure here leaves no chamber, so `rm` — which requires one — cannot clean up
+    # after it. The snapshot ref already exists by this point, and an orphaned ref makes
+    # the *next* `new` for this task fail at `update-ref`. So staging unwinds the ref the
+    # same way the `docker run` failure below does. Found by CodeRabbit on pull request 16.
     specs_stage="${REPO_ROOT}/workbench/autoclave/.specs/${task}"
+    stage_failed() {
+        rm -rf "$specs_stage"
+        [ -n "$snapshot_ref" ] &&
+            git -C "$REPO_ROOT" update-ref -d "$snapshot_ref" 2>/dev/null
+        die "$1${snapshot_ref:+ — the snapshot ref was removed}"
+    }
     rm -rf "$specs_stage"
-    mkdir -p "$specs_stage"
+    mkdir -p "$specs_stage" || stage_failed "could not create the spec staging directory"
     if [ -d "${REPO_ROOT}/workbench/design" ]; then
         cp -R "${REPO_ROOT}/workbench/design/." "${specs_stage}/" ||
-            die "could not stage workbench/design for the chamber"
+            stage_failed "could not stage workbench/design for the chamber"
     fi
 
     # **The window onto the old code, and it is deliberately opt-in.** CLAUDE.md's
@@ -1202,9 +1213,25 @@ cmd_rm() {
         git -C "$REPO_ROOT" update-ref -d "refs/heads/autoclave/snapshot-${task}"
         note "snapshot ref for '${task}' removed"
     fi
-    # The staged specs are a copy of files that still exist on this machine, so
-    # removing them loses nothing — unlike the output drawer below.
-    rm -rf "${REPO_ROOT}/workbench/autoclave/.specs/${task}"
+    # **The staged specs move into the output drawer rather than being deleted.** That
+    # comment used to say removing them lost nothing, because they were a copy of files
+    # still on this machine. Unlocking the mount in a8f0956 made that false and nothing
+    # noticed: `/specs` is writable, the brief tells the agent the specs are its to write,
+    # and `collect` only bundles commits from `/work` — so an agent's edits lived in
+    # exactly one place and `rm` deleted it. Hard rule 7 is that nothing is lost silently,
+    # and an agent that forgot to report an edit made this the silent case. The drawer is
+    # kept forever, so moving them there costs nothing and keeps the only copy.
+    # Found by CodeRabbit on pull request 16.
+    specs_stage="${REPO_ROOT}/workbench/autoclave/.specs/${task}"
+    if [ -d "$specs_stage" ]; then
+        mkdir -p "$(outdir_of "$task")"
+        rm -rf "$(outdir_of "$task")/specs"
+        if mv "$specs_stage" "$(outdir_of "$task")/specs" 2>/dev/null; then
+            note "staged specs kept at $(outdir_of "$task")/specs — read them for edits the agent made"
+        else
+            note "staged specs could not be moved; they remain at ${specs_stage}"
+        fi
+    fi
     # The output drawer is deliberately kept. Nothing is lost silently, and the
     # bundle is the only surviving evidence that the dispatch happened.
     note "chamber '${task}' destroyed. Output kept at $(outdir_of "$task")"

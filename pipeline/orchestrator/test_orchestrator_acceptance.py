@@ -33,6 +33,7 @@ from common.contracts.stages import (
     EXEMPLAR,
     PERLECTOR,
     RECENSOR,
+    STAGE_DIRECTORIES,
 )
 from common.runtree.store import RunTree
 from common.stage import load_fixture, run_config_bindings
@@ -958,3 +959,75 @@ def test_the_act_whose_reading_succeeded_is_still_delivered(truncated_reading_ru
     ]
     assert len(established) == 1
     assert established[0]["outcome"] == "established"
+
+
+def test_the_recensor_refuses_a_testimonium_from_a_chair_the_run_never_sealed(tmp_path):
+    """The mirror of the vanished-chair hole, and the one that counts toward the floor.
+
+    `chair_outcomes` reports every role it finds a testimonium for, and
+    `witness_coverage` counts completed-class outcomes without asking where they
+    came from. So a testimonium under a role `run.json` never named raised the
+    completed count: two real witnesses and one stranger read as three, and
+    `under_witnessed` came back False on a run that was genuinely short a witness.
+    Found by CodeRabbit on pull request 16.
+    """
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+    ):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / program),
+                "--run-root",
+                str(root),
+                "--run-id",
+                "r",
+                "--scenario",
+                "happy",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    # Forge one: an existing testimonium re-published under a chair name the run
+    # was never sealed with. Written straight into the tree, because no stage
+    # would produce it — that is the point of checking rather than trusting.
+    tree = RunTree(root, "r")
+    entry = next(
+        record
+        for record in artifacts(tree, ATTESTATORES, "testimonium")
+        if record["payload"]["chair"] == "attestator_1"
+    )
+    forged = json.loads(json.dumps(entry))
+    forged["payload"]["chair"] = "attestator_9"
+    forged["artifact_id"] = "art_" + "9" * 16
+    path = tree.resolve(
+        f"{STAGE_DIRECTORIES[ATTESTATORES]}/artifacts/testimonium/{forged['artifact_id']}.json"
+    )
+    path.write_text(json.dumps(forged), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline" / "5_recensor" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, "an unsealed chair was accepted into the coverage count"
+    assert "attestator_9" in result.stderr
+    assert "not sealed with" in result.stderr

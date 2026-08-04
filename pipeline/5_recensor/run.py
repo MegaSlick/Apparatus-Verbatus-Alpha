@@ -124,11 +124,27 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         act_id, act_key = act["act_id"], act["act_key"]
 
         outcomes = chair_outcomes(context, act_id)
-        missing = set(context.witness_chairs) - set(outcomes)
+        sealed = set(context.witness_chairs)
+        missing = sealed - set(outcomes)
         if missing:
             raise FatalAccounting(
                 f"act {act_id} has no outcome for configured chair(s) {sorted(missing)}. "
                 "Every configured chair gets an explicit outcome for every act"
+            )
+        # **And the other direction, which is the one that counts toward the floor.**
+        # `chair_outcomes` reports every role it finds a testimonium for, not every
+        # role the run was sealed with, and `witness_coverage` counts completed-class
+        # outcomes without asking where they came from. So a testimonium under a role
+        # `run.json` never named raised the completed count and satisfied the witness
+        # floor: two real witnesses and one stranger read as three, and
+        # `under_witnessed` came back False. Demonstrated, and found by CodeRabbit on
+        # pull request 16. A witness this run did not configure is not a witness.
+        unsealed = set(outcomes) - sealed
+        if unsealed:
+            raise FatalAccounting(
+                f"act {act_id} carries a testimonium from chair(s) {sorted(unsealed)}, "
+                f"which this run was not sealed with. `run.json` names its witness "
+                "chairs and nothing may add one after the seal"
             )
         coverage = witness_coverage(outcomes, floor)
 
