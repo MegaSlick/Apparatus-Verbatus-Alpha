@@ -13,7 +13,7 @@ artifact, so nothing can disappear inside a loop.
 **It does not select among witnesses.** Witness outcomes are aggregated into a
 coverage record and used for exactly two things: marking an act under-witnessed,
 and forcing the run's aggregate visibly partial. They never decide an act's
-outcome, and no count of agreeing seats can change a reading.
+outcome, and no count of agreeing chairs can change a reading.
 
     python pipeline/5_recensor/run.py --run-root <dir> --run-id <id>
 """
@@ -91,7 +91,7 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
 
 
 def chair_outcomes(context, act_id: str) -> dict[str, str]:
-    """The current outcome per seat: the latest attempt, with its honest status.
+    """The current outcome per chair: the latest attempt, with its honest status.
 
     Derived, never stored as a pointer. A failed attempt 2 over a successful
     attempt 1 therefore reads as `failed`, with attempt 1 intact as history.
@@ -111,7 +111,7 @@ def recoveries_so_far(context, act_id: str) -> int:
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run under the explicitly supplied seat/config implementation."""
+    """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, RECENSOR, registry_factory=registry_factory)
     budget = recovery_budget()
@@ -127,8 +127,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         missing = set(context.witness_chairs) - set(outcomes)
         if missing:
             raise FatalAccounting(
-                f"act {act_id} has no outcome for configured seat(s) {sorted(missing)}. "
-                "Every configured seat gets an explicit outcome for every act"
+                f"act {act_id} has no outcome for configured chair(s) {sorted(missing)}. "
+                "Every configured chair gets an explicit outcome for every act"
             )
         coverage = witness_coverage(outcomes, floor)
 

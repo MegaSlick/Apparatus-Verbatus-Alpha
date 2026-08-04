@@ -182,7 +182,7 @@ def test_the_recovery_region_differs_from_the_original_proposal(skeleton):
 
 
 def test_every_chair_has_testimony_declared_for_every_act(skeleton, models_config):
-    """A seat with no declared testimony would silently become an absence the
+    """A chair with no declared testimony would silently become an absence the
     fixture never meant to describe."""
     declared = {(row["act_key"], row["chair"]) for row in skeleton["testimony"]}
     chairs = configured_witness_chairs(models_config)
@@ -192,7 +192,7 @@ def test_every_chair_has_testimony_declared_for_every_act(skeleton, models_confi
 
 
 def test_models_config_owns_the_live_chairs_floor_and_recipes(skeleton, models_config):
-    """Fixture data does not decide which model seats a run invokes."""
+    """Fixture data does not decide which model chairs a run invokes."""
     assert "witness_chairs" not in skeleton
     assert "witness_floor" not in skeleton
     assert "adapter_recipes" not in skeleton

@@ -13,7 +13,7 @@ the record, and the shape is where GOVERNANCE 3 either holds or quietly fails:
   It records its basis.                   The region it read, and every testimonium
                                           it saw, by reference.
   It never counts witnesses.              No branch anywhere in this file reads how
-                                          many seats agreed. The dissent record is
+                                          many chairs agreed. The dissent record is
                                           computed *after* the reading is fixed,
                                           and cannot reach back into it.
 
@@ -108,7 +108,7 @@ def verify_region(context, region: dict) -> dict:
 def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     """Where the reading departed from each witness that actually reported.
 
-    Computed after the reading is fixed. A seat that failed or never ran has no
+    Computed after the reading is fixed. A chair that failed or never ran has no
     opinion to depart from, and is recorded as having none rather than as agreeing
     — silence is not assent.
     """
@@ -138,7 +138,7 @@ def declared_reading_failure(context, act_key: str) -> str | None:
 
 
 def perlector_chair(context) -> ChairIdentity | AbsentChair:
-    """The Perlector seat, resolved by name. Never another seat, never a base."""
+    """The Perlector chair, resolved by name. Never another chair, never a base."""
     resolved = context.registry.resolve(PERLECTOR)
     if not isinstance(resolved, (ChairIdentity, AbsentChair)):
         raise ContractError("Perlector resolution returned neither an identity nor an absence")
@@ -148,7 +148,7 @@ def perlector_chair(context) -> ChairIdentity | AbsentChair:
 def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted: bool) -> dict:
     """Project one Perlector outcome's immutable provenance.
 
-    A record for a reading that never happened — a held act, or an absent seat —
+    A record for a reading that never happened — a held act, or an absent chair —
     names what would have read and stops there. Manufacturing a receipt for it
     would be a serving moment nobody observed.
 
@@ -192,10 +192,10 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run through the explicitly supplied seat implementation.
+    """Run through the explicitly supplied chair implementation.
 
     Production passes the default registry. The test-only injection is a
-    dependency seam, not a runtime choice among models or seats.
+    dependency seam, not a runtime choice among models or chairs.
     """
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, PERLECTOR, registry_factory=registry_factory)
@@ -241,7 +241,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
         ordinal = _next_attempt(context, act_id)
         if isinstance(chair, AbsentChair):
-            # No seat to read with. Every act still gets an explicit record
+            # No chair to read with. Every act still gets an explicit record
             # naming the absence: a stage that simply produced nothing would
             # leave the Recensor to infer a gap it cannot see.
             context.publish(
@@ -252,7 +252,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 payload={
                     "act_key": act["act_key"],
                     "attempt_ordinal": ordinal,
-                    "reason": f"the Perlector seat is explicitly absent: {chair.reason}",
+                    "reason": f"the Perlector chair is explicitly absent: {chair.reason}",
                     "basis": {"regions": [], "testimonia": []},
                     "dissent": [],
                     "provenance": provenance_for(context, chair, attempted=False),

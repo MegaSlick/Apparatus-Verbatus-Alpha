@@ -6,13 +6,13 @@ naming the protocol clause."
 
 Two implementations are independent, in the spec's own words, "when neither
 imports the other and both are exercised by the same contract suite". Here that
-is `common.chairs.registry.SeatRegistry` — real, filesystem- and Hugging
-Face-backed — and `DeterministicSeatRegistry` in this package's `conftest.py`,
+is `common.chairs.registry.ChairRegistry` — real, filesystem- and Hugging
+Face-backed — and `DeterministicChairRegistry` in this package's `conftest.py`,
 in-memory and network-free. Every test below runs once per implementation, from
 one body, so a claim that holds for one and not the other cannot pass.
 
 The clause about the *stages* is discharged where the stages are:
-`pipeline/test_seat_parameterization.py` runs all eight stage programs over both
+`pipeline/test_chair_parameterization.py` runs all eight stage programs over both
 implementations. And the claim stays the size the spec sized it — exercising an
 interface against two implementations proves those two implement that interface,
 and nothing whatever about model churn.
@@ -68,15 +68,15 @@ def implementation(request, tmp_path):
 
 
 def test_both_implementations_satisfy_the_protocol_without_inheriting_it(implementation):
-    """`SeatProtocol` is structural: neither implementation subclasses it, and
+    """`ChairProtocol` is structural: neither implementation subclasses it, and
     neither could, because one of them must be able to exist without the other."""
     assert isinstance(implementation, ChairProtocol)
 
 
 def test_neither_implementation_imports_or_delegates_to_the_other():
     """Independence measured on the implementations, not on the files holding
-    them: `conftest.py` imports `SeatRegistry` for the *other* tests' plumbing,
-    which says nothing about whether the deterministic seat leans on it."""
+    them: `conftest.py` imports `ChairRegistry` for the *other* tests' plumbing,
+    which says nothing about whether the deterministic chair leans on it."""
     import inspect
 
     import common.chairs.registry as registry_module
@@ -85,7 +85,7 @@ def test_neither_implementation_imports_or_delegates_to_the_other():
     body = body[body.index('"""', body.index('"""') + 3) + 3 :]  # past the class docstring
 
     assert "common.chairs.registry" not in body
-    assert "SeatRegistry(" not in body
+    assert "ChairRegistry(" not in body
     assert not issubclass(DeterministicChairRegistry, registry_module.ChairRegistry)
     assert "conftest" not in inspect.getsource(registry_module)
     assert "Deterministic" not in inspect.getsource(registry_module)
@@ -189,7 +189,7 @@ class _MissingEnsure:
 
 
 class _WrongChair:
-    """Answers every request with one seat's identity — a picker with one option."""
+    """Answers every request with one chair's identity — a picker with one option."""
 
     def __init__(self, identity: ChairIdentity):
         self._identity = ChairIdentity(**{**identity.to_record(), "role": "a_different_role"})

@@ -1,10 +1,10 @@
 """Spec 02, test 8 — Import boundary. "The static import-boundary test covers
-`common/seats/`."
+`common/chairs/`."
 
 `common/README.md`, verbatim: "It knows nothing about stages. Stages import it;
 it never imports back. Add an executable import-boundary check when real modules
 exist; a placeholder declaration before code would prove nothing."
-`common/seats/` is that real module, so this is that check.
+`common/chairs/` is that real module, so this is that check.
 
 `pipeline/README.md` names why it has to be static: numbering the stage
 directories makes `import 4_perlector` invalid Python, "a useful deterrent... but
@@ -60,7 +60,7 @@ def _modules() -> list[Path]:
 
 def test_the_chair_package_never_imports_a_stage_or_a_fixture_or_the_hub_at_module_level():
     modules = _modules()
-    assert len(modules) >= 7, f"expected the whole seat package under {CHAIRS}, found {modules}"
+    assert len(modules) >= 7, f"expected the whole chair package under {CHAIRS}, found {modules}"
 
     violations = [
         f"{path.relative_to(ROOT)} imports {full!r}"
@@ -68,7 +68,7 @@ def test_the_chair_package_never_imports_a_stage_or_a_fixture_or_the_hub_at_modu
         for root, full in _imports_in(path)
         if root in FORBIDDEN_ROOTS
     ]
-    assert not violations, "common/seats/ crossed its boundary:\n" + "\n".join(violations)
+    assert not violations, "common/chairs/ crossed its boundary:\n" + "\n".join(violations)
 
 
 def test_the_chair_tests_never_import_a_stage_either():
@@ -76,7 +76,7 @@ def test_the_chair_tests_never_import_a_stage_either():
     here to guard — and would quietly make `common/` depend on stage code
     through the one file nobody thinks of as code."""
     tests = sorted(CHAIRS.glob("test_*.py")) + [CHAIRS / "conftest.py"]
-    assert len(tests) >= 8, f"expected the seat test suite under {CHAIRS}, found {tests}"
+    assert len(tests) >= 8, f"expected the chair test suite under {CHAIRS}, found {tests}"
 
     violations = [
         f"{path.relative_to(ROOT)} imports {full!r}"
@@ -84,12 +84,12 @@ def test_the_chair_tests_never_import_a_stage_either():
         for root, full in _imports_in(path)
         if root in ("pipeline", "proof")
     ]
-    assert not violations, "a seat test crossed the boundary:\n" + "\n".join(violations)
+    assert not violations, "a chair test crossed the boundary:\n" + "\n".join(violations)
 
 
 def test_nothing_anywhere_under_common_imports_pipeline():
     """The wider rule `common/README.md` states, made executable while a file is
-    open that can state it. `common/seats/` is one module inside `common/`; the
+    open that can state it. `common/chairs/` is one module inside `common/`; the
     boundary belongs to all of it."""
     files = sorted(COMMON.rglob("*.py"))
     assert len(files) >= 20, f"expected the whole of common/ under {COMMON}, found {len(files)}"

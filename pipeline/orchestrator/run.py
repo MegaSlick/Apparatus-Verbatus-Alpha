@@ -124,7 +124,7 @@ def main() -> int:
     parser.add_argument(
         "--models-config",
         default="config/models.toml",
-        help="the sealed model-seat roster and recipes for this run",
+        help="the sealed model-chair roster and recipes for this run",
     )
     args = parser.parse_args()
 

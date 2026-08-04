@@ -1,11 +1,11 @@
 # The only place a model is named (spec 02, master plan §2). Nothing in
-# `common/seats/` may rank, prefer, select, substitute or fall back among seats,
+# `common/chairs/` may rank, prefer, select, substitute or fall back among chairs,
 # revisions, recipes or caches: resolution is by name, and the only outcomes are
 # the named artifact or a refusal (GOVERNANCE 3, read as ops rather than models).
 #
 # Roles are configuration keys, not concepts — `designator_structure`,
 # `attestator_1..n`, `perlector`, `secondary_proposer`, `annotator`. A role added
-# later resolves without a schema change; nothing in `common/seats/` hard-codes
+# later resolves without a schema change; nothing in `common/chairs/` hard-codes
 # this list.
 #
 # The live roster below is the offline walking skeleton's. Every configured entry
@@ -25,7 +25,7 @@ model_root = "model-fixtures"
 
 # The minimum count of completed-class witness outcomes an act needs before it is
 # recorded `under_witnessed` (`common/contracts/outcomes.py::witness_coverage`).
-# A seat configured `state = "absent"` stays in the roster as an explicit absence
+# A chair configured `state = "absent"` stays in the roster as an explicit absence
 # and counts against this floor: it is one fewer configured witness, and the floor
 # does not shrink to match.
 witness_floor = 3
@@ -91,9 +91,9 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 
 # Real roster, commented pending Tyrel's S8 approval. Resolving a revision is not
 # choosing a roster: roster membership is his decision at S8, and nothing below
-# was added, removed or ranked here. The seat-to-model mapping is WITNESS_BENCH's
-# own "Seat today" column, read across unchanged — three witnesses, of which
-# chandra-ocr-2 also fills the structure seat ("one model may serve more than one
+# was added, removed or ranked here. The chair-to-model mapping is WITNESS_BENCH's
+# own "Chair today" column, read across unchanged — three witnesses, of which
+# chandra-ocr-2 also fills the structure chair ("one model may serve more than one
 # role... configuration, not architecture", ARCHITECTURE).
 #
 # The abbreviated revisions the archived research file carries (`af93b47…`,

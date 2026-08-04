@@ -8,7 +8,7 @@ three words at every boundary in the pipeline.
 
 Each stage also has its own closed OUTCOME vocabulary, because "failed" is not
 informative enough to act on: the Recensor needs to tell a held act from a blank
-one, and a witness seat that died from one that was never asked. Every outcome maps
+one, and a witness chair that died from one that was never asked. Every outcome maps
 to exactly one class, and every outcome maps either to a terminal Armarium category
 or explicitly to None meaning "flows onward". Both mappings are total, and
 `check_algebra_is_total` proves it rather than trusting it — an outcome added later
@@ -17,9 +17,9 @@ what "no stage invents a state" has to mean if it is to mean anything.
 
 **Why the witness column is all None.** Witness outcomes are the one vocabulary in
 this file that terminates nothing. They aggregate into a coverage record and never
-into a category or a character of text. An act every one of whose seats is `failed`
+into a category or a character of text. An act every one of whose chairs is `failed`
 or `dead` still reaches the Perlector, which reads the ink; it may be delivered,
-carrying `under_witnessed`. Any rule that let seat outcomes promote or demote an
+carrying `under_witnessed`. Any rule that let chair outcomes promote or demote an
 act's text would be a picker wearing an accounting name, and GOVERNANCE 3 forbids
 it under every name.
 
@@ -88,7 +88,7 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
     ATTESTATORES: {
         "read": _C.COMPLETED,
-        # The seat read the region and there was genuinely nothing to report.
+        # The chair read the region and there was genuinely nothing to report.
         # That is a reading, not an absence — the old stage could not tell the
         # difference, and collapsed both into one empty file.
         "genuinely-empty": _C.COMPLETED,
@@ -269,14 +269,14 @@ def check_algebra_is_total() -> None:
 
 
 def witness_coverage(chair_outcomes: Mapping[str, str], configured_floor: int) -> dict[str, Any]:
-    """Aggregate one act's seat outcomes into the coverage record.
+    """Aggregate one act's chair outcomes into the coverage record.
 
     Returns counts and two flags, and deliberately returns no category and no
     text. The caller may record this beside an act; nothing may branch the act's
     reading on it.
 
-    `under_witnessed` is seats reaching a completed-class outcome below the
-    configured floor. Spec 07: three seats is the floor, the machinery tolerates
+    `under_witnessed` is chairs reaching a completed-class outcome below the
+    configured floor. Spec 07: three chairs is the floor, the machinery tolerates
     fewer so one dead witness never kills a run, and a run below the floor is
     recorded as under-witnessed in the Recensor receipt and the export manifest,
     visibly, every time.
@@ -287,7 +287,7 @@ def witness_coverage(chair_outcomes: Mapping[str, str], configured_floor: int) -
     by_class: dict[str, int] = {klass.value: 0 for klass in OutcomeClass}
     for chair, outcome in chair_outcomes.items():
         if not chair:
-            raise FatalAccounting("a seat outcome was recorded against an unnamed seat")
+            raise FatalAccounting("a chair outcome was recorded against an unnamed chair")
         klass = classify(ATTESTATORES, outcome)
         by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
         by_class[klass.value] += 1
@@ -298,7 +298,7 @@ def witness_coverage(chair_outcomes: Mapping[str, str], configured_floor: int) -
         "by_outcome": by_outcome,
         "by_class": by_class,
         "under_witnessed": completed < configured_floor,
-        # An unresolved seat is a question nobody answered; it is not evidence of
+        # An unresolved chair is a question nobody answered; it is not evidence of
         # anything, so it cannot sit inside a run that calls itself complete.
         "unresolved_chairs": by_class[OutcomeClass.UNRESOLVED.value],
     }
@@ -313,7 +313,7 @@ def run_aggregate(
 
     GOVERNANCE 2, read literally: a partial result is visibly partial, and
     "complete" is refused unless everything reconciles. So `complete` here means
-    every act reached a completed-class category, every configured seat
+    every act reached a completed-class category, every configured chair
     reconciled against the configuration it was run under, AND every page in the
     census was sealed. Every reason is named in `reasons`; a run is never partial
     without saying why.
@@ -357,7 +357,7 @@ def run_aggregate(
             )
         if coverage.get("unresolved_chairs"):
             reasons.append(
-                f"act {act} has {coverage['unresolved_chairs']} seat(s) with no outcome yet"
+                f"act {act} has {coverage['unresolved_chairs']} chair(s) with no outcome yet"
             )
 
     by_page_outcome: dict[str, int] = {}

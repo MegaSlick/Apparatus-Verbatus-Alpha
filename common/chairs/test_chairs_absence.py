@@ -1,13 +1,13 @@
 """Spec 02, test 4 — Absence.
 
-"A `state = "absent"` seat produces the explicit absence record — not an
+"A `state = "absent"` chair produces the explicit absence record — not an
 exception, not a silent skip — and counts against the witness floor."
 
 Both halves matter and they pull in opposite directions. An absence that raised
 would be indistinguishable from a broken configuration; an absence that was
 simply left out of the roster would be a silent skip, and the run would look
-fully witnessed while a seat nobody configured quietly stopped counting. So an
-absent seat stays in the roster, resolves to a value rather than an exception,
+fully witnessed while a chair nobody configured quietly stopped counting. So an
+absent chair stays in the roster, resolves to a value rather than an exception,
 and is one fewer configured witness against a floor that does not shrink to match.
 
 The end of that sentence — that a run carries the absence all the way into its
@@ -56,7 +56,7 @@ def test_resolving_an_absent_chair_returns_its_record_rather_than_raising(roster
 
 
 def test_an_absent_chair_must_carry_a_reason(tmp_path):
-    """ "Absent" with no reason is a seat that vanished, not one that was retired."""
+    """ "Absent" with no reason is a chair that vanished, not one that was retired."""
     for table in ({"state": "absent"}, {"state": "absent", "reason": "  "}):
         with pytest.raises(ConfigurationRefusal, match="reason"):
             config_of(tmp_path, {"attestator_4": table})
@@ -73,7 +73,7 @@ def test_an_absent_chair_may_not_carry_a_pin_field(tmp_path):
 
 
 def test_an_absent_witness_stays_in_the_roster_the_run_binds(roster):
-    """`run.json`'s `witness_chairs` is the roster, absences included. A seat
+    """`run.json`'s `witness_chairs` is the roster, absences included. A chair
     dropped from it would make an under-witnessed run look fully witnessed, and
     reopening the same run id after the drop would not even be refused."""
     assert roster.config.witness_chairs == (
@@ -111,7 +111,7 @@ def test_the_absence_reaches_the_coverage_record_as_an_unresolved_chair(roster):
     """The roster's own arithmetic and the act-level arithmetic have to agree.
 
     `witness_coverage` counts completed-class outcomes against the same floor, so
-    an absent seat recorded `not-run` for an act lands as unresolved and forces
+    an absent chair recorded `not-run` for an act lands as unresolved and forces
     `under_witnessed` — which is what "counts against the witness floor" means
     once the run is running rather than only being configured.
     """
@@ -131,8 +131,8 @@ def test_the_absence_reaches_the_coverage_record_as_an_unresolved_chair(roster):
 
 
 def test_ensure_and_receipt_both_refuse_an_absent_chair_naming_it(roster):
-    """Neither call may fall through to some other seat's snapshot. Both take a
-    `SeatIdentity`, so the only way to ask is to hand over another seat's — which
+    """Neither call may fall through to some other chair's snapshot. Both take a
+    `ChairIdentity`, so the only way to ask is to hand over another chair's — which
     is exactly the substitution the refusal exists to name."""
     stolen = ChairIdentity(**{**roster.resolve("attestator_1").to_record(), "role": "attestator_4"})
 

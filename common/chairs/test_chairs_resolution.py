@@ -53,7 +53,7 @@ def test_a_huggingface_chair_resolves_to_its_exact_pinned_identity(tmp_path):
 
 
 def test_a_local_repository_chair_resolves_to_a_path_and_no_revision(tmp_path):
-    """A local seat has no git revision by contract, so its verified manifest
+    """A local chair has no git revision by contract, so its verified manifest
     hash is the immutable revision-equivalent — and the receipt says which."""
     config = config_of(
         tmp_path, {"perlector": local_chair("perlector", DIGEST)}, model_root="model-fixtures"

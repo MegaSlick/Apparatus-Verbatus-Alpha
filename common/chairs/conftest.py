@@ -1,4 +1,4 @@
-"""Builders the seat test files share, so each spec test can stand on its own.
+"""Builders the chair test files share, so each spec test can stand on its own.
 
 Spec 02 names nine tests. Seven of them live here, one file each, named for the
 test they discharge, because a reader checking the spec against the suite should
@@ -27,7 +27,7 @@ SERVING_RECIPE = "fixture-recipe-v0"
 
 
 def hf_chair(role: str, digest_manifest: str, **overrides: Any) -> dict[str, Any]:
-    """A well-formed `huggingface` seat table, before any deliberate damage."""
+    """A well-formed `huggingface` chair table, before any deliberate damage."""
     table = {
         "state": "configured",
         "source": "huggingface",
@@ -43,7 +43,7 @@ def hf_chair(role: str, digest_manifest: str, **overrides: Any) -> dict[str, Any
 
 
 def local_chair(role: str, digest_manifest: str, **overrides: Any) -> dict[str, Any]:
-    """A well-formed `local-repository` seat table: a path, and no revision."""
+    """A well-formed `local-repository` chair table: a path, and no revision."""
     table = {
         "state": "configured",
         "source": "local-repository",
@@ -121,9 +121,9 @@ class RecordingFetcher:
     """The one network seam, offline, keeping the log the tests actually assert on.
 
     Two things are measured through it and neither is Hugging Face's behaviour:
-    which seat a fetch was requested for, and exactly which paths were asked for.
+    which chair a fetch was requested for, and exactly which paths were asked for.
     Spec 02, test 2 says this plainly — "this measures the call the mock
-    received" — and test 7 leans on the same log to show no *other* seat was ever
+    received" — and test 7 leans on the same log to show no *other* chair was ever
     reached for while a refusal was being handled.
     """
 
@@ -174,11 +174,11 @@ def serving_details(**overrides: Any) -> ServingDetails:
 
 @pytest.fixture
 def hf_world(tmp_path):
-    """One configured Hugging Face seat, one absent seat, and a bystander.
+    """One configured Hugging Face chair, one absent chair, and a bystander.
 
-    The bystander is not decoration: "no other configured seat is invoked" is a
+    The bystander is not decoration: "no other configured chair is invoked" is a
     vacuous claim against a roster of one, so every refusal test has at least one
-    tempting alternative sitting beside the seat that refuses.
+    tempting alternative sitting beside the chair that refuses.
     """
     files = {"config.json": b'{"fixture": true}\n', "nested/weights.bin": b"fixture weights\n"}
     write_snapshot(tmp_path / "remote", files)
@@ -214,18 +214,18 @@ class HuggingFaceWorld:
 
 
 class DeterministicChairRegistry:
-    """The seat protocol's second implementation: in-memory, offline, no fetch.
+    """The chair protocol's second implementation: in-memory, offline, no fetch.
 
     Spec 02 asks for "a deterministic fake honoring the same protocol, for the
     skeleton and every offline test", living beside the tests rather than in
     `proof/` — `proof/` holds fixture *data*, and a fake implementation is code.
     It sits in this file, the one module in the package that only ever loads
     under pytest, so that nothing shipped can reach it: a fake answering under a
-    configured seat's name is the exact failure the whole framework is built to
+    configured chair's name is the exact failure the whole framework is built to
     refuse, and the surest way to prevent it is to leave no import path to one.
 
     Independence, in the sense spec 02 defines: it does not import, subclass or
-    delegate to `SeatRegistry`. It shares the configuration parser, because the
+    delegate to `ChairRegistry`. It shares the configuration parser, because the
     two implementations are meant to enforce one contract on a pin rather than
     two that happen to agree, and it shares the receipt builder for the same
     reason. Everything the protocol actually names — resolution, verification,
@@ -249,7 +249,7 @@ class DeterministicChairRegistry:
         self.calls.append(("resolve", role))
         configured = self.config.chairs.get(role)
         if configured is None:
-            raise UnresolvedChairRefusal(role, "role is not present in this deterministic seat")
+            raise UnresolvedChairRefusal(role, "role is not present in this deterministic chair")
         return configured
 
     def ensure(self, identity):
@@ -282,7 +282,7 @@ class DeterministicChairRegistry:
         configured = self.resolve(identity.role)
         if isinstance(configured, AbsentChair):
             raise UnresolvedChairRefusal(
-                identity.role, f"seat is explicitly absent: {configured.reason}"
+                identity.role, f"chair is explicitly absent: {configured.reason}"
             )
         if not isinstance(configured, ChairIdentity) or configured != identity:
             raise UnresolvedChairRefusal(

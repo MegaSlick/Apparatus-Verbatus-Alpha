@@ -30,9 +30,9 @@ treat a manifest as the evidence that something happened.
 ## run.json
 
 The immutable authority for what this run *is*: its source pages, its configured
-witness seats, its configuration digest, its adapter recipes — self-hashed, so an
+witness chairs, its configuration digest, its adapter recipes — self-hashed, so an
 edit after sealing is detectable. Reopening a run id whose source, configuration,
-recipes, or seat roster have changed is refused before any write: that is a
+recipes, or chair roster have changed is refused before any write: that is a
 different run wearing an old name.
 
 It deliberately does not predeclare acts. Pages are given; acts are discovered, and

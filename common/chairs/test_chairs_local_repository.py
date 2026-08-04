@@ -1,4 +1,4 @@
-"""Spec 02, test 5 — Local-repository seat.
+"""Spec 02, test 5 — Local-repository chair.
 
 "Path resolution under the model root, escape attempts refused, digest
 verification, no network."
@@ -6,7 +6,7 @@ verification, no network."
 The clause behind it is ARCHITECTURE's, not CLAUDE.md's Quarantine: weights are
 never vendored, a locally trained checkpoint is *called* like any other model
 from its own model repository, and trained weights are "a candidate, never a
-privileged inheritance". A local seat is therefore an ordinary seat that happens
+privileged inheritance". A local chair is therefore an ordinary chair that happens
 to sit on this filesystem — pinned by digest manifest exactly like a fetched one,
 and holding no revision at all, because it has no git commit to name.
 """
@@ -56,7 +56,7 @@ def test_a_complete_local_repository_verifies_against_its_pin(tmp_path):
 
 def test_a_local_repository_round_trip_never_touches_the_network(tmp_path):
     """Not "no network was reachable": no fetch was requested at all. The one
-    seam records every call, and for a local seat the log stays empty."""
+    seam records every call, and for a local chair the log stays empty."""
     registry, _, fetcher = _world(tmp_path)
     registry.ensure(registry.resolve("perlector"))
     assert fetcher.calls == []
@@ -80,8 +80,8 @@ def test_an_extra_file_under_the_model_root_fails_naming_it(tmp_path):
 
 
 def test_a_missing_file_under_the_model_root_fails_naming_it(tmp_path):
-    """A local seat has nowhere to re-fetch from, so a gap is a refusal outright
-    rather than the partial-cache path a Hugging Face seat takes."""
+    """A local chair has nowhere to re-fetch from, so a gap is a refusal outright
+    rather than the partial-cache path a Hugging Face chair takes."""
     registry, snapshot, _ = _world(tmp_path)
     (snapshot / "config.json").unlink()
 

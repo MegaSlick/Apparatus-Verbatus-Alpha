@@ -137,7 +137,7 @@ def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | Non
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run under the explicitly supplied seat/config implementation."""
+    """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, ARMARIUM, registry_factory=registry_factory)
 

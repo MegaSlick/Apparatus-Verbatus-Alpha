@@ -1,22 +1,22 @@
 """Spec 02, test 6, second half: "with the skeleton's calling stages
 parameterized over both".
 
-`common/seats/test_seats_contract_suite.py` runs the protocol itself against both
+`common/chairs/test_chairs_contract_suite.py` runs the protocol itself against both
 implementations. This runs the *pipeline* against both: all eight stage programs,
-over the real fixture, once through the production `SeatRegistry` and once
-through the `DeterministicSeatRegistry` the seat tests already use. One fake, in
+over the real fixture, once through the production `ChairRegistry` and once
+through the `DeterministicChairRegistry` the chair tests already use. One fake, in
 one place, exercised from both ends — a second copy living here would drift from
 the first and neither would be the thing the contract suite proved.
 
 The claim stays the size spec 02 sized it. This shows the skeleton's stages run
-against two implementations of the seat interface. It shows nothing about model
+against two implementations of the chair interface. It shows nothing about model
 churn, and nothing about any model at all.
 
 One departure from `test_orchestrator_acceptance.py`'s rule that load-bearing
 tests shell out: the injection seam is a `main(registry_factory=...)` keyword, so
 these stages are loaded and called in-process. The seam is deliberately not a
 command-line option — a `--registry fake` flag would be a live route to a fake
-answering under a configured seat's name, which is the one thing this whole
+answering under a configured chair's name, which is the one thing this whole
 framework exists to refuse. The end-to-end runs stay in the acceptance file,
 where they really are subprocesses.
 """
@@ -123,7 +123,7 @@ def test_the_deterministic_implementation_really_answered_for_every_chair_the_st
     """The parameterization above would still pass if the stages quietly fell
     back to the production registry, because both implementations agree. This is
     the assertion that says they did not: the fake's own call log has to carry
-    every seat the skeleton calls, through all three protocol methods."""
+    every chair the skeleton calls, through all three protocol methods."""
     fake = DeterministicChairRegistry(MODELS_CONFIG, tmp_path / "fake-snapshot")
     arguments = [
         "--run-root",

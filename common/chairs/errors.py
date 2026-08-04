@@ -1,4 +1,4 @@
-"""Closed refusals for the model-seat boundary.
+"""Closed refusals for the model-chair boundary.
 
 GOVERNANCE 6: Every stored reading carries the resolved identity and revision of the
 model that produced it, at the moment it was produced.  The registry therefore
@@ -12,18 +12,18 @@ from common.contracts.errors import ContractError
 
 
 class ChairRefusal(ContractError):
-    """Base refusal with the requested seat and the concrete mismatch."""
+    """Base refusal with the requested chair and the concrete mismatch."""
 
-    code = "seat-refusal"
+    code = "chair-refusal"
 
     def __init__(self, chair: str, difference: str):
         self.chair = chair
         self.difference = difference
-        super().__init__(f"seat {chair!r}: {difference}")
+        super().__init__(f"chair {chair!r}: {difference}")
 
 
 class ConfigurationRefusal(ChairRefusal):
-    """The named seat does not conform to the models.toml schema."""
+    """The named chair does not conform to the models.toml schema."""
 
     code = "configuration"
 
@@ -31,7 +31,7 @@ class ConfigurationRefusal(ChairRefusal):
 class UnresolvedChairRefusal(ChairRefusal):
     """The requested role cannot resolve to its own configured identity."""
 
-    code = "unresolved-seat"
+    code = "unresolved-chair"
 
 
 class DigestMismatchRefusal(ChairRefusal):
@@ -71,7 +71,7 @@ class ReceiptRefusal(ChairRefusal):
 
 
 class ProtocolClauseRefusal(ChairRefusal):
-    """An implementation breaks one named clause of the seat protocol."""
+    """An implementation breaks one named clause of the chair protocol."""
 
     code = "protocol-clause"
 

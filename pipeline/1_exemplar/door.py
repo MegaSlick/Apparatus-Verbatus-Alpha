@@ -62,11 +62,11 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Create the run with an explicitly supplied seat implementation.
+    """Create the run with an explicitly supplied chair implementation.
 
     The command-line default is the production registry. Tests supply an
     independent deterministic implementation through this seam; no command-line
-    option chooses among implementations, seats, revisions, recipes, or caches.
+    option chooses among implementations, chairs, revisions, recipes, or caches.
     """
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     fixture = load_fixture(args.fixture_root)

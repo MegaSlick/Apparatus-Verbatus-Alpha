@@ -13,14 +13,14 @@ The knobs. One question per planned file, each answerable without reading code.
 than in stage code or stage documentation, which keeps a swap to one configuration
 change. It also owns the three things a run is bound to that follow from the
 roster: the witness floor, the adapter recipes, and — with the fixture and the
-scenario — the run's configuration digest. `common/seats/README.md` describes how
+scenario — the run's configuration digest. `common/chairs/README.md` describes how
 it is read and what a malformed pin earns.
 
 Two directories sit beside it because they are resolved relative to it, and could
 not be pinned by it from anywhere else:
 
-- `manifests/` — one digest-manifest artifact per configured seat: the sorted
-  `{path, sha256, size}` rows whose canonical bytes a seat's `digest_manifest`
+- `manifests/` — one digest-manifest artifact per configured chair: the sorted
+  `{path, sha256, size}` rows whose canonical bytes a chair's `digest_manifest`
   names.
 - `model-fixtures/` — the tiny local-repository snapshots the offline walking
   skeleton resolves. **These are not models.** They stand in for a model

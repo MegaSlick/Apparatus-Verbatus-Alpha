@@ -177,7 +177,7 @@ def test_reusing_a_run_id_with_changed_adapter_recipes_is_refused(tmp_path):
 
 
 def test_reusing_a_run_id_with_a_changed_chair_roster_is_refused(tmp_path):
-    """A run that silently dropped a configured seat would under-witness every act
+    """A run that silently dropped a configured chair would under-witness every act
     in it while looking like the run that was authorized."""
     make_run(tmp_path)
     with pytest.raises(IncompatibleReuse):

@@ -1,4 +1,4 @@
-"""Attestatores: every configured seat reports, and every absence is a record.
+"""Attestatores: every configured chair reports, and every absence is a record.
 
 The biggest change from the old stage is the write path. Attempts are append-only:
 nothing overwrites attempt 1 to record attempt 2, and "current" is *derived* — the
@@ -6,7 +6,7 @@ latest attempt with its honest status — so a failed re-read shows as `failed` 
 the earlier success intact and visible as history, never hidden behind it. That is
 Tyrel's retention ruling of 2026-07-30 and GOVERNANCE 4.
 
-Every configured seat gets an explicit outcome for every act, drawn from the closed
+Every configured chair gets an explicit outcome for every act, drawn from the closed
 six-member vocabulary the contracts define. `failed` is the member Sol's finding
 B-2 added: an attempt was made and produced no usable Testimonium, as against
 `dead` (unavailable, never attempted) and `not-run` (configured, never tried). The
@@ -51,7 +51,7 @@ def proposed_regions(context, act_id: str) -> list[dict]:
 
     A Testimonium binds to the exact region it read, and a later recrop never
     silently inherits it (spec 07). Reading whichever region was *current* would
-    do exactly that: after a recovery, the same seat-and-attempt identity would
+    do exactly that: after a recovery, the same chair-and-attempt identity would
     describe different pixels, and the run tree rightly refuses to let one
     identity mean two things.
 
@@ -109,7 +109,7 @@ def content_health(reported: str | None) -> dict:
 def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted: bool) -> dict:
     """The exact configured identity for one witness outcome.
 
-    An absent seat has no model identity and no serving moment. A configured seat
+    An absent chair has no model identity and no serving moment. A configured chair
     gets a receipt only when it actually attempted a reading; `not-run` records
     retain the resolved pin but do not invent a serving event that never happened.
     """
@@ -144,10 +144,10 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run through the explicitly supplied seat implementation.
+    """Run through the explicitly supplied chair implementation.
 
     Production passes the default registry. The test-only injection is a
-    dependency seam, not a runtime choice among models or seats.
+    dependency seam, not a runtime choice among models or chairs.
     """
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
@@ -158,9 +158,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         if act["outcome"] == "held":
             # The Designator held this act: its proposal is incomplete, and a
             # witness shown only what exists would have read part of an act
-            # while the record said it read the act. Every configured seat
+            # while the record said it read the act. Every configured chair
             # still gets an explicit outcome — `not-run`, an unresolved unit —
-            # because a seat that simply never appears is a silent skip, and a
+            # because a chair that simply never appears is a silent skip, and a
             # silent skip is the shape of the original defect.
             for chair in context.witness_chairs:
                 resolved = context.registry.resolve(chair)
@@ -207,23 +207,23 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             if isinstance(resolved, AbsentChair):
                 # An explicitly absent witness remains in the run roster and
                 # therefore receives a visible outcome. Fixture testimony never
-                # turns an absent seat into a different configured model.
+                # turns an absent chair into a different configured model.
                 outcome = "not-run"
-                payload = {"reason": f"seat is explicitly absent: {resolved.reason}"}
+                payload = {"reason": f"chair is explicitly absent: {resolved.reason}"}
             elif failed:
-                outcome, payload = "failed", {"reason": "the seat returned no usable report"}
+                outcome, payload = "failed", {"reason": "the chair returned no usable report"}
             elif reported is None:
                 # Configured, nothing declared for it: not-run, which is an
                 # unresolved unit and forces the run visibly partial. It is not
                 # an empty reading and must never be counted as one.
-                outcome, payload = "not-run", {"reason": "no attempt was made for this seat"}
+                outcome, payload = "not-run", {"reason": "no attempt was made for this chair"}
             else:
                 outcome, payload = "read", {"reported": reported}
 
             # Derived from the outcome, never set beside it: the Perlector reads
             # the same set to decide whether a testimonium must carry a receipt,
             # and a producer and a consumer disagreeing about which outcomes mean
-            # "a seat actually served" is a refusal nobody could act on.
+            # "a chair actually served" is a refusal nobody could act on.
             attempted = outcome in ATTEMPTED_WITNESS_OUTCOMES
 
             context.publish(
@@ -242,7 +242,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "attempt_ordinal": 1,
                     "regions": region_references if attempted else [],
                     "provenance": provenance_for(context, resolved, attempted=attempted),
-                    # What this witness's output format can even express. A seat
+                    # What this witness's output format can even express. A chair
                     # that cannot say "unsure" must not be read as confident.
                     "format_capabilities": {
                         "can_express_uncertainty": False,
@@ -255,7 +255,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             recorded += 1
 
     if recorded == 0:
-        raise ContractError("no seat produced an outcome for any act")
+        raise ContractError("no chair produced an outcome for any act")
 
     context.finish()
     return EXIT_COMPLETE

@@ -1,26 +1,26 @@
 """Spec 02, test 7 — No substitution. The one this whole system exists for.
 
-"Every refusal in the clause above, injected: each raises with the seat named,
-and no other configured seat is invoked. This is the test the picker warning
+"Every refusal in the clause above, injected: each raises with the chair named,
+and no other configured chair is invoked. This is the test the picker warning
 never had."
 
 The clause names seven doors, and each is a refusal and never a substitution:
 
-  1. a seat whose digest does not verify
-  2. a seat that will not resolve — never a fake, never a base, never a
+  1. a chair whose digest does not verify
+  2. a chair that will not resolve — never a fake, never a base, never a
      neighbouring revision
   3. a cache holding a different revision than the pin (harvest #43: a pin is a
      constant the artifact must MATCH, never a value the artifact supplies)
   4. an adapter that will not fetch — never the bare base under the adapter's
-     seat name
+     chair name
   5. a serving recipe that will not start — never a second route under the same
      role name
-  6. a seat configured `absent`, which stays in the roster as an explicit
+  6. a chair configured `absent`, which stays in the roster as an explicit
      absence rather than being quietly filled
   7. a local-repository path that escapes its model root
 
-Every roster below carries at least one other configured seat, so "no other
-configured seat is invoked" is a real claim rather than a vacuous one, and every
+Every roster below carries at least one other configured chair, so "no other
+configured chair is invoked" is a real claim rather than a vacuous one, and every
 door is driven through the *real* registry. Two logs are asserted on: the fetch
 seam's, and a trace of every `resolve`/`ensure`/`receipt` call the registry made
 while handling the refusal.
@@ -63,7 +63,7 @@ FILES = {"weights.bin": b"expected fixture bytes\n"}
 class Traced:
     """Every protocol call the registry makes, in order, with the role asked for.
 
-    A refusal that named the right seat could still have reached for another one
+    A refusal that named the right chair could still have reached for another one
     on the way — resolving it, fetching it, receipting it — and the raised error
     would look identical. This is what makes the difference visible.
     """
@@ -93,12 +93,12 @@ class Traced:
 
 @pytest.fixture
 def world(tmp_path):
-    """One seat under test, one bystander that must never be reached for."""
+    """One chair under test, one bystander that must never be reached for."""
     write_snapshot(tmp_path / "remote", dict(FILES))
-    pin = pin_snapshot(tmp_path / "remote", tmp_path / "manifests" / "seat.json")
+    pin = pin_snapshot(tmp_path / "remote", tmp_path / "manifests" / "chair.json")
     chairs = {
-        "attestator_1": hf_chair("attestator_1", pin, manifest="manifests/seat.json"),
-        BYSTANDER: hf_chair(BYSTANDER, pin, manifest="manifests/seat.json"),
+        "attestator_1": hf_chair("attestator_1", pin, manifest="manifests/chair.json"),
+        BYSTANDER: hf_chair(BYSTANDER, pin, manifest="manifests/chair.json"),
     }
     fetcher = RecordingFetcher(dict(FILES))
     registry = registry_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher)
@@ -106,13 +106,13 @@ def world(tmp_path):
 
 
 def _assert_no_other_chair_was_reached_for(traced: Traced, fetcher: RecordingFetcher, chair: str):
-    """The whole of "no other configured seat is invoked", in three assertions."""
+    """The whole of "no other configured chair is invoked", in three assertions."""
     assert traced.roles("ensure") <= {chair}
     assert traced.roles("receipt") <= {chair}
     assert set(fetcher.roles) <= {chair}
 
 
-# --- 1. A seat whose digest does not verify -----------------------------------------
+# --- 1. A chair whose digest does not verify -----------------------------------------
 
 
 def test_a_digest_that_does_not_verify_refuses_without_reaching_for_another_chair(world):
@@ -129,7 +129,7 @@ def test_a_digest_that_does_not_verify_refuses_without_reaching_for_another_chai
     assert BYSTANDER not in traced.roles("resolve")
 
 
-# --- 2. A seat that will not resolve --------------------------------------------------
+# --- 2. A chair that will not resolve --------------------------------------------------
 
 
 def test_an_unconfigured_role_refuses_rather_than_returning_a_neighbouring_chair(world):
@@ -206,15 +206,15 @@ def test_a_cache_with_no_readable_descriptor_at_all_is_refused(world):
 
 @pytest.fixture
 def adapter_world(tmp_path):
-    """An adapter seat, its configured base, and a bystander witness."""
+    """An adapter chair, its configured base, and a bystander witness."""
     write_snapshot(tmp_path / "remote", dict(FILES))
-    pin = pin_snapshot(tmp_path / "remote", tmp_path / "manifests" / "seat.json")
+    pin = pin_snapshot(tmp_path / "remote", tmp_path / "manifests" / "chair.json")
     chairs = {
         "attestator_1": hf_chair(
-            "attestator_1", pin, manifest="manifests/seat.json", adapter_of="base"
+            "attestator_1", pin, manifest="manifests/chair.json", adapter_of="base"
         ),
-        "base": hf_chair("base", pin, manifest="manifests/seat.json", revision="b" * 40),
-        BYSTANDER: hf_chair(BYSTANDER, pin, manifest="manifests/seat.json"),
+        "base": hf_chair("base", pin, manifest="manifests/chair.json", revision="b" * 40),
+        BYSTANDER: hf_chair(BYSTANDER, pin, manifest="manifests/chair.json"),
     }
     fetcher = RecordingFetcher(dict(FILES))
     registry = registry_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher)
@@ -223,7 +223,7 @@ def adapter_world(tmp_path):
 
 def test_an_adapter_that_will_not_fetch_is_never_served_as_its_bare_base(adapter_world):
     """The failure mode this refusal exists for: the base fetches perfectly well,
-    and serving it under the adapter's seat name would look like success."""
+    and serving it under the adapter's chair name would look like success."""
     traced, fetcher = adapter_world
     fetcher.fail = RuntimeError("adapter weights would not download")
     adapter = traced.resolve("attestator_1")
@@ -261,14 +261,14 @@ def test_an_adapter_cache_is_bound_to_its_base_pin_and_refuses_when_the_base_mov
                 "attestator_1": hf_chair(
                     "attestator_1",
                     adapter.digest_manifest,
-                    manifest="manifests/seat.json",
+                    manifest="manifests/chair.json",
                     adapter_of="base",
                 ),
                 "base": hf_chair(
-                    "base", base.digest_manifest, manifest="manifests/seat.json", revision="c" * 40
+                    "base", base.digest_manifest, manifest="manifests/chair.json", revision="c" * 40
                 ),
                 BYSTANDER: hf_chair(
-                    BYSTANDER, base.digest_manifest, manifest="manifests/seat.json"
+                    BYSTANDER, base.digest_manifest, manifest="manifests/chair.json"
                 ),
             },
             witness_floor=2,
@@ -338,7 +338,7 @@ def test_a_recipe_failure_for_a_chair_that_is_no_longer_the_configured_pin_is_re
         traced.refuse_recipe_start(neighbouring, "irrelevant")
 
 
-# --- 6. A seat configured absent -------------------------------------------------------
+# --- 6. A chair configured absent -------------------------------------------------------
 
 
 def test_an_explicit_absence_is_never_filled_by_a_configured_neighbour(tmp_path):
@@ -366,11 +366,11 @@ def test_a_local_path_escaping_the_model_root_refuses_without_touching_the_netwo
     outside = write_snapshot(tmp_path / "outside", {"weights.bin": b"somewhere else\n"})
     (model_root / "escape").symlink_to(outside, target_is_directory=True)
     write_snapshot(model_root / BYSTANDER, dict(FILES))
-    pin = pin_snapshot(outside, tmp_path / "manifests" / "seat.json")
+    pin = pin_snapshot(outside, tmp_path / "manifests" / "chair.json")
 
     chairs = {
-        "perlector": local_chair("perlector", pin, path="escape", manifest="manifests/seat.json"),
-        BYSTANDER: local_chair(BYSTANDER, pin, manifest="manifests/seat.json"),
+        "perlector": local_chair("perlector", pin, path="escape", manifest="manifests/chair.json"),
+        BYSTANDER: local_chair(BYSTANDER, pin, manifest="manifests/chair.json"),
     }
     fetcher = RecordingFetcher(dict(FILES))
     registry = ChairRegistry(
@@ -407,11 +407,11 @@ def test_every_refusal_this_package_raises_is_a_member_of_the_closed_taxonomy():
         assert isinstance(error, ContractError)
 
     assert not is_closed_refusal(ChairRefusal("attestator_1", "the base class is not a member"))
-    assert not is_closed_refusal(ValueError("not a seat refusal at all"))
+    assert not is_closed_refusal(ValueError("not a chair refusal at all"))
 
 
 def test_a_refusal_carries_the_concrete_difference_and_not_only_the_chair(world):
-    """ "seat 'attestator_1': it did not work" would satisfy "names the seat" and
+    """ "chair 'attestator_1': it did not work" would satisfy "names the chair" and
     tell an operator nothing about what to change."""
     traced, fetcher = world
     fetcher.files["weights.bin"] = b"drifted\n"

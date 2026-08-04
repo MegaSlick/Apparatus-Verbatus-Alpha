@@ -32,7 +32,7 @@ from common.stage import (  # noqa: E402
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run under the explicitly supplied seat/config implementation."""
+    """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, EXEMPLAR, registry_factory=registry_factory)
     tree = context.tree

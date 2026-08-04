@@ -111,7 +111,7 @@ def validate_receipt(record: Any) -> dict[str, Any]:
 
 def _validate_identity(identity: ChairIdentity) -> None:
     if not isinstance(identity.role, str) or not identity.role:
-        raise ReceiptRefusal("receipt", "identity has no seat role")
+        raise ReceiptRefusal("receipt", "identity has no chair role")
     if identity.source == "huggingface":
         if not identity.repo or identity.path is not None or not is_hf_revision(identity.revision):
             raise ReceiptRefusal(
@@ -131,10 +131,10 @@ def _validate_identity(identity: ChairIdentity) -> None:
 def _validate_details(chair: str, details: ServingDetails) -> None:
     """Check the serving half directly, against the value's own attributes.
 
-    Deliberately not by building a throwaway `SeatIdentity` and reading the
+    Deliberately not by building a throwaway `ChairIdentity` and reading the
     assembled record back: a stand-in identity constructed to satisfy a
     validator is the one shape this package exists to keep out of its own code,
-    and it also made the refusal name a seat whose fields were invented here.
+    and it also made the refusal name a chair whose fields were invented here.
     """
     if not isinstance(details, ServingDetails):
         raise ReceiptRefusal(chair, "serving details are not a ServingDetails value")

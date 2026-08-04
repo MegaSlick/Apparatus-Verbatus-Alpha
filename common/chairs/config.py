@@ -76,7 +76,7 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
         and model_root is None
     ):
         raise ConfigurationRefusal(
-            "models.toml", "model_root is required when a local-repository seat is configured"
+            "models.toml", "model_root is required when a local-repository chair is configured"
         )
 
     for role, value in chairs.items():
@@ -85,14 +85,14 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
         base = chairs.get(value.adapter_of)
         if base is None:
             raise ConfigurationRefusal(
-                role, f"adapter_of names no configured base seat {value.adapter_of!r}"
+                role, f"adapter_of names no configured base chair {value.adapter_of!r}"
             )
         if isinstance(base, AbsentChair):
             raise ConfigurationRefusal(
                 role, f"adapter_of base {value.adapter_of!r} is explicitly absent"
             )
         if value.adapter_of == role:
-            raise ConfigurationRefusal(role, "adapter_of cannot name the adapter seat itself")
+            raise ConfigurationRefusal(role, "adapter_of cannot name the adapter chair itself")
 
     return ModelsConfig(
         witness_floor=witness_floor,
@@ -105,7 +105,7 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
 
 def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
     if not isinstance(values, dict):
-        raise ConfigurationRefusal(role, "seat declaration is not a table")
+        raise ConfigurationRefusal(role, "chair declaration is not a table")
     state = values.get("state")
     if state == "absent":
         _only_keys(role, values, {"state", "reason"})
@@ -116,7 +116,7 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
     source = values.get("source")
     if source not in ("huggingface", "local-repository"):
         raise ConfigurationRefusal(
-            role, "configured seat source must be 'huggingface' or 'local-repository'"
+            role, "configured chair source must be 'huggingface' or 'local-repository'"
         )
     allowed = _CONFIGURED_COMMON | ({"repo", "revision"} if source == "huggingface" else {"path"})
     _only_keys(role, values, allowed)
@@ -124,7 +124,7 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
     required |= {"repo", "revision"} if source == "huggingface" else {"path"}
     missing = sorted(field for field in required if field not in values)
     if missing:
-        raise ConfigurationRefusal(role, f"configured seat is missing field(s) {missing}")
+        raise ConfigurationRefusal(role, f"configured chair is missing field(s) {missing}")
 
     digest = values["digest_manifest"]
     if not is_sha256(digest):
@@ -178,7 +178,7 @@ def _only_keys(role: str, values: Mapping[str, Any], allowed: set[str]) -> None:
     unknown = sorted(set(values) - allowed)
     if unknown:
         raise ConfigurationRefusal(
-            role, f"field(s) {unknown} are forbidden for this seat state/source"
+            role, f"field(s) {unknown} are forbidden for this chair state/source"
         )
 
 

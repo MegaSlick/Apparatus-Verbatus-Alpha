@@ -9,7 +9,7 @@ endpoint and a start moment; `envelope.py`'s docstring already settles where suc
 a thing may live — "in an approval record or a run receipt, both of which are
 honestly non-deterministic and neither of which is a stage artifact" — so
 publishing one through `StageContext.publish` would break spec 01's determinism
-test. The refusal side of that lives in `common/test_stage_seats.py`, which has a
+test. The refusal side of that lives in `common/test_stage_chairs.py`, which has a
 `StageContext` to call; what is checked here is the value, its schema, and every
 way an incomplete one is refused.
 """
@@ -83,7 +83,7 @@ def test_a_receipt_carries_every_named_field_and_round_trips_through_its_validat
 
 
 def test_a_local_repository_receipt_records_its_revision_equivalent_and_says_which(tmp_path):
-    """A local seat has no git revision, so the verified manifest hash stands in
+    """A local chair has no git revision, so the verified manifest hash stands in
     — and `revision_kind` keeps that from being read as a commit id."""
     identity = config_of(
         tmp_path, {"perlector": local_chair("perlector", DIGEST)}, model_root="model-fixtures"
@@ -181,7 +181,7 @@ def test_a_receipt_that_is_not_an_object_at_all_is_refused(identity):
 
 
 def test_a_receipt_is_refused_for_an_identity_that_is_not_exactly_pinned(tmp_path):
-    """The seat's own pin has to be complete before there is anything to
+    """The chair's own pin has to be complete before there is anything to
     receipt: an identity carrying a branch name never reaches a receipt."""
     broken = ChairIdentity(
         role="attestator_1",
@@ -199,7 +199,7 @@ def test_a_receipt_is_refused_for_an_identity_that_is_not_exactly_pinned(tmp_pat
         build_receipt(broken, serving_details())
 
 
-# --- The registry only receipts the seat it still has a pin for ---------------------
+# --- The registry only receipts the chair it still has a pin for ---------------------
 
 
 def test_the_registry_refuses_a_receipt_for_an_identity_that_is_not_the_configured_pin(tmp_path):

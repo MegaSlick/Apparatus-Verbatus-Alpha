@@ -1,8 +1,8 @@
-"""The fixture seat snapshots, their manifests, and the pins that name them agree.
+"""The fixture chair snapshots, their manifests, and the pins that name them agree.
 
-Three artifacts have to say the same thing about every fixture seat: the bytes
-under `config/model-fixtures/<seat>/`, the manifest artifact under
-`config/manifests/<seat>.json`, and the `digest_manifest` pin in
+Three artifacts have to say the same thing about every fixture chair: the bytes
+under `config/model-fixtures/<chair>/`, the manifest artifact under
+`config/manifests/<chair>.json`, and the `digest_manifest` pin in
 `config/models.toml`. Nothing in the pipeline can notice if the checked-in
 manifest silently stops describing the checked-in bytes — `ensure()` would refuse
 at the first run, which is honest but late, and a pin edited to match a corrupted
@@ -24,7 +24,7 @@ MODELS_CONFIG = CONFIG_ROOT / "models.toml"
 
 
 def test_every_configured_fixture_chair_has_a_generator_entry():
-    """A seat configured in models.toml but absent from the generator would be a
+    """A chair configured in models.toml but absent from the generator would be a
     fixture nothing can rebuild, and therefore nothing can check."""
     config = load_models_toml(MODELS_CONFIG)
     configured = {role for role, chair in config.chairs.items() if isinstance(chair, ChairIdentity)}
@@ -52,7 +52,7 @@ def test_the_checked_in_snapshots_manifests_and_pins_all_agree(tmp_path):
 
 
 def test_no_two_fixture_chairs_share_a_snapshot():
-    """Distinct bytes per seat, so a manifest crossed between two seats fails."""
+    """Distinct bytes per chair, so a manifest crossed between two chairs fails."""
     pins = {
         role: chair.digest_manifest
         for role, chair in load_models_toml(MODELS_CONFIG).chairs.items()

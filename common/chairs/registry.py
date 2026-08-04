@@ -1,4 +1,4 @@
-"""Resolution and verification for named model seats, with no substitution path.
+"""Resolution and verification for named model chairs, with no substitution path.
 
 Every stored reading carries the resolved identity and revision of the model that produced it, at the moment it was produced.
 """
@@ -165,7 +165,7 @@ class ChairRegistry:
         configured = self.resolve(identity.role)
         if isinstance(configured, AbsentChair):
             raise UnresolvedChairRefusal(
-                identity.role, f"seat is explicitly absent: {configured.reason}"
+                identity.role, f"chair is explicitly absent: {configured.reason}"
             )
         if configured != identity:
             raise UnresolvedChairRefusal(
@@ -182,7 +182,7 @@ class ChairRegistry:
     def _resolve_local_path(self, identity: ChairIdentity) -> Path:
         if self.config.model_root is None:
             raise LocalPathRefusal(
-                identity.role, "no model_root is configured for local-repository seat"
+                identity.role, "no model_root is configured for local-repository chair"
             )
         base = (
             self.config.source_path.parent
@@ -201,7 +201,7 @@ class ChairRegistry:
     ) -> VerifiedSnapshot:
         if self.cache_root is None:
             raise UnresolvedChairRefusal(
-                identity.role, "no cache_root was supplied for Hugging Face seat"
+                identity.role, "no cache_root was supplied for Hugging Face chair"
             )
         if "/" in identity.role or "\\" in identity.role or identity.role in ("", ".", ".."):
             raise CacheRevisionRefusal(identity.role, "role is unsafe as a cache path")
@@ -271,7 +271,7 @@ class ChairRegistry:
 
 
 def resolve_local_path(identity: ChairIdentity, model_root: str | Path) -> Path:
-    """Resolve a local seat under model_root and refuse traversal or symlink escape."""
+    """Resolve a local chair under model_root and refuse traversal or symlink escape."""
 
     if identity.source != "local-repository" or not identity.path:
         raise LocalPathRefusal(identity.role, "local path requested for a non-local identity")

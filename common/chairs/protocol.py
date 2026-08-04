@@ -1,4 +1,4 @@
-"""Executable contract mechanics for independent seat implementations."""
+"""Executable contract mechanics for independent chair implementations."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from .models import AbsentChair, ChairIdentity, ServingDetails, ServingReceipt, 
 
 @runtime_checkable
 class ChairProtocol(Protocol):
-    """The caller-visible seat interface; lifecycle is intentionally absent."""
+    """The caller-visible chair interface; lifecycle is intentionally absent."""
 
     def resolve(self, role: str) -> ChairIdentity | AbsentChair:
         """Resolve only the role asked for."""

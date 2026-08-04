@@ -1,4 +1,4 @@
-"""The model-seat framework: exact named identities, verification, and receipts."""
+"""The model-chair framework: exact named identities, verification, and receipts."""
 
 from .config import load_models_toml, parse_models_config
 from .errors import (

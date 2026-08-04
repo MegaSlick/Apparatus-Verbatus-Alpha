@@ -37,7 +37,7 @@ EXIT_COMPLETE = 0
 EXIT_FATAL = 2
 EXIT_HELD = 3
 
-# The witness outcomes that mean a seat actually served, and therefore that a
+# The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
 # of the handoff need it and they must not drift: the Attestatores decides
 # whether to write a receipt, and the Perlector decides whether to demand one.
@@ -50,7 +50,7 @@ ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
 # because invariant #42 refuses *wrong-schema* provenance rather than a list of
 # fields we already know are wrong: a denylist passes anything a later stage
 # invents, and an unvalidated field inside a sealed reading is exactly what #42
-# exists to stop. `absence` appears only on an absent seat and the identity
+# exists to stop. `absence` appears only on an absent chair and the identity
 # fields only on a configured one; which combination is legal is decided in
 # `validate_serving_provenance`, not here.
 _PROVENANCE_FIELDS = frozenset(
@@ -79,7 +79,7 @@ class StageChairProtocol(ChairProtocol, Protocol):
     """The small additional config surface a calling stage needs.
 
     A stage receives this explicitly rather than knowing which registry
-    implementation made it.  The production default is ``SeatRegistry``; the
+    implementation made it.  The production default is ``ChairRegistry``; the
     deterministic fake beside the tests is a separate implementation of this
     protocol, not a subclass or import of it.
     """
@@ -346,11 +346,11 @@ def validate_serving_provenance(
     state = provenance.get("chair_state")
     chair = provenance.get("chair")
     if not isinstance(chair, str) or not chair:
-        raise SchemaRefusal("model provenance has no seat name")
+        raise SchemaRefusal("model provenance has no chair name")
     if state == "absent":
         configured = context.registry.resolve(chair)
         if not isinstance(configured, AbsentChair):
-            raise SchemaRefusal(f"model provenance calls configured seat {chair!r} absent")
+            raise SchemaRefusal(f"model provenance calls configured chair {chair!r} absent")
         if provenance.get("absence") != configured.to_record():
             raise SchemaRefusal(
                 f"model provenance absence for {chair!r} differs from models config"
@@ -359,16 +359,16 @@ def validate_serving_provenance(
             provenance.get(field) is not None
             for field in ("resolved_identity", "resolved_revision", "receipt_ref")
         ):
-            raise SchemaRefusal(f"absent seat {chair!r} carries a model identity or receipt")
+            raise SchemaRefusal(f"absent chair {chair!r} carries a model identity or receipt")
         if require_receipt:
-            raise SchemaRefusal(f"absent seat {chair!r} cannot have produced a reading")
+            raise SchemaRefusal(f"absent chair {chair!r} cannot have produced a reading")
         return None
 
     if state != "configured":
-        raise SchemaRefusal(f"model provenance has unknown seat state {state!r}")
+        raise SchemaRefusal(f"model provenance has unknown chair state {state!r}")
     record = provenance.get("resolved_identity")
     if not isinstance(record, dict):
-        raise SchemaRefusal(f"configured seat {chair!r} has no resolved identity")
+        raise SchemaRefusal(f"configured chair {chair!r} has no resolved identity")
     try:
         identity = ChairIdentity(**record)
     except TypeError as error:
@@ -392,10 +392,10 @@ def validate_serving_provenance(
     reference = provenance.get("receipt_ref")
     if not require_receipt:
         if reference is not None:
-            raise SchemaRefusal(f"seat {chair!r} was not run but carries a serving receipt")
+            raise SchemaRefusal(f"chair {chair!r} was not run but carries a serving receipt")
         return identity
     if not isinstance(reference, dict):
-        raise SchemaRefusal(f"reading from seat {chair!r} has no serving receipt reference")
+        raise SchemaRefusal(f"reading from chair {chair!r} has no serving receipt reference")
     receipt = context.tree.read_run_receipt(reference)
     expected = {
         "chair": identity.role,

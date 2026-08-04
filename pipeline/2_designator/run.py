@@ -60,17 +60,17 @@ DESIGNATOR_CHAIR = "designator_structure"
 
 
 def structure_provenance(context) -> dict:
-    """Verify and record the exact seat that produced structural proposals.
+    """Verify and record the exact chair that produced structural proposals.
 
     The walking skeleton derives deterministic crops, but it still exercises the
-    structure-seat seam. An absent or unverifiable Designator is a refusal, never
+    structure-chair seam. An absent or unverifiable Designator is a refusal, never
     a cue to synthesize structure through a different role.
     """
     resolved = context.registry.resolve(DESIGNATOR_CHAIR)
     if isinstance(resolved, AbsentChair):
         raise ContractError(
-            f"the Designator seat is explicitly absent: {resolved.reason}; "
-            "no other seat may mark out structure"
+            f"the Designator chair is explicitly absent: {resolved.reason}; "
+            "no other chair may mark out structure"
         )
     if not isinstance(resolved, ChairIdentity):
         raise ContractError("Designator resolution returned neither an identity nor an absence")
@@ -343,7 +343,7 @@ def _regions_of(context, act_id: str) -> list[dict]:
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run through the explicitly supplied structure-seat implementation."""
+    """Run through the explicitly supplied structure-chair implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, DESIGNATOR, registry_factory=registry_factory)
 

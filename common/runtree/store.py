@@ -17,7 +17,7 @@ responsible for:
                              identical; disagree with it and the artifacts win.
 
 `run.json` is the immutable authority for what this run *is*: its source pages,
-its configured witness seats, its configuration digest, its adapter recipes. It
+its configured witness chairs, its configuration digest, its adapter recipes. It
 deliberately does not predeclare acts — the Designator's proposal seal is the
 downstream expected-act authority, because acts are discovered and pages are given.
 
@@ -42,7 +42,7 @@ from typing import Any, Final
 # At module level, not deferred inside the two receipt methods. The dependency is
 # real — the store is the one writer and the one reader of a run receipt, and it
 # refuses an invalid one at both ends — so it belongs where a reader of the
-# imports can see it. `common/seats/` imports nothing from here, so there is no
+# imports can see it. `common/chairs/` imports nothing from here, so there is no
 # cycle to dodge, and a deferred import that exists only to hide a layer from the
 # eye is a layer nobody can check.
 from common.chairs.receipts import receipt_record, validate_receipt

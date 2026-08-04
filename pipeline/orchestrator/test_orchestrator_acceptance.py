@@ -48,7 +48,7 @@ FIXTURE = "synthetic-two-page-v0"
 # here is legitimate exactly when a commit deliberately changes what a run
 # writes, and then the new value belongs in that commit and nowhere else.
 HAPPY_RUN_TREE_DIGEST = "847165af3a625f66e7bf0cf5c352295eb509e89c45b332ab889c85cce1ceb069"
-REVIEW_RUN_TREE_DIGEST = "87884692f20b75c08f87b24637fe6798c806aa81fcbddd7fd509457f036a0396"
+REVIEW_RUN_TREE_DIGEST = "589c6b4251bafb89a368574fd6caa7413cf106ec008b31d8a8c6db2cbb771cb9"
 
 
 def orchestrate(
@@ -184,8 +184,8 @@ def test_the_run_used_no_network_and_no_model(happy_run):
     recipes = run["adapter_recipes"]
     assert len(recipes) == 8
     assert all(revision.startswith("fake-") for revision in recipes.values())
-    # Every configured seat is a local-repository fixture: nothing here can have
-    # reached Hugging Face, because no live seat names a repo at all.
+    # Every configured chair is a local-repository fixture: nothing here can have
+    # reached Hugging Face, because no live chair names a repo at all.
     assert {
         chair.source for chair in config.chairs.values() if isinstance(chair, ChairIdentity)
     } == {"local-repository"}
@@ -502,7 +502,7 @@ def test_the_held_act_appears_in_the_review_output_and_forces_partial(review_run
 def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
     """GOALS 3: a witness reading is never itself an output. The established text
     must not equal any witness's reported words *by accident of the fixture*
-    either, so the fixture deliberately makes two seats disagree."""
+    either, so the fixture deliberately makes two chairs disagree."""
     _, tree = review_run
     export = export_of(tree)
     testimony = {
@@ -754,7 +754,7 @@ def test_the_hold_is_a_real_artifact_naming_the_lost_page(refused_page_run):
 
 
 def test_no_witness_and_no_reading_pretends_to_have_seen_the_held_act(refused_page_run):
-    """The held act is not silently skipped: every configured seat records an
+    """The held act is not silently skipped: every configured chair records an
     explicit not-run, and the Perlector acknowledges the act without reading it —
     a reading of the near side alone would be a truncation delivered as an output."""
     _, tree = refused_page_run

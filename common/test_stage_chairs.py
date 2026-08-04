@@ -1,4 +1,4 @@
-"""The stage/run-receipt boundary for model-seat provenance."""
+"""The stage/run-receipt boundary for model-chair provenance."""
 
 from __future__ import annotations
 

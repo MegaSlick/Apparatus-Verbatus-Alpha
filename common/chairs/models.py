@@ -1,4 +1,4 @@
-"""Typed values exchanged by the model-seat protocol.
+"""Typed values exchanged by the model-chair protocol.
 
 These are deliberately data-only values.  They do not discover a model, launch a
 server, or choose an alternative: resolution and verification live in the registry.
@@ -252,7 +252,7 @@ class ModelsConfig:
         return tuple(sorted(role for role in self.chairs if role.startswith("attestator_")))
 
     def witness_floor_status(self) -> WitnessFloorStatus:
-        """Count configured Attestator seats; explicit absences create a deficit."""
+        """Count configured Attestator chairs; explicit absences create a deficit."""
 
         configured: list[str] = []
         absent: list[str] = []
