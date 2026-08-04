@@ -29,7 +29,7 @@ had no such member, so the supposedly closed algebra had a hole exactly where th
 retention ruling bites.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Any, Final
 
@@ -308,6 +308,7 @@ def run_aggregate(
     act_categories: Mapping[str, ArmariumCategory],
     coverage_records: Mapping[str, Mapping[str, Any]] | None = None,
     page_census: Mapping[int, Mapping[str, Any]] | None = None,
+    unaddressed_chairs: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -341,6 +342,17 @@ def run_aggregate(
     # carrying no acts is a blank page, which is a real and correct outcome.
     if not act_categories and not (page_census or {}):
         reasons.append("the run accounted for no acts and no pages, so nothing was reconciled")
+
+    # "Every configured chair reconciled against the configuration it was run
+    # under" was in this docstring before anything checked it. A configured chair
+    # whose role no stage addresses — a misspelt witness, most plainly — was
+    # resolved by nothing and named in no artifact, and the run still reported
+    # `complete`. It is named here instead, every time.
+    for chair in sorted(unaddressed_chairs or ()):
+        reasons.append(
+            f"chair {chair} is configured and no stage addresses that role, so nothing "
+            "resolved it and no artifact records it"
+        )
 
     for act, category in act_categories.items():
         if not isinstance(category, ArmariumCategory):

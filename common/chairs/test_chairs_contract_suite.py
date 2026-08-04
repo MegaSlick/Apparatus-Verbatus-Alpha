@@ -61,7 +61,7 @@ def implementation(request, tmp_path):
         from common.chairs.config import load_models_toml
 
         return registry_for(load_models_toml(config_path), tmp_path, RecordingFetcher({}))
-    return DeterministicChairRegistry(config_path, tmp_path / "deterministic-snapshot")
+    return DeterministicChairRegistry(config_path)
 
 
 # --- The shape itself --------------------------------------------------------------
@@ -258,6 +258,25 @@ def test_the_two_implementations_agree_on_a_huggingface_pin_they_cannot_both_fet
     from common.chairs.config import load_models_toml
 
     real = registry_for(load_models_toml(config_path), tmp_path, RecordingFetcher({}))
-    deterministic = DeterministicChairRegistry(config_path, tmp_path / "snapshot")
+    deterministic = DeterministicChairRegistry(config_path)
 
     assert real.resolve(CONFIGURED) == deterministic.resolve(CONFIGURED)
+
+
+def test_the_deterministic_implementation_refuses_to_exist_outside_a_test_run(
+    tmp_path, monkeypatch
+):
+    """The fake ships. `pyproject.toml` includes `common.*` wholesale, so this
+    class is an ordinary importable module of any installed copy — and a fake
+    answering under a configured chair's name is the one thing `common/chairs`
+    exists to refuse. Its constructor guard is what actually stops that, so the
+    guard needs a test; the packaging claim it replaced had none, which is why it
+    was wrong for as long as it was.
+    """
+    config_path = write_models_toml(
+        tmp_path, {CONFIGURED: hf_chair(CONFIGURED, "d" * 64)}, witness_floor=1
+    )
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    with pytest.raises(RuntimeError, match="refuses to run outside a pytest session"):
+        DeterministicChairRegistry(config_path)

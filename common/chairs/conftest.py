@@ -11,6 +11,9 @@ files, snapshot directories, manifest artifacts and serving details, and hands
 them back; every assertion about behaviour belongs in the test that makes it.
 """
 
+import hashlib
+import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -214,33 +217,48 @@ class HuggingFaceWorld:
 
 
 class DeterministicChairRegistry:
-    """The chair protocol's second implementation: in-memory, offline, no fetch.
+    """The chair protocol's second implementation: offline, no fetch.
 
     Spec 02 asks for "a deterministic fake honoring the same protocol, for the
     skeleton and every offline test", living beside the tests rather than in
     `proof/` — `proof/` holds fixture *data*, and a fake implementation is code.
-    It sits in this file, the one module in the package that only ever loads
-    under pytest, so that nothing shipped can reach it: a fake answering under a
-    configured chair's name is the exact failure the whole framework is built to
-    refuse, and the surest way to prevent it is to leave no import path to one.
+
+    **It is an ordinary module of an ordinary package, and it ships.** An earlier
+    version of this docstring said it "only ever loads under pytest, so that
+    nothing shipped can reach it"; `pyproject.toml` includes `common.*` wholesale,
+    so `import common.chairs.conftest` works in any installed copy. A fake
+    answering under a configured chair's name is the exact failure the framework
+    exists to refuse, and a claim about packaging that nothing checked was not
+    stopping it. The constructor guard below is: outside a pytest session this
+    class refuses to exist at all.
 
     Independence, in the sense spec 02 defines: it does not import, subclass or
     delegate to `ChairRegistry`. It shares the configuration parser, because the
     two implementations are meant to enforce one contract on a pin rather than
     two that happen to agree, and it shares the receipt builder for the same
     reason. Everything the protocol actually names — resolution, verification,
-    and what a receipt is issued for — it does itself.
+    and what a receipt is issued for — it does itself, down to its own hashing.
 
     `calls` is the log the parameterized skeleton test reads to prove the stages
     really ran against this implementation and not quietly against the real one.
     """
 
-    def __init__(self, config_path: str | Path, snapshot_root: Path):
+    def __init__(self, config_path: str | Path):
         from common.chairs.config import load_models_toml
 
+        # `PYTEST_CURRENT_TEST`, not `"pytest" in sys.modules`: this module imports
+        # pytest itself, so the module check was true the instant anyone imported
+        # this class and refused nothing. The environment variable is set by pytest
+        # only while a test's setup, call or teardown is running, which is the only
+        # time anything here has business existing.
+        if "PYTEST_CURRENT_TEST" not in os.environ:
+            raise RuntimeError(
+                "DeterministicChairRegistry is a test double and refuses to run outside a "
+                "pytest session; a fake answering under a configured chair's name is what "
+                "common/chairs exists to prevent"
+            )
         self.config = load_models_toml(config_path)
-        self.snapshot_root = Path(snapshot_root)
-        self.snapshot_root.mkdir(parents=True, exist_ok=True)
+        self._config_dir = Path(config_path).resolve().parent
         self.calls: list[tuple[str, str]] = []
 
     def resolve(self, role: str):
@@ -253,13 +271,91 @@ class DeterministicChairRegistry:
         return configured
 
     def ensure(self, identity):
+        """Verify the pinned snapshot, by its own reading of the manifest artifact.
+
+        It used to return a `VerifiedSnapshot` naming a directory it had created
+        itself and copy `identity.digest_manifest` into the answer, so the shared
+        contract suite could not tell an implementation that verifies from one
+        that asserts — and `exercise_contract` checks only the value's type and
+        identity, so an implementation with no verification at all passed it. The
+        hashing below is deliberately this class's own rather than
+        `manifests.verify_snapshot`: two implementations that call one verifier
+        agree because they are one verifier.
+        """
+        from common.chairs.errors import DigestMismatchRefusal, UnresolvedChairRefusal
         from common.chairs.models import VerifiedSnapshot
 
         self.calls.append(("ensure", identity.role))
         self._require_current(identity)
+        if identity.source != "local-repository":
+            raise UnresolvedChairRefusal(
+                identity.role,
+                "the deterministic chair fetches nothing, so only a local-repository pin "
+                "can be verified offline",
+            )
+        root = self._snapshot_root(identity)
+        expected = {row["path"]: row for row in self._manifest_rows(identity)}
+        actual = _files_under(root, identity.role)
+        for relative in sorted(set(expected) | set(actual)):
+            row, path = expected.get(relative), actual.get(relative)
+            if row is None:
+                raise DigestMismatchRefusal(
+                    identity.role, f"snapshot differs at {relative}: extra file"
+                )
+            if path is None:
+                raise DigestMismatchRefusal(
+                    identity.role, f"snapshot differs at {relative}: missing file"
+                )
+            data = path.read_bytes()
+            if len(data) != row["size"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
+                raise DigestMismatchRefusal(
+                    identity.role, f"snapshot differs at {relative}: bytes do not match the pin"
+                )
         return VerifiedSnapshot(
-            identity=identity, root=self.snapshot_root, manifest_digest=identity.digest_manifest
+            identity=identity, root=root, manifest_digest=identity.digest_manifest
         )
+
+    def _snapshot_root(self, identity) -> Path:
+        from common.chairs.errors import LocalPathRefusal
+
+        base = self._config_dir / (self.config.model_root or "")
+        root = (base / identity.path).resolve()
+        if not root.is_relative_to(base.resolve()) or not root.is_dir():
+            raise LocalPathRefusal(
+                identity.role, f"local path {identity.path!r} is not a directory under model_root"
+            )
+        return root
+
+    def _manifest_rows(self, identity) -> list[dict]:
+        """Read the manifest artifact and refuse it unless its bytes are the pin."""
+        from common.chairs.errors import DigestMismatchRefusal
+
+        path = (self._config_dir / identity.manifest).resolve()
+        try:
+            data = path.read_bytes()
+        except OSError as error:
+            raise DigestMismatchRefusal(
+                identity.role, f"cannot read manifest {path}: {error}"
+            ) from error
+        if hashlib.sha256(data).hexdigest() != identity.digest_manifest:
+            raise DigestMismatchRefusal(
+                identity.role, f"manifest {path} does not hash to the configured pin"
+            )
+        rows = json.loads(data)
+        if not isinstance(rows, list) or not rows:
+            raise DigestMismatchRefusal(
+                identity.role, "manifest artifact is not a non-empty row list"
+            )
+        # Row shape, not only list shape. Without this a malformed manifest reached
+        # `ensure` and came out as a bare KeyError or TypeError — an error outside
+        # the closed taxonomy, from the implementation whose whole job is to reach
+        # the same refusals the real registry reaches.
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict) or set(row) != {"path", "sha256", "size"}:
+                raise DigestMismatchRefusal(
+                    identity.role, f"manifest row {index} does not have exactly path, sha256, size"
+                )
+        return rows
 
     def receipt(self, identity, serving):
         from common.chairs.receipts import build_receipt
@@ -290,3 +386,24 @@ class DeterministicChairRegistry:
                 "identity differs from the configured pin; ensure and receipt never "
                 "accept a neighbouring revision",
             )
+
+
+def _files_under(root: Path, chair: str) -> dict[str, Path]:
+    """Every regular file beneath `root`, refusing a symlink rather than following it.
+
+    Refusing rather than skipping, because `manifests._regular_files` refuses, and
+    the two implementations are meant to agree on what a valid snapshot *is*. A
+    version of this that quietly skipped symlinks would have let a snapshot the
+    real registry rejects pass here, which is the disagreement the contract suite
+    exists to catch rather than to contain.
+    """
+    from common.chairs.errors import DigestMismatchRefusal
+
+    found: dict[str, Path] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            raise DigestMismatchRefusal(chair, f"snapshot differs at {relative}: symlink")
+        if not path.is_dir():
+            found[relative] = path
+    return found

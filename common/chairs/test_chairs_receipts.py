@@ -108,8 +108,17 @@ def test_an_adapter_identity_travels_in_full_or_not_at_all(tmp_path):
     assert record["adapter_identity"] == base.to_record()
     assert validate_receipt(record) == record
 
-    bare = receipt_record(build_receipt(adapter, serving_details()))
-    assert bare["adapter_identity"] is None
+    # "In full or not at all" is not the choice: an adapter chair's base really
+    # participated in the reading, so a receipt without it has lost a model that
+    # answered, and one naming a different chair has misattributed it.
+    with pytest.raises(ReceiptRefusal, match="carries no adapter base identity"):
+        build_receipt(adapter, serving_details())
+    with pytest.raises(ReceiptRefusal, match="configured as an adapter of"):
+        build_receipt(adapter, serving_details(adapter_identity=adapter))
+
+    # And the mirror: a chair with no `adapter_of` may not carry a base either.
+    with pytest.raises(ReceiptRefusal, match="configured with no adapter_of"):
+        build_receipt(base, serving_details(adapter_identity=adapter))
 
 
 # --- Every omission is refused (#42) ------------------------------------------------

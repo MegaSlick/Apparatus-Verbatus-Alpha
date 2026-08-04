@@ -25,11 +25,16 @@ def build_manifest(snapshot_root: str | Path) -> DigestManifest:
     root = Path(snapshot_root)
     if not root.is_dir():
         raise DigestMismatchRefusal("manifest", f"snapshot root {root} is not a directory")
-    rows = tuple(
-        ManifestRow(path=relative, sha256=digest_bytes(path.read_bytes()), size=path.stat().st_size)
-        for relative, path in _regular_files(root, chair="manifest")
-    )
-    return DigestManifest(rows=rows)
+    rows = []
+    for relative, path in _regular_files(root, chair="manifest"):
+        rows.append(
+            ManifestRow(
+                path=relative,
+                sha256=file_digest(path, "manifest", relative),
+                size=file_size(path, "manifest", relative),
+            )
+        )
+    return DigestManifest(rows=tuple(rows))
 
 
 def write_manifest(manifest: DigestManifest, path: str | Path) -> str:
@@ -105,13 +110,13 @@ def verify_snapshot(
             raise DigestMismatchRefusal(
                 identity.role, f"snapshot differs at {relative}: missing file"
             )
-        size = path.stat().st_size
+        size = file_size(path, identity.role, relative)
         if size != row.size:
             raise DigestMismatchRefusal(
                 identity.role,
                 f"snapshot differs at {relative}: size {size}, expected {row.size}",
             )
-        actual_sha = digest_bytes(path.read_bytes())
+        actual_sha = file_digest(path, identity.role, relative)
         if actual_sha != row.sha256:
             raise DigestMismatchRefusal(
                 identity.role,
@@ -146,7 +151,45 @@ def _manifest_from_record(raw: Any, chair: str) -> DigestManifest:
     return manifest
 
 
+def file_size(path: Path, chair: str, relative: str) -> int:
+    """One file's size, with a filesystem failure kept inside the taxonomy.
+
+    `errors.py` calls its list "the complete public taxonomy", and a caller that
+    catches `ChairRefusal` to record a refusal against a named chair got a bare
+    `PermissionError` instead — an error outside the taxonomy that names no chair
+    and no file. An unreadable pinned file is a snapshot that does not verify.
+
+    Split from `file_digest` rather than returning both, so that a size that
+    already disagrees with the pin refuses without reading the file. Model weights
+    are the files this walks; hashing several gigabytes to then report a size
+    mismatch is a long wait for an answer the `stat` already had.
+    """
+    return _guarded(chair, relative, lambda: path.stat().st_size)
+
+
+def file_digest(path: Path, chair: str, relative: str) -> str:
+    """One file's digest, under the same taxonomy guarantee as `file_size`."""
+    return _guarded(chair, relative, lambda: digest_bytes(path.read_bytes()))
+
+
+def _guarded(chair: str, relative: str, read):
+    try:
+        return read()
+    except OSError as error:
+        raise DigestMismatchRefusal(
+            chair, f"snapshot differs at {relative}: cannot be read: {error}"
+        ) from error
+
+
 def _validate_manifest(manifest: DigestManifest, chair: str) -> None:
+    # A manifest with no rows is satisfied by any empty directory, so a chair
+    # pinned to one resolves, verifies and receipts exactly as a real one while
+    # constraining nothing. A pin is a constant the artifact must match (#43);
+    # a pin that no artifact can fail is not one.
+    if not manifest.rows:
+        raise DigestMismatchRefusal(
+            chair, "manifest has no rows; an empty manifest constrains no snapshot"
+        )
     paths = [row.path for row in manifest.rows]
     if paths != sorted(paths) or len(paths) != len(set(paths)):
         raise DigestMismatchRefusal(chair, "manifest rows are not strictly sorted by unique path")
@@ -164,7 +207,14 @@ def _regular_files(root: Path, *, chair: str) -> list[tuple[str, Path]]:
 
     root = root.resolve()
     found: list[tuple[str, Path]] = []
-    for directory, directories, filenames in os.walk(root, followlinks=False):
+
+    def _refuse(error: OSError) -> None:
+        """An unlistable directory is a snapshot that does not verify, not a crash."""
+        raise DigestMismatchRefusal(
+            chair, f"snapshot under {root} cannot be walked: {error}"
+        ) from error
+
+    for directory, directories, filenames in os.walk(root, followlinks=False, onerror=_refuse):
         directory_path = Path(directory)
         directories.sort()
         filenames.sort()

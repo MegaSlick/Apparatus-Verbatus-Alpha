@@ -40,6 +40,7 @@ from common.imaging import dimensions  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
+    PERLECTOR_CHAIR,
     expected_acts,
     fixture_serving_details,
     open_context,
@@ -139,7 +140,7 @@ def declared_reading_failure(context, act_key: str) -> str | None:
 
 def perlector_chair(context) -> ChairIdentity | AbsentChair:
     """The Perlector chair, resolved by name. Never another chair, never a base."""
-    resolved = context.registry.resolve(PERLECTOR)
+    resolved = context.registry.resolve(PERLECTOR_CHAIR)
     if not isinstance(resolved, (ChairIdentity, AbsentChair)):
         raise ContractError("Perlector resolution returned neither an identity nor an absence")
     return resolved

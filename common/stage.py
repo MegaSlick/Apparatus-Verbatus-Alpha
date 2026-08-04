@@ -26,7 +26,7 @@ from common.contracts.envelope import build_envelope
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.outcomes import classify
-from common.contracts.stages import DESIGNATOR
+from common.contracts.stages import DESIGNATOR, PERLECTOR
 from common.runtree.store import PublishResult, RunTree
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
@@ -253,6 +253,44 @@ def run_config_bindings(
     }
 
 
+# The roles the pipeline addresses by name, beside the Attestator witnesses.
+# Here rather than in the stage modules because `unaddressed_chairs` below has to
+# know the whole set of roles the pipeline ever asks for, and a second spelling in
+# `2_designator/run.py` or `4_perlector/run.py` would be a set that could drift
+# from the check that depends on it.
+#
+# `PERLECTOR_CHAIR` exists even though its value equals the stage name, because a
+# stage and a chair are two vocabularies: `config/models.toml` says roles "are
+# configuration keys, not concepts". The Perlector reading through the stage
+# constant worked only because the two words happen to coincide, and repinning the
+# chair to a differently named role would have quietly broken it.
+DESIGNATOR_CHAIR = "designator_structure"
+PERLECTOR_CHAIR = PERLECTOR
+
+
+def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
+    """Configured roles no stage in this pipeline will ever ask for.
+
+    `models.toml` accepts a new role without a code change, which is the point —
+    and the cost is that a misspelt one is still a perfectly valid configured
+    chair. `attestor_4` for `attestator_4` fails the `attestator_` prefix, so it
+    never enters `witness_chairs`, no stage resolves it, and no artifact anywhere
+    names it: a configured model was silently never asked for anything and the run
+    still reported `complete`. GOVERNANCE 2 refuses complete unless everything
+    reconciles, and a chair in the roster is something to reconcile.
+
+    Absences count as addressed: an absent chair is a decision already recorded.
+    """
+    addressed = set(models.witness_chairs) | {DESIGNATOR_CHAIR, PERLECTOR_CHAIR}
+    return tuple(
+        sorted(
+            role
+            for role, value in models.chairs.items()
+            if role not in addressed and not isinstance(value, AbsentChair)
+        )
+    )
+
+
 def adapter_recipe_for(run: dict[str, Any], stage: str) -> str:
     """The recipe sealed for this producer, never a stage-local fallback."""
     recipes = run.get("adapter_recipes")
@@ -333,10 +371,23 @@ def validate_serving_provenance(
             f"model provenance carries unknown field(s) {unexpected}; a reading's provenance "
             "is a closed schema, and a field nothing validates is a field nothing can trust"
         )
-    if "witness_regime" in provenance and provenance["witness_regime"] not in _WITNESS_REGIMES:
+    # **Required of the Perlector, forbidden of everyone else.** Checking the value
+    # only when it happened to be present left the clause it cites unenforced from
+    # both directions: a Perlectio that stopped recording its regime validated all
+    # the way into the export, and a stage that does not own the field could attach
+    # one and nothing objected. Which producer owns a field is part of the closed
+    # schema, not a separate question.
+    regime = provenance.get("witness_regime")
+    if producer_stage == PERLECTOR:
+        if regime not in _WITNESS_REGIMES:
+            raise SchemaRefusal(
+                f"a Perlectio records the witness regime it ran under; this one carries "
+                f"{regime!r}, which is not one of {sorted(_WITNESS_REGIMES)}"
+            )
+    elif "witness_regime" in provenance:
         raise SchemaRefusal(
-            f"model provenance records witness regime {provenance['witness_regime']!r}, "
-            f"which is not one of {sorted(_WITNESS_REGIMES)}"
+            f"only the Perlector records a witness regime; provenance produced by "
+            f"{producer_stage!r} carries one"
         )
     if provenance.get("adapter_revision") != adapter_recipe_for(context.run, producer_stage):
         raise SchemaRefusal(

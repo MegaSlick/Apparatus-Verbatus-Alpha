@@ -82,7 +82,7 @@ def _invoke(module, monkeypatch, arguments: list[str], registry_factory) -> int:
 def test_the_full_skeleton_runs_over_both_chair_implementations(
     tmp_path, monkeypatch, implementation
 ):
-    fake = DeterministicChairRegistry(MODELS_CONFIG, tmp_path / "fake-snapshot")
+    fake = DeterministicChairRegistry(MODELS_CONFIG)
     registry_factory = ChairRegistry.from_toml if implementation == "registry" else lambda _: fake
     arguments = [
         "--run-root",
@@ -124,7 +124,7 @@ def test_the_deterministic_implementation_really_answered_for_every_chair_the_st
     back to the production registry, because both implementations agree. This is
     the assertion that says they did not: the fake's own call log has to carry
     every chair the skeleton calls, through all three protocol methods."""
-    fake = DeterministicChairRegistry(MODELS_CONFIG, tmp_path / "fake-snapshot")
+    fake = DeterministicChairRegistry(MODELS_CONFIG)
     arguments = [
         "--run-root",
         str(tmp_path / "runs"),

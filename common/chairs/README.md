@@ -19,13 +19,17 @@ in code.
 ## Four things worth knowing before you change anything here
 
 **Nothing here substitutes.** Every refusal names the chair and the concrete
-difference, and stops. There is no code path that resolves, fetches, or receipts
-a chair other than the one asked for. A registry that fell back from one chair to a
-close-enough one would be a picker wearing an ops hat (GOVERNANCE 3, CLAUDE.md
-hard rule 8), and the closed taxonomy plus `test_chairs_no_substitution.py` are
-what keep one out. That test drives all seven doors through the *real* registry
-and asserts, on a traced call log, that no other configured chair was reached for
-while each refusal was handled.
+difference, and stops. No code path fetches or receipts a chair other than the one
+asked for, and the one place another chair is *resolved* is `_cache_descriptor`
+reading an adapter's configured `adapter_of` base — a configuration lookup, so that
+an old adapter cache cannot masquerade as compatible with a repinned base. It never
+fetches, serves, ranks or substitutes that base. A registry that fell back from one
+chair to a close-enough one would be a picker wearing an ops hat (GOVERNANCE 3,
+CLAUDE.md hard rule 8), and the closed taxonomy plus `test_chairs_no_substitution.py`
+are what keep one out. That test drives all seven doors through the *real* registry
+and asserts, on a call log kept *inside* the registry rather than in front of it,
+that no other configured chair was resolved, fetched or receipted while each refusal
+was handled.
 
 **A pin is a constant the artifact must match.** Never a value the artifact
 supplies (harvest #43). A cache that holds a different revision than the pin is
@@ -65,7 +69,9 @@ Lifecycle and health belong to the serving manager (spec 04). This package
 produces identity and verification; it does not start a process. `receipt()`
 accepts the serving details some future serving manager observed, and
 `refuse_recipe_start()` is how a failed start is represented — as a refusal
-naming the chair, never as a second route under the same role name.
+naming the chair, never as a second route under the same role name. It has no
+caller outside its own test yet, because nothing here starts anything; the door
+it discharges is covered against the method, not against a production start path.
 
 Where the model root lives off-pod is still open; spec 02 flags it rather than
 resolving it, and `model_root` in `config/models.toml` is relative to that file.

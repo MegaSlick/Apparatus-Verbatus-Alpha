@@ -50,7 +50,12 @@ def _imports_in(path: Path) -> list[tuple[str, str]]:
 
 
 def _modules() -> list[Path]:
-    """Every shipped module of the package — the tests and their plumbing aside."""
+    """Every module production may import — the tests and their plumbing aside.
+
+    Not "every shipped module": `pyproject.toml` includes `common.*` wholesale, so
+    the tests and `conftest.py` are installed alongside these. What keeps the fake
+    out of production is its own constructor guard, not this list.
+    """
     return sorted(
         path
         for path in CHAIRS.glob("*.py")

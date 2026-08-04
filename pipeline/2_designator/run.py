@@ -45,6 +45,7 @@ from common.contracts.identities import attempt_id, region_id  # noqa: E402
 from common.contracts.stages import DESIGNATOR, EXEMPLAR  # noqa: E402
 from common.imaging import crop_png  # noqa: E402
 from common.stage import (  # noqa: E402
+    DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
     act_bounds,
     act_identity,
@@ -55,8 +56,6 @@ from common.stage import (  # noqa: E402
     run_stage,
     stage_parser,
 )
-
-DESIGNATOR_CHAIR = "designator_structure"
 
 
 def structure_provenance(context) -> dict:

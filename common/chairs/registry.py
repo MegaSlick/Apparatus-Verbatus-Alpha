@@ -9,10 +9,11 @@ import json
 import os
 import shutil
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
 
-from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.canonical import canonical_bytes
 
 from .config import load_models_toml
 from .errors import (
@@ -24,7 +25,7 @@ from .errors import (
     ServingRecipeRefusal,
     UnresolvedChairRefusal,
 )
-from .manifests import read_manifest, verify_snapshot
+from .manifests import file_digest, file_size, read_manifest, verify_snapshot
 from .models import (
     AbsentChair,
     ChairIdentity,
@@ -156,7 +157,15 @@ class ChairRegistry:
         return build_receipt(identity, serving)
 
     def refuse_recipe_start(self, identity: ChairIdentity, difference: str) -> None:
-        """Represent a serving-manager start failure without offering another recipe."""
+        """Represent a serving-manager start failure without offering another recipe.
+
+        **Nothing in `pipeline/` calls this yet, and that is a gap, not a design.**
+        No stage reaches a serving-manager start until spec 04 builds one, so the
+        serving-recipe door of `test_chairs_no_substitution.py` is currently
+        discharged against this method alone: it proves the refusal is the only
+        outcome available here, not that the production start path uses it. Whoever
+        wires the serving manager owns making that test exercise the real path.
+        """
 
         self._require_current_identity(identity)
         raise ServingRecipeRefusal(identity.role, difference)
@@ -205,7 +214,23 @@ class ChairRegistry:
             )
         if "/" in identity.role or "\\" in identity.role or identity.role in ("", ".", ".."):
             raise CacheRevisionRefusal(identity.role, "role is unsafe as a cache path")
-        self.cache_root.mkdir(parents=True, exist_ok=True)
+        # The cache writes its identity descriptor *inside* the snapshot root, so a
+        # manifest that pins a file of that name and the cache want the same byte
+        # range. Nothing downstream could see the collision: `_write_cache_descriptor`
+        # overwrote the pinned file after verification had passed, so `ensure` returned
+        # a VerifiedSnapshot whose root no longer matched the pin, and `_missing_files`
+        # skips that path forever, refetching and reoverwriting on every call. A pin is
+        # a constant the artifact must match (#43); overwriting a pinned file to make
+        # room for bookkeeping is not a verified snapshot, so this is refused rather
+        # than resolved in the cache's favour.
+        if any(row.path == CACHE_DESCRIPTOR for row in manifest.rows):
+            raise CacheRevisionRefusal(
+                identity.role,
+                f"the pinned manifest names {CACHE_DESCRIPTOR!r}, which is the cache's own "
+                "identity descriptor; a snapshot cannot hold both under one name",
+            )
+        with _cache_write(identity.role, f"cache root {self.cache_root} cannot be created"):
+            self.cache_root.mkdir(parents=True, exist_ok=True)
         target = self.cache_root / identity.role
         descriptor = self._cache_descriptor(identity)
         missing: tuple[str, ...]
@@ -223,12 +248,14 @@ class ChairRegistry:
             raise UnresolvedChairRefusal(
                 identity.role, "no fetcher is configured for a missing pinned snapshot"
             )
-        candidate = Path(
-            tempfile.mkdtemp(prefix=f".{identity.role}.candidate-", dir=self.cache_root)
-        )
+        with _cache_write(identity.role, "no candidate cache directory could be created"):
+            candidate = Path(
+                tempfile.mkdtemp(prefix=f".{identity.role}.candidate-", dir=self.cache_root)
+            )
         try:
             if target.exists():
-                _copy_existing_files(target, candidate, manifest)
+                with _cache_write(identity.role, "the existing cache could not be carried over"):
+                    _copy_existing_files(target, candidate, manifest)
             try:
                 self.fetcher.fetch(identity, candidate, missing)
             except ChairRefusal:
@@ -237,8 +264,9 @@ class ChairRegistry:
                 refusal = AdapterFetchRefusal if identity.adapter_of else UnresolvedChairRefusal
                 raise refusal(identity.role, f"pinned fetch failed: {error}") from error
             verified = verify_snapshot(identity, candidate, manifest)
-            _write_cache_descriptor(candidate, descriptor)
-            _promote(candidate, target)
+            with _cache_write(identity.role, "the verified snapshot could not be promoted"):
+                _write_cache_descriptor(candidate, descriptor)
+                _promote(candidate, target)
             return VerifiedSnapshot(
                 identity=verified.identity,
                 root=target.resolve(),
@@ -268,6 +296,20 @@ class ChairRegistry:
             )
         descriptor["adapter_base_identity"] = base.to_record()
         return descriptor
+
+
+@contextmanager
+def _cache_write(chair: str, what: str):
+    """Keep the cache's own filesystem writes inside the closed refusal taxonomy.
+
+    A failed mkdir, copy or promote raised a bare `OSError` naming no chair, so a
+    stage catching `ChairRefusal` to record a refusal crashed instead of recording
+    one. Four sites needed the same three lines; one of them is easier to keep true.
+    """
+    try:
+        yield
+    except OSError as error:
+        raise CacheRevisionRefusal(chair, f"{what}: {error}") from error
 
 
 def resolve_local_path(identity: ChairIdentity, model_root: str | Path) -> Path:
@@ -347,7 +389,10 @@ def _missing_files(
         if path is None:
             missing.append(relative)
             continue
-        if path.stat().st_size != row.size or digest_bytes(path.read_bytes()) != row.sha256:
+        if (
+            file_size(path, identity.role, relative) != row.size
+            or file_digest(path, identity.role, relative) != row.sha256
+        ):
             raise DigestMismatchRefusal(
                 identity.role, f"snapshot differs at {relative}: cached bytes do not match"
             )

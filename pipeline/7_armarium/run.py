@@ -47,6 +47,7 @@ from common.stage import (  # noqa: E402
     open_context,
     run_stage,
     stage_parser,
+    unaddressed_chairs,
     validate_serving_provenance,
 )
 
@@ -206,7 +207,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         )
 
     census = page_census(context)
-    aggregate = run_aggregate(categories, coverages, census)
+    aggregate = run_aggregate(
+        categories,
+        coverages,
+        census,
+        unaddressed_chairs=unaddressed_chairs(context.registry.config),
+    )
     expected_count = len(expected_acts(context))
     if len(categories) != expected_count:
         raise FatalAccounting(

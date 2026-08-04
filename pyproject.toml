@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Apparatus Verbatus — recovers the ipsissima verba from historical registers"
 requires-python = ">=3.12"
 dependencies = [
-    # Hugging Face snapshot metadata/download client used by common.seats.  It is
+    # Hugging Face snapshot metadata/download client used by common.chairs.  It is
     # pinned so a configured model identity is resolved by a reproducible client.
     "huggingface_hub==1.26.0",
 ]

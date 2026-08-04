@@ -52,43 +52,59 @@ from .conftest import (
     hf_chair,
     local_chair,
     pin_snapshot,
-    registry_for,
     write_snapshot,
 )
 
 BYSTANDER = "attestator_2"
 FILES = {"weights.bin": b"expected fixture bytes\n"}
+_DEFAULT = object()
 
 
-class Traced:
+class Traced(ChairRegistry):
     """Every protocol call the registry makes, in order, with the role asked for.
 
     A refusal that named the right chair could still have reached for another one
     on the way — resolving it, fetching it, receipting it — and the raised error
     would look identical. This is what makes the difference visible.
+
+    **A subclass, not a wrapper, and that is the whole point of it.** A delegating
+    wrapper only ever saw the calls the *test* made through it; the registry's own
+    internal `self.resolve(...)` — `_require_current_identity`, and
+    `_cache_descriptor` resolving an adapter's configured base — went straight to
+    the real method and left no entry, so a substitution introduced inside
+    `ensure()` or `receipt()` would have satisfied every assertion below. Because
+    Python binds `self.resolve` on the instance, overriding here puts the log on
+    the inside of the registry rather than in front of it.
     """
 
-    def __init__(self, registry: ChairRegistry):
-        self._registry = registry
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.calls: list[tuple[str, str]] = []
-
-    def __getattr__(self, name):
-        return getattr(self._registry, name)
 
     def resolve(self, role: str):
         self.calls.append(("resolve", role))
-        return self._registry.resolve(role)
+        return super().resolve(role)
 
     def ensure(self, identity):
         self.calls.append(("ensure", identity.role))
-        return self._registry.ensure(identity)
+        return super().ensure(identity)
 
     def receipt(self, identity, serving):
         self.calls.append(("receipt", identity.role))
-        return self._registry.receipt(identity, serving)
+        return super().receipt(identity, serving)
 
     def roles(self, method: str) -> set[str]:
         return {role for called, role in self.calls if called == method}
+
+
+def traced_for(config, tmp_path, fetcher, *, cache_root=_DEFAULT) -> Traced:
+    """`conftest.registry_for`, but building the tracing registry itself."""
+    return Traced(
+        config,
+        manifest_root=tmp_path,
+        cache_root=tmp_path / "cache" if cache_root is _DEFAULT else cache_root,
+        fetcher=fetcher,
+    )
 
 
 @pytest.fixture
@@ -101,12 +117,17 @@ def world(tmp_path):
         BYSTANDER: hf_chair(BYSTANDER, pin, manifest="manifests/chair.json"),
     }
     fetcher = RecordingFetcher(dict(FILES))
-    registry = registry_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher)
-    return Traced(registry), fetcher
+    return traced_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher), fetcher
 
 
 def _assert_no_other_chair_was_reached_for(traced: Traced, fetcher: RecordingFetcher, chair: str):
-    """The whole of "no other configured chair is invoked", in three assertions."""
+    """The whole of "no other configured chair is invoked", in four assertions.
+
+    `resolve` is here now, and it is the one the wrapper could not see: a
+    substitution reaches for its replacement by resolving it, and every internal
+    resolution the registry makes runs through the override above.
+    """
+    assert traced.roles("resolve") <= {chair}
     assert traced.roles("ensure") <= {chair}
     assert traced.roles("receipt") <= {chair}
     assert set(fetcher.roles) <= {chair}
@@ -126,7 +147,6 @@ def test_a_digest_that_does_not_verify_refuses_without_reaching_for_another_chai
     assert caught.value.chair == "attestator_1"
     assert "weights.bin" in str(caught.value)
     _assert_no_other_chair_was_reached_for(traced, fetcher, "attestator_1")
-    assert BYSTANDER not in traced.roles("resolve")
 
 
 # --- 2. A chair that will not resolve --------------------------------------------------
@@ -217,8 +237,7 @@ def adapter_world(tmp_path):
         BYSTANDER: hf_chair(BYSTANDER, pin, manifest="manifests/chair.json"),
     }
     fetcher = RecordingFetcher(dict(FILES))
-    registry = registry_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher)
-    return Traced(registry), fetcher
+    return traced_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher), fetcher
 
 
 def test_an_adapter_that_will_not_fetch_is_never_served_as_its_bare_base(adapter_world):
@@ -347,8 +366,7 @@ def test_an_explicit_absence_is_never_filled_by_a_configured_neighbour(tmp_path)
         BYSTANDER: absent_chair("withdrawn for alpha"),
     }
     fetcher = RecordingFetcher(dict(FILES))
-    registry = registry_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher)
-    traced = Traced(registry)
+    traced = traced_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher)
 
     absence = traced.resolve(BYSTANDER)
 
@@ -373,12 +391,12 @@ def test_a_local_path_escaping_the_model_root_refuses_without_touching_the_netwo
         BYSTANDER: local_chair(BYSTANDER, pin, manifest="manifests/chair.json"),
     }
     fetcher = RecordingFetcher(dict(FILES))
-    registry = ChairRegistry(
+    traced = traced_for(
         config_of(tmp_path, chairs, witness_floor=1, model_root="model-fixtures"),
-        manifest_root=tmp_path,
-        fetcher=fetcher,
+        tmp_path,
+        fetcher,
+        cache_root=None,
     )
-    traced = Traced(registry)
 
     with pytest.raises(LocalPathRefusal) as caught:
         traced.ensure(traced.resolve("perlector"))

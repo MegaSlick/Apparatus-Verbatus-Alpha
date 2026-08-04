@@ -9,7 +9,7 @@ import pytest
 
 from common.chairs import ChairIdentity, ChairRegistry
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES
+from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.runtree.store import RunTree
 from common.stage import (
     StageContext,
@@ -186,6 +186,12 @@ def test_a_witness_regime_that_cannot_be_true_is_refused(tmp_path):
     read it back, so a Perlectio claiming a regime that does not exist travelled
     sealed and provenance-checked. Binding it to a real run-level toggle is Spec
     08's work; refusing a value that cannot be true is provenance validation.
+
+    Required of the Perlector and forbidden of everyone else, in both directions.
+    An earlier version of this test proved only that a bad value is refused *when
+    present*, using `producer_stage=ATTESTATORES` — a producer that does not own
+    the field — so it left a Perlectio that recorded no regime at all validating
+    cleanly, which is the half of the clause that matters.
     """
     context, identity = _context(tmp_path)
     reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
@@ -198,23 +204,30 @@ def test_a_witness_regime_that_cannot_be_true_is_refused(tmp_path):
             "value": identity.receipt_revision,
         },
         "receipt_ref": reference,
-        "adapter_revision": context.adapter_revision,
+        "adapter_revision": adapter_recipe_for(context.run, PERLECTOR),
     }
     for regime in ("named", "blinded"):
         assert (
             validate_serving_provenance(
                 context,
                 {**provenance, "witness_regime": regime},
-                producer_stage=ATTESTATORES,
+                producer_stage=PERLECTOR,
                 require_receipt=True,
             )
             == identity
         )
 
-    with pytest.raises(SchemaRefusal, match="witness regime"):
+    for wrong in ("anonymised", None):
+        carried = dict(provenance) if wrong is None else {**provenance, "witness_regime": wrong}
+        with pytest.raises(SchemaRefusal, match="witness regime"):
+            validate_serving_provenance(
+                context, carried, producer_stage=PERLECTOR, require_receipt=True
+            )
+
+    with pytest.raises(SchemaRefusal, match="only the Perlector"):
         validate_serving_provenance(
             context,
-            {**provenance, "witness_regime": "anonymised"},
+            {**provenance, "adapter_revision": context.adapter_revision, "witness_regime": "named"},
             producer_stage=ATTESTATORES,
             require_receipt=True,
         )
