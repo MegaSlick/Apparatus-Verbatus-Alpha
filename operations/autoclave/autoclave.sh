@@ -983,7 +983,26 @@ cmd_dispatch() {
             # The system prompt is not a file it can rank; it is what it is.
             # Codex has no equivalent flag, and does not need one: it reads
             # `/work/AGENTS.md`, which is the same bytes, and it was probed doing so.
+            # `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` because the default is a real
+            # kill and it silently cost a lane. In `-p` mode the CLI waits a bounded
+            # time for its own background tasks and then **terminates them and exits**.
+            # An orchestrating seat that fans out — which is the whole reason to run at
+            # `ultracode` — reaches that ceiling as a matter of course: a round-two lane
+            # spawned a 28-agent join audit, hit the default at 600 seconds, killed its
+            # own workflow and returned having committed nothing. The dispatch exited 0
+            # and `collect` reported NO COMMITS, so the failure looked like a model that
+            # did no work rather than a harness that stopped it.
+            #
+            # This is the case `.claude/agents/README.md` singles out under "no agent
+            # gets a time limit": a real kill is not a deadline, and a killed seat loses
+            # its report entirely rather than handing back a shorter one. The rule there
+            # is to tell a seat a limit that genuinely exists — but this one buys
+            # nothing, so it is removed instead. Zero means wait indefinitely; the
+            # chamber is already the bound on how long anything may run.
+            #
+            # Codex needs no counterpart: it streams and has no such ceiling.
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
+                -e CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
                 "$(container_of "$task")" sh -c '
                 cd /work
                 claude --dangerously-skip-permissions \

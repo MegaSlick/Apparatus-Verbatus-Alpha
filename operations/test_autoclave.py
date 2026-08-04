@@ -862,6 +862,26 @@ class TestDispatch:
         joined = " ".join(code_lines())
         assert joined.count('-e AC_MODEL="$model" -e AC_EFFORT="$effort"') == 2
 
+    def test_a_claude_chamber_has_no_background_wait_ceiling(self):
+        """The default ceiling is a real kill, and it silently cost a lane.
+
+        In `-p` mode the Claude CLI waits a bounded time for its own background
+        tasks and then terminates them and exits. An orchestrating seat fans out —
+        that is the point of `ultracode` — so it reaches the ceiling as a matter of
+        course. A round-two lane spawned a 28-agent audit, hit the 600-second
+        default, killed its own workflow and committed nothing; the dispatch exited
+        0 and `collect` said NO COMMITS, so a harness kill looked like a model that
+        did no work.
+
+        `.claude/agents/README.md` names this exact shape: a real kill is not a
+        deadline, and a killed seat loses its report entirely rather than handing
+        back a shorter one. Zero means wait indefinitely. Asserted rather than
+        trusted, because nothing else in the dispatch would notice its removal —
+        the failure it prevents is silent by construction.
+        """
+        joined = " ".join(code_lines())
+        assert "-e CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" in joined
+
     def test_the_codex_prompt_is_behind_an_end_of_options_marker(self):
         """`--` so a prompt beginning with a dash is a prompt, `-` because that is
         how `codex exec` spells "read the instructions from stdin"."""
