@@ -8,10 +8,19 @@ been lost, which GOVERNANCE 2 does not allow.
 **Spec 03 replaces the walking skeleton's toy PNG-signature check with the real
 thing.** Admission is decided by `admission.py` — the one format policy — against
 the structural validators in `image_formats.py`, never by a file's declared
-extension. A PDF source is fanned out into its pages and rendered once, here,
+extension.
+
+**The admission list decides for every format, including the multi-page ones.**
+A `render-pages` source is fanned out into its pages and rendered once, here,
 through the door-private `pdf_render.py`; no module outside this stage imports it,
 which is what makes "no later stage may re-render" true by construction (spec 03,
-test 4) rather than by convention.
+test 4) rather than by convention. But *whether* a format is fanned out at all is
+`admission.classify_detected_format`'s answer, asked once before the pages are
+counted and again before one is rendered. This module names no format anywhere: a
+`sniff(data) == "pdf"` branch here would be the admission rule existing twice —
+the exact drift spec 03 was written to kill — and under the shipped list, which
+refuses PDF, it would have fanned out and sealed pages the configuration says are
+not admitted.
 
 Two invariants from the harvest still shape this. **#1: only images enter, verified
 by decoding, not by extension** — now the real structural decode, not a magic-byte
@@ -42,6 +51,7 @@ Invoked as a program:
         --submission-folder <dir> --approval-record <path>
 """
 
+import json
 import sys
 from pathlib import Path
 from typing import Any, Callable, Final, NamedTuple
@@ -69,7 +79,7 @@ from common.contracts.approval import (  # noqa: E402
 )
 from common.contracts.canonical import digest_bytes, digest_of  # noqa: E402
 from common.contracts.errors import ApprovalRefusal, ContractError  # noqa: E402
-from common.contracts.stages import DOOR  # noqa: E402
+from common.contracts.stages import DOOR, writing_directory  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -132,16 +142,26 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
 
 
 def decide(data: bytes, source: SourceEntry, policy: dict[str, str]) -> _Decision:
-    """One source's admission decision. PDF pages and standalone rasters alike."""
+    """One source's admission decision. PDF pages and standalone rasters alike.
+
+    **The policy decides first, for every source, whatever shape it has.** A page
+    index on a `SourceEntry` is a claim about how the file was fanned out; it is
+    never permission to skip the admission list. `expand_sources` asks the policy
+    before it counts a page and this asks it again before it renders one, so a
+    `render-pages` row turned to `refuse` refuses at both boundaries rather than at
+    neither.
+    """
+    verdict = admission.classify_detected_format(sniff(data), policy)
     if source.pdf_page_index is None:
-        if sniff(data) == "pdf":
-            # A PDF reaching this branch means a manifest skipped the fan-out
-            # `expand_sources` performs; refused rather than guessed at.
+        if verdict == admission.RENDER_PAGES:
+            # A multi-page container reaching this branch means a manifest skipped
+            # the fan-out `expand_sources` performs; refused rather than guessed at.
             return _Decision(
                 "refused",
                 admission.reason(
                     RefusalReason.UNSUPPORTED_VARIANT,
-                    "a PDF source must be declared with a page index; this one carries none",
+                    "a multi-page container must be declared with a page index; this "
+                    "one carries none",
                 ),
                 digest_bytes(data),
                 None,
@@ -157,6 +177,24 @@ def decide(data: bytes, source: SourceEntry, policy: dict[str, str]) -> _Decisio
             data if result.outcome == "admitted" else None,
             result.geometry,
         )
+
+    if verdict != admission.RENDER_PAGES:
+        # The source was fanned out into pages under a policy that does not fan this
+        # format out — a stale manifest, a hand-built entry, or a policy edited
+        # between the fan-out and here. The admission list is the authority in every
+        # one of those cases, and the refusal it names is the one the list gives.
+        detected = sniff(data)
+        code = (
+            RefusalReason.UNRECOGNIZED_FORMAT
+            if verdict is RefusalReason.UNRECOGNIZED_FORMAT
+            else RefusalReason.REFUSED_FORMAT
+        )
+        detail = (
+            "bytes do not match any known image signature"
+            if detected is None
+            else admission.refused_format_detail(detected)
+        )
+        return _Decision("refused", admission.reason(code, detail), digest_bytes(data), None, None)
 
     # A PDF-sourced page: the declared digest names the *whole file*, checked once
     # regardless of how many of its pages are being admitted, because a tampered
@@ -209,6 +247,13 @@ def expand_sources(
     through the same door-private `pdf_render` call that renders them; nothing here
     decodes a page early.
 
+    **A source is fanned out only when the admission list says to fan that format
+    out.** The decision is `admission.classify_detected_format`, the same one
+    function the raster path reads — never a format name written into this module.
+    A hardcoded `sniff(data) == "pdf"` here is the admission rule existing twice,
+    which is precisely the defect spec 03 exists to kill; under it, a policy row
+    reading `pdf = "refuse"` would be counted, fanned out and rendered anyway.
+
     Refusals are *not* decided here. One unreadable or unopenable source still
     occupies exactly one ordinal, and `process_sources` produces its named refusal
     artifact — so there is exactly one place in this module that decides an
@@ -231,7 +276,10 @@ def expand_sources(
             ordinal += 1
             sources.append(SourceEntry(ordinal, path, declared_sha256, None, declared_size))
             continue
-        if len(data) > MAX_SOURCE_BYTES or sniff(data) != "pdf":
+        if (
+            len(data) > MAX_SOURCE_BYTES
+            or admission.classify_detected_format(sniff(data), policy) != admission.RENDER_PAGES
+        ):
             ordinal += 1
             sources.append(SourceEntry(ordinal, path, declared_sha256, None, declared_size))
             continue
@@ -288,21 +336,18 @@ def process_sources(
 
     for source in sorted(sources, key=lambda item: item.ordinal):
         if source.declared_size is not None and source.declared_size > MAX_SOURCE_BYTES:
-            first = seen_sources.get(source.declared_sha256)
-            if first is not None and first[0] != source.declared_path:
-                refusal = admission.duplicate_reason(first[1])
-            else:
-                seen_sources[source.declared_sha256] = (source.declared_path, source.ordinal)
-                refusal = admission.reason(
-                    RefusalReason.TOO_LARGE,
-                    f"{source.declared_size} bytes exceeds the "
-                    f"{MAX_SOURCE_BYTES}-byte admission limit",
-                )
+            # Refused for its own size, never as a duplicate of something else. Two
+            # oversized copies of one file are two oversized files, and each is told
+            # the truth about itself.
             _publish(
                 context,
                 source,
                 outcome="refused",
-                reason=refusal,
+                reason=admission.reason(
+                    RefusalReason.TOO_LARGE,
+                    f"{source.declared_size} bytes exceeds the "
+                    f"{MAX_SOURCE_BYTES}-byte admission limit",
+                ),
                 approval_reference=approval_reference,
             )
             continue
@@ -332,7 +377,6 @@ def process_sources(
                 approval_reference=approval_reference,
             )
             continue
-        seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
         decision = decide(data, source, policy)
 
         if decision.outcome == "refused":
@@ -345,6 +389,13 @@ def process_sources(
             )
             continue
 
+        # Registered *after* the decision, and only on an admission: the duplicate
+        # reason says "already admitted as source-N", and a record may only claim
+        # what actually happened (GOVERNANCE 10). Registering before `decide` made
+        # a refused source the "first", so a second copy of two corrupt files was
+        # told its twin had been admitted, and the census read "one corrupt file,
+        # one duplicate" when the truth was two corrupt files.
+        seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
         _, published = tree.put_blob(DOOR, decision.store_bytes)
         extra: dict[str, Any] = {
             "sha256": decision.digest,
@@ -399,13 +450,42 @@ def _publish(
     )
 
 
-def require_some_admitted(admitted: int) -> None:
-    """An empty or wholly refused input set is a loud failure (harvest #3)."""
-    if admitted == 0:
-        raise ContractError(
-            "the door admitted nothing. An empty or wholly unreadable input set is "
-            "a loud failure, never a green run with no output (harvest #3)"
-        )
+def require_some_admitted(admitted: int, tree: RunTree) -> None:
+    """An empty or wholly refused input set is a loud failure (harvest #3).
+
+    Spec 03's test 2 asks for "zero admitted and a **named list**", and the name
+    that matters is the *reason*: the old door's actual defect was an anonymous
+    "unsupported" counter that told Tyrel a number and nothing he could act on. So
+    the failure carries the census of closed-set reason codes actually published,
+    read back off the door's own artifacts rather than off what this loop believed
+    it wrote — a summary is never verification.
+
+    It carries no declared path or filename. Those are recorded per source in the
+    admission artifacts named below, which live inside the run tree under an
+    approved storage root; the data-handling policy's logging rule keeps them out
+    of anything an operator's shell captures.
+    """
+    if admitted != 0:
+        return
+    census: dict[str, int] = {}
+    total = 0
+    for entry in tree.build_manifest(DOOR)["artifacts"]:
+        if entry["kind"] != "admission":
+            continue
+        total += 1
+        record = json.loads(tree.read_bytes(entry["relative_path"]).decode("utf-8"))
+        if record["outcome"] != "refused":
+            continue
+        code = admission.reason_code(record["payload"].get("reason"))
+        census[code.value] = census.get(code.value, 0) + 1
+    named = ", ".join(f"{code}: {count}" for code, count in sorted(census.items()))
+    raise ContractError(
+        f"the door admitted nothing: {total} source(s) submitted, "
+        f"{sum(census.values())} refused ({named or 'no refusal was recorded either'}). "
+        f"Each one is named by ordinal and declared path in "
+        f"{writing_directory(DOOR)}/artifacts/admission/. An empty or wholly unreadable input "
+        "set is a loud failure, never a green run with no output (harvest #3)"
+    )
 
 
 def declared_synthetic_fixture_root(requested_root: str) -> Path:
@@ -512,7 +592,7 @@ def fixture_submission(args, registry) -> int:
         policy=policy,
     )
     context.finish(DOOR)
-    require_some_admitted(admitted)
+    require_some_admitted(admitted, tree)
     return EXIT_COMPLETE
 
 
@@ -597,7 +677,7 @@ def real_submission(args, registry) -> int:
         data_policy=data_policy,
     )
     context.finish(DOOR)
-    require_some_admitted(admitted)
+    require_some_admitted(admitted, tree)
     return EXIT_COMPLETE
 
 

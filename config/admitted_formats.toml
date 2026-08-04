@@ -12,9 +12,19 @@
 #     structural validator for ISO-BMFF/HEVC and `admission.py` refuses to load a
 #     policy that admits a format nothing can verify. See the gate package.
 #   * `.gif` — refused by name, not disputed by either reading.
-#   * `pdf` — admitted and rendered once, per page, at the door. Reversing that is
-#     this file's `pdf = "refuse"`, plus deleting `pipeline/1_exemplar/pdf_render.py`
-#     and its tests.
+#   * `pdf` — **refused by name here, and that is the shipped default.** Spec 03
+#     recommends admitting PDF and rendering it per page at the door, and the
+#     renderer for it is written and tested (`pipeline/1_exemplar/pdf_render.py`).
+#     It is held behind this line because the renderer does not yet prove that the
+#     pixels it returns are the page's complete visible content: it accepts a page
+#     whose resource dictionary holds exactly one image XObject and returns that
+#     object's bytes, without ever interpreting the page's `/Contents` stream. A
+#     page carrying text or vector marks beside that one image would seal the image
+#     and lose the rest, which is GOALS 1 failing in the one place it must not.
+#     Turning this line to "render-pages" is one line and needs no code change —
+#     the door asks this table before it counts a single page — but it should not
+#     be turned until a page-content interpreter proves exactly one image is painted
+#     exactly as recorded, with no other visible content. That is its own spec.
 #
 # Actions are a closed set:
 #   "admit"        — a single-image raster, structurally validated, sealed as-is.
@@ -31,6 +41,6 @@
 png = "admit"
 jpeg = "admit"
 tiff = "admit"
-pdf = "render-pages"
+pdf = "refuse"
 gif = "refuse"
 heic = "refuse"

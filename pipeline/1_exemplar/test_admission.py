@@ -50,9 +50,13 @@ def test_the_shipped_admission_list_says_what_the_ledger_says_it_says():
     """Tyrel's two open ledger items are one line each in `config/admitted_formats.toml`,
     and this is what would notice if a code change quietly moved either of them."""
     assert POLICY["png"] == POLICY["jpeg"] == POLICY["tiff"] == ADMIT
-    assert POLICY["pdf"] == RENDER_PAGES
     assert POLICY["gif"] == REFUSE
     assert POLICY["heic"] == REFUSE, "the .heic ruling is Tyrel's; until he makes it, refused"
+    assert POLICY["pdf"] == REFUSE, (
+        "PDF is held behind this row until the renderer proves the pixels it returns are "
+        "the page's complete visible content; it reads one image XObject and never "
+        "interprets /Contents, so a page carrying text beside that image would lose it"
+    )
 
 
 def test_the_admission_list_covers_exactly_the_formats_the_door_can_detect(tmp_path):
@@ -150,9 +154,26 @@ def test_a_declared_digest_that_does_not_match_the_bytes_is_refused_and_named():
 
 def test_a_pdf_is_never_admitted_as_one_image_here():
     """A container of pages is not one image; the door fans it out. Asking this
-    function to decide one is a programming error, not a refusal."""
+    function to decide one is a programming error, not a refusal — but only while
+    the list actually asks for the fan-out. Under the shipped list, which refuses
+    PDF, the same call is an ordinary named refusal."""
+    render_pages = {**POLICY, "pdf": RENDER_PAGES}
     with pytest.raises(ValueError, match="multi-page container"):
-        inspect_source(single_gray_page_pdf(), declared_sha256=None, policy=POLICY)
+        inspect_source(single_gray_page_pdf(), declared_sha256=None, policy=render_pages)
+
+    outcome = inspect_source(single_gray_page_pdf(), declared_sha256=None, policy=POLICY)
+    assert reason_code(outcome.reason) is RefusalReason.REFUSED_FORMAT
+
+
+def test_the_pdf_row_is_the_whole_of_the_pdf_decision():
+    """`classify_detected_format` is the one authority, and the door reads it rather
+    than naming a format itself. Three of four reviewing seats found the same bypass
+    — a hardcoded `sniff(data) == "pdf"` fan-out that never consulted this — so this
+    pins the table's answer for every action the row can carry."""
+    assert (
+        classify_detected_format("pdf", {**POLICY, "pdf": REFUSE}) is RefusalReason.REFUSED_FORMAT
+    )
+    assert classify_detected_format("pdf", {**POLICY, "pdf": RENDER_PAGES}) == RENDER_PAGES
 
 
 # --- Test 2: the refusal vocabulary is closed, and every member is exercised ------
