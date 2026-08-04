@@ -18,14 +18,14 @@ from common.contracts.canonical import canonical_bytes
 from common.contracts.identities import artifact_id
 from common.contracts.stages import DESIGNATOR, EXEMPLAR
 from common.runtree.store import RunTree
-from common.stage import EXIT_FATAL
+from common.stage import EXIT_FATAL, EXIT_HELD
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 
 
-def populated_run(tmp_path) -> RunTree:
+def populated_run(tmp_path, scenario: str = "happy") -> RunTree:
     result = subprocess.run(
         [
             sys.executable,
@@ -33,7 +33,7 @@ def populated_run(tmp_path) -> RunTree:
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            scenario,
             "--run-root",
             str(tmp_path / "runs"),
             "--run-id",
@@ -43,11 +43,12 @@ def populated_run(tmp_path) -> RunTree:
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stderr
+    expected = EXIT_HELD if scenario.startswith("refused-") else 0
+    assert result.returncode == expected, result.stderr
     return RunTree(tmp_path / "runs", "boundary")
 
 
-def invoke_designator(tmp_path) -> subprocess.CompletedProcess:
+def invoke_designator(tmp_path, scenario: str = "happy") -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             sys.executable,
@@ -58,6 +59,8 @@ def invoke_designator(tmp_path) -> subprocess.CompletedProcess:
             "boundary",
             "--fixture-root",
             str(ROOT / "proof"),
+            "--scenario",
+            scenario,
         ],
         cwd=ROOT,
         capture_output=True,
@@ -142,3 +145,21 @@ def test_a_missing_sealed_pixel_blob_is_a_named_boundary_failure_not_a_traceback
     assert "sealed Exemplar pixel blob could not be read" in result.stderr
     assert "Traceback" not in result.stderr
     assert tree.build_manifest(DESIGNATOR) == before
+
+
+def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary(tmp_path):
+    tree = populated_run(tmp_path, "refused-page")
+    refused = next(
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+        and tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])["outcome"] == "refused"
+    )
+    assert len(refused["inputs"]) == 1
+    admission_path = refused["inputs"][0]["relative_path"]
+    tree.resolve(admission_path).unlink()
+
+    result = invoke_designator(tmp_path, "refused-page")
+
+    assert result.returncode == EXIT_FATAL
+    assert "refused Door admission could not be read" in result.stderr

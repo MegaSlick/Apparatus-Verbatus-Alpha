@@ -1,35 +1,23 @@
-"""The Perlector refuses a crop that cannot be traced back to an Exemplar page.
+"""The Perlector accepts only crops bound to their actual sealed Exemplar page."""
 
-Ruling 1 is why this check exists: "the goal of the pipeline is that every output
-is linked to the original image so we can cross reference to the source and cite
-and rebuild it." A crop the reader accepts without a page locator is a reading
-that reaches the export with nothing to cite — GOALS 5's traceability broken in the
-one stage that establishes text.
-
-The check itself was landed with no test at all, which was found by deleting it and
-watching the whole suite stay green. A check nothing can fail is not a check.
-"""
-
+import copy
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.identities import region_id
+from common.contracts.stages import DESIGNATOR, EXEMPLAR
+from common.imaging import dimensions
+from common.runtree.store import RunTree
 
-from common.contracts.canonical import digest_bytes  # noqa: E402
-from common.contracts.errors import SchemaRefusal  # noqa: E402
-from common.imaging import encode_grayscale_png  # noqa: E402
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_perlector():
-    """Load this stage's `run.py` by path, never by the bare name `run`.
-
-    Every stage's entry point is called `run.py`, so `import run` in a whole-suite
-    session resolves to whichever stage happened to be imported first — a test that
-    silently checks the Designator's boundary instead of the Perlector's.
-    """
     path = Path(__file__).resolve().parent / "run.py"
     spec = importlib.util.spec_from_file_location("perlector_run_under_test", path)
     module = importlib.util.module_from_spec(spec)
@@ -40,68 +28,136 @@ def _load_perlector():
 perlector = _load_perlector()
 
 
-class _Tree:
-    """Just enough run tree to hand `verify_region` one crop's bytes."""
+def _load_attestatores():
+    path = ROOT / "pipeline/3_attestatores/run.py"
+    spec = importlib.util.spec_from_file_location("attestatores_run_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    def __init__(self, data: bytes):
-        self._data = data
 
-    def read_bytes(self, relative_path: str) -> bytes:
-        return self._data
+attestatores = _load_attestatores()
 
 
 class _Context:
-    def __init__(self, data: bytes):
-        self.tree = _Tree(data)
-
-
-def _region(data: bytes, **transform) -> dict:
-    return {
-        "payload": {
-            "region_id": "region-1",
-            "image_path": "2_designator/blobs/sha256/" + digest_bytes(data),
-            "image_sha256": digest_bytes(data),
-            "transform": {
-                "bounds": {"x": 0, "y": 0, "w": 4, "h": 3},
-                "source_page_ordinal": 1,
-                "source_page_id": "page-abc",
-                **transform,
-            },
-        }
-    }
+    def __init__(self, tree):
+        self.tree = tree
+        self.run = tree.read_run()
 
 
 @pytest.fixture
-def crop() -> bytes:
-    return encode_grayscale_png(4, 3, [bytearray([128] * 4) for _ in range(3)])
+def real_region(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/orchestrator/run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--scenario",
+            "happy",
+            "--run-root",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "region-boundary",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "region-boundary")
+    entry = next(
+        entry for entry in tree.build_manifest(DESIGNATOR)["artifacts"] if entry["kind"] == "region"
+    )
+    return _Context(tree), tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
 
 
-def test_a_region_naming_its_exemplar_page_verifies(crop):
-    verified = perlector.verify_region(_Context(crop), _region(crop))
+def test_a_region_bound_to_its_actual_exemplar_input_verifies(real_region):
+    context, region = real_region
+    verified = perlector.verify_region(context, region)
 
-    assert verified["source_page_ordinal"] == 1
-    assert verified["source_page_id"] == "page-abc"
-    assert verified["verified_dimensions"] == {"w": 4, "h": 3}
+    assert verified["source_page_ordinal"] == region["payload"]["transform"]["source_page_ordinal"]
+    assert verified["source_page_id"] == region["payload"]["transform"]["source_page_id"]
+    assert verified["transform"] == region["payload"]["transform"]
 
 
-@pytest.mark.parametrize(
-    "transform",
-    [
-        pytest.param({"source_page_ordinal": None}, id="ordinal-absent"),
-        pytest.param({"source_page_ordinal": "1"}, id="ordinal-a-string"),
-        pytest.param({"source_page_ordinal": True}, id="ordinal-a-bool"),
-        pytest.param({"source_page_ordinal": -1}, id="ordinal-negative"),
-        pytest.param({"source_page_id": None}, id="page-id-absent"),
-        pytest.param({"source_page_id": ""}, id="page-id-empty"),
-        pytest.param({"source_page_id": 7}, id="page-id-not-a-string"),
-    ],
-)
-def test_a_region_with_no_usable_exemplar_locator_refuses(crop, transform):
-    """Each of these is a crop nothing could cite back to a page of ink.
+def test_attestatores_verifies_crop_lineage_before_a_witness_reads_it(real_region, monkeypatch):
+    context, region = real_region
+    monkeypatch.setattr(attestatores, "validate_serving_provenance", lambda *args, **kwargs: None)
 
-    `True` is in the list on purpose: it is an `int` in Python, so an ordinal check
-    written the obvious way accepts it, and a boolean that reads as ordinal 1 is
-    exactly the kind of thing that traces an act back to the wrong page.
-    """
-    with pytest.raises(SchemaRefusal, match="no valid Exemplar page locator"):
-        perlector.verify_region(_Context(crop), _region(crop, **transform))
+    def refuse(*args, **kwargs):
+        raise ContractError("crop-lineage marker")
+
+    monkeypatch.setattr(attestatores, "verify_exemplar_crop_lineage", refuse)
+    with pytest.raises(ContractError, match="crop-lineage marker"):
+        attestatores.proposed_regions(context, region["subject_id"])
+
+
+def test_a_crop_from_page_one_cannot_claim_another_valid_page(real_region):
+    context, region = real_region
+    other = next(
+        page
+        for page in (
+            context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+            for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]
+            if entry["kind"] == "page"
+        )
+        if page["payload"]["ordinal"] != region["payload"]["transform"]["source_page_ordinal"]
+    )
+    mismatched = copy.deepcopy(region)
+    mismatched["payload"]["transform"]["source_page_ordinal"] = other["payload"]["ordinal"]
+    mismatched["payload"]["transform"]["source_page_id"] = other["subject_id"]
+    mismatched["payload"]["region_id"] = region_id(
+        mismatched["subject_id"], mismatched["payload"]["transform"]
+    )
+
+    with pytest.raises(SchemaRefusal, match="does not trace to its Exemplar page"):
+        perlector.verify_region(context, mismatched)
+
+
+def test_malformed_exemplar_locators_all_refuse(real_region):
+    context, region = real_region
+    changes = [
+        {"source_page_ordinal": None},
+        {"source_page_ordinal": "1"},
+        {"source_page_ordinal": True},
+        {"source_page_ordinal": -1},
+        {"source_page_id": None},
+        {"source_page_id": ""},
+        {"source_page_id": 7},
+    ]
+    for change in changes:
+        malformed = copy.deepcopy(region)
+        malformed["payload"]["transform"].update(change)
+        with pytest.raises(SchemaRefusal, match="does not trace to its Exemplar page"):
+            perlector.verify_region(context, malformed)
+
+
+def test_a_crop_transform_must_fit_inside_its_sealed_exemplar_page(real_region):
+    context, region = real_region
+    page = context.tree.read_artifact(
+        EXEMPLAR,
+        "page",
+        next(
+            entry["artifact_id"]
+            for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]
+            if entry["kind"] == "page"
+            and entry["subject_id"] == region["payload"]["transform"]["source_page_id"]
+        ),
+    )
+    page_width, page_height = dimensions(context.tree.read_bytes(page["payload"]["image_path"]))
+    original = region["payload"]["transform"]["bounds"]
+    bad_bounds = [
+        {**original, "x": -1},
+        {**original, "y": -1},
+        {**original, "x": page_width - original["w"] + 1},
+        {**original, "y": page_height - original["h"] + 1},
+    ]
+    for bounds in bad_bounds:
+        malformed = copy.deepcopy(region)
+        malformed["payload"]["transform"]["bounds"] = bounds
+        malformed["payload"]["region_id"] = region_id(
+            malformed["subject_id"], malformed["payload"]["transform"]
+        )
+        with pytest.raises(SchemaRefusal, match="does not trace to its Exemplar page"):
+            perlector.verify_region(context, malformed)

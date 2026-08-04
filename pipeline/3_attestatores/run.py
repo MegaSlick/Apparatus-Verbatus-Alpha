@@ -30,6 +30,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
+from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -70,6 +71,7 @@ def proposed_regions(context, act_id: str) -> list[dict]:
                 producer_stage=DESIGNATOR,
                 require_receipt=True,
             )
+            verify_exemplar_crop_lineage(context.tree, context.run, record)
             regions.append(record)
     proposed = [record for record in regions if record["payload"]["origin"] == "proposal"]
     if not proposed:

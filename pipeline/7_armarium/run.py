@@ -25,9 +25,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.canonical import verify_self_hash  # noqa: E402
+from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
-from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     ArmariumCategory,
     run_aggregate,
@@ -41,7 +40,10 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
-from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
+from common.exemplar_boundary import (  # noqa: E402
+    verify_exemplar_corpus_seal,
+    verify_sealed_page_pixels,
+)
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -154,75 +156,18 @@ def page_census(context) -> dict[int, dict]:
             f"accounted for {sorted(census)}; a page in neither the sealed nor the "
             "refused set is a fatal accounting imbalance, never a warning"
         )
-    _verify_exemplar_corpus_seal(context, exemplar_manifest, sources, records, entries_by_ordinal)
-    return census
-
-
-def _verify_exemplar_corpus_seal(context, manifest, sources, records, entries_by_ordinal) -> None:
-    """Recheck the sealed source census at the final export boundary.
-
-    Designator verifies this on entry, but a corpus seal can still be damaged after
-    that stage has run. The final export cannot treat page artifacts alone as a
-    substitute for the self-hashed authority that reconciled them.
-    """
-    seals = [entry for entry in manifest["artifacts"] if entry["kind"] == "seal"]
-    expected_id = artifact_id(EXEMPLAR, "seal", "corpus-seal")
-    if len(seals) != 1 or seals[0]["artifact_id"] != expected_id:
-        raise FatalAccounting("the Exemplar carries no single derived corpus seal")
-    seal = context.tree.read_artifact(EXEMPLAR, "seal", expected_id)
-    if seal["run_id"] != context.tree.run_id or seal["stage"] != EXEMPLAR:
-        raise FatalAccounting("the Exemplar corpus seal belongs to a different run or stage")
-    payload = seal["payload"]
-    if set(payload) != {"page_count", "pages", "self_hash"} or not verify_self_hash(payload):
-        raise FatalAccounting("the Exemplar corpus seal does not carry a valid self-hashed census")
-    if payload["page_count"] != len(sources) or not isinstance(payload["pages"], list):
-        raise FatalAccounting(
-            "the Exemplar corpus seal count does not reconcile with submitted sources"
+    try:
+        verify_exemplar_corpus_seal(
+            context.tree,
+            context.run,
+            exemplar_manifest,
+            sources,
+            records,
+            entries_by_ordinal,
         )
-
-    seal_rows: dict[int, dict] = {}
-    for row in payload["pages"]:
-        ordinal = row.get("ordinal") if isinstance(row, dict) else None
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise FatalAccounting("the Exemplar corpus seal carries a page row without an ordinal")
-        if ordinal in seal_rows:
-            raise FatalAccounting(
-                f"the Exemplar corpus seal names ordinal {ordinal} more than once"
-            )
-        seal_rows[ordinal] = row
-    if set(seal_rows) != set(sources):
-        raise FatalAccounting("the Exemplar corpus seal page set does not reconcile with run.json")
-
-    expected_refs = {
-        (entry["relative_path"], entry["sha256"]) for entry in entries_by_ordinal.values()
-    }
-    actual_refs = {
-        (reference.get("relative_path"), reference.get("sha256")) for reference in seal["inputs"]
-    }
-    if actual_refs != expected_refs or len(seal["inputs"]) != len(expected_refs):
-        raise FatalAccounting("the Exemplar corpus seal inputs do not name every page outcome once")
-
-    for ordinal, source in sources.items():
-        record = records[ordinal]
-        outcome = record["outcome"]
-        expected = {
-            "ordinal": ordinal,
-            "declared_path": source["relative_path"],
-            "declared_sha256": source["sha256"],
-            "page_id": record["subject_id"] if outcome == "sealed" else None,
-            "outcome": outcome,
-            "source_sha256": record["payload"].get("source_sha256")
-            if outcome == "sealed"
-            else None,
-        }
-        for field in ("bytes", "ledger_sha256", "container_page_index"):
-            if source.get(field) is not None:
-                expected[{"bytes": "declared_bytes"}.get(field, field)] = source[field]
-        if seal_rows[ordinal] != expected:
-            raise FatalAccounting(
-                f"the Exemplar corpus seal row for {source['relative_path']!r} does not match "
-                "the final page outcome and filename ledger"
-            )
+    except ContractError as error:
+        raise FatalAccounting(str(error)) from error
+    return census
 
 
 def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
@@ -233,7 +178,7 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     return records
 
 
-def export_source_regions(regions: list[dict], census: dict[int, dict]) -> list[dict]:
+def export_source_regions(tree, regions: list[dict], census: dict[int, dict]) -> list[dict]:
     """Attach every delivered crop to the original filename-ledger page it used.
 
     A region's image digest proves the crop bytes, but an export needs the other
@@ -263,6 +208,26 @@ def export_source_regions(regions: list[dict], census: dict[int, dict]) -> list[
             raise FatalAccounting(
                 "an established source region's Exemplar page id disagrees with the final census"
             )
+        transform = region.get("transform")
+        if (
+            not isinstance(transform, dict)
+            or transform.get("operation") != "crop"
+            or transform.get("source_page_ordinal") != ordinal
+            or transform.get("source_page_id") != page_id
+            or not isinstance(transform.get("bounds"), dict)
+        ):
+            raise FatalAccounting(
+                "an established source region does not retain its complete crop transform"
+            )
+        image_path, image_sha256 = region.get("image_path"), region.get("image_sha256")
+        if not isinstance(image_path, str) or not isinstance(image_sha256, str):
+            raise FatalAccounting("an established source region names no sealed crop")
+        try:
+            crop = tree.read_bytes(image_path)
+        except OSError as error:
+            raise FatalAccounting("an established source region's crop is missing") from error
+        if digest_bytes(crop) != image_sha256:
+            raise FatalAccounting("an established source region's crop bytes changed before export")
         entry = dict(region)
         for field in (
             "declared_path",
@@ -359,7 +324,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "provenance": payload["provenance"],
                     # The link back to the exact ink: every region, with the
                     # transform that produced it and the digest of its bytes.
-                    "source_regions": export_source_regions(payload["regions"], census),
+                    "source_regions": export_source_regions(
+                        context.tree, payload["regions"], census
+                    ),
                     "dissent_ref": payload["dissent_ref"],
                 }
             )

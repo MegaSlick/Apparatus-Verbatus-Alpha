@@ -32,11 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
-from common.imaging import dimensions  # noqa: E402
+from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -81,44 +80,10 @@ def verify_region(context, region: dict) -> dict:
     something that is not an image, and the dimensions catch a crop that does not
     match the transform it claims to be.
     """
-    payload = region["payload"]
-    data = context.tree.read_bytes(payload["image_path"])
-
-    actual = digest_bytes(data)
-    if actual != payload["image_sha256"]:
-        raise SchemaRefusal(
-            f"region {payload['region_id']} has digest {actual}, not the "
-            f"{payload['image_sha256']} its reference recorded"
-        )
-
-    width, height = dimensions(data)
-    transform = payload["transform"]
-    bounds = transform["bounds"]
-    if (width, height) != (bounds["w"], bounds["h"]):
-        raise SchemaRefusal(
-            f"region {payload['region_id']} is {width}x{height}, but its transform "
-            f"claims {bounds['w']}x{bounds['h']}"
-        )
-    source_ordinal = transform.get("source_page_ordinal")
-    source_page_id = transform.get("source_page_id")
-    if (
-        not isinstance(source_ordinal, int)
-        or isinstance(source_ordinal, bool)
-        or source_ordinal < 0
-        or not isinstance(source_page_id, str)
-        or not source_page_id
-    ):
-        raise SchemaRefusal(
-            f"region {payload['region_id']} has no valid Exemplar page locator in its transform"
-        )
-    return {
-        "region_id": payload["region_id"],
-        "image_path": payload["image_path"],
-        "image_sha256": actual,
-        "verified_dimensions": {"w": width, "h": height},
-        "source_page_ordinal": source_ordinal,
-        "source_page_id": source_page_id,
-    }
+    try:
+        return verify_exemplar_crop_lineage(context.tree, context.run, region)
+    except ContractError as error:
+        raise SchemaRefusal("a Designator region does not trace to its Exemplar page") from error
 
 
 def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:

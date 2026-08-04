@@ -11,10 +11,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import digest_bytes
-from common.contracts.stages import ARMARIUM, DOOR
+from common.contracts.errors import FatalAccounting
+from common.contracts.stages import ARMARIUM, DESIGNATOR, DOOR
 from common.runtree.store import RunTree
 from common.stage import StageContext, adapter_recipe_for, load_fixture, run_config_bindings
 
@@ -70,6 +73,13 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
         adapter_recipes=bindings["adapter_recipes"],
         witness_chairs=bindings["witness_chairs"],
         ingress=synthetic_fixture_ingress_record(),
+        render_settings={
+            "pdf": {
+                "configured_target_dpi": 400,
+                "target_dpi": 400,
+                "minimum_dpi": 72,
+            }
+        },
     )
     door_context = StageContext(
         tree=tree,
@@ -120,21 +130,36 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
     assert {row["declared_path"] for row in census.values()} == {"iPhone/FS-88.pdf"}
     assert {row["declared_sha256"] for row in census.values()} == {digest_bytes(data)}
 
+    first_digest, first_blob = tree.put_blob(DESIGNATOR, b"first synthetic crop")
+    second_digest, second_blob = tree.put_blob(DESIGNATOR, b"second synthetic crop")
     linked = armarium.export_source_regions(
+        tree,
         [
             {
                 "region_id": "rgn_first",
-                "image_path": "synthetic/crop-1.png",
-                "image_sha256": "a" * 64,
+                "image_path": first_blob.relative_path,
+                "image_sha256": first_digest,
                 "source_page_ordinal": 1,
                 "source_page_id": census[1]["page_id"],
+                "transform": {
+                    "operation": "crop",
+                    "source_page_ordinal": 1,
+                    "source_page_id": census[1]["page_id"],
+                    "bounds": {"x": 0, "y": 0, "w": 1, "h": 1},
+                },
             },
             {
                 "region_id": "rgn_second",
-                "image_path": "synthetic/crop-2.png",
-                "image_sha256": "b" * 64,
+                "image_path": second_blob.relative_path,
+                "image_sha256": second_digest,
                 "source_page_ordinal": 2,
                 "source_page_id": census[2]["page_id"],
+                "transform": {
+                    "operation": "crop",
+                    "source_page_ordinal": 2,
+                    "source_page_id": census[2]["page_id"],
+                    "bounds": {"x": 0, "y": 0, "w": 1, "h": 1},
+                },
             },
         ],
         census,
@@ -142,3 +167,7 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
     assert [row["container_page_index"] for row in linked] == [0, 1]
     assert {row["declared_path"] for row in linked} == {"iPhone/FS-88.pdf"}
     assert {row["declared_sha256"] for row in linked} == {digest_bytes(data)}
+
+    tree.resolve(first_blob.relative_path).write_bytes(b"changed crop pixels")
+    with pytest.raises(FatalAccounting, match="crop bytes changed before export"):
+        armarium.export_source_regions(tree, linked, census)
