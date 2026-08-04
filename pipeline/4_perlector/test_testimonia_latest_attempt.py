@@ -88,9 +88,7 @@ def run_with_a_superseded_attempt(tmp_path):
     second["artifact_id"] = artifact_id(
         ATTESTATORES, "testimonium", act_id, attempt_id(act_id, f"read:{chair}", 2)
     )
-    path = tree.resolve(
-        f"3_attestatores/artifacts/testimonium/{second['artifact_id']}.json"
-    )
+    path = tree.resolve(f"3_attestatores/artifacts/testimonium/{second['artifact_id']}.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(canonical_bytes(second))
     tree.write_manifest(ATTESTATORES)
@@ -120,5 +118,7 @@ def test_the_witness_read_filter_excludes_a_chair_whose_current_attempt_failed(
     attempt is `failed` — this is the exact filter, exercised directly."""
     context, act_id, chair = run_with_a_superseded_attempt
     testimonia = perlector.testimonia_of(context, act_id)
-    read_chairs = {record["payload"]["chair"] for record in testimonia if record["outcome"] == "read"}
+    read_chairs = {
+        record["payload"]["chair"] for record in testimonia if record["outcome"] == "read"
+    }
     assert chair not in read_chairs
