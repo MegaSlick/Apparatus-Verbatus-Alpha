@@ -645,11 +645,19 @@ def _page_image_object(page: dict[str, Any], data: bytes, xref: dict[int, int]) 
 # --- Decoding the one image XObject a page may carry ----------------------------
 
 _RAW_COLORSPACES: Final = {"DeviceGray": (1, 0), "DeviceRGB": (3, 2)}
-# The keys that change what a page's pixels *look like* and that this module does
-# not apply. A page carrying one of them renders to something other than what the
-# PDF declares, so it is refused by name rather than rendered with the key dropped.
+# The keys that change what a page's pixels *are* and that this module does not
+# apply. A page carrying one of them renders to something other than what the PDF
+# declares, so it is refused by name rather than rendered with the key dropped.
 # `/Decode` is handled separately because its identity value is legal and harmless.
-_APPEARANCE_KEYS: Final = ("ImageMask", "Mask", "SMask", "DecodeParms", "Intent")
+#
+# **`/Intent` is deliberately not here**, though it was in the first draft of this
+# repair. A rendering intent annotates colour *conversion*, and this module performs
+# none — it stores DeviceGray and DeviceRGB samples as they are, which is a limit it
+# already states. Refusing every image that carries one would refuse a large share of
+# real PDF output for a key that changes no sample, and a refused page is a page
+# nobody reads (GOALS 1). `/DecodeParms` is here because a Flate predictor genuinely
+# does change the decoded samples.
+_APPEARANCE_KEYS: Final = ("ImageMask", "Mask", "SMask", "DecodeParms")
 
 
 def _refuse_sample_remapping(fields: dict[str, Any], channels: int) -> None:
@@ -663,7 +671,17 @@ def _refuse_sample_remapping(fields: dict[str, Any], channels: int) -> None:
     means nothing, so it passes; anything else is a documented limit.
     """
     decode = fields.get("Decode")
-    if decode is not None and list(decode or ()) != [0, 1] * channels:
+    if decode is None:
+        pass
+    elif not isinstance(decode, list):
+        # An indirect reference or any other shape. Refused rather than resolved:
+        # the safe direction, and a scanner does not write one.
+        raise PdfRefusal(
+            RefusalReason.UNSUPPORTED_VARIANT,
+            "the image declares a /Decode that is not a plain array; only an inline "
+            "identity array is read here",
+        )
+    elif decode != [0, 1] * channels:
         raise PdfRefusal(
             RefusalReason.UNSUPPORTED_VARIANT,
             f"the image declares /Decode {decode!r}, which remaps its samples; this "

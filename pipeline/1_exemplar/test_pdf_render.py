@@ -388,7 +388,7 @@ def test_a_decode_array_that_remaps_samples_is_refused_rather_than_dropped():
     assert render_page(with_decode("[0 1]"), 0)[1] == "png"
 
 
-@pytest.mark.parametrize("key", ["ImageMask", "Mask", "SMask", "DecodeParms", "Intent"])
+@pytest.mark.parametrize("key", ["ImageMask", "Mask", "SMask", "DecodeParms"])
 def test_every_key_that_changes_what_a_page_shows_is_refused_by_name(key):
     entry = gray_image(2, 2, 0)
     entry["dictionary"] += f" /{key} true"
@@ -396,6 +396,24 @@ def test_every_key_that_changes_what_a_page_shows_is_refused_by_name(key):
         render_page(image_page_pdf([entry]), 0)
     assert caught.value.reason is RefusalReason.UNSUPPORTED_VARIANT
     assert key in str(caught.value)
+
+
+def test_a_rendering_intent_is_not_a_sample_transform_and_does_not_refuse():
+    """The other direction, and the one this repair got wrong first. `/Intent`
+    annotates colour *conversion*, which this module performs none of — it stores
+    DeviceGray and DeviceRGB samples as they are. Refusing every image carrying one
+    would refuse a large share of real PDF output for a key that changes no sample,
+    and a refused page is a page nobody reads (GOALS 1)."""
+    entry = gray_image(2, 2, 0)
+    entry["dictionary"] += " /Intent /RelativeColorimetric"
+    assert render_page(image_page_pdf([entry]), 0)[1] == "png"
+
+
+def test_a_decode_array_that_is_not_a_plain_array_is_refused_not_coerced():
+    entry = gray_image(2, 2, 0)
+    entry["dictionary"] += " /Decode 7 0 R"
+    with pytest.raises(PdfRefusal, match="not a plain array"):
+        render_page(image_page_pdf([entry]), 0)
 
 
 def test_a_dct_page_is_checked_against_the_colour_space_its_dictionary_declares():
