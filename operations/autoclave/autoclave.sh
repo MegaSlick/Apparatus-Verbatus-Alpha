@@ -376,6 +376,42 @@ cmd_new() {
     base_sha=$(git -C "$REPO_ROOT" rev-parse --verify "${base}^{commit}") \
         || die "cannot resolve base '$base'"
 
+    # A drawer that already holds a report belongs to a dispatch that already
+    # happened, and `rm` deliberately keeps it — the drawer is the only surviving
+    # evidence that a chamber ran. Reusing the task name therefore overwrites that
+    # evidence the moment the new seat finishes, silently and with no way back:
+    # `workbench/` is gitignored, so there is no history to recover it from.
+    #
+    # That is not hypothetical. On 2026-08-04 a session dispatched a four-seat
+    # review into `rev-terra`, `rev-sonnet`, `rev-opus` and `rev-sol` — names used
+    # for a different review the night before — and destroyed GPT-5.6 Terra's seat
+    # from the System 02 review. The other three were rescued only because their
+    # seats had not finished writing yet. Recorded in
+    # `workbench/archive/2026-08-03_reviews-preserved/LOST.md`.
+    #
+    # CLAUDE.md hard rule 7: nothing is lost silently. So this refuses rather than
+    # warns — a warning printed at the top of a dispatch that then runs for two
+    # hours is a warning nobody reads.
+    #
+    # **Before `need_docker`, and that ordering is the point.** Its own test asserts
+    # this refusal happens "before the engine is touched", and until 2026-08-05 it did
+    # not: the check sat a hundred lines below, after the engine and image were
+    # required. On a machine with the image built that is invisible — the image check
+    # passes silently and this one fires — so the test passed locally and failed in CI,
+    # where no image exists and `new` died at "image not built" instead. A refusal that
+    # only works on a machine that has already done the setup is not the refusal the
+    # test claims. Reading a path needs no engine, so it is checked first.
+    if [ -f "$(outdir_of "$task")/report.md" ]; then
+        die "chamber '${task}' would reuse an output drawer that already holds a report:
+    $(outdir_of "$task")/report.md
+    written $(date -r "$(outdir_of "$task")/report.md" '+%Y-%m-%d %H:%M' 2>/dev/null || echo 'at an unknown time')
+
+  That report is the only surviving evidence of an earlier dispatch, and creating
+  this chamber would overwrite it with no way back — workbench/ is gitignored.
+
+  Pick a different task name, or move the old report aside first."
+    fi
+
     # **Every prerequisite that only reads is checked before anything is written.**
     # These four used to sit below the snapshot, which is the first thing `new` writes
     # to the host repository, so a `new` that failed for a missing engine, an unbuilt
@@ -509,6 +545,7 @@ cmd_new() {
     fi
 
     outdir=$(outdir_of "$task")
+
     mkdir -p "$outdir"
 
     # --network none would be the honest default, but the agent CLIs need to
@@ -983,7 +1020,26 @@ cmd_dispatch() {
             # The system prompt is not a file it can rank; it is what it is.
             # Codex has no equivalent flag, and does not need one: it reads
             # `/work/AGENTS.md`, which is the same bytes, and it was probed doing so.
+            # `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` because the default is a real
+            # kill and it silently cost a lane. In `-p` mode the CLI waits a bounded
+            # time for its own background tasks and then **terminates them and exits**.
+            # An orchestrating seat that fans out — which is the whole reason to run at
+            # `ultracode` — reaches that ceiling as a matter of course: a round-two lane
+            # spawned a 28-agent join audit, hit the default at 600 seconds, killed its
+            # own workflow and returned having committed nothing. The dispatch exited 0
+            # and `collect` reported NO COMMITS, so the failure looked like a model that
+            # did no work rather than a harness that stopped it.
+            #
+            # This is the case `.claude/agents/README.md` singles out under "no agent
+            # gets a time limit": a real kill is not a deadline, and a killed seat loses
+            # its report entirely rather than handing back a shorter one. The rule there
+            # is to tell a seat a limit that genuinely exists — but this one buys
+            # nothing, so it is removed instead. Zero means wait indefinitely; the
+            # chamber is already the bound on how long anything may run.
+            #
+            # Codex needs no counterpart: it streams and has no such ceiling.
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
+                -e CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
                 "$(container_of "$task")" sh -c '
                 cd /work
                 claude --dangerously-skip-permissions \

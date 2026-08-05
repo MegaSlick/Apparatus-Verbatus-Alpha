@@ -391,6 +391,48 @@ class TestTaskNames:
         # Past validation and into the real work: it is looking for the report.
         assert "report.md" in result.stderr
 
+    def test_a_drawer_holding_a_report_refuses_a_new_chamber(self, tmp_path):
+        """Reusing a task name would overwrite the only evidence a dispatch ran.
+
+        `rm` keeps the output drawer deliberately — it is the sole surviving record
+        of a chamber. So a second `new` under the same task name silently destroys
+        the first one's report the moment the new seat finishes, and `workbench/` is
+        gitignored, so there is no history to recover it from.
+
+        This happened on 2026-08-04: a four-seat review was dispatched into
+        `rev-terra`, `rev-sonnet`, `rev-opus` and `rev-sol`, the names a different
+        review had used the night before, and GPT-5.6 Terra's System 02 review report
+        was destroyed. The other three survived only because their seats had not
+        finished writing when it was noticed. See
+        `workbench/archive/2026-08-03_reviews-preserved/LOST.md`.
+
+        It refuses rather than warns, per CLAUDE.md hard rule 7: a warning printed at
+        the top of a dispatch that then runs for two hours is a warning nobody reads.
+        Asserted to happen before the engine is touched, so the refusal cannot leave
+        a half-made chamber behind.
+        """
+        script = elsewhere(tmp_path)
+        drawer = tmp_path / "workbench" / "autoclave" / "a-finished-review"
+        drawer.mkdir(parents=True)
+        (drawer / "report.md").write_text("an earlier seat's findings\n")
+        # A *working* engine, deliberately. Reading the refusal text cannot tell a
+        # launcher that never called Docker apart from one that called it and then
+        # refused for its own reasons — and on a host with the image already built,
+        # the second is what used to happen. The stub records every invocation, so
+        # "the engine was not touched" is asserted against what was called rather
+        # than against what the error happened to say.
+        env, log = fake_docker(tmp_path)
+
+        result = run("new", "a-finished-review", script=script, env=env)
+
+        assert result.returncode != 0
+        assert "report.md" in result.stderr
+        assert "a-finished-review" in result.stderr
+        # The old report is still there, untouched.
+        assert (drawer / "report.md").read_text() == "an earlier seat's findings\n"
+        # And nothing reached the engine — no Docker call of any kind was made.
+        assert docker_calls(log) == []
+
     def test_validation_happens_before_anything_is_created(self):
         """A rejected name must not reach the engine at all.
 
@@ -861,6 +903,26 @@ class TestDispatch:
         a quoted command line brings its punctuation with it."""
         joined = " ".join(code_lines())
         assert joined.count('-e AC_MODEL="$model" -e AC_EFFORT="$effort"') == 2
+
+    def test_a_claude_chamber_has_no_background_wait_ceiling(self):
+        """The default ceiling is a real kill, and it silently cost a lane.
+
+        In `-p` mode the Claude CLI waits a bounded time for its own background
+        tasks and then terminates them and exits. An orchestrating seat fans out —
+        that is the point of `ultracode` — so it reaches the ceiling as a matter of
+        course. A round-two lane spawned a 28-agent audit, hit the 600-second
+        default, killed its own workflow and committed nothing; the dispatch exited
+        0 and `collect` said NO COMMITS, so a harness kill looked like a model that
+        did no work.
+
+        `.claude/agents/README.md` names this exact shape: a real kill is not a
+        deadline, and a killed seat loses its report entirely rather than handing
+        back a shorter one. Zero means wait indefinitely. Asserted rather than
+        trusted, because nothing else in the dispatch would notice its removal —
+        the failure it prevents is silent by construction.
+        """
+        joined = " ".join(code_lines())
+        assert "-e CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0" in joined
 
     def test_the_codex_prompt_is_behind_an_end_of_options_marker(self):
         """`--` so a prompt beginning with a dash is a prompt, `-` because that is

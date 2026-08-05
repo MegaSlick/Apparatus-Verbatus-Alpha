@@ -1,10 +1,30 @@
-# Whole-page PDF rasterisation target for the next run. This default is
-# deliberately unmeasured: configuration makes it adjustable, not proven. Check it
-# against a real approved sample before scale (GOVERNANCE 9).
+# Whole-page PDF rasterisation target for the next run.
 #
 # A run may override this with --pdf-target-dpi. The door records both this chosen
 # target and the bounded target it can safely use. Pixel, decoded-byte, and 72-DPI
 # floor limits remain code-owned and cannot be weakened here.
+#
+# 300 rather than the 400 this shipped with, on Tyrel's instruction 2026-08-05,
+# after measuring his own material rather than reasoning from a standard:
+#
+#   - Hudson's Bay Company account books, rendered and measured at several targets,
+#     put written line pitch near 52 px at 150 DPI. That is roughly a 21 px
+#     x-height, and the OCR literature places the useful band at 25-30 px with
+#     accuracy collapsing below about 10. 300 clears the band for the tighter hands
+#     in the corpus; 150 does not.
+#   - The reading models resize before they read — the strongest cap the long edge
+#     at 2,576 px — and an act crop taken full width from a letter-sized page at
+#     300 DPI is 2,550 px, landing just under that and surviving whole. The same
+#     crop at 400 DPI is 3,400 px and is resized back down to 2,576, so it arrives
+#     at the model barely larger than the 300 DPI crop did while costing
+#     (400/300)^2 = 1.78x the pixels to render, store and keep until export.
+#     Rendering at 400 therefore pays for about 78% more raster and reads almost
+#     none of it.
+#
+# **Still not proven, and adjustable for exactly that reason.** This is measured
+# against page geometry, not against reading accuracy: nothing here has read a real
+# act yet. GOVERNANCE 9 wants a real approved sample before scale, and if a hand
+# turns out to need more, this is one number in one file.
 
 [pdf]
-target_dpi = 400
+target_dpi = 300

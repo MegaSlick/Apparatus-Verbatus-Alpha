@@ -116,12 +116,19 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
         adapter_recipes=bindings["adapter_recipes"],
         witness_chairs=bindings["witness_chairs"],
         ingress=synthetic_fixture_ingress_record(),
+        # Read from the shipped config rather than restated: a sealed run binds its
+        # render recipe, so a literal here goes stale the moment the default moves
+        # and fails as "the render contract changes the sealed pixel recipe" — which
+        # is the guard doing its job, several files away from the actual edit.
+        #
+        # Through `door` rather than by importing `render_config` and `pdf_render`
+        # directly: those two are door-private (`test_import_boundaries.py`), this
+        # file is not on their allow-list, and widening that list to spare one test
+        # an attribute lookup would trade a real boundary for a cosmetic one.
         render_settings={
-            "pdf": {
-                "configured_target_dpi": 400,
-                "target_dpi": 400,
-                "minimum_dpi": 72,
-            }
+            "pdf": door.render_config.load_pdf_render_settings(
+                minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+            ).to_record()
         },
     )
     door_context = StageContext(

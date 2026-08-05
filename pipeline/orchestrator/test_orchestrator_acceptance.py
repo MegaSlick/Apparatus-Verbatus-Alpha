@@ -68,8 +68,19 @@ FIXTURE = "synthetic-two-page-v0"
 # fatal, and fatal *after* every admission had already been published. The artifact
 # count is unchanged (42 and 46 below); only the bytes of the admission payloads
 # moved, which is what a deliberate record change looks like here.
-HAPPY_RUN_TREE_DIGEST = "d0cda74d1e1db68e8a2b50b14f4915faa7ca49b67747cfdee691b37332e84962"
-REVIEW_RUN_TREE_DIGEST = "750fe3bb3d72e8b15b49d76e29b093aa382cfee4b7b2ba2e68b3428c37055dc2"
+# Re-pinned once more on 2026-08-05: the shipped PDF render target moved from 400 to
+# 300 DPI on Tyrel's instruction, so every PDF-derived page is a different — and
+# deliberately different — set of pixels. Artifact counts are again unchanged.
+#
+# Re-pinned again the same day for a *comment* in `config/pdf_render.toml`, which is
+# worth stating plainly because it surprises people: the config digest sealed into
+# `run.json` covers the file's bytes, so its prose is part of the configuration a run
+# is bound to. Correcting an arithmetic error in an explanatory comment therefore moves
+# every downstream artifact digest and these two whole-tree pins with them. That is the
+# seal behaving correctly — a run records exactly the configuration text it ran under —
+# but it means a documentation-only edit to anything under `config/` lands here.
+HAPPY_RUN_TREE_DIGEST = "e2999e45d0cac2b3776cb2ecf42abdc13e366ef81ae9e8f46c579269286ca14a"
+REVIEW_RUN_TREE_DIGEST = "b6740e78dddca45c15de796208159bf54a3d322fe9084cfab24ba8b52354c63b"
 
 
 def orchestrate(
