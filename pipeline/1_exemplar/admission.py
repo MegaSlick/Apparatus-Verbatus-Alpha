@@ -67,7 +67,6 @@ class RefusalReason(str, Enum):
     CORRUPT = "corrupt"
     UNSUPPORTED_VARIANT = "unsupported-variant"
     DIGEST_MISMATCH = "digest-mismatch"
-    DUPLICATE = "duplicate"
 
 
 class AdmissionOutcome(NamedTuple):
@@ -195,11 +194,3 @@ def _refusal_code(error: FormatRefusal) -> RefusalReason:
     if error.verdict is FormatVerdict.UNSUPPORTED:
         return RefusalReason.UNSUPPORTED_VARIANT
     return RefusalReason.CORRUPT
-
-
-def duplicate_reason(first_ordinal: int) -> str:
-    """The alarm for a second submitted file whose bytes match an admission."""
-    return reason(
-        RefusalReason.DUPLICATE,
-        f"identical content already admitted as source-{first_ordinal}",
-    )

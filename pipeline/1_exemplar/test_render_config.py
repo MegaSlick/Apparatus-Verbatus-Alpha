@@ -2,12 +2,14 @@
 
 import importlib.util
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import door
 import pdf_render
 import pytest
 import render_config
+from PIL import Image
 from synthetic_sources import content_page_pdf
 
 from common.contracts.canonical import digest_bytes
@@ -109,6 +111,36 @@ def test_exemplar_refuses_a_page_target_that_disagrees_with_run_authority():
             run,
             container_format="pdf",
         )
+
+
+@pytest.mark.parametrize(("mode", "value"), [("I", 70_000), ("F", 1_000.25)])
+def test_exemplar_accepts_the_lossless_tiff_contract_for_high_precision_fanned_pages(mode, value):
+    """The Door and Exemplar agree that these samples are TIFF, not clipped RGB."""
+    output = BytesIO()
+    Image.new(mode, (2, 2), 1 if mode == "I" else 0.5).save(
+        output,
+        format="TIFF",
+        save_all=True,
+        append_images=[Image.new(mode, (2, 2), value)],
+    )
+    rendered, geometry, contract = door.render_raster_page(output.getvalue(), 1)
+
+    assert contract["output"]["codec"] == "tiff"
+    assert (
+        door.admission.inspect_source(
+            rendered,
+            declared_sha256=None,
+            policy=door.admission.load_format_policy(),
+        ).outcome
+        == "admitted"
+    )
+    _exemplar_module()._verify_render_contract(
+        contract,
+        1,
+        {"geometry": {"width": geometry.width, "height": geometry.height}},
+        {},
+        container_format="tiff",
+    )
 
 
 def test_run_override_is_sealed_in_authority_and_changed_resume_writes_nothing(

@@ -16,7 +16,7 @@ import pytest
 import render_config
 from admission import RefusalReason
 from image_formats import MAX_DIMENSION, MAX_PIXELS, validate_png
-from pdf_render import MAX_PAGES, PdfRefusal, close_document, count_pages, open_document
+from pdf_render import PdfRefusal, close_document, count_pages, open_document
 from PIL import Image
 from synthetic_sources import (
     blank_pages_pdf,
@@ -245,13 +245,26 @@ def test_a_non_positive_page_dimension_is_a_corrupt_alarm(width: int, height: in
     assert caught.value.reason is RefusalReason.CORRUPT
 
 
-def test_the_page_fan_out_limit_is_enforced_on_a_real_synthetic_page_tree():
-    assert MAX_PAGES == 5_000
-    with pytest.raises(PdfRefusal) as caught:
-        count_pages(blank_pages_pdf(MAX_PAGES + 1))
+def test_a_pdf_page_count_past_the_retired_policy_cap_remains_the_fan_out_denominator():
+    """A long reel's declared page tree, not an old 5,000-page policy, fans out."""
+    pages = 5_001
+    assert count_pages(blank_pages_pdf(pages)) == pages
 
-    assert caught.value.reason is RefusalReason.UNSUPPORTED_VARIANT
-    assert f"above the {MAX_PAGES}-page" in str(caught.value)
+
+def test_a_path_backed_pdf_is_handed_to_pdfium_as_a_path(tmp_path, monkeypatch):
+    """The real Door path must never build a reel-sized bytes object for PDFium."""
+    path = tmp_path / "reel.pdf"
+    path.write_bytes(single_gray_page_pdf())
+    calls = []
+    original = pdf_render.pdfium.PdfDocument
+
+    def record_source(source, *args, **kwargs):
+        calls.append(source)
+        return original(source, *args, **kwargs)
+
+    monkeypatch.setattr(pdf_render.pdfium, "PdfDocument", record_source)
+    assert count_pages(path) == 1
+    assert calls == [path]
 
 
 def test_a_zero_page_document_is_a_corrupt_alarm():
@@ -268,6 +281,11 @@ def test_non_pdf_and_truncated_pdf_bytes_are_corrupt_alarms():
     with pytest.raises(PdfRefusal) as truncated:
         count_pages(b"%PDF-1.7\nthis stops before any objects")
     assert truncated.value.reason is RefusalReason.CORRUPT
+
+
+def test_a_pdfium_accepted_prefix_preamble_is_not_called_an_unknown_format():
+    """A transfer preamble does not erase an otherwise readable PDF's route."""
+    assert count_pages(b"\n\n" + single_gray_page_pdf()) == 1
 
 
 @pytest.mark.parametrize("page_index", [-1, 1, True, 0.5])

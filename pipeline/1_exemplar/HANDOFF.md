@@ -97,17 +97,24 @@ rendered_from = {
 }
 ```
 
-`render_contract` records the renderer/version, exact page index, lossless PNG
-output, geometry, and PDF-specific pixel choices. It is a complete explanation for
+`render_contract` records the renderer/version, exact page index, lossless PNG or
+TIFF output, geometry, and PDF-specific pixel choices. It is a complete explanation for
 why a sealed rendered digest differs from the source container digest. Only the
 PDFium whole-page renderer forces RGB; the raster fan-out renderer preserves an
 already-PNG-legal source mode (grayscale, bilevel, LA, RGBA, 16-bit) unchanged
-rather than converting it.
+rather than converting it, and retains `I`/`F` high-precision samples in TIFF.
+When a PDF page is memory-capped below the provisional run target, its sealed page
+also names configured/resolved/effective DPI and the shortfall explicitly.
 
 A refused payload has `reason`, whose prefix is one of the closed alarm codes:
 `empty`, `unreadable`, `too-large`, `unrecognized-format`, `corrupt`,
-`unsupported-variant`, `digest-mismatch`, or `duplicate`. The artifact retains the
+`unsupported-variant`, or `digest-mismatch`. The artifact retains the
 filename; a terminal is only presentation.
+
+Byte-identical submitted sources are not refusals. Each ordinal is admitted and
+keeps its filename link, may reuse the same content-addressed blob, and the Door
+seals a private `duplicate-report` naming the first observed ordinal/path and
+operator-visible duplicate counts.
 
 ## Exemplar `kind="page"` and corpus seal
 

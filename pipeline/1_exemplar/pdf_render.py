@@ -15,6 +15,7 @@ from __future__ import annotations
 import warnings
 from io import BytesIO
 from math import ceil
+from pathlib import Path
 from typing import Any, Final, NamedTuple
 
 import admission
@@ -25,7 +26,7 @@ from PIL import Image
 from render_config import PdfRenderSettings
 
 PDF_SIGNATURE: Final = b"%PDF-"
-MAX_PAGES: Final = 5_000
+PDF_HEADER_PREFIX_BYTES: Final = 1024
 # The floor this module will not render below. A page is capped *downward* toward
 # it rather than refused for being large: a huge legitimate page captured at reduced
 # resolution is a poorly read act, and refusing it outright is a missed one. Only a
@@ -87,13 +88,20 @@ def renderer_recipe(settings: PdfRenderSettings) -> dict[str, Any]:
     }
 
 
-def open_document(data: bytes) -> OpenPdf:
-    """Open bytes already selected by the door, counting pages without rendering."""
-    if not data.startswith(PDF_SIGNATURE):
+def open_document(source: bytes | str | Path) -> OpenPdf:
+    """Open a PDF source, counting pages without rasterising it.
+
+    The Door gives a real-submission PDF to PDFium by filesystem path.  PDFium then
+    reads the document itself instead of the Door allocating one bytes object the
+    size of a complete reel.  Synthetic callers can still supply their in-memory
+    bytes directly; both paths use the same renderer and page contract.
+    """
+    header = _pdf_header(source)
+    if PDF_SIGNATURE not in header:
         raise PdfRefusal(RefusalReason.CORRUPT, "the source has no PDF header")
     document = None
     try:
-        document = pdfium.PdfDocument(data)
+        document = pdfium.PdfDocument(source)
     except (pdfium.PdfiumError, ValueError, OSError) as error:
         raise PdfRefusal(
             _open_failure_code(error), f"PDFium could not open the document: {error}"
@@ -121,13 +129,22 @@ def open_document(data: bytes) -> OpenPdf:
     if pages <= 0:
         close_document(OpenPdf(document, pages))
         raise PdfRefusal(RefusalReason.CORRUPT, "the PDF contains no pages")
-    if pages > MAX_PAGES:
-        close_document(OpenPdf(document, pages))
-        raise PdfRefusal(
-            RefusalReason.UNSUPPORTED_VARIANT,
-            f"the PDF contains {pages} pages, above the {MAX_PAGES}-page fan-out limit",
-        )
     return OpenPdf(document, pages)
+
+
+def _pdf_header(source: bytes | str | Path) -> bytes:
+    """Read only a bounded PDF prefix, never a complete path-backed source."""
+    if isinstance(source, bytes):
+        return source[:PDF_HEADER_PREFIX_BYTES]
+    if not isinstance(source, (str, Path)):
+        raise PdfRefusal(RefusalReason.CORRUPT, "the PDF source is neither bytes nor a path")
+    try:
+        with Path(source).open("rb") as handle:
+            return handle.read(PDF_HEADER_PREFIX_BYTES)
+    except OSError as error:
+        raise PdfRefusal(
+            RefusalReason.UNREADABLE, f"the PDF source could not be read: {error}"
+        ) from error
 
 
 # PDFium's own load-error codes for the two cases that mean "locked", not "broken":
@@ -162,9 +179,9 @@ def _open_failure_code(error: Exception) -> RefusalReason:
     return RefusalReason.CORRUPT
 
 
-def count_pages(data: bytes) -> int:
+def count_pages(source: bytes | str | Path) -> int:
     """Count PDF pages without rasterising them, closing the temporary handle."""
-    opened = open_document(data)
+    opened = open_document(source)
     try:
         return opened.page_count
     finally:

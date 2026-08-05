@@ -54,6 +54,13 @@ def jpeg(width: int = 5, height: int = 4, *, trailing: bytes = b"") -> bytes:
     return output.getvalue() + trailing
 
 
+def synthetic_decoder_image(format_name: str) -> bytes:
+    """Generate ordinary bytes for a door-level installed-codec assertion."""
+    output = BytesIO()
+    Image.new("RGB", (7, 5), (17, 34, 51)).save(output, format=format_name)
+    return output.getvalue()
+
+
 def multipage_tiff() -> bytes:
     """Two distinct ordinary TIFF pages, made only for this test process."""
     output = BytesIO()
@@ -203,6 +210,45 @@ def test_correct_bytes_admit_even_when_the_filename_extension_is_wrong(tmp_path)
     assert record["payload"]["declared_sha256"] == digest_bytes(data)
 
 
+def test_the_real_door_seals_bmp_webp_avif_and_a_generic_decoder_fallback(tmp_path):
+    """Format routing is not enough: every route must reach a sealed admission.
+
+    This uses the Door's normal `process_sources`/RunTree publication path rather
+    than an in-memory decoder result.  PPM deliberately has no sniffer branch, so
+    its row is the generic decoder fallback proof.
+    """
+    formats = [
+        ("BMP", "bitmap.bmp", "bmp"),
+        ("WEBP", "lossless.webp", "webp"),
+        ("AVIF", "phone-export.avif", "avif"),
+        ("PPM", "portable-pixmap.ppm", "ppm"),
+    ]
+    files = {path: synthetic_decoder_image(encoder) for encoder, path, _ in formats}
+    sources = [
+        SourceEntry(ordinal, path, digest_bytes(files[path]))
+        for ordinal, (_, path, _) in enumerate(formats, start=1)
+    ]
+    tree, context = open_door(tmp_path, sources)
+
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == len(sources)
+    context.finish(DOOR)
+
+    records = admissions(tree)
+    assert [
+        (records[ordinal]["outcome"], records[ordinal]["payload"]["geometry"])
+        for ordinal in sorted(records)
+    ] == [
+        ("admitted", {"width": 7, "height": 5}),
+    ] * len(sources)
+    assert [records[ordinal]["payload"].get("rendered_from") for ordinal in sorted(records)] == [
+        None
+    ] * len(sources)
+    for ordinal, (_, path, _) in enumerate(formats, start=1):
+        payload = records[ordinal]["payload"]
+        assert payload["sha256"] == digest_bytes(files[path])
+        assert tree.read_bytes(payload["stored_at"]) == files[path]
+
+
 def test_every_source_gets_a_named_record_even_when_nothing_admits(tmp_path):
     sources = [
         SourceEntry(1, "not-an-image.png", digest_bytes(b"plain text")),
@@ -270,7 +316,7 @@ def test_an_oversized_decoder_alarm_does_not_abort_later_source_accounting(tmp_p
     huge = tiff(100_000, 2_000, tag_type=4, strip_bytes=1)
     ordinary = png(3, 2)
     sources = [
-        SourceEntry(1, "oversized.tif", digest_bytes(huge), container_page_index=0),
+        SourceEntry(1, "oversized.tif", digest_bytes(huge)),
         SourceEntry(2, "ordinary.png", digest_bytes(ordinary)),
     ]
     tree, context = open_door(tmp_path, sources)
@@ -328,6 +374,28 @@ def test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs(tmp_path):
         assert record["outcome"] == "admitted"
         assert payload["sha256"] != payload["rendered_from"]["container_sha256"]
         assert validate_png(tree.read_bytes(payload["stored_at"])).format == "png"
+
+
+def test_a_pdf_with_a_bounded_transport_preamble_still_routes_and_admits(tmp_path):
+    """The Door routes the same preamble PDF that PDFium can actually open."""
+    data = b"\n\n" + single_gray_page_pdf()
+    files = {"transfer-wrapped-scan.pdf": data}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(bytes_), "bytes": len(bytes_)}
+            for path, bytes_ in files.items()
+        ],
+        reader(files),
+        POLICY,
+    )
+    assert [(source.declared_path, source.container_page_index) for source in sources] == [
+        ("transfer-wrapped-scan.pdf", 0)
+    ]
+    tree, context = open_door(tmp_path, sources)
+
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 1
+    context.finish(DOOR)
+    assert admissions(tree)[1]["outcome"] == "admitted"
 
 
 def test_every_decoder_reported_animation_frame_fans_out_once(tmp_path):
@@ -452,7 +520,7 @@ def test_a_single_page_tiff_is_sealed_as_its_own_untouched_bytes(tmp_path):
     assert tree.read_bytes(payload["stored_at"]) == data
 
 
-def test_duplicate_files_are_an_alarm_but_identical_pages_inside_one_pdf_are_not(tmp_path):
+def test_duplicate_files_are_admitted_and_sealed_in_a_private_operator_report(tmp_path, capsys):
     data = png(3, 2)
     sources = [
         SourceEntry(1, "source-a.png", digest_bytes(data)),
@@ -467,10 +535,43 @@ def test_duplicate_files_are_an_alarm_but_identical_pages_inside_one_pdf_are_not
             reader({"source-a.png": data, "source-b.png": data}),
             policy=POLICY,
         )
-        == 1
+        == 2
     )
+    report = door.publish_duplicate_report(context)
     context.finish(DOOR)
-    assert reason_code(admissions(tree)[2]["payload"]["reason"]) is RefusalReason.DUPLICATE
+    records = admissions(tree)
+    assert {record["outcome"] for record in records.values()} == {"admitted"}
+    assert records[2]["payload"]["duplicate_of"] == {
+        "first_declared_path": "source-a.png",
+        "first_ordinal": 1,
+        "source_sha256": digest_bytes(data),
+    }
+    assert records[1]["payload"]["stored_at"] == records[2]["payload"]["stored_at"]
+    assert report is not None
+    entry = next(
+        item
+        for item in tree.build_manifest(DOOR)["artifacts"]
+        if item["kind"] == "duplicate-report"
+    )
+    duplicate = json.loads(tree.read_bytes(entry["relative_path"]).decode("utf-8"))["payload"]
+    assert duplicate["duplicate_source_count"] == 1
+    assert duplicate["duplicate_ordinal_count"] == 1
+    assert duplicate["groups"] == [
+        {
+            "source_sha256": digest_bytes(data),
+            "first_declared_path": "source-a.png",
+            "first_ordinal": 1,
+            "sources": [
+                {"declared_path": "source-a.png", "ordinals": [1]},
+                {"declared_path": "source-b.png", "ordinals": [2]},
+            ],
+        }
+    ]
+    door._announce_duplicate_report(tree, report)
+    summary = capsys.readouterr().err
+    assert "1 duplicate source(s) admitted across 1 page ordinal(s)" in summary
+    assert "source-a.png" not in summary
+    assert "source-b.png" not in summary
 
 
 def test_expansion_ordinals_are_stable_by_filename_and_page_index():
@@ -531,6 +632,48 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         door.load_recovery_policy(),
     )
 
+    assert baseline["config_digest"] != changed["config_digest"]
+
+
+def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(monkeypatch):
+    class Models:
+        witness_chairs = ("attestator_1",)
+        adapter_recipes = {"door": "fake-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+    ledger = {
+        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    reference = ApprovalRecordReference("receipts/sha256/" + "c" * 64 + ".json", "c" * 64)
+    settings = door.render_config.load_pdf_render_settings(
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    )
+    baseline = door._real_bindings(
+        Models(),
+        ledger,
+        {"policy": "synthetic"},
+        reference,
+        POLICY,
+        settings,
+        door.load_recovery_policy(),
+    )
+    assert baseline["adapter_recipes"]["door"] == door.REAL_DOOR_ADAPTER_REVISION
+    assert baseline["adapter_recipes"]["door"] != "fake-door-v0"
+
+    monkeypatch.setattr(door, "REAL_DOOR_ADAPTER_REVISION", "exemplar-door-v2")
+    changed = door._real_bindings(
+        Models(),
+        ledger,
+        {"policy": "synthetic"},
+        reference,
+        POLICY,
+        settings,
+        door.load_recovery_policy(),
+    )
     assert baseline["config_digest"] != changed["config_digest"]
 
 
@@ -692,7 +835,9 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     assert tree.build_manifest(DESIGNATOR) == before_designator
 
 
-def test_a_corrupt_later_tiff_page_cannot_erase_another_sources_admission(tmp_path, monkeypatch):
+def test_a_corrupt_later_tiff_page_keeps_its_good_earlier_page_and_other_sources(
+    tmp_path, monkeypatch
+):
     files = {"bad-volume.tiff": corrupt_later_tiff_page(), "good-page.png": png(4, 3)}
     approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
         tmp_path, files
@@ -713,10 +858,13 @@ def test_a_corrupt_later_tiff_page_cannot_erase_another_sources_admission(tmp_pa
     )
 
     records = admissions(RunTree(run_root, "corrupt-tiff-isolated"))
-    assert len(records) == 2
-    by_name = {record["payload"]["declared_path"]: record for record in records.values()}
-    assert by_name["bad-volume.tiff"]["outcome"] == "refused"
-    assert by_name["good-page.png"]["outcome"] == "admitted"
+    assert len(records) == 3
+    assert records[1]["payload"]["declared_path"] == "bad-volume.tiff"
+    assert records[1]["outcome"] == "admitted"
+    assert records[2]["payload"]["declared_path"] == "bad-volume.tiff"
+    assert records[2]["outcome"] == "refused"
+    assert records[3]["payload"]["declared_path"] == "good-page.png"
+    assert records[3]["outcome"] == "admitted"
 
 
 def test_a_truncated_animated_gif_cannot_erase_another_sources_admission(tmp_path, monkeypatch):
@@ -902,13 +1050,13 @@ def test_two_byte_identical_pages_inside_one_container_are_both_kept(tmp_path):
     assert records[1]["payload"]["sha256"] == records[2]["payload"]["sha256"]
 
 
-def test_a_second_copy_of_one_container_is_a_duplicate_file_not_two_lost_pages(tmp_path):
+def test_a_second_copy_of_one_container_keeps_all_pages_and_flags_the_source_duplicate(tmp_path):
     """The same two rules meeting from the other side.
 
     Pages of one file are never duplicates of each other; two copies of one file
     under different names are. A two-page PDF submitted twice produces four slots:
-    two admitted pages and two named duplicates. Neither rule may quietly become
-    the other.
+    four admitted pages. The second filename is a duplicate fact, not a refusal;
+    neither rule may quietly become the other.
     """
     data = two_page_pdf()
     files = {"scan-1.pdf": data, "scan-2.pdf": data}
@@ -923,19 +1071,18 @@ def test_a_second_copy_of_one_container_is_a_duplicate_file_not_two_lost_pages(t
     assert len(sources) == 4
 
     tree, context = open_door(tmp_path, sources)
-    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 2
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 4
+    report = door.publish_duplicate_report(context)
     context.finish(DOOR)
 
     records = admissions(tree)
-    assert [records[ordinal]["outcome"] for ordinal in sorted(records)] == [
-        "admitted",
-        "admitted",
-        "refused",
-        "refused",
-    ]
+    assert [records[ordinal]["outcome"] for ordinal in sorted(records)] == ["admitted"] * 4
     for ordinal in (3, 4):
-        assert reason_code(records[ordinal]["payload"]["reason"]) is RefusalReason.DUPLICATE
         assert records[ordinal]["payload"]["declared_path"] == "scan-2.pdf"
+        assert records[ordinal]["payload"]["duplicate_of"]["first_declared_path"] == "scan-1.pdf"
+    assert records[1]["payload"]["stored_at"] == records[3]["payload"]["stored_at"]
+    assert records[2]["payload"]["stored_at"] == records[4]["payload"]["stored_at"]
+    assert report is not None
 
 
 def test_two_identical_broken_sources_are_each_told_the_truth_about_themselves(tmp_path):
@@ -1001,6 +1148,40 @@ def test_an_oversized_source_is_named_too_large_without_ever_being_read(tmp_path
     assert payload["declared_path"] == "enormous.tif"
 
 
+def test_a_path_backed_pdf_is_not_refused_by_the_retired_bytes_allocation_cap(
+    tmp_path, monkeypatch
+):
+    """The source remains a path for both its streamed digest and PDFium open.
+
+    The cap is monkeypatched below this tiny synthetic PDF rather than allocating a
+    64 MiB fixture. If the retired branch returns, it refuses before the reader is
+    called; the page admission below is therefore a direct proof that a path-backed
+    PDF is not treated like a raster bytes allocation.
+    """
+    source_path = tmp_path / "microfilm-reel.pdf"
+    data = single_gray_page_pdf()
+    source_path.write_bytes(data)
+    source = SourceEntry(
+        1,
+        "microfilm-reel.pdf",
+        digest_bytes(data),
+        0,
+        len(data),
+        None,
+        source_path,
+        "pdf",
+    )
+
+    def unexpected_reader(_relative_path: str) -> bytes:
+        raise AssertionError("a path-backed PDF was read as one bytes object")
+
+    tree, context = open_door(tmp_path, [source])
+    monkeypatch.setattr(door, "MAX_SOURCE_BYTES", 1)
+    assert process_sources(context, tree, [source], unexpected_reader, policy=POLICY) == 1
+    context.finish(DOOR)
+    assert admissions(tree)[1]["outcome"] == "admitted"
+
+
 def test_a_page_container_declared_without_a_page_index_is_refused_not_guessed_at(tmp_path):
     """A stale or hand-built manifest must not silently seal page one of a document.
 
@@ -1018,22 +1199,18 @@ def test_a_page_container_declared_without_a_page_index_is_refused_not_guessed_a
     assert "must be declared with a page index" in decision.reason
 
 
-def test_a_page_index_on_a_one_frame_image_refuses_without_asserting_a_falsehood(tmp_path):
+def test_a_page_index_on_a_one_frame_image_names_door_bookkeeping_disagreement(tmp_path):
     """The mirror case, and the wording is the point.
 
-    An ordinary PNG carrying a page index is a manifest that disagrees with the
-    file. The refusal says what was actually observed — declared with a page index,
-    decoder reports one frame — rather than claiming the file is damaged, which it
-    is not.
+    An ordinary PNG carrying a page index is an internal manifest/decoder
+    disagreement. It must not be labelled an unsupported source variant: the Door
+    itself constructed the inconsistent page identity.
     """
     data = png(3, 2)
     source = SourceEntry(1, "register-page.png", digest_bytes(data), container_page_index=0)
 
-    decision = door.decide(data, source, POLICY)
-
-    assert decision.outcome == "refused"
-    assert reason_code(decision.reason) is RefusalReason.UNSUPPORTED_VARIANT
-    assert "decoder reports one frame" in decision.reason
+    with pytest.raises(ContractError, match="pipeline bookkeeping disagreement"):
+        door.decide(data, source, POLICY)
 
 
 def test_a_container_page_whose_bytes_changed_in_transfer_is_a_digest_alarm(tmp_path):
@@ -1051,6 +1228,30 @@ def test_a_container_page_whose_bytes_changed_in_transfer_is_a_digest_alarm(tmp_
 
     assert decision.outcome == "refused"
     assert reason_code(decision.reason) is RefusalReason.DIGEST_MISMATCH
+
+
+def test_a_filename_ledger_byte_count_mismatch_has_its_own_named_alarm(tmp_path):
+    """The byte-count check must remain distinct from a later digest comparison."""
+    data = png(3, 2)
+    source = SourceEntry(
+        1,
+        "changed-length.png",
+        digest_bytes(data),
+        declared_size=len(data) + 1,
+    )
+    tree, context = open_door(tmp_path, [source])
+
+    assert (
+        process_sources(
+            context, tree, [source], reader({source.declared_path: data}), policy=POLICY
+        )
+        == 0
+    )
+    context.finish(DOOR)
+    reason = admissions(tree)[1]["payload"]["reason"]
+    assert reason_code(reason) is RefusalReason.DIGEST_MISMATCH
+    assert "now has" in reason
+    assert "recorded in its filename ledger" in reason
 
 
 def test_a_caller_owned_folder_is_never_the_declared_synthetic_fixture_root(tmp_path):

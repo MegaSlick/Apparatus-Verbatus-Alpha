@@ -108,6 +108,10 @@ JPEG_SIGNATURE: Final = b"\xff\xd8"
 # offset table and says so, and the decoder answers instead.
 TIFF_SIGNATURES: Final = (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")
 PDF_SIGNATURE: Final = b"%PDF-"
+# PDFium accepts a PDF header after a bounded transport preamble. The Door reads
+# this much for a path-backed source, so the route stays byte-based while a
+# preamble cannot make an otherwise readable document look unrecognized.
+PDF_HEADER_PREFIX_BYTES: Final = 1024
 GIF_SIGNATURES: Final = (b"GIF87a", b"GIF89a")
 BMP_SIGNATURES: Final = (b"BM", b"BA", b"CI", b"CP", b"IC", b"PT")
 WEBP_SIGNATURE: Final = b"WEBP"
@@ -143,6 +147,11 @@ def sniff(data: bytes) -> str | None:
     the bytes are a valid instance of it. `admission.py` calls the matching
     validator before ever admitting anything.
     """
+    # Unlike raster signatures, PDFium accepts this header within a bounded
+    # leading transport preamble. PDFium still validates the document before a
+    # page is admitted.
+    if PDF_SIGNATURE in data[:PDF_HEADER_PREFIX_BYTES]:
+        return "pdf"
     for name, signatures in _SIGNATURES:
         if any(data.startswith(signature) for signature in signatures):
             return name
@@ -285,8 +294,11 @@ def validate_png(data: bytes) -> ImageGeometry:
             saw_idat = True
             idat.append(chunk_data)
         elif chunk_type == b"IEND":
-            if length != 0 or end != len(data) or not saw_idat:
-                raise corrupt("PNG: malformed IEND, or trailing bytes after it")
+            if length != 0 or not saw_idat:
+                raise corrupt("PNG: malformed IEND")
+            # IEND ends PNG's datastream. Scanner padding or appended metadata is
+            # retained just as JPEG suffix bytes are retained; it is not evidence
+            # that the pixels before the terminal chunk were damaged.
             seen_iend = True
             break
         else:
@@ -536,6 +548,99 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
             marker, cursor = _jpeg_marker_after_entropy(data, cursor)
         else:
             marker, cursor = _jpeg_marker_at(data, cursor)
+
+
+# --- GIF -------------------------------------------------------------------------
+
+
+def _gif_skip_sub_blocks(data: bytes, offset: int, *, context: str) -> int:
+    """Advance through one GIF sub-block sequence, requiring its zero terminator."""
+    while True:
+        if offset >= len(data):
+            raise corrupt(f"GIF: {context} ends before its sub-block length")
+        length = data[offset]
+        offset += 1
+        if length == 0:
+            return offset
+        if offset + length > len(data):
+            raise corrupt(f"GIF: {context} sub-block runs past the end of the file")
+        offset += length
+
+
+def _gif_color_table_end(data: bytes, offset: int, packed: int, *, context: str) -> int:
+    """Advance over an optional GIF colour table whose size its header declares."""
+    if not packed & 0x80:
+        return offset
+    entries = 1 << ((packed & 0x07) + 1)
+    end = offset + 3 * entries
+    if end > len(data):
+        raise corrupt(f"GIF: {context} colour table runs past the end of the file")
+    return end
+
+
+def validate_gif(data: bytes) -> ImageGeometry:
+    """Require a complete GIF block stream before Pillow can trust a frame count.
+
+    Pillow can decode a strict prefix of an animated GIF as a complete one-frame
+    image.  That is useful recovery behaviour for an interactive viewer, but it is
+    not a sufficient immutable Exemplar: without the GIF trailer and every block
+    framing its second frame, a damaged source would be sealed as a complete page.
+    This small walker proves framing only; Pillow still owns LZW pixel decoding.
+    """
+    if not any(data.startswith(signature) for signature in GIF_SIGNATURES):
+        raise corrupt("GIF: missing GIF87a or GIF89a header")
+    if len(data) < 13:
+        raise corrupt("GIF: truncated logical screen descriptor")
+    width, height = struct.unpack_from("<HH", data, 6)
+    geometry = _geometry("gif", width, height)
+    offset = _gif_color_table_end(data, 13, data[10], context="logical-screen")
+    images = 0
+
+    while offset < len(data):
+        marker = data[offset]
+        offset += 1
+        if marker == 0x3B:  # trailer
+            if images < 1:
+                raise corrupt("GIF: trailer arrives before an image descriptor")
+            # Appended bytes do not alter the complete GIF datastream, just as
+            # JPEG padding after EOI does not make an otherwise sound image corrupt.
+            return geometry
+        if marker == 0x21:  # extension introducer + label + sub-blocks
+            if offset >= len(data):
+                raise corrupt("GIF: truncated extension label")
+            label = data[offset]
+            offset += 1
+            if label == 0xF9:  # Graphic Control Extension: fixed four-byte payload.
+                if offset >= len(data) or data[offset] != 4:
+                    raise corrupt("GIF: malformed graphic-control extension length")
+                offset += 1
+                if offset + 4 >= len(data):
+                    raise corrupt("GIF: graphic-control extension runs past the file")
+                offset += 4
+                if data[offset] != 0:
+                    raise corrupt("GIF: graphic-control extension has no terminator")
+                offset += 1
+            else:
+                offset = _gif_skip_sub_blocks(data, offset, context="extension")
+            continue
+        if marker != 0x2C:  # image separator
+            raise corrupt(f"GIF: unknown block marker 0x{marker:02X}")
+        if offset + 9 > len(data):
+            raise corrupt("GIF: truncated image descriptor")
+        # The image descriptor begins with left/top/width/height and ends with
+        # packed flags. Its local dimensions are bounded as well as the screen.
+        _left, _top, image_width, image_height, packed = struct.unpack_from("<HHHHB", data, offset)
+        _geometry("gif", image_width, image_height)
+        offset = _gif_color_table_end(data, offset + 9, packed, context="image")
+        if offset >= len(data):
+            raise corrupt("GIF: image has no LZW minimum code size")
+        # Any byte is a syntactically present code-size field. Pillow owns whether
+        # it actually supports the encoded LZW stream.
+        offset += 1
+        offset = _gif_skip_sub_blocks(data, offset, context="image data")
+        images += 1
+
+    raise corrupt("GIF: missing trailer")
 
 
 def _jpeg_quantization_tables(payload: bytes) -> set[int]:
@@ -944,7 +1049,7 @@ def _validate_tiff_sample_storage(
         # Only an uncompressed segment's size is derivable from the geometry. For a
         # compressed one the count is whatever the codec produced, and reconciling it
         # would mean decompressing — the named limit this module keeps.
-        if compression == _TIFF_UNCOMPRESSED and count != needed:
+        if compression == _TIFF_UNCOMPRESSED and count < needed:
             raise corrupt(
                 f"TIFF: an uncompressed image-data segment stores {count} byte(s) "
                 f"where its share of a {geometry.width}x{geometry.height} image needs {needed}"
@@ -981,7 +1086,12 @@ def _tiff_expected_tile_sizes(
     return [tile_length * ((tile_width * sum(bits) + 7) // 8)] * (across * down)
 
 
-VALIDATORS: Final = {"png": validate_png, "jpeg": validate_jpeg, "tiff": validate_tiff}
+VALIDATORS: Final = {
+    "png": validate_png,
+    "jpeg": validate_jpeg,
+    "gif": validate_gif,
+    "tiff": validate_tiff,
+}
 
 # Both derived from what this module can actually do, never written out a second
 # time: `SNIFFABLE_FORMATS` from the table `sniff()` walks (plus HEIC, whose
@@ -1047,7 +1157,7 @@ def _structural_corruption_check(format_name: str | None, data: bytes) -> None:
 
 
 @contextmanager
-def _decoder_only(detail: str):
+def _decoder_only(detail: str, *, format_name: str | None = None):
     """Guard a region that contains nothing but the installed decoder's own work.
 
     A previous round widened this module's catch set to whatever classes Pillow had
@@ -1082,6 +1192,12 @@ def _decoder_only(detail: str):
         # is about this machine rather than about these bytes.
         raise
     except Exception as error:
+        if format_name is not None and has_reader(format_name):
+            raise corrupt(
+                f"{format_name}: the installed decoder could not {detail} ({error})"
+            ) from error
+        if format_name is not None:
+            raise unsupported(missing_reader_detail(format_name)) from error
         raise unsupported(
             f"image variant: the installed decoder could not {detail} ({error})"
         ) from error
@@ -1098,12 +1214,13 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
     detected_by_signature = sniff(data)
     if detected_by_signature in {"heic", "heif", "avif"}:
         _validate_iso_bmff_image_header(data, detected_by_signature)
+    classic_tiff_pages: int | None = None
     if detected_by_signature == "tiff":
         # A resource bound, not a verdict about the layout: it propagates whatever
         # the structural walker below decides, because a decoder that happily
         # enumerates fifty thousand directories is not a reason to fan out fifty
         # thousand ordinals.
-        _validate_classic_tiff_page_chain(data)
+        classic_tiff_pages = _validate_classic_tiff_page_chain(data)
     _structural_corruption_check(detected_by_signature, data)
     try:
         # Pillow warns for a decompression bomb while opening some formats.  A
@@ -1114,9 +1231,21 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(data)) as image:
-                with _decoder_only("read what these bytes contain"):
+                with _decoder_only(
+                    "read what these bytes contain", format_name=detected_by_signature
+                ):
                     reported_format = image.format
-                    frames = getattr(image, "n_frames", 1)
+                    # Pillow's ``n_frames`` walk can touch a later bad IFD before
+                    # we have asked it for page zero.  A structurally complete
+                    # classic TIFF chain gives us the same finite count without
+                    # interpreting every page's tags, so page zero stays eligible
+                    # for its own decode and a bad later page gets its own ordinal
+                    # and named outcome.
+                    frames = (
+                        classic_tiff_pages
+                        if classic_tiff_pages is not None
+                        else getattr(image, "n_frames", 1)
+                    )
                 detected = _pillow_format_name(reported_format)
                 if not isinstance(frames, int) or frames < 1:
                     raise corrupt("image: decoder returned no frames")
@@ -1137,11 +1266,11 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                 # Seeking chooses the frame but does not ask Pillow to decode its
                 # pixels.  Bound that frame's declared dimensions before `load()`
                 # can inflate attacker-controlled data into memory.
-                with _decoder_only(f"reach page {page_index}"):
+                with _decoder_only(f"reach page {page_index}", format_name=detected_by_signature):
                     image.seek(page_index)
                     declared = (image.width, image.height)
                 geometry = _geometry(detected, *declared)
-                with _decoder_only(f"decode page {page_index}"):
+                with _decoder_only(f"decode page {page_index}", format_name=detected_by_signature):
                     image.load()
                 return DecodedRaster(detected, geometry.width, geometry.height, frames)
     except FormatRefusal:
@@ -1153,6 +1282,10 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         raise
     except UnidentifiedImageError as error:
         if detected_by_signature is not None:
+            if has_reader(detected_by_signature):
+                raise corrupt(
+                    f"{detected_by_signature}: the installed decoder could not open these bytes"
+                ) from error
             raise unsupported(missing_reader_detail(detected_by_signature)) from error
         raise unrecognized("image format: no installed decoder recognizes these bytes") from error
     except (Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
@@ -1168,6 +1301,12 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         # still raise before a plugin has been chosen. Everything after it is
         # guarded by region, so no class list here has to guess at Pillow's
         # internals again.
+        if detected_by_signature is not None and has_reader(detected_by_signature):
+            raise corrupt(
+                f"{detected_by_signature}: the installed decoder could not open these bytes ({error})"
+            ) from error
+        if detected_by_signature is not None:
+            raise unsupported(missing_reader_detail(detected_by_signature)) from error
         raise unsupported(
             f"image variant: the installed decoder could not open it ({error})"
         ) from error
@@ -1221,6 +1360,14 @@ def missing_reader_detail(format_name: str) -> str:
 
 def count_raster_pages(data: bytes) -> int:
     """Read a decoder-backed page count without creating output pixels."""
+    if sniff(data) == "tiff":
+        classic_pages = _validate_classic_tiff_page_chain(data)
+        if classic_pages is not None:
+            if classic_pages > MAX_RASTER_FRAMES:
+                raise unsupported(
+                    f"TIFF: {classic_pages} frames exceed the {MAX_RASTER_FRAMES}-frame fan-out limit"
+                )
+            return classic_pages
     return decode_raster(data).frame_count
 
 
@@ -1237,14 +1384,31 @@ def raster_renderer_recipe() -> dict[str, Any]:
         "pillow_heif_version": pillow_heif.__version__,
         "libheif_version": pillow_heif.libheif_info()["libheif"],
         "output": {
-            "codec": "png",
-            "mode_policy": "preserve-png-mode-else-convert-by-alpha",
+            "codec": "png-or-tiff",
+            "mode_policy": "preserve-standard-png-or-high-precision-tiff-else-convert-by-alpha",
         },
     }
 
 
+_HIGH_PRECISION_TIFF_MODES: Final = {
+    # Pillow's PNG encoder cannot represent the unbounded signed integer or float
+    # modes.  TIFF can, so use it rather than clipping real samples to 8-bit RGB.
+    "I": "I",
+    "F": "F",
+    "I;16B": "I;16B",
+    # Pillow normalises a little-endian 16-bit TIFF to ``I;16`` when re-opened.
+    "I;16L": "I;16",
+}
+_PNG_IDENTITY_MODES: Final = frozenset({"1", "L", "LA", "RGB", "RGBA", "I;16"})
+
+
 def render_raster_page(data: bytes, page_index: int) -> tuple[bytes, ImageGeometry, dict[str, Any]]:
-    """Render one multi-page raster page to a lossless, door-sealed PNG."""
+    """Render a fanned raster page to lossless PNG or lossless TIFF pixels.
+
+    Standard Pillow modes retain compact PNG output.  The modes whose samples PNG
+    cannot faithfully hold keep their native samples in TIFF; an Exemplar page is
+    immutable evidence, not a display preview allowed to crush its values.
+    """
     decoded = decode_raster(data, page_index=page_index)
     try:
         with warnings.catch_warnings():
@@ -1261,15 +1425,24 @@ def render_raster_page(data: bytes, page_index: int) -> tuple[bytes, ImageGeomet
                     image.load()
                     source_mode = image.mode
                     source_bands = list(image.getbands())
-                    if source_mode in {"1", "L", "LA", "RGB", "RGBA", "I;16"}:
+                    if source_mode in _HIGH_PRECISION_TIFF_MODES:
+                        rendered = image.copy()
+                        mode_transform = "lossless-tiff-samples"
+                        output_codec = "tiff"
+                    elif source_mode in _PNG_IDENTITY_MODES:
                         rendered = image.copy()
                         mode_transform = "identity"
+                        output_codec = "png"
                     else:
                         target_mode = "RGBA" if "A" in source_bands else "RGB"
                         rendered = image.convert(target_mode)
                         mode_transform = f"convert-to-{target_mode.lower()}"
+                        output_codec = "png"
                     output = BytesIO()
-                    rendered.save(output, format="PNG", optimize=False, compress_level=9)
+                    if output_codec == "tiff":
+                        rendered.save(output, format="TIFF", compression="raw")
+                    else:
+                        rendered.save(output, format="PNG", optimize=False, compress_level=9)
     except FormatRefusal:
         raise
     except (
@@ -1291,7 +1464,7 @@ def render_raster_page(data: bytes, page_index: int) -> tuple[bytes, ImageGeomet
             "source_mode": source_mode,
             "source_bands": source_bands,
             "mode_transform": mode_transform,
-            "output": {"codec": "png", "color_mode": rendered.mode},
+            "output": {"codec": output_codec, "color_mode": rendered.mode},
             "container_page_index": page_index,
             "width": decoded.width,
             "height": decoded.height,
@@ -1307,8 +1480,8 @@ def _pillow_format_name(format_name: str | None) -> str:
     return aliases.get(format_name, format_name.lower())
 
 
-def _validate_classic_tiff_page_chain(data: bytes) -> None:
-    """Bound classic TIFF page links without mistaking later pages for an error.
+def _validate_classic_tiff_page_chain(data: bytes) -> int | None:
+    """Return a bounded classic-TIFF page count without decoding later pages.
 
     Pillow owns actual pixel decoding and accepts several valid TIFF layouts this
     project's narrow first-page structural walker deliberately does not interpret.
@@ -1319,11 +1492,11 @@ def _validate_classic_tiff_page_chain(data: bytes) -> None:
     being a wider offset layout.
     """
     if len(data) < 8 or data[:2] not in (b"II", b"MM"):
-        return
+        return None
     endian = "<" if data[:2] == b"II" else ">"
     (magic,) = struct.unpack_from(endian + "H", data, 2)
     if magic != 42:
-        return
+        return None
     (offset,) = struct.unpack_from(endian + "I", data, 4)
     seen: set[int] = set()
     pages = 0
@@ -1341,3 +1514,4 @@ def _validate_classic_tiff_page_chain(data: bytes) -> None:
         if pages > MAX_TIFF_PAGES:
             raise unsupported(f"TIFF: more than {MAX_TIFF_PAGES} pages exceed the fan-out limit")
         (offset,) = struct.unpack_from(endian + "I", data, next_offset_at)
+    return pages

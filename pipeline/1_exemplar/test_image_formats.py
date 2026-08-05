@@ -55,6 +55,7 @@ def test_sniff_recognizes_every_explicitly_named_format():
     assert sniff(jpeg()) == "jpeg"
     assert sniff(tiff()) == "tiff"
     assert sniff(b"%PDF-1.4\n%...") == "pdf"
+    assert sniff(b"\n\n%PDF-1.4\n%...") == "pdf"
     assert sniff(gif()) == "gif"
     assert sniff(heic()) == "heic"
     assert sniff(struct.pack(">I", 16) + b"ftyp" + b"avif" + b"\x00" * 4) == "avif"
@@ -202,9 +203,8 @@ def test_validate_png_refuses_a_chunk_type_with_the_reserved_bit_set():
     assert validate_png(png(extra_chunks=png_chunk(b"abCd", b"reserved-bit-set"))).width == 4
 
 
-def test_validate_png_refuses_trailing_bytes_after_iend():
-    with pytest.raises(FormatRefusal, match="IEND"):
-        validate_png(png() + b"appended payload")
+def test_validate_png_retains_trailing_bytes_after_iend():
+    assert validate_png(png() + b"appended payload") == ImageGeometry("png", 4, 3)
 
 
 def test_validate_png_bounds_a_compression_bomb_by_the_declared_geometry():
@@ -422,13 +422,20 @@ def test_multi_page_tiff_is_a_page_container_that_can_be_counted_and_rendered():
 
 
 @pytest.mark.parametrize(
-    ("mode", "first", "second"),
+    ("mode", "first", "second", "codec", "transform"),
     [
-        ("RGBA", (1, 2, 3, 4), (5, 6, 7, 8)),
-        ("I;16", 1_000, 50_000),
+        ("RGBA", (1, 2, 3, 4), (5, 6, 7, 8), "png", "identity"),
+        ("I;16", 1_000, 50_000, "png", "identity"),
+        # PNG cannot hold these Pillow sample modes without turning them into
+        # 8-bit display pixels. The fanned Exemplar page must preserve values, so
+        # it uses lossless TIFF instead.
+        ("I", 1_000, 70_000, "tiff", "lossless-tiff-samples"),
+        ("F", 0.5, 1_000.25, "tiff", "lossless-tiff-samples"),
     ],
 )
-def test_raster_fan_out_preserves_png_compatible_alpha_and_precision(mode, first, second):
+def test_raster_fan_out_preserves_alpha_and_high_precision_samples(
+    mode, first, second, codec, transform
+):
     output = BytesIO()
     Image.new(mode, (2, 2), first).save(
         output,
@@ -443,8 +450,8 @@ def test_raster_fan_out_preserves_png_compatible_alpha_and_precision(mode, first
         assert page.mode == mode
         assert page.getpixel((0, 0)) == second
     assert contract["source_mode"] == mode
-    assert contract["mode_transform"] == "identity"
-    assert contract["output"] == {"codec": "png", "color_mode": mode}
+    assert contract["mode_transform"] == transform
+    assert contract["output"] == {"codec": codec, "color_mode": mode}
 
 
 def test_a_cyclic_ifd_chain_is_still_a_named_decoder_failure():
@@ -456,19 +463,13 @@ def test_a_cyclic_ifd_chain_is_still_a_named_decoder_failure():
         count_raster_pages(bytes(data))
 
 
-def test_a_second_page_whose_own_tag_directory_is_unreadable_is_a_named_refusal():
-    """The structural walker above bounds the universal IFD-chain shape only; a
-    later page's per-tag layout is Pillow's to interpret, and Pillow's own internal
-    corruption handling does not always surface as OSError/SyntaxError/ValueError.
+def test_a_bad_later_tiff_page_keeps_a_good_earlier_page_counted_and_decodable():
+    """A per-page tag defect must not erase a good earlier TIFF page.
 
-    Point the second page's ImageWidth entry at an out-of-line value past EOF.
-    Pillow's `ImageFileDirectory_v2.load()` catches the resulting read failure
-    itself and just warns, leaving that page's tag directory with no ImageWidth at
-    all; establishing that page's dimensions then raises a bare
-    `TypeError("Missing dimensions")` while `n_frames` walks the chain to count
-    pages — deep inside Pillow's plugin code, not this module's. A refusal here is
-    what keeps that one malformed later page from crashing the whole door process
-    over every other source still waiting to be decided (ruling 2)."""
+    The classic IFD chain remains complete, so it supplies the fan-out denominator
+    without asking Pillow to traverse the bad page. Pillow then reads page zero on
+    its own merits and refuses only page one when its own tag layout is reached.
+    """
     data = bytearray(_two_page_tiff())
     little_endian = data[:2] == b"II"
     endian = "<" if little_endian else ">"
@@ -480,10 +481,10 @@ def test_a_second_page_whose_own_tag_directory_is_unreadable_is_a_named_refusal(
     struct.pack_into(endian + "I", data, second_image_width_entry + 4, 2)
     struct.pack_into(endian + "I", data, second_image_width_entry + 8, len(data) + 999_999)
 
+    assert count_raster_pages(bytes(data)) == 2
+    assert decode_raster(bytes(data), page_index=0).width == 4
     with pytest.raises(FormatRefusal):
-        count_raster_pages(bytes(data))
-    with pytest.raises(FormatRefusal):
-        decode_raster(bytes(data), page_index=0)
+        decode_raster(bytes(data), page_index=1)
 
 
 # --- the decoder boundary: whose code raised it, not which class it was -----------
@@ -501,7 +502,7 @@ def _two_frame_gif() -> bytes:
     return output.getvalue()
 
 
-def test_no_truncation_of_an_animated_gif_escapes_as_a_bare_python_exception():
+def test_no_complete_gif_prefix_is_admitted_after_its_header():
     """The whole-Door crash, one byte along from where it was closed.
 
     A previous round widened this module's catch set to the classes Pillow had been
@@ -514,19 +515,15 @@ def test_no_truncation_of_an_animated_gif_escapes_as_a_bare_python_exception():
     `IndexError` — which escaped `decode_raster`, escaped `expand_sources`, and took
     down every other source in the submission before any admission could be written.
 
-    Sweeping every truncation rather than pinning the one offset is deliberate: the
-    escaping byte was one past the offset that produced a clean refusal, so a single
-    crafted cut proves nothing about its neighbours."""
+    Sweeping every truncation rather than pinning the one offset is deliberate:
+    Pillow admits some strict prefixes as a one-frame GIF. The container trailer and
+    block walk now make every prefix that still names GIF a named corruption alarm,
+    instead of an immutable Exemplar page that silently lost its later frame."""
     data = _two_frame_gif()
-    escaped = []
-    for cut in range(1, len(data)):
-        try:
+    for cut in range(len(image_formats.GIF_SIGNATURES[0]), len(data)):
+        with pytest.raises(FormatRefusal) as caught:
             decode_raster(data[:cut])
-        except FormatRefusal:
-            continue
-        except Exception as error:  # noqa: BLE001 - the point of the test
-            escaped.append((cut, type(error).__name__))
-    assert escaped == []
+        assert caught.value.verdict is image_formats.FormatVerdict.CORRUPT
 
 
 def test_a_project_corruption_verdict_is_not_relabelled_as_a_decoder_gap():
@@ -550,6 +547,16 @@ def test_validate_tiff_refuses_a_strip_too_small_for_the_geometry_it_declares():
     stores exactly what its rows occupy or it is not that image."""
     with pytest.raises(FormatRefusal, match="needs 30"):
         validate_tiff(tiff(6, 5, strip_bytes=1))
+
+
+def test_an_uncompressed_tiff_can_retain_padding_after_its_last_strip():
+    """A decoder ignores end padding; larger storage is not missing pixel data."""
+    data = bytearray(tiff(4, 3)) + b"\x00" * 4
+    count_offset = data.find(struct.pack("<HHI", 279, 4, 1)) + 8
+    struct.pack_into("<I", data, count_offset, 16)
+
+    assert validate_tiff(bytes(data)) == ImageGeometry("tiff", 4, 3)
+    assert decode_raster(bytes(data)) == DecodedRaster("tiff", 4, 3, 1)
 
 
 def test_validate_tiff_refuses_a_header_declaring_far_more_pixels_than_it_stores():
@@ -601,12 +608,13 @@ def test_validate_tiff_refuses_non_tiff_bytes():
 def test_validate_dispatches_by_format_name():
     assert validate("png", png()).format == "png"
     assert validate("jpeg", jpeg()).format == "jpeg"
+    assert validate("gif", _two_frame_gif()).format == "gif"
     assert validate("tiff", tiff()).format == "tiff"
 
 
 def test_validate_refuses_a_format_it_has_no_validator_for():
     with pytest.raises(FormatRefusal, match="no structural validator"):
-        validate("gif", b"anything")
+        validate("webp", b"anything")
 
 
 def test_a_lossless_frame_needs_only_its_dc_table():

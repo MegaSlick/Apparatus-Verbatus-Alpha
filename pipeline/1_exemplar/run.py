@@ -165,7 +165,41 @@ def _page_payload(payload: dict[str, Any], ordinal: int, source: dict[str, Any])
         sealed["container_page_index"] = source["container_page_index"]
     if "rendered_from" in payload:
         sealed["rendered_from"] = payload["rendered_from"]
+        resolution = _render_resolution_record(payload["rendered_from"])
+        if resolution is not None:
+            # Ruling 14's unresolved interpretation leaves the memory-bounded
+            # renderer provisional.  Until Tyrel settles it, a page whose effective
+            # DPI is below the run target must not hide that reduction inside a
+            # nested renderer recipe: the sealed Exemplar page says so plainly.
+            sealed["render_resolution"] = resolution
     return sealed
+
+
+def _render_resolution_record(rendered_from: Any) -> dict[str, Any] | None:
+    """Project a PDF render's target/effective DPI into its sealed page record."""
+    if not isinstance(rendered_from, dict) or rendered_from.get("container_format") != "pdf":
+        return None
+    contract = rendered_from.get("render_contract")
+    if not isinstance(contract, dict):
+        return None
+    target = contract.get("dpi")
+    effective = contract.get("effective_dpi")
+    configured = contract.get("configured_target_dpi")
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value <= 0
+        for value in (configured, target, effective)
+    ):
+        # The existing render-contract verifier names malformed evidence.  This
+        # helper deliberately adds no alternate acceptance path for it.
+        return None
+    below_target = effective < target
+    return {
+        "configured_target_dpi": configured,
+        "resolved_target_dpi": target,
+        "effective_dpi": effective,
+        "below_resolved_target": below_target,
+        "shortfall_dpi": target - effective if below_target else 0,
+    }
 
 
 def _refused_page_payload(
@@ -387,9 +421,8 @@ def _checked_admissions(
 
     missing = sorted(set(sources) - observed)
     if missing:
-        named = [f"{ordinal} ({sources[ordinal]['relative_path']})" for ordinal in missing]
         raise ContractError(
-            f"the door published no admission for submitted source(s) {named}; a source "
+            f"the door published no admission for submitted source ordinal(s) {missing}; a source "
             "may not disappear between submission and sealing"
         )
     _verify_data_gate_evidence(tree, run, [item[1] for item in checked])
@@ -551,10 +584,12 @@ def _verify_render_contract(
     if (
         not isinstance(output, dict)
         or set(output) != {"codec", "color_mode"}
-        or output["codec"] != "png"
+        or output["codec"] not in {"png", "tiff"}
         or not isinstance(output["color_mode"], str)
     ):
-        raise ContractError("a rendered page's render contract does not name lossless PNG output")
+        raise ContractError(
+            "a rendered page's render contract does not name lossless PNG or TIFF output"
+        )
     if contract["renderer"] == "pypdfium2":
         if container_format != "pdf":
             raise ContractError("only a PDF container may claim the PDFium pixel renderer")
@@ -615,7 +650,7 @@ def _verify_render_contract(
                 "a PDF page's render contract does not name the whole DPI it was "
                 "actually rendered at, inside the recipe's own floor and target"
             )
-        if output["color_mode"] != "RGB":
+        if output["codec"] != "png" or output["color_mode"] != "RGB":
             raise ContractError("a PDF page's render contract changes its RGB pixel recipe")
     elif contract["renderer"] == "Pillow":
         if container_format == "pdf":
@@ -639,7 +674,13 @@ def _verify_render_contract(
         source_mode = contract["source_mode"]
         source_bands = contract["source_bands"]
         transform = contract["mode_transform"]
-        preserved = {"1", "L", "LA", "RGB", "RGBA", "I;16"}
+        high_precision_tiff_modes = {
+            "I": "I",
+            "F": "F",
+            "I;16B": "I;16B",
+            "I;16L": "I;16",
+        }
+        preserved_png = {"1", "L", "LA", "RGB", "RGBA", "I;16"}
         if (
             not isinstance(source_mode, str)
             or not source_mode
@@ -648,13 +689,23 @@ def _verify_render_contract(
             or any(not isinstance(band, str) or not band for band in source_bands)
         ):
             raise ContractError("a raster page's render contract names no source pixel mode")
-        if source_mode in preserved:
+        if source_mode in high_precision_tiff_modes:
+            expected_transform = "lossless-tiff-samples"
+            expected_mode = high_precision_tiff_modes[source_mode]
+            expected_codec = "tiff"
+        elif source_mode in preserved_png:
             expected_transform = "identity"
             expected_mode = source_mode
+            expected_codec = "png"
         else:
             expected_mode = "RGBA" if "A" in source_bands else "RGB"
             expected_transform = f"convert-to-{expected_mode.lower()}"
-        if transform != expected_transform or output["color_mode"] != expected_mode:
+            expected_codec = "png"
+        if (
+            transform != expected_transform
+            or output["codec"] != expected_codec
+            or output["color_mode"] != expected_mode
+        ):
             raise ContractError("a raster page's render contract changes its mode conversion")
     else:
         raise ContractError("a rendered page's contract names an unrecognized renderer")

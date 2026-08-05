@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 from door import SourceEntry, process_sources
-from run import SEAL_SUBJECT
+from run import SEAL_SUBJECT, _page_payload
 from synthetic_sources import png
 
 from common.contracts.approval import (
@@ -170,6 +170,47 @@ def test_a_sealed_page_is_named_by_the_digest_that_was_actually_admitted(tmp_pat
     assert record["payload"]["ordinal"] == 1
 
 
+def test_a_pdf_page_rendered_below_its_run_target_says_so_in_the_sealed_page_record():
+    """The provisional per-page cap is visible until Tyrel settles ruling 14.
+
+    This is deliberately a page payload rather than a corpus-seal field: the
+    existing cross-stage corpus-seal contract closes its census-row schema in
+    ``common/exemplar_boundary.py``. The immutable page record is the existing
+    place downstream consumers receive the full render contract, and the explicit
+    projection makes an under-target render visible without silently changing the
+    unresolved DPI behaviour.
+    """
+    source = {
+        "relative_path": "large-plan.pdf",
+        "sha256": "a" * 64,
+        "container_page_index": 0,
+    }
+    payload = {
+        "sha256": "b" * 64,
+        "stored_at": "blobs/sha256/bb/bb" + "b" * 60,
+        "rendered_from": {
+            "container_format": "pdf",
+            "container_sha256": "a" * 64,
+            "container_page_index": 0,
+            "render_contract": {
+                "configured_target_dpi": 400,
+                "dpi": 400,
+                "effective_dpi": 119,
+            },
+        },
+    }
+
+    sealed = _page_payload(payload, 1, source)
+
+    assert sealed["render_resolution"] == {
+        "configured_target_dpi": 400,
+        "resolved_target_dpi": 400,
+        "effective_dpi": 119,
+        "below_resolved_target": True,
+        "shortfall_dpi": 281,
+    }
+
+
 def test_a_refused_page_is_carried_forward_rather_than_dropped(tmp_path):
     tree, _ = build_door_run(tmp_path / "runs")
     assert run_exemplar(tmp_path / "runs").returncode == 0
@@ -239,6 +280,7 @@ def test_a_source_that_lost_its_door_outcome_refuses_before_anything_is_sealed(t
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode != 0
     assert "may not disappear between submission and sealing" in result.stderr
+    assert "page-2.png" not in result.stderr
     assert not (tree.root / "1_exemplar" / "artifacts" / "page").exists()
     # The ordering claim, on a run that actually reached the Exemplar and refused:
     # the seal names the pages, so a seal written before the census closed would be
