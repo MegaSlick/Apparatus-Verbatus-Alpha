@@ -613,6 +613,25 @@ def test_a_manifest_name_at_the_filesystem_limit_refuses_rather_than_crashing(su
     assert "Traceback" not in result.stderr
 
 
+def test_a_successful_manifest_with_an_unremoved_temp_is_not_reported_complete(
+    monkeypatch, tmp_path
+):
+    """A successful link does not make a retained temporary file disappear."""
+    target = tmp_path / "manifest.json"
+    original_unlink = Path.unlink
+
+    def fail_temporary_unlink(path, *, missing_ok=False):
+        if path.name.startswith(".manifest.json.tmp-"):
+            raise OSError("synthetic cleanup failure")
+        return original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_temporary_unlink)
+
+    with pytest.raises(submit.SubmitRefusal, match="temporary file could not be removed"):
+        submit._atomic_create(target, b"synthetic manifest")
+    assert target.read_bytes() == b"synthetic manifest"
+
+
 def test_a_submitted_name_that_is_not_valid_utf8_is_a_named_refusal(submission):
     """`os.listdir` surrogate-escapes bytes that are not valid UTF-8, and a
     surrogate cannot be encoded again — so the name reached the manifest's canonical
@@ -638,9 +657,19 @@ def test_a_submitted_name_that_is_not_valid_utf8_is_a_named_refusal(submission):
             f"this filesystem refuses a non-UTF-8 filename, so the case cannot exist here: {error}"
         )
 
-    with pytest.raises(inventory.SubmissionInputError, match="not valid UTF-8"):
+    raw_name = b"LEAK\xff\xfeNAME.png"
+    with pytest.raises(inventory.SubmissionInputError, match="not valid UTF-8") as caught:
         inventory.read_submission(folder, max_bytes=0)
+    assert isinstance(caught.value.entry, inventory.RawPathReference)
+    assert bytes.fromhex(caught.value.entry.raw_bytes_hex) == raw_name
 
     result = run_cli(submission, folder, manifest_out=submission["approved"] / "m.json")
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
+    report = json.loads((submission["approved"] / "m.refusals.json").read_text(encoding="utf-8"))
+    assert report["refusals"] == [
+        caught.value.entry.to_refusal_record(
+            "a submitted name is not valid UTF-8; the manifest is canonical JSON and cannot record a name it cannot encode"
+        )
+    ]
+    assert raw_name.hex() not in result.stderr

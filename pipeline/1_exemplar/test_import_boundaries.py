@@ -97,10 +97,12 @@ def repository_python_files() -> list[str]:
 
 
 def imports_module(path: Path, module: str) -> bool:
-    """True when `path` names `module` in any `import`/`from ... import`.
+    """True when `path` names `module` in a statically knowable import.
 
     Walked with `ast.walk`, so a deferred import inside a function is caught exactly
-    like a top-level one.
+    like a top-level one. Literal `import_module(...)` and `__import__(...)` calls
+    are included; aliases and nonliteral module names require data-flow analysis and
+    remain outside this deliberately small AST check.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
@@ -110,7 +112,27 @@ def imports_module(path: Path, module: str) -> bool:
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             if (node.module or "").split(".")[0] == module:
                 return True
+        elif isinstance(node, ast.Call) and (target := _literal_dynamic_import(node)) is not None:
+            if target.split(".")[0] == module:
+                return True
     return False
+
+
+def _literal_dynamic_import(node: ast.Call) -> str | None:
+    """The literal module name for the two direct dynamic-import spellings."""
+    if not node.args or not isinstance(node.args[0], ast.Constant):
+        return None
+    if not isinstance(node.args[0].value, str):
+        return None
+    function = node.func
+    import_module = (
+        isinstance(function, ast.Name)
+        and function.id == "import_module"
+        or isinstance(function, ast.Attribute)
+        and function.attr == "import_module"
+    )
+    builtin = isinstance(function, ast.Name) and function.id == "__import__"
+    return node.args[0].value if import_module or builtin else None
 
 
 def test_the_population_is_the_repositorys_own_python():
@@ -182,3 +204,19 @@ def test_an_unparseable_gitignored_file_does_not_break_this_check():
             test_a_door_private_module_is_imported_only_by_the_door_and_its_own_tests(module)
     finally:
         scratch.unlink()
+
+
+def test_literal_dynamic_imports_of_door_private_modules_are_visible(tmp_path):
+    source = tmp_path / "dynamic_import.py"
+    source.write_text(
+        "import importlib\nfrom importlib import import_module\n"
+        "importlib.import_module('pdf_render')\n"
+        "import_module('image_formats')\n"
+        "__import__('pdf_render')\n",
+        encoding="utf-8",
+    )
+    assert imports_module(source, "pdf_render")
+    assert imports_module(source, "image_formats")
+    builtin_only = tmp_path / "builtin_import.py"
+    builtin_only.write_text("__import__('pdf_render')\n", encoding="utf-8")
+    assert imports_module(builtin_only, "pdf_render")

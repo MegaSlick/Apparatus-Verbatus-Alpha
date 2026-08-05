@@ -2,14 +2,14 @@
 
 The knobs. One question per planned file, each answerable without reading code.
 
-| File | The question it answers |
+| File | Status and question |
 |---|---|
-| `models.toml` | which model and revision fills each numbered role |
-| `recovery.toml` | how many times rework may be asked for before review |
-| `pdf_render.toml` | what whole-page PDF resolution the next run targets |
-| `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
-| `spend.toml` | money caps |
-| `formats.toml` | which formats the Armarium writes |
+| `models.toml` | present — which model and revision fills each numbered role |
+| `recovery.toml` | present — how many times rework may be asked for before review |
+| `pdf_render.toml` | present — what whole-page PDF resolution the next run targets |
+| `data_handling_policy.json` | present — how real material is stored, logged, retained and disposed of |
+| `spend.toml` | planned — money caps |
+| `formats.toml` | planned — which formats the Armarium writes |
 
 Decoder routing is deliberately not configuration. Tyrel ruled that an uncorrupted
 image is never declined by policy, and there is exactly one valid route map: every

@@ -283,6 +283,7 @@ def _atomic_create(target: Path, data: bytes) -> bool:
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+    completed = False
     try:
         # `open(temporary, "wb")` followed a symlink. The temp name is derived from
         # the manifest name and the pid, so it is guessable, and a link planted at it
@@ -300,12 +301,14 @@ def _atomic_create(target: Path, data: bytes) -> bool:
             os.link(temporary, target)
         except FileExistsError:
             if _read_or_none(target) == data:
+                completed = True
                 return False
             raise ExistingRecordRefusal(
                 "a sealed submission record already exists at that path and seals different "
                 "content. Evidence is never overwritten (GOVERNANCE 4): the existing "
                 "record was not touched, and a changed submission needs its own path"
             ) from None
+        completed = True
         return True
     except OSError as error:
         # A name too long for the filesystem, a full disk, a temp path already taken.
@@ -315,17 +318,17 @@ def _atomic_create(target: Path, data: bytes) -> bool:
             "the submission manifest could not be written; nothing was sealed"
         ) from error
     finally:
-        # Nothing in here may raise. `is_symlink()` on an over-length name raises
-        # ENAMETOOLONG rather than reporting False, and an exception from a `finally`
-        # supersedes the one in flight — so the named `SubmitRefusal` above was
-        # demoted to `__context__` and a raw OSError escaped `main()`'s handler as a
-        # traceback with exit 1. A cleanup that can destroy its own error report is
-        # worse than no cleanup.
+        # Preserve a primary refusal, but do not call a completed create/reuse
+        # successful while its temporary record remains on disk. Calling unlink
+        # directly avoids a second, fallible stat call on an over-long temp path.
         try:
-            if temporary.is_symlink() or temporary.exists():
-                temporary.unlink()
-        except OSError:
-            pass
+            temporary.unlink(missing_ok=True)
+        except OSError as error:
+            if completed:
+                raise SubmitRefusal(
+                    "the submission manifest was sealed or reused, but its temporary file could "
+                    "not be removed; it must not be reported complete"
+                ) from error
 
 
 def _read_or_none(path: Path) -> bytes | None:
@@ -395,7 +398,7 @@ def submit(
         entries = walk_folder(resolved_source)
     except ContractError as error:
         entry = getattr(error, "entry", None)
-        records = [] if entry is None else [{"relative_path": entry, "reason": str(error)}]
+        records = [] if entry is None else [inventory.refusal_record(entry, str(error))]
         try:
             written_report = _write_refusal_report(report_target, records)
         except SubmitRefusal as report_error:

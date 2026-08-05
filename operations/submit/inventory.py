@@ -23,9 +23,8 @@ silent loss GOVERNANCE 2 forbids.
 to interpolate the offending entry's submitted relative path, and `submit.py`'s CLI
 prints every one of them to stderr — so a rejected submission emitted a declared
 path into the channel a runner captures, which the data-handling policy's logging
-rule excludes. The name still exists: it rides on the exception as `entry`, for a
-caller with an approved place to write it. Nothing in this repository has one yet,
-which is a question in the gate package rather than a decision made here.
+rule excludes. The name still exists: it rides on the exception as `entry`, for the
+submit door's approved private refusal report.
 
 **The walk is bounded in four directions, not one.** `max_bytes` bounded a single
 file's retained bytes and nothing else: a submission's file count, its aggregate
@@ -79,6 +78,26 @@ class SubmittedSource(NamedTuple):
     data: bytes | None
 
 
+class RawPathReference(NamedTuple):
+    """A non-UTF-8 submitted name, retained without putting surrogates in JSON."""
+
+    display: str
+    raw_bytes_hex: str
+
+    @classmethod
+    def from_relative_path(cls, relative_path: str) -> "RawPathReference":
+        raw = relative_path.encode("utf-8", "surrogateescape")
+        return cls(display=raw.decode("utf-8", "backslashreplace"), raw_bytes_hex=raw.hex())
+
+    def to_refusal_record(self, reason: str) -> dict[str, str]:
+        return {
+            "relative_path": self.display,
+            "relative_path_encoding": "raw-bytes-hex",
+            "relative_path_bytes_hex": self.raw_bytes_hex,
+            "reason": reason,
+        }
+
+
 class SubmissionInputError(ContractError):
     """A folder could not be inventoried without lying about what is in it.
 
@@ -88,9 +107,16 @@ class SubmissionInputError(ContractError):
     when one is what went wrong, for a caller with an approved place to record it.
     """
 
-    def __init__(self, message: str, *, entry: str | None = None):
+    def __init__(self, message: str, *, entry: str | RawPathReference | None = None):
         super().__init__(message)
         self.entry = entry
+
+
+def refusal_record(entry: str | RawPathReference, reason: str) -> dict[str, str]:
+    """Project an inventory error into the private, canonical refusal report."""
+    if isinstance(entry, RawPathReference):
+        return entry.to_refusal_record(reason)
+    return {"relative_path": entry, "reason": reason}
 
 
 class _Budget:
@@ -235,7 +261,8 @@ def _walk(
         except UnicodeEncodeError as error:
             raise SubmissionInputError(
                 "a submitted name is not valid UTF-8; the manifest is canonical JSON "
-                "and cannot record a name it cannot encode"
+                "and cannot record a name it cannot encode",
+                entry=RawPathReference.from_relative_path(relative_path),
             ) from error
         try:
             details = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)

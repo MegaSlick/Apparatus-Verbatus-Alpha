@@ -27,7 +27,9 @@ resumable", and no pod exists yet.
   the later alarm to immutable evidence already at the ordinary path;
   `purge()` refuses routine deletion because this tool has no sealed end-of-run
   authority. The Exemplar door writes the corresponding private report for
-  decoder, digest, unreadable-after-transfer, and duplicate alarms.
+  decoder, digest, and unreadable-after-transfer alarms. Byte-identical sources
+  are admitted as distinct filename links and recorded as a private duplicate fact,
+  not a refusal.
 - `cleanup.py` — the drill's verification half: declared, measurable bounds, and a
   refusal when one of them is not met.
 
@@ -56,8 +58,9 @@ never appear there.
 - The manifest and private refusal reports are canonical, self-hashed records.
   A changed submission never overwrites evidence. A later distinct inventory
   alarm gets a content-addressed sibling report; the door records decoder,
-  digest, unreadable-after-transfer, and duplicate alarms in its own private
-  run-tree refusal-report artifact.
+  digest, and unreadable-after-transfer alarms in its own private run-tree
+  refusal-report artifact. It records admitted byte-identical sources in a
+  separate private duplicate report instead of treating them as alarms.
 - Records retain original filenames, digests, byte counts, and fanned page/frame
   indices. An export retains those links both in its page census and alongside
   every delivered source region. Terminals are presentation only: they report a
@@ -66,9 +69,10 @@ never appear there.
   old repository ignored personal material by extension and leaked acts as `.md`
   through the gap; a rule keyed on a suffix is a rule anyone can walk past by
   renaming. Storage roots are chosen by the stage that wrote the file.
-- **Testimonia sit outside every retention schedule.** They are pipeline records
-  under GOVERNANCE 4 — "testimony is always retained" — and the schedule below
-  governs working copies and exports, never them.
+- **Testimonia survive per-stage cleanup.** They are pipeline records under
+  GOVERNANCE 4 — "testimony is always retained" — and remain until the whole run
+  reaches its sealed disposal condition; they are destroyed with that whole volume,
+  not retained beyond it.
 - Temporary writes are same-directory, flushed and `fsync`ed before atomic
   publication. Retain every run artifact, working copy, export, and ledger until
   the whole run is dead/broken or complete/exported. Only the lifecycle owner may

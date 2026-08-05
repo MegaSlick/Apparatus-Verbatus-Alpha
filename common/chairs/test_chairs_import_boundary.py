@@ -11,7 +11,8 @@ directories makes `import 4_perlector` invalid Python, "a useful deterrent... bu
 not a complete boundary: dynamic imports and path manipulation can still cross
 it." Everything below reads source through `ast` and executes nothing.
 
-Literal dynamic `import_module(...)` calls are checked alongside ordinary imports.
+Literal dynamic `import_module(...)` and `__import__(...)` calls are checked alongside
+ordinary imports.
 They are executable imports just as much as a top-level statement is; letting a
 constant `pipeline...` string evade the AST walker would make the boundary a naming
 convention. The one allowed deferred hub import is counted explicitly below.
@@ -39,7 +40,9 @@ def _imports_in(path: Path) -> list[tuple[str, str]]:
     `ast.walk` descends into function and class bodies as well as the module top
     level, so a deliberately deferred import — this package has several — is
     caught exactly like a top-level one. Constant-string calls through either
-    `import_module` spelling are included too. Relative imports (`from .errors
+    `import_module` spelling and the builtin `__import__` are included too.
+    Loader aliases and nonliteral names require data-flow analysis and remain
+    outside this intentionally small AST check. Relative imports (`from .errors
     import ...`) are intra-package by construction and are not returned.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -65,7 +68,7 @@ def _is_literal_import_module(node: ast.Call) -> bool:
     if not isinstance(node.args[0].value, str):
         return False
     function = node.func
-    return (
+    is_import_module = (
         isinstance(function, ast.Name)
         and function.id == "import_module"
         or isinstance(function, ast.Attribute)
@@ -73,6 +76,7 @@ def _is_literal_import_module(node: ast.Call) -> bool:
         and function.value.id == "importlib"
         and function.attr == "import_module"
     )
+    return is_import_module or (isinstance(function, ast.Name) and function.id == "__import__")
 
 
 def _modules() -> list[Path]:
@@ -162,7 +166,9 @@ def test_a_literal_dynamic_stage_import_is_detected(tmp_path):
     """A guard must prove its new dynamic branch can become red."""
     source = tmp_path / "dynamic_import.py"
     source.write_text(
-        "from importlib import import_module\nimport_module('pipeline.forbidden_stage')\n",
+        "from importlib import import_module\nimport_module('pipeline.forbidden_stage')\n"
+        "__import__('pipeline.another_forbidden_stage')\n",
         encoding="utf-8",
     )
     assert ("pipeline", "pipeline.forbidden_stage") in _imports_in(source)
+    assert ("pipeline", "pipeline.another_forbidden_stage") in _imports_in(source)

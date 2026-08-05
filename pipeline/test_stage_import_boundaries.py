@@ -12,9 +12,9 @@ Static, for the same reason `common/chairs/test_chairs_import_boundary.py` is:
 the numbered directories already make `import 4_perlector` invalid Python,
 "a useful deterrent... but not a complete boundary: dynamic imports and path
 manipulation can still cross it." This walks `ast.Import`/`ast.ImportFrom`
-nodes and literal `import_module("...")` calls, so it sees a deferred import
+nodes and literal `import_module("...")` / `__import__("...")` calls, so it sees a deferred import
 inside a function exactly like a top-level one. It does NOT decide a nonliteral
-dynamic module name or an `importlib.util.spec_from_file_location(...)` call.
+dynamic module name, an aliased loader, or an `importlib.util.spec_from_file_location(...)` call.
 Every stage's own test
 suite already uses exactly that mechanism, under a synthetic module name, to
 load a sibling stage's `run.py` for cross-stage boundary testing (e.g.
@@ -129,8 +129,9 @@ def _literal_import_module(node: ast.Call) -> str | None:
         or isinstance(function, ast.Attribute)
         and function.attr == "import_module"
     )
+    is_builtin_import = isinstance(function, ast.Name) and function.id == "__import__"
     if (
-        is_import_module
+        (is_import_module or is_builtin_import)
         and node.args
         and isinstance(node.args[0], ast.Constant)
         and isinstance(node.args[0].value, str)
@@ -208,7 +209,8 @@ def test_literal_dynamic_pipeline_imports_are_visible_to_the_guard(tmp_path):
     source.write_text(
         "import importlib\nfrom importlib import import_module\n"
         "importlib.import_module('pipeline.7_armarium.run')\n"
-        "import_module('pipeline.2_designator.run')\n",
+        "import_module('pipeline.2_designator.run')\n"
+        "__import__('pipeline.4_perlector.run')\n",
         encoding="utf-8",
     )
     assert _imports_in(source) == [
@@ -216,4 +218,5 @@ def test_literal_dynamic_pipeline_imports_are_visible_to_the_guard(tmp_path):
         ("importlib", "importlib"),
         ("pipeline", "pipeline.7_armarium.run"),
         ("pipeline", "pipeline.2_designator.run"),
+        ("pipeline", "pipeline.4_perlector.run"),
     ]
