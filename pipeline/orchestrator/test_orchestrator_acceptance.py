@@ -71,8 +71,16 @@ FIXTURE = "synthetic-two-page-v0"
 # Re-pinned once more on 2026-08-05: the shipped PDF render target moved from 400 to
 # 300 DPI on Tyrel's instruction, so every PDF-derived page is a different — and
 # deliberately different — set of pixels. Artifact counts are again unchanged.
-HAPPY_RUN_TREE_DIGEST = "5a4e8777588ee22916e9481abdbdec497b05d6bf5ef5d5dfb46cdad8cd2087cd"
-REVIEW_RUN_TREE_DIGEST = "11051797ba3538e842e14e6f91721903e3a85353cc615b45f2f07efbbc30f5ba"
+#
+# Re-pinned again the same day for a *comment* in `config/pdf_render.toml`, which is
+# worth stating plainly because it surprises people: the config digest sealed into
+# `run.json` covers the file's bytes, so its prose is part of the configuration a run
+# is bound to. Correcting an arithmetic error in an explanatory comment therefore moves
+# every downstream artifact digest and these two whole-tree pins with them. That is the
+# seal behaving correctly — a run records exactly the configuration text it ran under —
+# but it means a documentation-only edit to anything under `config/` lands here.
+HAPPY_RUN_TREE_DIGEST = "e2999e45d0cac2b3776cb2ecf42abdc13e366ef81ae9e8f46c579269286ca14a"
+REVIEW_RUN_TREE_DIGEST = "b6740e78dddca45c15de796208159bf54a3d322fe9084cfab24ba8b52354c63b"
 
 
 def orchestrate(

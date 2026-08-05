@@ -415,16 +415,23 @@ class TestTaskNames:
         drawer = tmp_path / "workbench" / "autoclave" / "a-finished-review"
         drawer.mkdir(parents=True)
         (drawer / "report.md").write_text("an earlier seat's findings\n")
+        # A *working* engine, deliberately. Reading the refusal text cannot tell a
+        # launcher that never called Docker apart from one that called it and then
+        # refused for its own reasons — and on a host with the image already built,
+        # the second is what used to happen. The stub records every invocation, so
+        # "the engine was not touched" is asserted against what was called rather
+        # than against what the error happened to say.
+        env, log = fake_docker(tmp_path)
 
-        result = run("new", "a-finished-review", script=script)
+        result = run("new", "a-finished-review", script=script, env=env)
 
         assert result.returncode != 0
         assert "report.md" in result.stderr
         assert "a-finished-review" in result.stderr
         # The old report is still there, untouched.
         assert (drawer / "report.md").read_text() == "an earlier seat's findings\n"
-        # And nothing reached the engine.
-        assert "docker" not in result.stderr.lower()
+        # And nothing reached the engine — no Docker call of any kind was made.
+        assert docker_calls(log) == []
 
     def test_validation_happens_before_anything_is_created(self):
         """A rejected name must not reach the engine at all.
