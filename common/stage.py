@@ -991,6 +991,39 @@ def reading_basis_regions(reading: dict[str, Any], what: str) -> list[dict[str, 
     return regions
 
 
+def recovery_region_count(act_id: str, regions: list[dict[str, Any]]) -> int:
+    """How many recovery crops one act carries, refusing an unplaceable origin.
+
+    One accounting rule with three consumers, so it lives here beside
+    `latest_attempt`, `reading_basis_regions` and `expected_acts` for the reason
+    those do: the three had drifted. `pipeline/5_recensor/run.py::recovery_state`
+    refuses a region whose `origin` is outside `{"proposal", "recovery"}`, while
+    the Archetypus and Armarium copies asked only whether it equalled `"recovery"`
+    and counted anything else as zero. The same tree was therefore fatal at the
+    Recensor and reconciled at the Archetypus — a region with an unrecognized
+    origin silently left the recovery denominator at exactly the two stages that
+    decide whether a recrop was reread before its text is established.
+    """
+    count = 0
+    for region in regions:
+        payload = region.get("payload")
+        if not isinstance(payload, dict):
+            raise FatalAccounting(f"Designator region of {act_id} has no object payload")
+        origin = payload.get("origin")
+        # `isinstance` first: `origin not in {...}` raises `TypeError` on an
+        # unhashable value, so a resealed region carrying a list or an object where
+        # its origin belongs escaped as a traceback out of the very check written to
+        # name it. All three copies of this rule had that hole.
+        if not isinstance(origin, str) or origin not in {"proposal", "recovery"}:
+            raise FatalAccounting(
+                f"Designator region of {act_id} has unrecognized origin {origin!r}; its "
+                "place in the recovery denominator is unknown"
+            )
+        if origin == "recovery":
+            count += 1
+    return count
+
+
 def latest_per_chair(records: list[dict[str, Any]], what: str) -> list[dict[str, Any]]:
     """One record per chair: each chair's own latest attempt, honest status kept.
 

@@ -57,7 +57,7 @@ Designator regions actually cut -- not from the proposal seal's primary
 examines both -- and hands it to the run aggregate, which names any sealed page no
 act reached. Silence is not `confirmed-blank` evidence, and a check that asked only
 whether the *run* produced any acts let every busy page discharge a silent page's
-proof obligation. Nothing here diagnoses a blank page; that is the unbuilt
-Recensor's, and what artifact will eventually prove a page-level `confirmed-blank`
-is open -- the category algebra is act-oriented and has no way to say "this page was
-examined and held nothing".
+proof obligation. Nothing here diagnoses a blank page; that is the Recensor's, and
+what artifact will eventually prove a page-level `confirmed-blank` is open -- the
+category algebra is act-oriented and has no way to say "this page was examined and
+held nothing".

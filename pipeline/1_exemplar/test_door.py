@@ -5,10 +5,12 @@ summary.  Every image/PDF byte is created at test time; no real source material 
 read or checked in.
 """
 
+import gc
 import json
 import struct
 import subprocess
 import sys
+import weakref
 from io import BytesIO
 from pathlib import Path
 
@@ -192,6 +194,62 @@ def reader(files: dict[str, bytes]):
             raise OSError("synthetic source is absent") from error
 
     return read_bytes
+
+
+class _Sentinel:
+    """An ordinary object, which unlike `bytes` can be weak-referenced."""
+
+
+class _TrackedBytes(bytes):
+    """`bytes` carrying a weak-referenceable sentinel that dies exactly when it does.
+
+    Neither `bytes` nor a `bytes` subclass can be weak-referenced directly — a
+    variable-length built-in subtype cannot gain `__weakref__` — so liveness is
+    watched through an attribute hanging off the body instead.
+    """
+
+    def __new__(cls, data: bytes) -> "_TrackedBytes":
+        body = super().__new__(cls, data)
+        body.sentinel = _Sentinel()
+        return body
+
+
+def test_the_raster_body_cache_holds_one_source_at_a_time(tmp_path):
+    """The cache retained the complete bytes of every distinct raster path for the
+    whole call, so peak memory grew with the number of raster sources in the
+    submission rather than with the largest one — the guarantee this door's docstring
+    makes for a reel, granted on the PDF path and given straight back on this one.
+
+    Liveness is watched from inside the reader, because that is the only moment the
+    two implementations differ: both drop everything when the call returns. One slot
+    loses no re-read avoidance, since `expand_sources` numbers row by row and a
+    path's ordinals therefore arrive together.
+    """
+    pages = {f"scan-{index}.png": png(3, 2 + index) for index in range(1, 5)}
+    sources = [
+        SourceEntry(index, name, digest_bytes(data))
+        for index, (name, data) in enumerate(sorted(pages.items()), start=1)
+    ]
+    tree, context = open_door(tmp_path, sources)
+
+    handed_out: list[weakref.ref] = []
+    reads: list[str] = []
+    live_at_each_read: list[int] = []
+
+    def read_bytes(path: str) -> _TrackedBytes:
+        gc.collect()
+        live_at_each_read.append(sum(1 for ref in handed_out if ref() is not None))
+        reads.append(path)
+        body = _TrackedBytes(pages[path])
+        handed_out.append(weakref.ref(body.sentinel))
+        return body
+
+    assert process_sources(context, tree, sources, read_bytes, policy=POLICY) == len(pages)
+
+    assert reads == sorted(pages), f"a source was re-read or skipped: {reads}"
+    assert max(live_at_each_read) <= 1, (
+        f"more than one raster body was retained at once: {live_at_each_read}"
+    )
 
 
 def test_correct_bytes_admit_even_when_the_filename_extension_is_wrong(tmp_path):
@@ -518,6 +576,92 @@ def test_a_single_page_tiff_is_sealed_as_its_own_untouched_bytes(tmp_path):
     assert "rendered_from" not in payload
     assert payload["sha256"] == digest_bytes(data)
     assert tree.read_bytes(payload["stored_at"]) == data
+
+
+def test_a_source_with_no_declared_digest_still_reaches_a_duplicate_report(tmp_path):
+    """`SourceEntry.declared_sha256` defaults to `None`, and `decide` and
+    `process_sources` both treat a missing declared digest as acceptable — so a run
+    could legally admit one and then die in `publish_duplicate_report`, which grouped
+    on exactly that optional field. It failed *after* every admission was published,
+    which is the worst moment to discover it. Duplicate accounting groups on the
+    digest the door itself computed instead."""
+    data, other = png(3, 2), png(4, 2)
+    sources = [
+        SourceEntry(1, "undeclared-a.png", None),
+        SourceEntry(2, "undeclared-b.png", None),
+        SourceEntry(3, "distinct.png", None),
+    ]
+    tree, context = open_door(tmp_path, sources)
+    assert (
+        process_sources(
+            context,
+            tree,
+            sources,
+            reader({"undeclared-a.png": data, "undeclared-b.png": data, "distinct.png": other}),
+            policy=POLICY,
+        )
+        == 3
+    )
+
+    report = door.publish_duplicate_report(context)
+    context.finish(DOOR)
+
+    assert report is not None, "the two identical sources were not reported as duplicates"
+    entry = next(
+        item
+        for item in tree.build_manifest(DOOR)["artifacts"]
+        if item["kind"] == "duplicate-report"
+    )
+    duplicate = json.loads(tree.read_bytes(entry["relative_path"]).decode("utf-8"))["payload"]
+    assert duplicate["duplicate_source_count"] == 1
+    assert [group["source_sha256"] for group in duplicate["groups"]] == [digest_bytes(data)]
+    assert [source["declared_path"] for source in duplicate["groups"][0]["sources"]] == [
+        "undeclared-a.png",
+        "undeclared-b.png",
+    ]
+
+
+@pytest.mark.parametrize("damaged", [b'["a list", 1]', b'"a bare string"', b"17"])
+def test_the_refusal_census_survives_an_artifact_that_decodes_to_a_non_object(
+    tmp_path, monkeypatch, damaged
+):
+    """`_refusal_census` promises that nothing in it may raise, because it runs only
+    on the failure path to describe a failure that already happened. It indexed
+    `record["outcome"]`, so a record decoding to a JSON list, string or number raised
+    `TypeError` — which the `except` did not name, replacing "the door admitted
+    nothing" with something about JSON. That is the exact substitution the docstring
+    rejects: the primary failure masked by a secondary one.
+
+    Damage is injected between the manifest walk and the re-read, because that is the
+    only way the two disagree — `build_manifest` validates each envelope, so a file
+    already broken on disk is caught one branch earlier. A tree being damaged while
+    the failure path reads it is precisely what this function is written for.
+    """
+    data = png(3, 2)
+    sources = [SourceEntry(1, "only.png", digest_bytes(data))]
+    tree, context = open_door(tmp_path, sources)
+    assert process_sources(context, tree, sources, reader({"only.png": data}), policy=POLICY) == 1
+    context.finish(DOOR)
+
+    # Only the admission record is damaged. `build_manifest` verifies referenced blob
+    # bytes through this same method, so damaging everything would trip the earlier
+    # "census could not be read" branch instead of the one under test.
+    admission_path = next(
+        entry["relative_path"]
+        for entry in tree.build_manifest(DOOR)["artifacts"]
+        if entry["kind"] == "admission"
+    )
+    sound = tree.read_bytes
+    monkeypatch.setattr(
+        tree,
+        "read_bytes",
+        lambda relative_path: damaged if relative_path == admission_path else sound(relative_path),
+    )
+
+    total, census = door._refusal_census(tree)
+
+    assert total == 1
+    assert census == {"unreadable record": 1}
 
 
 def test_duplicate_files_are_admitted_and_sealed_in_a_private_operator_report(tmp_path, capsys):
@@ -949,7 +1093,7 @@ def test_extra_copy_absent_from_the_filename_ledger_stops_before_a_run_is_create
 def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventory(
     tmp_path, monkeypatch
 ):
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    _approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png()}
     )
     with pytest.raises(ContractError, match="run root cannot live inside the submitted folder"):

@@ -28,7 +28,9 @@ A successful or attempted reading payload contains:
 ```text
 act_key, attempt_ordinal, text
 basis = {
-  regions = [{region_id, image_path, image_sha256, transform, witness_covered}, ...],
+  regions = [{region_id, image_path, image_sha256, transform,
+              verified_dimensions, source_page_ordinal, source_page_id,
+              structure_provenance, witness_covered}, ...],
   testimonia = [{chair, artifact_id, outcome, reference}, ...]
 }
 dissent, provenance

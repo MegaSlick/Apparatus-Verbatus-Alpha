@@ -149,6 +149,14 @@ def build_approval_record(
             "an approval must name the lowercase sha256 of the exact policy or target version "
             "it approved, or it goes on approving something that changed underneath it"
         )
+    # The last asymmetry between this and the validator. The validator refuses a
+    # blank or non-string timestamp; this did not check it at all, so a caller
+    # could seal `timestamp="   "` here and no reader would ever accept it back.
+    if not isinstance(timestamp, str) or not timestamp.strip():
+        raise ApprovalRefusal(
+            "an approval with no timestamp cannot be reviewed later; when it was given "
+            "is half of what makes it checkable against the version it approved"
+        )
     record: dict[str, Any] = {
         "schema": "approval-record.v0",
         "subject_ids": sorted(subject_ids),

@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.errors import ContractError  # noqa: E402
+from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
@@ -76,7 +76,19 @@ def proposed_regions(context, act_id: str) -> list[dict]:
     proposed = [record for record in regions if record["payload"]["origin"] == "proposal"]
     if not proposed:
         raise ContractError(f"act {act_id} has no proposed region for a witness to read")
-    return sorted(proposed, key=lambda record: record["payload"]["attempt_ordinal"])
+    return sorted(proposed, key=_region_ordinal)
+
+
+def _region_ordinal(record: dict) -> int:
+    """The sort key, refused by name rather than escaping as a raw `KeyError`.
+
+    Same reasoning as `pipeline/4_perlector/run.py`: a resealed region that lost
+    its `attempt_ordinal` is a named refusal, never a traceback out of a sort.
+    """
+    ordinal = record.get("payload", {}).get("attempt_ordinal")
+    if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        raise SchemaRefusal("a Designator region carries no integer attempt ordinal to order by")
+    return ordinal
 
 
 def declared_failures(context) -> set[tuple[str, str]]:

@@ -37,6 +37,37 @@ _COLOR_TYPE_GRAYSCALE = 0
 _BIT_DEPTH = 8
 _FILTER_NONE = 0
 
+# The same ceiling the door admits pages under (`pipeline/1_exemplar/image_formats.py`).
+# This module accepts bytes directly rather than only sealed pages, so it needs its own
+# bound: without one, Pillow's default decompression-bomb ceiling (89,478,485 pixels)
+# sits *below* the door's, and a page the door legitimately admitted could raise here.
+# Restated rather than imported because `common/` may not import `pipeline/` — the
+# import-boundary test in `common/chairs/` enforces that — and the drift is covered by
+# a test that reads the door's constant and compares the two.
+MAX_PIXELS = 100_000_000
+
+# Pillow refuses above twice `MAX_IMAGE_PIXELS` and warns above it. Raising its
+# ceiling past this module's own bound makes this module's refusal the one that
+# speaks, with a message naming the page rather than a library's internal limit.
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+
+# Pillow's bomb error descends from `Exception`, not `ValueError`, so neither
+# decoding path below caught it and it escaped past this module's stated contract
+# that an undecodable page raises `ValueError`.
+_DECODE_FAILURES = (
+    UnidentifiedImageError,
+    OSError,
+    SyntaxError,
+    Image.DecompressionBombError,
+)
+
+# Modes whose samples are wider than 8 bits per channel. `convert("RGB")` does not
+# scale them: Pillow maps the value straight through, so 1024 and 65535 both land on
+# 255 and a 16-bit scan comes out clipped to near-white. Scaled explicitly instead,
+# by the mode's own declared range rather than by the page's own maximum — a per-image
+# maximum would make the same ink a different grey on a different page.
+_HIGH_PRECISION_SCALE = {"I;16": 1 / 257, "I;16L": 1 / 257, "I;16B": 1 / 257, "I;16N": 1 / 257}
+
 
 class Bounds(TypedDict):
     x: int
@@ -192,9 +223,14 @@ def dimensions(png_bytes: bytes) -> tuple[int, int]:
     except ValueError:
         try:
             with Image.open(BytesIO(png_bytes)) as image:
+                if image.width * image.height > MAX_PIXELS:
+                    raise ValueError(
+                        f"a {image.width}x{image.height} page is past this pipeline's "
+                        f"{MAX_PIXELS}-pixel bound"
+                    )
                 image.load()
                 return image.width, image.height
-        except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as error:
+        except (*_DECODE_FAILURES, ValueError) as error:
             raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
 
 
@@ -216,9 +252,57 @@ def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> byte
                 )
             crop = image.crop((x, y, x + w, y + h))
             if crop.mode not in {"1", "L", "LA", "P", "RGB", "RGBA"}:
-                crop = crop.convert("RGBA" if "A" in crop.getbands() else "RGB")
+                crop = _to_display_mode(crop)
             output = BytesIO()
             crop.save(output, format="PNG", optimize=False, compress_level=9)
             return output.getvalue()
-    except (UnidentifiedImageError, OSError, SyntaxError) as error:
+    except _DECODE_FAILURES as error:
         raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
+
+
+def _to_display_mode(crop: Image.Image) -> Image.Image:
+    """Convert a crop to a PNG-representable mode without crushing its samples.
+
+    The door seals `I`, `F` and the `I;16*` family losslessly as TIFF rather than
+    clipping them (`pipeline/1_exemplar/image_formats.py`), so those modes really do
+    arrive here — this is not a hypothetical branch. A bare `convert("RGB")` maps
+    their samples straight through instead of scaling, which puts every value above
+    255 on 255: a 16-bit scan came out as near-white, and the crop a model was asked
+    to read held none of the ink the page held.
+    """
+    mode = crop.mode
+    scale = _HIGH_PRECISION_SCALE.get(mode)
+    if scale is not None:
+        # Scaled by the mode's declared range, not by this page's own maximum:
+        # a per-image maximum would render identical ink as a different grey on a
+        # page that happened to contain a brighter pixel somewhere else.
+        #
+        # No `int()` inside the expression. On the `I` family Pillow probes the
+        # callable with an `ImagePointTransform` to compile it into a scale/offset
+        # pair, and `int()` raises a `TypeError` on that probe rather than on any
+        # pixel — a plain multiply is what it can compile, and `convert("L")` does
+        # the truncation to 8 bits.
+        return crop.point(lambda value: value * scale).convert("L")
+    if mode in {"I", "F"}:
+        # Genuinely undecided rather than quietly guessed. `I` is unbounded signed
+        # integer and `F` is float: neither declares a range, so any mapping to 8
+        # bits is a policy choice about what black and white mean, and this module
+        # is not the place that gets to make it. Refused by name so it surfaces as
+        # an alarm (ruling 2) instead of a silently flattened reading.
+        raise ValueError(
+            f"a sealed page in mode {mode!r} has no defined sample range to display, and "
+            "cropping it to 8 bits would decide one silently; the door keeps these modes "
+            "losslessly and the value-range policy for reading them is not settled"
+        )
+    # Premultiplied alpha first, because Pillow will not convert it to anything
+    # else: `La` converts *only* to `LA`, and `RGBa` only to `RGBA`. The band name
+    # is the tell and it is spelled in lower case, so `"A" in bands` read `La` as
+    # having no alpha at all and asked for RGB — which does not merely drop the
+    # channel, it raises "conversion from La to L not supported" out of a helper
+    # whose caller catches OSError and friends but not that. One hop to the straight
+    # -alpha counterpart lands in a mode PNG can hold, with the channel intact.
+    unpremultiplied = {"La": "LA", "RGBa": "RGBA"}.get(mode)
+    if unpremultiplied is not None:
+        return crop.convert(unpremultiplied)
+    has_alpha = any(band.upper() == "A" for band in crop.getbands())
+    return crop.convert("RGBA" if has_alpha else "RGB")

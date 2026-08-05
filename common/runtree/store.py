@@ -34,6 +34,7 @@ and a stage payload carries only its digest-checked reference plus the immutable
 it needs.
 """
 
+import errno
 import json
 import os
 import tempfile
@@ -70,6 +71,11 @@ RECEIPTS_DIR: Final = "receipts/sha256"
 # run wearing an old name, and reuse is refused rather than resumed.
 _BOUND_FIELDS: Final = ("source_manifest", "config_digest", "adapter_recipes", "witness_chairs")
 _INGRESS_FIELD: Final = "ingress"
+
+# What a filesystem that will not hard-link answers with. Named so `_atomic_create`
+# can say which setup fact is wrong instead of letting a bare OSError about `link`
+# escape as a traceback.
+_NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 _RENDER_SETTINGS_FIELD: Final = "render_settings"
 
 
@@ -719,10 +725,30 @@ def _atomic_create(target: Path, data: bytes) -> None:
     A hard link is an atomic create on the target filesystem.  The temporary is
     fully written and synced first, then either acquires the final name or raises
     ``FileExistsError`` without replacing the competing writer's bytes.
+
+    **The run root must therefore be on a hard-link-capable filesystem**, which most
+    are and some are not — an exFAT or FAT32 volume, a few network mounts, and some
+    container bind mounts reject ``os.link`` outright.  Those refuse with ``EPERM``,
+    ``EOPNOTSUPP`` or ``ENOSYS``, which escaped from here as a bare ``OSError`` and
+    surfaced as a traceback naming ``link`` rather than as a statement about where
+    the run root was put.  Named instead, because it is a setup fact the operator
+    can act on.  A plain ``O_EXCL`` write is deliberately not substituted: it would
+    publish the final name before the bytes were in it, and no-partial-publication
+    is the guarantee this function exists for.
     """
     temporary = _write_temporary(target, data)
     try:
-        os.link(temporary, target)
+        try:
+            os.link(temporary, target)
+        except OSError as error:
+            if error.errno in _NO_HARD_LINKS:
+                raise SchemaRefusal(
+                    f"the run root at {target.parent} is on a filesystem that refuses hard "
+                    f"links ({error.strerror}); artifacts are published by atomic link so "
+                    "that a partly written file can never take its final name, and the run "
+                    "root has to be on a filesystem that supports it"
+                ) from error
+            raise
     finally:
         if temporary.exists():
             temporary.unlink()

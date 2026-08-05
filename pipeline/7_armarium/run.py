@@ -54,6 +54,7 @@ from common.stage import (  # noqa: E402
     latest_attempt,
     open_context,
     reading_basis_regions,
+    recovery_region_count,
     run_stage,
     stage_parser,
     unaddressed_chairs,
@@ -455,13 +456,9 @@ def verify_established_record(context, act: dict, review: dict, established: dic
             f"act {act['act_id']} has a newer Perlectio than the one its Archetypus and "
             "Recensor review bind; export may not hide unreconciled evidence"
         )
-    recovery_regions = 0
-    for region in artifacts_for(context, DESIGNATOR, "region", act["act_id"]):
-        region_payload = region.get("payload")
-        if not isinstance(region_payload, dict):
-            raise FatalAccounting(f"Designator region of {act['act_id']} has no object payload")
-        if region_payload.get("origin") == "recovery":
-            recovery_regions += 1
+    recovery_regions = recovery_region_count(
+        act["act_id"], artifacts_for(context, DESIGNATOR, "region", act["act_id"])
+    )
     readings = artifacts_for(context, PERLECTOR, "perlectio", act["act_id"])
     if len(readings) != recovery_regions + 1:
         raise FatalAccounting(

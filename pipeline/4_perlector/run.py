@@ -73,7 +73,22 @@ def regions_of(context, act_id: str) -> list[dict]:
                 require_receipt=True,
             )
             records.append(record)
-    return sorted(records, key=lambda record: record["payload"]["attempt_ordinal"])
+    return sorted(records, key=_region_ordinal)
+
+
+def _region_ordinal(record: dict) -> int:
+    """The sort key, refused by name rather than escaping as a raw `KeyError`.
+
+    The ordering happens before `verify_region` validates the region, so a resealed
+    record whose payload lost `attempt_ordinal` produced a traceback here rather
+    than a named refusal — the same class of record `test_region_boundary.py`
+    already exercises, and the boundary the Designator's own tests assert carries
+    no `Traceback` in its stderr.
+    """
+    ordinal = record.get("payload", {}).get("attempt_ordinal")
+    if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        raise SchemaRefusal("a Designator region carries no integer attempt ordinal to order by")
+    return ordinal
 
 
 def _region_reference(region: dict) -> dict[str, str]:

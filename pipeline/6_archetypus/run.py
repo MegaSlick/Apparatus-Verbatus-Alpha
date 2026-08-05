@@ -39,6 +39,7 @@ from common.stage import (  # noqa: E402
     latest_attempt,
     open_context,
     reading_basis_regions,
+    recovery_region_count,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -94,13 +95,9 @@ def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str
             f"act {act_id} has a newer Perlectio that the accepted Recensor review did not "
             "assess; no unreconciled reading may become established"
         )
-    recovery_regions = 0
-    for region in artifacts_for(context, DESIGNATOR, "region", act_id):
-        payload = region.get("payload")
-        if not isinstance(payload, dict):
-            raise FatalAccounting(f"Designator region of {act_id} has no object payload")
-        if payload.get("origin") == "recovery":
-            recovery_regions += 1
+    recovery_regions = recovery_region_count(
+        act_id, artifacts_for(context, DESIGNATOR, "region", act_id)
+    )
     readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
     if len(readings) != recovery_regions + 1:
         raise FatalAccounting(

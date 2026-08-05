@@ -157,9 +157,32 @@ def test_the_hub_is_reachable_from_exactly_one_module_and_only_inside_a_function
     # The one door is still there, and it is `importlib` inside a function body:
     # importing this package therefore cannot pull the dependency in, which is
     # what lets every test above run with it absent.
-    assert 'import_module("huggingface_hub")' in (CHAIRS / "registry.py").read_text(
-        encoding="utf-8"
-    ), "the production fetcher no longer names the one seam this test is about"
+    #
+    # Parsed, not string-matched. A substring test proved only that the call text
+    # appears somewhere in the file, so moving the very same call to module level —
+    # the one change this test exists to catch, because it makes importing the
+    # package require the optional dependency — would have kept it green. Scope is
+    # the claim, so scope is what is asserted.
+    tree = ast.parse((CHAIRS / "registry.py").read_text(encoding="utf-8"))
+    scopes: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Name)
+                and inner.func.id == "import_module"
+                and inner.args
+                and isinstance(inner.args[0], ast.Constant)
+                and inner.args[0].value == "huggingface_hub"
+            ):
+                scopes.append(node.name)
+    assert scopes, (
+        "registry.py no longer reaches huggingface_hub through an `import_module` call "
+        "nested in a function body; either the seam moved to module level — which makes "
+        "importing this package require the optional dependency — or it is gone entirely"
+    )
 
 
 def test_a_literal_dynamic_stage_import_is_detected(tmp_path):

@@ -42,6 +42,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Final, NoReturn
 
@@ -282,17 +283,24 @@ def _atomic_create(target: Path, data: bytes) -> bool:
     Returns True when the file was created, False when an identical one was reused.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+    temporary: Path | None = None
     completed = False
     try:
-        # `open(temporary, "wb")` followed a symlink. The temp name is derived from
-        # the manifest name and the pid, so it is guessable, and a link planted at it
-        # would have taken the manifest bytes wherever it pointed — outside every
-        # approved storage root, with `os.link` then failing and the write already
-        # done. O_EXCL refuses a name that exists at all; O_NOFOLLOW refuses to
-        # follow one that is a link.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(temporary, flags, 0o600)
+        # `mkstemp`, not a pid-derived name. `open(temporary, "wb")` originally
+        # followed a symlink, and O_EXCL|O_NOFOLLOW closed that — but the name was
+        # still `.{manifest}.tmp-{pid}`, so it was both guessable *and* reusable: a
+        # process that died between the create and the unlink, or a pid the system
+        # later handed out again, left that exact name on disk. O_EXCL then refused
+        # it, and every later submission to the same manifest path failed with the
+        # generic "could not be written" — the one refusal that does not say a stale
+        # temporary is the cause. `mkstemp` picks an unpredictable name per attempt,
+        # creating it 0o600 with O_CREAT|O_EXCL, so it is at least as strict against
+        # a planted link and immune to the stale-name wedge. Same helper, and the
+        # same reasoning, as `common/runtree/store.py::_write_temporary`.
+        descriptor, raw_temporary = tempfile.mkstemp(
+            prefix=f".{target.name}.tmp-", dir=target.parent
+        )
+        temporary = Path(raw_temporary)
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
@@ -321,8 +329,11 @@ def _atomic_create(target: Path, data: bytes) -> bool:
         # Preserve a primary refusal, but do not call a completed create/reuse
         # successful while its temporary record remains on disk. Calling unlink
         # directly avoids a second, fallible stat call on an over-long temp path.
+        # `temporary` stays None when `mkstemp` itself failed, which is the one
+        # path where there is nothing on disk to remove.
         try:
-            temporary.unlink(missing_ok=True)
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         except OSError as error:
             if completed:
                 raise SubmitRefusal(

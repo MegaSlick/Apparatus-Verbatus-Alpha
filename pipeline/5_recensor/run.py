@@ -26,7 +26,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
-from common.contracts.outcomes import OutcomeClass, classify, witness_coverage  # noqa: E402
+from common.contracts.outcomes import (  # noqa: E402
+    OutcomeClass,
+    classify,
+    terminal_category,
+    witness_coverage,
+)
 from common.contracts.stages import (  # noqa: E402
     ATTESTATORES,
     DESIGNATOR,
@@ -42,6 +47,7 @@ from common.stage import (  # noqa: E402
     latest_per_chair,
     open_context,
     reading_basis_regions,
+    recovery_region_count,
     run_stage,
     scenario_for,
     stage_parser,
@@ -221,15 +227,14 @@ def recovery_state(context, act_id: str) -> dict:
     regions = artifacts_for(context, DESIGNATOR, "region", act_id)
     recrops_by_request = {request_id: [] for request_id in request_refs}
     recovery_regions = []
+    # Validate the whole origin vocabulary through the one shared reader, so this
+    # stage and the two downstream ones cannot disagree about what counts as a
+    # recovery crop. The count is discarded here; the per-region binding below is
+    # what this function additionally needs and the shared reader does not do.
+    recovery_region_count(act_id, regions)
     for region in regions:
         payload = _payload(region, f"Designator region of {act_id}")
-        origin = payload.get("origin")
-        if origin not in {"proposal", "recovery"}:
-            raise FatalAccounting(
-                f"Designator region of {act_id} has unrecognized origin {origin!r}; its "
-                "place in the recovery denominator is unknown"
-            )
-        if origin != "recovery":
+        if payload.get("origin") != "recovery":
             continue
         inputs = region.get("inputs")
         if not isinstance(inputs, list):
@@ -332,6 +337,33 @@ def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) 
     return basis
 
 
+def _refuse_an_unhandled_designator_terminal(act: dict) -> None:
+    """Name a Designator outcome that ends an act but has no handling here yet.
+
+    `held` is not the only terminal Designator outcome. `excluded` and `failed` are
+    terminal in the same table (`common/contracts/outcomes.py`), and both stages of
+    this file tested only for `held` — so either would fall through to the reading
+    path and be reported as "reached the Recensor with no reading at all". That
+    message is false: the act was never going to have a reading, and the imbalance
+    was invented by the check rather than found by it.
+
+    What review record such an act should get is genuinely undecided — `excluded` is
+    approval-bound and `failed` is a refusal, and the Designator emits neither today.
+    So this says exactly that, rather than inventing the policy or letting a wrong
+    message stand. Whoever teaches the Designator to emit one lands the handling here
+    and this refusal stops firing.
+    """
+    category = terminal_category(DESIGNATOR, act["outcome"])
+    if category is None:
+        return
+    raise FatalAccounting(
+        f"act {act['act_id']} carries the terminal Designator outcome {act['outcome']!r} "
+        f"({category.value}), which ends the act before any reading — but the Recensor has "
+        "no review record for it yet, and nothing may pass through this stage unaccounted "
+        "for. Only 'held' is handled today"
+    )
+
+
 def preflight_review_evidence(context) -> None:
     """Validate every readable act before publishing a review for any one of them."""
     for act in expected_acts(context):
@@ -339,6 +371,7 @@ def preflight_review_evidence(context) -> None:
         if act["outcome"] == "held":
             designator_hold(context, act_id)
             continue
+        _refuse_an_unhandled_designator_terminal(act)
         readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
         if not readings:
             raise FatalAccounting(
@@ -413,6 +446,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
             held += 1
             continue
+
+        _refuse_an_unhandled_designator_terminal(act)
 
         state = recovery_state(context, act_id)
         if state["outstanding_request_ids"]:

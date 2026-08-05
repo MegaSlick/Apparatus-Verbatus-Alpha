@@ -19,6 +19,7 @@ one. What still needs a real engine is named in `operations/autoclave/README.md`
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -271,6 +272,26 @@ def code_lines():
         for line in SCRIPT.read_text().splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
+
+
+def _mount_operands(runnable):
+    """Every `(source, destination, options)` the launcher passes as a bind mount.
+
+    Read out of the text rather than matched against it: `--volume` and `-v` are the
+    same flag, the operand may be quoted or not, and the options field may be absent
+    entirely. A test that asserts one exact spelling is absent proves nothing about
+    the three spellings it did not name.
+    """
+    operands = []
+    for match in re.finditer(r"(?:--volume|--mount|-v)[= ]+(\"?)([^\s\"]+)\1", runnable):
+        fields = match.group(2).split(":")
+        if len(fields) < 2:
+            continue
+        source, destination = fields[0], fields[1]
+        options = fields[2].split(",") if len(fields) > 2 else []
+        operands.append((source, destination, options))
+    assert operands, "no bind mounts were parsed out of the launcher at all"
+    return operands
 
 
 def test_script_exists_and_is_executable():
@@ -551,8 +572,24 @@ class TestLogin:
         assert "${WINDOW_OCR_ROOT}/${wdir}:/window/${wdir}:ro" in runnable, (
             "the old repository is not mounted directory by directory"
         )
-        assert "--volume ${WINDOW_OCR_ROOT}:/window" not in runnable, (
-            "the old repository root is mounted whole"
+        # Parsed, not string-matched. The negative assertion used to be one exact
+        # substring, so `-v ${WINDOW_OCR_ROOT}:/window`, a quoted operand, or one
+        # written without `:ro` all passed it while mounting the whole 5.5 GB root.
+        # Every mount operand naming WINDOW_OCR_ROOT or WINDOW_STAGE is read out and
+        # judged on its source, destination and options instead.
+        for source, destination, options in _mount_operands(runnable):
+            if source not in {"${WINDOW_OCR_ROOT}", "${WINDOW_STAGE}"}:
+                continue
+            assert destination != "/window", (
+                f"the old repository root is mounted whole at /window ({source})"
+            )
+            assert "ro" in options, (
+                f"the window mount {source}:{destination} is not read-only ({options})"
+            )
+        # The override remains supported and is the one place a whole root may be
+        # named, because it is an operator's deliberate one-off rather than a default.
+        assert "${AUTOCLAVE_WINDOW}:/window:ro" in runnable, (
+            "the AUTOCLAVE_WINDOW override no longer mounts read-only"
         )
         assert "--tmpfs /stage/${masked}:ro" in runnable, "the stage probes are not masked"
         assert "$window_masks" in runnable, "the mask flags never reach docker run"

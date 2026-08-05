@@ -61,8 +61,15 @@ FIXTURE = "synthetic-two-page-v0"
 # Re-pinned for the round-two merge. The recovery policy values are unchanged,
 # but its corrected explanatory text changes the policy file hash deliberately
 # sealed into run.json and therefore every downstream artifact config digest.
-HAPPY_RUN_TREE_DIGEST = "10779829e036347c9ecae1688cfe1d71b12fb74c01124ac4862e22c8c3dfb445"
-REVIEW_RUN_TREE_DIGEST = "846cb5d7a90ef725933e2ada498c6615052386bdb40b3148d29bb05a44615612"
+# Re-pinned again for the CodeRabbit pass on PR #17: an admitted door source now
+# records `admitted_source_sha256`, the digest this door actually computed for the
+# submitted file. Duplicate accounting used to group on `declared_sha256`, which a
+# `SourceEntry` may legally omit — so a legal admission made the duplicate report
+# fatal, and fatal *after* every admission had already been published. The artifact
+# count is unchanged (42 and 46 below); only the bytes of the admission payloads
+# moved, which is what a deliberate record change looks like here.
+HAPPY_RUN_TREE_DIGEST = "d0cda74d1e1db68e8a2b50b14f4915faa7ca49b67747cfdee691b37332e84962"
+REVIEW_RUN_TREE_DIGEST = "750fe3bb3d72e8b15b49d76e29b093aa382cfee4b7b2ba2e68b3428c37055dc2"
 
 
 def orchestrate(

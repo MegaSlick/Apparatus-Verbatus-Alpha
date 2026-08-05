@@ -102,10 +102,17 @@ def test_a_tampered_corpus_seal_stops_before_the_designator_reads_any_page(tmp_p
     record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
     tree.write_manifest(EXEMPLAR)
+    # Captured after `write_manifest`, which mutates the tree itself. This is the
+    # assertion that actually proves the module docstring's claim — that the
+    # Designator stops *before publishing any new proposal* — and without it a
+    # regression that refused only after writing a region stayed green here while
+    # the four neighbouring tests caught it.
+    before = snapshot(tree.root)
 
     result = invoke_designator(tmp_path)
     assert result.returncode == EXIT_FATAL
     assert "valid self-hashed census" in result.stderr
+    assert snapshot(tree.root) == before
 
 
 def test_a_changed_sealed_pixel_blob_stops_before_designator_crops_or_rehashes_it(tmp_path):
@@ -167,12 +174,14 @@ def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary
     assert len(refused["inputs"]) == 1
     admission_path = refused["inputs"][0]["relative_path"]
     tree.resolve(admission_path).unlink()
+    before = snapshot(tree.root)
 
     result = invoke_designator(tmp_path, "refused-page")
 
     assert result.returncode == EXIT_FATAL
     assert "artifact input" in result.stderr
     assert admission_path in result.stderr
+    assert snapshot(tree.root) == before
 
 
 def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(tmp_path):

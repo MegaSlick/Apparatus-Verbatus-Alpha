@@ -215,6 +215,16 @@ def test_a_crop_relabelled_with_another_acts_key_cannot_borrow_its_seal_evidence
 
 
 def test_malformed_exemplar_locators_all_refuse(real_region):
+    """Every case must refuse *as a locator*, not as a stale binding.
+
+    The loop mutated `transform` and left `region_id` naming the original one, so a
+    case that survived the transform type checks refused at the `region_id`
+    comparison instead — proving only that the binding still works. Six of the seven
+    tripped the intended branch; `{"source_page_ordinal": -1}` is a non-boolean int,
+    so it passed the type block and never showed that a negative ordinal is rejected
+    as a locator at all. `region_id` is re-derived per case here, exactly as
+    `test_a_crop_transform_must_fit_inside_its_sealed_exemplar_page` already does.
+    """
     context, region = real_region
     changes = [
         {"source_page_ordinal": None},
@@ -228,6 +238,15 @@ def test_malformed_exemplar_locators_all_refuse(real_region):
     for change in changes:
         malformed = copy.deepcopy(region)
         malformed["payload"]["transform"].update(change)
+        try:
+            malformed["payload"]["region_id"] = region_id(
+                malformed["subject_id"], malformed["payload"]["transform"]
+            )
+        except (TypeError, ValueError):
+            # A locator this malformed cannot be hashed into a binding at all, which
+            # leaves the original `region_id` in place. The refusal below is then the
+            # transform type check, which is the branch these cases are for anyway.
+            pass
         with pytest.raises(SchemaRefusal, match="does not trace to its Exemplar page"):
             perlector.verify_region(context, malformed)
 
@@ -260,6 +279,24 @@ def test_a_crop_transform_must_fit_inside_its_sealed_exemplar_page(real_region):
         )
         with pytest.raises(SchemaRefusal, match="does not trace to its Exemplar page"):
             perlector.verify_region(context, malformed)
+
+
+@pytest.mark.parametrize("ordinal", [None, "1", True, {}])
+def test_a_region_with_no_integer_attempt_ordinal_refuses_by_name(real_region, ordinal):
+    """The sort ran before `verify_region` validated anything, and indexed
+    `record["payload"]["attempt_ordinal"]` directly — so a resealed region that lost
+    the field produced a `KeyError` traceback rather than a named refusal, at the
+    boundary whose sibling test asserts `"Traceback" not in result.stderr`.
+    """
+    context, region = real_region
+    malformed = copy.deepcopy(region)
+    if ordinal is None:
+        del malformed["payload"]["attempt_ordinal"]
+    else:
+        malformed["payload"]["attempt_ordinal"] = ordinal
+
+    with pytest.raises(SchemaRefusal, match="no integer attempt ordinal"):
+        perlector._region_ordinal(malformed)
 
 
 def test_a_resealed_testimonium_cannot_retroactively_claim_a_recovery_crop(tmp_path):

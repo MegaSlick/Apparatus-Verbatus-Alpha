@@ -498,7 +498,15 @@ def process_sources(
         gate.enforce(approval=approval, policy=data_policy)
     admitted = 0
     seen_sources: dict[str, tuple[str, int]] = {}
-    cache: dict[str, bytes] = {}
+    # One entry, never a growing map. `expand_sources` assigns ordinals row by row,
+    # so every ordinal of one declared path is contiguous in this sorted iteration
+    # and a single slot avoids the same re-reads a full cache did. A full cache
+    # retained every distinct raster body for the whole call, so peak memory grew
+    # with the number of raster sources in the submission rather than with the
+    # largest one — the opposite of the guarantee the docstring above makes for a
+    # reel, granted for PDFs and then given back on the raster path.
+    cached_path: str | None = None
+    cached_data: bytes | None = None
     streamed: dict[Path, tuple[str, int]] = {}
     pdf_documents: dict[Path, pdf_render.OpenPdf] = {}
     try:
@@ -545,10 +553,11 @@ def process_sources(
                     continue
             else:
                 try:
-                    data = cache.get(source.declared_path)
-                    if data is None:
+                    if cached_path == source.declared_path and cached_data is not None:
+                        data = cached_data
+                    else:
                         data = read_bytes(source.declared_path)
-                        cache[source.declared_path] = data
+                        cached_path, cached_data = source.declared_path, data
                 except OSError as error:
                     _publish(
                         context,
@@ -637,6 +646,13 @@ def process_sources(
             _, published = tree.put_blob(DOOR, decision.store_bytes)
             extra: dict[str, Any] = {
                 "sha256": decision.digest,
+                # The digest of the submitted source file, as this door computed it.
+                # Deliberately three separate names for three separate facts:
+                # `declared_sha256` is what the ledger claimed and is contractually
+                # optional; `sha256` is the stored bytes, which for a PDF page is a
+                # render and not the source at all; this is what duplicate accounting
+                # groups on, and the door always knows it for anything it admitted.
+                "admitted_source_sha256": actual_digest,
                 "stored_at": published.relative_path,
                 "geometry": {"width": decision.geometry[0], "height": decision.geometry[1]},
             }
@@ -756,7 +772,12 @@ def publish_duplicate_report(context: StageContext) -> str | None:
         payload = record["payload"]
         ordinal = payload.get("ordinal")
         path = payload.get("declared_path")
-        source_digest = payload.get("declared_sha256")
+        # Not `declared_sha256`: that one is optional on a `SourceEntry`, so grouping
+        # on it made a legal admission fatal here — and fatal *after* the run had
+        # already published every admission, which is the worst moment to discover it.
+        # The door computes this one for everything it admits, so its absence really
+        # is a contract breach and stays loud rather than being skipped (GOVERNANCE 2).
+        source_digest = payload.get("admitted_source_sha256")
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
             raise ContractError(
                 "an admitted door source has no integer ordinal for duplicate accounting"
@@ -873,7 +894,11 @@ def _refusal_census(tree: RunTree) -> tuple[int, dict[str, int]]:
             if record["outcome"] != "refused":
                 continue
             code = admission.reason_code(record["payload"].get("reason")).value
-        except (OSError, ValueError, KeyError, ContractError):
+        # TypeError belongs here with the rest: a damaged artifact that decodes to a
+        # JSON list, string or number makes `record["outcome"]` raise it, and this
+        # function's whole contract is that it never replaces the primary failure
+        # with a secondary one about JSON.
+        except (OSError, TypeError, ValueError, KeyError, ContractError):
             code = "unreadable record"
         census[code] = census.get(code, 0) + 1
     return total, census

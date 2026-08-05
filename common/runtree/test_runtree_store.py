@@ -11,8 +11,10 @@ is no in-memory stand-in, because the properties under test are properties of th
 filesystem behaviour.
 """
 
+import errno
 import inspect
 import json
+import os
 import re
 from pathlib import Path
 
@@ -871,6 +873,37 @@ def test_first_publication_never_overwrites_a_competing_writer(tmp_path, monkeyp
         tree.publish_artifact(envelope)
 
     assert target.read_bytes() == b"competing bytes"
+
+
+@pytest.mark.parametrize("code", [errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS])
+def test_a_filesystem_that_refuses_hard_links_is_named_not_a_raw_oserror(
+    tmp_path, monkeypatch, code
+):
+    """Publication is an atomic `os.link`, so the run root has to be on a filesystem
+    that supports one — exFAT, FAT32, some network mounts and some container bind
+    mounts do not. Those answer `EPERM`, `EOPNOTSUPP` or `ENOSYS`, which escaped as a
+    bare `OSError` and surfaced as a traceback about `link` rather than as a statement
+    about where the run root was put. It is a setup fact, so it is named as one.
+    """
+    tree = make_run(tmp_path)
+
+    def refusing_link(source, destination, *args, **kwargs):
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(runtree_store.os, "link", refusing_link)
+
+    with pytest.raises(SchemaRefusal, match="refuses hard links"):
+        tree.publish_artifact(make_envelope())
+
+
+def test_an_existing_target_is_still_a_reuse_check_not_a_hard_link_complaint(tmp_path):
+    """`FileExistsError` is an `OSError` too, and the translation above must not
+    swallow it: an identical republication is a true no-op, not a filesystem fault."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+
+    assert tree.publish_artifact(envelope).reused is True
 
 
 def test_the_run_file_is_valid_json_a_human_can_read(tmp_path):

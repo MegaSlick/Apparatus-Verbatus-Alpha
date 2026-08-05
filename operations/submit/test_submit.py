@@ -578,14 +578,52 @@ def test_the_submit_tool_retains_no_file_content_at_all(submission):
 # --- what an adversarial pass over the repair itself found -----------------------
 
 
-def test_the_manifest_is_not_written_through_a_symlink_planted_at_its_temp_path(submission):
-    """The temp name is derived from the manifest name and the pid, so it is
-    guessable. `open(temporary, "wb")` followed a link planted there: the manifest
+def test_the_manifest_temp_name_is_unpredictable_and_never_reused(submission):
+    """The temp name used to be `.{manifest}.tmp-{pid}` — guessable, so a link could
+    be planted at it, and *reusable*, so a crash or a recycled pid left that exact
+    name behind and wedged every later submission to the same manifest path behind
+    the generic "could not be written". `mkstemp` picks an unpredictable name per
+    attempt, so neither the plant nor the wedge has a name to aim at."""
+    target = submission["approved"] / "sealed.json"
+    stale = submission["approved"] / f".{target.name}.tmp-{os.getpid()}"
+    stale.write_bytes(b"a temporary file a dead run left behind")
+
+    assert submit.submit(
+        submission["folder"],
+        target,
+        approval_record=submission["approval"],
+        policy_path=submission["policy_path"],
+    )
+    assert target.exists(), "a stale temporary must not block a fresh submission"
+    assert stale.read_bytes() == b"a temporary file a dead run left behind"
+    leftovers = [
+        path
+        for path in submission["approved"].iterdir()
+        if path.name.startswith(f".{target.name}.tmp-") and path != stale
+    ]
+    assert leftovers == [], f"the run's own temporary was not removed: {leftovers}"
+
+
+def test_the_manifest_is_not_written_through_a_symlink_planted_at_its_temp_path(
+    monkeypatch, submission
+):
+    """`open(temporary, "wb")` followed a link planted at the temp path: the manifest
     bytes went wherever it pointed — outside every approved storage root — with
-    `os.link` then failing and the write already done."""
+    `os.link` then failing and the write already done. The name is unguessable now,
+    so the plant is forced here by pinning it; what must still hold is that a link
+    sitting at the chosen name takes no bytes and seals nothing."""
     victim = submission["approved"].parent / "victim-outside-the-approved-roots.json"
     target = submission["approved"] / "sealed.json"
-    (submission["approved"] / f".{target.name}.tmp-{os.getpid()}").symlink_to(victim)
+    planted = submission["approved"] / f".{target.name}.tmp-planted"
+    planted.symlink_to(victim)
+
+    def _mkstemp_at_the_planted_name(prefix, dir):  # noqa: A002 - mkstemp's own name
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        return os.open(planted, flags, 0o600), str(planted)
+
+    monkeypatch.setattr(
+        submit.tempfile, "mkstemp", lambda prefix, dir: _mkstemp_at_the_planted_name(prefix, dir)
+    )
 
     with pytest.raises(submit.SubmitRefusal, match="could not be written"):
         submit.submit(

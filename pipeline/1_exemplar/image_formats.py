@@ -1435,7 +1435,20 @@ def render_raster_page(data: bytes, page_index: int) -> tuple[bytes, ImageGeomet
                         mode_transform = "identity"
                         output_codec = "png"
                     else:
-                        target_mode = "RGBA" if "A" in source_bands else "RGB"
+                        # Premultiplied alpha is its own case. Pillow spells that
+                        # band in lower case, so `"A" in source_bands` read mode
+                        # `La` as having none and asked for RGB — a conversion
+                        # Pillow refuses outright ("conversion from La to L not
+                        # supported"), turning a page it could have kept into a
+                        # refusal. `La` converts only to `LA` and `RGBa` only to
+                        # `RGBA`, so those go straight to their counterpart.
+                        premultiplied = {"La": "LA", "RGBa": "RGBA"}.get(source_mode)
+                        if premultiplied is not None:
+                            target_mode = premultiplied
+                        elif any(band.upper() == "A" for band in source_bands):
+                            target_mode = "RGBA"
+                        else:
+                            target_mode = "RGB"
                         rendered = image.convert(target_mode)
                         mode_transform = f"convert-to-{target_mode.lower()}"
                         output_codec = "png"

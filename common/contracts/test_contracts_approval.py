@@ -30,6 +30,23 @@ def approval_bytes(*, target_hash: str | None = None, action: str = "data-gate")
     return canonical_bytes(record)
 
 
+@pytest.mark.parametrize("timestamp", ["", "   ", None, 20260804])
+def test_the_builder_refuses_a_timestamp_the_validator_would_reject(timestamp):
+    """The builder and the validator have to accept exactly the same records. The
+    validator refuses a blank or non-string timestamp; the builder did not check it
+    at all, so a caller could seal one no reader would ever accept back — and its
+    self-hash would verify happily, because a hash covers whatever bytes were sealed
+    rather than whether they meant anything."""
+    with pytest.raises(ApprovalRefusal, match="no timestamp"):
+        build_approval_record(
+            subject_ids=["data-handling-policy"],
+            action="data-gate",
+            reason="approved for real input under this exact policy",
+            target_version_hash=data_gate_policy_hash(POLICY),
+            timestamp=timestamp,
+        )
+
+
 def approval_path(data: bytes) -> str:
     return f"receipts/sha256/{digest_bytes(data)}.json"
 
@@ -101,21 +118,52 @@ def test_reference_digest_mismatch_is_refused_before_the_record_is_trusted():
         require_current_data_gate_approval(POLICY, wrong_reference, lambda _path: data)
 
 
+# Split deliberately. All four cases used to be raw dictionaries on one parametrize,
+# and `_approval_record_reference` refuses anything that is not an
+# `ApprovalRecordReference` before it inspects the path or the digest at all — so
+# every case tripped that first guard, whose message also contains "data-gate
+# approval reference" and so satisfied the shared `match`. The traversal branch and
+# the bad-digest branch never executed, and deleting either would have left this
+# green. The well-shaped cases now arrive typed, so they reach the branch they name.
 @pytest.mark.parametrize(
-    "bad_reference",
+    "bad_record",
     [
         {},
         {"relative_path": "receipts/sha256/missing.json"},
-        {"relative_path": "../approval.json", "sha256": "a" * 64},
-        {
-            "relative_path": f"receipts/sha256/{'a' * 64}.json",
-            "sha256": "NOT-A-DIGEST",
-        },
     ],
 )
-def test_malformed_data_gate_approval_reference_is_refused(bad_reference):
-    with pytest.raises(ApprovalRefusal, match="data-gate approval reference"):
+def test_a_reference_record_with_the_wrong_keys_is_refused(bad_record):
+    with pytest.raises(ApprovalRefusal, match="exactly relative_path and sha256"):
+        approval_record_reference_from_record(bad_record)
+
+
+@pytest.mark.parametrize(
+    ("bad_reference", "expected"),
+    [
+        (
+            ApprovalRecordReference("../approval.json", "a" * 64),
+            "is not a safe relative path",
+        ),
+        (
+            ApprovalRecordReference(f"receipts/sha256/{'a' * 64}.json", "NOT-A-DIGEST"),
+            "has no lowercase sha256",
+        ),
+    ],
+)
+def test_malformed_data_gate_approval_reference_is_refused(bad_reference, expected):
+    # One expected message per case, not one shared pattern: a case that drifts to a
+    # different branch has to fail here rather than pass under a looser match.
+    with pytest.raises(ApprovalRefusal, match=expected):
         require_current_data_gate_approval(POLICY, bad_reference, reader_holding(b""))
+
+
+def test_a_raw_dictionary_never_reaches_the_approval_reference_checks():
+    with pytest.raises(ApprovalRefusal, match="not a raw dictionary"):
+        require_current_data_gate_approval(
+            POLICY,
+            {"relative_path": f"receipts/sha256/{'a' * 64}.json", "sha256": "a" * 64},
+            reader_holding(b""),
+        )
 
 
 def test_otherwise_safe_path_that_is_not_the_digest_named_receipt_path_is_refused():
