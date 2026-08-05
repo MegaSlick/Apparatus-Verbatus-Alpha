@@ -29,12 +29,32 @@ def _exemplar_module():
 
 
 def test_the_shipped_default_is_documented_run_configuration():
+    """300 since 2026-08-05. The value is a decision, not an accident, so it is
+    asserted here — and `config/pdf_render.toml` carries the measurement it came
+    from. A change to one without the other should fail."""
     settings = render_config.load_pdf_render_settings(minimum_dpi=pdf_render.MIN_RENDER_DPI)
     assert settings.to_record() == {
-        "configured_target_dpi": 400,
-        "target_dpi": 400,
+        "configured_target_dpi": 300,
+        "target_dpi": 300,
         "minimum_dpi": 72,
     }
+
+
+def test_the_target_is_configuration_rather_than_a_constant_in_code(tmp_path):
+    """Ruling 14's actual requirement: changing this needs no code change.
+
+    Asserted both ways. The loader carries no shipped value of its own — a constant
+    there would keep working after somebody edited the file and would be very hard
+    to notice — and a config naming a different target really does change the run.
+    """
+    source = (Path(__file__).resolve().parent / "render_config.py").read_text(encoding="utf-8")
+    assert "300" not in source, "the shipped target leaked into the loader as a constant"
+
+    for chosen in (150, 300, 600):
+        configured = tmp_path / f"render-{chosen}.toml"
+        configured.write_text(f"[pdf]\ntarget_dpi = {chosen}\n", encoding="utf-8")
+        settings = render_config.load_pdf_render_settings(configured, minimum_dpi=72)
+        assert settings.configured_target_dpi == settings.target_dpi == chosen
 
 
 def test_a_per_run_override_wins_without_weakening_the_code_owned_floor(tmp_path):

@@ -186,11 +186,17 @@ def test_the_render_contract_records_every_pixel_affecting_choice():
     assert contract["renderer_version"]
     assert contract["pdfium_version"]
     assert contract["container_page_index"] == 0
-    assert contract["configured_target_dpi"] == 400
-    assert contract["dpi"] == PDF_SETTINGS.target_dpi == 400
+    # Stated as relationships against the resolved settings, not as the shipped
+    # number. What this test is for is that the contract records every choice that
+    # moves a pixel; *which* DPI ships is one fact owned by one test
+    # (`test_render_config.py::test_the_shipped_default_is_documented_run_configuration`),
+    # and repeating it here only means two files to edit and one of them forgotten.
+    target = PDF_SETTINGS.target_dpi
+    assert contract["configured_target_dpi"] == PDF_SETTINGS.configured_target_dpi
+    assert contract["dpi"] == target
     assert contract["min_dpi"] == pdf_render.MIN_RENDER_DPI == 72
-    assert contract["effective_dpi"] == 400
-    assert contract["scale"] == {"numerator": 400, "denominator": 72}
+    assert contract["effective_dpi"] == target
+    assert contract["scale"] == {"numerator": target, "denominator": 72}
     assert contract["output"] == {"codec": "png", "color_mode": "RGB"}
     assert contract["background"] == "white"
     assert contract["draw_annotations"] is True

@@ -68,8 +68,11 @@ FIXTURE = "synthetic-two-page-v0"
 # fatal, and fatal *after* every admission had already been published. The artifact
 # count is unchanged (42 and 46 below); only the bytes of the admission payloads
 # moved, which is what a deliberate record change looks like here.
-HAPPY_RUN_TREE_DIGEST = "d0cda74d1e1db68e8a2b50b14f4915faa7ca49b67747cfdee691b37332e84962"
-REVIEW_RUN_TREE_DIGEST = "750fe3bb3d72e8b15b49d76e29b093aa382cfee4b7b2ba2e68b3428c37055dc2"
+# Re-pinned once more on 2026-08-05: the shipped PDF render target moved from 400 to
+# 300 DPI on Tyrel's instruction, so every PDF-derived page is a different — and
+# deliberately different — set of pixels. Artifact counts are again unchanged.
+HAPPY_RUN_TREE_DIGEST = "5a4e8777588ee22916e9481abdbdec497b05d6bf5ef5d5dfb46cdad8cd2087cd"
+REVIEW_RUN_TREE_DIGEST = "11051797ba3538e842e14e6f91721903e3a85353cc615b45f2f07efbbc30f5ba"
 
 
 def orchestrate(
