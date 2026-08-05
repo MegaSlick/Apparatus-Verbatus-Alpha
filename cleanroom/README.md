@@ -7,12 +7,38 @@ instead — they are the thing that actually sterilizes — and one word for two
 made every sentence about either of them ambiguous. `operations/autoclave/` is the
 chamber; this is the tray a draft waits in, tracked, so reviewers read it raw.
 
-This project is a rebuild. Old code never crosses the boundary — not copied, not pasted,
-not "ported". A rebuilding model reads the reference where it lies — `Temp_Stage`, an
-analysis output, and the frozen old repository — and writes its best fresh expression of
-that system into this tray, line by line, in this project's vocabulary. Both reference
-locations are intended to be read-only, but repository settings are not an operating-system
-write barrier. The knowledge crosses; the bytes never do.
+This project is a rebuild. A rebuilding model reads the reference where it lies —
+`Temp_Stage`, an analysis output, and the frozen old repository — and writes its best
+fresh expression of that system into this tray, line by line, in this project's
+vocabulary. Both reference locations are intended to be read-only, but repository settings
+are not an operating-system write barrier. Understanding crosses freely; bytes do not,
+unless they earn it under the rule below.
+
+## Citing the window, and citing a library
+
+CLAUDE.md's Quarantine section names this file as the procedure. The standard is academic:
+**read it, reason past it, and cite what you take.** The offence is the silence, not the
+borrowing.
+
+**Reason first, then look.** Work out what the stage needs on its own terms, then read the
+old code to see how it was solved before, then build the better version. Reading first and
+reasoning backwards is how a workaround gets carried forward as though it were a design —
+and the old pipeline was messy and broke often, which is why it is reference rather than a
+source tree.
+
+**A line carried from the old code** crosses only where it is genuinely the best option
+available, is understood well enough to defend line by line, and is **named as carried in
+both the commit and the report**. Adapted, renamed and reformatted are the same act as
+copied. An unnamed paste is a finding at review, not a shortcut — and it is checkable,
+because a reviewer can diff against the reference and nobody can audit whether a model
+truly understood something.
+
+**A third-party library is a different question, and the answer is usually yes.** Do not
+rebuild what a maintained project already does well. It enters under a licence that
+permits the use, with its source and licence recorded beside the code. Where a whole
+dependency is disproportionate, a borrowed snippet is allowed on the same terms. The old
+pipeline is Tyrel's own work and raises no licence question; a third party's is the
+reverse, and that is the one to check before writing the line rather than after.
 
 **Their paths are deliberately not written here.** They sit outside this repository and
 differ on every machine, clone, sandbox and pod; a checked-in absolute path is wrong

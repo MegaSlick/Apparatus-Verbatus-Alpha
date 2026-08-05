@@ -107,9 +107,16 @@ so name the symptoms at a clean break and let him see the numbers.
 
 ## Quarantine
 
-No byte of the old code crosses the boundary. It is read where it lies, through the
-window; what enters here is written new and justified against goals and governance. **A
-line nobody can justify does not enter, whoever typed it.**
+Understanding crosses the boundary freely; bytes do not. The old code is read where it
+lies, through the window; what enters here is written new and justified against goals and
+governance. **A line nobody can justify does not enter, whoever typed it.**
+
+**A line carried across is the exception and is never silent** — only where it is the best
+option available, understood well enough to defend line by line, and named as carried in
+both the commit and the report. Adapted, renamed and reformatted are the same act as
+copied. **Third-party code under a permitting licence is a different question and is
+welcome**, recorded with its source and licence. Procedure:
+[cleanroom/README.md](cleanroom/README.md).
 
 `cleanroom/` is the bench and is in this repository; an *autoclave* is a container, and
 nothing in one is here until a branch is collected and read.

@@ -27,7 +27,8 @@
 
 ---
 
-- [ ] Written new — no old byte crossed; the reference was read line by line
+- [ ] Written new — anything carried from the reference or a third party is named as
+      carried, with its licence where one applies
 - [ ] Legacy system understood before its pieces were rebuilt
 - [ ] Rebuilt and deferred paths recorded, including reconsideration conditions
 - [ ] Checked against GOALS.md and GOVERNANCE.md

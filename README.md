@@ -108,8 +108,10 @@ branches, rules and contracts. Old code is reference, read through the window; i
 systems are written new here, one piece at a time. Alpha does not need to be a finished
 pipeline.
 
-**Nothing enters this repository uninspected, and no old byte enters at all.** Code is
-written new, read line by line and justified, or it does not arrive.
+**Nothing enters this repository uninspected.** Code is written new, read line by line
+and justified, or it does not arrive. An old byte crosses only where it is the best
+option available and is named as carried; third-party code enters under a licence that
+permits it, recorded with its source.
 
 **beta** — start again in a fresh, clean private environment using only what survived
 alpha. Build there until the system works.

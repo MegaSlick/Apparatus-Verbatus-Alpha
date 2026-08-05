@@ -654,7 +654,7 @@ cmd_new() {
                 fi
             done
             [ -n "$window_mount" ] &&
-                note "airlock open: the old pipeline's code is readable at /window. It is contaminated — reference only, and no line of it may enter a branch."
+                note "airlock open: the old pipeline's code is readable at /window. Reference, not a source tree — reason past it, and a line carried across is named as carried in the commit and the report."
         elif [ -n "${WINDOW_OCR_ROOT:-}" ]; then
             note "window.conf names ${WINDOW_OCR_ROOT}, which is not on this machine — /window not mounted"
         fi
@@ -666,7 +666,7 @@ cmd_new() {
             for masked in ${WINDOW_STAGE_MASKS:-}; do
                 window_masks="${window_masks} --tmpfs /stage/${masked}:ro,size=4k"
             done
-            note "stage open: ${WINDOW_STAGE} is readable at /stage. No byte of it may enter a branch."
+            note "stage open: ${WINDOW_STAGE} is readable at /stage. Reference — what you take from it is cited, never carried across silently."
         elif [ -n "${WINDOW_STAGE:-}" ]; then
             note "window.conf names ${WINDOW_STAGE}, which is not on this machine — /stage not mounted"
         fi
@@ -689,7 +689,7 @@ cmd_new() {
         [ -d "$AUTOCLAVE_WINDOW" ] ||
             die "AUTOCLAVE_WINDOW names '${AUTOCLAVE_WINDOW}', which is not a directory"
         window_mount="${window_mount} --volume ${AUTOCLAVE_WINDOW}:/window:ro"
-        note "window open: ${AUTOCLAVE_WINDOW} is readable at /window. No byte of it may enter a branch."
+        note "window open: ${AUTOCLAVE_WINDOW} is readable at /window. Reference — what you take from it is cited, never carried across silently."
     fi
     #
     # Word splitting on $auth_mounts is the point: it is a flag list this script
