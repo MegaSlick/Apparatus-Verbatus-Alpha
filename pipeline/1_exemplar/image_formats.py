@@ -459,9 +459,10 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
     the EOI still closes the JPEG image and this door must not call that normal form
     corrupted merely because it carries bytes after it.
 
-    `expected_components` is the colour-space reconciliation the PDF renderer needs —
-    the number of components the *container around this JPEG* declares. A mismatch
-    means the embedded stream is not the image its dictionary describes.
+    `expected_components` is an optional container-level consistency check for a
+    caller that already knows how many components the JPEG payload must declare.
+    The current whole-page PDF renderer never extracts embedded JPEG streams; any
+    future caller that does use this argument must name its own container contract.
     """
     if not data.startswith(JPEG_SIGNATURE):
         raise corrupt("JPEG: missing SOI")
