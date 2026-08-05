@@ -103,10 +103,10 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
     PERLECTOR: {
         "read": _C.COMPLETED,
-        # An explicit status, never an empty string standing in for one. What the
-        # canonical `text` value is for this case is Spec 10's to settle (Sol N-3
-        # / blocker 7); the status exists here so the algebra is closed regardless.
-        "no-readable-text": _C.COMPLETED,
+        # An explicit status, never an empty string standing in for one. Silence
+        # does not prove a blank page or act, so it remains unresolved until a
+        # future Recensor blank-proof contract can establish confirmed-blank.
+        "no-readable-text": _C.UNRESOLVED,
         # ARCHITECTURE: it reads through to the end — truncation is a failure,
         # not an output.
         "truncated": _C.FAILED,
@@ -304,11 +304,84 @@ def witness_coverage(chair_outcomes: Mapping[str, str], configured_floor: int) -
     }
 
 
+SILENT_PAGE_REASON: Final = (
+    "page {ordinal} was sealed and no act was marked out on it; silence cannot "
+    "distinguish a blank page from a detection failure, and a blank page is proved "
+    "rather than inferred"
+)
+
+NO_ATTRIBUTION_REASON: Final = (
+    "the run supplied no act-to-page attribution, so no page could be checked for "
+    "silence; a page that produced nothing cannot be told from a page nobody marked out"
+)
+
+
+def _attributed_pages(
+    act_categories: Mapping[str, ArmariumCategory],
+    page_census: Mapping[int, Mapping[str, Any]],
+    act_pages: Mapping[str, Sequence[int]] | None,
+    reasons: list[str],
+) -> set[int] | None:
+    """Which sealed pages an act was marked out on, or None when nobody said.
+
+    Each act maps to *every* page ordinal it was marked out on, not to one. An act
+    that runs over a page break is cut on both sides and examines both pages; a
+    single primary ordinal would have called the far side silent and refused a run
+    whose continuation page was read exactly as it should have been.
+
+    Returning None rather than an empty set is the difference between "no page
+    produced an act" and "this run does not know" — collapsing the two would let a
+    caller that supplies nothing silently satisfy the silence check for every page.
+    """
+    if not page_census:
+        # There is no page denominator to check silence against, and the caller is
+        # already told so by the missing-census reason. Saying it twice would make
+        # one defect look like two.
+        return None
+    if act_pages is None:
+        if act_categories:
+            reasons.append(NO_ATTRIBUTION_REASON)
+            return None
+        # No acts and no attribution is not ignorance: every page is silent, and
+        # the loop below names each one.
+        return set()
+
+    unknown_acts = sorted(set(act_pages) - set(act_categories))
+    if unknown_acts:
+        raise FatalAccounting(
+            f"act-to-page attribution names unknown act(s) {unknown_acts}; attribution and "
+            "terminal categories must describe the same act denominator"
+        )
+    attributed: set[int] = set()
+    for act in sorted(act_categories):
+        if act not in act_pages:
+            reasons.append(
+                f"act {act} names no page, so the page it came from cannot be checked for coverage"
+            )
+            continue
+        for ordinal in act_pages[act]:
+            page = page_census.get(ordinal)
+            if page is None:
+                raise FatalAccounting(
+                    f"act {act} was marked out on page {ordinal}, which the run's page census "
+                    "does not account for; an act on a page nobody counted is invariant #10's "
+                    "imbalance"
+                )
+            if page.get("outcome") != "sealed":
+                raise FatalAccounting(
+                    f"act {act} was marked out on page {ordinal}, which the Exemplar did not "
+                    "seal; nothing may be marked out on pixels that were never sealed"
+                )
+            attributed.add(ordinal)
+    return attributed
+
+
 def run_aggregate(
     act_categories: Mapping[str, ArmariumCategory],
     coverage_records: Mapping[str, Mapping[str, Any]] | None = None,
     page_census: Mapping[int, Mapping[str, Any]] | None = None,
     unaddressed_chairs: Sequence[str] | None = None,
+    act_pages: Mapping[str, Sequence[int]] | None = None,
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -327,6 +400,17 @@ def run_aggregate(
     loss becomes visible. A page outcome outside the Exemplar's vocabulary is
     fatal, never routed around, and a refusal with no recorded reason still
     forces `partial` — absent evidence never reads cleaner than damaged evidence.
+
+    `act_pages` maps each act key to every page ordinal it was marked out on, and
+    it is what makes the blank-by-silence refusal reach a *page* rather than only
+    the whole run. Tyrel's ruling of 2026-08-04 is that truly blank pages exist at the
+    scale of tens of thousands of archival scans and are not failures — but that a
+    blank sheet and a page whose faint ink the Designator missed give the identical
+    zero-act signal. Blank is proved, never inferred. Checking only "did the run
+    produce any acts at all" left that proof obligation satisfied by any other page:
+    one silent page among ten thousand busy ones reconciled to `complete` with no
+    reason named at all. Attribution is what closes it, and a run that supplies none
+    is told so rather than believed.
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
@@ -338,10 +422,23 @@ def run_aggregate(
     # GOVERNANCE 2 refuses "complete" unless everything reconciles, and an empty
     # population reconciles vacuously rather than actually.
     #
-    # Acts alone being empty is deliberately *not* the trigger: a sealed page
-    # carrying no acts is a blank page, which is a real and correct outcome.
     if not act_categories and not (page_census or {}):
         reasons.append("the run accounted for no acts and no pages, so nothing was reconciled")
+
+    pages_with_acts = _attributed_pages(act_categories, page_census or {}, act_pages, reasons)
+
+    coverage = coverage_records or {}
+    unexpected_coverage = sorted(set(coverage) - set(act_categories))
+    if unexpected_coverage:
+        raise FatalAccounting(
+            f"witness coverage names unknown act(s) {unexpected_coverage}; coverage and terminal "
+            "categories must describe the same act denominator"
+        )
+    for act in sorted(set(act_categories) - set(coverage)):
+        reasons.append(f"act {act} has no witness-coverage record")
+
+    if act_categories and not page_census:
+        reasons.append("the run has acts but no page census, so page conservation was not checked")
 
     # "Every configured chair reconciled against the configuration it was run
     # under" was in this docstring before anything checked it. A configured chair
@@ -361,15 +458,15 @@ def run_aggregate(
         if VOCABULARIES[ARMARIUM][category.value] is not OutcomeClass.COMPLETED:
             reasons.append(f"act {act} is {category.value}")
 
-    for act, coverage in (coverage_records or {}).items():
-        if coverage.get("under_witnessed"):
+    for act, record in coverage.items():
+        if record.get("under_witnessed"):
             reasons.append(
                 f"act {act} is under-witnessed "
-                f"({coverage['by_class']['completed']} of a floor of {coverage['floor']})"
+                f"({record['by_class']['completed']} of a floor of {record['floor']})"
             )
-        if coverage.get("unresolved_chairs"):
+        if record.get("unresolved_chairs"):
             reasons.append(
-                f"act {act} has {coverage['unresolved_chairs']} chair(s) with no outcome yet"
+                f"act {act} has {record['unresolved_chairs']} chair(s) with no outcome yet"
             )
 
     by_page_outcome: dict[str, int] = {}
@@ -380,6 +477,8 @@ def run_aggregate(
         if outcome != "sealed":
             reason = page_census[ordinal].get("reason") or "no reason was recorded"
             reasons.append(f"page {ordinal} was {outcome}: {reason}")
+        elif pages_with_acts is not None and ordinal not in pages_with_acts:
+            reasons.append(SILENT_PAGE_REASON.format(ordinal=ordinal))
 
     return {
         "status": "complete" if not reasons else "partial",

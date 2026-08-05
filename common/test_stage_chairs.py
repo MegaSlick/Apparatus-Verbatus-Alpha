@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from common.chairs import ChairIdentity, ChairRegistry
+from common.chairs import AbsentChair, ChairIdentity, ChairRegistry, build_receipt
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.runtree.store import RunTree
@@ -48,6 +48,42 @@ def _context(tmp_path) -> tuple[StageContext, ChairIdentity]:
     identity = registry.resolve("attestator_1")
     assert isinstance(identity, ChairIdentity)
     return context, identity
+
+
+def _served_provenance(
+    context: StageContext,
+    identity: ChairIdentity,
+    *,
+    reference: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Build one otherwise-valid configured-chair projection."""
+    if reference is None:
+        reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
+    return {
+        "chair": identity.role,
+        "chair_state": "configured",
+        "resolved_identity": identity.to_record(),
+        "resolved_revision": {
+            "kind": identity.receipt_revision_kind,
+            "value": identity.receipt_revision,
+        },
+        "receipt_ref": reference,
+        "adapter_revision": context.adapter_revision,
+    }
+
+
+def _declared_absence(context: StageContext) -> tuple[AbsentChair, dict[str, object]]:
+    absent = context.registry.resolve("secondary_proposer")
+    assert isinstance(absent, AbsentChair)
+    return absent, {
+        "chair": absent.role,
+        "chair_state": "absent",
+        "absence": absent.to_record(),
+        "resolved_identity": None,
+        "resolved_revision": None,
+        "receipt_ref": None,
+        "adapter_revision": context.adapter_revision,
+    }
 
 
 def test_serving_receipts_are_refused_as_stage_artifacts_and_accepted_as_run_receipts(tmp_path):
@@ -134,6 +170,216 @@ def test_a_consumer_refuses_tampered_model_provenance_and_receipt_reference(tmp_
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("endpoint", "fixture://leaked"), ("started_at", "2026-08-05T00:00:00Z")],
+)
+def test_serving_only_fields_have_their_own_named_provenance_refusal(tmp_path, field, value):
+    """Endpoint and start time belong only in the digest-checked run receipt."""
+    context, identity = _context(tmp_path)
+
+    with pytest.raises(SchemaRefusal, match="leaks serving-only field"):
+        validate_serving_provenance(
+            context,
+            {**_served_provenance(context, identity), field: value},
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+
+def test_a_provenance_record_cannot_substitute_the_sealed_adapter_recipe(tmp_path):
+    context, identity = _context(tmp_path)
+
+    with pytest.raises(SchemaRefusal, match="sealed adapter recipe"):
+        validate_serving_provenance(
+            context,
+            {
+                **_served_provenance(context, identity),
+                "adapter_revision": adapter_recipe_for(context.run, PERLECTOR),
+            },
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+
+def test_provenance_must_be_an_object_with_a_named_known_chair_state(tmp_path):
+    context, identity = _context(tmp_path)
+    provenance = _served_provenance(context, identity)
+
+    with pytest.raises(SchemaRefusal, match="is not an object"):
+        validate_serving_provenance(
+            context,
+            [],
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+    with pytest.raises(SchemaRefusal, match="has no chair name"):
+        validate_serving_provenance(
+            context,
+            {**provenance, "chair": ""},
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+    with pytest.raises(SchemaRefusal, match="unknown chair state"):
+        validate_serving_provenance(
+            context,
+            {**provenance, "chair_state": "invented"},
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+
+def test_an_absent_chair_can_make_only_its_declared_non_serving_claim(tmp_path):
+    context, identity = _context(tmp_path)
+    absent, provenance = _declared_absence(context)
+
+    assert (
+        validate_serving_provenance(
+            context,
+            provenance,
+            producer_stage=ATTESTATORES,
+            require_receipt=False,
+        )
+        is None
+    )
+
+    with pytest.raises(SchemaRefusal, match="differs from models config"):
+        validate_serving_provenance(
+            context,
+            {**provenance, "absence": {**absent.to_record(), "reason": "invented"}},
+            producer_stage=ATTESTATORES,
+            require_receipt=False,
+        )
+
+    with pytest.raises(SchemaRefusal, match="carries a model identity or receipt"):
+        validate_serving_provenance(
+            context,
+            {**provenance, "resolved_identity": identity.to_record()},
+            producer_stage=ATTESTATORES,
+            require_receipt=False,
+        )
+
+    with pytest.raises(SchemaRefusal, match="cannot have produced a reading"):
+        validate_serving_provenance(
+            context,
+            provenance,
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+    with pytest.raises(SchemaRefusal, match="calls configured chair"):
+        validate_serving_provenance(
+            context,
+            {**provenance, "chair": identity.role},
+            producer_stage=ATTESTATORES,
+            require_receipt=False,
+        )
+
+
+def test_a_configured_chair_must_carry_its_exact_resolved_identity(tmp_path):
+    context, identity = _context(tmp_path)
+    provenance = _served_provenance(context, identity)
+
+    with pytest.raises(SchemaRefusal, match="has no resolved identity"):
+        validate_serving_provenance(
+            context,
+            {**provenance, "resolved_identity": None},
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+    with pytest.raises(SchemaRefusal, match="wrong schema"):
+        validate_serving_provenance(
+            context,
+            {**provenance, "resolved_identity": {"role": identity.role}},
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+    with pytest.raises(SchemaRefusal, match="is malformed"):
+        validate_serving_provenance(
+            context,
+            {
+                **provenance,
+                "resolved_identity": {**identity.to_record(), "role": "attestator_2"},
+            },
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+    with pytest.raises(SchemaRefusal, match="differs from the sealed models config"):
+        validate_serving_provenance(
+            context,
+            {
+                **provenance,
+                "resolved_identity": {**identity.to_record(), "license_note": "invented"},
+            },
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+
+def test_receipt_claims_must_match_the_serving_state_and_resolved_identity(tmp_path, monkeypatch):
+    context, identity = _context(tmp_path)
+    provenance = _served_provenance(context, identity)
+
+    with pytest.raises(SchemaRefusal, match="was not run but carries a serving receipt"):
+        validate_serving_provenance(
+            context,
+            provenance,
+            producer_stage=ATTESTATORES,
+            require_receipt=False,
+        )
+
+    with pytest.raises(SchemaRefusal, match="has no serving receipt reference"):
+        validate_serving_provenance(
+            context,
+            {**provenance, "receipt_ref": None},
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+    other = context.registry.resolve("attestator_2")
+    assert isinstance(other, ChairIdentity)
+    other_reference = context.write_serving_receipt(other, fixture_serving_details(other))
+    with pytest.raises(SchemaRefusal, match="differs from the resolved identity"):
+        validate_serving_provenance(
+            context,
+            _served_provenance(context, identity, reference=other_reference),
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+    # Receipt construction refuses this lie upstream; exercise the consumer's
+    # independent defence with the same fully shaped receipt projection.
+    class TreeWithUnadaptedReceipt:
+        def read_run_receipt(self, reference):
+            return {
+                "chair": identity.role,
+                "source": identity.source,
+                "resolved": identity.source_reference,
+                "revision": identity.receipt_revision,
+                "revision_kind": identity.receipt_revision_kind,
+                "digest_manifest": identity.digest_manifest,
+                "adapter_identity": other.to_record(),
+            }
+
+    monkeypatch.setattr(context, "tree", TreeWithUnadaptedReceipt())
+    with pytest.raises(SchemaRefusal, match="unadapted chair"):
+        validate_serving_provenance(
+            context,
+            _served_provenance(
+                context,
+                identity,
+                reference={"relative_path": "receipts/forged.json", "sha256": "0" * 64},
+            ),
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+
 def test_a_field_nothing_validates_is_refused_rather_than_carried(tmp_path):
     """Invariant #42 refuses wrong-schema provenance, not a list of known-bad names.
 
@@ -181,11 +427,14 @@ def test_a_field_nothing_validates_is_refused_rather_than_carried(tmp_path):
 
 
 def test_a_witness_regime_that_cannot_be_true_is_refused(tmp_path):
-    """ARCHITECTURE: the named/blinded toggle is run-level and every Perlectio
-    records its regime. The Perlector writes the field; until this check nothing
-    read it back, so a Perlectio claiming a regime that does not exist travelled
-    sealed and provenance-checked. Binding it to a real run-level toggle is Spec
-    08's work; refusing a value that cannot be true is provenance validation.
+    """Tyrel's 2026-07-30 ruling (courtroom_doctrine.md, formalized in the
+    unbuilt spec_08_perlector.md — this is not in ARCHITECTURE.md, which names
+    no regime/toggle anywhere): the named/blinded toggle is run-level and every
+    Perlectio records its regime. The Perlector writes the field; until this
+    check nothing read it back, so a Perlectio claiming a regime that does not
+    exist travelled sealed and provenance-checked. Binding it to a real
+    run-level toggle is Spec 08's work; refusing a value that cannot be true is
+    provenance validation.
 
     Required of the Perlector and forbidden of everyone else, in both directions.
     An earlier version of this test proved only that a bad value is refused *when
@@ -228,6 +477,79 @@ def test_a_witness_regime_that_cannot_be_true_is_refused(tmp_path):
         validate_serving_provenance(
             context,
             {**provenance, "adapter_revision": context.adapter_revision, "witness_regime": "named"},
+            producer_stage=ATTESTATORES,
+            require_receipt=True,
+        )
+
+
+def test_a_consumed_adapter_receipt_must_retain_the_configured_base_identity(tmp_path):
+    """A structurally valid base role at a different pin is still wrong provenance."""
+    adapter = ChairIdentity(
+        role="attestator_adapter",
+        source="local-repository",
+        repo=None,
+        path="adapter",
+        revision=None,
+        digest_manifest="a" * 64,
+        manifest="manifests/adapter.json",
+        adapter_of="base",
+        serving_recipe="fixture-adapter-v0",
+        license_note="fixture only",
+    )
+    configured_base = ChairIdentity(
+        role="base",
+        source="local-repository",
+        repo=None,
+        path="base",
+        revision=None,
+        digest_manifest="b" * 64,
+        manifest="manifests/base.json",
+        adapter_of=None,
+        serving_recipe="fixture-base-v0",
+        license_note="fixture only",
+    )
+    stale_base = replace(configured_base, digest_manifest="c" * 64)
+
+    class Registry:
+        def resolve(self, role):
+            return {adapter.role: adapter, configured_base.role: configured_base}[role]
+
+    tree = RunTree.create(
+        tmp_path,
+        "adapter-receipt",
+        source_manifest=[],
+        config_digest="d" * 64,
+        adapter_recipes={ATTESTATORES: adapter.serving_recipe},
+        witness_chairs=[],
+    )
+    context = StageContext(
+        tree=tree,
+        run=tree.read_run(),
+        fixture={},
+        scenario="test",
+        stage=ATTESTATORES,
+        adapter_revision=adapter.serving_recipe,
+        args=object(),
+        registry=Registry(),
+    )
+    details = replace(fixture_serving_details(adapter), adapter_identity=stale_base)
+    reference, _ = tree.write_run_receipt(build_receipt(adapter, details))
+    provenance = {
+        "chair": adapter.role,
+        "chair_state": "configured",
+        "resolved_identity": adapter.to_record(),
+        "resolved_revision": {
+            "kind": adapter.receipt_revision_kind,
+            "value": adapter.receipt_revision,
+        },
+        "receipt_ref": reference.to_record(),
+        "adapter_revision": adapter.serving_recipe,
+    }
+
+    with pytest.raises(SchemaRefusal, match="configured base identity"):
+        validate_serving_provenance(
+            context,
+            provenance,
             producer_stage=ATTESTATORES,
             require_receipt=True,
         )

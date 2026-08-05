@@ -11,17 +11,24 @@ is no in-memory stand-in, because the properties under test are properties of th
 filesystem behaviour.
 """
 
+import errno
+import inspect
 import json
+import os
+import re
+from pathlib import Path
 
 import pytest
 
 from common.chairs.models import ChairIdentity, ServingDetails
 from common.chairs.receipts import build_receipt
-from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.approval import ApprovalRecordReference, build_approval_record
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import build_envelope
-from common.contracts.errors import IncompatibleReuse, SchemaRefusal
+from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
+from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR
+from common.runtree import store as runtree_store
 from common.runtree.store import RECEIPTS_DIR, RUN_FILE, RunTree
 
 PAGE_BYTES = b"synthetic page one"
@@ -85,6 +92,18 @@ def make_receipt(*, endpoint="http://fixture.invalid/seat", started_at="2026-08-
         started_at=started_at,
     )
     return build_receipt(identity, details)
+
+
+def make_approval_record(**overrides):
+    record = build_approval_record(
+        subject_ids=["data-handling-policy"],
+        action="data-gate",
+        reason="approved for this exact synthetic policy",
+        target_version_hash="b" * 64,
+        timestamp="2026-08-04T12:00:00Z",
+    )
+    record.update(overrides)
+    return record
 
 
 # --- The run authority ---------------------------------------------------------
@@ -172,6 +191,18 @@ def test_reusing_a_run_id_with_changed_config_is_refused(tmp_path):
         make_run(tmp_path, config_digest="d" * 64)
 
 
+def test_render_settings_are_an_explicit_run_binding_not_only_an_opaque_digest(tmp_path):
+    first = {"pdf": {"configured_target_dpi": 300, "target_dpi": 300, "minimum_dpi": 72}}
+    second = {"pdf": {"configured_target_dpi": 400, "target_dpi": 400, "minimum_dpi": 72}}
+    make_run(tmp_path, render_settings=first)
+    before = (tmp_path / "r1" / "run.json").read_bytes()
+
+    with pytest.raises(IncompatibleReuse, match="render_settings"):
+        make_run(tmp_path, render_settings=second)
+
+    assert (tmp_path / "r1" / "run.json").read_bytes() == before
+
+
 def test_reusing_a_run_id_with_changed_adapter_recipes_is_refused(tmp_path):
     make_run(tmp_path)
     with pytest.raises(IncompatibleReuse):
@@ -184,6 +215,24 @@ def test_reusing_a_run_id_with_a_changed_chair_roster_is_refused(tmp_path):
     make_run(tmp_path)
     with pytest.raises(IncompatibleReuse):
         make_run(tmp_path, witness_chairs=["attestator_1", "attestator_2"])
+
+
+def test_reusing_a_run_id_with_changed_ingress_evidence_is_refused(tmp_path):
+    """A run cannot turn a declared real ingress into a fixture on reuse."""
+    make_run(tmp_path, ingress={"mode": "synthetic-fixture"})
+
+    with pytest.raises(IncompatibleReuse, match="ingress"):
+        make_run(
+            tmp_path,
+            ingress={
+                "mode": "approval-gated-real",
+                "data_gate_policy_hash": "a" * 64,
+                "data_gate_approval_ref": {
+                    "relative_path": f"{RECEIPTS_DIR}/{'b' * 64}.json",
+                    "sha256": "b" * 64,
+                },
+            },
+        )
 
 
 def test_an_incompatible_reuse_writes_nothing(tmp_path):
@@ -205,9 +254,33 @@ def test_an_edited_run_authority_is_refused(tmp_path):
     assert "self-hash" in str(caught.value)
 
 
+def test_an_old_schema_run_authority_is_refused_before_a_stage_can_use_it(tmp_path):
+    tree = make_run(tmp_path)
+    record = tree.read_run()
+    record["schema"] = "skeleton.v0"
+    record["self_hash"] = self_hash(record)
+    (tmp_path / "r1" / RUN_FILE).write_bytes(canonical_bytes(record))
+
+    with pytest.raises(IncompatibleReuse, match="old run cannot be reinterpreted"):
+        tree.read_run()
+
+
 def test_reading_a_run_that_does_not_exist_is_refused(tmp_path):
     with pytest.raises(IncompatibleReuse):
         RunTree(tmp_path, "never-created").read_run()
+
+
+def test_a_run_id_symlink_cannot_redirect_a_new_run_outside_its_requested_root(tmp_path):
+    requested_root = tmp_path / "requested-runs"
+    requested_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (requested_root / "r1").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SchemaRefusal, match="outside the requested run root"):
+        make_run(requested_root)
+
+    assert not (outside / RUN_FILE).exists()
 
 
 # --- Immutability, and reuse in both directions -------------------------------
@@ -259,6 +332,126 @@ def test_an_artifact_for_another_run_is_refused(tmp_path):
         tree.publish_artifact(make_envelope(run_id="r2"))
 
 
+def test_every_artifact_read_route_refuses_bytes_from_another_run(tmp_path):
+    tree = make_run(tmp_path)
+    foreign = make_envelope(run_id="r2")
+    relative = tree.artifact_path(DESIGNATOR, "proposal", foreign["artifact_id"])
+    path = tree.resolve(relative)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = canonical_bytes(foreign)
+    path.write_bytes(data)
+
+    with pytest.raises(SchemaRefusal, match="belongs to run 'r2'"):
+        tree.read_artifact(DESIGNATOR, "proposal", foreign["artifact_id"])
+    with pytest.raises(SchemaRefusal, match="belongs to run 'r2'"):
+        tree.read_artifact_reference(
+            {"relative_path": relative, "sha256": digest_bytes(data)},
+            stage=DESIGNATOR,
+            kind="proposal",
+        )
+    with pytest.raises(SchemaRefusal, match="belongs to run 'r2'"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_same_named_run_in_another_root_cannot_lend_this_one_its_evidence(tmp_path):
+    """The run id is a name an operator types, and `--run-root` and `--run-id` are
+    independent flags, so two runs may both be called `r1` and a name comparison
+    cannot tell their artifacts apart. A reading produced under one configuration
+    was accepted as the other run's, and that run's manifest, review and export all
+    reconciled around it. A tree restored from a partial backup is enough.
+
+    The config_digest is the run authority's own binding to the source manifest,
+    model roster and adapter recipes it was created with. It is integrity rather
+    than authentication -- anything holding this repository's API can re-seal a
+    forgery, because every input to the hash is inside the record -- but it is the
+    difference between "the same name" and "the same run".
+    """
+    ours = make_run(tmp_path / "a")
+    theirs = make_run(tmp_path / "b", config_digest="d" * 64)
+    foreign = make_envelope()
+    foreign = build_envelope(
+        run_id="r1",
+        artifact_id=foreign["artifact_id"],
+        subject_id=foreign["subject_id"],
+        stage=DESIGNATOR,
+        kind="proposal",
+        outcome="proposed",
+        config_digest="d" * 64,
+        adapter_revision="fake-designator-v0",
+        inputs=[],
+        payload={"proposals": 2},
+    )
+    theirs.publish_artifact(foreign)
+
+    relative = ours.artifact_path(DESIGNATOR, "proposal", foreign["artifact_id"])
+    path = ours.resolve(relative)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = canonical_bytes(foreign)
+    path.write_bytes(data)
+
+    assert foreign["run_id"] == ours.run_id, "the point of the case is that the names match"
+    with pytest.raises(SchemaRefusal, match="two runs may share a name"):
+        ours.read_artifact(DESIGNATOR, "proposal", foreign["artifact_id"])
+    with pytest.raises(SchemaRefusal, match="two runs may share a name"):
+        ours.read_artifact_reference(
+            {"relative_path": relative, "sha256": digest_bytes(data)},
+            stage=DESIGNATOR,
+            kind="proposal",
+        )
+    with pytest.raises(SchemaRefusal, match="two runs may share a name"):
+        ours.build_manifest(DESIGNATOR)
+
+
+@pytest.mark.parametrize("authority_state", ("missing", "self-hash-corrupt", "bad-digest"))
+def test_every_generic_artifact_read_route_fails_closed_without_a_valid_run_authority(
+    tmp_path, authority_state
+):
+    """`run.json` is the binding, not an optional optimization for a fresh reader."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    result = tree.publish_artifact(envelope)
+    reference = {
+        "relative_path": result.relative_path,
+        "sha256": digest_bytes(tree.read_bytes(result.relative_path)),
+    }
+    run_file = tmp_path / "r1" / RUN_FILE
+
+    if authority_state == "missing":
+        run_file.unlink()
+    else:
+        authority = tree.read_run()
+        if authority_state == "self-hash-corrupt":
+            authority["config_digest"] = "d" * 64
+        else:
+            authority["config_digest"] = "not-a-digest"
+            authority["self_hash"] = self_hash(authority)
+        run_file.write_bytes(canonical_bytes(authority))
+
+    fresh = RunTree(tmp_path, "r1")
+    with pytest.raises(IncompatibleReuse):
+        fresh.read_artifact(DESIGNATOR, "proposal", envelope["artifact_id"])
+    with pytest.raises(IncompatibleReuse):
+        fresh.read_artifact_reference(reference, stage=DESIGNATOR, kind="proposal")
+    with pytest.raises(IncompatibleReuse):
+        fresh.build_manifest(PERLECTOR)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("ingress", {"mode": "synthetic-fixture"}),
+        ("render_settings", {"target_dpi": 400}),
+    ),
+)
+def test_reuse_with_a_now_absent_optional_bound_field_is_named_not_a_keyerror(
+    tmp_path, field, value
+):
+    make_run(tmp_path, **{field: value})
+
+    with pytest.raises(IncompatibleReuse, match=field):
+        make_run(tmp_path)
+
+
 def test_a_published_artifact_reads_back_and_revalidates(tmp_path):
     tree = make_run(tmp_path)
     envelope = make_envelope()
@@ -272,6 +465,45 @@ def test_a_corrupted_artifact_on_disk_is_refused_on_read(tmp_path):
     result = tree.publish_artifact(envelope)
     tree.resolve(result.relative_path).write_text("{not json", encoding="utf-8")
     with pytest.raises(SchemaRefusal):
+        tree.read_artifact(DESIGNATOR, "proposal", envelope["artifact_id"])
+
+
+def test_a_valid_envelope_copied_to_a_different_artifact_path_is_refused(tmp_path):
+    """The producer directory and filename are part of the artifact's identity."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    result = tree.publish_artifact(envelope)
+    forged_id = "art_" + "0" * 16
+    forged_path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", forged_id))
+    forged_path.parent.mkdir(parents=True, exist_ok=True)
+    forged_path.write_bytes(tree.read_bytes(result.relative_path))
+
+    with pytest.raises(SchemaRefusal, match="contents do not match"):
+        tree.read_artifact(DESIGNATOR, "proposal", forged_id)
+    with pytest.raises(SchemaRefusal, match="derived path"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_reading_an_artifact_rechecks_every_direct_input_bytes(tmp_path):
+    tree = make_run(tmp_path)
+    data = b"the source evidence"
+    digest, blob = tree.put_blob(DESIGNATOR, data)
+    envelope = build_envelope(
+        run_id="r1",
+        artifact_id=artifact_id(DESIGNATOR, "proposal", "pg_0123456789abcdef"),
+        subject_id="pg_0123456789abcdef",
+        stage=DESIGNATOR,
+        kind="proposal",
+        outcome="proposed",
+        config_digest=CONFIG_DIGEST,
+        adapter_revision="fake-designator-v0",
+        inputs=[{"relative_path": blob.relative_path, "sha256": digest}],
+        payload={"proposals": 2},
+    )
+    tree.publish_artifact(envelope)
+    tree.resolve(blob.relative_path).write_bytes(b"altered after publication")
+
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         tree.read_artifact(DESIGNATOR, "proposal", envelope["artifact_id"])
 
 
@@ -343,6 +575,95 @@ def test_distinct_serving_moments_are_not_collapsed_by_model_identity(tmp_path):
     assert first.to_record() != second.to_record()
     assert tree.read_run_receipt(first)["endpoint"] == "http://fixture.invalid/seat"
     assert tree.read_run_receipt(second)["endpoint"] == "http://fixture.invalid/seat-2"
+
+
+# --- Approval records use the same receipt shape -----------------------------
+
+
+def test_an_approval_record_is_content_addressed_and_reads_back(tmp_path):
+    tree = make_run(tmp_path)
+    record = make_approval_record()
+
+    reference, result = tree.write_approval_record(record)
+
+    assert result.reused is False
+    assert isinstance(reference, ApprovalRecordReference)
+    assert reference.relative_path == f"{RECEIPTS_DIR}/{reference.sha256}.json"
+    assert tree.read_approval_record(reference) == record
+    assert tree.build_manifest(DESIGNATOR)["artifacts"] == []
+
+
+def test_identical_approval_record_reuses_its_immutable_bytes(tmp_path):
+    tree = make_run(tmp_path)
+    record = make_approval_record()
+
+    first, first_result = tree.write_approval_record(record)
+    second, second_result = tree.write_approval_record(record)
+
+    assert first_result.reused is False
+    assert second_result.reused is True
+    assert second.to_record() == first.to_record()
+
+
+def test_an_invalid_approval_record_is_refused_before_any_receipt_write(tmp_path):
+    tree = make_run(tmp_path)
+    record = make_approval_record(reason="edited after approval")
+
+    with pytest.raises(ApprovalRefusal, match="self-hash"):
+        tree.write_approval_record(record)
+
+    assert not (tree.root / RECEIPTS_DIR).exists()
+
+
+def test_an_approval_schema_is_refused_before_any_receipt_write(tmp_path):
+    tree = make_run(tmp_path)
+    record = make_approval_record(schema="approval-record.v9")
+    record["self_hash"] = self_hash(record)
+
+    with pytest.raises(ApprovalRefusal, match="schema"):
+        tree.write_approval_record(record)
+
+    assert not (tree.root / RECEIPTS_DIR).exists()
+
+
+def test_an_approval_reference_must_name_the_bytes_and_path_it_claims(tmp_path):
+    tree = make_run(tmp_path)
+    reference, _ = tree.write_approval_record(make_approval_record())
+    forged = ApprovalRecordReference(f"{RECEIPTS_DIR}/{'a' * 64}.json", reference.sha256)
+
+    with pytest.raises(ApprovalRefusal, match="content-addressed path"):
+        tree.read_approval_record(forged)
+
+
+def test_an_approval_read_refuses_an_untyped_reference(tmp_path):
+    tree = make_run(tmp_path)
+    reference, _ = tree.write_approval_record(make_approval_record())
+
+    with pytest.raises(ApprovalRefusal, match="ApprovalRecordReference"):
+        tree.read_approval_record(reference.to_record())
+
+
+def test_an_approval_reference_refuses_replaced_bytes(tmp_path):
+    tree = make_run(tmp_path)
+    reference, _ = tree.write_approval_record(make_approval_record())
+    tree.resolve(reference.relative_path).write_bytes(b"{}")
+
+    with pytest.raises(ApprovalRefusal, match="digest"):
+        tree.read_approval_record(reference)
+
+
+def test_a_self_hash_invalid_approval_record_is_refused_after_digest_checks(tmp_path):
+    tree = make_run(tmp_path)
+    record = make_approval_record(reason="edited after approval")
+    data = canonical_bytes(record)
+    digest = digest_bytes(data)
+    relative_path = tree.receipt_path(digest)
+    target = tree.resolve(relative_path)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(data)
+
+    with pytest.raises(ApprovalRefusal, match="self-hash"):
+        tree.read_approval_record(ApprovalRecordReference(relative_path, digest))
 
 
 # --- The door writes into the Exemplar's directory ----------------------------
@@ -463,7 +784,9 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
     fails a static drift test, loudly, naming the path.
 
     Driven against real writes rather than a list of strings, so a new writer that
-    forgot to extend the scope is caught by what it actually does.
+    forgot to extend the scope is caught by what it actually does. Spec 03 adds a
+    sixth real write — the approval record — and it is exercised here for the same
+    reason as the other five, by writing one.
     """
     tree = make_run(tmp_path)
     scope = tree.inventory_scope()
@@ -473,12 +796,44 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
     written.append(tree.put_blob(DESIGNATOR, b"a crop")[1].relative_path)
     written.append(tree.write_manifest(DESIGNATOR).relative_path)
     written.append(tree.write_run_receipt(make_receipt())[0].relative_path)
+    written.append(tree.write_approval_record(make_approval_record())[0].relative_path)
 
-    assert len(written) == 5
+    assert len(written) == 6
     for path in written:
         assert any(path == prefix or path.startswith(prefix) for prefix in scope), (
             f"{path} is written by the store but falls outside the inventory scope"
         )
+
+
+def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
+    """The static half of harvest #13, read from source rather than from a fixture.
+
+    The runtime test above proves the six writers we know about stay in scope. It
+    cannot prove that a *seventh* writer added later was exercised at all — an
+    un-called writer leaves no trace to check. So this reads every immutable
+    publication in `RunTree` and requires it to route through one of the path
+    constructors `inventory_scope()` is derived from. A new writer that invents a
+    path fails here even though no test calls it.
+    """
+    source = inspect.getsource(runtree_store.RunTree)
+    constructors = set(re.findall(r"self\._publish_bytes\(\s*self\.(\w+)\(", source))
+    indirect = set(re.findall(r"(\w+)\s*=\s*self\.(?:artifact_path|manifest_path)\(", source))
+    passed_through = set(re.findall(r"self\._publish_bytes\(\s*(\w+)\s*,", source))
+
+    assert constructors <= {"blob_path", "receipt_path"}, (
+        f"a store writer publishes through unknown path constructor(s) {sorted(constructors)}; "
+        "inventory_scope() is derived from artifact_path/blob_path/manifest_path/receipt_path "
+        "and cannot name a fifth"
+    )
+    assert passed_through <= indirect, (
+        "a store writer publishes bytes at a path that did not come from "
+        "artifact_path() or manifest_path(); harvest #13 requires every managed "
+        f"path to be one the inventory scope can name (found {sorted(passed_through - indirect)})"
+    )
+    assert constructors and passed_through, (
+        "no publication sites were found at all — this test would pass vacuously, "
+        "which is the false green meta-invariant #88 refuses"
+    )
 
 
 def test_the_inventory_scope_covers_every_producer(tmp_path):
@@ -500,6 +855,55 @@ def test_publication_leaves_no_temporary_files_behind(tmp_path):
     tree.write_manifest(DESIGNATOR)
     leftovers = [path.name for path in (tmp_path / "r1").rglob(".*tmp*")]
     assert leftovers == []
+
+
+def test_first_publication_never_overwrites_a_competing_writer(tmp_path, monkeypatch):
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    target = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    original_link = runtree_store.os.link
+
+    def competing_link(source, destination, *args, **kwargs):
+        Path(destination).write_bytes(b"competing bytes")
+        return original_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(runtree_store.os, "link", competing_link)
+
+    with pytest.raises(IncompatibleReuse, match="already holds different bytes"):
+        tree.publish_artifact(envelope)
+
+    assert target.read_bytes() == b"competing bytes"
+
+
+@pytest.mark.parametrize("code", [errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS])
+def test_a_filesystem_that_refuses_hard_links_is_named_not_a_raw_oserror(
+    tmp_path, monkeypatch, code
+):
+    """Publication is an atomic `os.link`, so the run root has to be on a filesystem
+    that supports one — exFAT, FAT32, some network mounts and some container bind
+    mounts do not. Those answer `EPERM`, `EOPNOTSUPP` or `ENOSYS`, which escaped as a
+    bare `OSError` and surfaced as a traceback about `link` rather than as a statement
+    about where the run root was put. It is a setup fact, so it is named as one.
+    """
+    tree = make_run(tmp_path)
+
+    def refusing_link(source, destination, *args, **kwargs):
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(runtree_store.os, "link", refusing_link)
+
+    with pytest.raises(SchemaRefusal, match="refuses hard links"):
+        tree.publish_artifact(make_envelope())
+
+
+def test_an_existing_target_is_still_a_reuse_check_not_a_hard_link_complaint(tmp_path):
+    """`FileExistsError` is an `OSError` too, and the translation above must not
+    swallow it: an identical republication is a true no-op, not a filesystem fault."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+
+    assert tree.publish_artifact(envelope).reused is True
 
 
 def test_the_run_file_is_valid_json_a_human_can_read(tmp_path):

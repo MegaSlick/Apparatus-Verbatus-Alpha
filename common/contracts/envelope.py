@@ -20,9 +20,9 @@ which are honestly non-deterministic and neither of which is a stage artifact.
 
 from typing import Any, Final
 
-from .canonical import SCHEMA_LABEL, digest_bytes
+from .canonical import SCHEMA_LABEL, digest_bytes, self_hash, verify_self_hash
 from .errors import SchemaRefusal
-from .identities import is_well_formed
+from .identities import artifact_id, is_well_formed
 from .outcomes import classify, require_approval
 from .stages import STAGES
 
@@ -30,6 +30,7 @@ _REQUIRED: Final = (
     "schema",
     "run_id",
     "artifact_id",
+    "attempt_id",
     "subject_id",
     "stage",
     "kind",
@@ -38,7 +39,10 @@ _REQUIRED: Final = (
     "producer",
     "inputs",
     "payload",
+    "self_hash",
 )
+
+_OPTIONAL: Final = ("approval_ref",)
 
 
 def build_envelope(
@@ -53,6 +57,7 @@ def build_envelope(
     adapter_revision: str,
     inputs: list[dict[str, str]],
     payload: dict[str, Any],
+    attempt: str | None = None,
     approval_ref: str | None = None,
 ) -> dict[str, Any]:
     """Assemble an envelope and refuse it here rather than at the next stage.
@@ -65,6 +70,10 @@ def build_envelope(
         "schema": SCHEMA_LABEL,
         "run_id": run_id,
         "artifact_id": artifact_id,
+        # The artifact id is derived from this exact attempt.  Keeping the
+        # binding beside it is what lets a consumer recompute the id rather than
+        # accepting any well-formed-looking string under a trusted path.
+        "attempt_id": attempt,
         "subject_id": subject_id,
         "stage": stage,
         "kind": kind,
@@ -78,6 +87,13 @@ def build_envelope(
     }
     if approval_ref is not None:
         envelope["approval_ref"] = approval_ref
+    # An artifact id is stable across a stage's payload by design — attempts
+    # append under a derived identity, while the payload remains the evidence of
+    # what happened.  Its own hash closes the otherwise unsealed half: a changed
+    # payload cannot be mistaken for the immutable artifact the consumer was
+    # handed.  Direct input references still establish lineage; this catches an
+    # altered artifact before a stage can reinterpret it.
+    envelope["self_hash"] = self_hash(envelope)
     validate_envelope(envelope)
     return envelope
 
@@ -90,6 +106,13 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
     missing = [field for field in _REQUIRED if field not in envelope]
     if missing:
         raise SchemaRefusal(f"artifact is missing required fields {missing}")
+
+    unexpected = sorted(set(envelope) - set(_REQUIRED) - set(_OPTIONAL))
+    if unexpected:
+        raise SchemaRefusal(
+            f"artifact carries unknown top-level field(s) {unexpected}; an envelope is a closed "
+            "handoff schema"
+        )
 
     if envelope["schema"] != SCHEMA_LABEL:
         raise SchemaRefusal(
@@ -109,10 +132,35 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
     if not is_well_formed(envelope["artifact_id"]):
         raise SchemaRefusal(f"artifact_id {envelope['artifact_id']!r} is malformed")
 
+    attempt = envelope["attempt_id"]
+    if attempt is not None and (
+        not is_well_formed(attempt)
+        or not isinstance(attempt, str)
+        or not attempt.startswith("att_")
+    ):
+        raise SchemaRefusal(
+            f"attempt_id {attempt!r} is not an attempt identity or null for a once-only artifact"
+        )
+    expected_artifact_id = artifact_id(
+        envelope["stage"], envelope["kind"], envelope["subject_id"], attempt
+    )
+    if envelope["artifact_id"] != expected_artifact_id:
+        raise SchemaRefusal(
+            f"artifact_id {envelope['artifact_id']!r} does not verify against its stage, kind, "
+            f"subject, and attempt binding (recomputed {expected_artifact_id!r})"
+        )
+
     producer = envelope["producer"]
-    if not isinstance(producer, dict) or producer.get("stage") != stage:
-        raise SchemaRefusal("producer is missing or disagrees with the artifact's stage")
-    if not producer.get("adapter_revision"):
+    if not isinstance(producer, dict) or set(producer) != {"stage", "adapter_revision"}:
+        raise SchemaRefusal(
+            "producer is not the closed {stage, adapter_revision} provenance object"
+        )
+    if producer["stage"] != stage:
+        raise SchemaRefusal("producer disagrees with the artifact's stage")
+    if (
+        not isinstance(producer["adapter_revision"], str)
+        or not producer["adapter_revision"].strip()
+    ):
         raise SchemaRefusal(
             "producer names no adapter revision; GOVERNANCE 6 — provenance travels "
             "with the record, at the moment it was produced"
@@ -127,6 +175,11 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
 
     if not isinstance(envelope["payload"], dict):
         raise SchemaRefusal("payload is not an object")
+
+    if not verify_self_hash(envelope):
+        raise SchemaRefusal(
+            "artifact fails its self-hash: its sealed envelope or payload changed after publication"
+        )
 
     return envelope
 

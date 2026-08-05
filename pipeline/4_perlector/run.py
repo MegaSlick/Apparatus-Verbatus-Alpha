@@ -32,17 +32,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.canonical import digest_bytes  # noqa: E402
-from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
+from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
-from common.imaging import dimensions  # noqa: E402
+from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     PERLECTOR_CHAIR,
+    WITNESS_READING_OUTCOMES,
     expected_acts,
     fixture_serving_details,
+    latest_per_chair,
     open_context,
     run_stage,
     stage_parser,
@@ -51,26 +52,124 @@ from common.stage import (  # noqa: E402
 
 
 def regions_of(context, act_id: str) -> list[dict]:
+    """Every Designator region for this act, its own provenance verified first.
+
+    `pipeline/3_attestatores/run.py::proposed_regions` already validates the
+    identical artifact kind before showing a region to a witness; reading it here
+    unvalidated would let a tampered Designator provenance reach a real reading
+    while the equivalent tamper on a Testimonium is refused. A region always
+    carries a receipt-backed provenance -- `structure_provenance` refuses before
+    any region is cut if the Designator chair is absent or unverifiable -- so
+    every region validated here requires one.
+    """
     records = []
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
         if entry["kind"] == "region" and entry["subject_id"] == act_id:
-            records.append(context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"]))
-    return sorted(records, key=lambda record: record["payload"]["attempt_ordinal"])
+            record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+            validate_serving_provenance(
+                context,
+                record.get("payload", {}).get("provenance"),
+                producer_stage=DESIGNATOR,
+                require_receipt=True,
+            )
+            records.append(record)
+    return sorted(records, key=_region_ordinal)
 
 
-def testimonia_of(context, act_id: str) -> list[dict]:
+def _region_ordinal(record: dict) -> int:
+    """The sort key, refused by name rather than escaping as a raw `KeyError`.
+
+    The ordering happens before `verify_region` validates the region, so a resealed
+    record whose payload lost `attempt_ordinal` produced a traceback here rather
+    than a named refusal — the same class of record `test_region_boundary.py`
+    already exercises, and the boundary the Designator's own tests assert carries
+    no `Traceback` in its stderr.
+    """
+    ordinal = record.get("payload", {}).get("attempt_ordinal")
+    if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        raise SchemaRefusal("a Designator region carries no integer attempt ordinal to order by")
+    return ordinal
+
+
+def _region_reference(region: dict) -> dict[str, str]:
+    """The exact public region facts a Testimonium may claim it saw."""
+    payload = region["payload"]
+    return {
+        "region_id": payload["region_id"],
+        "image_path": payload["image_path"],
+        "image_sha256": payload["image_sha256"],
+    }
+
+
+def _testimonium_inputs(context, regions: list[dict]) -> list[dict[str, str]]:
+    """The crop blobs that a witness attempt must directly bind."""
+    return sorted(
+        [context.input_ref(region["payload"]["image_path"]) for region in regions],
+        key=lambda reference: (reference["relative_path"], reference["sha256"]),
+    )
+
+
+def validate_testimonium_regions(context, record: dict, proposal_regions: list[dict]) -> None:
+    """Bind a witness's claimed regions to the actual original proposal.
+
+    A Testimonium's direct blob references prove its pixels have not changed, but
+    not by themselves that the `regions` payload names the proposal it was shown.
+    Without this comparison, a resealed record could add a recovery crop and make
+    Perlector mark newly uncovered ink as witnessed.  Recovery must stay visible
+    as recovery, not become retrospective witness coverage.
+    """
+    payload = record["payload"]
+    attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
+    expected_regions = (
+        [_region_reference(region) for region in proposal_regions] if attempted else []
+    )
+    expected_inputs = _testimonium_inputs(context, proposal_regions) if attempted else []
+    if payload.get("regions") != expected_regions or record.get("inputs") != expected_inputs:
+        raise SchemaRefusal(
+            "a Testimonium does not bind exactly the original proposal regions and pixel "
+            "inputs it claims its witness saw"
+        )
+
+
+def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[dict]:
+    """Every chair's current testimonium for this act — the latest attempt only.
+
+    Attempts are append-only (GOVERNANCE 4): a failed re-read is recorded beside
+    the earlier success, never over it. Every record is still read and its
+    provenance still validated, but only each chair's latest attempt is returned
+    as evidence — the same collapsing `pipeline/5_recensor/run.py::chair_outcomes`
+    already does for the identical artifacts, so dissent, witness-coverage, and the
+    Perlectio's own recorded basis cannot see a superseded attempt as though it
+    were still live.
+    """
     records = []
     for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] == "testimonium" and entry["subject_id"] == act_id:
             record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
             validate_serving_provenance(
                 context,
-                record["payload"]["provenance"],
+                record.get("payload", {}).get("provenance"),
                 producer_stage=ATTESTATORES,
                 require_receipt=record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES,
             )
+            validate_testimonium_regions(context, record, proposal_regions)
             records.append(record)
-    return sorted(records, key=lambda record: record["payload"]["chair"])
+    current = latest_per_chair(records, f"testimonium for {act_id}")
+    chairs = {record["payload"]["chair"] for record in current}
+    configured = set(context.witness_chairs)
+    missing = configured - chairs
+    if missing:
+        raise FatalAccounting(
+            f"act {act_id} has no current Testimonium for configured chair(s) {sorted(missing)}; "
+            "the Perlector may not seal a reading over a shortened witness denominator"
+        )
+    unsealed = chairs - configured
+    if unsealed:
+        raise FatalAccounting(
+            f"act {act_id} carries Testimonium from chair(s) {sorted(unsealed)}, which this "
+            "run was not sealed with"
+        )
+    return current
 
 
 def verify_region(context, region: dict) -> dict:
@@ -81,29 +180,10 @@ def verify_region(context, region: dict) -> dict:
     something that is not an image, and the dimensions catch a crop that does not
     match the transform it claims to be.
     """
-    payload = region["payload"]
-    data = context.tree.read_bytes(payload["image_path"])
-
-    actual = digest_bytes(data)
-    if actual != payload["image_sha256"]:
-        raise SchemaRefusal(
-            f"region {payload['region_id']} has digest {actual}, not the "
-            f"{payload['image_sha256']} its reference recorded"
-        )
-
-    width, height = dimensions(data)
-    bounds = payload["transform"]["bounds"]
-    if (width, height) != (bounds["w"], bounds["h"]):
-        raise SchemaRefusal(
-            f"region {payload['region_id']} is {width}x{height}, but its transform "
-            f"claims {bounds['w']}x{bounds['h']}"
-        )
-    return {
-        "region_id": payload["region_id"],
-        "image_path": payload["image_path"],
-        "image_sha256": actual,
-        "verified_dimensions": {"w": width, "h": height},
-    }
+    try:
+        return verify_exemplar_crop_lineage(context.tree, context.run, region)
+    except ContractError as error:
+        raise SchemaRefusal("a Designator region does not trace to its Exemplar page") from error
 
 
 def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
@@ -116,12 +196,26 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     rows = []
     for record in testimonia:
         chair = record["payload"]["chair"]
-        if record["outcome"] != "read":
+        if record["outcome"] not in WITNESS_READING_OUTCOMES:
             rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
             continue
-        reported = record["payload"]["reported"]
+        reported = record["payload"].get("reported")
+        if not isinstance(reported, str):
+            raise SchemaRefusal(
+                f"completed Testimonium from chair {chair!r} carries no text to compare"
+            )
         rows.append({"chair": chair, "compared": True, "departed": reported != reading})
     return rows
+
+
+def witnessed_region_ids(testimonia: list[dict]) -> set[str]:
+    """The original regions actually read by at least one completed witness."""
+    return {
+        reference["region_id"]
+        for record in testimonia
+        if record["outcome"] in WITNESS_READING_OUTCOMES
+        for reference in record["payload"]["regions"]
+    }
 
 
 def declared_reading_failure(context, act_key: str) -> str | None:
@@ -144,6 +238,29 @@ def perlector_chair(context) -> ChairIdentity | AbsentChair:
     if not isinstance(resolved, (ChairIdentity, AbsentChair)):
         raise ContractError("Perlector resolution returned neither an identity nor an absence")
     return resolved
+
+
+def preflight_testimonia_denominator(context, acts: list[dict]) -> None:
+    """Validate every requested act's witness denominator before any Perlectio writes.
+
+    A missing Testimonium used to be discovered only by the Recensor, after an
+    immutable Perlectio over the shorter denominator had already been published.
+    Restoring the missing witness then changed the bytes under the same reading
+    identity and made a normal resume impossible. The complete requested set is
+    checked first so a later malformed act cannot leave an earlier reading behind.
+    """
+    for act in acts:
+        if act["outcome"] == "held":
+            continue
+        regions = regions_of(context, act["act_id"])
+        proposal_regions = [
+            region for region in regions if region["payload"].get("origin") == "proposal"
+        ]
+        if not proposal_regions:
+            raise ContractError(
+                f"act {act['act_id']} reached the Perlector with no original proposal region"
+            )
+        testimonia_of(context, act["act_id"], proposal_regions)
 
 
 def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted: bool) -> dict:
@@ -208,6 +325,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     wanted = [act for act in expected_acts(context) if args.act in (None, act["act_id"])]
     if args.act and not wanted:
         raise ContractError(f"asked to read {args.act}, which the proposal seal does not name")
+    preflight_testimonia_denominator(context, wanted)
 
     read = 0
     acknowledged = 0
@@ -266,35 +384,45 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         if not regions:
             raise ContractError(f"act {act_id} reached the Perlector with no region")
 
+        proposal_regions = [
+            region for region in regions if region["payload"].get("origin") == "proposal"
+        ]
+        if not proposal_regions:
+            raise ContractError(
+                f"act {act_id} reached the Perlector with no original proposal region"
+            )
+
         # Every region of the act is verified and read, including a continuation
         # on the next page: an act that ran over the page break and was read only
         # up to the fold would be truncated, which is a failure and not an output.
         bases = [verify_region(context, region) for region in regions]
-        testimonia = testimonia_of(context, act_id)
+        testimonia = testimonia_of(context, act_id, proposal_regions)
         reading = texts[act["act_key"]]
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
         # recrop was never shown to a witness, and saying so is the difference
         # between a gap in the record and a gap nobody can see. It changes nothing
         # about the reading — the Perlector reads the ink either way.
-        witnessed = {
-            reference["region_id"]
-            for record in testimonia
-            if record["outcome"] == "read"
-            for reference in record["payload"]["regions"]
-        }
+        witnessed = witnessed_region_ids(testimonia)
         for basis in bases:
             basis["witness_covered"] = basis["region_id"] in witnessed
 
         # A real reading attempt, so the pinned snapshot is re-verified here, at
         # the moment this reading is produced, and its receipt written.
         provenance = provenance_for(context, chair, attempted=True)
+        testimonium_references = {
+            record["artifact_id"]: context.artifact_ref(
+                ATTESTATORES, "testimonium", record["artifact_id"]
+            )
+            for record in testimonia
+        }
         context.publish(
             kind="perlectio",
             subject_id=act_id,
             outcome=declared_reading_failure(context, act["act_key"]) or "read",
             attempt=attempt_id(act_id, "perlegere", ordinal),
-            inputs=[context.input_ref(basis["image_path"]) for basis in bases],
+            inputs=[context.input_ref(basis["image_path"]) for basis in bases]
+            + list(testimonium_references.values()),
             payload={
                 "act_key": act["act_key"],
                 "attempt_ordinal": ordinal,
@@ -306,6 +434,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                             "chair": record["payload"]["chair"],
                             "artifact_id": record["artifact_id"],
                             "outcome": record["outcome"],
+                            "reference": testimonium_references[record["artifact_id"]],
                         }
                         for record in testimonia
                     ],

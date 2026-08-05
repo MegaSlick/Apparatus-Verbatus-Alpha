@@ -21,12 +21,13 @@ from typing import Any, Callable, Protocol
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails
 from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
-from common.contracts.canonical import digest_of
+from common.contracts.canonical import digest_bytes, digest_of, verify_self_hash
 from common.contracts.envelope import build_envelope
-from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
-from common.contracts.identities import artifact_id
+from common.contracts.errors import ContractError, FatalAccounting, IncompatibleReuse, SchemaRefusal
+from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.outcomes import classify
-from common.contracts.stages import DESIGNATOR, PERLECTOR
+from common.contracts.stages import DESIGNATOR, PERLECTOR, RECENSOR
+from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH, load_recovery_policy
 from common.runtree.store import PublishResult, RunTree
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
@@ -37,6 +38,8 @@ EXIT_COMPLETE = 0
 EXIT_FATAL = 2
 EXIT_HELD = 3
 
+DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "pdf_render.toml"
+
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
 # of the handoff need it and they must not drift: the Attestatores decides
@@ -45,6 +48,12 @@ EXIT_HELD = 3
 # that is in fact correct — `dead` and `not-run` are unresolved or unattempted,
 # and inventing a serving moment for either would be a receipt for nothing.
 ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
+
+# A failed call was attempted but produced no usable reading, so it must not
+# certify that its regions were witnessed.  A genuinely-empty Testimonium is
+# different: the chair did read the pixels and found no reportable text.  The
+# Perlector uses this narrower set when it records region coverage.
+WITNESS_READING_OUTCOMES = frozenset({"read", "genuinely-empty"})
 
 # Every top-level field a reading's model provenance may carry. A closed set,
 # because invariant #42 refuses *wrong-schema* provenance rather than a list of
@@ -66,12 +75,15 @@ _PROVENANCE_FIELDS = frozenset(
     }
 )
 
-# ARCHITECTURE's Perlector paragraph: witness identity travels under a run-level
-# named/blinded toggle, "every Perlectio recording its regime". The Perlector
-# writes it; until this check, nothing read it back, so a Perlectio claiming an
-# impossible regime — or a typo — travelled sealed. Binding it to an actual
-# run-level toggle is Spec 08's work; refusing a value that cannot be true is
-# this system's, because it is provenance and #42 governs provenance.
+# Tyrel's 2026-07-30 ruling (courtroom_doctrine.md's "Rulings received" section,
+# formalized in the unbuilt spec_08_perlector.md — not ARCHITECTURE.md, which
+# does not define this regime): witness identity
+# travels under a run-level named/blinded toggle, "every Perlectio recording its
+# regime". The Perlector writes it; until this check, nothing read it back, so a
+# Perlectio claiming an impossible regime — or a typo — travelled sealed. Binding
+# it to an actual run-level toggle is Spec 08's work; refusing a value that
+# cannot be true is this system's, because it is provenance and #42 governs
+# provenance.
 _WITNESS_REGIMES = frozenset({"named", "blinded"})
 
 
@@ -151,6 +163,7 @@ class StageContext:
             adapter_revision=self.adapter_revision,
             inputs=inputs or [],
             payload=payload,
+            attempt=attempt,
             approval_ref=approval_ref,
         )
         return self.tree.publish_artifact(envelope)
@@ -186,6 +199,10 @@ class StageContext:
             "sha256": digest_bytes(self.tree.read_bytes(relative_path)),
         }
 
+    def artifact_ref(self, stage: str, kind: str, artifact_id: str) -> dict[str, str]:
+        """A digest-checked reference to one already-published stage artifact."""
+        return self.input_ref(self.tree.artifact_path(stage, kind, artifact_id))
+
     def finish(self, stage: str | None = None) -> None:
         """Write the stage's derived manifest inventory."""
         self.tree.write_manifest(stage or self.stage)
@@ -201,8 +218,16 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--scenario", default="happy")
     parser.add_argument("--fixture-root", default="proof")
     parser.add_argument("--models-config", default="config/models.toml")
+    parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
+    parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
+    parser.add_argument("--pdf-target-dpi", type=int, default=None)
     parser.add_argument("--operation", default="initial")
     parser.add_argument("--act", default=None, help="one act id, for a recovery operation")
+    parser.add_argument(
+        "--recovery-request",
+        default=None,
+        help="the exact Recensor recovery-request artifact a Designator recrop answers",
+    )
     return parser
 
 
@@ -227,14 +252,23 @@ def load_fixture(fixture_root: str) -> dict[str, Any]:
 
 
 def run_config_bindings(
-    models: ModelsConfig, fixture: dict[str, Any], scenario: str
+    models: ModelsConfig,
+    fixture: dict[str, Any],
+    scenario: str,
+    *,
+    pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
+    pdf_target_dpi: int | None = None,
+    recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
     Since spec 02 `config/models.toml` owns the roster, the witness floor and
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
-    behaviour — the model configuration, the fixture, and the scenario.
+    behaviour — the model configuration, fixture, scenario, PDF-render settings,
+    and recovery policy. The synthetic fixture declares byte-backed pages only, so
+    it does not claim to bind the real Door's PDFium/Pillow/libheif execution
+    recipe; ``door._real_bindings`` binds that recipe on actual ingress.
 
     All three parts are load-bearing, and the scenario is the one easiest to
     drop by accident. Spec 01's third acceptance test reuses one run id under a
@@ -244,10 +278,24 @@ def run_config_bindings(
     stages in before artifact immutability catches it. A late incidental
     refusal is not the sealed-tree guarantee spec 01 landed.
     """
+    try:
+        pdf_render_config_digest = digest_bytes(Path(pdf_render_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            f"the PDF render configuration binding at {pdf_render_config_path} could not be read"
+        ) from error
+    recovery_policy = load_recovery_policy(recovery_config_path)
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
-            {"fixture": fixture, "scenario": scenario, "models": models.to_record()}
+            {
+                "fixture": fixture,
+                "scenario": scenario,
+                "models": models.to_record(),
+                "pdf_render_config_sha256": pdf_render_config_digest,
+                "pdf_target_dpi_override": pdf_target_dpi,
+                "recovery_policy": recovery_policy,
+            }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
     }
@@ -485,6 +533,19 @@ def validate_serving_provenance(
         raise SchemaRefusal(
             f"serving receipt for {chair!r} differs from the resolved identity at {differing}"
         )
+    adapter = receipt.get("adapter_identity")
+    if identity.adapter_of is None:
+        if adapter is not None:
+            raise SchemaRefusal(
+                f"serving receipt for unadapted chair {chair!r} carries an adapter base identity"
+            )
+    else:
+        configured_base = context.registry.resolve(identity.adapter_of)
+        if not isinstance(configured_base, ChairIdentity) or adapter != configured_base.to_record():
+            raise SchemaRefusal(
+                f"serving receipt for adapter chair {chair!r} does not retain the configured "
+                "base identity that also produced the reading"
+            )
     return identity
 
 
@@ -516,10 +577,172 @@ def expected_acts(context) -> list[dict[str, Any]]:
         "proposal-seal",
         artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
     )
-    acts = seal["payload"]["expected_acts"]
+    payload = seal.get("payload")
+    if not isinstance(payload, dict) or not verify_self_hash(payload):
+        raise FatalAccounting(
+            "the Designator proposal seal lacks a valid self-hashed expected-act denominator"
+        )
+    acts = payload.get("expected_acts")
+    count = payload.get("count")
+    if not isinstance(acts, list) or not acts:
+        raise FatalAccounting("the Designator proposal seal names no expected acts")
+    if not isinstance(count, int) or isinstance(count, bool) or count != len(acts):
+        raise FatalAccounting(
+            "the Designator proposal seal count does not reconcile with its expected-act rows"
+        )
+    act_ids: set[str] = set()
+    act_keys: set[str] = set()
     for act in acts:
+        if not isinstance(act, dict):
+            raise FatalAccounting("the Designator proposal seal has a non-object expected-act row")
+        required = {
+            "act_id",
+            "act_key",
+            "page_id",
+            "page_ordinal",
+            "has_continuation",
+            "outcome",
+            "evidence",
+        }
+        if set(act) != required:
+            raise FatalAccounting(
+                "the Designator proposal seal expected-act row has fields other than its "
+                "closed denominator contract"
+            )
+        if (
+            not isinstance(act["act_id"], str)
+            or not act["act_id"]
+            or not isinstance(act["act_key"], str)
+            or not act["act_key"]
+            or not isinstance(act["page_id"], str)
+            or not act["page_id"]
+            or not isinstance(act["page_ordinal"], int)
+            or isinstance(act["page_ordinal"], bool)
+            or not isinstance(act["has_continuation"], bool)
+            or not isinstance(act["evidence"], list)
+        ):
+            raise FatalAccounting("the Designator proposal seal has an invalid expected-act row")
+        if act["act_id"] in act_ids or act["act_key"] in act_keys:
+            raise FatalAccounting(
+                "the Designator proposal seal names an act id or key more than once; "
+                "a duplicate is not an additional denominator unit"
+            )
+        act_ids.add(act["act_id"])
+        act_keys.add(act["act_key"])
         classify(DESIGNATOR, act.get("outcome"))
+    _verify_synthetic_act_denominator(context, acts)
+    _verify_proposal_seal_evidence(context, seal, acts)
     return acts
+
+
+def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> None:
+    """Bind the skeleton's discovered-act denominator to its sealed fixture input.
+
+    This check belongs only to the declared synthetic walking skeleton: its fake
+    Designator derives every act from fixture data, and the run configuration
+    seals those fixture bytes.  Real ingress intentionally stops before any
+    proposal seal exists, so no unbuilt structural model is being prescribed.
+    """
+    fixture_acts = context.fixture.get("act", [])
+    if not fixture_acts:
+        return
+    expected = {
+        act_identity(context.fixture, row): {
+            "act_key": row["key"],
+            "page_id": page_identity(context.fixture, row["page_ordinal"]),
+            "page_ordinal": row["page_ordinal"],
+            "has_continuation": continuation_for(context.fixture, row["key"]) is not None,
+        }
+        for row in fixture_acts
+    }
+    observed = {act["act_id"]: act for act in acts}
+    if set(observed) != set(expected):
+        raise FatalAccounting(
+            "the proposal seal expected-act denominator does not reconcile to every synthetic "
+            "act bound into this run"
+        )
+    for act_id, facts in expected.items():
+        row = observed[act_id]
+        if any(
+            row[field] != value for field, value in facts.items() if field != "has_continuation"
+        ):
+            raise FatalAccounting(
+                f"proposal-seal act {act_id} does not match its sealed synthetic act identity"
+            )
+        if not facts["has_continuation"] and row["has_continuation"]:
+            raise FatalAccounting(
+                f"proposal-seal act {act_id} claims a continuation not declared in the fixture"
+            )
+        if row["outcome"] == "proposed" and row["has_continuation"] != facts["has_continuation"]:
+            raise FatalAccounting(
+                f"proposed act {act_id} does not account for its declared continuation"
+            )
+
+
+def _verify_proposal_seal_evidence(
+    context, seal: dict[str, Any], acts: list[dict[str, Any]]
+) -> None:
+    """Reconcile the immutable expected-act denominator to Designator evidence.
+
+    The proposal seal is the sole downstream denominator, so it cannot be a
+    shorter producer-authored list than the regions and holds actually published.
+    Only original proposal regions belong to it; recovery regions are later,
+    append-only evidence and must not rewrite the denominator.
+    """
+    expected_ids = {act["act_id"] for act in acts}
+    by_subject: dict[str, list[dict[str, Any]]] = {act_id: [] for act_id in expected_ids}
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] not in {"region", "hold"}:
+            continue
+        record = context.tree.read_artifact(DESIGNATOR, entry["kind"], entry["artifact_id"])
+        subject = record["subject_id"]
+        if subject not in by_subject:
+            raise FatalAccounting(
+                f"Designator artifact {record['artifact_id']} names act {subject!r}, which the "
+                "proposal denominator does not account for"
+            )
+        if entry["kind"] == "region" and record["payload"].get("origin") != "proposal":
+            continue
+        by_subject[subject].append(record)
+
+    expected_seal_refs: list[dict[str, str]] = []
+    for act in acts:
+        records = by_subject[act["act_id"]]
+        regions = [record for record in records if record["kind"] == "region"]
+        holds = [record for record in records if record["kind"] == "hold"]
+        if act["outcome"] == "proposed":
+            if not regions or holds:
+                raise FatalAccounting(
+                    f"proposed act {act['act_id']} does not reconcile to proposal-region evidence"
+                )
+        elif act["outcome"] == "held":
+            if len(holds) != 1:
+                raise FatalAccounting(
+                    f"held act {act['act_id']} does not reconcile to exactly one hold record"
+                )
+        else:
+            raise FatalAccounting(
+                f"proposal seal uses unsupported current Designator outcome {act['outcome']!r}"
+            )
+        actual_refs = sorted(
+            [
+                context.artifact_ref(DESIGNATOR, record["kind"], record["artifact_id"])
+                for record in records
+            ],
+            key=lambda reference: reference["relative_path"],
+        )
+        if act["evidence"] != actual_refs:
+            raise FatalAccounting(
+                f"proposal-seal row for {act['act_id']} does not name exactly its current "
+                "proposal-region and hold evidence"
+            )
+        expected_seal_refs.extend(actual_refs)
+    if sorted(seal["inputs"], key=lambda reference: reference["relative_path"]) != sorted(
+        expected_seal_refs, key=lambda reference: reference["relative_path"]
+    ):
+        raise FatalAccounting(
+            "the proposal seal input set does not reconcile to every expected act's evidence"
+        )
 
 
 def open_context(
@@ -532,7 +755,14 @@ def open_context(
     fixture = load_fixture(args.fixture_root)
     scenario_for(fixture, args.scenario)
     registry = registry_factory(args.models_config)
-    bindings = run_config_bindings(registry.config, fixture, args.scenario)
+    bindings = run_config_bindings(
+        registry.config,
+        fixture,
+        args.scenario,
+        pdf_render_config_path=args.pdf_render_config,
+        pdf_target_dpi=args.pdf_target_dpi,
+        recovery_config_path=args.recovery_config,
+    )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
     differing = [
@@ -575,7 +805,7 @@ def run_stage(main) -> int:
         return EXIT_FATAL
 
 
-def latest_attempt(records: list[dict[str, Any]], what: str) -> dict[str, Any]:
+def latest_attempt(records: list[dict[str, Any]], what: str, *, operation: str) -> dict[str, Any]:
     """The current record for a subject: the latest attempt, with its honest status.
 
     "Current" is derived, never stored as a pointer — Tyrel's retention ruling of
@@ -588,18 +818,236 @@ def latest_attempt(records: list[dict[str, Any]], what: str) -> dict[str, Any]:
     listed first. The orchestrator read a stale "recovery-requested" that way and
     dispatched a second recrop over the top of the first. An evidence channel that
     cannot be read makes the answer unknown; it never resolves in the run's favour.
-    """
-    from common.contracts.errors import FatalAccounting
 
+    **`operation` is what binds the ordinal to the sealed identity, and it is why
+    this function cannot be called without naming one.** The envelope proves that
+    `artifact_id` derives from `attempt_id`, and stops there: it takes the attempt
+    token as an opaque well-formed string and never re-derives it from the
+    subject/operation/ordinal it is supposed to bind. `attempt_ordinal` lives in the
+    payload, outside that derivation, and this function used to select on it alone.
+    So the field that decides which reading is current was the one field in the
+    chain nothing recomputed. Demonstrated on a real run tree before this change: a
+    second `perlectio` for one act, carrying different text and `attempt_ordinal:
+    99`, validated as an envelope and became the current reading over the record
+    that had actually read the ink.
+
+    The caller knows its own operation — the Perlector reads `perlegere`, the
+    Recensor recenses, a chair reads `read:<chair>` — so the identity can be
+    recomputed here without the envelope growing a field, and `skeleton.v1` does not
+    have to become `skeleton.v2` to close it. A richer envelope carrying the
+    operation and the ordinal would be the more general answer, and it stays open;
+    this is the reader-side half of it, which needs no migration.
+
+    Ordinals must also be the contiguous run 1..N. Attempts are append-only and
+    never reused, so a gap means an attempt that existed is no longer here — which
+    is the one thing GOVERNANCE 2 does not allow to pass quietly — and it is also
+    what stops an honestly-derived attempt 99 from being manufactured beside
+    attempt 1 and outranking it.
+    """
     if not records:
         raise FatalAccounting(f"no {what} to derive a current outcome from")
+    ordinals: dict[int, str] = {}
     for record in records:
-        if not isinstance(record.get("payload", {}).get("attempt_ordinal"), int):
+        ordinal = record.get("payload", {}).get("attempt_ordinal")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
             raise FatalAccounting(
                 f"a {what} artifact carries no attempt ordinal, so which attempt is "
                 "current cannot be derived. A guess here silently picks a stale record"
             )
+        if ordinal in ordinals:
+            raise FatalAccounting(
+                f"{what} carries duplicate attempt ordinal {ordinal} in artifacts "
+                f"{ordinals[ordinal]!r} and {record.get('artifact_id')!r}; a tie is not "
+                "a latest attempt and may not be selected"
+            )
+        subject = record.get("subject_id")
+        expected = attempt_id(subject, operation, ordinal) if isinstance(subject, str) else None
+        if record.get("attempt_id") != expected:
+            raise FatalAccounting(
+                f"a {what} artifact claims attempt ordinal {ordinal} in its payload but its "
+                f"sealed attempt identity {record.get('attempt_id')!r} does not derive from "
+                f"({subject!r}, {operation!r}, {ordinal}). The ordinal decides which record is "
+                "current, so an ordinal the identity does not bind is a reading nobody sealed"
+            )
+        ordinals[ordinal] = record.get("artifact_id", "<unknown>")
+    if sorted(ordinals) != list(range(1, len(ordinals) + 1)):
+        raise FatalAccounting(
+            f"{what} carries attempt ordinals {sorted(ordinals)}, which is not the contiguous "
+            "run 1.. that append-only attempts produce; a gap is an attempt that is no longer "
+            "here, and nothing is lost silently"
+        )
     return max(records, key=lambda record: record["payload"]["attempt_ordinal"])
+
+
+def current_recovery_request(
+    tree: RunTree,
+    act_id: str,
+    recovery_policy: dict[str, Any],
+    *,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    """Return the exact request named by an act's current Recensor review.
+
+    A recovery request is not self-authorizing merely because its own envelope is
+    well formed.  The Recensor review is the decision that makes it current; the
+    request, review, Perlectio, and run-bound policy must therefore form one
+    closed, digest-checked chain.  Both the dispatcher and the sole crop author
+    use this one check so a direct Designator invocation cannot bypass the
+    orchestrator's view of the recovery loop.
+    """
+    reviews = []
+    for entry in tree.build_manifest(RECENSOR)["artifacts"]:
+        if entry["kind"] == "review" and entry["subject_id"] == act_id:
+            reviews.append(tree.read_artifact(RECENSOR, "review", entry["artifact_id"]))
+    review = latest_attempt(reviews, f"Recensor review of {act_id}", operation="recense")
+    if review["outcome"] != "recovery-requested":
+        raise ContractError(
+            f"act {act_id}'s latest Recensor review is {review['outcome']!r}, not an "
+            "outstanding recovery request"
+        )
+    review_payload = review.get("payload")
+    if not isinstance(review_payload, dict):
+        raise ContractError(f"recovery-requested review of {act_id} has no payload")
+    request_ref = review_payload.get("recovery_request_ref")
+    reading_ref = review_payload.get("perlectio_ref")
+    ordinal = review_payload.get("attempt_ordinal")
+    if (
+        not isinstance(request_ref, dict)
+        or request_ref not in review.get("inputs", [])
+        or not isinstance(reading_ref, dict)
+        or reading_ref not in review.get("inputs", [])
+        or not isinstance(ordinal, int)
+        or isinstance(ordinal, bool)
+        or review_payload.get("recovery_policy") != recovery_policy
+    ):
+        raise ContractError(
+            f"recovery-requested review of {act_id} does not carry its exact request, "
+            "Perlectio, ordinal, and run-bound policy"
+        )
+    request = tree.read_artifact_reference(
+        request_ref,
+        stage=RECENSOR,
+        kind="recovery-request",
+        subject_id=act_id,
+    )
+    if request_id is not None and request["artifact_id"] != request_id:
+        raise ContractError(
+            f"the supplied recovery request {request_id!r} is not the exact current "
+            f"Recensor request for {act_id}"
+        )
+    request_payload = request.get("payload")
+    expected_id = artifact_id(
+        RECENSOR,
+        "recovery-request",
+        act_id,
+        attempt_id(act_id, "recover", ordinal),
+    )
+    if (
+        request["artifact_id"] != expected_id
+        or request["outcome"] != "recovery-requested"
+        or not isinstance(request_payload, dict)
+        or request_payload.get("attempt_ordinal") != ordinal
+        or request_payload.get("act_key") != review_payload.get("act_key")
+        or request_payload.get("perlectio_ref") != reading_ref
+        or reading_ref not in request.get("inputs", [])
+        or request_payload.get("recovery_policy") != recovery_policy
+    ):
+        raise ContractError(
+            f"recovery-requested review of {act_id} does not match its exact request, "
+            "Perlectio, and policy"
+        )
+    tree.read_artifact_reference(
+        reading_ref,
+        stage=PERLECTOR,
+        kind="perlectio",
+        subject_id=act_id,
+    )
+    return request
+
+
+def reading_basis_regions(reading: dict[str, Any], what: str) -> list[dict[str, Any]]:
+    """Return a completed Perlectio's regions without trusting an untyped payload.
+
+    An artifact envelope closes transport shape, not every stage payload.  The
+    three consumers of a completed Perlectio must therefore refuse a resealed
+    `basis=[]` (or malformed region) as accounting evidence, rather than indexing
+    into it and escaping through an accidental traceback.
+    """
+    payload = reading.get("payload")
+    if not isinstance(payload, dict):
+        raise FatalAccounting(f"{what} has no object payload")
+    basis = payload.get("basis")
+    if not isinstance(basis, dict):
+        raise FatalAccounting(f"{what} has no object basis for its completed reading")
+    regions = basis.get("regions")
+    if not isinstance(regions, list) or not regions:
+        raise FatalAccounting(f"{what} has no non-empty region basis for its completed reading")
+    for index, region in enumerate(regions):
+        if not isinstance(region, dict) or not isinstance(region.get("image_path"), str):
+            raise FatalAccounting(
+                f"{what} has malformed basis region {index}; a completed reading must name "
+                "the crop bytes it read"
+            )
+    return regions
+
+
+def recovery_region_count(act_id: str, regions: list[dict[str, Any]]) -> int:
+    """How many recovery crops one act carries, refusing an unplaceable origin.
+
+    One accounting rule with three consumers, so it lives here beside
+    `latest_attempt`, `reading_basis_regions` and `expected_acts` for the reason
+    those do: the three had drifted. `pipeline/5_recensor/run.py::recovery_state`
+    refuses a region whose `origin` is outside `{"proposal", "recovery"}`, while
+    the Archetypus and Armarium copies asked only whether it equalled `"recovery"`
+    and counted anything else as zero. The same tree was therefore fatal at the
+    Recensor and reconciled at the Archetypus — a region with an unrecognized
+    origin silently left the recovery denominator at exactly the two stages that
+    decide whether a recrop was reread before its text is established.
+    """
+    count = 0
+    for region in regions:
+        payload = region.get("payload")
+        if not isinstance(payload, dict):
+            raise FatalAccounting(f"Designator region of {act_id} has no object payload")
+        origin = payload.get("origin")
+        # `isinstance` first: `origin not in {...}` raises `TypeError` on an
+        # unhashable value, so a resealed region carrying a list or an object where
+        # its origin belongs escaped as a traceback out of the very check written to
+        # name it. All three copies of this rule had that hole.
+        if not isinstance(origin, str) or origin not in {"proposal", "recovery"}:
+            raise FatalAccounting(
+                f"Designator region of {act_id} has unrecognized origin {origin!r}; its "
+                "place in the recovery denominator is unknown"
+            )
+        if origin == "recovery":
+            count += 1
+    return count
+
+
+def latest_per_chair(records: list[dict[str, Any]], what: str) -> list[dict[str, Any]]:
+    """One record per chair: each chair's own latest attempt, honest status kept.
+
+    Attestatores attempts are append-only per (act, chair) — a failed re-read shows
+    as `failed` with the earlier success intact as history (GOVERNANCE 4) — so any
+    consumer of a flat list of testimonium records for one act has to collapse each
+    chair's own history down to its current attempt before treating the group as
+    evidence. `pipeline/5_recensor/run.py` did this collapsing inline;
+    `pipeline/4_perlector/run.py` read the same artifacts unfiltered, so once a
+    chair gained a second attempt the two consumers of one upstream contract would
+    disagree about what "current" means — one dissent row per attempt instead of
+    per chair, and a since-superseded `read` still marking a region witness-covered.
+    One derivation, reused by both, is what keeps that from recurring.
+    """
+    by_chair: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        chair = record.get("payload", {}).get("chair")
+        if not isinstance(chair, str) or not chair:
+            raise FatalAccounting(f"a {what} artifact carries no chair to group its attempts by")
+        by_chair.setdefault(chair, []).append(record)
+    return [
+        latest_attempt(group, f"{what} from chair {chair}", operation=f"read:{chair}")
+        for chair, group in sorted(by_chair.items())
+    ]
 
 
 def page_for(fixture: dict[str, Any], ordinal: int) -> dict[str, Any]:

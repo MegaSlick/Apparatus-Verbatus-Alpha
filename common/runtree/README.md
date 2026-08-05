@@ -17,10 +17,11 @@ already exists is a no-op reported as `reused` — that is how a resumed run pro
 it did not redo work. Publishing *different* bytes under the same identity is
 refused before anything is written, and the existing file is not touched.
 
-**Publication is atomic.** Temp file in the same directory, flushed and fsynced,
-then `os.replace`. A crash leaves either the old artifact or the new one. A
-half-written artifact that a resume trusts is the failure the sealed tree exists
-to prevent.
+**Publication is atomic.** Immutable artifacts and receipts use same-directory
+temporary files, flush and fsync them, then atomically hard-link them into an
+otherwise-unused identity; a different existing identity is refused. Derived
+manifests use `os.replace`. A crash cannot make a half-written artifact trusted by
+a resume.
 
 **Manifests are derived.** `manifest.json` is rebuilt from the artifacts on disk
 every time it is written. Delete it and it comes back identical. If it ever

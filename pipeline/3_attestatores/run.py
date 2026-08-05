@@ -27,9 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.errors import ContractError  # noqa: E402
+from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
+from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -66,21 +67,43 @@ def proposed_regions(context, act_id: str) -> list[dict]:
             record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
             validate_serving_provenance(
                 context,
-                record["payload"]["provenance"],
+                record.get("payload", {}).get("provenance"),
                 producer_stage=DESIGNATOR,
                 require_receipt=True,
             )
+            verify_exemplar_crop_lineage(context.tree, context.run, record)
             regions.append(record)
     proposed = [record for record in regions if record["payload"]["origin"] == "proposal"]
     if not proposed:
         raise ContractError(f"act {act_id} has no proposed region for a witness to read")
-    return sorted(proposed, key=lambda record: record["payload"]["attempt_ordinal"])
+    return sorted(proposed, key=_region_ordinal)
+
+
+def _region_ordinal(record: dict) -> int:
+    """The sort key, refused by name rather than escaping as a raw `KeyError`.
+
+    Same reasoning as `pipeline/4_perlector/run.py`: a resealed region that lost
+    its `attempt_ordinal` is a named refusal, never a traceback out of a sort.
+    """
+    ordinal = record.get("payload", {}).get("attempt_ordinal")
+    if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        raise SchemaRefusal("a Designator region carries no integer attempt ordinal to order by")
+    return ordinal
 
 
 def declared_failures(context) -> set[tuple[str, str]]:
     return {
         (row["act_key"], row["chair"])
         for row in context.fixture.get("witness_failure", [])
+        if row["scenario"] == context.scenario
+    }
+
+
+def declared_empty(context) -> set[tuple[str, str]]:
+    """Fixture-declared completed empty readings, distinct from no attempt."""
+    return {
+        (row["act_key"], row["chair"])
+        for row in context.fixture.get("witness_empty", [])
         if row["scenario"] == context.scenario
     }
 
@@ -152,6 +175,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
     failures = declared_failures(context)
+    empty = declared_empty(context)
 
     recorded = 0
     for act in expected_acts(context):
@@ -212,6 +236,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 payload = {"reason": f"chair is explicitly absent: {resolved.reason}"}
             elif failed:
                 outcome, payload = "failed", {"reason": "the chair returned no usable report"}
+            elif (act["act_key"], chair) in empty:
+                outcome, payload = "genuinely-empty", {"reported": ""}
             elif reported is None:
                 # Configured, nothing declared for it: not-run, which is an
                 # unresolved unit and forces the run visibly partial. It is not

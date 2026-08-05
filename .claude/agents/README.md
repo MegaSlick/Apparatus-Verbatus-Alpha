@@ -161,7 +161,41 @@ bookkeeping that the chamber does for free.
 mechanical sweep, a question with one answer. Reach for an orchestrator when the unit is a
 system, a stage, a spec, or anything that will take more than one pass.
 
-And **an orchestrating seat gets no deadline** — see Effort rules below.
+## The two-lane build — the default shape for a section
+
+**Tyrel ruled, 2026-08-04:** this is how a section gets built from now on, without asking.
+
+| # | Step | Seat | Effort |
+|---|---|---|---|
+| 1 | **Lane A** — builds the section | GPT-5.6 Terra | `ultra` |
+| 2 | **Lane B** — builds it blind to lane A | Claude Sonnet 5 | `ultracode` |
+| 3 | **Merge** — combines both lanes and fixes what neither got right | Claude Opus 5 | `medium`–`high` |
+| 4 | **Check** — reads, fixes and edits the merge | GPT-5.6 Sol | `medium`–`high` |
+
+**Both lanes get the same prompt, byte for byte, and neither is told the other exists.**
+That is the whole mechanism: two independent answers to one question, from different
+vendors, so the places they diverge are the places the spec was unclear or the problem was
+hard. Agreement is evidence; divergence is where to look. It has already earned its keep —
+one lane found a policy bypass the other missed, and the other solved a decoder problem the
+first declared a blocker.
+
+**Terra and Sonnet are the lanes, and they are the only orchestrating seats by default.**
+Tyrel's words: "Terra and Sonnet ultra settings are fine to use they are cheap." **Opus at
+`ultracode` is not to be used** unless he says so in that session — its sub-agents are all
+Opus and it burns the budget too fast. That is a cost rule, not a capability one.
+
+The merge and check seats sit at `medium`–`high` because they are judging rather than
+producing, and the matrix says effort buys nothing on well-specified building work.
+
+**A repair against a written findings list is the host session's own work on the branch**,
+not another lane. Tyrel ruled that the same day, after a session spawned a seventh chamber
+to do what it could have done itself.
+
+Chambers open with the airlock onto the old pipeline mounted — see
+[operations/autoclave/README.md](../../operations/autoclave/README.md). Tell every lane to
+read it, and tell every lane that what crosses is understanding and never a line of code.
+
+And **no seat gets a deadline** — see Effort rules below.
 
 ## Choosing between the vendors
 
@@ -204,16 +238,18 @@ leaning on one.
   and judging — and the matrix says why: on building work it buys nothing.
 - Effort is set on the dispatch, never written into a brief, because a value in prose is
   a value nothing enforces. `dispatch` requires a model and defaults effort to `medium`.
-- **An orchestrating seat gets no time limit.** Tyrel's ruling, 2026-08-02: a seat sent
-  in as ultracode or at `max` to fan out across a large job is being asked for depth,
-  and a stated deadline is an instruction to attempt less. Give it the objective and
-  the stop conditions and let it run. Ordinary bounded units keep their deadline —
-  a unit that runs forever is a different failure, and a seat blind to a real kill
-  cannot triage before one.
+- **No agent gets a time limit.** Tyrel ruled 2026-08-04, widening his 2026-08-02 ruling
+  from orchestrating seats to every seat: we do not need time limits on agents in general.
+  A stated deadline is an instruction to attempt less, and it buys nothing back — there is
+  no mechanical kill on a chamber dispatch, `docker exec` runs until the CLI exits, so the
+  number shapes what the agent chooses to attempt and stops nothing at all. Give every
+  seat the objective, the deliverable and the stop conditions, and let it run.
 
-  There is no mechanical kill on a chamber dispatch: `docker exec` runs until the CLI
-  exits. So a deadline in a brief shapes what the agent chooses to attempt and nothing
-  else, which is exactly why naming one for an orchestrator is a mistake.
+  **A real kill is the one thing that is not a deadline.** A host agent can be killed by
+  the harness, and a killed seat loses its report entirely rather than handing back a
+  shorter one — so where such a limit genuinely exists, tell the seat the true figure and
+  let it land its work before it. `reviewer-pass` does exactly this with its 600 and 2700
+  second host limits. Never invent one, and never state a limit no mechanism enforces.
 - **A Claude chamber cannot be watched.** The CLI buffers its output until it exits, so
   the dispatch log stays empty for the whole run; the only live progress signal is
   `git log` inside the chamber. Codex streams as it goes. Plan an unattended run around
@@ -233,9 +269,9 @@ leaning on one.
   (GOVERNANCE 10).
 - Effort controls thinking volume, never visible response length. Prompt for length and
   shape directly.
-- Every prompt names the objective, the allowed paths and actions, the deadline, the
-  deliverable, the checks, and the stop conditions. Long work writes results
-  incrementally.
+- Every prompt names the objective, the allowed paths and actions, the deliverable, the
+  checks, and the stop conditions — and a real harness limit where one exists, never an
+  invented deadline. Long work writes results incrementally.
 
 ## Bounds
 
@@ -287,7 +323,8 @@ leaning on one.
   > legitimate answer. If a rule and your task pull apart, stop and say so.
 
 - Memory stays off: reviews remain blind and legacy knowledge does not cross sessions
-  unseen. `maxTurns` stays off — give an agent a deadline it can plan against instead.
+  unseen. `maxTurns` stays off — give an agent the objective and the stop conditions and
+  let it run, rather than any cap on how long or how hard it may work.
 - Smallest useful roster, fan-out visible, results verified, session the only
   integrator. An agent team whose members must challenge one another is exceptional —
   say why before building one.

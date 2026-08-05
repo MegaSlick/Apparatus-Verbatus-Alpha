@@ -19,6 +19,7 @@ one. What still needs a real engine is named in `operations/autoclave/README.md`
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -273,6 +274,26 @@ def code_lines():
     ]
 
 
+def _mount_operands(runnable):
+    """Every `(source, destination, options)` the launcher passes as a bind mount.
+
+    Read out of the text rather than matched against it: `--volume` and `-v` are the
+    same flag, the operand may be quoted or not, and the options field may be absent
+    entirely. A test that asserts one exact spelling is absent proves nothing about
+    the three spellings it did not name.
+    """
+    operands = []
+    for match in re.finditer(r"(?:--volume|--mount|-v)[= ]+(\"?)([^\s\"]+)\1", runnable):
+        fields = match.group(2).split(":")
+        if len(fields) < 2:
+            continue
+        source, destination = fields[0], fields[1]
+        options = fields[2].split(",") if len(fields) > 2 else []
+        operands.append((source, destination, options))
+    assert operands, "no bind mounts were parsed out of the launcher at all"
+    return operands
+
+
 def test_script_exists_and_is_executable():
     assert SCRIPT.is_file()
     assert SCRIPT.stat().st_mode & 0o111, "launcher is not executable"
@@ -513,16 +534,80 @@ class TestLogin:
         copied = runnable.index('cp -R "${REPO_ROOT}/workbench/design/."')
         assert copied < runnable.index("${specs_stage}:/specs"), "staged after the bind"
 
-    def test_the_window_onto_the_old_code_is_opt_in_and_read_only(self):
-        """A chamber that can read the old repository can copy old bytes into its
-        branch, and the only control on that is the operator reading the diff. So the
-        window is off unless `AUTOCLAVE_WINDOW` names one — a default-on window would
-        make the risk invisible — and read-only when it is open.
+    def test_the_window_onto_the_old_code_is_open_by_default_and_read_only(self):
+        """**Tyrel ruled 2026-08-04 that the window is on by default**, reversing the
+        opt-in rule this test used to assert. His evidence: four seats built System 03
+        with no window and one decided to refuse PDFs outright, while the old pipeline
+        had taken PDFs at stage one all along. An opt-in window is one every session
+        must remember, and the session that forgot cost a night.
+
+        The copying risk the old rule guarded against is unchanged and is still
+        controlled the same way — the operator reads every line of the diff. What is
+        mechanical here is that neither mount can ever be writable.
         """
         runnable = "\n".join(code_lines())
-        assert 'window_mount=""' in runnable, "the window has no closed default"
-        assert 'window_mount="--volume ${AUTOCLAVE_WINDOW}:/window:ro"' in runnable
+        assert "window.conf" in runnable, "the window is not configured from window.conf"
+        assert ":/window:ro" in runnable, "the old-code window is not mounted read-only"
+        assert ":/stage:ro" in runnable, "the audit-notes window is not mounted read-only"
         assert ":/window:rw" not in runnable, "the window is writable"
+        assert ":/stage:rw" not in runnable, "the stage window is writable"
+
+    def test_the_old_repository_is_admitted_by_named_directory_never_whole(self):
+        """The old repository is 5.5 GB and holds roughly 31,500 real register images
+        plus months of dated notes, and a chamber has open network egress — a readable
+        image is a sendable one.
+
+        **The control is that the root is never mounted.** `window.conf` names the
+        directories that may cross and the launcher mounts each one individually, so a
+        drawer that appears in the old repository tomorrow is absent from the airlock
+        until somebody names it. An exclusion list would have the opposite default and
+        would admit it silently — the same reasoning that makes the repository's own
+        `.dockerignore` deny everything and re-admit two files by name.
+
+        A control that is merely configured is not a control that holds; what proves it
+        is scanning the mounts from inside a chamber, which no static test can do. The
+        chamber-side scan is recorded in the commit that added this.
+        """
+        runnable = "\n".join(code_lines())
+        assert "${WINDOW_OCR_ROOT}/${wdir}:/window/${wdir}:ro" in runnable, (
+            "the old repository is not mounted directory by directory"
+        )
+        # Parsed, not string-matched. The negative assertion used to be one exact
+        # substring, so `-v ${WINDOW_OCR_ROOT}:/window`, a quoted operand, or one
+        # written without `:ro` all passed it while mounting the whole 5.5 GB root.
+        # Every mount operand naming WINDOW_OCR_ROOT or WINDOW_STAGE is read out and
+        # judged on its source, destination and options instead.
+        for source, destination, options in _mount_operands(runnable):
+            if source not in {"${WINDOW_OCR_ROOT}", "${WINDOW_STAGE}"}:
+                continue
+            assert destination != "/window", (
+                f"the old repository root is mounted whole at /window ({source})"
+            )
+            assert "ro" in options, (
+                f"the window mount {source}:{destination} is not read-only ({options})"
+            )
+        # The override remains supported and is the one place a whole root may be
+        # named, because it is an operator's deliberate one-off rather than a default.
+        assert "${AUTOCLAVE_WINDOW}:/window:ro" in runnable, (
+            "the AUTOCLAVE_WINDOW override no longer mounts read-only"
+        )
+        assert "--tmpfs /stage/${masked}:ro" in runnable, "the stage probes are not masked"
+        assert "$window_masks" in runnable, "the mask flags never reach docker run"
+
+    def test_the_stage_mount_does_not_clobber_the_window_mount(self):
+        """Both flag sets share one variable, and `/stage` was assigned into it rather
+        than appended — so every `/window` flag built above was silently discarded and
+        the chamber came up with `/stage` present, `/window` absent, and a log line
+        still saying the airlock was open.
+
+        Caught by inspecting a real container's mounts rather than by reading the
+        script, which is the only way this class of bug shows itself.
+        """
+        runnable = "\n".join(code_lines())
+        assert 'window_mount="--volume ${WINDOW_STAGE}:/stage:ro"' not in runnable, (
+            "the stage mount overwrites the window mount instead of appending"
+        )
+        assert 'window_mount="${window_mount} --volume ${WINDOW_STAGE}:/stage:ro"' in runnable
 
     def test_the_window_path_cannot_forge_a_volume_spec(self):
         """`window_mount` is word-split into the flag list, and Docker's short volume
@@ -535,13 +620,23 @@ class TestLogin:
         assert "*[[:space:]]*) die " in runnable, "whitespace is not refused"
         assert "*:*) die " in runnable, "a colon is not refused"
 
-    def test_an_unset_window_mounts_nothing(self):
-        """The flag is empty unless the variable is set, and it word-splits into the
-        `docker run` line beside the auth mounts. An empty string must contribute no
-        argument at all — a stray quote here would pass Docker an empty operand.
+    def test_an_absent_window_mounts_nothing(self):
+        """The flags are empty when the configured paths are not on this machine, and
+        they word-split into the `docker run` line beside the auth mounts. An empty
+        string must contribute no argument at all — a stray quote here would pass Docker
+        an empty operand.
+
+        This is what keeps `window.conf`'s machine-specific absolute paths harmless in a
+        clone somewhere else: the directory is missing, the flag stays empty, and the
+        chamber starts without a window rather than failing to start at all.
         """
         runnable = " ".join(code_lines())
-        assert "$auth_mounts $window_mount \\" in runnable, "the window flag is quoted or absent"
+        assert "$auth_mounts $window_mount $window_masks \\" in runnable, (
+            "a window flag is quoted or absent"
+        )
+        assert 'window_mount=""' in runnable, "the window flag has no empty default"
+        assert 'window_masks=""' in runnable, "the mask flag list has no empty default"
+        assert "is not on this machine" in runnable, "a missing window path is not reported"
 
 
 class TestDispatch:

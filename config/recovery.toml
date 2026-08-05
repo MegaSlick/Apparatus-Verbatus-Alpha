@@ -7,9 +7,17 @@
 #
 # QUEUED FOR TYREL, not decided here: the master plan's ledger records that both
 # mechanisms exist -- a run-level cap and this per-act recovery budget -- and that
-# he confirms which his ruling governed, or blesses both. The skeleton implements
-# the per-act budget and holds the act when it is spent. If the ruling was meant
+# he confirms which his ruling governed, or blesses both. If the ruling was meant
 # to bind the run level instead, this file is where that changes.
+#
+# The skeleton's own request gate (`pipeline/5_recensor/run.py`'s `wants_recovery`)
+# grants an act at most one recovery-request in its whole lifetime regardless of
+# the value below, so with the shipped budget of 2 the "held, budget is spent"
+# branch is structurally unreachable -- an act never gets far enough into its
+# budget to spend it. That branch is genuinely correct (a regression test drives
+# it directly with a zero budget and confirms so), but this file's own number is
+# not what proves it, and raising fallback_recrop/page_level_reread alone will
+# not make a second recovery round actually happen until that gate changes too.
 #
 # Recovery recovers COVERAGE, never quality (GOVERNANCE 11). A suspected
 # fabrication or a poor reading may be flagged for review; it may never be

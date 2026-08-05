@@ -38,6 +38,8 @@ from common.stage import (  # noqa: E402
     expected_acts,
     latest_attempt,
     open_context,
+    reading_basis_regions,
+    recovery_region_count,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -54,13 +56,55 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
 
 def final_review(context, act_id: str) -> dict:
     """The Recensor's last word on this act."""
-    return latest_attempt(artifacts_for(context, RECENSOR, "review", act_id), f"review of {act_id}")
-
-
-def latest_reading(context, act_id: str) -> dict:
     return latest_attempt(
-        artifacts_for(context, PERLECTOR, "perlectio", act_id), f"reading of {act_id}"
+        artifacts_for(context, RECENSOR, "review", act_id),
+        f"review of {act_id}",
+        operation="recense",
     )
+
+
+def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str, str]]:
+    """Resolve the exact Perlectio the Recensor reviewed, never a newer one.
+
+    `latest_attempt` establishes which review is current.  That review then
+    carries the evidence of the reading it assessed.  Looking up the current
+    Perlectio independently would silently establish a recovery attempt nobody
+    reviewed, which is a reconciliation failure rather than a useful fallback.
+    """
+    payload = review.get("payload")
+    if not isinstance(payload, dict):
+        raise FatalAccounting(f"review of {act_id} has no payload")
+    reference = payload.get("perlectio_ref")
+    if not isinstance(reference, dict) or reference not in review.get("inputs", []):
+        raise FatalAccounting(
+            f"accepted review of {act_id} does not retain its digest-checked Perlectio reference"
+        )
+    reading = context.tree.read_artifact_reference(
+        reference,
+        stage=PERLECTOR,
+        kind="perlectio",
+        subject_id=act_id,
+    )
+    current = latest_attempt(
+        artifacts_for(context, PERLECTOR, "perlectio", act_id),
+        f"reading of {act_id}",
+        operation="perlegere",
+    )
+    if current["artifact_id"] != reading["artifact_id"]:
+        raise FatalAccounting(
+            f"act {act_id} has a newer Perlectio that the accepted Recensor review did not "
+            "assess; no unreconciled reading may become established"
+        )
+    recovery_regions = recovery_region_count(
+        act_id, artifacts_for(context, DESIGNATOR, "region", act_id)
+    )
+    readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
+    if len(readings) != recovery_regions + 1:
+        raise FatalAccounting(
+            f"act {act_id} has {recovery_regions} recovery crop(s) but {len(readings)} "
+            "Perlectio attempt(s); a recovery crop must be reread before any text is established"
+        )
+    return reading, reference
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
@@ -91,7 +135,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # absence is what the Armarium reconciles against.
             continue
 
-        reading = latest_reading(context, act_id)
+        reading, reading_ref = reviewed_reading(context, review, act_id)
         # The Recensor now holds an act whose latest reading did not succeed, so
         # reaching here with a failed one means that check was bypassed or a
         # future edit removed it. This is the last stage before the text exists
@@ -105,12 +149,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "from a reading that succeeded, and a failed one is held, never written"
             )
         payload = reading["payload"]
+        regions = reading_basis_regions(reading, f"accepted reading of {act_id}")
+        if not isinstance(payload.get("text"), str) or not payload["text"].strip():
+            raise FatalAccounting(
+                f"accepted reading of {act_id} establishes no readable text; silence is held "
+                "until a Recensor blank proof exists"
+            )
         validate_serving_provenance(
             context,
-            payload["provenance"],
+            payload.get("provenance"),
             producer_stage=PERLECTOR,
             require_receipt=True,
         )
+        provenance = payload.get("provenance")
         record = {
             "act_id": act_id,
             "act_key": act["act_key"],
@@ -119,12 +170,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # an alternative.
             "text": payload["text"],
             "status": "established",
-            "regions": payload["basis"]["regions"],
-            "provenance": payload["provenance"],
-            # Dissent travels by reference rather than by value: the Perlectio
-            # holds it, and copying it here would create a second copy to drift.
-            "dissent_ref": reading["artifact_id"],
-            "recensor_ref": review["artifact_id"],
+            "regions": regions,
+            "provenance": provenance,
+            # Dissent travels by a digest-checked Perlectio reference rather than
+            # by value: the Perlectio holds it, and copying it here would create a
+            # second copy to drift. The terminal export can retain this reference
+            # after the run volume has been disposed of.
+            "dissent_ref": reading_ref,
+            "perlectio_ref": reading_ref,
+            "recensor_ref": context.artifact_ref(RECENSOR, "review", review["artifact_id"]),
         }
         record["self_hash"] = self_hash(record)
 
@@ -132,9 +186,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             kind="archetypus",
             subject_id=act_id,
             outcome="established",
-            inputs=[
-                context.input_ref(region["image_path"]) for region in payload["basis"]["regions"]
-            ],
+            inputs=[record["recensor_ref"], reading_ref]
+            + [context.input_ref(region["image_path"]) for region in regions],
             payload=record,
         )
 

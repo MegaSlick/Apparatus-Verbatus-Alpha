@@ -582,14 +582,58 @@ cmd_new() {
             stage_failed "could not stage workbench/design for the chamber"
     fi
 
-    # **The window onto the old code, and it is deliberately opt-in.** CLAUDE.md's
+    # **The windows onto the old work, and they are on by default now.** CLAUDE.md's
     # Quarantine section says the old repository is "read where it lies, through the
     # window" — mounting it read-only is that window, and nothing else here provides
-    # one. It is off unless `AUTOCLAVE_WINDOW` names a directory, because a chamber
-    # that can read old code is a chamber that can copy old bytes into its branch, and
-    # the only control on that is the operator reading the diff. A default-on window
-    # would make that risk invisible; naming it per chamber keeps it a decision.
+    # one.
+    #
+    # This used to be opt-in, on the reasoning that a chamber which can read old code
+    # can copy old bytes into its branch. **Tyrel overruled that on 2026-08-04** and the
+    # evidence was concrete: four seats built System 03 with no window, and one of them
+    # decided to refuse PDFs entirely, when the old pipeline had accepted PDFs at stage
+    # one all along. An opt-in window is a window every session must remember, and the
+    # session that forgot cost a night. The copying risk is unchanged and is still
+    # controlled the same way — the operator reads every line of the diff, and no old
+    # byte enters.
+    #
+    # `operations/autoclave/window.conf` holds the paths and the mask list.
+    # `AUTOCLAVE_WINDOW` still overrides `/window` for a one-off.
     window_mount=""
+    window_masks=""
+    if [ -z "${AUTOCLAVE_WINDOW:-}" ] && [ -f "${REPO_ROOT}/operations/autoclave/window.conf" ]; then
+        # shellcheck disable=SC1091
+        . "${REPO_ROOT}/operations/autoclave/window.conf"
+        # The old pipeline's code, mounted directory by directory rather than whole.
+        # Naming each one is what keeps the corpus, the datasets and the months of
+        # dated notes out — a mount of the repository root with exclusions would admit
+        # every new drawer that appears, which is the failure `.dockerignore` at the
+        # repository root was already shaped to avoid.
+        if [ -n "${WINDOW_OCR_ROOT:-}" ] && [ -d "${WINDOW_OCR_ROOT}" ]; then
+            for wdir in ${WINDOW_OCR_DIRS:-}; do
+                if [ -d "${WINDOW_OCR_ROOT}/${wdir}" ]; then
+                    window_mount="${window_mount} --volume ${WINDOW_OCR_ROOT}/${wdir}:/window/${wdir}:ro"
+                else
+                    note "window.conf names ${wdir}, absent from ${WINDOW_OCR_ROOT} — not mounted"
+                fi
+            done
+            [ -n "$window_mount" ] &&
+                note "airlock open: the old pipeline's code is readable at /window. It is contaminated — reference only, and no line of it may enter a branch."
+        elif [ -n "${WINDOW_OCR_ROOT:-}" ]; then
+            note "window.conf names ${WINDOW_OCR_ROOT}, which is not on this machine — /window not mounted"
+        fi
+        if [ -n "${WINDOW_STAGE:-}" ] && [ -d "${WINDOW_STAGE}" ]; then
+            # Appended, never assigned: `=` here silently discarded every /window flag
+            # built above it, and the chamber came up with /stage present and /window
+            # absent while the log still said the airlock was open.
+            window_mount="${window_mount} --volume ${WINDOW_STAGE}:/stage:ro"
+            for masked in ${WINDOW_STAGE_MASKS:-}; do
+                window_masks="${window_masks} --tmpfs /stage/${masked}:ro,size=4k"
+            done
+            note "stage open: ${WINDOW_STAGE} is readable at /stage. No byte of it may enter a branch."
+        elif [ -n "${WINDOW_STAGE:-}" ]; then
+            note "window.conf names ${WINDOW_STAGE}, which is not on this machine — /stage not mounted"
+        fi
+    fi
     if [ -n "${AUTOCLAVE_WINDOW:-}" ]; then
         case "$AUTOCLAVE_WINDOW" in
             /*) : ;;
@@ -607,7 +651,7 @@ cmd_new() {
         esac
         [ -d "$AUTOCLAVE_WINDOW" ] ||
             die "AUTOCLAVE_WINDOW names '${AUTOCLAVE_WINDOW}', which is not a directory"
-        window_mount="--volume ${AUTOCLAVE_WINDOW}:/window:ro"
+        window_mount="${window_mount} --volume ${AUTOCLAVE_WINDOW}:/window:ro"
         note "window open: ${AUTOCLAVE_WINDOW} is readable at /window. No byte of it may enter a branch."
     fi
     #
@@ -626,7 +670,7 @@ cmd_new() {
         --tmpfs /src/scriptorium:ro,size=4k \
         --volume "${outdir}:/out" \
         --volume "${specs_stage}:/specs" \
-        $auth_mounts $window_mount \
+        $auth_mounts $window_mount $window_masks \
         --workdir /work \
         "$IMAGE" \
         sleep infinity >/dev/null || {

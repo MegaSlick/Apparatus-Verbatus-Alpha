@@ -123,6 +123,11 @@ name = "truncated-reading"
 recover_acts = []
 hold_acts = []
 
+[[scenario]]
+name = "genuinely-empty-witness"
+recover_acts = []
+hold_acts = []
+
 # A reading that did not succeed. `truncated` is a failed-class Perlector
 # outcome that still carries text, which is the combination that matters: the
 # Recensor used to ask only whether a reading existed, and the Archetypus
@@ -144,9 +149,17 @@ scenario = "review"
 act_key = "a2"
 chair = "attestator_3"
 
+# A completed empty Testimonium means the chair read the region and found no
+# reportable text. It is deliberately distinct from a missing or failed attempt.
+
 # Per-scenario declared digests the checked-in bytes cannot match, so the
 # door refuses those pages through its real inspection path. The declared
 # digest is all zeros: unmistakably not the digest of anything here.
+
+[[witness_empty]]
+scenario = "genuinely-empty-witness"
+act_key = "a1"
+chair = "attestator_3"
 
 [[page_refusal]]
 scenario = "refused-page"

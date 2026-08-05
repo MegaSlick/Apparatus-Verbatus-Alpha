@@ -2,12 +2,56 @@
 
 The knobs. One question per planned file, each answerable without reading code.
 
-| File | The question it answers |
+| File | Status and question |
 |---|---|
-| `models.toml` | which model and revision fills each numbered role |
-| `recovery.toml` | how many times rework may be asked for before review |
-| `spend.toml` | money caps |
-| `formats.toml` | which formats the Armarium writes |
+| `models.toml` | present — which model and revision fills each numbered role |
+| `recovery.toml` | present — how many times rework may be asked for before review |
+| `pdf_render.toml` | present — what whole-page PDF resolution the next run targets |
+| `data_handling_policy.json` | present — how real material is stored, logged, retained and disposed of |
+| `spend.toml` | planned — money caps |
+| `formats.toml` | planned — which formats the Armarium writes |
+
+Decoder routing is deliberately not configuration. Tyrel ruled that an uncorrupted
+image is never declined by policy, and there is exactly one valid route map: every
+raster gets a decoder attempt and is sealed unchanged or fanned out when it has more
+than one frame; PDF is always painted page by page. `admission.py` derives that map
+from the formats the byte sniffer can name, so a new format cannot route by omission.
+A format/variant the installed readers cannot yet decode is a named pipeline alarm
+carried with its filename, rather than a routine rejection.
+
+PDF alone uses `render-pages`, and the loader refuses any other format given that
+action. PDF is full-page PDFium rasterisation, which paints text, vectors,
+annotations, and images together; it is never embedded-image extraction. TIFF is
+`admit-or-fan-out`: a single-directory scan seals its own bytes untouched, and a
+multi-page one — including the LZW, Deflate, PackBits and CCITT compressions real
+flatbed scanners produce — fans out to one ordinal per page. JPEG suffix bytes after
+EOI are not called corruption.
+
+`pdf_render.toml` supplies the documented default target for whole-page PDF
+rasterisation. `--pdf-target-dpi` overrides it for one run. The run authority records
+the configured target and the code-bounded target, and every rendered PDF page records
+those beside its `effective_dpi`. The 72-DPI floor, pixel ceiling, and decoded-byte
+ceiling remain in code; configuration cannot weaken them. The default is **unmeasured**:
+making it adjustable does not prove it suitable, and it should be checked against a
+real sample only after the data-handling gate is approved (GOVERNANCE 9).
+
+`data_handling_policy.json` is the version an approval record names. Its hash is the
+canonical digest of its own content, so editing one character of it invalidates
+every approval that named the old version — which is the honest behaviour, not a
+bug. The **data-handling gate package** is the tracked
+`operations/submit/README.md`, and `operations/submit/gate.py` is the machinery
+that enforces it. Note that both entry points expose the policy's path as a flag, so
+"the current policy" is whichever file the invoker names — a documented limit of a
+mechanism `common/contracts/approval.py` already describes as tamper-evidence rather
+than access control.
+
+For real submissions, the local submit door writes a self-hashed filename ledger
+before any transfer. The Exemplar door requires that ledger and binds its filename,
+digest, byte-count, and fanned-page-index rows into `run.json`; an export carries
+the same linkage back out. The policy permits no per-stage deletion: retain the whole run until it is
+dead/broken or complete/exported, then its lifecycle owner may destroy the whole
+volume. See `operations/submit/README.md` for the package being handed to Tyrel;
+transfer/pod/UI work is not built here.
 
 `models.toml` is the operational cast list. Model assignments belong there rather
 than in stage code or stage documentation, which keeps a swap to one configuration
