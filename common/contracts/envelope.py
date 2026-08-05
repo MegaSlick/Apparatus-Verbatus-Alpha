@@ -151,9 +151,16 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
         )
 
     producer = envelope["producer"]
-    if not isinstance(producer, dict) or producer.get("stage") != stage:
-        raise SchemaRefusal("producer is missing or disagrees with the artifact's stage")
-    if not producer.get("adapter_revision"):
+    if not isinstance(producer, dict) or set(producer) != {"stage", "adapter_revision"}:
+        raise SchemaRefusal(
+            "producer is not the closed {stage, adapter_revision} provenance object"
+        )
+    if producer["stage"] != stage:
+        raise SchemaRefusal("producer disagrees with the artifact's stage")
+    if (
+        not isinstance(producer["adapter_revision"], str)
+        or not producer["adapter_revision"].strip()
+    ):
         raise SchemaRefusal(
             "producer names no adapter revision; GOVERNANCE 6 — provenance travels "
             "with the record, at the moment it was produced"

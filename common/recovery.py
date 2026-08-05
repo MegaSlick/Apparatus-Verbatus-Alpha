@@ -8,12 +8,16 @@ directory happened to launch a command.
 
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 
 DEFAULT_RECOVERY_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "recovery.toml"
+
+# Tyrel's ruled ceiling. The configuration may choose a lower run budget, but it
+# may not turn three bounded recovery rounds into a larger one.
+RULED_ABSOLUTE_CAP: Final = 3
 
 
 def load_recovery_policy(path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH) -> dict[str, Any]:
@@ -43,6 +47,11 @@ def load_recovery_policy(path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH) -> dic
     if invalid:
         raise ContractError(
             f"the recovery configuration has invalid non-negative integer field(s) {invalid}"
+        )
+    if values["absolute_cap"] > RULED_ABSOLUTE_CAP:
+        raise ContractError(
+            f"the recovery configuration names absolute_cap {values['absolute_cap']}, above the "
+            f"ruled maximum of {RULED_ABSOLUTE_CAP}; recovery is PURE ABSOLUTE, STOP AT 3"
         )
     allowed = values["fallback_recrop"] + values["page_level_reread"]
     if allowed > values["absolute_cap"]:

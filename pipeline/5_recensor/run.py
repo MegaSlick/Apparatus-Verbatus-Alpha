@@ -127,6 +127,211 @@ def preflight_witness_denominator(context, floor: int) -> None:
         validate_chair_coverage(context, act["act_id"], floor)
 
 
+def _payload(record: dict, what: str) -> dict:
+    """One record payload, refusing an untyped recovery fact before using it."""
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        raise FatalAccounting(f"{what} has no object payload")
+    return payload
+
+
+def recovery_state(context, act_id: str) -> dict:
+    """Reconcile this act's requested, cut, and reviewed recovery history.
+
+    A recovery request is not evidence that its recrop happened, and a recovery
+    crop is not evidence that the Perlector read it.  The three append-only
+    histories must therefore agree before another Recensor review can be written:
+    exactly one recovery-requested review per request, at most one recrop per
+    request, and a later Perlectio for every recrop.  No branch here establishes
+    text or selects among readings; disagreement is fatal accounting.
+    """
+    requests = artifacts_for(context, RECENSOR, "recovery-request", act_id)
+    request_refs: dict[str, dict] = {}
+    requests_by_ordinal: dict[int, dict] = {}
+    for request in requests:
+        payload = _payload(request, f"recovery request for {act_id}")
+        ordinal = payload.get("attempt_ordinal")
+        if (
+            request.get("outcome") != "recovery-requested"
+            or not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or request.get("attempt_id") != attempt_id(act_id, "recover", ordinal)
+        ):
+            raise FatalAccounting(
+                f"recovery request for {act_id} does not carry its bound recovery ordinal"
+            )
+        if ordinal in requests_by_ordinal:
+            raise FatalAccounting(
+                f"act {act_id} carries two recovery requests for ordinal {ordinal}; recovery "
+                "has no rule for choosing one"
+            )
+        requests_by_ordinal[ordinal] = request
+        request_refs[request["artifact_id"]] = context.artifact_ref(
+            RECENSOR, "recovery-request", request["artifact_id"]
+        )
+
+    reviews_by_request = {request_id: [] for request_id in request_refs}
+    for review in artifacts_for(context, RECENSOR, "review", act_id):
+        if review.get("outcome") != "recovery-requested":
+            continue
+        payload = _payload(review, f"recovery-requested review of {act_id}")
+        ordinal = payload.get("attempt_ordinal")
+        request_ref = payload.get("recovery_request_ref")
+        matching_request = next(
+            (
+                request_id
+                for request_id, reference in request_refs.items()
+                if request_ref == reference
+            ),
+            None,
+        )
+        if (
+            matching_request is None
+            or request_ref not in review.get("inputs", [])
+            or not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or review.get("attempt_id") != attempt_id(act_id, "recense", ordinal)
+        ):
+            raise FatalAccounting(
+                f"recovery-requested review of {act_id} has no exact matching recovery request"
+            )
+        request = requests_by_ordinal.get(ordinal)
+        if request is None or request["artifact_id"] != matching_request:
+            raise FatalAccounting(
+                f"recovery-requested review of {act_id} disagrees with its request ordinal"
+            )
+        request_payload = _payload(request, f"recovery request for {act_id}")
+        if payload.get("perlectio_ref") != request_payload.get("perlectio_ref"):
+            raise FatalAccounting(
+                f"recovery-requested review of {act_id} does not name the Perlectio its "
+                "request assessed"
+            )
+        reviews_by_request[matching_request].append(review)
+
+    missing_reviews = [
+        request_id for request_id, reviews in reviews_by_request.items() if len(reviews) != 1
+    ]
+    if missing_reviews:
+        raise FatalAccounting(
+            f"act {act_id} has recovery request(s) without exactly one matching "
+            f"recovery-requested review {sorted(missing_reviews)}; a crash between the two "
+            "publications is named rather than turned into a later ordinal"
+        )
+
+    regions = artifacts_for(context, DESIGNATOR, "region", act_id)
+    recrops_by_request = {request_id: [] for request_id in request_refs}
+    recovery_regions = []
+    for region in regions:
+        payload = _payload(region, f"Designator region of {act_id}")
+        origin = payload.get("origin")
+        if origin not in {"proposal", "recovery"}:
+            raise FatalAccounting(
+                f"Designator region of {act_id} has unrecognized origin {origin!r}; its "
+                "place in the recovery denominator is unknown"
+            )
+        if origin != "recovery":
+            continue
+        inputs = region.get("inputs")
+        if not isinstance(inputs, list):
+            raise FatalAccounting(f"recovery region of {act_id} has no input list")
+        matches = [
+            request_id for request_id, reference in request_refs.items() if reference in inputs
+        ]
+        if len(matches) != 1:
+            raise FatalAccounting(
+                f"recovery region of {act_id} is not bound to exactly one recorded recovery request"
+            )
+        recovery_regions.append(region)
+        recrops_by_request[matches[0]].append(region)
+
+    repeated_recrops = [
+        request_id for request_id, recrops in recrops_by_request.items() if len(recrops) > 1
+    ]
+    if repeated_recrops:
+        raise FatalAccounting(
+            f"act {act_id} has more than one recovery crop for request(s) "
+            f"{sorted(repeated_recrops)}; one request may not silently create a second reread"
+        )
+    return {
+        "requests": requests,
+        "regions": regions,
+        "recovery_regions": recovery_regions,
+        "outstanding_request_ids": [
+            request_id for request_id, recrops in recrops_by_request.items() if not recrops
+        ],
+    }
+
+
+def preflight_recovery_history(context) -> None:
+    """Name every broken recovery pair before publishing another review."""
+    for act in expected_acts(context):
+        recovery_state(context, act["act_id"])
+
+
+def _basis_facts(region: dict, what: str) -> dict:
+    """The read-side facts that identify one Designator crop without its witness flag."""
+    if not isinstance(region, dict):
+        raise FatalAccounting(f"{what} is not an object")
+    fields = (
+        "region_id",
+        "image_path",
+        "image_sha256",
+        "source_page_ordinal",
+        "source_page_id",
+        "transform",
+    )
+    facts = {field: region.get(field) for field in fields}
+    if not isinstance(facts["region_id"], str) or not facts["region_id"]:
+        raise FatalAccounting(f"{what} has no region identity")
+    if not isinstance(facts["image_path"], str) or not facts["image_path"]:
+        raise FatalAccounting(f"{what} has no crop image path")
+    return facts
+
+
+def _expected_basis_facts(region: dict, act_id: str) -> dict:
+    payload = _payload(region, f"Designator region of {act_id}")
+    transform = payload.get("transform")
+    return _basis_facts(
+        {
+            "region_id": payload.get("region_id"),
+            "image_path": payload.get("image_path"),
+            "image_sha256": payload.get("image_sha256"),
+            "source_page_ordinal": transform.get("source_page_ordinal")
+            if isinstance(transform, dict)
+            else None,
+            "source_page_id": transform.get("source_page_id")
+            if isinstance(transform, dict)
+            else None,
+            "transform": transform,
+        },
+        f"Designator region of {act_id}",
+    )
+
+
+def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) -> list[dict]:
+    """Require a completed Perlectio to name exactly every region currently cut."""
+    basis = reading_basis_regions(reading, f"reading of {act_id}")
+    expected_by_id = {
+        facts["region_id"]: facts
+        for facts in (_expected_basis_facts(region, act_id) for region in regions)
+    }
+    actual_by_id = {
+        facts["region_id"]: facts
+        for facts in (_basis_facts(region, f"reading of {act_id}") for region in basis)
+    }
+    if len(expected_by_id) != len(regions) or len(actual_by_id) != len(basis):
+        raise FatalAccounting(
+            f"act {act_id} repeats a crop identity in its cut or read basis; duplicate evidence "
+            "cannot count as recovered coverage"
+        )
+    if actual_by_id != expected_by_id:
+        raise FatalAccounting(
+            f"act {act_id}'s latest Perlectio does not name exactly the Designator regions "
+            "currently cut for it; a recovery crop may not disappear before it is reread"
+        )
+    return basis
+
+
 def preflight_review_evidence(context) -> None:
     """Validate every readable act before publishing a review for any one of them."""
     for act in expected_acts(context):
@@ -140,16 +345,24 @@ def preflight_review_evidence(context) -> None:
                 f"act {act_id} reached the Recensor with no reading at all. A unit "
                 "in no terminal set is a fatal accounting imbalance (#10)"
             )
+        state = recovery_state(context, act_id)
+        expected_readings = len(state["recovery_regions"]) + 1
+        if len(readings) != expected_readings:
+            raise FatalAccounting(
+                f"act {act_id} carries {len(readings)} Perlectio attempt(s) for "
+                f"{len(state['recovery_regions'])} recovery crop(s); every reread must answer "
+                "one recorded recrop and no reading may appear unrequested"
+            )
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
         if classify(PERLECTOR, latest["outcome"]) is OutcomeClass.COMPLETED:
-            for region in reading_basis_regions(latest, f"reading of {act_id}"):
+            for region in _reconcile_reading_regions(latest, state["regions"], act_id):
                 context.input_ref(region["image_path"])
 
 
 def recoveries_so_far(context, act_id: str) -> int:
-    """Requests already made for this act, read from the artifacts themselves."""
-    return len(artifacts_for(context, RECENSOR, "recovery-request", act_id))
+    """Requests already made for this act, after their paired history reconciles."""
+    return len(recovery_state(context, act_id)["requests"])
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
@@ -166,6 +379,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # doing that only as each act is published can leave an earlier act's review
     # behind when a later act is malformed.
     preflight_witness_denominator(context, floor)
+    preflight_recovery_history(context)
     preflight_review_evidence(context)
 
     held = 0
@@ -200,6 +414,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             held += 1
             continue
 
+        state = recovery_state(context, act_id)
+        if state["outstanding_request_ids"]:
+            # The matching review is already the durable record of this hold. A
+            # direct Recensor retry must not turn it into a later acceptance while
+            # the Designator has not yet cut the requested recovery crop.
+            held += 1
+            continue
+
         readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
         if not readings:
             raise FatalAccounting(
@@ -212,6 +434,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # digest and a payload fact so Archetypus can prove it establishes the
         # exact reading Recensor assessed.
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
+        latest_payload = _payload(latest, f"reading of {act_id}")
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
         basis_regions = (
@@ -228,8 +451,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         proposal_count = len(
             [
                 record
-                for record in artifacts_for(context, DESIGNATOR, "region", act_id)
-                if record["payload"]["origin"] == "proposal"
+                for record in state["regions"]
+                if _payload(record, f"Designator region of {act_id}").get("origin") == "proposal"
             ]
         )
         continuation_shortfall = act["has_continuation"] and proposal_count < 2
@@ -274,6 +497,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "recovery_policy": budget,
                 },
             )
+            held += 1
             continue
 
         # Whether the reading *succeeded*, not merely whether one exists. The
@@ -289,6 +513,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "held-for-review",
                 f"the latest reading is {latest['outcome']!r} ({reading_class.value}); "
                 "accepting would establish text that nobody successfully read",
+            )
+            held += 1
+        elif not isinstance(latest_payload.get("text"), str) or not latest_payload["text"].strip():
+            outcome, reason = (
+                "held-for-review",
+                "the latest reading establishes no readable text; silence is not blank proof and "
+                "is held until the Recensor can seal one",
             )
             held += 1
         elif continuation_shortfall:

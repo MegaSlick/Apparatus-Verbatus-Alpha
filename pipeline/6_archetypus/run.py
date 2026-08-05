@@ -84,6 +84,29 @@ def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str
         kind="perlectio",
         subject_id=act_id,
     )
+    current = latest_attempt(
+        artifacts_for(context, PERLECTOR, "perlectio", act_id),
+        f"reading of {act_id}",
+        operation="perlegere",
+    )
+    if current["artifact_id"] != reading["artifact_id"]:
+        raise FatalAccounting(
+            f"act {act_id} has a newer Perlectio that the accepted Recensor review did not "
+            "assess; no unreconciled reading may become established"
+        )
+    recovery_regions = 0
+    for region in artifacts_for(context, DESIGNATOR, "region", act_id):
+        payload = region.get("payload")
+        if not isinstance(payload, dict):
+            raise FatalAccounting(f"Designator region of {act_id} has no object payload")
+        if payload.get("origin") == "recovery":
+            recovery_regions += 1
+    readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
+    if len(readings) != recovery_regions + 1:
+        raise FatalAccounting(
+            f"act {act_id} has {recovery_regions} recovery crop(s) but {len(readings)} "
+            "Perlectio attempt(s); a recovery crop must be reread before any text is established"
+        )
     return reading, reference
 
 
@@ -130,14 +153,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
         payload = reading["payload"]
         regions = reading_basis_regions(reading, f"accepted reading of {act_id}")
-        if not isinstance(payload.get("text"), str):
-            raise FatalAccounting(f"accepted reading of {act_id} has no text string to establish")
+        if not isinstance(payload.get("text"), str) or not payload["text"].strip():
+            raise FatalAccounting(
+                f"accepted reading of {act_id} establishes no readable text; silence is held "
+                "until a Recensor blank proof exists"
+            )
         validate_serving_provenance(
             context,
-            payload["provenance"],
+            payload.get("provenance"),
             producer_stage=PERLECTOR,
             require_receipt=True,
         )
+        provenance = payload.get("provenance")
         record = {
             "act_id": act_id,
             "act_key": act["act_key"],
@@ -147,10 +174,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "text": payload["text"],
             "status": "established",
             "regions": regions,
-            "provenance": payload["provenance"],
-            # Dissent travels by reference rather than by value: the Perlectio
-            # holds it, and copying it here would create a second copy to drift.
-            "dissent_ref": reading["artifact_id"],
+            "provenance": provenance,
+            # Dissent travels by a digest-checked Perlectio reference rather than
+            # by value: the Perlectio holds it, and copying it here would create a
+            # second copy to drift. The terminal export can retain this reference
+            # after the run volume has been disposed of.
+            "dissent_ref": reading_ref,
             "perlectio_ref": reading_ref,
             "recensor_ref": context.artifact_ref(RECENSOR, "review", review["artifact_id"]),
         }

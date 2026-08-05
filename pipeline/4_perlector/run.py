@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
+from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
@@ -133,13 +133,28 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
             record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
             validate_serving_provenance(
                 context,
-                record["payload"]["provenance"],
+                record.get("payload", {}).get("provenance"),
                 producer_stage=ATTESTATORES,
                 require_receipt=record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES,
             )
             validate_testimonium_regions(context, record, proposal_regions)
             records.append(record)
-    return latest_per_chair(records, f"testimonium for {act_id}")
+    current = latest_per_chair(records, f"testimonium for {act_id}")
+    chairs = {record["payload"]["chair"] for record in current}
+    configured = set(context.witness_chairs)
+    missing = configured - chairs
+    if missing:
+        raise FatalAccounting(
+            f"act {act_id} has no current Testimonium for configured chair(s) {sorted(missing)}; "
+            "the Perlector may not seal a reading over a shortened witness denominator"
+        )
+    unsealed = chairs - configured
+    if unsealed:
+        raise FatalAccounting(
+            f"act {act_id} carries Testimonium from chair(s) {sorted(unsealed)}, which this "
+            "run was not sealed with"
+        )
+    return current
 
 
 def verify_region(context, region: dict) -> dict:
@@ -166,10 +181,14 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     rows = []
     for record in testimonia:
         chair = record["payload"]["chair"]
-        if record["outcome"] != "read":
+        if record["outcome"] not in WITNESS_READING_OUTCOMES:
             rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
             continue
-        reported = record["payload"]["reported"]
+        reported = record["payload"].get("reported")
+        if not isinstance(reported, str):
+            raise SchemaRefusal(
+                f"completed Testimonium from chair {chair!r} carries no text to compare"
+            )
         rows.append({"chair": chair, "compared": True, "departed": reported != reading})
     return rows
 
@@ -204,6 +223,29 @@ def perlector_chair(context) -> ChairIdentity | AbsentChair:
     if not isinstance(resolved, (ChairIdentity, AbsentChair)):
         raise ContractError("Perlector resolution returned neither an identity nor an absence")
     return resolved
+
+
+def preflight_testimonia_denominator(context, acts: list[dict]) -> None:
+    """Validate every requested act's witness denominator before any Perlectio writes.
+
+    A missing Testimonium used to be discovered only by the Recensor, after an
+    immutable Perlectio over the shorter denominator had already been published.
+    Restoring the missing witness then changed the bytes under the same reading
+    identity and made a normal resume impossible. The complete requested set is
+    checked first so a later malformed act cannot leave an earlier reading behind.
+    """
+    for act in acts:
+        if act["outcome"] == "held":
+            continue
+        regions = regions_of(context, act["act_id"])
+        proposal_regions = [
+            region for region in regions if region["payload"].get("origin") == "proposal"
+        ]
+        if not proposal_regions:
+            raise ContractError(
+                f"act {act['act_id']} reached the Perlector with no original proposal region"
+            )
+        testimonia_of(context, act["act_id"], proposal_regions)
 
 
 def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted: bool) -> dict:
@@ -268,6 +310,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     wanted = [act for act in expected_acts(context) if args.act in (None, act["act_id"])]
     if args.act and not wanted:
         raise ContractError(f"asked to read {args.act}, which the proposal seal does not name")
+    preflight_testimonia_denominator(context, wanted)
 
     read = 0
     acknowledged = 0

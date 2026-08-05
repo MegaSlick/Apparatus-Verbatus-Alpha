@@ -12,6 +12,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from common.contracts.errors import ContractError
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -90,7 +94,7 @@ def test_recovering_the_same_act_twice_refuses_rather_than_cutting_a_duplicate(t
 
     second = _run("pipeline/2_designator/run.py", root, *recovery_args)
     assert second.returncode == 2
-    assert "already has a recovery region cut" in second.stderr
+    assert "already has a region cut" in second.stderr
 
     recovery_regions_after = [
         record
@@ -127,18 +131,12 @@ def _designator_context(designator, root: Path):
     return open_context(args, DESIGNATOR)
 
 
-def test_a_first_recovery_is_still_cut_when_its_recrop_lands_on_the_original_bounds(tmp_path):
-    """Invariant #14: the refusal above must not have bought its strictness by
-    refusing good input too.
+def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_path):
+    """A recrop must add coverage rather than manufacture another reading pass.
 
-    `region_id` binds the act and the transform and nothing else, so a proposal
-    region and a recovery region cut at identical bounds derive the identical id --
-    `region_id(act, t) == region_id(act, dict(t))`. The duplicate guard compared
-    against *every* region of the act, so a first, entirely legitimate recovery was
-    refusable purely because its recrop landed on the act's original rectangle,
-    which is exactly what a recrop asked for because the crop *decoded* badly
-    rather than because it was *cut* badly would ask for. Nothing in the shipped
-    fixture produces that collision, so nothing noticed.
+    `region_id` binds the act and transform, so a recovery at an already-cut
+    proposal rectangle would carry the same pixels and identity. It cannot recover
+    coverage, and allowing it makes the Perlector receive duplicate evidence.
 
     Driven in process rather than by CLI: `--fixture-root` cannot carry a modified
     fixture through the door, because the door refuses any root but the declared
@@ -183,7 +181,8 @@ def test_a_first_recovery_is_still_cut_when_its_recrop_lands_on_the_original_bou
         if row["act_key"] == "a1":
             row.update(original_bounds)
 
-    assert designator.recovery_pass(context, act_id, request_id) == 1
+    with pytest.raises(ContractError, match="already has a region cut"):
+        designator.recovery_pass(context, act_id, request_id)
     context.finish()
 
     recovery_regions = [
@@ -195,5 +194,41 @@ def test_a_first_recovery_is_still_cut_when_its_recrop_lands_on_the_original_bou
         )
         if record["subject_id"] == act_id and record["payload"]["origin"] == "recovery"
     ]
-    assert len(recovery_regions) == 1
-    assert recovery_regions[0]["payload"]["transform"]["bounds"] == original_bounds
+    assert recovery_regions == []
+
+
+def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first(tmp_path):
+    """A recovery request may not pick one of several fixture rectangles by order."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+        "pipeline/5_recensor/run.py",
+    ):
+        result = _run(program, root)
+        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+
+    from common.contracts.stages import RECENSOR
+    from common.runtree.store import RunTree
+
+    designator = _load_designator()
+    tree = RunTree(root, "r")
+    review = next(
+        record
+        for record in (
+            tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+            for entry in tree.build_manifest(RECENSOR)["artifacts"]
+            if entry["kind"] == "review"
+        )
+        if record["payload"]["act_key"] == "a1"
+    )
+    request_id = review["payload"]["recovery_request_ref"]["relative_path"].rsplit("/", 1)[-1][:-5]
+    context = _designator_context(designator, root)
+    original = next(row for row in context.fixture["recovery"] if row["act_key"] == "a1")
+    context.fixture["recovery"].append(dict(original))
+
+    with pytest.raises(ContractError, match="declares 2 recovery regions"):
+        designator.recovery_pass(context, review["subject_id"], request_id)

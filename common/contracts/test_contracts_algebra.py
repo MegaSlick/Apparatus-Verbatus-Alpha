@@ -132,6 +132,17 @@ def test_perlector_failures_flow_to_the_recensor_rather_than_terminating():
         assert terminal_category(PERLECTOR, outcome) is None
 
 
+def test_no_readable_text_is_unresolved_until_a_blank_proof_exists():
+    """Silence is not blank proof (ruling 15), so it cannot reach an Archetypus.
+
+    The Recensor's existing unresolved branch holds this status. A future
+    proof-bearing `confirmed-blank` may complete, but a Perlector saying it found
+    no characters is not that proof.
+    """
+    assert classify(PERLECTOR, "no-readable-text") is OutcomeClass.UNRESOLVED
+    assert terminal_category(PERLECTOR, "no-readable-text") is None
+
+
 # --- Unknown states are fatal, never routed around ----------------------------
 
 

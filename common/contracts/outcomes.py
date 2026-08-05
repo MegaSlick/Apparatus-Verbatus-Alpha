@@ -103,10 +103,10 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
     PERLECTOR: {
         "read": _C.COMPLETED,
-        # An explicit status, never an empty string standing in for one. What the
-        # canonical `text` value is for this case is Spec 10's to settle (Sol N-3
-        # / blocker 7); the status exists here so the algebra is closed regardless.
-        "no-readable-text": _C.COMPLETED,
+        # An explicit status, never an empty string standing in for one. Silence
+        # does not prove a blank page or act, so it remains unresolved until a
+        # future Recensor blank-proof contract can establish confirmed-blank.
+        "no-readable-text": _C.UNRESOLVED,
         # ARCHITECTURE: it reads through to the end — truncation is a failure,
         # not an output.
         "truncated": _C.FAILED,

@@ -17,9 +17,9 @@ import pytest
 
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.errors import FatalAccounting
+from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.identities import artifact_id, attempt_id
-from common.contracts.stages import ATTESTATORES, DESIGNATOR
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +48,10 @@ class _Context:
             "relative_path": relative_path,
             "sha256": digest_bytes(self.tree.read_bytes(relative_path)),
         }
+
+    @property
+    def witness_chairs(self):
+        return list(self.run["witness_chairs"])
 
 
 @pytest.fixture
@@ -229,3 +233,105 @@ def test_a_manufactured_far_ordinal_cannot_leapfrog_the_attempt_that_happened(ha
 
     with pytest.raises(FatalAccounting, match="contiguous run"):
         perlector.testimonia_of(context, act_id, _proposal_regions(context, act_id))
+
+
+def test_perlector_names_a_testimonium_with_missing_provenance(happy_run):
+    context, first = happy_run
+    missing = copy.deepcopy(first)
+    del missing["payload"]["provenance"]
+    missing["self_hash"] = self_hash(missing)
+    path = context.tree.resolve(
+        context.tree.artifact_path(ATTESTATORES, "testimonium", first["artifact_id"])
+    )
+    path.write_bytes(canonical_bytes(missing))
+    context.tree.write_manifest(ATTESTATORES)
+
+    with pytest.raises(SchemaRefusal, match="model provenance is not an object"):
+        perlector.testimonia_of(
+            context,
+            first["subject_id"],
+            _proposal_regions(context, first["subject_id"]),
+        )
+
+
+def test_perlector_refuses_a_missing_witness_before_publishing_any_reading(tmp_path):
+    """A later bad act cannot leave an earlier shortened Perlectio immutable.
+
+    Recensor used to discover this only after Perlector had written the earlier
+    act.  Restoring the missing Testimonium then changed the bytes under the
+    same Perlectio identity.  The preflight has to cover every requested act
+    before the first publication.
+    """
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+    ):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / program),
+                "--run-root",
+                str(root),
+                "--run-id",
+                "missing-witness",
+                "--scenario",
+                "happy",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "missing-witness")
+    missing = next(
+        entry
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium"
+        and tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])["payload"][
+            "act_key"
+        ]
+        == "a2"
+        and tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])["payload"][
+            "chair"
+        ]
+        == "attestator_3"
+    )
+    tree.resolve(missing["relative_path"]).unlink()
+    tree.write_manifest(ATTESTATORES)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/4_perlector/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "missing-witness",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "shortened witness denominator" in result.stderr
+    assert tree.build_manifest(PERLECTOR)["artifacts"] == []
+
+
+def test_dissent_compares_a_genuinely_empty_witness():
+    rows = perlector.dissent_against(
+        "visible characters",
+        [
+            {
+                "outcome": "genuinely-empty",
+                "payload": {"chair": "attestator_3", "reported": ""},
+            }
+        ],
+    )
+
+    assert rows == [{"chair": "attestator_3", "compared": True, "departed": True}]

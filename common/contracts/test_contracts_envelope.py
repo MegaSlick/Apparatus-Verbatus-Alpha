@@ -129,6 +129,22 @@ def test_a_missing_adapter_revision_is_refused():
         validate_envelope(envelope)
 
 
+@pytest.mark.parametrize(
+    "producer",
+    (
+        {"stage": "designator", "adapter_revision": 17},
+        {"stage": "designator", "adapter_revision": "   "},
+        {"stage": "designator", "adapter_revision": "v1", "unvalidated": "x"},
+    ),
+)
+def test_producer_provenance_is_a_closed_string_revision_schema(producer):
+    envelope = sound_envelope()
+    envelope["producer"] = producer
+
+    with pytest.raises(SchemaRefusal):
+        validate_envelope(reseal(envelope))
+
+
 # --- Corruption kind 2: the identity ------------------------------------------
 
 
