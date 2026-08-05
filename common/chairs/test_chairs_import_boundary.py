@@ -23,6 +23,8 @@ Meta-invariant #88: no loop here reports success over an empty population.
 import ast
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 COMMON = ROOT / "common"
 CHAIRS = COMMON / "chairs"
@@ -140,6 +142,68 @@ def test_nothing_anywhere_under_common_imports_pipeline():
     )
 
 
+def _is_hub_loader(node: ast.AST) -> bool:
+    """A literal `import_module("huggingface_hub")` call, however it is nested."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "import_module"
+        and bool(node.args)
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "huggingface_hub"
+    )
+
+
+def _signature_parts(node: ast.AST) -> list[ast.AST]:
+    """The parts of a `def` that run where the `def` sits, not when it is called.
+
+    Argument defaults, decorators and annotations are all evaluated at the moment
+    the function is *defined*. `ast.walk` over a `FunctionDef` descends into them
+    exactly as it descends into the body, so
+    `def fetch(client=import_module("huggingface_hub")):` reads as function-scoped
+    while in fact running on import — which is the one thing this file exists to
+    forbid.
+    """
+    parts: list[ast.AST] = list(getattr(node, "decorator_list", []))
+    arguments = node.args
+    parts += [default for default in arguments.defaults if default is not None]
+    parts += [default for default in arguments.kw_defaults if default is not None]
+    for argument in arguments.posonlyargs + arguments.args + arguments.kwonlyargs:
+        if argument.annotation is not None:
+            parts.append(argument.annotation)
+    if getattr(node, "returns", None) is not None:
+        parts.append(node.returns)
+    return parts
+
+
+def _hub_loader_calls(source: str) -> list[tuple[str, bool]]:
+    """`(where, deferred)` per hub loader call. `deferred` means "only when called".
+
+    Deliberately not `ast.walk`: the question is not "does a function enclose this
+    call" but "does importing this module run it", and those differ wherever a
+    signature is evaluated.
+    """
+    found: list[tuple[str, bool]] = []
+
+    def scan(node: ast.AST, deferred: bool, where: str) -> None:
+        if _is_hub_loader(node):
+            found.append((where, deferred))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            name = getattr(node, "name", "<lambda>")
+            signature_scope = f"{where} -> signature of {name}"
+            for part in _signature_parts(node):
+                scan(part, deferred, signature_scope)
+            body = [node.body] if isinstance(node, ast.Lambda) else node.body
+            for statement in body:
+                scan(statement, True, f"{where} -> body of {name}")
+            return
+        for child in ast.iter_child_nodes(node):
+            scan(child, deferred, where)
+
+    scan(ast.parse(source), False, "module level")
+    return found
+
+
 def test_the_hub_is_reachable_from_exactly_one_module_and_only_inside_a_function():
     """The dependency has one door. Naming it here means a second one — a
     convenience import in `manifests.py`, say — fails this test rather than
@@ -163,25 +227,16 @@ def test_the_hub_is_reachable_from_exactly_one_module_and_only_inside_a_function
     # the one change this test exists to catch, because it makes importing the
     # package require the optional dependency — would have kept it green. Scope is
     # the claim, so scope is what is asserted.
-    tree = ast.parse((CHAIRS / "registry.py").read_text(encoding="utf-8"))
-    scopes: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for inner in ast.walk(node):
-            if (
-                isinstance(inner, ast.Call)
-                and isinstance(inner.func, ast.Name)
-                and inner.func.id == "import_module"
-                and inner.args
-                and isinstance(inner.args[0], ast.Constant)
-                and inner.args[0].value == "huggingface_hub"
-            ):
-                scopes.append(node.name)
-    assert scopes, (
-        "registry.py no longer reaches huggingface_hub through an `import_module` call "
-        "nested in a function body; either the seam moved to module level — which makes "
-        "importing this package require the optional dependency — or it is gone entirely"
+    calls = _hub_loader_calls((CHAIRS / "registry.py").read_text(encoding="utf-8"))
+    assert calls, (
+        "registry.py no longer reaches huggingface_hub through a literal "
+        '`import_module("huggingface_hub")` call; either the seam is gone or it is '
+        "spelled in a way this boundary check can no longer see"
+    )
+    at_import = [where for where, deferred in calls if not deferred]
+    assert not at_import, (
+        "registry.py reaches huggingface_hub at import time, which makes importing this "
+        f"package require the optional dependency: {at_import}"
     )
 
 
@@ -195,3 +250,55 @@ def test_a_literal_dynamic_stage_import_is_detected(tmp_path):
     )
     assert ("pipeline", "pipeline.forbidden_stage") in _imports_in(source)
     assert ("pipeline", "pipeline.another_forbidden_stage") in _imports_in(source)
+
+
+HUB_LOADER = 'import_module("huggingface_hub")'
+
+DEFERRED_SPELLINGS = [
+    f"def fetch():\n    client = {HUB_LOADER}\n",
+    f"async def fetch():\n    client = {HUB_LOADER}\n",
+    f"def outer():\n    def inner():\n        return {HUB_LOADER}\n",
+    f"class Fetcher:\n    def build(self):\n        return {HUB_LOADER}\n",
+    f"def fetch():\n    loader = lambda: {HUB_LOADER}\n    return loader\n",
+]
+
+AT_IMPORT_SPELLINGS = [
+    # The plain case the substring check could not see.
+    f"client = {HUB_LOADER}\n",
+    # Every one of these sits syntactically inside a `def`, and every one of them
+    # runs the moment the module is imported.
+    f"def fetch(client={HUB_LOADER}):\n    return client\n",
+    f"def fetch(*, client={HUB_LOADER}):\n    return client\n",
+    f"@{HUB_LOADER}.cache\ndef fetch():\n    return None\n",
+    f"def fetch() -> {HUB_LOADER}.Client:\n    return None\n",
+    f"def fetch(client: {HUB_LOADER}.Client = None):\n    return client\n",
+    f"class Fetcher:\n    client = {HUB_LOADER}\n",
+]
+
+
+@pytest.mark.parametrize("source", DEFERRED_SPELLINGS)
+def test_a_hub_loader_that_runs_only_when_called_is_read_as_deferred(source):
+    calls = _hub_loader_calls(source)
+
+    assert calls, f"the loader call was not found at all in:\n{source}"
+    assert all(deferred for _where, deferred in calls), (
+        f"a call that only runs when the function is called was read as import-time:\n{source}"
+    )
+
+
+@pytest.mark.parametrize("source", AT_IMPORT_SPELLINGS)
+def test_a_hub_loader_that_runs_on_import_is_caught_however_it_is_spelled(source):
+    """A guard must prove its new branch can become red.
+
+    Six of these seven sit inside a `def`, which is what made the first version of
+    this check wrong: `ast.walk` descends into defaults, decorators and annotations
+    exactly as it descends into the body, so each would have been recorded as
+    function-scoped while running on import — the precise failure the check exists
+    to prevent.
+    """
+    calls = _hub_loader_calls(source)
+
+    assert calls, f"the loader call was not found at all in:\n{source}"
+    assert any(not deferred for _where, deferred in calls), (
+        f"an import-time call was read as deferred:\n{source}"
+    )
