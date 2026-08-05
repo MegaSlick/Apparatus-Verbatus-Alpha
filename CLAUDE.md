@@ -208,6 +208,10 @@ a container.** Record what actually answered, never only what was requested.
 detail and keep it in context** — it owns roles, seats, effort and bounds. Do not choose
 a model or an effort from memory: that file is measured and this one is not.
 
+**A chamber is pinned to the commit it was created from.** Work committed afterwards never
+reaches a chamber already running, and nothing about it looks wrong from the inside. If a
+change must bind a running lane, the lane is re-created, not told.
+
 ## What may be missing or wrong
 
 Until `sh .githooks/install.sh` has run in a clone, **every git-hook rule is off** —

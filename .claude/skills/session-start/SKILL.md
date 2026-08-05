@@ -123,6 +123,16 @@ started it, so the state of his machine is never changed silently. If Colima is 
 installed at all, say so and carry on: it is only needed when something is dispatched,
 and `operations/autoclave/README.md` says how to install it.
 
+**Then check the chamber image is not older than what it bakes in.** The image carries
+the agent's standing instructions and its pinned dependencies, copied in at build time,
+so a stale image runs instructions this repository no longer holds — and nothing about it
+looks wrong from the inside. `docker images` gives its build time; `git log -1` on
+`operations/autoclave/agent-brief.md`, `operations/autoclave/Dockerfile` and
+`requirements-dev.txt` gives theirs. If any of the three is newer, say so and run
+`sh operations/autoclave/autoclave.sh build` before dispatching anything. This is a
+comparison, not a rebuild every session: rebuilding costs minutes and is only worth it
+when a file actually moved.
+
 `/session-end` stops it again, and stops it only when no chamber is running.
 
 ## 6. Agree the goal before anything moves
