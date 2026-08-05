@@ -61,8 +61,8 @@ FIXTURE = "synthetic-two-page-v0"
 # Re-pinned for the round-two merge. The recovery policy values are unchanged,
 # but its corrected explanatory text changes the policy file hash deliberately
 # sealed into run.json and therefore every downstream artifact config digest.
-HAPPY_RUN_TREE_DIGEST = "f9639419dea324bbbaa35704716a144380678750940c20a3ccb56ed854239d02"
-REVIEW_RUN_TREE_DIGEST = "d3a86ff00b866c97e922daba8aa75bf008c6b0c957809874728d092fea092bee"
+HAPPY_RUN_TREE_DIGEST = "10779829e036347c9ecae1688cfe1d71b12fb74c01124ac4862e22c8c3dfb445"
+REVIEW_RUN_TREE_DIGEST = "846cb5d7a90ef725933e2ada498c6615052386bdb40b3148d29bb05a44615612"
 
 
 def orchestrate(
@@ -224,12 +224,39 @@ def test_the_final_export_keeps_each_original_filename_and_digest_link(happy_run
         assert page["page_id"]
     for delivered in export["delivered"]:
         assert delivered["source_regions"]
+        perlectio = tree.read_artifact_reference(
+            delivered["perlectio_ref"],
+            stage=PERLECTOR,
+            kind="perlectio",
+            subject_id=delivered["act_id"],
+        )
+        assert delivered["dissent_ref"] == delivered["perlectio_ref"]
+        assert len(delivered["witnesses"]) == 3
+        assert {witness["chair"] for witness in delivered["witnesses"]} == {
+            "attestator_1",
+            "attestator_2",
+            "attestator_3",
+        }
+        assert all("reported" not in witness for witness in delivered["witnesses"])
+        assert perlectio["artifact_id"] == delivered["perlectio_ref"]["relative_path"].split("/")[
+            -1
+        ].removesuffix(".json")
+        for witness in delivered["witnesses"]:
+            testimony = tree.read_artifact_reference(
+                witness["testimonium_ref"],
+                stage=ATTESTATORES,
+                kind="testimonium",
+                subject_id=delivered["act_id"],
+            )
+            assert testimony["payload"]["chair"] == witness["chair"]
+            assert testimony["payload"]["provenance"] == witness["provenance"]
         for region in delivered["source_regions"]:
             source = source_by_ordinal[region["source_page_ordinal"]]
             page = pages_by_ordinal[region["source_page_ordinal"]]
             assert region["source_page_id"] == page["page_id"]
             assert region["declared_path"] == source["relative_path"]
             assert region["declared_sha256"] == source["sha256"]
+            assert region["structure_provenance"]["chair"] == "designator_structure"
 
 
 def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
@@ -852,8 +879,8 @@ def test_archetypus_refuses_a_resealed_completed_perlectio_without_an_object_bas
     assert snapshot(root) == before
 
 
-def test_archetypus_uses_the_perlectio_named_by_the_accepted_review(tmp_path):
-    """A newer unreviewed reading may not replace the reading Recensor assessed."""
+def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
+    """A newer reading must be reviewed, never silently ignored or substituted."""
     root = tmp_path / "runs"
     run_through_recensor(root, "r")
     tree = RunTree(root, "r")
@@ -881,12 +908,69 @@ def test_archetypus_uses_the_perlectio_named_by_the_accepted_review(tmp_path):
     forged_path.write_bytes(canonical_bytes(forged))
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 0, result.stderr
-    established = tree.read_artifact(
-        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+    assert result.returncode == 2
+    assert "newer Perlectio" in result.stderr
+
+
+def test_archetypus_refuses_an_accepted_empty_reading(tmp_path):
+    """An empty string is not evidence that the act was blank."""
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
     )
-    assert established["payload"]["text"] == original["payload"]["text"]
-    assert established["payload"]["text"] != forged["payload"]["text"]
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    old_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(old_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    reading["payload"]["text"] = ""
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    new_ref = {
+        "relative_path": old_ref["relative_path"],
+        "sha256": digest_bytes(reading_path.read_bytes()),
+    }
+    review["inputs"] = [
+        new_ref if reference == old_ref else reference for reference in review["inputs"]
+    ]
+    review["payload"]["perlectio_ref"] = new_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2
+    assert "establishes no readable text" in result.stderr
+
+
+def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):
+    """A completed Archetypus cannot hide a reading appended after its review."""
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    original = next(
+        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio"
+    )
+    act_id = original["subject_id"]
+    forged = json.loads(json.dumps(original))
+    forged_attempt = attempt_id(act_id, "perlegere", 2)
+    forged["attempt_id"] = forged_attempt
+    forged["artifact_id"] = artifact_id(PERLECTOR, "perlectio", act_id, forged_attempt)
+    forged["payload"]["attempt_ordinal"] = 2
+    forged["payload"]["text"] = "UNREVIEWED EXPORT REPLACEMENT"
+    forged["self_hash"] = self_hash(forged)
+    forged_path = tree.resolve(tree.artifact_path(PERLECTOR, "perlectio", forged["artifact_id"]))
+    forged_path.parent.mkdir(parents=True, exist_ok=True)
+    forged_path.write_bytes(canonical_bytes(forged))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
+    assert result.returncode == 2
+    assert "newer Perlectio" in result.stderr
 
 
 def test_armarium_refuses_a_resealed_archetypus_text_that_disagrees_with_its_parent(tmp_path):
@@ -1367,6 +1451,14 @@ def refused_page_run(tmp_path_factory):
     result = orchestrate(root, "r", "refused-page")
     assert result.returncode == 3, result.stderr
     return root, RunTree(root, "r")
+
+
+def test_the_orchestrator_relays_the_doors_private_refusal_report(tmp_path):
+    """A successful Door can still have a named refusal report for an operator."""
+    result = orchestrate(tmp_path / "runs", "r", "refused-page")
+
+    assert result.returncode == 3, result.stderr
+    assert "1 door refusal(s); private refusal report:" in result.stderr
 
 
 @pytest.fixture(scope="module")

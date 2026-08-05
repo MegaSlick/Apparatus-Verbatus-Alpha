@@ -6,10 +6,10 @@ categories are the closed five the contracts define. An act in none of them is a
 fatal accounting imbalance and stops the run — never a warning, never a shrug.
 
 **What leaves carries the Perlector's established reading and nothing else.**
-Witness testimony informed that reading and is retained inside the run as evidence;
-it never appears as output. There is no branch in this file that could put a
-witness's words into a delivered text, and that is the point rather than an
-accident of the fixture.
+Witness testimony informed that reading and its digest-checked references and
+provenance leave alongside the result; witness words never become the delivered
+text. There is no branch in this file that could put a witness's words into a
+delivered text, and that is the point rather than an accident of the fixture.
 
 **Partial cannot look complete.** A held act has no Archetypus, so it has no text
 to export; it appears in the review output, and the run's aggregate says `partial`
@@ -35,6 +35,7 @@ from common.contracts.outcomes import (  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
     ARCHETYPUS,
     ARMARIUM,
+    ATTESTATORES,
     DESIGNATOR,
     EXEMPLAR,
     PERLECTOR,
@@ -42,9 +43,11 @@ from common.contracts.stages import (  # noqa: E402
 )
 from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
+    verify_exemplar_crop_lineage,
     verify_sealed_page_pixels,
 )
 from common.stage import (  # noqa: E402
+    ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     EXIT_HELD,
     expected_acts,
@@ -197,12 +200,14 @@ def pages_marked_out(context) -> dict[str, list[int]]:
                 f"the Designator cut a region for act {act_id}, which its own proposal seal "
                 "does not expect; a crop of an act nobody declared is invariant #10's imbalance"
             )
-        ordinal = region["payload"].get("transform", {}).get("source_page_ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        try:
+            verified = verify_exemplar_crop_lineage(context.tree, context.run, region)
+        except ContractError as error:
             raise FatalAccounting(
-                f"the Designator region {entry['artifact_id']} names no integer source page "
-                "ordinal, so the page it examined cannot be reconciled against the census"
-            )
+                f"the Designator region {entry['artifact_id']} cannot be verified as a crop of "
+                "the Exemplar page it claims to mark out"
+            ) from error
+        ordinal = verified["source_page_ordinal"]
         if ordinal not in marked[act_id]:
             marked[act_id].append(ordinal)
     return {act_id: sorted(ordinals) for act_id, ordinals in marked.items()}
@@ -214,6 +219,58 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
         if entry["kind"] == kind and entry["subject_id"] == subject:
             records.append(context.tree.read_artifact(stage, kind, entry["artifact_id"]))
     return records
+
+
+def export_witnesses(context, reading: dict, act_id: str) -> list[dict]:
+    """Project the exact evidence-backed witnesses without exporting their words."""
+    payload = reading.get("payload")
+    basis = payload.get("basis") if isinstance(payload, dict) else None
+    testimonia = basis.get("testimonia") if isinstance(basis, dict) else None
+    if not isinstance(testimonia, list) or not testimonia:
+        raise FatalAccounting("an established Perlectio has no witness basis to retain at export")
+
+    witnesses: list[dict] = []
+    seen_chairs: set[str] = set()
+    for item in testimonia:
+        if not isinstance(item, dict):
+            raise FatalAccounting("an established Perlectio has a non-object witness basis entry")
+        chair, outcome, reference = item.get("chair"), item.get("outcome"), item.get("reference")
+        if not isinstance(chair, str) or not chair or not isinstance(outcome, str):
+            raise FatalAccounting("an established Perlectio has an untyped witness basis entry")
+        if chair in seen_chairs:
+            raise FatalAccounting("an established Perlectio names one witness more than once")
+        record = context.tree.read_artifact_reference(
+            reference,
+            stage=ATTESTATORES,
+            kind="testimonium",
+            subject_id=act_id,
+        )
+        testimony = record.get("payload")
+        if (
+            record.get("outcome") != outcome
+            or not isinstance(testimony, dict)
+            or testimony.get("chair") != chair
+            or item.get("artifact_id") != record.get("artifact_id")
+        ):
+            raise FatalAccounting(
+                "an established Perlectio's witness basis does not match its sealed Testimonium"
+            )
+        validate_serving_provenance(
+            context,
+            testimony.get("provenance"),
+            producer_stage=ATTESTATORES,
+            require_receipt=outcome in ATTEMPTED_WITNESS_OUTCOMES,
+        )
+        seen_chairs.add(chair)
+        witnesses.append(
+            {
+                "chair": chair,
+                "outcome": outcome,
+                "testimonium_ref": reference,
+                "provenance": testimony["provenance"],
+            }
+        )
+    return sorted(witnesses, key=lambda witness: witness["chair"])
 
 
 def export_source_regions(tree, regions: list[dict], census: dict[int, dict]) -> list[dict]:
@@ -309,6 +366,12 @@ def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | Non
             )
         return terminal, review, None
 
+    if review["outcome"] == "recovery-requested":
+        raise FatalAccounting(
+            f"act {act_id} has an outstanding recovery request; its recrop must be reread "
+            "before an Archetypus can exist"
+        )
+
     established = artifacts_for(context, ARCHETYPUS, "archetypus", act_id)
     if not established:
         raise FatalAccounting(
@@ -382,6 +445,29 @@ def verify_established_record(context, act: dict, review: dict, established: dic
         kind="perlectio",
         subject_id=act["act_id"],
     )
+    current = latest_attempt(
+        artifacts_for(context, PERLECTOR, "perlectio", act["act_id"]),
+        f"reading of {act['act_id']}",
+        operation="perlegere",
+    )
+    if current["artifact_id"] != reading["artifact_id"]:
+        raise FatalAccounting(
+            f"act {act['act_id']} has a newer Perlectio than the one its Archetypus and "
+            "Recensor review bind; export may not hide unreconciled evidence"
+        )
+    recovery_regions = 0
+    for region in artifacts_for(context, DESIGNATOR, "region", act["act_id"]):
+        region_payload = region.get("payload")
+        if not isinstance(region_payload, dict):
+            raise FatalAccounting(f"Designator region of {act['act_id']} has no object payload")
+        if region_payload.get("origin") == "recovery":
+            recovery_regions += 1
+    readings = artifacts_for(context, PERLECTOR, "perlectio", act["act_id"])
+    if len(readings) != recovery_regions + 1:
+        raise FatalAccounting(
+            f"act {act['act_id']} has {recovery_regions} recovery crop(s) but {len(readings)} "
+            "Perlectio attempt(s); export may not complete over an unre-read recrop"
+        )
     reading_payload = reading.get("payload")
     if not isinstance(reading_payload, dict):
         raise FatalAccounting("an established Perlectio has no payload")
@@ -390,7 +476,7 @@ def verify_established_record(context, act: dict, review: dict, established: dic
         payload.get("text") != reading_payload.get("text")
         or payload.get("regions") != reading_regions
         or payload.get("provenance") != reading_payload.get("provenance")
-        or payload.get("dissent_ref") != reading["artifact_id"]
+        or payload.get("dissent_ref") != reading_ref
     ):
         raise FatalAccounting(
             "an Archetypus does not exactly preserve the Perlectio its review accepted"
@@ -456,21 +542,31 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             payload = verify_established_record(context, act, review, established)
             validate_serving_provenance(
                 context,
-                payload["provenance"],
+                payload.get("provenance"),
                 producer_stage=PERLECTOR,
                 require_receipt=True,
+            )
+            provenance = payload.get("provenance")
+            reading = context.tree.read_artifact_reference(
+                payload["perlectio_ref"],
+                stage=PERLECTOR,
+                kind="perlectio",
+                subject_id=act["act_id"],
             )
             entry.update(
                 {
                     # The established reading, and nothing else. No witness text
                     # reaches this field by any path.
                     "text": payload["text"],
-                    "provenance": payload["provenance"],
+                    "provenance": provenance,
                     # The link back to the exact ink: every region, with the
                     # transform that produced it and the digest of its bytes.
                     "source_regions": export_source_regions(
                         context.tree, payload["regions"], census
                     ),
+                    "perlectio_ref": payload["perlectio_ref"],
+                    "recensor_ref": payload["recensor_ref"],
+                    "witnesses": export_witnesses(context, reading, act["act_id"]),
                     "dissent_ref": payload["dissent_ref"],
                 }
             )

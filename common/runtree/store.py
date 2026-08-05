@@ -223,7 +223,7 @@ class RunTree:
             differing = [
                 field
                 for field in bound_fields
-                if field not in existing or existing[field] != authority[field]
+                if field not in existing or existing[field] != authority.get(field)
             ]
             if differing:
                 raise IncompatibleReuse(
@@ -526,6 +526,9 @@ class RunTree:
         if it disagrees with the artifacts, the artifacts are right and the
         manifest was stale.
         """
+        # A manifest is a read route too. In particular, an empty directory must
+        # not make a missing run authority look like an empty, trustworthy run.
+        self._run_authority()
         stage_root = self.resolve(writing_directory(stage))
         entries: list[dict[str, Any]] = []
         artifacts_root = stage_root / ARTIFACTS_DIR
@@ -607,26 +610,30 @@ class RunTree:
                 f"artifact belongs to run {record['run_id']!r}, not {self.run_id!r}"
             )
         authority = self._run_authority()
-        if authority is not None and record["config_digest"] != authority:
+        if record["config_digest"] != authority:
             raise SchemaRefusal(
                 f"artifact was produced under configuration {record['config_digest']!r} and this "
                 f"run is bound to {authority!r}; two runs may share a name, so the name alone "
                 "does not say an artifact belongs here"
             )
 
-    def _run_authority(self) -> str | None:
-        """This tree's sealed `config_digest`, or None before `run.json` exists.
+    def _run_authority(self) -> str:
+        """This tree's sealed `config_digest`.
 
         Read once and kept, because it cannot change under a run: `read_run` refuses
         an authority that fails its own self-hash, and `create` refuses incompatible
-        reuse. None is returned during creation, when the authority genuinely does
-        not exist yet and there is nothing to bind against.
+        reuse. Artifact readers run only after creation; a missing or unreadable
+        authority therefore makes evidence unreadable rather than disabling its
+        run binding.
         """
         if self._config_digest is None:
-            try:
-                self._config_digest = self.read_run().get("config_digest")
-            except (IncompatibleReuse, SchemaRefusal, OSError):
-                return None
+            config_digest = self.read_run().get("config_digest")
+            if not _is_sha256(config_digest):
+                raise IncompatibleReuse(
+                    "run.json has no lowercase sha256 config_digest, so no artifact in this "
+                    "tree can be bound to its run authority"
+                )
+            self._config_digest = config_digest
         return self._config_digest
 
     def _verify_artifact_inputs(self, record: dict[str, Any]) -> None:

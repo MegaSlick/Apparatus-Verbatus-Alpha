@@ -10,13 +10,14 @@ import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import FatalAccounting
+from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import ARMARIUM, DESIGNATOR, DOOR
 from common.runtree.store import RunTree
 from common.stage import StageContext, adapter_recipe_for, load_fixture, run_config_bindings
@@ -33,6 +34,48 @@ def _armarium_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_page_attribution_requires_verified_designator_crop_lineage(monkeypatch):
+    """A raw region ordinal cannot itself prove a sealed page was marked out."""
+    armarium = _armarium_module()
+
+    class Tree:
+        def build_manifest(self, stage):
+            assert stage == DESIGNATOR
+            return {"artifacts": [{"kind": "region", "artifact_id": "forged"}]}
+
+        def read_artifact(self, stage, kind, artifact_id):
+            assert (stage, kind, artifact_id) == (DESIGNATOR, "region", "forged")
+            return {
+                "subject_id": "act-1",
+                "payload": {"transform": {"source_page_ordinal": 999}},
+            }
+
+    context = SimpleNamespace(tree=Tree(), run={})
+    monkeypatch.setattr(armarium, "expected_acts", lambda _context: [{"act_id": "act-1"}])
+
+    def forged_lineage(*_args):
+        raise ContractError("the forged transform is not an Exemplar crop")
+
+    monkeypatch.setattr(armarium, "verify_exemplar_crop_lineage", forged_lineage)
+    with pytest.raises(FatalAccounting, match="cannot be verified"):
+        armarium.pages_marked_out(context)
+
+
+def test_an_outstanding_recovery_is_not_called_an_accepted_act_without_an_archetypus(monkeypatch):
+    """The terminal message must name outstanding recovery, not a false acceptance."""
+    armarium = _armarium_module()
+    review = {"outcome": "recovery-requested", "artifact_id": "review-1"}
+    monkeypatch.setattr(
+        armarium,
+        "artifacts_for",
+        lambda _context, stage, _kind, _act_id: [review] if stage == "recensor" else [],
+    )
+    monkeypatch.setattr(armarium, "latest_attempt", lambda records, *_args, **_kwargs: records[0])
+
+    with pytest.raises(FatalAccounting, match="outstanding recovery request"):
+        armarium.categorize(SimpleNamespace(), "act-1")
 
 
 def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(tmp_path):

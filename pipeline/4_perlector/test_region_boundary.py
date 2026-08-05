@@ -78,6 +78,7 @@ def test_a_region_bound_to_its_actual_exemplar_input_verifies(real_region):
     assert verified["source_page_ordinal"] == region["payload"]["transform"]["source_page_ordinal"]
     assert verified["source_page_id"] == region["payload"]["transform"]["source_page_id"]
     assert verified["transform"] == region["payload"]["transform"]
+    assert verified["structure_provenance"] == region["payload"]["provenance"]
 
 
 def test_perlector_refuses_a_tampered_designator_region_provenance(real_region, monkeypatch):
@@ -194,6 +195,23 @@ def test_a_crop_relabelled_onto_a_different_act_cannot_pass_as_that_acts_own(rea
         verify_exemplar_crop_lineage(context.tree, context.run, forged)
     with pytest.raises(SchemaRefusal, match="does not trace to its Exemplar page"):
         perlector.verify_region(context, forged)
+
+
+def test_a_crop_relabelled_with_another_acts_key_cannot_borrow_its_seal_evidence(real_region):
+    """Changing both identity fields must not make one act's crop evidence another's."""
+    context, region = real_region
+    other_act = next(
+        context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == "region" and entry["subject_id"] != region["subject_id"]
+    )
+    forged = copy.deepcopy(other_act)
+    forged["subject_id"] = region["subject_id"]
+    forged["payload"]["act_key"] = region["payload"]["act_key"]
+    forged["payload"]["region_id"] = region_id(forged["subject_id"], forged["payload"]["transform"])
+
+    with pytest.raises(ContractError, match="does not name this proposal crop"):
+        verify_exemplar_crop_lineage(context.tree, context.run, forged)
 
 
 def test_malformed_exemplar_locators_all_refuse(real_region):

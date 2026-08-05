@@ -67,7 +67,7 @@ def proposed_regions(context, act_id: str) -> list[dict]:
             record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
             validate_serving_provenance(
                 context,
-                record["payload"]["provenance"],
+                record.get("payload", {}).get("provenance"),
                 producer_stage=DESIGNATOR,
                 require_receipt=True,
             )

@@ -265,8 +265,10 @@ def run_config_bindings(
     Since spec 02 `config/models.toml` owns the roster, the witness floor and
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
-    behaviour — the model configuration, the fixture, scenario, and the exact
-    Exemplar decoder-routing bytes.
+    behaviour — the model configuration, fixture, scenario, PDF-render settings,
+    and recovery policy. The synthetic fixture declares byte-backed pages only, so
+    it does not claim to bind the real Door's PDFium/Pillow/libheif execution
+    recipe; ``door._real_bindings`` binds that recipe on actual ingress.
 
     All three parts are load-bearing, and the scenario is the one easiest to
     drop by accident. Spec 01's third acceptance test reuses one run id under a

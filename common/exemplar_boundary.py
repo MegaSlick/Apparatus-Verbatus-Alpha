@@ -7,9 +7,9 @@ a changed, missing, or substituted blob cannot be quietly re-hashed into new
 downstream evidence.
 
 This deliberately knows contracts and the run tree, but not a numbered pipeline
-module.  Both Designator and Armarium use the same check: the first prevents work
-over altered pixels; the latter prevents an export after pixels changed between
-stages.
+module. Designator, Attestatores, Perlector, and Armarium use the same check: the
+first three prevent work over altered pixels; the latter prevents an export after
+pixels changed between stages.
 """
 
 import json
@@ -286,7 +286,7 @@ def verify_exemplar_crop_lineage(
         raise ContractError("a crop region carries an invalid Exemplar transform")
     if payload.get("region_id") != region_id(region.get("subject_id"), transform):
         raise ContractError("a crop region's identities do not bind its recorded transform")
-    _verify_act_identity_binding(tree, region.get("subject_id"), payload)
+    _verify_act_identity_binding(tree, region, payload)
     sources = [row for row in run.get("source_manifest", []) if row.get("ordinal") == ordinal]
     if len(sources) != 1:
         raise ContractError("a crop region's source ordinal does not name one submitted page")
@@ -367,10 +367,16 @@ def verify_exemplar_crop_lineage(
         "source_page_ordinal": ordinal,
         "source_page_id": source_page_id,
         "transform": dict(transform),
+        # Attestatores and Perlector validate this receipt-backed provenance
+        # before invoking this helper. Keep it with the verified crop facts so
+        # the export can still name the chair that marked the ink out.
+        "structure_provenance": payload.get("provenance"),
     }
 
 
-def _verify_act_identity_binding(tree: RunTree, subject_id: Any, payload: dict[str, Any]) -> None:
+def _verify_act_identity_binding(
+    tree: RunTree, region: dict[str, Any], payload: dict[str, Any]
+) -> None:
     """Refuse a region whose claimed act does not match the Designator's own seal.
 
     Everything above proves the region's TRANSFORM traces to a genuine sealed
@@ -387,8 +393,11 @@ def _verify_act_identity_binding(tree: RunTree, subject_id: Any, payload: dict[s
     The proposal seal is the downstream expected-act authority (`common/stage.py`'s
     `expected_acts`) and is emitted once, never rewritten, so a region's `act_key`
     must name exactly one seal entry, and that entry's own `act_id` — not the
-    region's self-reported one — is what `subject_id` must equal.
+    region's self-reported one — is what `subject_id` must equal. Proposal
+    evidence is checked here too, so this function does not depend on a caller
+    first running the broader proposal-seal reconciliation.
     """
+    subject_id = region.get("subject_id")
     act_key = payload.get("act_key")
     if not isinstance(act_key, str) or not act_key:
         raise ContractError("a crop region names no act_key to verify its identity against")
@@ -408,6 +417,19 @@ def _verify_act_identity_binding(tree: RunTree, subject_id: Any, payload: dict[s
             "a crop region's subject_id does not match the proposal seal's act identity "
             "for the act_key it claims"
         )
+    if payload.get("origin") == "proposal":
+        artifact = region.get("artifact_id")
+        if not isinstance(artifact, str) or not artifact:
+            raise ContractError("a proposal crop region has no artifact id to bind to its seal")
+        relative_path = tree.artifact_path(DESIGNATOR, "region", artifact)
+        reference = {
+            "relative_path": relative_path,
+            "sha256": digest_bytes(tree.read_bytes(relative_path)),
+        }
+        if reference not in matches[0].get("evidence", []):
+            raise ContractError(
+                "a proposal crop region does not name this proposal crop in the act's sealed evidence"
+            )
 
 
 def _verify_page_source_facts(

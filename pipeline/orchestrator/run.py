@@ -93,6 +93,12 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
     if completed.stdout.strip():
         print(completed.stdout.rstrip())
+    # A completed-but-partial Door publishes its private refusal report on stderr.
+    # Forward it on the normal orchestration path so the human who ran the pipeline
+    # is told that the retained record exists.  Unexpected exits remain reported by
+    # the ContractError below, without printing their diagnostics twice.
+    if completed.returncode in (EXIT_COMPLETE, EXIT_HELD) and completed.stderr.strip():
+        print(completed.stderr.rstrip(), file=sys.stderr)
     if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD):
         raise ContractError(f"{program} exited {completed.returncode}\n{completed.stderr.rstrip()}")
     return completed.returncode

@@ -1,5 +1,6 @@
 """Attestatores refuses an unverified crop before a chair is asked to read it."""
 
+import copy
 import importlib.util
 import subprocess
 import sys
@@ -7,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.errors import ContractError
+from common.chairs import ChairRegistry
+from common.contracts.canonical import canonical_bytes, self_hash
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import DESIGNATOR
 from common.runtree.store import RunTree
 
@@ -29,6 +32,7 @@ class _Context:
     def __init__(self, tree):
         self.tree = tree
         self.run = tree.read_run()
+        self.registry = ChairRegistry.from_toml(ROOT / "config/models.toml")
 
 
 @pytest.fixture
@@ -67,4 +71,22 @@ def test_attestatores_verifies_crop_lineage_before_a_witness_reads_it(real_regio
 
     monkeypatch.setattr(attestatores, "verify_exemplar_crop_lineage", refuse)
     with pytest.raises(ContractError, match="crop-lineage marker"):
+        attestatores.proposed_regions(context, region["subject_id"])
+
+
+def test_attestatores_names_a_designator_region_with_missing_provenance(real_region, monkeypatch):
+    """A resealed missing field is a schema refusal, not a raw KeyError traceback."""
+    context, region = real_region
+    missing = copy.deepcopy(region)
+    del missing["payload"]["provenance"]
+    missing["self_hash"] = self_hash(missing)
+    entry = next(
+        entry
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["artifact_id"] == region["artifact_id"]
+    )
+    context.tree.resolve(entry["relative_path"]).write_bytes(canonical_bytes(missing))
+    monkeypatch.setattr(context.tree, "build_manifest", lambda stage: {"artifacts": [entry]})
+
+    with pytest.raises(SchemaRefusal, match="model provenance is not an object"):
         attestatores.proposed_regions(context, region["subject_id"])

@@ -25,7 +25,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
+from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR
 from common.runtree import store as runtree_store
 from common.runtree.store import RECEIPTS_DIR, RUN_FILE, RunTree
 
@@ -398,6 +398,56 @@ def test_a_same_named_run_in_another_root_cannot_lend_this_one_its_evidence(tmp_
         )
     with pytest.raises(SchemaRefusal, match="two runs may share a name"):
         ours.build_manifest(DESIGNATOR)
+
+
+@pytest.mark.parametrize("authority_state", ("missing", "self-hash-corrupt", "bad-digest"))
+def test_every_generic_artifact_read_route_fails_closed_without_a_valid_run_authority(
+    tmp_path, authority_state
+):
+    """`run.json` is the binding, not an optional optimization for a fresh reader."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    result = tree.publish_artifact(envelope)
+    reference = {
+        "relative_path": result.relative_path,
+        "sha256": digest_bytes(tree.read_bytes(result.relative_path)),
+    }
+    run_file = tmp_path / "r1" / RUN_FILE
+
+    if authority_state == "missing":
+        run_file.unlink()
+    else:
+        authority = tree.read_run()
+        if authority_state == "self-hash-corrupt":
+            authority["config_digest"] = "d" * 64
+        else:
+            authority["config_digest"] = "not-a-digest"
+            authority["self_hash"] = self_hash(authority)
+        run_file.write_bytes(canonical_bytes(authority))
+
+    fresh = RunTree(tmp_path, "r1")
+    with pytest.raises(IncompatibleReuse):
+        fresh.read_artifact(DESIGNATOR, "proposal", envelope["artifact_id"])
+    with pytest.raises(IncompatibleReuse):
+        fresh.read_artifact_reference(reference, stage=DESIGNATOR, kind="proposal")
+    with pytest.raises(IncompatibleReuse):
+        fresh.build_manifest(PERLECTOR)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("ingress", {"mode": "synthetic-fixture"}),
+        ("render_settings", {"target_dpi": 400}),
+    ),
+)
+def test_reuse_with_a_now_absent_optional_bound_field_is_named_not_a_keyerror(
+    tmp_path, field, value
+):
+    make_run(tmp_path, **{field: value})
+
+    with pytest.raises(IncompatibleReuse, match=field):
+        make_run(tmp_path)
 
 
 def test_a_published_artifact_reads_back_and_revalidates(tmp_path):
