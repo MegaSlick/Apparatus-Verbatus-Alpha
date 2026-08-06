@@ -5,10 +5,12 @@
 # suggestion a stage may argue with, and nothing in the pipeline may raise it at
 # run time.
 #
-# QUEUED FOR TYREL, not decided here: the master plan's ledger records that both
-# mechanisms exist -- a run-level cap and this per-act recovery budget -- and that
-# he confirms which his ruling governed, or blesses both. If the ruling was meant
-# to bind the run level instead, this file is where that changes.
+# SETTLED 2026-08-05, ruling #18: he blesses BOTH mechanisms. The per-act recovery
+# budget below and the run-level hard-failure cap are separate instruments and both
+# stand. The run-level threshold is "more than two": one hard failure is a fluke,
+# two is an early warning, more than two means something needs fixing and the run
+# stops. This file governs the per-act budget only; the run-level threshold lives
+# in `config/hard_failure.toml`. Nothing here is queued for him any more.
 #
 # The skeleton's own request gate (`pipeline/5_recensor/run.py`'s `wants_recovery`)
 # grants an act at most one recovery-request in its whole lifetime regardless of

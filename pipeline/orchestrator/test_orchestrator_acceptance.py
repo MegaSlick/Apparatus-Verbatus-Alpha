@@ -79,8 +79,15 @@ FIXTURE = "synthetic-two-page-v0"
 # every downstream artifact digest and these two whole-tree pins with them. That is the
 # seal behaving correctly — a run records exactly the configuration text it ran under —
 # but it means a documentation-only edit to anything under `config/` lands here.
-HAPPY_RUN_TREE_DIGEST = "e2999e45d0cac2b3776cb2ecf42abdc13e366ef81ae9e8f46c579269286ca14a"
-REVIEW_RUN_TREE_DIGEST = "b6740e78dddca45c15de796208159bf54a3d322fe9084cfab24ba8b52354c63b"
+#
+# Re-pinned 2026-08-05 for the same reason a third time, this time a comment in
+# `config/recovery.toml`: it still asked Tyrel to confirm which mechanism his "stop at 3"
+# ruling governed, months after ruling #18 answered it (he blessed both, and set the
+# run-level threshold at more than two). A stale question standing in a merged config is
+# how a settled decision gets re-litigated, so the prose was corrected and these two pins
+# moved with it. Nothing about the pipeline's behaviour changed.
+HAPPY_RUN_TREE_DIGEST = "bb76b02db65475659388d97e1863d88b05a8a68a3f44da99b62a4f6093b5130b"
+REVIEW_RUN_TREE_DIGEST = "a83a0c69cf85bfbdd8147b38ed6051ef26bc6b60966c8739aa5d5d25e3a0f059"
 
 
 def orchestrate(
