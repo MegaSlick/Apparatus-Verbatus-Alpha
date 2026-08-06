@@ -128,7 +128,8 @@ the agent's standing instructions and its pinned dependencies, copied in at buil
 so a stale image runs instructions this repository no longer holds — and nothing about it
 looks wrong from the inside. `docker images` gives its build time; `git log -1` on
 `operations/autoclave/agent-brief.md`, `operations/autoclave/Dockerfile` and
-`requirements-dev.txt` gives theirs. If any of the three is newer, say so and run
+`requirements-dev.txt` gives theirs. If any of the three is newer — or
+`git status --porcelain` shows an uncommitted edit to any of them — say so and run
 `sh operations/autoclave/autoclave.sh build` before dispatching anything. This is a
 comparison, not a rebuild every session: rebuilding costs minutes and is only worth it
 when a file actually moved.
