@@ -93,9 +93,19 @@ AUTH_DIR_CODEX="/home/agent/.codex"
 HOME_CONFIG_LIVE="/home/agent/.claude.json"
 HOME_CONFIG_KEPT="${AUTH_DIR_CLAUDE}/home-config.json"
 
-HOME_CONFIG_SEED="if [ -f '${HOME_CONFIG_KEPT}' ]; then cp '${HOME_CONFIG_KEPT}' '${HOME_CONFIG_LIVE}'; fi
+# The seed aborts its shell on a failed copy rather than letting the second line
+# report success over a partial file — a chamber running the CLI against a torn
+# configuration is the original bug wearing a new face. The save publishes by
+# copy-to-temp-then-rename so a reader never sees a half-written file even when two
+# chambers save at once: rename is atomic on one filesystem, so the last complete
+# snapshot wins and no interleaving produces a torn one. `\$\$` is escaped on
+# purpose — it must expand to the *container* shell's pid, so two concurrent saves
+# never share a temp name. The save ends in `false` rather than `exit` when the
+# copy fails, because `wrap_home_config` below needs to see the failure and still
+# report the CLI's own status; a bare `sh -c` caller sees the non-zero either way.
+HOME_CONFIG_SEED="if [ -f '${HOME_CONFIG_KEPT}' ]; then cp '${HOME_CONFIG_KEPT}' '${HOME_CONFIG_LIVE}' || exit 1; fi
 if [ ! -f '${HOME_CONFIG_LIVE}' ]; then printf '%s\\n' '{}' > '${HOME_CONFIG_LIVE}'; fi"
-HOME_CONFIG_SAVE="if [ -f '${HOME_CONFIG_LIVE}' ] && [ -d '${AUTH_DIR_CLAUDE}' ]; then cp '${HOME_CONFIG_LIVE}' '${HOME_CONFIG_KEPT}'; fi"
+HOME_CONFIG_SAVE="if [ -f '${HOME_CONFIG_LIVE}' ] && [ -d '${AUTH_DIR_CLAUDE}' ]; then { cp '${HOME_CONFIG_LIVE}' '${HOME_CONFIG_KEPT}.tmp.'\$\$ && mv -f '${HOME_CONFIG_KEPT}.tmp.'\$\$ '${HOME_CONFIG_KEPT}'; } || { rm -f '${HOME_CONFIG_KEPT}.tmp.'\$\$; false; }; fi"
 
 # Run one command between a seed and a save, and hand back the command's own exit
 # status rather than the copy's. A save that quietly became the exit code would report
@@ -105,6 +115,10 @@ HOME_CONFIG_SAVE="if [ -f '${HOME_CONFIG_LIVE}' ] && [ -d '${AUTH_DIR_CLAUDE}' ]
 # oversight: this function builds a script for the *container's* shell, so the variable
 # must survive as text and be expanded in there. Expanding it here would bake in this
 # shell's exit status, which is a different number about a different command.
+# A save that fails after a successful command is surfaced as the wrapper's own
+# failure — a sign-in that worked but was not persisted will die at the next
+# refresh, and reporting success there is how this bug stayed invisible twice. A
+# failed command keeps its own status regardless; the save still ran first.
 # shellcheck disable=SC2016
 wrap_home_config() {
     printf '%s\n' \
@@ -112,6 +126,11 @@ wrap_home_config() {
         "$1" \
         'ac_home_config_rc=$?' \
         "$HOME_CONFIG_SAVE" \
+        'ac_home_config_save_rc=$?' \
+        'if [ "$ac_home_config_rc" -eq 0 ] && [ "$ac_home_config_save_rc" -ne 0 ]; then' \
+        '    echo "the command finished but its configuration could not be saved to the volume; the next chamber may find this sign-in blank" >&2' \
+        '    exit "$ac_home_config_save_rc"' \
+        'fi' \
         'exit $ac_home_config_rc'
 }
 
@@ -1170,7 +1189,7 @@ cmd_dispatch() {
                     -m "$AC_MODEL" \
                     -c "model_reasoning_effort=$AC_EFFORT" \
                     -- - < /out/brief.md
-            ' ;;
+            ' || dispatch_status=$? ;;
     esac
 
     note ""

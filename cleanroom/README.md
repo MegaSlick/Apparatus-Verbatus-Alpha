@@ -1,6 +1,7 @@
 # cleanroom
 
-**The rebuild bench. Only code written new, inside this repository, ever sits here.**
+**The rebuild bench. What sits here is written new in this repository — or carried
+under the citation rule below, named and justified, never silently.**
 
 Called `autoclave/` until 2026-08-01. The containers agents work inside took that name
 instead — they are the thing that actually sterilizes — and one word for two boundaries

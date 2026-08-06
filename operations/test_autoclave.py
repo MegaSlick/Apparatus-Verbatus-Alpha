@@ -1934,7 +1934,9 @@ class TestTheConfigurationThatLivesOutsideTheMount:
             return None
 
         seed = index_of("cp /home/agent/.claude/home-config.json /home/agent/.claude.json")
-        save = index_of("cp /home/agent/.claude.json /home/agent/.claude/home-config.json")
+        # The save now publishes copy-to-temp-then-rename, so the fragment matches the
+        # temp destination's stable prefix rather than a direct copy to the kept path.
+        save = index_of("cp /home/agent/.claude.json /home/agent/.claude/home-config.json.tmp.")
         cli = index_of("--append-system-prompt-file")
         assert seed is not None, "dispatch never seeded the configuration from the volume"
         assert save is not None, "dispatch never wrote the configuration back to the volume"
@@ -2004,6 +2006,122 @@ class TestTheConfigurationThatLivesOutsideTheMount:
         for line in code_lines():
             if "home-config.json" in line:
                 assert "ln -s" not in line, f"symlinked instead of copied: {line.strip()}"
+
+
+class TestTheWrapperAgainstARealFilesystem:
+    """The wrapped seed-command-save script, executed for real against a sandbox.
+
+    The class above proves the launcher *emits* the right calls in the right order;
+    the Docker stand-in cannot prove the calls *work*, because it never executes the
+    shell it records (CodeRabbit on PR 19, three findings). These tests extract the
+    genuine snippet-and-wrapper block from the script's own bytes, retarget its two
+    absolute container paths into a temporary directory, and run what
+    `wrap_home_config` actually generates — so a copy that fails, a partial file, or
+    a swallowed status shows up as an outcome here rather than in a dead chamber.
+    The login booth runs this exact wrapper (`login_cmd=$(wrap_home_config ...)`),
+    so this is its execution coverage too.
+    """
+
+    def _wrapper_script(self, tmp_path, command):
+        """Extract the real block from the script, retargeted into tmp_path."""
+        source = SCRIPT.read_text()
+        start = source.index("HOME_CONFIG_LIVE=")
+        end = source.index("\n}", source.index("wrap_home_config()")) + 2
+        block = source[start:end]
+        live = tmp_path / "home" / ".claude.json"
+        kept_dir = tmp_path / "home" / ".claude"
+        (tmp_path / "home").mkdir(exist_ok=True)
+        kept_dir.mkdir(exist_ok=True)
+        block = block.replace("/home/agent/.claude.json", str(live))
+        block = f'AUTH_DIR_CLAUDE="{kept_dir}"\n' + block
+        driver = block + f'\nwrap_home_config "{command}"\n'
+        generated = subprocess.run(
+            ["sh", "-c", driver], capture_output=True, text=True, check=True
+        ).stdout
+        return generated, live, kept_dir / "home-config.json"
+
+    def _run(self, generated):
+        return subprocess.run(["sh", "-c", generated], capture_output=True, text=True)
+
+    def test_content_travels_both_directions_and_survives(self, tmp_path):
+        """The volume's snapshot reaches the live path, the command's rewrite reaches
+        the volume, and a command that succeeded exits zero. Outcome, not call order."""
+        generated, live, kept = self._wrapper_script(
+            tmp_path, f"printf refreshed > {tmp_path}/home/.claude.json"
+        )
+        kept.write_text('{"from":"volume"}')
+        result = self._run(generated)
+        assert result.returncode == 0, result.stderr
+        assert kept.read_text() == "refreshed", "the command's rewrite never reached the volume"
+
+    def test_a_failed_command_still_saves_and_keeps_its_own_status(self, tmp_path):
+        """The refresh that rewrites the file and then fails at something else is the
+        exact case that killed the sign-in — the rewrite must be saved anyway, and the
+        command's status must come back untouched."""
+        # A subshell, deliberately: a real CLI that fails *returns* non-zero to the
+        # wrapper. A bare `exit 7` here would terminate the generated script itself,
+        # which no external command can do.
+        generated, live, kept = self._wrapper_script(
+            tmp_path, f"(printf rewritten > {tmp_path}/home/.claude.json; exit 7)"
+        )
+        kept.write_text('{"stale":true}')
+        result = self._run(generated)
+        assert result.returncode == 7, "the command's own status was not preserved"
+        assert kept.read_text() == "rewritten", "a failed command's rewrite was thrown away"
+
+    def test_a_save_failure_after_success_is_not_reported_as_success(self, tmp_path):
+        """A sign-in that worked but was not persisted dies at the next refresh, and
+        zero here is how that stayed invisible twice. The volume directory is made
+        unwritable so the copy genuinely fails."""
+        generated, live, kept = self._wrapper_script(tmp_path, "true")
+        kept.write_text("{}")
+        kept.parent.chmod(0o555)
+        try:
+            result = self._run(generated)
+        finally:
+            kept.parent.chmod(0o755)
+        assert result.returncode != 0, "a lost save was reported as a successful sign-in"
+        assert "could not be saved" in result.stderr
+
+    def test_a_failed_seed_stops_before_the_command_runs(self, tmp_path):
+        """Running the CLI against a configuration that failed to copy is the original
+        bug with extra steps. The kept file is made unreadable so the seed's copy
+        genuinely fails, and the command must never run."""
+        marker = tmp_path / "command-ran"
+        generated, live, kept = self._wrapper_script(tmp_path, f"touch {marker}")
+        kept.write_text("{}")
+        kept.chmod(0o000)
+        try:
+            result = self._run(generated)
+        finally:
+            kept.chmod(0o644)
+        assert result.returncode != 0, "a failed seed was not surfaced"
+        assert not marker.exists(), "the command ran against a configuration that failed to seed"
+
+    def test_concurrent_saves_never_leave_a_torn_file(self, tmp_path):
+        """Two chambers saving at once was CodeRabbit's serialization finding. The
+        launcher's answer is atomic publication — copy to a pid-suffixed temp, then
+        rename — so a reader sees a complete snapshot from one writer or the other,
+        never an interleaving. Proven by racing real writers and checking every
+        observation is one of the two whole payloads."""
+        payload_a = "A" * 200_000
+        payload_b = "B" * 200_000
+        generated_a, live, kept = self._wrapper_script(tmp_path, "true")
+        (tmp_path / "home" / ".claude.json").write_text(payload_a)
+        script_b = generated_a.replace(str(live), str(live) + "-b")
+        (tmp_path / "home" / ".claude.json-b").write_text(payload_b)
+        procs = [
+            subprocess.Popen(["sh", "-c", s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for s in (generated_a, script_b) * 10
+        ]
+        seen = set()
+        while any(p.poll() is None for p in procs):
+            if kept.exists():
+                seen.add(kept.read_text()[:1] + str(len(kept.read_text())))
+        for p in procs:
+            p.wait()
+        torn = {s for s in seen if s not in {f"A{len(payload_a)}", f"B{len(payload_b)}"}}
+        assert not torn, f"a reader observed a torn snapshot: {torn}"
 
 
 def test_report_names_the_path_it_looked_for():
