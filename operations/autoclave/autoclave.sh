@@ -68,6 +68,53 @@ AUTH_VOL_CODEX="verbatus-ac-auth-codex"
 AUTH_DIR_CLAUDE="/home/agent/.claude"
 AUTH_DIR_CODEX="/home/agent/.codex"
 
+# **Claude keeps its configuration in two places and only one of them was mounted.**
+# `.credentials.json` lives inside the mounted directory named above, so it survived
+# every container. `.claude.json` lives beside that directory rather than in it — one
+# level *up*, outside the mount — and this script created a fresh empty one in every
+# chamber. Both paths below are the container's own; nothing here reads this host. The
+# CLI needs
+# both to refresh an OAuth token: with the credential present and the config blank the
+# refresh fails and the CLI **blanks the token fields in place**, leaving a record whose
+# `refreshTokenExpiresAt` is still weeks away and whose tokens are empty strings.
+#
+# That is not an expiry and it is not a lost volume. It is why the sign-in worked for a
+# few hours and then died, twice, on 2026-08-05 and 2026-08-06 — the access token lasts
+# until its first refresh, and the first refresh is where it goes. The 50-byte
+# `backups/.claude.json.backup.*` files in the volume are the CLI dutifully backing up
+# the empty stub this script had just made.
+#
+# So the file is kept inside the volume and copied in and out around anything that runs
+# a Claude CLI. Copying rather than symlinking on purpose: the CLI writes this file
+# atomically — temp file, then rename over — and a rename replaces a symlink with a
+# regular file, which would put the whole thing back exactly as it was while looking
+# fixed. Codex needs none of this: everything it writes is already inside its own
+# mounted directory, which is why only one vendor ever had this problem.
+HOME_CONFIG_LIVE="/home/agent/.claude.json"
+HOME_CONFIG_KEPT="${AUTH_DIR_CLAUDE}/home-config.json"
+
+HOME_CONFIG_SEED="if [ -f '${HOME_CONFIG_KEPT}' ]; then cp '${HOME_CONFIG_KEPT}' '${HOME_CONFIG_LIVE}'; fi
+if [ ! -f '${HOME_CONFIG_LIVE}' ]; then printf '%s\\n' '{}' > '${HOME_CONFIG_LIVE}'; fi"
+HOME_CONFIG_SAVE="if [ -f '${HOME_CONFIG_LIVE}' ] && [ -d '${AUTH_DIR_CLAUDE}' ]; then cp '${HOME_CONFIG_LIVE}' '${HOME_CONFIG_KEPT}'; fi"
+
+# Run one command between a seed and a save, and hand back the command's own exit
+# status rather than the copy's. A save that quietly became the exit code would report
+# a failed sign-in as success.
+#
+# The single quotes on the two `ac_home_config_rc` lines are the whole point and not an
+# oversight: this function builds a script for the *container's* shell, so the variable
+# must survive as text and be expanded in there. Expanding it here would bake in this
+# shell's exit status, which is a different number about a different command.
+# shellcheck disable=SC2016
+wrap_home_config() {
+    printf '%s\n' \
+        "$HOME_CONFIG_SEED" \
+        "$1" \
+        'ac_home_config_rc=$?' \
+        "$HOME_CONFIG_SAVE" \
+        'exit $ac_home_config_rc'
+}
+
 die() { printf 'autoclave: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
 
@@ -303,19 +350,29 @@ cmd_login() {
     # discarded so the report below could always run; the report has to say what
     # happened either way, and a vendor CLI that failed is the clearest evidence there
     # is of what happened.
+    #
+    # **The booth is where the two-file split bit hardest.** A Claude sign-in writes
+    # `.credentials.json` into the volume and `.claude.json` into a container marked
+    # `--rm`, so the half the refresh needs was thrown away the moment the sign-in
+    # succeeded. Wrapping the CLI keeps both halves. See `HOME_CONFIG_KEPT` above.
+    case "$vendor" in
+        claude) login_cmd=$(wrap_home_config "$tool") ;;
+        *) login_cmd="$tool" ;;
+    esac
+
     login_status=0
     if [ -t 0 ]; then
         docker run --rm --interactive --tty \
             --volume "${volume}:${mount}" \
             "$IMAGE" \
-            sh -c "$tool" || login_status=$?
+            sh -c "$login_cmd" || login_status=$?
     else
         note "(no terminal here — running without one; follow the URL or code below)"
         note ""
         docker run --rm --interactive \
             --volume "${volume}:${mount}" \
             "$IMAGE" \
-            sh -c "$tool" || login_status=$?
+            sh -c "$login_cmd" || login_status=$?
     fi
 
     note ""
@@ -811,6 +868,19 @@ AUTOCLAVE_SETUP
         # and the file it wants did not exist at all; only a backup of it did. Codex
         # has carried its own `trust_level = "trusted"` since sign-in, so this is the
         # Claude half of a thing already true for the other vendor.
+        #
+        # Seeded from the volume rather than created blank, and written back after, so
+        # the configuration written at sign-in reaches the CLI and the trust flag set
+        # below outlives this chamber. `HOME_CONFIG_KEPT` at the top of this file says
+        # why the file has to make that trip at all.
+        #
+        # No apostrophe may appear anywhere in this block. It is one long single-quoted
+        # argument, so a word like "the sign-in-s own config" ends the string in the
+        # middle of a comment and silently swallows every function defined after it —
+        # which is exactly what it did, once, while this fix was being written.
+        if [ -f /home/agent/.claude/home-config.json ]; then
+            cp /home/agent/.claude/home-config.json /home/agent/.claude.json
+        fi
         [ -f /home/agent/.claude.json ] || printf "%s\n" "{}" > /home/agent/.claude.json
         python3 - <<"PY"
 import json, pathlib
@@ -822,6 +892,12 @@ except ValueError:
 config.setdefault("projects", {}).setdefault("/work", {})["hasTrustDialogAccepted"] = True
 p.write_text(json.dumps(config, indent=2))
 PY
+        # Only where the volume is actually mounted. A chamber created without a vendor
+        # — the default, and most of them — has no mounted directory to keep it in, and
+        # an unguarded copy there would fail and take the whole chamber down with it.
+        if [ -d /home/agent/.claude ]; then
+            cp /home/agent/.claude.json /home/agent/.claude/home-config.json
+        fi
     ' || die "chamber started but the agent configuration could not be written"
 
     note "chamber '${task}' is up"
@@ -1004,6 +1080,15 @@ cmd_dispatch() {
     # is a config override, `-c model_reasoning_effort=<level>`, which is how
     # `operations/codex/seat.sh` has always done it. Verified against `--help` on
     # both CLIs rather than assumed.
+    # Seeded again here, not only at `new`: a chamber can be created before a sign-in
+    # and dispatched after one, so the configuration the CLI is about to refresh against
+    # has to be the current one rather than whatever existed when the chamber was built.
+    dispatch_status=0
+    if [ "$vendor" = claude ]; then
+        docker exec "$(container_of "$task")" sh -c "$HOME_CONFIG_SEED" ||
+            die "the CLI configuration could not be seeded from the credential volume, and dispatching without it is what silently blanks the sign-in"
+    fi
+
     case "$vendor" in
         claude)
             # --dangerously-skip-permissions is correct *here* and nowhere else:
@@ -1047,7 +1132,14 @@ cmd_dispatch() {
                     --model "$AC_MODEL" \
                     --effort "$AC_EFFORT" \
                     -p < /out/brief.md
-            ' ;;
+            ' || dispatch_status=$?
+            # **The save runs whether the dispatch succeeded or not**, and that is the
+            # point: a refresh that rewrote the configuration and then failed at
+            # something else still rewrote the configuration. Losing it is what killed
+            # the sign-in twice. `HOME_CONFIG_KEPT` at the top of this file has the
+            # whole account.
+            docker exec "$(container_of "$task")" sh -c "$HOME_CONFIG_SAVE" ||
+                note "warning: the CLI configuration could not be written back to the credential volume; a later chamber may find this sign-in blank" ;;
         codex)
             # stdin is a finite regular file, which is what the old `< /dev/null`
             # protected against: `codex exec` waits forever on an open stdin when
@@ -1083,6 +1175,7 @@ cmd_dispatch() {
 
     note ""
     note "dispatch returned. Nothing has been collected and nothing merged."
+    [ "$dispatch_status" -eq 0 ] || note "  the CLI exited ${dispatch_status} — read the output above before trusting anything below"
     note "  what it wrote:  $0 collect ${task}"
     note "  what it said:   $0 report ${task}"
 }

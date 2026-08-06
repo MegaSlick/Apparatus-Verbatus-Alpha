@@ -1877,6 +1877,135 @@ class TestSignInIsAsked:
         assert asked, "dispatch never asked the CLI inside the chamber"
 
 
+class TestTheConfigurationThatLivesOutsideTheMount:
+    """Claude keeps its credential inside the mounted directory and its configuration
+    beside it, and the CLI needs both to refresh an OAuth token.
+
+    Only the credential half was ever persisted, so every container got a blank
+    configuration next to a real credential, the first refresh failed, and the CLI
+    blanked the token fields in place — twice, on 2026-08-05 and 2026-08-06, each time
+    a few hours after a sign-in that had visibly worked. These tests are the outcome
+    half of that fix: the file has to make the trip in both directions, or the sign-in
+    dies again and the evidence looks exactly like an expiry.
+    """
+
+    def _dispatch_claude(self, tmp_path):
+        script = elsewhere(tmp_path)
+        brief = tmp_path / "brief.md"
+        brief.write_text("bounded task\n")
+        drawer = tmp_path / "workbench" / "autoclave" / "task-x"
+        drawer.mkdir(parents=True)
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_CONTAINER_EXISTS": "1",
+                "FAKE_CHAMBER_VENDOR": "claude",
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_EXEC_STATUS": "0",
+            }
+        )
+        result = run(
+            "dispatch",
+            "task-x",
+            "claude",
+            str(brief),
+            "sonnet",
+            "ultracode",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+        return result, docker_calls(log)
+
+    def test_dispatch_seeds_the_configuration_before_the_cli_and_saves_it_after(self, tmp_path):
+        """Both directions, and in that order. Seeding alone would hand the CLI a
+        current configuration and then throw away whatever the refresh wrote to it,
+        which is the failure being fixed rather than a smaller version of it."""
+        result, calls = self._dispatch_claude(tmp_path)
+        assert result.returncode == 0, result.stderr
+
+        def index_of(fragment):
+            # Quotes stripped before matching: the launcher single-quotes both paths
+            # inside the snippet, and a test that depended on that spelling would fail
+            # the day someone reformatted the shell without changing what it does.
+            for position, call in enumerate(calls):
+                if call[:1] == ["exec"] and fragment in " ".join(call).replace("'", ""):
+                    return position
+            return None
+
+        seed = index_of("cp /home/agent/.claude/home-config.json /home/agent/.claude.json")
+        save = index_of("cp /home/agent/.claude.json /home/agent/.claude/home-config.json")
+        cli = index_of("--append-system-prompt-file")
+        assert seed is not None, "dispatch never seeded the configuration from the volume"
+        assert save is not None, "dispatch never wrote the configuration back to the volume"
+        assert cli is not None, "dispatch never ran the CLI"
+        assert seed < cli < save, f"wrong order: seed={seed} cli={cli} save={save}"
+
+    def test_a_codex_dispatch_touches_none_of_it(self, tmp_path):
+        """Codex keeps everything inside its own mounted directory, so this whole
+        mechanism is Claude's alone. A launcher that copied Claude's files around a
+        Codex chamber would be doing something nobody could explain."""
+        script = elsewhere(tmp_path)
+        brief = tmp_path / "brief.md"
+        brief.write_text("bounded task\n")
+        (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_CONTAINER_EXISTS": "1",
+                "FAKE_CHAMBER_VENDOR": "codex",
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_EXEC_STATUS": "0",
+            }
+        )
+        result = run(
+            "dispatch",
+            "task-x",
+            "codex",
+            str(brief),
+            "gpt-5.6-luna",
+            "high",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not [c for c in docker_calls(log) if "home-config.json" in " ".join(c)]
+
+    def test_the_save_does_not_depend_on_the_cli_succeeding(self):
+        """A refresh that rewrote the configuration and *then* failed at something else
+        still rewrote the configuration. Skipping the save on a non-zero exit would
+        throw away exactly the write that matters most.
+
+        **This is a reading, not an outcome**, and it is the honest limit of the stub:
+        it has one exec status for every exec, so making the CLI fail also fails the
+        sign-in check that runs before it and the dispatch never reaches the CLI at
+        all. What can be asserted is that the launcher captures the status into a
+        variable instead of branching on it — which is what keeps the save
+        unconditional.
+        """
+        source = SCRIPT.read_text()
+        assert "|| dispatch_status=$?" in source, (
+            "the CLI status is no longer captured, so the save may have become conditional on it"
+        )
+
+    def test_the_login_booth_keeps_the_configuration_it_writes(self):
+        """The booth is `--rm`, so a sign-in wrote the credential into the volume and
+        the configuration into a container that was thrown away seconds later. That is
+        why the sign-in worked and then died a few hours on."""
+        source = SCRIPT.read_text()
+        assert "wrap_home_config" in source
+        assert 'login_cmd=$(wrap_home_config "$tool")' in source
+
+    def test_nothing_symlinks_the_configuration_into_the_volume(self):
+        """A symlink is the obvious one-line fix and it is wrong: the CLI writes this
+        file atomically, and a rename replaces a symlink with a regular file — putting
+        the split back while looking fixed."""
+        for line in code_lines():
+            if "home-config.json" in line:
+                assert "ln -s" not in line, f"symlinked instead of copied: {line.strip()}"
+
+
 def test_report_names_the_path_it_looked_for():
     """A missing report says where it looked, so the operator can go and see."""
     result = run("report", "no-such-task")
