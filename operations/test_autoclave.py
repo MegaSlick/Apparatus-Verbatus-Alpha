@@ -2040,18 +2040,56 @@ class TestTheWrapperAgainstARealFilesystem:
         ).stdout
         return generated, live, kept_dir / "home-config.json"
 
-    def _run(self, generated):
-        return subprocess.run(["sh", "-c", generated], capture_output=True, text=True)
+    def _run(self, generated, env=None):
+        return subprocess.run(["sh", "-c", generated], capture_output=True, text=True, env=env)
+
+    def _cp_that_fails_writing_to(self, tmp_path, doomed_glob):
+        """A `cp` stand-in on PATH that fails only when writing to `doomed_glob`.
+
+        The wrapper's seed and save both call `cp` by bare name, so interposing on
+        PATH reaches exactly the copy under test and nothing else. Denying access by
+        `chmod` looked equivalent and is not: under an effective UID of 0 — which is
+        every chamber, and some CI runners — root reads a `0o000` file and writes into
+        a `0o555` directory, so the copy succeeds and the test passes for the wrong
+        reason, or fails for one. Found by CodeRabbit on PR 19.
+        """
+        bindir = tmp_path / "bin"
+        bindir.mkdir(exist_ok=True)
+        real_cp = shutil.which("cp")
+        assert real_cp, "no cp on PATH to stand in front of"
+        stub = bindir / "cp"
+        stub.write_text(
+            "#!/bin/sh\n"
+            'for arg in "$@"; do\n'
+            f'    case "$arg" in {doomed_glob}) exit 1 ;; esac\n'
+            "done\n"
+            f'exec {real_cp} "$@"\n'
+        )
+        stub.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = f"{bindir}:{env.get('PATH', '')}"
+        return env
 
     def test_content_travels_both_directions_and_survives(self, tmp_path):
         """The volume's snapshot reaches the live path, the command's rewrite reaches
-        the volume, and a command that succeeded exits zero. Outcome, not call order."""
+        the volume, and a command that succeeded exits zero. Outcome, not call order.
+
+        The command observes the live file *before* rewriting it, so the seed leg is
+        genuinely asserted. Rewriting first would let this pass on the save alone even
+        if the seed stopped copying entirely — CodeRabbit on PR 19.
+        """
+        observed = tmp_path / "observed.json"
+        live_path = tmp_path / "home" / ".claude.json"
         generated, live, kept = self._wrapper_script(
-            tmp_path, f"printf refreshed > {tmp_path}/home/.claude.json"
+            tmp_path, f"cp {live_path} {observed} && printf refreshed > {live_path}"
         )
         kept.write_text('{"from":"volume"}')
         result = self._run(generated)
         assert result.returncode == 0, result.stderr
+        assert observed.read_text() == '{"from":"volume"}', (
+            "the volume's snapshot never reached the live path"
+        )
+        assert live.read_text() == "refreshed"
         assert kept.read_text() == "refreshed", "the command's rewrite never reached the volume"
 
     def test_a_failed_command_still_saves_and_keeps_its_own_status(self, tmp_path):
@@ -2071,30 +2109,28 @@ class TestTheWrapperAgainstARealFilesystem:
 
     def test_a_save_failure_after_success_is_not_reported_as_success(self, tmp_path):
         """A sign-in that worked but was not persisted dies at the next refresh, and
-        zero here is how that stayed invisible twice. The volume directory is made
-        unwritable so the copy genuinely fails."""
+        zero here is how that stayed invisible twice. Only the save's copy is made to
+        fail — it writes to the pid-suffixed temp beside the kept file."""
         generated, live, kept = self._wrapper_script(tmp_path, "true")
         kept.write_text("{}")
-        kept.parent.chmod(0o555)
-        try:
-            result = self._run(generated)
-        finally:
-            kept.parent.chmod(0o755)
+        env = self._cp_that_fails_writing_to(tmp_path, f"{kept}.tmp.*")
+        result = self._run(generated, env=env)
         assert result.returncode != 0, "a lost save was reported as a successful sign-in"
         assert "could not be saved" in result.stderr
+        assert kept.read_text() == "{}", "a failed save left the volume's copy disturbed"
+        assert not list(kept.parent.glob("home-config.json.tmp.*")), (
+            "a failed save left its temp file behind"
+        )
 
     def test_a_failed_seed_stops_before_the_command_runs(self, tmp_path):
         """Running the CLI against a configuration that failed to copy is the original
-        bug with extra steps. The kept file is made unreadable so the seed's copy
-        genuinely fails, and the command must never run."""
+        bug with extra steps. Only the seed's copy is made to fail — it is the one
+        writing to the live path — and the command must never run."""
         marker = tmp_path / "command-ran"
         generated, live, kept = self._wrapper_script(tmp_path, f"touch {marker}")
         kept.write_text("{}")
-        kept.chmod(0o000)
-        try:
-            result = self._run(generated)
-        finally:
-            kept.chmod(0o644)
+        env = self._cp_that_fails_writing_to(tmp_path, str(live))
+        result = self._run(generated, env=env)
         assert result.returncode != 0, "a failed seed was not surfaced"
         assert not marker.exists(), "the command ran against a configuration that failed to seed"
 
@@ -2116,12 +2152,23 @@ class TestTheWrapperAgainstARealFilesystem:
         ]
         seen = set()
         while any(p.poll() is None for p in procs):
-            if kept.exists():
-                seen.add(kept.read_text()[:1] + str(len(kept.read_text())))
-        for p in procs:
-            p.wait()
-        torn = {s for s in seen if s not in {f"A{len(payload_a)}", f"B{len(payload_b)}"}}
+            try:
+                seen.add(kept.read_text())
+            except OSError:
+                pass  # not published yet; nothing to observe
+        statuses = [p.wait() for p in procs]
+        try:
+            seen.add(kept.read_text())
+        except OSError:
+            pass
+        # Whole payloads, not a first-byte-and-length signature: a 200,000-byte file
+        # of interleaved As and Bs matched that signature exactly, so the check could
+        # not fail on the thing it was written to catch. CodeRabbit on PR 19.
+        torn = {f"{s[:1]}...{s[-1:]} len={len(s)}" for s in seen if s not in {payload_a, payload_b}}
         assert not torn, f"a reader observed a torn snapshot: {torn}"
+        # An empty `seen` would otherwise pass this test after every writer failed.
+        assert statuses == [0] * len(procs), f"a writer failed: {statuses}"
+        assert seen, "no snapshot was ever observed, so nothing was proven"
 
 
 def test_report_names_the_path_it_looked_for():
