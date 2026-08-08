@@ -2052,6 +2052,13 @@ class TestTheWrapperAgainstARealFilesystem:
         every chamber, and some CI runners — root reads a `0o000` file and writes into
         a `0o555` directory, so the copy succeeds and the test passes for the wrong
         reason, or fails for one. Found by CodeRabbit on PR 19.
+
+        It leaves a partial file at the destination before failing, because a real
+        `cp` that dies mid-write does. Exiting without writing anything left the
+        caller's cleanup untested: there was no temp file to remove, so an assertion
+        that none survives passed on a launcher that never removed one. Only the last
+        argument is matched, which is `cp`'s destination — the second CodeRabbit
+        finding on this helper, PR 19.
         """
         bindir = tmp_path / "bin"
         bindir.mkdir(exist_ok=True)
@@ -2060,9 +2067,12 @@ class TestTheWrapperAgainstARealFilesystem:
         stub = bindir / "cp"
         stub.write_text(
             "#!/bin/sh\n"
-            'for arg in "$@"; do\n'
-            f'    case "$arg" in {doomed_glob}) exit 1 ;; esac\n'
-            "done\n"
+            'target=""\n'
+            'for arg in "$@"; do target="$arg"; done\n'
+            f'case "$target" in {doomed_glob})\n'
+            '    printf partial > "$target"\n'
+            "    exit 1 ;;\n"
+            "esac\n"
             f'exec {real_cp} "$@"\n'
         )
         stub.chmod(0o755)
