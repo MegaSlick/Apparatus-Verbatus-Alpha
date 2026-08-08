@@ -103,7 +103,19 @@ HOME_CONFIG_KEPT="${AUTH_DIR_CLAUDE}/home-config.json"
 # never share a temp name. The save ends in `false` rather than `exit` when the
 # copy fails, because `wrap_home_config` below needs to see the failure and still
 # report the CLI's own status; a bare `sh -c` caller sees the non-zero either way.
-HOME_CONFIG_SEED="if [ -f '${HOME_CONFIG_KEPT}' ]; then cp '${HOME_CONFIG_KEPT}' '${HOME_CONFIG_LIVE}' || exit 1; fi
+#
+# The seed reads with `cat` rather than `cp`, and that is the pair to the rename
+# above rather than a matter of taste. GNU `cp` stats its source before opening it
+# and refuses when the two differ: "skipping file ..., as it was replaced while
+# being copied", exit 1. The save's rename is exactly that replacement, so one
+# chamber publishing its sign-in killed another chamber's seed — and the seed's
+# `|| exit 1` then killed that whole dispatch before the CLI ran. CI found it; a
+# two-CPU runner reproduces it in about one attempt in twenty, and concurrent
+# Claude chambers are the standing review roster rather than a corner case.
+# `cat` opens the file once and reads the inode it opened, so a rename underneath
+# is invisible to it: the seed gets the complete snapshot from one side of the
+# rename or the other, which is the same guarantee the readers get.
+HOME_CONFIG_SEED="if [ -f '${HOME_CONFIG_KEPT}' ]; then cat '${HOME_CONFIG_KEPT}' > '${HOME_CONFIG_LIVE}' || exit 1; fi
 if [ ! -f '${HOME_CONFIG_LIVE}' ]; then printf '%s\\n' '{}' > '${HOME_CONFIG_LIVE}'; fi"
 HOME_CONFIG_SAVE="if [ -f '${HOME_CONFIG_LIVE}' ] && [ -d '${AUTH_DIR_CLAUDE}' ]; then { cp '${HOME_CONFIG_LIVE}' '${HOME_CONFIG_KEPT}.tmp.'\$\$ && mv -f '${HOME_CONFIG_KEPT}.tmp.'\$\$ '${HOME_CONFIG_KEPT}'; } || { rm -f '${HOME_CONFIG_KEPT}.tmp.'\$\$; false; }; fi"
 

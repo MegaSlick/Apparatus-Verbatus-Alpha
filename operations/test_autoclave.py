@@ -1933,7 +1933,9 @@ class TestTheConfigurationThatLivesOutsideTheMount:
                     return position
             return None
 
-        seed = index_of("cp /home/agent/.claude/home-config.json /home/agent/.claude.json")
+        # `cat` rather than `cp`, because the kept file is shared and a concurrent
+        # chamber's publishing rename makes GNU cp refuse the copy outright.
+        seed = index_of("cat /home/agent/.claude/home-config.json > /home/agent/.claude.json")
         # The save now publishes copy-to-temp-then-rename, so the fragment matches the
         # temp destination's stable prefix rather than a direct copy to the kept path.
         save = index_of("cp /home/agent/.claude.json /home/agent/.claude/home-config.json.tmp.")
@@ -2043,10 +2045,44 @@ class TestTheWrapperAgainstARealFilesystem:
     def _run(self, generated, env=None):
         return subprocess.run(["sh", "-c", generated], capture_output=True, text=True, env=env)
 
+    def _stub_on_path(self, tmp_path, name, body):
+        """Put an executable `name` on PATH ahead of the real one, and hand back the
+        environment that finds it. The wrapper calls its tools by bare name, so this
+        reaches exactly the call under test and nothing else."""
+        bindir = tmp_path / "bin"
+        bindir.mkdir(exist_ok=True)
+        stub = bindir / name
+        stub.write_text(body)
+        stub.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = f"{bindir}:{env.get('PATH', '')}"
+        return env
+
+    def _cat_that_fails_reading(self, tmp_path, doomed_glob):
+        """A `cat` stand-in that fails only when reading `doomed_glob`.
+
+        The seed reads with `cat`, so this is what stands in front of it. It writes
+        a partial payload to stdout before failing, because a read that dies partway
+        does — the shell has already truncated the destination by then, so the live
+        file is left short, which is the state the seed's abort exists to refuse.
+        """
+        real_cat = shutil.which("cat")
+        assert real_cat, "no cat on PATH to stand in front of"
+        return self._stub_on_path(
+            tmp_path,
+            "cat",
+            "#!/bin/sh\n"
+            f'case "${{1:-}}" in {doomed_glob})\n'
+            "    printf partial\n"
+            "    exit 1 ;;\n"
+            "esac\n"
+            f'exec {real_cat} "$@"\n',
+        )
+
     def _cp_that_fails_writing_to(self, tmp_path, doomed_glob):
         """A `cp` stand-in on PATH that fails only when writing to `doomed_glob`.
 
-        The wrapper's seed and save both call `cp` by bare name, so interposing on
+        The wrapper's save calls `cp` by bare name, so interposing on
         PATH reaches exactly the copy under test and nothing else. Denying access by
         `chmod` looked equivalent and is not: under an effective UID of 0 — which is
         every chamber, and some CI runners — root reads a `0o000` file and writes into
@@ -2060,12 +2096,11 @@ class TestTheWrapperAgainstARealFilesystem:
         argument is matched, which is `cp`'s destination — the second CodeRabbit
         finding on this helper, PR 19.
         """
-        bindir = tmp_path / "bin"
-        bindir.mkdir(exist_ok=True)
         real_cp = shutil.which("cp")
         assert real_cp, "no cp on PATH to stand in front of"
-        stub = bindir / "cp"
-        stub.write_text(
+        return self._stub_on_path(
+            tmp_path,
+            "cp",
             "#!/bin/sh\n"
             'target=""\n'
             'for arg in "$@"; do target="$arg"; done\n'
@@ -2073,12 +2108,8 @@ class TestTheWrapperAgainstARealFilesystem:
             '    printf partial > "$target"\n'
             "    exit 1 ;;\n"
             "esac\n"
-            f'exec {real_cp} "$@"\n'
+            f'exec {real_cp} "$@"\n',
         )
-        stub.chmod(0o755)
-        env = dict(os.environ)
-        env["PATH"] = f"{bindir}:{env.get('PATH', '')}"
-        return env
 
     def test_content_travels_both_directions_and_survives(self, tmp_path):
         """The volume's snapshot reaches the live path, the command's rewrite reaches
@@ -2134,31 +2165,69 @@ class TestTheWrapperAgainstARealFilesystem:
 
     def test_a_failed_seed_stops_before_the_command_runs(self, tmp_path):
         """Running the CLI against a configuration that failed to copy is the original
-        bug with extra steps. Only the seed's copy is made to fail — it is the one
-        writing to the live path — and the command must never run."""
+        bug with extra steps. Only the seed's read is made to fail — it is the one
+        reading the kept file — and the command must never run."""
         marker = tmp_path / "command-ran"
         generated, live, kept = self._wrapper_script(tmp_path, f"touch {marker}")
         kept.write_text("{}")
-        env = self._cp_that_fails_writing_to(tmp_path, str(live))
+        env = self._cat_that_fails_reading(tmp_path, str(kept))
         result = self._run(generated, env=env)
         assert result.returncode != 0, "a failed seed was not surfaced"
         assert not marker.exists(), "the command ran against a configuration that failed to seed"
+
+    def test_the_seed_never_reads_the_kept_file_with_cp(self, tmp_path):
+        """One chamber publishing its sign-in must not kill another chamber's start.
+
+        The save replaces the kept file's inode by rename. GNU `cp` refuses a source
+        that changed under it — *"skipping file ..., as it was replaced while being
+        copied"*, exit 1 — and the seed's `|| exit 1` turned that into a dispatch
+        that died before the CLI ran. Two Claude chambers at once is the standing
+        review roster, so this sat on the path of ordinary work. CI failed on it and
+        a two-CPU Linux runner reproduced it in about one attempt in twenty, each
+        attempt racing twenty writers.
+
+        **This asserts the tool, not the race, and that is deliberate.** The window
+        cp fails in is between its `stat` of the source and its `open` of it —
+        microseconds, hit roughly once per four hundred seeds. A test that runs the
+        race is a test that passes almost every time on the broken code, which is
+        worse than no test. `cat` opens the file once and reads the inode it opened,
+        so a rename underneath it is invisible; that property is the fix, and this
+        is what fails the moment someone spells it `cp` again.
+        """
+        generated, live, kept = self._wrapper_script(tmp_path, "true")
+        assert f"cat '{kept}'" in generated, "the seed no longer reads with a single open"
+        assert f"cp '{kept}'" not in generated, (
+            "the seed reads the shared kept file with cp, which dies when another "
+            "chamber republishes it mid-copy"
+        )
+        assert "|| exit 1" in generated, "the seed no longer aborts on a failed read"
 
     def test_concurrent_saves_never_leave_a_torn_file(self, tmp_path):
         """Two chambers saving at once was CodeRabbit's serialization finding. The
         launcher's answer is atomic publication — copy to a pid-suffixed temp, then
         rename — so a reader sees a complete snapshot from one writer or the other,
         never an interleaving. Proven by racing real writers and checking every
-        observation is one of the two whole payloads."""
+        observation is one of the two whole payloads.
+
+        **Every writer gets its own live path, because a real chamber has one.** The
+        live file is inside the container; the kept file is the shared volume, so the
+        volume is the only object two chambers ever contend for. An earlier version
+        of this test pointed ten writers at a single live path, and CI caught what
+        that produced: one writer's save read that path while another writer's seed
+        was truncating it, and the short copy was then published whole. A real tear,
+        but one the test manufactured and the launcher cannot suffer.
+        """
         payload_a = "A" * 200_000
         payload_b = "B" * 200_000
-        generated_a, live, kept = self._wrapper_script(tmp_path, "true")
-        (tmp_path / "home" / ".claude.json").write_text(payload_a)
-        script_b = generated_a.replace(str(live), str(live) + "-b")
-        (tmp_path / "home" / ".claude.json-b").write_text(payload_b)
+        base_script, live, kept = self._wrapper_script(tmp_path, "true")
+        scripts = []
+        for index in range(20):
+            mine = tmp_path / "home" / f".claude.json-{index}"
+            mine.write_text(payload_a if index % 2 == 0 else payload_b)
+            scripts.append(base_script.replace(str(live), str(mine)))
         procs = [
             subprocess.Popen(["sh", "-c", s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            for s in (generated_a, script_b) * 10
+            for s in scripts
         ]
         seen = set()
         while any(p.poll() is None for p in procs):
