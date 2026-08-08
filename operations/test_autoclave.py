@@ -1936,9 +1936,9 @@ class TestTheConfigurationThatLivesOutsideTheMount:
         # `cat` rather than `cp`, because the kept file is shared and a concurrent
         # chamber's publishing rename makes GNU cp refuse the copy outright.
         seed = index_of("cat /home/agent/.claude/home-config.json > /home/agent/.claude.json")
-        # The save now publishes copy-to-temp-then-rename, so the fragment matches the
-        # temp destination's stable prefix rather than a direct copy to the kept path.
-        save = index_of("cp /home/agent/.claude.json /home/agent/.claude/home-config.json.tmp.")
+        # The save publishes copy-to-temp-then-rename into a name mktemp chose, so the
+        # fragment matches the copy out of the live path rather than any temp spelling.
+        save = index_of('cp /home/agent/.claude.json "$ac_home_config_tmp"')
         cli = index_of("--append-system-prompt-file")
         assert seed is not None, "dispatch never seeded the configuration from the volume"
         assert save is not None, "dispatch never wrote the configuration back to the volume"
@@ -1991,6 +1991,53 @@ class TestTheConfigurationThatLivesOutsideTheMount:
         source = SCRIPT.read_text()
         assert "|| dispatch_status=$?" in source, (
             "the CLI status is no longer captured, so the save may have become conditional on it"
+        )
+
+    def test_the_shared_temp_name_does_not_come_from_the_shell_pid(self):
+        """`.tmp.$$` was not unique across chambers, and the whole atomic publication
+        rested on believing it was.
+
+        The kept file lives on a volume every chamber of that vendor shares, so two
+        saves at once must not choose one temp path. The old spelling took the temp
+        name from the container shell pid, on the stated grounds that a pid is per
+        container. It is: each container has its own pid namespace, which is exactly
+        why the numbers repeat — two chambers exec'd into on this machine both
+        reported **pid 8**. Both saves would have written one path and published the
+        interleaving, in the mechanism built to prevent interleaving.
+
+        **This reads the source rather than racing two pid namespaces**, which a unit
+        test cannot create. `mktemp` decides uniqueness on the shared filesystem,
+        where the collision would actually happen.
+        """
+        source = SCRIPT.read_text()
+        save = next(line for line in source.splitlines() if line.startswith("HOME_CONFIG_SAVE="))
+        assert "mktemp" in save, "the save no longer takes its temp name from mktemp"
+        assert "$$" not in save, (
+            "the save is back to naming its temp file after the shell pid, which "
+            "repeats across containers sharing one volume"
+        )
+
+    def test_chamber_creation_writes_the_shared_file_as_carefully_as_dispatch_does(self):
+        """Chamber creation has its own copy of the seed and the save, and it was the
+        half that got missed.
+
+        It seeded with `cp` — dying on a source another chamber republished, and the
+        `die` beside it takes the whole chamber down — and it saved by copying
+        straight onto the shared file, with no temp and no rename, so a chamber
+        starting up could hand another chamber a half-written configuration. Both are
+        the failures the dispatch path was already fixed for; a second copy of a
+        mechanism is a second place for it to be wrong.
+        """
+        source = SCRIPT.read_text()
+        assert "cat /home/agent/.claude/home-config.json > /home/agent/.claude.json" in source, (
+            "chamber creation no longer seeds with a single open"
+        )
+        assert "cp /home/agent/.claude.json /home/agent/.claude/home-config.json\n" not in source, (
+            "chamber creation copies straight onto the shared file again, with no "
+            "temp and no rename"
+        )
+        assert "mktemp /home/agent/.claude/home-config.json.tmp.XXXXXX" in source, (
+            "chamber creation no longer publishes through a mktemp temp file"
         )
 
     def test_the_login_booth_keeps_the_configuration_it_writes(self):

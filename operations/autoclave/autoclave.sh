@@ -98,9 +98,17 @@ HOME_CONFIG_KEPT="${AUTH_DIR_CLAUDE}/home-config.json"
 # configuration is the original bug wearing a new face. The save publishes by
 # copy-to-temp-then-rename so a reader never sees a half-written file even when two
 # chambers save at once: rename is atomic on one filesystem, so the last complete
-# snapshot wins and no interleaving produces a torn one. `\$\$` is escaped on
-# purpose — it must expand to the *container* shell's pid, so two concurrent saves
-# never share a temp name. The save ends in `false` rather than `exit` when the
+# snapshot wins and no interleaving produces a torn one.
+#
+# **The temp name comes from `mktemp`, not from the shell pid, and that correction
+# is measured.** This once used `.tmp.$$` on the stated grounds that a container
+# shell pid is unique per chamber. It is not: each container has its own pid
+# namespace, and two chambers exec'd into on this machine both reported pid 8. The
+# kept file is on a volume shared by every chamber of that vendor, so both saves
+# would have written one temp path at once and published the interleaving — the
+# exact tear the rename exists to prevent, in the mechanism built to prevent it.
+# `mktemp` creates the file on the real shared filesystem, so uniqueness is decided
+# where the collision would happen. The save ends in `false` rather than `exit` when the
 # copy fails, because `wrap_home_config` below needs to see the failure and still
 # report the CLI's own status; a bare `sh -c` caller sees the non-zero either way.
 #
@@ -117,7 +125,7 @@ HOME_CONFIG_KEPT="${AUTH_DIR_CLAUDE}/home-config.json"
 # rename or the other, which is the same guarantee the readers get.
 HOME_CONFIG_SEED="if [ -f '${HOME_CONFIG_KEPT}' ]; then cat '${HOME_CONFIG_KEPT}' > '${HOME_CONFIG_LIVE}' || exit 1; fi
 if [ ! -f '${HOME_CONFIG_LIVE}' ]; then printf '%s\\n' '{}' > '${HOME_CONFIG_LIVE}'; fi"
-HOME_CONFIG_SAVE="if [ -f '${HOME_CONFIG_LIVE}' ] && [ -d '${AUTH_DIR_CLAUDE}' ]; then { cp '${HOME_CONFIG_LIVE}' '${HOME_CONFIG_KEPT}.tmp.'\$\$ && mv -f '${HOME_CONFIG_KEPT}.tmp.'\$\$ '${HOME_CONFIG_KEPT}'; } || { rm -f '${HOME_CONFIG_KEPT}.tmp.'\$\$; false; }; fi"
+HOME_CONFIG_SAVE="if [ -f '${HOME_CONFIG_LIVE}' ] && [ -d '${AUTH_DIR_CLAUDE}' ]; then { ac_home_config_tmp=\$(mktemp '${HOME_CONFIG_KEPT}.tmp.XXXXXX') && cp '${HOME_CONFIG_LIVE}' \"\$ac_home_config_tmp\" && mv -f \"\$ac_home_config_tmp\" '${HOME_CONFIG_KEPT}'; } || { rm -f \"\${ac_home_config_tmp:-}\"; false; }; fi"
 
 # Run one command between a seed and a save, and hand back the command's own exit
 # status rather than the copy's. A save that quietly became the exit code would report
@@ -909,8 +917,12 @@ AUTOCLAVE_SETUP
         # argument, so a word like "the sign-in-s own config" ends the string in the
         # middle of a comment and silently swallows every function defined after it —
         # which is exactly what it did, once, while this fix was being written.
+        # Read with cat rather than cp: the kept file is on a volume every chamber of
+        # this vendor shares, and a save publishes it by rename. GNU cp refuses a
+        # source replaced under it and exits non-zero, which the die below turns into
+        # a dead chamber. cat opens the file once and is blind to the rename.
         if [ -f /home/agent/.claude/home-config.json ]; then
-            cp /home/agent/.claude/home-config.json /home/agent/.claude.json
+            cat /home/agent/.claude/home-config.json > /home/agent/.claude.json
         fi
         [ -f /home/agent/.claude.json ] || printf "%s\n" "{}" > /home/agent/.claude.json
         python3 - <<"PY"
@@ -926,8 +938,17 @@ PY
         # Only where the volume is actually mounted. A chamber created without a vendor
         # — the default, and most of them — has no mounted directory to keep it in, and
         # an unguarded copy there would fail and take the whole chamber down with it.
+        #
+        # Published by copy-to-temp-then-rename, the same way the dispatch and login
+        # wrapper publishes it, and for the same reason: this writes to the shared
+        # volume, so a reader in another chamber must never see it half written. The
+        # temp name comes from mktemp because a container shell pid is not unique
+        # across chambers - two of them report the same number.
         if [ -d /home/agent/.claude ]; then
-            cp /home/agent/.claude.json /home/agent/.claude/home-config.json
+            { ac_tmp=$(mktemp /home/agent/.claude/home-config.json.tmp.XXXXXX) &&
+                cp /home/agent/.claude.json "$ac_tmp" &&
+                mv -f "$ac_tmp" /home/agent/.claude/home-config.json
+            } || { rm -f "${ac_tmp:-}"; false; }
         fi
     ' || die "chamber started but the agent configuration could not be written"
 
