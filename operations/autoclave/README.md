@@ -242,10 +242,23 @@ and is fine for running the suite or reading the tree. Before this, every
 chamber received every sign-in that existed, read-write, so a Codex agent held
 the Claude credential and the reverse.
 
+**Claude keeps its configuration in two places and only one of them is a volume.**
+The credential is inside the mounted directory and survives every container.
+`.claude.json` sits *beside* that directory, outside the mount, and the CLI needs
+both to refresh an OAuth token. For a while the launcher created a blank one in
+every chamber, so the first refresh after a sign-in failed and the CLI blanked the
+token fields in place — leaving a record whose refresh token was still weeks from
+expiring and whose tokens were empty strings. It killed the sign-in twice, on
+2026-08-05 and 2026-08-06, each time a few hours after a login that had visibly
+worked, and both times it read like an expiry. The launcher now keeps that file in
+the volume and copies it in and out around anything that runs the Claude CLI —
+copied rather than symlinked, because the CLI writes it atomically and a rename
+replaces a symlink with a regular file. Codex has never had this problem: its
+whole configuration is already inside its own mount.
+
 **That credential volume is shared between chambers and outlives them.** It is
-mounted read-write at the directory the CLI keeps its *whole* configuration in —
-read-write is not optional, because both CLIs refresh their own tokens — and
-every later chamber for the same vendor mounts the same volume. An agent has a
+mounted read-write — read-write is not optional, because both CLIs refresh their
+own tokens — and every later chamber for the same vendor mounts the same volume. An agent has a
 full shell and can read and rewrite every file in it, including anything the
 next agent's CLI will read as instructions or hooks. So the isolation here is
 against the *other* vendor's credential and against the host, not between one

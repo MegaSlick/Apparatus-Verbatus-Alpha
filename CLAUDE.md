@@ -107,9 +107,16 @@ so name the symptoms at a clean break and let him see the numbers.
 
 ## Quarantine
 
-No byte of the old code crosses the boundary. It is read where it lies, through the
-window; what enters here is written new and justified against goals and governance. **A
-line nobody can justify does not enter, whoever typed it.**
+Understanding crosses the boundary freely; bytes do not. The old code is read where it
+lies, through the window; what enters here is written new and justified against goals and
+governance. **A line nobody can justify does not enter, whoever typed it.**
+
+**A line carried across is the exception and is never silent** — only where it is the best
+option available, understood well enough to defend line by line, and named as carried in
+both the commit and the report. Adapted, renamed and reformatted are the same act as
+copied. **Third-party code under a permitting licence is a different question and is
+welcome**, recorded with its source and licence. Procedure:
+[cleanroom/README.md](cleanroom/README.md).
 
 `cleanroom/` is the bench and is in this repository; an *autoclave* is a container, and
 nothing in one is here until a branch is collected and read.
@@ -200,6 +207,10 @@ a container.** Record what actually answered, never only what was requested.
 **Before spawning anything, read [.claude/agents/README.md](.claude/agents/README.md) in
 detail and keep it in context** — it owns roles, seats, effort and bounds. Do not choose
 a model or an effort from memory: that file is measured and this one is not.
+
+**A chamber is pinned to the commit it was created from.** Work committed afterwards never
+reaches a chamber already running, and nothing about it looks wrong from the inside. If a
+change must bind a running lane, the lane is re-created, not told.
 
 ## What may be missing or wrong
 

@@ -27,8 +27,8 @@ Read `README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`,
 ## When auditing a rebuild draft
 
 The standard is the quarantine rule: **if nobody can say what a line is for, it does not
-enter** — and no old byte may have crossed; a paste is a finding, not a shortcut. For
-each file, report:
+enter**. An old byte may cross only where the commit and the report both name it as
+carried; **an unnamed paste is a finding**, not a shortcut. For each file, report:
 
 - what it actually does, in plain language
 - which stage it belongs to, in the project's own vocabulary

@@ -68,13 +68,17 @@ PDF is rendered as a whole page with PDFium at the door. Its visible content str
 text, vectors, images, rotation, annotations, and initialized form appearances are
 painted into the sealed pixels; embedded-image extraction is not used.
 
-`config/pdf_render.toml` supplies the **400-DPI default**, and
+`config/pdf_render.toml` supplies the **300-DPI default**, and
 `--pdf-target-dpi` overrides it for one run. The chosen value is sealed explicitly
 in `run.json`; each page's `render_contract` records the configured target, the
 code-bounded target, and the whole `effective_dpi` actually used. Pixel/byte caps and
-the 72-DPI floor stay in code. **400 remains unmeasured**: configuration makes it
-adjustable, not proven, and it should be checked against Tyrel's approved real sample
-under GOVERNANCE 9 before scale.
+the 72-DPI floor stay in code. **300 rests on geometry, not on measured accuracy**:
+it was chosen on Tyrel's instruction 2026-08-05 from line pitch and x-height against
+real material, and because a 400-DPI page exceeds the reading models' own resize
+ceiling while costing 1.78x the pixels to render, store and keep until export. It has
+still never been checked against reading accuracy on his approved real sample, which
+GOVERNANCE 9 asks for before scale. The reasoning is in `config/pdf_render.toml`'s
+own header.
 
 ## Door `kind="admission"`
 

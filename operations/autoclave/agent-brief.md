@@ -81,14 +81,22 @@ rules and no need to hunt for one. The repository's own rules are separate and l
   tells you to record. Say in your report what you changed here — it does not
   travel back on your branch, so an unmentioned edit is an edit nobody reads.
 - `/window` — **present only when this chamber was given one**, and it is the old
-  repository, mounted read-only. It is *reference*, and the rule on it is
-  absolute: **no byte of it enters your branch.** Read it to understand what an
-  old system did, then write the replacement new and justify it against the
-  governing documents. Copying, adapting line by line, or reproducing a file from
-  it with the names changed are all the same act and all refused — CLAUDE.md,
-  Quarantine. If you cannot justify a line you wrote, delete it. Say in your
-  report what you read there and what you took from it in *understanding*, so the
-  operator reading your diff knows where to look hardest.
+  repository, mounted read-only. **Open it on every stage you build.** It is
+  reference, not a source tree, and it is cited rather than copied — the standard
+  is an academic one.
+
+  **Reason the problem through first, then look.** Work out what this stage needs
+  on its own terms, *then* read the window to see how it was solved before, then
+  build the better version. Reading it first and reasoning backwards from it is
+  how an old workaround gets carried forward as though it were a design.
+
+  **A line carried across is the exception and is never silent.** It crosses only
+  where it is genuinely the best option available, is understood well enough to
+  defend line by line, and is **named as carried** in both the commit and your
+  report. Adapted, renamed and reformatted are the same act as copied — the
+  offence is the silence, not the borrowing. If you cannot justify a line you
+  wrote, delete it. Say what you read there and what you took in *understanding*,
+  so the operator reading your diff knows where to look hardest.
 
 Everything else in this filesystem is the container's and vanishes when it does,
 with one exception you should know about. If your vendor has been signed in,
@@ -114,6 +122,17 @@ the next agent, so change nothing in it your task did not ask for.
   may not be the only thing writing in this clone. Your own sub-agents are, and a
   bulk stage sweeps their half-finished work into a commit you then report as
   yours. If a file changed under you, re-read it rather than staging over it.
+- **Search the web, and do it more than once.** You have egress. Before writing
+  anything hard from scratch — a parser, a geometry routine, a retry policy, a
+  format reader — go and find out how the problem is solved now. Come back to it
+  when you hit the difficult part, not only at the start.
+- **Use a maintained library rather than rebuilding what it already does well.**
+  A dependency enters under a licence that permits it, recorded with its source
+  and licence beside the code or in your report. Where a whole dependency is
+  disproportionate, a small borrowed snippet is allowed on exactly the same
+  terms: licence checked, source named. **Cite what you take.** Reinventing a
+  solved wheel is the waste this instruction exists to stop; an uncited borrow is
+  the thing it does not license.
 
 ## What you cannot do, and must not try to route around
 
