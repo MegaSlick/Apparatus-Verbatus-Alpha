@@ -8,6 +8,7 @@ through a cutoff; it never claims that no future charge can appear.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -146,7 +147,7 @@ class PodCreateRequest:
         if not isinstance(self.recovery_only, bool):
             raise ValueError("recovery_only must be boolean")
         require_utc(self.hard_deadline, "hard_deadline")
-        if "@sha256:" not in self.image:
+        if re.fullmatch(r"[^\s]+@sha256:[0-9a-f]{64}", self.image) is None:
             raise ValueError("image must be pinned by immutable sha256 digest")
         if len(self.repository_commit) != 40 or any(
             character not in "0123456789abcdef" for character in self.repository_commit
@@ -198,9 +199,16 @@ def _required_timer_arguments(command: tuple[str, ...], volume_mount_path: str) 
         or not all(isinstance(item, str) and item for item in bootstrap)
     ):
         raise ValueError("pod bootstrap command must be a non-empty string argv")
-    report_path = PurePosixPath(values["--report-path"])
+    raw_report_path = values["--report-path"]
+    report_path = PurePosixPath(raw_report_path)
     volume_path = PurePosixPath(volume_mount_path)
-    if not report_path.is_absolute() or not report_path.is_relative_to(volume_path):
+    if (
+        ".." in raw_report_path.split("/")
+        or not volume_path.is_absolute()
+        or not report_path.is_absolute()
+        or report_path == volume_path
+        or not report_path.is_relative_to(volume_path)
+    ):
         raise ValueError("pod timer report path must be inside the attached volume mount")
 
 

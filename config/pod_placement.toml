@@ -21,8 +21,8 @@ schema = "pod-placement.v1"
 
 [dtype_floor]
 # Compute capability floors are configuration, never a bf16 assumption in code.
-# These are the widely documented architecture floors (Volta 7.0, Ampere 8.0,
-# Ada/Hopper 8.9), not measurements taken on real silicon here.
+# These are configured dtype-support floors, not architecture identities or
+# measurements taken on real silicon here (Hopper itself is capability 9.0).
 float16 = "7.0"
 bfloat16 = "8.0"
 fp8 = "8.9"

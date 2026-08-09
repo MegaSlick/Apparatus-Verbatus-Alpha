@@ -679,6 +679,32 @@ def test_unbound_controller_receipt_closes_the_pod_and_cannot_make_launch_green(
     assert provider.status(result.record.pod_id).presence.value == "absent"
 
 
+def test_timer_acknowledgement_for_another_report_path_cannot_make_launch_green(
+    tmp_path: Path,
+) -> None:
+    class WrongReportPathArmer(FakeControllerArmer):
+        def arm(self, **kwargs):  # type: ignore[no-untyped-def]
+            observed = super().arm(**kwargs)
+            receipt = dict(observed.receipt)
+            timer = dict(receipt["pod_timer"])
+            timer["report_path"] = "/workspace/private/unrelated-report.json"
+            receipt["pod_timer"] = timer
+            return replace(observed, receipt=receipt)
+
+    clock = Clock()
+    provider = fake(clock)
+    result = runtime(provider, clock, tmp_path, armer=WrongReportPathArmer(clock, provider)).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.CONTROLLERS_UNARMED
+    assert not result.green
+    assert result.controller_arming is not None
+    assert "different durable report path" in result.controller_arming.detail
+    assert result.record is not None
+    assert provider.status(result.record.pod_id).presence.value == "absent"
+
+
 def test_controller_arming_failure_closes_a_created_pod_and_stays_non_green(tmp_path: Path) -> None:
     clock = Clock()
     provider = fake(clock)
@@ -815,6 +841,7 @@ def test_billing_reconciliation_is_bounded_and_absorbs_a_lagging_first_answer() 
 
     assert report.state is CloseState.VERIFIED
     assert report.captured_cost_usd == Decimal("0.13")
+    assert report.billing_attempts == 3
     assert provider.billing_calls == 3
 
 
@@ -837,6 +864,7 @@ def test_billing_that_never_posts_exhausts_its_bounded_retry_and_stays_red() -> 
 
     assert report.state is CloseState.UNVERIFIED_BILLING
     assert report.captured_cost_usd is None
+    assert report.billing_attempts == 2
     assert sum(1 for verb, _ in provider.calls if verb == "capture_cost") == 2
 
 
@@ -865,6 +893,26 @@ def test_lease_creation_failure_refuses_before_provider_create(tmp_path: Path) -
 
     assert result.state is LaunchState.LEASE_FAILURE
     assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_confirmed_adoption_closes_if_its_lease_cannot_be_recorded(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    expected = request(clock)
+    existing = provider.create(expected)
+    blocked_root = tmp_path / "not-a-directory"
+    blocked_root.write_text("block lease directory", encoding="utf-8")
+
+    result = runtime(provider, clock, blocked_root).adopt(
+        existing.pod_id,
+        expected=expected,
+        confirmation=adopt_confirmation(existing.pod_id),
+    )
+
+    assert result.state is LaunchState.LEASE_FAILURE
+    assert result.close_report is not None
+    assert existing.pod_id in provider.terminate_calls
+    assert provider.status(existing.pod_id).presence.value == "absent"
 
 
 def test_an_altered_lease_is_refused_rather_than_acted_on(tmp_path: Path) -> None:
@@ -983,7 +1031,9 @@ def test_verified_shutdown_reissues_termination_until_get_and_list_are_both_abse
     assert report.pod_get_absent and report.pod_list_absent
     assert report.captured_cost_usd == Decimal("0.13")
     assert len(provider.terminate_calls) >= 3, "still-present fake must force reissued terminate"
-    assert report.to_record()["volume"]["decision"] == "retained; deletion is separately authorized"
+    assert report.to_record()["volume"]["decision"] == (
+        "unchanged by pod close; retention or deletion requires separate authorization"
+    )
 
 
 @pytest.mark.parametrize("wrong_observation", ("status", "list"))
@@ -1102,6 +1152,15 @@ def test_close_report_names_the_provider_resolved_billing_cutoff() -> None:
 
     assert report.state is CloseState.VERIFIED
     assert report.cutoff_at == resolved_cutoff
+    cost_record = report.to_record()["cost_capture"]
+    assert isinstance(cost_record, dict)
+    assert cost_record["lines"] == [
+        {
+            "amount_usd": "0.11",
+            "description": "provider resolved hour bucket",
+            "recorded_at": None,
+        }
+    ]
 
 
 def test_follow_up_supervisor_never_turns_unverified_close_green(tmp_path: Path) -> None:
@@ -1126,6 +1185,27 @@ def test_follow_up_supervisor_never_turns_unverified_close_green(tmp_path: Path)
 
     assert result.state is ControllerState.CLOSE_UNVERIFIED
     assert not result.green
+
+
+def test_lease_cannot_construct_verified_phase_from_misbound_close_evidence(
+    tmp_path: Path,
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.04")
+    store = LeaseStore(tmp_path / "misbound-close.json")
+    _lease(store, record, owner="laptop", clock=clock, deadline_seconds=5)
+    close_record = shutdown(provider, clock).close(record, reason="binding drill").to_record()
+    close_record["pod_id"] = "another-pod"
+
+    with pytest.raises(ValueError, match="exact pod"):
+        store.record_close(
+            owner_token="laptop",
+            close_record=close_record,
+            verified=True,
+            now=clock.now(),
+        )
 
 
 def test_status_timeout_reaches_a_named_non_green_shutdown_state() -> None:
@@ -1363,6 +1443,27 @@ def test_bare_timer_command_is_rejected_before_a_paid_create() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "image",
+    [
+        "registry.example/verbatus@sha256:short",
+        "registry.example/verbatus@sha256:" + "g" * 64,
+        "registry.example/verbatus@sha256:" + "a" * 64 + ":mutable",
+    ],
+)
+def test_image_pin_must_be_one_complete_lowercase_sha256_digest(image: str) -> None:
+    with pytest.raises(ValueError, match="immutable sha256 digest"):
+        replace(request(Clock()), image=image)
+
+
+def test_timer_report_path_cannot_lexically_escape_the_attached_volume() -> None:
+    command = list(request(Clock()).docker_start_cmd)
+    command[command.index("--report-path") + 1] = "/workspace/private/../outside.json"
+
+    with pytest.raises(ValueError, match="inside the attached volume"):
+        replace(request(Clock()), docker_start_cmd=tuple(command))
+
+
 def test_pod_timer_report_write_failure_immediately_closes_and_never_returns_green(
     tmp_path: Path,
 ) -> None:
@@ -1466,6 +1567,19 @@ def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: P
     assert actions.calls.count(BootstrapStep.PREFLIGHT) == 1
 
 
+def test_bootstrap_journal_cannot_claim_green_with_unaccounted_steps(tmp_path: Path) -> None:
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    path = tmp_path / "bootstrap.json"
+    journal = BootstrapJournal(path, BootstrapPlan("c" * 40, lockfile), now=lambda: START)
+    record = journal.load_or_create()
+    record["status"] = "green"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(BootstrapStepFailure, match="does not account for every step"):
+        journal.load_or_create()
+
+
 def test_partial_transfer_becomes_named_red_bootstrap_result(tmp_path: Path) -> None:
     lockfile = tmp_path / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
@@ -1503,6 +1617,26 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
     with pytest.raises(BootstrapStepFailure, match="not repository uv.lock"):
         actions.sync_uv_environment(other)
     assert calls == []
+
+
+def test_red_preflight_details_survive_into_the_bootstrap_failure(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    actions = SubprocessBootstrapActions(
+        repository=repository,
+        transfer=lambda: {},
+        cache=None,  # type: ignore[arg-type]
+        preflight=lambda: {
+            "color": "red",
+            "issues": [{"code": "smoke-output-invalid", "chair": "attestator_2"}],
+        },
+    )
+
+    with pytest.raises(BootstrapStepFailure) as caught:
+        actions.run_preflight()
+
+    assert "smoke-output-invalid" in caught.value.detail
+    assert "attestator_2" in caught.value.detail
 
 
 class FakeCache:
@@ -1686,6 +1820,81 @@ def test_smoke_read_failure_is_red_and_names_the_chair() -> None:
         issue.chair == "attestator_2" and issue.code == "smoke-output-invalid"
         for issue in report.issues
     )
+
+
+def test_missing_utilization_is_a_red_measurement_failure() -> None:
+    class UnmeasuredSmoke(FakeSmoke):
+        def read(self, identity, fixture, placement):  # type: ignore[no-untyped-def]
+            return replace(super().read(identity, fixture, placement), utilization=())
+
+    report = _preflight(FakeCache(), UnmeasuredSmoke()).run(
+        GpuProfile(
+            "synthetic",
+            "12.4",
+            "550",
+            (8, 0),
+            Decimal("48"),
+            Decimal("100"),
+            "bfloat16",
+        )
+    )
+
+    assert report.color == "red"
+    assert all(
+        any(issue.code == "utilization-missing" and issue.chair == role for issue in report.issues)
+        for role in {
+            "designator_structure",
+            "attestator_1",
+            "attestator_2",
+            "attestator_3",
+            "perlector",
+        }
+    )
+
+
+def test_smoke_receipt_cannot_replace_its_chair_identity() -> None:
+    class MisboundSmoke(FakeSmoke):
+        def read(self, identity, fixture, placement):  # type: ignore[no-untyped-def]
+            return replace(
+                super().read(identity, fixture, placement),
+                receipt={"chair": "attestator_1", "fixture": fixture.name},
+            )
+
+    report = _preflight(FakeCache(), MisboundSmoke()).run(
+        GpuProfile(
+            "synthetic",
+            "12.4",
+            "550",
+            (8, 0),
+            Decimal("48"),
+            Decimal("100"),
+            "bfloat16",
+        )
+    )
+
+    assert report.color == "red"
+    assert any(issue.code == "smoke-receipt-misbound" for issue in report.issues)
+
+
+def test_cache_receipt_cannot_replace_runtime_retry_accounting() -> None:
+    class MiscountedCache(FakeCache):
+        def verify(self, identity):  # type: ignore[no-untyped-def]
+            return {"manifest_digest": identity.digest_manifest, "repaired_once": False}
+
+    report = _preflight(MiscountedCache(), FakeSmoke()).run(
+        GpuProfile(
+            "synthetic",
+            "12.4",
+            "550",
+            (8, 0),
+            Decimal("48"),
+            Decimal("100"),
+            "bfloat16",
+        )
+    )
+
+    assert report.color == "red"
+    assert any(issue.code == "cache-receipt-invalid" for issue in report.issues)
 
 
 @pytest.mark.parametrize(

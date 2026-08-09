@@ -471,6 +471,21 @@ class SmokeResult:
     receipt: dict[str, object]
     utilization: tuple[UtilizationSample, ...]
 
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("shape_valid", self.shape_valid),
+            ("nonempty", self.nonempty),
+            ("format_valid", self.format_valid),
+        ):
+            if not isinstance(value, bool):
+                raise ValueError(f"smoke result {label} must be boolean")
+        if not isinstance(self.receipt, dict):
+            raise ValueError("smoke result receipt must be an object")
+        if not isinstance(self.utilization, tuple) or not all(
+            isinstance(sample, UtilizationSample) for sample in self.utilization
+        ):
+            raise ValueError("smoke result utilization must contain typed samples")
+
 
 class ChairCacheVerifier(Protocol):
     """One exact chair cache at a time; a mismatch receives one explicit repair."""
@@ -787,10 +802,58 @@ class PreflightRunner:
                     )
                 )
                 return False
-            receipts.append({"chair": identity.role, "repaired_once": True, **receipt})
+            normalized = self._bound_receipt(identity, receipt, issues, "cache")
+            if normalized is None:
+                return False
+            receipts.append({"chair": identity.role, "repaired_once": True, **normalized})
             return True
-        receipts.append({"chair": identity.role, "repaired_once": False, **receipt})
+        normalized = self._bound_receipt(identity, receipt, issues, "cache")
+        if normalized is None:
+            return False
+        receipts.append({"chair": identity.role, "repaired_once": False, **normalized})
         return True
+
+    @staticmethod
+    def _bound_receipt(
+        identity: ChairIdentity,
+        receipt: object,
+        issues: list[PreflightIssue],
+        kind: str,
+    ) -> dict[str, object] | None:
+        """Keep a returned receipt from replacing the chair that produced it."""
+
+        if not isinstance(receipt, dict):
+            issues.append(
+                PreflightIssue(
+                    f"{kind}-receipt-invalid",
+                    f"chair {identity.role} returned a non-object {kind} receipt.",
+                    f"Repair the named chair's {kind} adapter so it returns identity-bound evidence.",
+                    identity.role,
+                )
+            )
+            return None
+        reported_chair = receipt.get("chair", identity.role)
+        if reported_chair != identity.role:
+            issues.append(
+                PreflightIssue(
+                    f"{kind}-receipt-misbound",
+                    f"chair {identity.role} returned a {kind} receipt naming {reported_chair!r}.",
+                    "Repair the adapter; evidence from one chair cannot be recorded under another.",
+                    identity.role,
+                )
+            )
+            return None
+        if kind == "cache" and "repaired_once" in receipt:
+            issues.append(
+                PreflightIssue(
+                    "cache-receipt-invalid",
+                    f"chair {identity.role} returned the runtime-owned repaired_once field.",
+                    "Repair the cache adapter; retry accounting belongs to the preflight runtime.",
+                    identity.role,
+                )
+            )
+            return None
+        return {key: value for key, value in receipt.items() if key != "chair"}
 
     def _smoke(
         self,
@@ -812,7 +875,29 @@ class PreflightRunner:
                 )
             )
             return
+        if not isinstance(result, SmokeResult):
+            issues.append(
+                PreflightIssue(
+                    "smoke-receipt-invalid",
+                    f"chair {identity.role} returned no structured smoke result.",
+                    "Repair the named chair service so shape, format, and utilization are all measurable.",
+                    identity.role,
+                )
+            )
+            return
+        receipt = self._bound_receipt(identity, result.receipt, issues, "smoke")
+        if receipt is None:
+            return
         utilization.extend(result.utilization)
+        if not result.utilization:
+            issues.append(
+                PreflightIssue(
+                    "utilization-missing",
+                    f"chair {identity.role} smoke read returned no GPU/CPU utilization samples.",
+                    "Repair utilization sampling and rerun; an unmeasured value is not a pass.",
+                    identity.role,
+                )
+            )
         if not result.shape_valid or not result.nonempty or not result.format_valid:
             failed = []
             if not result.shape_valid:
@@ -829,7 +914,19 @@ class PreflightRunner:
                     identity.role,
                 )
             )
-        receipts.append({"chair": identity.role, **result.receipt})
+        receipts.append(
+            {
+                "chair": identity.role,
+                **receipt,
+                "utilization": [
+                    {
+                        "gpu_percent": str(sample.gpu_percent),
+                        "cpu_percent": str(sample.cpu_percent),
+                    }
+                    for sample in result.utilization
+                ],
+            }
+        )
 
 
 def _is_cache_mismatch(error: BaseException) -> bool:

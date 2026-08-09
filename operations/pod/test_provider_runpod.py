@@ -17,7 +17,7 @@ from decimal import Decimal
 import pytest
 
 from .models import BillingState, PodCreateRequest, Presence, ProviderFailure
-from .provider_runpod import HttpResponse, RunPodProvider
+from .provider_runpod import HttpResponse, RunPodProvider, timer_context_from_environment
 
 UTC = timezone.utc
 NOW = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
@@ -133,7 +133,7 @@ def test_create_correlates_the_launch_token_before_it_posts() -> None:
 
     assert record.pod_id == "pod-1"
     assert [(method, path) for method, path, _ in transport.calls] == [
-        ("GET", "/pods"),
+        ("GET", "/pods?includeMachine=true&includeNetworkVolume=true"),
         ("POST", "/pods"),
     ]
     body = transport.calls[1][2]
@@ -238,7 +238,9 @@ def test_adopt_reads_the_exact_pod_and_carries_its_runtime_contract() -> None:
     assert record.pod_id == "pod-1"
     assert record.runtime_contract is not None
     assert record.estimate.pod_hourly_usd == Decimal("0.77")
-    assert [(method, path) for method, path, _ in transport.calls] == [("GET", "/pods/pod-1")]
+    assert [(method, path) for method, path, _ in transport.calls] == [
+        ("GET", "/pods/pod-1?includeMachine=true&includeNetworkVolume=true")
+    ]
 
 
 def test_adopting_an_absent_pod_refuses_rather_than_inventing_a_record() -> None:
@@ -246,6 +248,15 @@ def test_adopting_an_absent_pod_refuses_rather_than_inventing_a_record() -> None
 
     with pytest.raises(ProviderFailure, match="reports it absent"):
         provider(transport).adopt("pod-1")
+
+
+@pytest.mark.parametrize("pod_id", [".", "..", "pod\nheader", "pod/child", "pod?query"])
+def test_provider_refuses_unsafe_pod_ids_before_transport(pod_id: str) -> None:
+    transport = ScriptedTransport([])
+
+    with pytest.raises(ProviderFailure, match="unsafe for a path"):
+        provider(transport).adopt(pod_id)
+    assert transport.calls == []
 
 
 # -- status, list absence, terminate ---------------------------------------
@@ -266,9 +277,27 @@ def test_status_list_absence_and_terminate_use_documented_v1_paths_and_shapes() 
     assert listed.presence is Presence.ABSENT
     assert [(method, path) for method, path, _ in transport.calls] == [
         ("GET", "/pods/pod-1"),
-        ("GET", "/pods"),
+        ("GET", "/pods?includeMachine=true&includeNetworkVolume=true"),
         ("DELETE", "/pods/pod-1"),
     ]
+
+
+def test_pod_timer_reuses_the_prearmed_launch_lease_identity() -> None:
+    context = timer_context_from_environment(
+        {
+            "RUNPOD_POD_ID": "pod-1",
+            "RUNPOD_API_KEY": "test-" + "capability",
+            "VERBATUS_VOLUME_ID": "volume-1",
+            "VERBATUS_HARD_DEADLINE": "2026-08-08T13:00:00Z",
+            "VERBATUS_REQUESTED_AT": "2026-08-08T12:00:00Z",
+            "VERBATUS_POD_HOURLY_USD": "0.77",
+            "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
+            "VERBATUS_LAUNCH_TOKEN": TOKEN,
+        }
+    )
+
+    assert context.timer.lease.lease_id == TOKEN
+    assert context.timer.lease.launch_token == TOKEN
 
 
 def test_a_present_pod_reports_present_with_its_200() -> None:
@@ -284,6 +313,9 @@ def test_terminate_treats_a_404_as_an_idempotent_repeat_not_an_error() -> None:
     transport = ScriptedTransport([HttpResponse(404, b"{}")])
 
     provider(transport).terminate("pod-1")
+
+    assert [(method, path) for method, path, _ in transport.calls] == [("DELETE", "/pods/pod-1")]
+    assert transport.responses == []
 
 
 def test_terminate_refuses_an_undocumented_status_rather_than_assuming_success() -> None:

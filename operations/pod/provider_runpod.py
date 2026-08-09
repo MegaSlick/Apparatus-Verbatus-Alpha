@@ -1,6 +1,7 @@
 """RunPod's own API — the only module in this package that knows it.
 
-**Route: REST v1 (`https://rest.runpod.io/v1`), re-verified live on 2026-08-09.**
+**Route: REST v1 (`https://rest.runpod.io/v1`), documentation re-checked online
+on 2026-08-09.**
 Spec 04 named this route from the 2026-07-30 track-B research; the four pages
 below were fetched again on the merge date rather than trusted from the spec,
 because a routing decision on a money path should not rest on a month-old note:
@@ -35,7 +36,6 @@ Nothing here reads a credential from a tracked file (`operations/pod/README.md`)
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import urllib.error
@@ -147,9 +147,9 @@ class RunPodProvider:
     call, because v1 publishes no "quote this GPU" endpoint independent of
     actually creating a pod. `operations.pod.preflight.card_price_resolver` binds
     them to `config/pod_placement.toml`'s reviewed `card_profile` table. A stale
-    sheet can only *under*-estimate: `launch.py` re-assesses the price the
-    provider actually returned from `create`/`adopt` against the same ceilings
-    before a launch is ever green.
+    sheet can drift: `launch.py` re-assesses the provider-observed undiscounted
+    `costPerHr` from `create`/`adopt` against the same ceilings before a launch
+    is ever green.
     """
 
     def __init__(
@@ -209,7 +209,10 @@ class RunPodProvider:
         return self._record(_object(response.body, "RunPod create"))
 
     def adopt(self, pod_id: str) -> PodRecord:
-        response = self.transport.request("GET", f"/pods/{_path_id(pod_id)}")
+        response = self.transport.request(
+            "GET",
+            f"/pods/{_path_id(pod_id)}?includeMachine=true&includeNetworkVolume=true",
+        )
         if response.status == 404:
             raise ProviderFailure(
                 f"RunPod cannot adopt pod {pod_id!r}: the provider reports it absent"
@@ -375,7 +378,13 @@ class RunPodProvider:
     # -- internals ---------------------------------------------------------
 
     def _pod_rows(self) -> list[dict[str, object]]:
-        response = self.transport.request("GET", "/pods")
+        # Recovery needs the same effective runtime facts as a create/adopt
+        # response.  RunPod omits machine and network-volume objects from list
+        # results unless they are requested explicitly; without these flags an
+        # exact launch-token match cannot be bound back into a PodRecord.
+        response = self.transport.request(
+            "GET", "/pods?includeMachine=true&includeNetworkVolume=true"
+        )
         if response.status != 200:
             raise ProviderFailure(
                 f"RunPod pod-list GET returned HTTP {response.status}: {_body_summary(response.body)}"
@@ -562,7 +571,11 @@ def timer_context_from_environment(environment: Mapping[str, str] | None = None)
         volume_price=lambda volume: volume_rate,
     )
     lease = PodLease(
-        lease_id=hashlib.sha256(pod_id.encode("utf-8")).hexdigest()[:32],
+        # The launch token is also the durable local lease identity.  Rebuilding
+        # that identity from the provider pod id creates a second PodLease for
+        # one paid pod, so controller receipts no longer name the lease that was
+        # armed before create.
+        lease_id=launch_identity,
         launch_token=launch_identity,
         provider_name="runpod",
         pod_id=pod_id,
@@ -580,7 +593,14 @@ def timer_context_from_environment(environment: Mapping[str, str] | None = None)
 
 
 def _path_id(value: str) -> str:
-    if not isinstance(value, str) or not value or "/" in value or "?" in value:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or "/" in value
+        or "?" in value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
         raise ProviderFailure("RunPod pod id is unsafe for a path")
     return urllib.parse.quote(value, safe="")
 

@@ -40,6 +40,7 @@ class CloseReport:
     reason: str
     cutoff_at: datetime
     terminate_attempts: int
+    billing_attempts: int
     pod_get_absent: bool
     pod_list_absent: bool
     cost_capture: CostCapture | None
@@ -47,6 +48,32 @@ class CloseReport:
     volume_ongoing_hourly_usd: Decimal
     last_detail: str
     manual_action: str | None
+
+    def __post_init__(self) -> None:
+        require_utc(self.cutoff_at, "close report cutoff")
+        if not isinstance(self.pod_id, str) or not self.pod_id.strip():
+            raise ValueError("close report pod_id must be non-blank")
+        if not isinstance(self.reason, str) or not self.reason.strip():
+            raise ValueError("close report reason must be non-blank")
+        if not isinstance(self.terminate_attempts, int) or self.terminate_attempts < 1:
+            raise ValueError("close report must record at least one terminate attempt")
+        if not isinstance(self.billing_attempts, int) or self.billing_attempts < 0:
+            raise ValueError("close report billing attempts must be a non-negative integer")
+        if self.state is CloseState.VERIFIED:
+            capture = self.cost_capture
+            if not self.pod_get_absent or not self.pod_list_absent:
+                raise ValueError("verified close requires both exact-pod and pod-list absence")
+            if (
+                capture is None
+                or capture.state is not BillingState.CAPTURED
+                or capture.pod_id != self.pod_id
+                or not capture.lines
+            ):
+                raise ValueError("verified close requires captured billing for this exact pod")
+            if capture.cutoff_at != self.cutoff_at:
+                raise ValueError("verified close cutoff must equal its billing capture cutoff")
+            if self.manual_action is not None:
+                raise ValueError("verified close cannot also require manual action")
 
     @property
     def verified(self) -> bool:
@@ -64,6 +91,7 @@ class CloseReport:
             "reason": self.reason,
             "cutoff_at": self.cutoff_at.isoformat().replace("+00:00", "Z"),
             "terminate_attempts": self.terminate_attempts,
+            "billing_attempts": self.billing_attempts,
             "pod_get_absent": self.pod_get_absent,
             "pod_list_absent": self.pod_list_absent,
             "cost_capture": None
@@ -78,13 +106,27 @@ class CloseReport:
                 "cutoff_at": cost.cutoff_at.isoformat().replace("+00:00", "Z"),
                 "total_usd": str(cost.total_usd) if cost.total_usd is not None else None,
                 "records": len(cost.lines),
+                "lines": [
+                    {
+                        "amount_usd": str(line.amount_usd),
+                        "description": line.description,
+                        "recorded_at": (
+                            line.recorded_at.isoformat().replace("+00:00", "Z")
+                            if line.recorded_at is not None
+                            else None
+                        ),
+                    }
+                    for line in cost.lines
+                ],
                 "reason": cost.reason,
                 "source": cost.source,
             },
             "volume": {
                 "id": self.volume_id,
                 "ongoing_hourly_usd": str(self.volume_ongoing_hourly_usd),
-                "decision": "retained; deletion is separately authorized",
+                "decision": (
+                    "unchanged by pod close; retention or deletion requires separate authorization"
+                ),
             },
             "last_detail": self.last_detail,
             "manual_action": self.manual_action,
@@ -288,6 +330,7 @@ class VerifiedShutdown:
                 reason,
                 cutoff,
                 attempts,
+                attempt,
                 True,
                 True,
                 None,
@@ -304,6 +347,7 @@ class VerifiedShutdown:
                 reason,
                 cutoff,
                 attempts,
+                attempt,
                 True,
                 True,
                 capture if isinstance(capture, CostCapture) else None,
@@ -320,6 +364,7 @@ class VerifiedShutdown:
                 reason,
                 capture.cutoff_at,
                 attempts,
+                attempt,
                 True,
                 True,
                 capture,
@@ -335,6 +380,7 @@ class VerifiedShutdown:
                 reason,
                 capture.cutoff_at,
                 attempts,
+                attempt,
                 True,
                 True,
                 capture,
@@ -350,6 +396,7 @@ class VerifiedShutdown:
             reason,
             capture.cutoff_at,
             attempts,
+            attempt,
             True,
             True,
             capture,
@@ -374,6 +421,7 @@ class VerifiedShutdown:
             reason,
             require_utc(self.now(), "failed shutdown cutoff"),
             attempts,
+            0,
             get_absent,
             list_absent,
             None,

@@ -182,7 +182,12 @@ def _under(root: Path, relative: object) -> Path:
         or ".." in relative.split("/")
     ):
         raise TransferFailure("submission manifest contains an unsafe relative path")
-    candidate = (root / relative).resolve()
+    candidate = root
+    for component in relative.split("/"):
+        candidate /= component
+        if candidate.is_symlink():
+            raise TransferFailure("submission path traverses a symbolic link")
+    candidate = candidate.resolve()
     if not candidate.is_relative_to(root):
         raise TransferFailure("submission path escapes its source root")
     return candidate

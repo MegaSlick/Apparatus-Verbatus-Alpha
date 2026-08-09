@@ -122,6 +122,14 @@ class PodLease:
             raise ValueError("pending recovery attempts must be a non-negative integer")
         if self.phase == "pending-create" and self.pending_create is None:
             raise ValueError("pending-create lease must retain its non-secret recovery intent")
+        if self.phase not in {
+            "pending-create",
+            "active",
+            "closing",
+            "close-unverified",
+            "closed-verified",
+        }:
+            raise ValueError("lease phase is unsupported")
         if (
             self.phase != "pending-create"
             and self.pod_id is None
@@ -140,6 +148,14 @@ class PodLease:
                 created_at=self.created_at,
                 hard_deadline=self.hard_deadline,
             )
+        if self.phase in {"close-unverified", "closed-verified"}:
+            _validate_close_record(
+                self.close_record,
+                pod_id=self.pod_id,
+                verified=self.phase == "closed-verified",
+            )
+        elif self.close_record is not None:
+            raise ValueError("non-terminal lease cannot carry a close record")
 
     @property
     def active(self) -> bool:
@@ -434,8 +450,10 @@ class LeaseStore:
     ) -> PodLease:
         """Persist a close result; unverified evidence remains present for review."""
 
+        _validate_close_record(close_record, pod_id=None, verified=verified)
         with self._lock():
             lease = self._require_owner_unlocked(owner_token)
+            _validate_close_record(close_record, pod_id=lease.pod_id, verified=verified)
             next_phase = "closed-verified" if verified else "close-unverified"
             closed = replace(
                 lease,
@@ -547,6 +565,35 @@ def _validate_controller_record(
     ):
         if timestamp < created_at or timestamp > hard_deadline:
             raise ValueError(f"{label} lies outside this lease's lifetime")
+    if supervisor_started > observed_at or timer_acknowledged > observed_at:
+        raise ValueError("controller component observation cannot occur after its receipt")
+
+
+def _validate_close_record(
+    value: Mapping[str, object] | None, *, pod_id: str | None, verified: bool
+) -> None:
+    """Bind a terminal lease phase to the close evidence it summarizes."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("terminal lease must carry a close record")
+    if pod_id is not None and value.get("pod_id") != pod_id:
+        raise ValueError("close record is not bound to this exact pod")
+    if verified:
+        capture = value.get("cost_capture")
+        if (
+            value.get("state") != "verified"
+            or value.get("pod_get_absent") is not True
+            or value.get("pod_list_absent") is not True
+            or not isinstance(capture, Mapping)
+            or capture.get("state") != "captured"
+            or not isinstance(capture.get("lines"), list)
+            or not capture["lines"]
+            or capture.get("cutoff_at") != value.get("cutoff_at")
+            or value.get("manual_action") is not None
+        ):
+            raise ValueError("verified lease phase requires complete verified close evidence")
+    elif value.get("state") == "verified":
+        raise ValueError("unverified lease phase cannot carry verified close evidence")
 
 
 def _assert_nonsecret_receipt(value: Mapping[str, object]) -> None:

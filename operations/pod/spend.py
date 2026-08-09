@@ -15,11 +15,11 @@ SPEND_SCHEMA = "pod-spend.v1"
 CONFIRMATION_PREFIX = "I CONFIRM PAID POD"
 """The fixed opening of the typed phrase; the rest is derived from the price.
 
-A constant phrase can be typed from memory or pasted from a script without
-anyone having read what is about to be billed. CLAUDE.md's Gate rule is that a
-clear answer authorises *that action and nothing adjacent*, so the phrase names
-the action, the subject and both hourly rates that were just displayed: it
-cannot be produced without reading the preview it came from.
+A constant phrase can be typed from memory without referring to one action.
+CLAUDE.md's Gate rule is that a clear answer authorises *that action and nothing
+adjacent*, so this phrase names the action, subject, and both displayed hourly
+rates. It binds the acknowledgement to one preview; it is not proof of Tyrel's
+permission and does not claim automation cannot derive the phrase.
 """
 
 
@@ -40,7 +40,7 @@ class SpendPolicy:
 
     ``max_hourly_usd`` and ``max_estimated_metered_cost_usd`` apply to all
     launch-time metering: the pod plus its attached volume. Ongoing volume
-    retention after close remains a separately authorized decision.
+    retention or deletion after close remains a separately authorized decision.
     """
 
     state: str

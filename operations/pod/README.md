@@ -79,13 +79,13 @@ the way its documentation says.
   adoption is green only after a supplied controller harness starts the laptop supervisor,
   observes a pod-timer acknowledgement, and that receipt is durably recorded and bound to
   the exact lease, pod, and hard deadline. The default is fail-closed; an active lease without
-  the receipt is immediately closed. A volume is
-  retained by ordinary close; its ongoing price is in the close report. This runtime has no
-  volume-delete operation.
+  the receipt is immediately closed. Pod close makes no volume retention/deletion
+  decision; either choice requires separate authorization, and the unchanged
+  volume's ongoing price is in the close report. This runtime has no volume-delete operation.
 - `spend.py` applies the same price display, ceiling calculation, and typed phrase to
   create and adopt. The phrase is **derived from the preview**: it names the action, the
-  subject and both hourly rates just displayed, so it cannot be typed from memory or
-  pasted from a script by someone who has not read what is about to bill. The hourly and
+  subject and both hourly rates just displayed, binding the acknowledgement to that
+  preview. It is not Tyrel's live-pod permission and does not claim a script cannot derive it. The hourly and
   lifetime ceiling checks include both pod and attached volume while the hard lifetime is
   running, and the ceiling is applied a second time to the price the provider *actually*
   returned — a created pod that bills above it is closed immediately rather than left
@@ -126,7 +126,14 @@ termination capability. Its behavior is fake-proven, including both death drills
 green fake launch handshake. Delivery of that capability, a real pod identity at boot,
 the acknowledgement channel, and the provider's post-delete/billing behavior remain part
 of Tyrel's gated live demonstration; this repository makes no claim that they have
-occurred.
+occurred. The tracked tree also does not yet supply the durable laptop-supervisor driver,
+the controller armer that observes the real timer report, or a runnable bootstrap/service
+entrypoint: `bootstrap.py` is a finite library module, while `pod_timer.py` deliberately
+closes when its child exits. Those integration pieces are therefore blockers before the
+gated demonstration, not capabilities this fake suite proves. A pod-side process may be
+destroyed by its own DELETE before it can observe GET-404, list absence, or lagging billing;
+the real controller design must leave final verification and reconciliation to surviving
+laptop/restart machinery rather than infer it from the pod process.
 
 Run the fake checks with:
 

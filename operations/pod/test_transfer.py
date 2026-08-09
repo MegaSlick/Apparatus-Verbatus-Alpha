@@ -95,3 +95,22 @@ def test_conflicting_remote_bytes_are_refused_not_overwritten(tmp_path: Path) ->
             journal_path=tmp_path / "transfer.json",
         ).resume()
     assert target.puts == []
+
+
+def test_submission_path_cannot_traverse_a_source_symlink(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"outside synthetic bytes")
+    (source / "page.bin").symlink_to(outside)
+    manifest_path = tmp_path / "submission.json"
+    manifest(source, manifest_path)
+
+    with pytest.raises(TransferFailure, match="symbolic link"):
+        ChecksummedTransfer(
+            source_root=source,
+            submission_manifest=manifest_path,
+            target=FakeTarget(),
+            prefix="run",
+            journal_path=tmp_path / "transfer.json",
+        ).resume()

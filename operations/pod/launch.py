@@ -63,7 +63,7 @@ class PaidActionPreview:
 
     @property
     def confirmation_phrase(self) -> str:
-        """Derived from this preview, so it cannot be typed without reading it."""
+        """Bind the typed acknowledgement to this action and displayed price."""
 
         return confirmation_phrase(
             self.action,
@@ -246,8 +246,9 @@ class PodRuntime:
             )
         # The estimate authorised the launch; the pod that arrived is what bills.
         # A stale or wrong price sheet must not be able to put a pod above the
-        # ceiling past this point, so the *actual* rate is re-assessed here and
-        # a pod that fails is closed immediately rather than left running.
+        # ceiling past this point, so the provider-observed undiscounted rate is
+        # re-assessed here and a pod that fails is closed immediately rather
+        # than left running.
         actual = self._reassess_actual_price(
             action="create",
             record=record,
@@ -359,11 +360,28 @@ class PodRuntime:
                 )
             )
         except Exception as error:
+            try:
+                close = self.shutdown.close(
+                    preview_result.record,
+                    reason="confirmed adoption could not arm its durable lease",
+                )
+            except Exception as close_error:
+                close = None
+                detail = (
+                    f"could not record adoption lease: {error}; "
+                    f"immediate close raised: {close_error}"
+                )
+            else:
+                detail = (
+                    f"could not record adoption lease: {error}; "
+                    f"immediate close is {close.state.value}"
+                )
             return LaunchResult(
                 LaunchState.LEASE_FAILURE,
                 preview_result.preview,
                 record=preview_result.record,
-                detail=f"could not record adoption lease: {error}",
+                detail=detail,
+                close_report=close,
             )
         bound = store.load()
         assert bound is not None
@@ -445,6 +463,19 @@ class PodRuntime:
             )
         if arming.armed:
             try:
+                self._validate_arming_binding(
+                    arming=arming, request=request, record=record, lease=lease
+                )
+            except Exception as error:
+                arming = ControllerArming(
+                    False,
+                    arming.pod_timer_acknowledged,
+                    self.now(),
+                    f"controller acknowledgement is not bound to this launch: {error}",
+                    arming.receipt,
+                )
+        if arming.armed:
+            try:
                 store.record_controller_arming(
                     owner_token=owner_token,
                     controller_record=arming.to_record(),
@@ -497,6 +528,31 @@ class PodRuntime:
             close_report=close,
             controller_arming=arming,
         )
+
+    @staticmethod
+    def _validate_arming_binding(
+        *,
+        arming: ControllerArming,
+        request: PodCreateRequest,
+        record: PodRecord,
+        lease: PodLease,
+    ) -> None:
+        """Bind the observed timer report to the path this exact pod was told to write."""
+
+        receipt = arming.receipt
+        if receipt.get("lease_id") != lease.lease_id or receipt.get("pod_id") != record.pod_id:
+            raise ValueError("receipt names another lease or pod")
+        expected_deadline = request.hard_deadline.isoformat().replace("+00:00", "Z")
+        if receipt.get("hard_deadline") != expected_deadline:
+            raise ValueError("receipt names another hard deadline")
+        timer = receipt.get("pod_timer")
+        if not isinstance(timer, dict):
+            raise ValueError("receipt has no pod-timer observation")
+        command = request.docker_start_cmd
+        report_flag = command.index("--report-path")
+        expected_path = command[report_flag + 1]
+        if timer.get("report_path") != expected_path:
+            raise ValueError("pod timer acknowledged a different durable report path")
 
     def _reassess_actual_price(
         self,

@@ -208,6 +208,14 @@ class BootstrapJournal:
                 "bootstrap journal completion list is invalid",
                 "Preserve it for review and create a new explicit bootstrap journal.",
             )
+        completed = raw["completed"]
+        expected_prefix = [step.value for step in ORDERED_STEPS[: len(completed)]]
+        if completed != expected_prefix:
+            raise BootstrapStepFailure(
+                BootstrapStep.REPOSITORY,
+                "bootstrap journal completion is duplicated, reordered, or skips a step",
+                "Preserve it for review and create a new explicit bootstrap journal.",
+            )
         if not isinstance(raw["receipts"], dict) or raw["status"] not in {
             "running",
             "green",
@@ -217,6 +225,22 @@ class BootstrapJournal:
                 BootstrapStep.REPOSITORY,
                 "bootstrap journal state is invalid",
                 "Preserve it for review and create a new explicit bootstrap journal.",
+            )
+        if set(raw["receipts"]) != set(completed) or not all(
+            isinstance(receipt, dict) for receipt in raw["receipts"].values()
+        ):
+            raise BootstrapStepFailure(
+                BootstrapStep.REPOSITORY,
+                "bootstrap journal receipts do not reconcile with completed steps",
+                "Preserve it for review and create a new explicit bootstrap journal.",
+            )
+        if raw["status"] == "green" and (
+            completed != [step.value for step in ORDERED_STEPS] or raw["failure"] is not None
+        ):
+            raise BootstrapStepFailure(
+                BootstrapStep.REPOSITORY,
+                "green bootstrap journal does not account for every step without failure",
+                "Preserve it for review and rerun the missing bootstrap work.",
             )
 
     def _write(self, record: dict[str, object]) -> None:
@@ -390,7 +414,8 @@ class SubprocessBootstrapActions:
         if result.get("color") != "green":
             raise BootstrapStepFailure(
                 BootstrapStep.PREFLIGHT,
-                "preflight returned red",
+                "preflight returned red: "
+                + json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
                 "Read the preflight issues and repair the named environment, chair, or smoke-read failure.",
             )
         return result
@@ -450,9 +475,25 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        _sync_directory(path.parent)
     except Exception:
         try:
             os.unlink(temporary)
         except OSError:
             pass
         raise
+
+
+def _sync_directory(path: Path) -> None:
+    """Make an atomic journal replacement durable across a machine crash."""
+
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:  # pragma: no cover - unusual filesystems may refuse directory opens
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:  # pragma: no cover - the same filesystem caveat
+        pass
+    finally:
+        os.close(descriptor)
