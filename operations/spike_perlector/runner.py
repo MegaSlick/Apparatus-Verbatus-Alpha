@@ -448,8 +448,10 @@ def _preflight_act(
             "evaluation act has no adjudicated checked reference; blank and unresolved ink stay "
             "in private sample accounting rather than receiving a CER/WER row"
         )
+    # The gap-excised text, not the raw text: an act whose readable ink normalizes
+    # away has nothing to score even though its raw text is non-blank.
     if not isinstance(act.ground_truth.text, str) or not normalize_text(
-        act.ground_truth.text, profile
+        act.ground_truth.scoreable_text, profile
     ):
         raise MatrixRefusal("evaluation act has no scoreable checked text after normalization")
     if require_human_adjudication and len(act.ground_truth.independent_draft_sha256s) != 2:
@@ -643,7 +645,7 @@ def _execute_matrix(
                         perlectio=perlectio,
                         raw_response_text=response.text,
                         score=score_response(
-                            act.ground_truth.text or "",
+                            act.ground_truth.scoreable_text,
                             status=response.status,
                             text=response.text,
                             profile=profile,
@@ -657,7 +659,7 @@ def _execute_matrix(
             public_source_index=testimonium.public_source_index,
             status=testimonium.status,
             score=score_response(
-                act.ground_truth.text or "",
+                act.ground_truth.scoreable_text,
                 status=testimonium.status,
                 text=testimonium.text,
                 profile=profile,

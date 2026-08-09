@@ -27,3 +27,7 @@ class PublicSafetyRefusal(MeasurementRefusal):
 
 class CandidateRosterRefusal(MeasurementRefusal):
     """A candidate roster violates the settled Perlector constraints."""
+
+
+class AdjudicationRefusal(MeasurementRefusal):
+    """Two transcriptions could not become a checked reference this instrument trusts."""

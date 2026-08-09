@@ -90,6 +90,76 @@ def _text_lineage_sha256s(text: str) -> frozenset[str]:
 
 
 @dataclass(frozen=True, slots=True)
+class GapSpan:
+    """Ink the adjudicators could not read, marked where it sits in the reference.
+
+    Offsets are character offsets into the *raw* checked text, never into a
+    normalized or excised string, whose length shifts under normalization and
+    would make a stored offset drift silently.
+
+    ``start == end`` is a legitimate zero-width gap: unread ink at a single point
+    with no characters of its own.  That is the structure
+    ``TYREL_RULINGS_2026-08-05.md`` ruling 3 asks for -- "a gap whose start equals
+    its end cannot carry characters whatever evidence hangs off it" -- and it is
+    what keeps "we could not read it" from decaying into "there was nothing to
+    read."  A whole crop of unread ink is not a gap: it is
+    ``ReferenceStatus.UNRESOLVED_GAP``, and it never becomes a checked reference.
+    """
+
+    start: int
+    end: int
+
+    def __post_init__(self) -> None:
+        for name, value in (("start", self.start), ("end", self.end)):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise MeasurementRefusal(f"a GapSpan {name} must be an integer")
+        if self.start < 0 or self.end < self.start:
+            raise MeasurementRefusal(
+                f"a GapSpan must satisfy 0 <= start <= end, got ({self.start}, {self.end})"
+            )
+
+    def record(self) -> dict[str, int]:
+        return {"start": self.start, "end": self.end}
+
+
+def _validated_gaps(text: str, gaps: tuple[GapSpan, ...]) -> None:
+    previous_end = 0
+    for gap in gaps:
+        if gap.start < previous_end:
+            raise MeasurementRefusal(
+                "gap spans must be supplied sorted and non-overlapping; "
+                f"the span at {gap.start} starts before the previous one ended"
+            )
+        if gap.end > len(text):
+            raise MeasurementRefusal(
+                f"gap span ({gap.start}, {gap.end}) reaches past the reference it was "
+                f"recorded against (length {len(text)})"
+            )
+        previous_end = gap.end
+
+
+def excise_gaps(text: str, gaps: tuple[GapSpan, ...]) -> str:
+    """The reference text CER/WER actually compares against, with unread ink removed.
+
+    Neither the adjudicators' inability to read a span nor a candidate's guess at
+    it is scored.  Named limitation, carried over from lane A, which found it:
+    this is a text-only exclusion, not a spatial alignment, so it cannot by itself
+    detect a candidate that fabricates *inside* a marked gap.  That is a harder
+    problem this instrument does not solve and does not pretend to.
+    """
+
+    if not gaps:
+        return text
+    pieces: list[str] = []
+    cursor = 0
+    for gap in gaps:
+        pieces.append(text[cursor : gap.start])
+        cursor = gap.end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedIdentity:
     """The resolved candidate identity retained in private run evidence.
 
@@ -169,23 +239,46 @@ class ImageEvidence:
 
 @dataclass(frozen=True, slots=True)
 class GroundTruth:
-    """An independently adjudicated reference, with raw text kept private."""
+    """An independently adjudicated reference, with raw text kept private.
+
+    A checked reference may carry gaps.  ``TYREL_RULINGS_2026-08-05.md`` ruling 3:
+    "many of our records are damaged", so an act of three readable words and fifty
+    unread spans is "a successful partial reading of three words plus honest gaps
+    -- not a failure".  Without ``gaps`` the only way to record that act is
+    ``UNRESOLVED_GAP`` for the whole crop, which throws away the three words and
+    the fifty positions alike.  The gap machinery is grafted from lane A, which
+    built it; lane B modelled only whole-act unread ink.
+    """
 
     text: str | None
     adjudication_digest: str
     reference_revision: str
     status: ReferenceStatus = ReferenceStatus.CHECKED
     independent_draft_sha256s: tuple[str, ...] = ()
+    gaps: tuple[GapSpan, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, ReferenceStatus):
             raise MeasurementRefusal("ground-truth status must be a ReferenceStatus")
+        if any(not isinstance(gap, GapSpan) for gap in self.gaps):
+            raise MeasurementRefusal("ground-truth gaps must be GapSpan values")
         if self.status is ReferenceStatus.CHECKED:
             _require_nonempty(self.text or "", "ground-truth text")
-        elif self.text is not None:
-            raise MeasurementRefusal(
-                "no_readable_text and unresolved_gap carry no surrogate CER/WER text"
-            )
+            _validated_gaps(self.text or "", self.gaps)
+            if not excise_gaps(self.text or "", self.gaps).strip():
+                raise MeasurementRefusal(
+                    "a checked reference whose every character is inside a gap has no ink "
+                    "anyone read; it is unresolved_gap, not a checked reference"
+                )
+        else:
+            if self.text is not None:
+                raise MeasurementRefusal(
+                    "no_readable_text and unresolved_gap carry no surrogate CER/WER text"
+                )
+            if self.gaps:
+                raise MeasurementRefusal(
+                    "a gap is a span inside a checked reference; an unread crop is a status"
+                )
         if not is_sha256(self.adjudication_digest):
             raise MeasurementRefusal("ground-truth adjudication_digest must be a SHA-256")
         _require_nonempty(self.reference_revision, "ground-truth reference_revision")
@@ -195,8 +288,25 @@ class GroundTruth:
             raise MeasurementRefusal(
                 "ground truth carries either no fixture drafts or exactly two independent draft digests"
             )
+        # These digests are of one transcriber's *draft record* -- their identity
+        # plus their text -- never of the bare text.  `adjudication.py` builds them
+        # that way, and the difference matters: two people transcribing an easy act
+        # will produce byte-identical text, which is the good case and must not be
+        # refused here, while the same draft counted twice must be.  Hashing bare
+        # text cannot tell those two apart; hashing the record can.
         if len(set(self.independent_draft_sha256s)) != len(self.independent_draft_sha256s):
-            raise MeasurementRefusal("ground-truth independent draft digests must differ")
+            raise MeasurementRefusal(
+                "ground-truth independent draft digests must differ; two identical draft "
+                "records are one draft counted twice, not two independent transcriptions"
+            )
+
+    @property
+    def scoreable_text(self) -> str:
+        """The reference CER/WER compares against: checked text with its gaps removed."""
+
+        if self.text is None:
+            return ""
+        return excise_gaps(self.text, self.gaps)
 
     def private_record(self) -> dict[str, object]:
         """Return the private reference record used to bind held-out evidence."""
@@ -207,6 +317,7 @@ class GroundTruth:
             "reference_revision": self.reference_revision,
             "status": self.status.value,
             "independent_draft_sha256s": list(self.independent_draft_sha256s),
+            "gaps": [gap.record() for gap in self.gaps],
         }
 
     @property
@@ -220,6 +331,10 @@ class GroundTruth:
         }
         if self.text is not None:
             values.update(_text_lineage_sha256s(self.text))
+            # The gap-excised form is what a scorer, a bench, or a tuning caller
+            # would actually hold, so it is bound too. Binding only the raw text
+            # would leave the comparison form free to travel.
+            values.update(_text_lineage_sha256s(self.scoreable_text))
         return frozenset(values)
 
 

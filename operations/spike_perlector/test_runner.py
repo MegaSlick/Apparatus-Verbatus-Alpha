@@ -8,6 +8,7 @@ from operations.spike_perlector.gates import RunAuthorization
 from operations.spike_perlector.models import (
     ALL_CONDITIONS,
     Condition,
+    GapSpan,
     GroundTruth,
     OutputStatus,
     ReferenceStatus,
@@ -234,3 +235,29 @@ def test_condition_and_pairwise_deltas_expose_witness_only_advantage_without_ver
     assert paired.primed_cer_advantage > 0
     assert paired.witness_only_cer_advantage > 0
     assert {row.public_slot for row in run.condition_deltas()} == {1, 2}
+
+
+def test_a_gapped_reference_is_scored_against_its_readable_ink_only():
+    """Ruling 3's common case, carried through the whole matrix.
+
+    An act with unread ink in the middle of it is a checked reference with a gap,
+    not an unreadable crop. A candidate that reproduces the readable ink exactly
+    scores zero errors, and the denominator counts only what a human could read.
+    """
+    reader = identity("base-private", 1)
+    act = evaluation_act(text="alpha UNREAD beta", gaps=(GapSpan(6, 13),))
+    assert act.ground_truth.scoreable_text == "alpha beta"
+    replies = {
+        (act.opaque_act_id, condition): FakeReply(OutputStatus.COMPLETE, "alpha beta")
+        for condition in ALL_CONDITIONS
+    }
+    run = run_matrix(
+        (FakeCandidate(reader, replies),),
+        (act,),
+        prompt_registry=registry(reader),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    for cell in run.cells:
+        assert cell.score.cer.edits.errors == 0
+        assert cell.score.cer.reference_units == len("alpha beta")

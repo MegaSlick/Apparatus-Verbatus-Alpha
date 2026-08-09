@@ -19,6 +19,7 @@ from .holdout import (
 from .models import (
     DeliveryMode,
     EvaluationAct,
+    GapSpan,
     GroundTruth,
     ImageEvidence,
     MaterialClass,
@@ -77,6 +78,7 @@ def evaluation_act(
     opaque_act_id: str = "synthetic-act-1",
     *,
     text: str = "alpha beta",
+    gaps: tuple[GapSpan, ...] = (),
     testimonia: tuple[Testimonium, ...] | None = None,
     material_class: MaterialClass = MaterialClass.SYNTHETIC,
 ) -> EvaluationAct:
@@ -98,6 +100,7 @@ def evaluation_act(
                 digest(f"draft-a:{opaque_act_id}"),
                 digest(f"draft-b:{opaque_act_id}"),
             ),
+            gaps=gaps,
         ),
         testimonia=testimonia
         or (

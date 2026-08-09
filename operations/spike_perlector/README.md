@@ -14,6 +14,18 @@ The declared-run entry point hashes this exact document and compares it with a
 reviewable protocol pin in the code. A caller-supplied protocol digest is insufficient:
 the sealed manifest and its run-plan approval must name this document's digest.
 
+Spec 05 was built twice, independently and blind, by two seats from different
+vendors. This protocol is lane B's, with lane A's human-adjudication procedure,
+gap-span handling, no-transport proof and literature citations merged into it; every
+divergence between the two builds and what was done about it is recorded in the merge
+report that accompanied this branch. Nothing in either lane ran against real
+material, and the merge did not either.
+
+Where the spike's build path departs from spec 05's own text: the spec names
+`autoclave/spike_perlector/`, and `autoclave/` was reassigned on 2026-08-01 to mean
+the container tooling directory, so this harness lives at `operations/spike_perlector/`.
+Both lanes made that same call independently.
+
 The question is: does a Perlector grounded in the **Exemplar** and informed by fallible **Testimonia** read better than its **Lectio nuda** and than every Testimonium alone? The image-absent control asks whether a candidate merely summarizes testimony. The framework measures; it never picks a candidate, witness, reading, or Perlector chair.
 
 ## 1. Preconditions before any material is shown
@@ -63,7 +75,50 @@ The manifest retains the full opaque frame and recomputes its own deterministic 
 3. A third qualified person adjudicates every disagreement against the Exemplar and records a character/span decision or `unresolved_gap`. No model or witness sets the reference.
 4. Independent QA checks the reference revision, crop/page digest, and normalization profile digest. The resulting checked reference is immutable; later corrections create a new revision and invalidate comparability rather than overwrite evidence.
 
-`no_readable_text` is a positive fact about a truly blank crop, never an empty string. `unresolved_gap` means ink exists but cannot be adjudicated. Neither has a CER/WER denominator, so neither gets an artificial perfect score. Both remain accounted for until a separately predeclared masked-alignment method exists.
+**Steps 1–3 are executed by `adjudication.py`, not merely described here.** The
+method is the standard one — two independent annotators, differences resolved by a
+third and more experienced adjudicator, and material whose disagreement cannot be
+reconciled excluded from the gold standard rather than guessed into it — and the
+part that makes it checkable is that `disagreement_spans` computes the disputed
+spans from the two drafts and `reconcile` then demands **exactly** that set of
+spans as the adjudicator's resolution keys. A span left unresolved refuses; a
+resolution for a span that does not exist refuses; an adjudicator who is one of the
+two transcribers refuses; and an act where nothing readable survives refuses rather
+than becoming a checked reference with no ink in it. Both drafts and every
+resolution stay on the record unedited beside the reconciled reading (GOVERNANCE 4).
+The diff itself is `difflib.SequenceMatcher` from the Python standard library — a
+mechanical text diff needs no new dependency, and a deterministic one is what lets
+an adjudicator recompute the exact keys that will be demanded of them.
+
+Each draft's digest is taken over the transcriber **and** their text, never over
+bare text. Two people transcribing an easy act produce byte-identical text; that is
+the good case and must not be refused, while the same draft counted twice must be,
+and only a digest that includes the transcriber can tell those two apart.
+
+**A checked reference may carry gaps, and this is the common case, not the edge
+case.** Ruling 3, recorded verbatim in `TYREL_RULINGS_2026-08-05.md`: "many of our
+records are damaged", and a damaged page yielding three readable words is "a
+successful partial reading of three words plus honest gaps — not a failure". A
+`GapSpan` marks unread ink at its place in the reference; `start == end` is a
+legitimate zero-width anchor, which is the structural reason a gap cannot carry
+characters whatever evidence hangs off it. The gap-excised text is what CER/WER
+compares against, so neither the adjudicators' inability to read a span nor a
+candidate's guess at it is scored. **Named limitation:** this is a text-only
+exclusion, not a spatial alignment, so it cannot by itself detect a candidate that
+fabricates *inside* a marked gap. That is a harder problem this instrument does not
+solve and does not claim to.
+
+`no_readable_text` is a positive fact about a truly blank crop, never an empty string. `unresolved_gap` means ink exists but cannot be adjudicated — for the whole crop; unread ink *within* a reading is a gap, above. Neither has a CER/WER denominator, so neither gets an artificial perfect score. Both remain accounted for in `PrivateSampleAccounting` until a separately predeclared masked-alignment method exists.
+
+**What follows from that, said plainly rather than left to be discovered.** A
+selected act whose reference is `no_readable_text` is excluded from the matrix, so
+**this instrument does not measure whether a candidate invents text on a blank
+page.** That failure mode is named in ruling 3 — "we don't want it making shit up" —
+and it is real; it is simply not a measure spec 05 predeclared, and adding it would
+change the public finding's shape after the fact, which GOVERNANCE 10 does not
+allow. It is a decision for Tyrel, not for this document: either the blank-page
+control is predeclared as a measure of its own before an evaluation manifest opens,
+or the instrument goes on being honest that it does not take it.
 
 ## 6. Normalization: recommended `graphemic-v1`
 
@@ -77,6 +132,18 @@ Raw text is retained privately. Apply this sequence identically to reference, ca
 6. Preserve case, all remaining punctuation, diacritics, digits, historic spelling, abbreviations, `i/j`, `u/v`, and `œ/æ`. Never case-fold, strip accents, modernize, remove punctuation, or correct a scribal error.
 
 CER uses UAX #29 extended grapheme clusters (spaces count). WER uses nonempty runs between canonical spaces, leaving punctuation inside a token. `uniseg==0.10.1` segments clusters; no library normalizer is used. Each run records the profile digest. The conservative historic-spelling choice is supported by the [OCR-D transcription guidance](https://ocr-d.de/en/gt-guidelines/trans/transkription.html), and NFC/reference-length CER by [OCR-D's evaluation specification](https://ocr-d.de/en/spec/ocrd_eval.html).
+
+**Why long-s is the one transliteration applied, and nothing else is.** The
+historical long-s is the same letter as round `s`, and folding it is the one
+widely-agreed, uncontroversial transliteration in the historical-text-normalization
+literature — trivial long-s transliterations are routinely ignored in normalization
+comparisons (the large-scale comparison of historical normalization systems,
+[arXiv:1904.02036](https://arxiv.org/abs/1904.02036), read 2026-08-05). Everything
+past that point is an editorial decision about what the ink *means*: expanding a
+scribal abbreviation says what the abbreviation stood for, which belongs to the
+transcription convention Tyrel owns (§5), not to a scorer. Over-normalization is a
+named risk in that same literature, so this profile stops at the one case with no
+real controversy.
 
 ### Required Tyrel decision before the first real run
 
@@ -99,6 +166,37 @@ WER = sum(act edit counts) / sum(act reference words)
 ```
 
 Rates can exceed 1.0 due to invented insertions. They are never clipped or divided by the longer string. Every Testimonium gets this exact direct baseline against the same checked reference; no silver or witness-derived reference is admitted.
+
+**Why the bare distance primitive, and why the unbounded denominator.** Both are
+predeclared choices rather than a library default inherited without reading it
+(GOVERNANCE 10).
+
+*The primitive.* `rapidfuzz.distance.Levenshtein` computes the minimum count of
+single-element insertions, deletions and substitutions and nothing else: no
+tokenization, no case-folding, no text normalization of any kind. That is exactly
+why it is called directly instead of a higher-level scorer such as `jiwer`
+(Apache-2.0, RapidFuzz-backed underneath), which bundles its own tokenization and
+transform pipeline into `wer()`/`cer()`. What `jiwer` normalizes by default could
+not be confirmed from its own documentation in one reading (checked 2026-08-05: the
+usage page defers the default-transform list to a separate API reference). Rather
+than call a function whose normalization has not been read, the distance primitive
+is used bare and **every** normalization decision above is this project's own,
+explicit, and independently tested.
+
+*The denominator.* Two conventions exist. The classical / NIST-style rate used here
+is `(S + D + I) / N` with `N` the reference length, which is unbounded above.
+OCR-D's own evaluation specification normalizes instead — `(I + S + D) / (I + S + D
++ C)` — which is bounded to `[0, 1]`. The reason for choosing the unbounded form is
+concrete and ties to ruling 3, "we don't want it making shit up": a refused,
+missing, unavailable or malformed response scores an empty hypothesis, which against
+a non-blank reference is exactly `1.0`. Under the bounded formula, a candidate that
+hallucinates an enormous volume of wrong text *approaches but can never exceed* that
+same ceiling, so fabrication is capped at parity with honest silence. Under the
+unbounded formula, wild fabrication scores **worse** than declining to answer. Given
+this project's explicit concern about invention on damaged ink, the formula that
+leaves that penalty uncapped is the one that measures honestly. Nothing here rewards
+silence over an honest attempt either: a partial, flawed reading almost always
+scores below 1.0 and therefore better than declining.
 
 | Observed response state | CER/WER hypothesis | Extra accounting |
 |---|---|---|
@@ -123,7 +221,7 @@ An image carries an explicit provenance class: `synthetic`, `cleared_public`, or
 
 Raw requests, prompt bytes, model identities, image bytes/paths, Testimonia, human transcriptions, candidate responses, adjudication records, and limitations stay under approved private roots. They never go to git, `/out`, or `history/`.
 
-A dated finding validates against `history/reading_claim_public_finding.schema.json` and `redaction.validate_public_finding`. It permits only fixed metric keys, integer slots, condition enums, SHA-256 digests, and fixed measure-quote IDs. It requires the exact three-slot × three-condition matrix, matching deltas, equal act denominators, and arithmetic-consistent CER/WER before the only supported writer, `publication.write_public_finding`, performs an exclusive dated write. It has no free-text path. Tests plant synthetic transcript, name, image, and identity fields and prove the projector omits them or validation refuses them. This build writes no finding because it measured nothing.
+A dated finding validates against `reading_claim_public_finding.schema.json`, which lives beside this document rather than in `history/` — `history/README.md` says that directory holds dated evidence and that anything there telling you what to do is out of date by definition, and a schema is exactly a document that tells you what to do. The finding itself is still written into `history/`. Validation is by that schema and by `redaction.validate_public_finding`, which is deliberately the stricter of the two. It permits only fixed metric keys, integer slots, condition enums, SHA-256 digests, and fixed measure-quote IDs. It requires the exact three-slot × three-condition matrix, matching deltas, equal act denominators, and arithmetic-consistent CER/WER before the only supported writer, `publication.write_public_finding`, performs an exclusive dated write. It has no free-text path. Tests plant synthetic transcript, name, image, and identity fields and prove the projector omits them or validation refuses them. This build writes no finding because it measured nothing.
 
 ## 10. Pinned scoring dependencies
 
