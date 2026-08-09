@@ -43,8 +43,9 @@ Invoked as a program:
 import hashlib
 import json
 import sys
+from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Callable, Final, NamedTuple
+from typing import Any, BinaryIO, Callable, Final, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[2]
 # The one folder in this repository whose contents are declared synthetic. A
@@ -107,10 +108,10 @@ class SourceEntry(NamedTuple):
     container_page_index: int | None = None
     declared_size: int | None = None
     ledger_sha256: str | None = None
-    # A real-submission PDF stays on disk.  This ephemeral, local-only path is
-    # deliberately not written into run.json or an artifact: the sealed filename
-    # ledger is the citation link, while PDFium uses the path only to avoid putting
-    # an entire reel into one Python bytes allocation.
+    # Unit callers can supply a local PDF path without allocating its whole body.
+    # The real-submission route deliberately leaves this empty and opens its PDF
+    # through inventory.open_submission_source(), so the descriptor that PDFium
+    # reads cannot be switched between the ledger digest and rasterisation.
     source_path: Path | None = None
     detected_format: str | None = None
 
@@ -133,17 +134,24 @@ _SNIFF_BYTES: Final = 4096
 # The real Exemplar Door decodes/renders bytes; it is not the walking skeleton's
 # fake adapter. Bump this deliberately whenever source behavior changes so a real
 # run cannot resume under pixels made by a different Door implementation.
-REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v1"
+REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v2"
 
 
 def _source_digest(path: Path) -> tuple[str, int]:
     """Hash a source path in bounded chunks, returning its exact byte count too."""
+    with path.open("rb") as handle:
+        return _source_digest_stream(handle)
+
+
+def _source_digest_stream(handle: BinaryIO) -> tuple[str, int]:
+    """Hash an already-open source and reset it for the PDF decoder."""
     digest = hashlib.sha256()
     size = 0
-    with path.open("rb") as handle:
-        while chunk := handle.read(_SOURCE_HASH_CHUNK):
-            digest.update(chunk)
-            size += len(chunk)
+    handle.seek(0)
+    while chunk := handle.read(_SOURCE_HASH_CHUNK):
+        digest.update(chunk)
+        size += len(chunk)
+    handle.seek(0)
     return digest.hexdigest(), size
 
 
@@ -151,6 +159,14 @@ def _sniff_source_path(path: Path) -> str | None:
     """Route a path after reading only the bounded signature prefix."""
     with path.open("rb") as handle:
         return sniff(handle.read(_SNIFF_BYTES))
+
+
+def _sniff_source_stream(handle: BinaryIO) -> str | None:
+    """Route an already-open source from a bounded prefix, then reset it."""
+    handle.seek(0)
+    detected = sniff(handle.read(_SNIFF_BYTES))
+    handle.seek(0)
+    return detected
 
 
 def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
@@ -186,17 +202,19 @@ def decide(
     """Decide one raster or one source-container page by its actual bytes.
 
     ``data`` is present for ordinary rasters and synthetic PDFs. A real PDF is
-    deliberately represented by ``source.source_path`` plus a digest already
-    streamed from that path, so PDFium opens the file itself instead of receiving a
-    whole-file bytes allocation.
+    deliberately represented by an already-open PDFium document plus a digest
+    streamed from the same anchored descriptor, so PDFium does not receive a
+    whole-file bytes allocation or reopen a mutable pathname.
     """
     if pdf_settings is None:
         pdf_settings = render_config.load_pdf_render_settings(minimum_dpi=pdf_render.MIN_RENDER_DPI)
     if data is None:
-        if source.source_path is None or source_digest is None:
-            raise ValueError("a path-backed decision needs both a source path and streamed digest")
+        if source_digest is None:
+            raise ValueError("a streamed decision needs its source digest")
         detected = detected_format or source.detected_format
         if detected is None:
+            if source.source_path is None:
+                raise ValueError("a streamed decision needs its detected PDF format")
             detected = _sniff_source_path(source.source_path)
         whole_digest = source_digest
     else:
@@ -241,8 +259,8 @@ def decide(
 
     try:
         if detected == "pdf":
-            if data is None and source.source_path is None:
-                raise ValueError("a path-backed PDF has no source path")
+            if data is None and opened_pdf is None and source.source_path is None:
+                raise ValueError("a streamed PDF has no open document")
             opened = opened_pdf or pdf_render.open_document(
                 source.source_path if data is None else data
             )
@@ -302,13 +320,25 @@ def decide(
 
 
 def expand_sources(
-    files: list[dict[str, Any]], read_bytes: Callable[[str], bytes], policy: dict[str, str]
+    files: list[dict[str, Any]],
+    read_bytes: Callable[[str], bytes],
+    policy: dict[str, str],
+    *,
+    open_source: Callable[[str], Any] | None = None,
 ) -> list[SourceEntry]:
     """Expand configured PDF/TIFF containers to stable page ordinals.
 
     Counting inspects only enough to learn a page count; it does not produce page
     pixels.  Any source that cannot be read or counted still receives one ordinal,
     so the later decision can publish a named alarm rather than lose it.
+
+    ``open_source`` is the real submission's descriptor-anchored opener
+    (`operations.submit.inventory.open_submission_source`).  Counting is where the
+    anchoring matters most: PDFium parses whatever it is given *before* any digest
+    has been computed, so a pathname reopened here could be fanned out to the page
+    ordinals of a document nobody submitted.  Each row's stream is opened and
+    closed within its own row, so this pass holds one descriptor at a time rather
+    than one per file in the folder.
     """
     ordinal = 0
     sources: list[SourceEntry] = []
@@ -333,7 +363,15 @@ def expand_sources(
             )
         data: bytes | None = None
         try:
-            detected = _sniff_source_path(source_path) if source_path is not None else None
+            if open_source is not None:
+                # A real source is classified from the same descriptor-relative
+                # opener used later for its digest and PDFium document.  A pathname
+                # reconstructed from the ledger would have a replacement window.
+                with open_source(path) as opened_source:
+                    detected = _sniff_source_stream(opened_source.handle)
+                    opened_source.assert_unchanged()
+            else:
+                detected = _sniff_source_path(source_path) if source_path is not None else None
             if detected != "pdf":
                 # Rasters remain byte-backed. Their existing bounded path is
                 # intentionally unchanged; only a PDF container can be opened by
@@ -355,7 +393,7 @@ def expand_sources(
                     continue
                 data = read_bytes(path)
                 detected = sniff(data)
-        except OSError:
+        except (OSError, inventory.SubmissionInputError):
             ordinal += 1
             sources.append(
                 SourceEntry(
@@ -387,12 +425,17 @@ def expand_sources(
             )
             continue
         try:
-            page_count = (
-                pdf_render.count_pages(source_path if source_path is not None else data)
-                if detected == "pdf"
-                else count_raster_pages(data)
-            )
-        except (pdf_render.PdfRefusal, FormatRefusal):
+            if detected == "pdf" and open_source is not None:
+                with open_source(path) as opened_source:
+                    page_count = pdf_render.count_pages(opened_source.handle)
+                    opened_source.assert_unchanged()
+            else:
+                page_count = (
+                    pdf_render.count_pages(source_path if source_path is not None else data)
+                    if detected == "pdf"
+                    else count_raster_pages(data)
+                )
+        except (pdf_render.PdfRefusal, FormatRefusal, inventory.SubmissionInputError, OSError):
             if route != admission.RENDER_PAGES:
                 ordinal += 1
                 sources.append(
@@ -467,6 +510,7 @@ def process_sources(
     policy: dict[str, str],
     pdf_settings: render_config.PdfRenderSettings | None = None,
     data_policy: dict[str, Any] | None = None,
+    open_source: Callable[[str], Any] | None = None,
 ) -> int:
     """Admit or refuse every declared source. Returns the count admitted.
 
@@ -476,9 +520,10 @@ def process_sources(
 
     `read_bytes` is called once per distinct raster path within this call. A real
     PDF is different: its digest is streamed once, then PDFium holds one native
-    path-backed document handle while every fanned page renders from it. This is
-    what lets a reel be larger than available Python memory without losing its
-    page ordinals or filename ledger link.
+    descriptor-anchored document handle while every fanned page renders from it.
+    This lets a reel be larger than available Python memory without losing its
+    page ordinals or filename ledger link, and prevents a pathname replacement
+    from separating the digest from the pixels that are sealed.
 
     Per-file, never per-folder (harvest #2): one unreadable or refused source does
     not stop the rest from being decided. Byte-identical pages within one PDF remain
@@ -507,19 +552,52 @@ def process_sources(
     # reel, granted for PDFs and then given back on the raster path.
     cached_path: str | None = None
     cached_data: bytes | None = None
-    streamed: dict[Path, tuple[str, int]] = {}
-    pdf_documents: dict[Path, pdf_render.OpenPdf] = {}
+    # `expand_sources()` assigns all page ordinals from one container together.
+    # Keep exactly that one PDF stream/document alive while those pages render,
+    # rather than retaining a descriptor for every PDF in a large submission.
+    active_pdf_key: str | None = None
+    active_pdf_digest: tuple[str, int] | None = None
+    active_pdf_document: pdf_render.OpenPdf | None = None
+    active_opened_source: inventory.OpenedSubmissionSource | None = None
+    active_context: ExitStack | None = None
+
+    def close_active_pdf() -> None:
+        nonlocal active_pdf_key
+        nonlocal active_pdf_digest
+        nonlocal active_pdf_document
+        nonlocal active_opened_source
+        nonlocal active_context
+        try:
+            if active_pdf_document is not None:
+                pdf_render.close_document(active_pdf_document)
+        finally:
+            # The stream outlives the document by construction, so it is released
+            # second — and in a `finally`, because a document that fails to close
+            # must not also strand the descriptor it was reading through.
+            if active_context is not None:
+                active_context.close()
+        active_pdf_key = None
+        active_pdf_digest = None
+        active_pdf_document = None
+        active_opened_source = None
+        active_context = None
+
     try:
         for source in sorted(sources, key=lambda item: item.ordinal):
+            stream_backed_pdf = open_source is not None and source.detected_format == "pdf"
             path_backed_pdf = source.source_path is not None and source.detected_format == "pdf"
+            streamed_pdf = stream_backed_pdf or path_backed_pdf
+            source_key = source.declared_path
+            if active_pdf_key is not None and (not streamed_pdf or source_key != active_pdf_key):
+                close_active_pdf()
             if (
                 source.declared_size is not None
                 and source.declared_size > MAX_SOURCE_BYTES
-                and not path_backed_pdf
+                and not streamed_pdf
             ):
                 # The raster path still receives bytes today, so retaining its
-                # allocation guard is honest. A path-backed PDF does not allocate
-                # those bytes and must not be refused by a cap that guarded the
+                # allocation guard is honest. A streamed PDF does not allocate
+                # those bytes and must not be refused by a cap that guarded a
                 # retired allocation.
                 _publish(
                     context,
@@ -535,14 +613,35 @@ def process_sources(
                 continue
 
             data: bytes | None = None
-            if path_backed_pdf:
-                assert source.source_path is not None  # narrowed by path_backed_pdf
+            if streamed_pdf:
                 try:
-                    actual_digest, actual_size = streamed.get(source.source_path, (None, None))
-                    if actual_digest is None:
-                        actual_digest, actual_size = _source_digest(source.source_path)
-                        streamed[source.source_path] = (actual_digest, actual_size)
-                except OSError as error:
+                    if active_pdf_key is None:
+                        candidate_context: ExitStack | None = None
+                        if stream_backed_pdf:
+                            assert open_source is not None  # narrowed by stream_backed_pdf
+                            candidate_context = ExitStack()
+                            try:
+                                candidate_source = candidate_context.enter_context(
+                                    open_source(source.declared_path)
+                                )
+                                actual_digest, actual_size = _source_digest_stream(
+                                    candidate_source.handle
+                                )
+                                candidate_source.assert_unchanged()
+                            except BaseException:
+                                candidate_context.close()
+                                raise
+                        else:
+                            assert source.source_path is not None  # narrowed by path_backed_pdf
+                            actual_digest, actual_size = _source_digest(source.source_path)
+                            candidate_source = None
+                        active_pdf_key = source_key
+                        active_pdf_digest = (actual_digest, actual_size)
+                        active_opened_source = candidate_source
+                        active_context = candidate_context
+                    assert active_pdf_digest is not None  # set with active_pdf_key
+                    actual_digest, actual_size = active_pdf_digest
+                except (OSError, inventory.SubmissionInputError) as error:
                     _publish(
                         context,
                         source,
@@ -558,7 +657,7 @@ def process_sources(
                     else:
                         data = read_bytes(source.declared_path)
                         cached_path, cached_data = source.declared_path, data
-                except OSError as error:
+                except (OSError, inventory.SubmissionInputError) as error:
                     _publish(
                         context,
                         source,
@@ -597,15 +696,31 @@ def process_sources(
                 continue
 
             opened_pdf = None
-            if path_backed_pdf:
-                assert source.source_path is not None  # narrowed by path_backed_pdf
+            if streamed_pdf:
                 try:
-                    opened_pdf = pdf_documents.get(source.source_path)
-                    if opened_pdf is None:
-                        opened_pdf = pdf_render.open_document(source.source_path)
-                        pdf_documents[source.source_path] = opened_pdf
+                    if active_pdf_document is None:
+                        if stream_backed_pdf:
+                            assert active_opened_source is not None
+                            active_pdf_document = pdf_render.open_document(
+                                active_opened_source.handle
+                            )
+                        else:
+                            assert source.source_path is not None  # narrowed by path_backed_pdf
+                            active_pdf_document = pdf_render.open_document(source.source_path)
+                    opened_pdf = active_pdf_document
                 except pdf_render.PdfRefusal as error:
                     decision = _Decision("refused", str(error), None, None, None)
+                except (OSError, inventory.SubmissionInputError) as error:
+                    # Per-file, never per-folder. A descriptor that dies between
+                    # the digest and the document open is this one source's named
+                    # alarm; letting it escape would abandon every source after it.
+                    decision = _Decision(
+                        "refused",
+                        admission.reason(RefusalReason.UNREADABLE, str(error)),
+                        None,
+                        None,
+                        None,
+                    )
                 else:
                     decision = decide(
                         None,
@@ -628,6 +743,20 @@ def process_sources(
                     approval_reference=approval_reference,
                 )
                 continue
+
+            if stream_backed_pdf:
+                try:
+                    assert active_opened_source is not None
+                    active_opened_source.assert_unchanged()
+                except inventory.SubmissionInputError as error:
+                    _publish(
+                        context,
+                        source,
+                        outcome="refused",
+                        reason=admission.reason(RefusalReason.DIGEST_MISMATCH, str(error)),
+                        approval_reference=approval_reference,
+                    )
+                    continue
 
             # Register only an admitted source. A corrupt twin needs its own
             # corruption alarm rather than a duplicate claim about a source whose
@@ -670,8 +799,7 @@ def process_sources(
             )
             admitted += 1
     finally:
-        for opened in pdf_documents.values():
-            pdf_render.close_document(opened)
+        close_active_pdf()
 
     return admitted
 
@@ -1084,9 +1212,10 @@ def real_submission(args, registry) -> int:
         target_override=args.pdf_target_dpi,
         minimum_dpi=pdf_render.MIN_RENDER_DPI,
     )
-    # Inventory streams every digest and retains no source body.  The PDF branch
-    # below gives PDFium the original path, so a 15 GB reel never becomes a Python
-    # bytes object merely to discover its page count.
+    # Inventory streams every digest and retains no source body.  Later reads
+    # reopen by directory descriptor, never by a reconstructed ordinary path: a
+    # 15 GB PDF remains a stream, and the digest and PDFium renderer hold the same
+    # submitted file even if its name is replaced after inventory.
     found = inventory.read_submission(submission_folder, max_bytes=0)
     found_paths = {source.relative_path for source in found}
     declared_paths = {row["relative_path"] for row in ledger["files"]}
@@ -1096,18 +1225,26 @@ def real_submission(args, registry) -> int:
             "the submitted folder contains file(s) absent from its self-hashed filename "
             f"ledger ({len(unexpected)} extra); no run was created over an ambiguous set"
         )
-    source_paths = {
-        source.relative_path: submission_folder / source.relative_path for source in found
-    }
 
     def read_bytes(relative_path: str) -> bytes:
         try:
-            source_path = source_paths[relative_path]
-        except KeyError as error:
-            raise OSError(
-                "a source named by the filename ledger is absent after transfer"
-            ) from error
-        return source_path.read_bytes()
+            with inventory.open_submission_source(
+                submission_folder, relative_path
+            ) as opened_source:
+                # The raster path is deliberately bounded even if an untrusted
+                # filename ledger lies about a file that grew after inventory.
+                # `process_sources` compares this observed size to the ledger and
+                # records the mismatch; it never allocates an arbitrary replacement.
+                data = opened_source.handle.read(MAX_SOURCE_BYTES + 1)
+                opened_source.assert_unchanged()
+                return data
+        except inventory.SubmissionInputError as error:
+            # `process_sources` turns a per-source read failure into its ordinary,
+            # private named refusal artifact rather than failing the entire census.
+            raise OSError(str(error)) from error
+
+    def open_source(relative_path: str):
+        return inventory.open_submission_source(submission_folder, relative_path)
 
     sources = expand_sources(
         [
@@ -1116,16 +1253,12 @@ def real_submission(args, registry) -> int:
                 "sha256": source["sha256"],
                 "bytes": source["bytes"],
                 "ledger_sha256": ledger["self_hash"],
-                # A ledger name missing from the just-inventoried folder is kept
-                # as an ordinal and later receives the existing named unreadable
-                # outcome. Do not turn that per-source accounting fact into a raw
-                # KeyError before the run exists.
-                "source_path": source_paths.get(source["relative_path"]),
             }
             for source in ledger["files"]
         ],
         read_bytes,
         format_policy,
+        open_source=open_source,
     )
     bindings = _real_bindings(
         registry.config,
@@ -1172,6 +1305,7 @@ def real_submission(args, registry) -> int:
         policy=format_policy,
         pdf_settings=pdf_settings,
         data_policy=data_policy,
+        open_source=open_source,
     )
     refusal_report = publish_refusal_report(context)
     duplicate_report = publish_duplicate_report(context)
