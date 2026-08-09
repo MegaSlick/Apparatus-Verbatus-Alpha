@@ -100,6 +100,21 @@ WITNESS_EMPTY = (
     {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_1"},
     {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_2"},
 )
+
+# A page the structure pass could not mark out. Spec 06 asks for this exact case
+# by name: "A page the structure seat fails on is **held visibly** and
+# recoverable ... never silently skipped". It is a *recorded* failure rather than
+# a live one because there is no live structure model here to fail; what is real
+# is everything downstream of it — the page's held structure-status record, the
+# hold artifact on every act that needed the page, and the act's continued
+# presence in the proposal seal.
+STRUCTURE_FAILURES = (
+    {
+        "scenario": "structure-failure",
+        "page_ordinal": 1,
+        "reason_code": "recorded-fixture-structure-failure",
+    },
+)
 _UNMATCHABLE_SHA256 = "0" * 64
 
 # A reading that did not succeed but still carries text -- the hazard
@@ -325,6 +340,11 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "recover_acts = []",
         "hold_acts = []",
         "",
+        "[[scenario]]",
+        'name = "structure-failure"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
         "# A reading that did not succeed. `truncated` is a failed-class Perlector",
         "# outcome that still carries text, which is the combination that matters: the",
         "# Recensor used to ask only whether a reading existed, and the Archetypus",
@@ -403,6 +423,18 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"scenario = {toml_string(row['scenario'])}",
             f"act_key = {toml_string(row['act_key'])}",
             f"chair = {toml_string(row['chair'])}",
+        ]
+
+    for row in STRUCTURE_FAILURES:
+        lines += [
+            "",
+            "# A recorded structure-seat failure: the Designator holds the page and every",
+            "# act that needed it, with the reason named, rather than skipping either.",
+            "",
+            "[[structure_failure]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"page_ordinal = {row['page_ordinal']}",
+            f"reason_code = {toml_string(row['reason_code'])}",
         ]
 
     for refusal in PAGE_REFUSALS:

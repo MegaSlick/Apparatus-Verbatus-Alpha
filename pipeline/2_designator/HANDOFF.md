@@ -77,9 +77,13 @@ structural cues grouped the raw candidate regions into this act, reconciled
 against (never the source of) the act's identity-bound bounds. **It carries no
 text, enforced at the schema boundary** by `_refuse_text_fields` — every payload
 this stage publishes is walked for a closed set of forbidden content-bearing
-keys (`text`, `reported`, `transcription`, `content`, `reading`) before it is
-sent to `context.publish`, and this is the one kind the spec names the rule for
-by name.
+keys (`text`, `reported`, `transcription`, `transcript`, `content`, `reading`,
+`literal`, `token`, `tokens`) before it is sent to `context.publish`, and this
+is the one kind the spec names the rule for by name. The same closed set also
+refuses `chosen` and `pivot`: neither is text, but both are the retired
+picker's own words for the witness it elected (GLOSSARY, "Retired terms"), and
+a Designator payload growing either field would be a picker announcing itself
+at the one boundary already positioned to refuse it.
 
 ```text
 act_key, declared_bounds, detected_bounds
@@ -191,12 +195,55 @@ once is refused outright rather than published (`_secondary_rescue_candidates`)
 two acts or refine either. Removing the proposer changes no `region`,
 `act-group`, or `proposal-seal` outcome; only these two kinds disappear.
 
+## `kind="structure-status"`
+
+One record per sealed page, subject-keyed to the page identity: whether the
+structure pass marked that page out or was held on it, and if held, the reason
+code. Published for every sealed page rather than only the failing ones, because
+a page nothing marked out and a page nothing *tried* to mark out would otherwise
+look identical — a reader could only infer the structural outcome from whether
+crops happen to exist, which is exactly the inference GOVERNANCE 2 refuses.
+
+```text
+page_id, page_ordinal, state ("marked-out" | "held"), reason_code | null
+provenance (the resolved Designator chair)
+```
+
+A failure is declared per scenario by the fixture's `[[structure_failure]]`
+rows, because the walking skeleton has no live structure model that can fail.
+Everything downstream of the declaration is real: `structure_failures` refuses
+two declarations for one page rather than taking either, and ignores a
+declaration naming a page this run never sealed, since the Exemplar's own
+refusal already accounts for that loss and a second hold would double-count it.
+
 ## `kind="hold"` and `kind="proposal-seal"`
 
-If an act's own page or necessary continuation was not sealed, the Designator
-publishes one `held` record rather than omitting the act. Its direct input is the
-relevant Exemplar page outcome and its payload names the act key, unsealed page
-ordinal, and reason.
+If an act's own page or necessary continuation was not sealed, or the structure
+pass could not mark that page out, the Designator publishes one `held` record
+rather than omitting the act. Its direct input is the relevant Exemplar page
+outcome; its payload names the act key, the page whose state blocked the act,
+the reason as a sentence, and the reason as a closed code:
+
+```text
+act_key, blocking_page_ordinal, reason_code, reason
+```
+
+`reason_code` is one of `exemplar-page-not-sealed`,
+`exemplar-continuation-not-sealed`, `structure-pass-held`, or
+`structure-pass-held-on-continuation` (`HOLD_REASON_CODES`), so a consumer can
+branch on the cause without parsing prose and a new cause has to be declared
+rather than appear as an unexpected sentence. The page field is
+`blocking_page_ordinal` rather than the `unsealed_page_ordinal` this payload
+carried while an unsealed page was the only way to reach here: a page the
+structure pass failed on **is** sealed, and the old name would have said
+something false about it.
+
+A structure-pass hold does not suppress that page's ink. The page sealed, so
+its ink exists; no crop claims any of it, so all of it reconciles as
+conservation residual and each residual component becomes its own held act.
+That is the difference Tyrel drew on 2026-08-05 between "there was nothing to
+read" and "we could not read it", carried through structurally rather than by
+convention.
 
 The once-only `proposal-seal` is the downstream denominator. Its self-hashed
 payload contains `count`, Designator provenance, and one `expected_acts` row per
@@ -211,6 +258,27 @@ and the seal's direct input set is their exact union. Consumers reject a shorter
 denominator, an unaccounted Designator record, a duplicate, a claimed
 continuation with no supporting proposal, or a mismatch between the row and its
 evidence.
+
+## Exit code
+
+`EXIT_COMPLETE` (0) only when the seal holds nothing and no page was held.
+Anything held — an act, a page, or ink no crop claimed — exits `EXIT_HELD` (3).
+The exit code is the one signal an operator reads without opening the tree, and
+a 0 over a hold is a partial result wearing "complete" (GOVERNANCE 2). It is
+computed from the seal's own rows, so it cannot drift from the record it
+describes. A recovery invocation cuts one requested crop and exits 0 or fails;
+it publishes no holds.
+
+## Run binding
+
+`config/designator_padding.toml` is sealed into `run.json`'s `config_digest`
+alongside `config/models.toml`, `config/pdf_render.toml` and
+`config/recovery.toml`. Padding decides how many pixels a witness is actually
+shown, so two runs under different padding cut different crop bytes; without the
+binding, one run id could be reused across a padding change and produce a second
+geometry under the first run's name. The stage reads the policy from the run's
+own `--designator-padding-config` argument, so the bytes it pads with and the
+bytes the run sealed are the same file by construction.
 
 ## Recovery boundary
 
@@ -232,8 +300,8 @@ a Testimonium actually names them. Recensor, Archetypus, and Armarium use the
 proposal seal as the conserved act denominator; none may manufacture a new act
 or choose among competing crops.
 
-`act-group`, `secondary-provenance`, and `secondary-proposal` have no consumer
-downstream of this stage today. They are evidence, filed the same way a `hold`
+`act-group`, `secondary-provenance`, `secondary-proposal` and `structure-status`
+have no consumer downstream of this stage today. They are evidence, filed the same way a `hold`
 is filed — nothing is lost silently — but no other stage reads them, and every
 other stage's own reader of this stage's manifest already filters to the one or
 two kinds it actually wants (`entry["kind"] == "region"`, `== "hold"`), so a new
@@ -263,3 +331,25 @@ resolved: `grouping.find_continuation_candidate`'s independent geometric check
 is recorded on `act-group` as `continuation.geometric_corroboration` precisely
 so the fact is visible for whoever does settle it, without this build changing
 `pipeline/5_recensor/run.py` to act on it.
+
+**Recovery from a structural hold.** Spec 06's test 4 asks for three things: the
+page held with a named reason, no silent gap downstream, and "the recovery
+operation proposes a replacement region on request". The first two are built and
+proven end to end (`test_structure_failure.py`). The third is not, and nothing
+here makes it: `recovery_pass` refuses any act the seal holds — "a held act is
+terminal and may not be recropped back to life" — which is the landed recovery
+contract this stage shares with the Recensor (spec 09), reached through
+`common.stage.current_recovery_request`. Making a *structural* hold recoverable
+while an *unsealed-page* hold stays terminal means distinguishing the two in a
+contract owned across two stages, and that is a decision for Tyrel rather than a
+distinction to introduce quietly here.
+
+**Captured structure text.** Spec 06's contracts section says the structure
+pass's transcription is "captured and handed to the Attestatores stage as a
+Testimonium rather than re-run", recorded at capture time with full provenance.
+Nothing in this tree does that, and nothing here could: the walking skeleton's
+structure pass is an ink scan with no transcription to capture, and the intake
+contract it would hand to is spec 07's, which the spec's own exit criteria say
+is verified "against the intake schema **as written in Spec 07's text**". This
+is a named gap awaiting a real structure model and that intake schema, not an
+oversight.

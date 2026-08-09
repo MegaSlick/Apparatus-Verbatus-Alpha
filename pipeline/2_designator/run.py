@@ -9,11 +9,13 @@ rather than "did I account for the acts that were found", and an act lost betwee
 stages would leave no hole to notice.
 
 Every seal entry carries this stage's outcome for the act: `proposed` when it was
-fully marked out, `held` when it could not be — its page unsealed, or a declared
-continuation whose page never sealed — with a `hold` artifact recording why. An
-act this stage cannot mark out is a unit it still accounts for; before the hold
+fully marked out, `held` when it could not be — its page unsealed, a declared
+continuation whose page never sealed, or a sealed page the structure pass could
+not mark out — with a `hold` artifact recording which of those it was. An act
+this stage cannot mark out is a unit it still accounts for; before the hold
 existed, such an act was skipped, sealed nowhere, and the run reported complete
-over its absence.
+over its absence. A run that held anything exits `EXIT_HELD`, so the same fact
+reaches an operator who never opens the tree.
 
 Regions are append-only per act, and each carries an `origin` saying what kind of
 region it is: a **proposal** region is part of what was originally marked out — the
@@ -77,6 +79,7 @@ from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
+    EXIT_HELD,
     SECONDARY_PROPOSER_CHAIR,
     StageContext,
     act_bounds,
@@ -100,7 +103,41 @@ from common.stage import (  # noqa: E402
 # check silently. Named for *content* fields specifically -- "reason" and
 # "rationale" describe a mechanism (which rule fired), never the ink itself,
 # and stay allowed.
-_FORBIDDEN_TEXT_KEYS = frozenset({"text", "reported", "transcription", "content", "reading"})
+_FORBIDDEN_TEXT_KEYS = frozenset(
+    {
+        "text",
+        "reported",
+        "transcription",
+        "transcript",
+        "content",
+        "reading",
+        "literal",
+        "token",
+        "tokens",
+        # Not text, but the two words the retired picker used for the witness it
+        # elected (GLOSSARY's "Retired terms"). A Designator payload that grew a
+        # `chosen` or a `pivot` field would be a picker announcing itself, and
+        # refusing the name at the same boundary as the text costs nothing.
+        "chosen",
+        "pivot",
+    }
+)
+
+# Why an act could not be marked out. A closed vocabulary rather than free text,
+# so a consumer can branch on the cause without parsing a sentence, and so a new
+# cause has to be declared here rather than appearing as prose nothing expects.
+HOLD_REASON_CODES = frozenset(
+    {
+        # The act's own page never sealed at the Exemplar door.
+        "exemplar-page-not-sealed",
+        # The act runs onto a page that never sealed, so it cannot be cut whole.
+        "exemplar-continuation-not-sealed",
+        # The page sealed, but the structure pass could not mark it out.
+        "structure-pass-held",
+        # The act's continuation page sealed, but its structure pass could not.
+        "structure-pass-held-on-continuation",
+    }
+)
 
 
 def _refuse_text_fields(value, path: str = "$") -> None:
@@ -445,7 +482,9 @@ def cut_region(
     )
 
 
-def hold_act(context, act, act_id: str, unsealed_ordinal: int, records, reason: str):
+def hold_act(
+    context, act, act_id: str, blocking_ordinal: int, records, reason: str, reason_code: str
+):
     """Publish the artifact that says why this act could not be marked out.
 
     The hold is a real record, never a skipped loop iteration: before it existed,
@@ -454,13 +493,27 @@ def hold_act(context, act, act_id: str, unsealed_ordinal: int, records, reason: 
     a record of the loss's absence. The hold references the Exemplar's own page
     outcome as its evidence, so the refusal it rests on is one digest-checked
     hop away.
+
+    `blocking_ordinal` is the page whose state stopped this act, and
+    `reason_code` says which state that was. The two are separate fields because
+    the page is not always *unsealed*: a page the structure pass could not mark
+    out is sealed ink this stage still cannot bound, and a field named
+    `unsealed_page_ordinal` — which is what this payload carried while an
+    unsealed page was the only way to reach here — would have said something
+    false about it. `reason` stays the sentence a reviewer reads; `reason_code`
+    is the closed vocabulary a consumer may branch on without parsing prose.
     """
-    entry = records.get(unsealed_ordinal)
+    entry = records.get(blocking_ordinal)
     if entry is None:
         raise ContractError(
-            f"act {act['key']} needs page {unsealed_ordinal}, and the Exemplar "
+            f"act {act['key']} needs page {blocking_ordinal}, and the Exemplar "
             "recorded no outcome for it at all — a page in neither the sealed nor "
             "the refused set is invariant #10's imbalance, not a page to skip"
+        )
+    if reason_code not in HOLD_REASON_CODES:
+        raise ContractError(
+            f"act {act['key']} is held for {reason_code!r}, which is not one of the "
+            f"declared hold reasons {sorted(HOLD_REASON_CODES)}"
         )
     return context.publish(
         kind="hold",
@@ -469,10 +522,76 @@ def hold_act(context, act, act_id: str, unsealed_ordinal: int, records, reason: 
         inputs=[context.input_ref(entry["relative_path"])],
         payload={
             "act_key": act["key"],
-            "unsealed_page_ordinal": unsealed_ordinal,
+            "blocking_page_ordinal": blocking_ordinal,
+            "reason_code": reason_code,
             "reason": reason,
         },
     )
+
+
+def structure_failures(context, pages: dict[int, dict]) -> dict[int, str]:
+    """The sealed pages this run's structure pass could not mark out, by ordinal.
+
+    Spec 06 asks for this case by name: "A page the structure seat fails on is
+    **held visibly** and recoverable ... never silently skipped — the old design
+    made a missing witness fatal to the corpus; this one makes it a named,
+    recoverable hold." The walking skeleton has no live structure model to fail,
+    so the *failure* is declared by the fixture; everything downstream of it —
+    the page's held status record, the hold on every act that needed that page,
+    and the act's continued presence in the proposal seal — is real.
+
+    A failure naming a page this run never sealed is ignored rather than
+    invented: the page's own Exemplar refusal already accounts for it, and two
+    holds for one loss would double-count it.
+    """
+    failures: dict[int, str] = {}
+    for row in context.fixture.get("structure_failure", []):
+        if not isinstance(row, dict) or set(row) != {"scenario", "page_ordinal", "reason_code"}:
+            raise ContractError(
+                "a declared structure failure has fields outside its closed contract"
+            )
+        if row["scenario"] != context.scenario:
+            continue
+        ordinal, reason_code = row["page_ordinal"], row["reason_code"]
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise ContractError("a declared structure failure names no integer page ordinal")
+        if not isinstance(reason_code, str) or not reason_code:
+            raise ContractError("a declared structure failure names no reason code")
+        if ordinal in failures:
+            raise ContractError(
+                f"the fixture declares more than one structure failure for page {ordinal}; "
+                "this stage may not choose one of them by order"
+            )
+        if ordinal in pages:
+            failures[ordinal] = reason_code
+    return failures
+
+
+def publish_structure_status(context, records, pages, provenance, failures) -> None:
+    """One visible per-page outcome for the structure pass, held or marked out.
+
+    Published for every sealed page, not only the failing ones, so "the
+    structure pass ran on this page and succeeded" is a record rather than the
+    absence of one. Without it a reader can only infer a page's structural
+    outcome from whether crops happen to exist on it, which is exactly the
+    inference GOVERNANCE 2 refuses: a page nothing marked out and a page nothing
+    tried to mark out would look identical.
+    """
+    for ordinal in sorted(pages):
+        reason_code = failures.get(ordinal)
+        context.publish(
+            kind="structure-status",
+            subject_id=page_identity(context.fixture, ordinal),
+            outcome="held" if reason_code else "proposed",
+            inputs=[context.input_ref(records[ordinal]["relative_path"])],
+            payload={
+                "page_id": pages[ordinal]["subject_id"],
+                "page_ordinal": ordinal,
+                "state": "held" if reason_code else "marked-out",
+                "reason_code": reason_code,
+                "provenance": provenance,
+            },
+        )
 
 
 def _analyze_page(cache: dict, context, ordinal: int, page_record: dict) -> dict:
@@ -795,13 +914,18 @@ def _publish_conservation_and_secondary(
     )
 
 
-def initial_pass(context) -> int:
+def initial_pass(context) -> bool:
+    """Mark out every act on every sealed page. True when anything was held."""
     records = page_records(context)
     pages = sealed_pages(records)
     if not pages:
         raise ContractError("the Designator found no sealed page to mark out")
 
-    padding = geometry.load_padding_config()
+    # Read from the run's own argument rather than the module default, so the
+    # bytes this stage pads with are the exact bytes `run_config_bindings`
+    # sealed into `run.json` — one path, one digest, no way for the two to name
+    # different files.
+    padding = geometry.load_padding_config(context.args.designator_padding_config)
     secondary = secondary_provenance(context)
     context.publish(
         kind="secondary-provenance",
@@ -810,6 +934,12 @@ def initial_pass(context) -> int:
         inputs=[],
         payload=secondary,
     )
+
+    # Which sealed pages the structure pass could not mark out, decided once and
+    # before any crop is cut, so a page's structural outcome is a fact the act
+    # loop reads rather than one it discovers halfway through.
+    failures = structure_failures(context, pages)
+    publish_structure_status(context, records, pages, structure_provenance(context), failures)
 
     page_cache: dict[int, dict] = {}
     expected = []
@@ -835,6 +965,25 @@ def initial_pass(context) -> int:
                 page_ordinal,
                 records,
                 f"page {page_ordinal} was not sealed, so the act could not be marked out",
+                "exemplar-page-not-sealed",
+            )
+            evidence.append(context.input_ref(hold.relative_path))
+        elif page_ordinal in failures:
+            # The page sealed — its ink is real and reachable — but the structure
+            # pass could not mark it out. That is not a blank page and not a page
+            # to skip: the act stays in the denominator, held, with the structural
+            # reason named. Its ink still reaches the accounting, as conservation
+            # residual, because no crop claims any of it.
+            outcome = "held"
+            hold = hold_act(
+                context,
+                act,
+                act_id,
+                page_ordinal,
+                records,
+                f"the structure pass could not mark out page {page_ordinal} "
+                f"({failures[page_ordinal]}), so the act could not be bounded",
+                "structure-pass-held",
             )
             evidence.append(context.input_ref(hold.relative_path))
         else:
@@ -855,7 +1004,11 @@ def initial_pass(context) -> int:
             # SAME act. A continuation that became its own act would quietly turn
             # one entry into two and break identity where it is hardest to see.
             continuation_analysis = None
-            if continuation and continuation["page_ordinal"] in pages:
+            if (
+                continuation
+                and continuation["page_ordinal"] in pages
+                and continuation["page_ordinal"] not in failures
+            ):
                 continuation_analysis = _analyze_page(
                     page_cache,
                     context,
@@ -881,15 +1034,21 @@ def initial_pass(context) -> int:
                 # a reading of the near side alone would be a truncation wearing
                 # a complete act's name.
                 outcome = "held"
-                hold = hold_act(
-                    context,
-                    act,
-                    act_id,
-                    continuation["page_ordinal"],
-                    records,
-                    f"the act continues onto page {continuation['page_ordinal']}, "
-                    "which was not sealed, so its continuation could not be cut",
-                )
+                far_ordinal = continuation["page_ordinal"]
+                if far_ordinal in failures:
+                    reason = (
+                        f"the act continues onto page {far_ordinal}, which the structure "
+                        f"pass could not mark out ({failures[far_ordinal]}), so its "
+                        "continuation could not be cut"
+                    )
+                    reason_code = "structure-pass-held-on-continuation"
+                else:
+                    reason = (
+                        f"the act continues onto page {far_ordinal}, "
+                        "which was not sealed, so its continuation could not be cut"
+                    )
+                    reason_code = "exemplar-continuation-not-sealed"
+                hold = hold_act(context, act, act_id, far_ordinal, records, reason, reason_code)
                 evidence.append(context.input_ref(hold.relative_path))
             else:
                 outcome = "proposed"
@@ -955,7 +1114,13 @@ def initial_pass(context) -> int:
         inputs=seal_inputs,
         payload=payload,
     )
-    return len(expected)
+    # A run that held an act, or held a page, or found ink no crop claimed, has
+    # not completed — and said so only inside its artifacts until now. The exit
+    # code is the one signal an operator reads without opening the tree, and a 0
+    # over a hold is a partial result wearing "complete" (GOVERNANCE 2). The
+    # holds are counted from the seal itself, so this cannot drift from the
+    # record it describes.
+    return any(row["outcome"] == "held" for row in expected) or bool(failures)
 
 
 def recovery_pass(context, act_id: str, request_id: str) -> int:
@@ -1127,11 +1292,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "a recovery operation must name the exact Recensor recovery request it answers"
             )
         recovery_pass(context, args.act, args.recovery_request)
+        held = False
     else:
-        initial_pass(context)
+        held = initial_pass(context)
 
     context.finish()
-    return EXIT_COMPLETE
+    return EXIT_HELD if held else EXIT_COMPLETE
 
 
 if __name__ == "__main__":

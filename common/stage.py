@@ -74,6 +74,15 @@ DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
 WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
 MAX_NUDA_PER_MILLE: Final = 1000
 
+# The Designator's capture padding decides how many pixels a witness is actually
+# shown around each act, so two runs under different padding produce different
+# crop bytes. Sealing its digest here is what makes reusing one run id across a
+# padding change a refusal rather than a silent second geometry — the same
+# reason `pdf_render.toml` is sealed.
+DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "designator_padding.toml"
+)
+
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
 # of the handoff need it and they must not drift: the Attestatores decides
@@ -272,6 +281,9 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--fixture-root", default="proof")
     parser.add_argument("--models-config", default="config/models.toml")
     parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
+    parser.add_argument(
+        "--designator-padding-config", default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH)
+    )
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
     parser.add_argument("--hard-failure-config", default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH))
     parser.add_argument("--pdf-target-dpi", type=int, default=None)
@@ -433,6 +445,7 @@ def run_config_bindings(
     scenario: str,
     *,
     pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
+    designator_padding_config_path: str | Path = DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
     hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -466,6 +479,13 @@ def run_config_bindings(
         raise ContractError(
             f"the PDF render configuration binding at {pdf_render_config_path} could not be read"
         ) from error
+    try:
+        padding_config_digest = digest_bytes(Path(designator_padding_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the Designator padding configuration binding at "
+            f"{designator_padding_config_path} could not be read"
+        ) from error
     recovery_policy = load_recovery_policy(recovery_config_path)
     hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
     witness_context_config_digest = validate_witness_context_bindings(
@@ -483,6 +503,7 @@ def run_config_bindings(
                 "scenario": scenario,
                 "models": models.to_record(),
                 "pdf_render_config_sha256": pdf_render_config_digest,
+                "designator_padding_config_sha256": padding_config_digest,
                 "pdf_target_dpi_override": pdf_target_dpi,
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
@@ -1079,6 +1100,7 @@ def open_context(
         fixture,
         args.scenario,
         pdf_render_config_path=args.pdf_render_config,
+        designator_padding_config_path=args.designator_padding_config,
         pdf_target_dpi=args.pdf_target_dpi,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,

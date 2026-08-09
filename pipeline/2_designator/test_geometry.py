@@ -120,19 +120,45 @@ def test_model_space_round_trips_the_page_rectangle_exactly(page, model):
 
 
 @pytest.mark.parametrize("page,model", _ROUND_TRIP_CASES)
-def test_model_space_round_trips_an_interior_rectangle_within_rounding_noise(page, model):
-    # Two independent integer-truncating conversions (forward, then back) can
-    # each lose up to a fraction of a pixel; chained, the bound is two pixels,
-    # not one. That is honest rounding noise from two floor divisions, not the
-    # multi-pixel-per-hundred distortion the "narrow left-margin crops" defect
-    # class produced by skipping the rescale entirely.
+def test_a_round_trip_never_loses_a_pixel_of_the_original_rectangle(page, model):
+    """The property that matters is containment, not closeness.
+
+    A round trip through a coarser model space cannot be lossless — the forward
+    conversion genuinely discards information. What it can be is *one-sided*:
+    `from_model_space` rounds low edges down and far edges up, so the recovered
+    rectangle always contains the original. That is the direction GOALS 1 asks
+    for. A recovered rectangle a pixel too wide costs a sliver of neighbouring
+    paper; a recovered rectangle a pixel too narrow costs the far edge of a
+    signature, which is the "clipped signatures" class the capture padding
+    exists to prevent and which a symmetric rounding rule would reintroduce one
+    conversion later.
+    """
     page_w, page_h = page
     model_w, model_h = model
     bounds = {"x": page_w // 5, "y": page_h // 7, "w": page_w // 3, "h": page_h // 4}
     projected = to_model_space(bounds, page_w, page_h, model_w, model_h)
     recovered = from_model_space(projected["bounds"], projected["scale"], page_w, page_h)
-    for key in ("x", "y", "w", "h"):
-        assert abs(recovered[key] - bounds[key]) <= 2, (key, recovered, bounds)
+    assert recovered["x"] <= bounds["x"], (recovered, bounds)
+    assert recovered["y"] <= bounds["y"], (recovered, bounds)
+    assert recovered["x"] + recovered["w"] >= bounds["x"] + bounds["w"], (recovered, bounds)
+    assert recovered["y"] + recovered["h"] >= bounds["y"] + bounds["h"], (recovered, bounds)
+
+
+@pytest.mark.parametrize("page,model", _ROUND_TRIP_CASES)
+def test_a_round_trip_grows_a_rectangle_by_at_most_a_pixel_per_edge(page, model):
+    """Outward rounding is a bounded correction, not a licence to widen."""
+    page_w, page_h = page
+    model_w, model_h = model
+    bounds = {"x": page_w // 5, "y": page_h // 7, "w": page_w // 3, "h": page_h // 4}
+    projected = to_model_space(bounds, page_w, page_h, model_w, model_h)
+    recovered = from_model_space(projected["bounds"], projected["scale"], page_w, page_h)
+    # Each edge can gain at most one model-space pixel going out, which is
+    # worth `ceil(page/model)` source pixels coming back, plus one more source
+    # pixel from the inverse's own outward rounding. Two edges per axis.
+    slack_x = 2 * (-(-page_w // model_w) + 1)
+    slack_y = 2 * (-(-page_h // model_h) + 1)
+    assert recovered["w"] - bounds["w"] <= slack_x, (recovered, bounds, slack_x)
+    assert recovered["h"] - bounds["h"] <= slack_y, (recovered, bounds, slack_y)
 
 
 def test_model_space_scale_is_an_exact_integer_ratio_not_a_float():

@@ -35,7 +35,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash,
 from common.contracts.errors import ContractError
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
 from common.runtree.store import RunTree
-from common.stage import StageContext
+from common.stage import DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH, StageContext
 from operations.submit import gate, submit
 
 POLICY = load_format_policy()
@@ -807,6 +807,9 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         settings,
         door.load_recovery_policy(),
         door.load_hard_failure_policy(),
+        designator_padding_config_sha256=door._padding_config_digest(
+            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+        ),
     )
     altered_pdf_recipe = dict(door.pdf_render.renderer_recipe(settings), dpi=301)
     monkeypatch.setattr(door.pdf_render, "renderer_recipe", lambda _settings: altered_pdf_recipe)
@@ -817,6 +820,9 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         settings,
         door.load_recovery_policy(),
         door.load_hard_failure_policy(),
+        designator_padding_config_sha256=door._padding_config_digest(
+            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+        ),
     )
 
     assert baseline["config_digest"] != changed["config_digest"]
@@ -848,6 +854,9 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         settings,
         door.load_recovery_policy(),
         door.load_hard_failure_policy(),
+        designator_padding_config_sha256=door._padding_config_digest(
+            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+        ),
     )
     assert baseline["adapter_recipes"]["door"] == door.REAL_DOOR_ADAPTER_REVISION
     assert baseline["adapter_recipes"]["door"] != "fake-door-v0"
@@ -860,6 +869,9 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         settings,
         door.load_recovery_policy(),
         door.load_hard_failure_policy(),
+        designator_padding_config_sha256=door._padding_config_digest(
+            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+        ),
     )
     assert baseline["config_digest"] != changed["config_digest"]
 

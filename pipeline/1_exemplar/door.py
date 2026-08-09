@@ -1029,6 +1029,7 @@ def fixture_submission(args, registry) -> int:
         fixture,
         args.scenario,
         pdf_render_config_path=args.pdf_render_config,
+        designator_padding_config_path=args.designator_padding_config,
         pdf_target_dpi=args.pdf_target_dpi,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
@@ -1173,6 +1174,9 @@ def real_submission(args, registry) -> int:
         pdf_settings,
         load_recovery_policy(args.recovery_config),
         load_hard_failure_policy(args.hard_failure_config),
+        designator_padding_config_sha256=_padding_config_digest(
+            args.designator_padding_config
+        ),
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
         nuda_per_mille=args.nuda_per_mille,
@@ -1249,6 +1253,23 @@ def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> N
     )
 
 
+def _padding_config_digest(path: str) -> str:
+    """The Designator padding policy's digest, read at the door like every other.
+
+    A real submission stops before the Designator cuts anything today, so this
+    binds nothing a real run currently uses. It is sealed anyway, because the
+    day a real structure pass exists is the day crops start depending on it, and
+    a configuration that entered the digest only once it mattered would leave
+    every earlier run id reusable across a geometry change.
+    """
+    try:
+        return digest_bytes(Path(path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            f"the Designator padding configuration binding at {path} could not be read"
+        ) from error
+
+
 def _real_bindings(
     models,
     ledger,
@@ -1257,6 +1278,7 @@ def _real_bindings(
     recovery_policy,
     hard_failure_policy,
     *,
+    designator_padding_config_sha256: str,
     witness_context: str = "named",
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     nuda_per_mille: int = 0,
@@ -1301,6 +1323,7 @@ def _real_bindings(
                 "door_implementation_revision": REAL_DOOR_ADAPTER_REVISION,
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
+                "designator_padding_config_sha256": designator_padding_config_sha256,
                 "models": models.to_record(),
                 # Spec 08's run-level settings, bound on the real path exactly as
                 # `run_config_bindings` binds them on the fixture path: a resumed

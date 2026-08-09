@@ -101,6 +101,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.models_config),
         "--pdf-render-config",
         str(args.pdf_render_config),
+        "--designator-padding-config",
+        str(args.designator_padding_config),
         "--recovery-config",
         str(args.recovery_config),
         "--hard-failure-config",
@@ -181,6 +183,11 @@ def main() -> int:
         "--pdf-render-config",
         default="config/pdf_render.toml",
         help="the default whole-page PDF rasterisation target for this run",
+    )
+    parser.add_argument(
+        "--designator-padding-config",
+        default="config/designator_padding.toml",
+        help="the capture padding applied to every act crop, sealed into this run",
     )
     parser.add_argument(
         "--pdf-target-dpi",

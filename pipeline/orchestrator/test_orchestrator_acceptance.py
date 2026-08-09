@@ -274,8 +274,18 @@ FIXTURE = "synthetic-two-page-v0"
 # `config/designator_padding.toml` and now travels with the evidence itself.
 # That new field, present on every region artifact in both scenarios, is a
 # deliberate record change and moves both whole-tree pins with it.
-HAPPY_RUN_TREE_DIGEST = "a5874cd1efdb654230787afa112fcc29180814b8213888bb4d3106677898f180"
-REVIEW_RUN_TREE_DIGEST = "ec43262411316817d16e5fd5a17bab97a9180f8e5a0063b9fb0e95e52a31a75e"
+#
+# Re-pinned once more when the two independent builds of System 06 were merged.
+# Two changes moved these, both deliberate. Counts go 47/51 to 49/53: the
+# Designator now publishes one `structure-status` record per sealed page (2 per
+# run, both scenarios) so that "the structure pass ran here and succeeded" is a
+# record rather than the absence of one. And `config/designator_padding.toml` is
+# now sealed into `run.json`'s `config_digest` — padding decides how many pixels
+# a witness is shown, so a run reusing an id across a padding change would hold
+# two geometries under one name — which moves every downstream artifact digest
+# with it, exactly as the pdf_render binding above does.
+HAPPY_RUN_TREE_DIGEST = "09b23ed014b76972be1597a9a3b64fc13f46f248da33ce4db88ed1b5d7f0be44"
+REVIEW_RUN_TREE_DIGEST = "e50c1f4f990cb5474a0d053c7d7ba4ac76496bf4bcb3d6c00f45a6e95c1c92ef"
 
 
 def orchestrate(

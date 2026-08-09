@@ -238,10 +238,19 @@ def to_model_space(bounds: Bounds, page_w: int, page_h: int, model_w: int, model
     """Downscale full-res `bounds` to a model's own input geometry, once.
 
     The two axis scales are kept as exact integer ratios rather than floats,
-    so `from_model_space` inverts exactly instead of rounding a second time
-    away from the first -- which is what "the exact image shown to a model is
-    reproducible from the Exemplar plus the recorded transforms" (ARCHITECTURE
-    invariant 3) requires of a transform that includes a rescale.
+    so `from_model_space` inverts against the same arithmetic instead of
+    rounding a second time away from the first -- which is what "the exact
+    image shown to a model is reproducible from the Exemplar plus the recorded
+    transforms" (ARCHITECTURE invariant 3) requires of a transform that
+    includes a rescale.
+
+    **Low edges floor, far edges ceil**, the same one-sided rule
+    `from_model_space` uses coming back, so the model-space rectangle always
+    covers the image of the source rectangle rather than undercutting it. The
+    width is derived as `far - near` rather than scaled on its own: scaling a
+    width independently of its origin floors twice against the same edge, and
+    the two roundings compound into a rectangle that is genuinely short of the
+    ink it was supposed to enclose.
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no positive dimensions to rescale")
@@ -251,24 +260,38 @@ def to_model_space(bounds: Bounds, page_w: int, page_h: int, model_w: int, model
         "x": {"numerator": model_w, "denominator": page_w},
         "y": {"numerator": model_h, "denominator": page_h},
     }
-    model_bounds = {
-        "x": (bounds["x"] * model_w) // page_w,
-        "y": (bounds["y"] * model_h) // page_h,
-        "w": max(1, (bounds["w"] * model_w) // page_w),
-        "h": max(1, (bounds["h"] * model_h) // page_h),
-    }
+    x0 = (bounds["x"] * model_w) // page_w
+    y0 = (bounds["y"] * model_h) // page_h
+    x1 = min(model_w, -((-(bounds["x"] + bounds["w"]) * model_w) // page_w))
+    y1 = min(model_h, -((-(bounds["y"] + bounds["h"]) * model_h) // page_h))
+    model_bounds = {"x": x0, "y": y0, "w": max(1, x1 - x0), "h": max(1, y1 - y0)}
     return {"bounds": model_bounds, "scale": scale, "page_w": page_w, "page_h": page_h}
 
 
 def from_model_space(
     model_bounds: Bounds, scale: dict[str, Any], page_w: int, page_h: int
 ) -> Bounds:
-    """Invert `to_model_space` using the exact ratio it recorded.
+    """Invert `to_model_space` using the exact ratio it recorded, rounding outward.
 
     Refuses a scale that is not a positive integer ratio pair, and refuses a
     result that falls outside the page it claims to belong to -- a rescale
     computed against one page's dimensions and applied to another's is the
     same class of silent corruption a mismatched digest catches for bytes.
+
+    **Low edges floor, far edges ceil**, so a rectangle that survives a round
+    trip through model space can only ever grow, never shrink. Rounding both
+    edges the same way (which this function did until the two independent
+    builds of this stage were compared) loses up to a pixel on each far edge,
+    and the direction of that loss is the whole point: a shaved far edge is a
+    clipped signature, and GOALS 1 puts a missed act above a poorly read one.
+    Taken from the lane-B build of this stage, whose `source_bounds_from_view`
+    reached the same conclusion independently and named the reason: it "cannot
+    round a source pixel out of the emitted crop".
+
+    The out-of-page refusal is deliberately tested against the *floored* far
+    edge rather than the ceiled one, so a rescale genuinely belonging to a
+    different page is still refused while a single pixel of outward rounding at
+    the true page edge is merely clamped.
     """
     axes = {}
     for axis in ("x", "y"):
@@ -289,23 +312,18 @@ def from_model_space(
 
     x_num, x_den = axes["x"]
     y_num, y_den = axes["y"]
-    bounds: Bounds = {
-        "x": (model_bounds["x"] * x_den) // x_num,
-        "y": (model_bounds["y"] * y_den) // y_num,
-        "w": max(1, (model_bounds["w"] * x_den) // x_num),
-        "h": max(1, (model_bounds["h"] * y_den) // y_num),
-    }
-    if (
-        bounds["x"] < 0
-        or bounds["y"] < 0
-        or bounds["x"] + bounds["w"] > page_w
-        or bounds["y"] + bounds["h"] > page_h
-    ):
+    x0 = (model_bounds["x"] * x_den) // x_num
+    y0 = (model_bounds["y"] * y_den) // y_num
+    far_x = (model_bounds["x"] + model_bounds["w"]) * x_den
+    far_y = (model_bounds["y"] + model_bounds["h"]) * y_den
+    if x0 < 0 or y0 < 0 or far_x // x_num > page_w or far_y // y_num > page_h:
         raise ContractError(
             f"rescaling {model_bounds} by {scale} lands outside a {page_w}x{page_h} page; "
             "the scale does not belong to this page"
         )
-    return bounds
+    x1 = min(page_w, -((-far_x) // x_num))
+    y1 = min(page_h, -((-far_y) // y_num))
+    return {"x": x0, "y": y0, "w": max(1, x1 - x0), "h": max(1, y1 - y0)}
 
 
 def verify_isotropic(

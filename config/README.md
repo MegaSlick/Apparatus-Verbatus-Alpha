@@ -41,12 +41,13 @@ real sample of real material (GOVERNANCE 9).
 `designator_padding.toml` is the asymmetric capture-padding policy
 `pipeline/2_designator/geometry.py` applies to a structural proposal before
 cutting it: top/bottom/left/right, in integer basis points of the crop's own
-width or height, clamped to the page edge. It is **not** currently bound into
-`run.json`'s `config_digest` the way `pdf_render.toml` and `recovery.toml`
-are — a run does not yet refuse to reuse an id whose padding policy changed —
-but every crop's own payload carries the exact fraction and pixel amount
-applied plus the file's digest, so a padding change is still traceable per
-artifact even though the run authority does not yet seal it.
+width or height, clamped to the page edge. It is bound into `run.json`'s
+`config_digest` exactly as `pdf_render.toml` and `recovery.toml` are, so
+reusing a run id across a padding change is refused before anything is
+written — the crops would otherwise be different pixels under the same run's
+name. Every crop's own payload additionally carries the exact fraction and
+pixel amount applied, the file's digest, and the file's declared provenance,
+so a padding change is traceable per artifact as well as per run.
 
 `data_handling_policy.json` names the storage roots real material may occupy, and
 `operations/submit/gate.py` refuses a submission folder, run root or ledger outside

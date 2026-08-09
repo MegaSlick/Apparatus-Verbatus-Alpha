@@ -156,6 +156,11 @@ name = "no-readable-text-reading"
 recover_acts = []
 hold_acts = []
 
+[[scenario]]
+name = "structure-failure"
+recover_acts = []
+hold_acts = []
+
 # A reading that did not succeed. `truncated` is a failed-class Perlector
 # outcome that still carries text, which is the combination that matters: the
 # Recensor used to ask only whether a reading existed, and the Archetypus
@@ -250,6 +255,14 @@ chair = "attestator_1"
 scenario = "blank-with-dissent"
 act_key = "a1"
 chair = "attestator_2"
+
+# A recorded structure-seat failure: the Designator holds the page and every
+# act that needed it, with the reason named, rather than skipping either.
+
+[[structure_failure]]
+scenario = "structure-failure"
+page_ordinal = 1
+reason_code = "recorded-fixture-structure-failure"
 
 [[page_refusal]]
 scenario = "refused-page"

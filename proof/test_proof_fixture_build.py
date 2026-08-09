@@ -244,6 +244,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "blank-with-dissent",
         "engine-truncated-reading",
         "no-readable-text-reading",
+        "structure-failure",
     ]
     by_name = {scenario["name"]: scenario for scenario in skeleton["scenario"]}
     assert by_name["happy"]["recover_acts"] == []
@@ -269,6 +270,21 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     assert by_name["engine-truncated-reading"]["hold_acts"] == []
     assert by_name["no-readable-text-reading"]["recover_acts"] == []
     assert by_name["no-readable-text-reading"]["hold_acts"] == []
+    # Nothing is held by configuration here either: the hold must come from the
+    # recorded structure failure, or the scenario would prove nothing.
+    assert by_name["structure-failure"]["recover_acts"] == []
+    assert by_name["structure-failure"]["hold_acts"] == []
+
+
+def test_the_recorded_structure_failure_names_one_page_and_one_closed_reason(skeleton):
+    """Spec 06 test 4's fixture: a page the structure seat could not mark out."""
+    assert skeleton["structure_failure"] == [
+        {
+            "scenario": "structure-failure",
+            "page_ordinal": 1,
+            "reason_code": "recorded-fixture-structure-failure",
+        }
+    ]
 
 
 def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
