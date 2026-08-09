@@ -2,6 +2,8 @@
 
 import copy
 import importlib.util
+import inspect
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +12,7 @@ import pytest
 
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import IncompatibleReuse
+from common.contracts.outcomes import witness_coverage
 from common.contracts.stages import ATTESTATORES, DESIGNATOR
 from common.runtree.store import RunTree
 from common.stage import latest_per_chair
@@ -56,17 +59,60 @@ def invoke_stage(
 
 
 def run_to_designator(
-    tmp_path: Path, scenario: str, *, fixture_root: Path = ROOT / "proof"
+    tmp_path: Path,
+    scenario: str,
+    *,
+    fixture_root: Path = ROOT / "proof",
+    models_config: Path | None = None,
 ) -> tuple[Path, RunTree]:
     run_root = tmp_path / "runs"
+    extra = {} if models_config is None else {"models_config": models_config}
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
         "pipeline/2_designator/run.py",
     ):
-        result = invoke_stage(run_root, "retention", scenario, program, fixture_root=fixture_root)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
+        result = invoke_stage(
+            run_root, "retention", scenario, program, fixture_root=fixture_root, **extra
+        )
+        expected = (
+            3
+            if program == "pipeline/2_designator/run.py"
+            and scenario in {"refused-page", "refused-first-page", "structure-failure"}
+            else 0
+        )
+        assert result.returncode == expected, f"{program}: {result.stderr}"
     return run_root, RunTree(run_root, "retention")
+
+
+def absent_third_chair_config(tmp_path: Path) -> Path:
+    """A models.toml whose third witness chair is explicitly absent.
+
+    The same substitution `pipeline/orchestrator/test_orchestrator_acceptance.py`
+    makes, kept here so this file can exercise the reread guard rails against a
+    real `AbsentChair` rather than against a stub of one.
+    """
+    config_root = tmp_path / "chair-config"
+    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
+    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
+    live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
+    configured = """[chairs.attestator_3]
+state = "configured"
+source = "local-repository"
+path = "attestator_3"
+digest_manifest = "b9d6f5b6400e8aa36ecc35bad33cb4c54bb69b207e1ffdea39e1999cfa7e523a"
+manifest = "manifests/attestator_3.json"
+serving_recipe = "fake-attestatores-v0"
+license_note = "fixture identity only; no model weights or model license apply"
+"""
+    absent = """[chairs.attestator_3]
+state = "absent"
+reason = "fixture test removes this witness without replacing it"
+"""
+    assert configured in live
+    path = config_root / "models.toml"
+    path.write_text(live.replace(configured, absent), encoding="utf-8")
+    return path
 
 
 def _testimonia(tree: RunTree) -> list[dict]:
@@ -138,6 +184,227 @@ def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
     assert current["payload"]["attempt_ordinal"] == 2
     assert current["outcome"] == "failed"
     assert attestatores.attempt_tally(tree)["count"] == 12
+
+
+# --- The targeted reread: one seat, one act -------------------------------------
+#
+# The whole-pass reread above re-witnesses every seat on every act to move one of
+# them. That is the right instrument for a resume and the wrong one for a reread,
+# which happens because one witness failed on one act. These tests drive the
+# narrow path: the ordinal comes from that seat's own history, and nothing else
+# in the folder moves.
+
+
+def _act_id_for(tree: RunTree, act_key: str) -> str:
+    return next(
+        record["subject_id"]
+        for record in _testimonia(tree)
+        if record["payload"]["act_key"] == act_key
+    )
+
+
+def _reread(run_root: Path, scenario: str, act_id: str, chair: str, **extra):
+    return invoke_stage(
+        run_root,
+        "retention",
+        scenario,
+        "pipeline/3_attestatores/run.py",
+        operation="reread",
+        act=act_id,
+        chair=chair,
+        **extra,
+    )
+
+
+def test_a_targeted_reread_moves_one_seat_and_leaves_every_other_seat_alone(tmp_path):
+    run_root, tree = run_to_designator(tmp_path, "reread-failure")
+    assert (
+        invoke_stage(
+            run_root, "retention", "reread-failure", "pipeline/3_attestatores/run.py"
+        ).returncode
+        == 0
+    )
+    first = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    first_path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", first["artifact_id"]))
+    first_bytes = first_path.read_bytes()
+    untouched = {
+        record["artifact_id"]: tree.resolve(
+            tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"])
+        ).read_bytes()
+        for record in _testimonia(tree)
+    }
+
+    result = _reread(run_root, "reread-failure", _act_id_for(tree, "a1"), "attestator_3")
+    assert result.returncode == 0, result.stderr
+
+    records = _testimonia(tree)
+    # One new artifact, and every artifact that existed before is byte-identical.
+    assert len(records) == len(untouched) + 1
+    for record in records:
+        if record["artifact_id"] in untouched:
+            path = tree.resolve(
+                tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"])
+            )
+            assert path.read_bytes() == untouched[record["artifact_id"]]
+    assert first_path.read_bytes() == first_bytes
+
+    moved = [
+        record
+        for record in records
+        if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_3"
+    ]
+    assert sorted(record["payload"]["attempt_ordinal"] for record in moved) == [1, 2]
+    others = [record for record in records if record not in moved]
+    assert others and all(record["payload"]["attempt_ordinal"] == 1 for record in others), (
+        "a reread of one seat must not append an attempt for any other seat"
+    )
+
+    current = next(
+        record
+        for record in latest_per_chair(moved, "reread Testimonia")
+        if record["payload"]["chair"] == "attestator_3"
+    )
+    assert current["payload"]["attempt_ordinal"] == 2
+    assert current["outcome"] == "failed"
+    assert attestatores.attempt_tally(tree)["count"] == 7
+
+
+def test_a_targeted_reread_names_both_the_act_and_the_chair_or_is_refused(tmp_path):
+    """Without both, it is a whole second pass wearing a narrower name."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(
+            run_root, "retention", "happy", "pipeline/3_attestatores/run.py"
+        ).returncode
+        == 0
+    )
+    act_id = _act_id_for(tree, "a1")
+    before = len(_testimonia(tree))
+
+    missing_chair = invoke_stage(
+        run_root,
+        "retention",
+        "happy",
+        "pipeline/3_attestatores/run.py",
+        operation="reread",
+        act=act_id,
+    )
+    assert missing_chair.returncode == 2
+    assert "names the one act and the one chair" in missing_chair.stderr
+
+    unknown_act = _reread(run_root, "happy", "act_not_in_this_run", "attestator_1")
+    assert unknown_act.returncode == 2
+    assert "proposal seal does not" in unknown_act.stderr
+
+    unsealed_chair = _reread(run_root, "happy", act_id, "attestator_9")
+    assert unsealed_chair.returncode == 2
+    assert "this run is not sealed with" in unsealed_chair.stderr
+
+    assert len(_testimonia(tree)) == before, "a refused reread writes nothing"
+
+
+def test_a_targeted_reread_of_a_held_act_is_refused(tmp_path):
+    """`refused-page` holds a2: its continuation page never sealed, so no witness
+    was ever shown a reading there. There is nothing to read a second time."""
+    run_root, tree = run_to_designator(tmp_path, "refused-page")
+    assert (
+        invoke_stage(
+            run_root, "retention", "refused-page", "pipeline/3_attestatores/run.py"
+        ).returncode
+        == 0
+    )
+    held = _testimonium_for(tree, act_key="a2", chair="attestator_1", ordinal=1)
+    assert held["outcome"] == "not-run"
+
+    result = _reread(run_root, "refused-page", held["subject_id"], "attestator_1")
+
+    assert result.returncode == 2
+    assert "is held" in result.stderr
+
+
+def test_a_targeted_reread_of_an_absent_chair_is_refused(tmp_path):
+    """A dead seat is dead. Asking it again is not a second attempt, and inventing
+    one would put a serving moment on a chair that never served."""
+    models_config = absent_third_chair_config(tmp_path)
+    run_root, tree = run_to_designator(tmp_path, "happy", models_config=models_config)
+    assert (
+        invoke_stage(
+            run_root,
+            "retention",
+            "happy",
+            "pipeline/3_attestatores/run.py",
+            models_config=models_config,
+        ).returncode
+        == 0
+    )
+    dead = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    assert dead["outcome"] == "dead"
+    before = len(_testimonia(tree))
+
+    result = _reread(
+        run_root,
+        "happy",
+        dead["subject_id"],
+        "attestator_3",
+        models_config=models_config,
+    )
+
+    assert result.returncode == 2
+    assert "explicitly absent" in result.stderr
+    assert len(_testimonia(tree)) == before
+
+
+# --- `witness_reported`: kept, and demoted ---------------------------------------
+
+
+def test_a_self_report_is_retained_verbatim_whatever_its_format_can_express(tmp_path):
+    """Spec 07's reason for `format_capabilities`, exercised on both sides at once.
+
+    Chair 1's output format cannot express uncertainty at all and claims high
+    confidence anyway; chair 2's can, and reports genuine doubt. Both claims are
+    retained exactly as the witness made them, and neither reaches the outcome or
+    `content_health` — a witness that cannot say "unsure" must not be read as
+    confident merely for having said something.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(
+            run_root, "retention", "happy", "pipeline/3_attestatores/run.py"
+        ).returncode
+        == 0
+    )
+
+    cannot_say_unsure = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    assert cannot_say_unsure["payload"]["format_capabilities"]["can_express_uncertainty"] is False
+    assert cannot_say_unsure["payload"]["witness_reported"] == {"confidence": "high"}
+    assert cannot_say_unsure["outcome"] == "read"
+
+    can_say_unsure = _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=1)
+    assert can_say_unsure["payload"]["format_capabilities"]["can_express_uncertainty"] is True
+    assert can_say_unsure["payload"]["witness_reported"] == {"confidence": "low", "note": "faded ink"}
+    # The confident claim and the doubtful one produce the same outcome and the
+    # same computed health shape. Nothing here grades a witness by what it says
+    # about itself.
+    assert can_say_unsure["outcome"] == cannot_say_unsure["outcome"]
+    assert set(can_say_unsure["payload"]["content_health"]) == set(
+        cannot_say_unsure["payload"]["content_health"]
+    )
+
+    silent = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    assert silent["payload"]["witness_reported"] is None, (
+        "a witness that said nothing about itself has nothing invented for it"
+    )
+
+
+def test_no_self_report_can_reach_a_coverage_count_or_an_outcome_class():
+    """Structural, not incidental: `witness_coverage` takes chair outcomes and a
+    floor, and the outcome vocabulary is a closed set of strings. There is no
+    parameter anywhere on that boundary through which a witness's claim about
+    itself could reach a count or a class."""
+    parameters = inspect.signature(witness_coverage).parameters
+    assert set(parameters) == {"chair_outcomes", "configured_floor"}
+    assert attestatores.content_health.__doc__ is not None
+    assert "witness_reported" not in inspect.signature(attestatores.content_health).parameters
 
 
 def test_an_actual_testimonium_identity_refuses_replacement_at_the_store_boundary(tmp_path):

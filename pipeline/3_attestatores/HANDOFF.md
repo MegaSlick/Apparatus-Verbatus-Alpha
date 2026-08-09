@@ -39,6 +39,15 @@ emptiness, blankness, character count for text, and truncation. It never reads
 `witness_reported`; when the real serving boundary cannot supply completion,
 truncation is `null`, not guessed from punctuation.
 
+`format_capabilities` says what this witness's output format can express at all,
+and it is the fact a later reader needs beside `witness_reported` to avoid a
+specific mistake: a witness whose format cannot say "unsure" must not be read as
+confident merely for having said something. The happy scenario declares both
+sides on act a1 — chair 1 cannot express uncertainty and claims high confidence
+anyway, chair 2 can and reports doubt — so the distinction is exercised rather
+than merely representable. Both claims are retained verbatim and neither reaches
+an outcome, a coverage count, or `content_health`.
+
 The synthetic fixture declares complete responses, so its retained text gets
 `truncated=false`. A malformed or unrecordable provider response becomes a
 `failed` Testimonium with an explicit health reason; it is not decoded with
@@ -89,11 +98,28 @@ status. Only an `UNKNOWN` attempt tally holds Stage 3 and stops orchestration.
 
 ## Retention and current state
 
-Run with `--attempt-ordinal N` (default `1`). The writer permits only an exact
+Two write paths, and both append.
+
+`--attempt-ordinal N` (default `1`) is the whole pass: every configured chair on
+every expected act, at that one ordinal. The writer permits only an exact
 byte-identical repeat of the current ordinal or the next contiguous ordinal for
-every `(act, chair)` pair. Each identity is `read:<chair>:<ordinal>`; the RunTree's
-immutable publish boundary atomically creates it and refuses different bytes at an
-existing identity. The stage has no pointer and no artifact overwrite path.
+every `(act, chair)` pair, so the same command twice is a resume rather than a
+second reading.
+
+`--operation reread --act <act_id> --chair <role>` moves exactly one seat on one
+act, at the ordinal that seat's own history says comes next. This is the path a
+real reread uses: a reread happens because one witness failed on one act, and
+re-witnessing the other seats to reach it would re-read ink nobody doubted and
+spend a provider call per chair per act to do it. Every other seat's current
+record stays the attempt it already was. It is refused, writing nothing, for an
+act the proposal seal does not name, a chair the run is not sealed with, a
+Designator-held act (no witness was shown a reading there), an absent chair
+(a dead seat asked again is not a second attempt), and a seat with no first
+attempt to follow. The orchestrator never invokes it.
+
+Each identity is `read:<chair>:<ordinal>`; the RunTree's immutable publish
+boundary atomically creates it and refuses different bytes at an existing
+identity. The stage has no pointer and no artifact overwrite path.
 
 Consumers derive current per chair through `common.stage.latest_per_chair()`.
 Thus a later `failed` attempt is current and visible, while the earlier successful

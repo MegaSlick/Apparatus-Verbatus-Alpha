@@ -1399,8 +1399,8 @@ def test_the_config_digest_still_binds_the_scenario_as_well_as_the_chairs(happy_
     assert run_config_bindings(config, altered, "happy")["config_digest"] != happy
 
 
-def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(tmp_path):
-    """Exercise absence through real stage programs, not only the config parser."""
+def absent_third_chair_config(tmp_path: Path) -> Path:
+    """A models.toml identical to the live one but with chair 3 explicitly absent."""
     config_root = tmp_path / "chair-config"
     shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
     shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
@@ -1421,6 +1421,12 @@ reason = \"fixture test removes this witness without replacing it\"
     assert configured in live
     models_config = config_root / "models.toml"
     models_config.write_text(live.replace(configured, absent), encoding="utf-8")
+    return models_config
+
+
+def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(tmp_path):
+    """Exercise absence through real stage programs, not only the config parser."""
+    models_config = absent_third_chair_config(tmp_path)
 
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "happy", models_config=models_config)
@@ -1457,6 +1463,36 @@ reason = \"fixture test removes this witness without replacing it\"
         for item in export["review"]
     )
     assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
+
+
+def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(tmp_path):
+    """A dead witness is dead independent of the act's own state.
+
+    "Held" here is the Designator's own outcome — `refused-page` holds a2 because
+    its continuation page never sealed — not the Recensor's later
+    `held-for-review` category. Before spec 07's repair every chair on a held act
+    was recorded `not-run` whether it was configured or explicitly absent, which
+    is the collapse this guards against: holding the act does not turn an
+    unreachable witness into a merely unasked one, and a live chair on the same
+    act must stay `not-run` rather than being swept into the same word.
+    """
+    models_config = absent_third_chair_config(tmp_path)
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "refused-page", models_config=models_config)
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(root, "r")
+    testimonia = [
+        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium"
+    ]
+    held = [record for record in testimonia if record["payload"]["act_key"] == "a2"]
+    by_chair = {record["payload"]["chair"]: record for record in held}
+    assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
+    assert by_chair["attestator_3"]["outcome"] == "dead"
+    assert "chair is explicitly absent" in by_chair["attestator_3"]["payload"]["reason"]
+    assert by_chair["attestator_1"]["outcome"] == "not-run"
+    assert by_chair["attestator_2"]["outcome"] == "not-run"
 
 
 def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):

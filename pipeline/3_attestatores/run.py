@@ -11,13 +11,21 @@ there is no current pointer to update. Consumers derive current from the newest
 contiguous ordinal, so a later failed attempt remains visibly failed while the
 earlier reading remains intact in history.
 
+Two write paths, and both append. `--attempt-ordinal N` is the whole pass: every
+configured chair, every expected act, at that one ordinal — the same command
+twice writes the same bytes. `--operation reread --act <id> --chair <role>` moves
+exactly one seat on one act, at the ordinal that seat's own history says comes
+next; a reread happens because one witness failed on one act, and re-witnessing
+the other seats to reach it would re-read ink nobody doubted.
+
     python pipeline/3_attestatores/run.py --run-root <dir> --run-id <id>
+    python pipeline/3_attestatores/run.py ... --operation reread --act <id> --chair <role>
 """
 
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -94,11 +102,12 @@ def region_references(regions: list[dict]) -> list[dict[str, str]]:
 
 
 def region_inputs(context, regions: list[dict]) -> list[dict[str, str]]:
-    """The direct pixel-blob inputs for an attempted Testimonium."""
-    return sorted(
-        [context.input_ref(record["payload"]["image_path"]) for record in regions],
-        key=lambda reference: (reference["relative_path"], reference["sha256"]),
-    )
+    """Bind each distinct crop blob once while retaining every region in payloads."""
+    inputs = {}
+    for record in regions:
+        reference = context.input_ref(record["payload"]["image_path"])
+        inputs[reference["relative_path"]] = reference
+    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
 
 
 def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
@@ -752,44 +761,151 @@ def _positive_ordinal(value: str) -> int:
     return ordinal
 
 
-def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run every configured chair through one explicitly requested attempt ordinal."""
-    parser = stage_parser(__doc__.splitlines()[0])
-    parser.add_argument(
-        "--attempt-ordinal",
-        type=_positive_ordinal,
-        default=1,
-        help="append this ordinal for every act/chair, or repeat the current one byte-identically",
-    )
-    args = parser.parse_args()
-    context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
-    acts = expected_acts(context)
-    fallback_bounds = _page_fallback_bounds(context)
-    try:
-        has_existing_attempts = bool(context.tree.build_manifest(ATTESTATORES)["artifacts"])
-    except ContractError as error:
-        print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
-        return EXIT_HELD
-    if has_existing_attempts:
-        prior_tally = attempt_tally(
-            context.tree, context=context, acts=acts, chairs=context.witness_chairs
+class Attempt(NamedTuple):
+    """One chair's resolved outcome for one act on one attempt.
+
+    Assembled in exactly one place so the whole-pass write path and the targeted
+    reread cannot drift on what a witness attempt is. It describes one chair and
+    reads no other chair's record: nothing here compares, ranks, or chooses among
+    witnesses, and there is no argument through which it could.
+    """
+
+    outcome: str
+    native_payload: Any
+    witness_reported: Any
+    format_capabilities: dict[str, Any]
+    health: dict[str, Any]
+    reason: str | None
+
+
+def declarations_for(context, ordinal: int) -> dict[str, Any]:
+    """Every fixture declaration that applies to this exact attempt ordinal.
+
+    Read once per pass rather than once per chair, and bound to the ordinal, so a
+    declared first-attempt failure cannot silently describe a later reread.
+    """
+    return {
+        "failures": declared_failures(context, ordinal),
+        "empty": declared_empty(context, ordinal),
+        "not_run": declared_not_run(context, ordinal),
+        "malformed": declared_malformed(context, ordinal),
+    }
+
+
+def resolve_attempt(
+    context,
+    act: dict[str, Any],
+    chair: str,
+    resolved: ChairIdentity | AbsentChair,
+    declarations: dict[str, Any],
+) -> Attempt:
+    """What one configured chair's attempt at one act came to.
+
+    Every branch ends in exactly one member of the closed six-outcome vocabulary,
+    because a chair that simply does not appear is the silent skip this stage
+    exists to refuse.
+    """
+    key = (act["act_key"], chair)
+    native_payload: Any = None
+    witness_reported: Any = None
+    capabilities = DEFAULT_FORMAT_CAPABILITIES
+    health = no_response_health(reason="not-attempted")
+    reason: str | None = None
+
+    if isinstance(resolved, AbsentChair):
+        outcome = "dead"
+        reason = f"chair is explicitly absent: {resolved.reason}"
+    elif key in declarations["not_run"]:
+        outcome = "not-run"
+        reason = "fixture declares that this configured chair was never attempted"
+    elif key in declarations["failures"]:
+        outcome = "failed"
+        health = no_response_health(reason="attempted-but-no-usable-response")
+        reason = "the chair returned no usable response"
+    elif key in declarations["malformed"]:
+        outcome = "failed"
+        health = {
+            "native_type": "unrecordable",
+            "encoding": "invalid-or-unrecordable",
+            "recordable": False,
+            "empty": None,
+            "blank": None,
+            "truncated": None,
+            "characters": None,
+            "truncation_basis": declarations["malformed"][key],
+        }
+        reason = (
+            "the provider response was refused without repair: "
+            f"{declarations['malformed'][key]}"
         )
-        if prior_tally["hold"]:
-            print(f"Attestatores attempt tally UNKNOWN: {prior_tally['reason']}", file=sys.stderr)
-            return EXIT_HELD
-    try:
-        preflight_appendable_ordinals(context, acts, args.attempt_ordinal)
-    except ContractError as error:
-        # A damaged existing channel cannot be repaired by adding a replacement
-        # attempt. It is an UNKNOWN tally and holds the folder as it stands.
-        print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
-        return EXIT_HELD
+    elif _is_page_fallback(context, act) or key in declarations["empty"]:
+        outcome = "genuinely-empty"
+        native_payload = ""
+        health = content_health(native_payload, completed=True)
+    else:
+        response = testimony_for(context, act["act_key"], chair)
+        if response is None:
+            outcome = "not-run"
+            reason = "no attempt was made for this configured chair"
+        else:
+            (
+                native_payload,
+                witness_reported,
+                capabilities,
+                health,
+                recording_problem,
+            ) = prepared_response(response)
+            if recording_problem is None:
+                outcome = "read"
+            else:
+                outcome = "failed"
+                reason = f"the provider response was refused without repair: {recording_problem}"
 
-    failures = declared_failures(context, args.attempt_ordinal)
-    empty = declared_empty(context, args.attempt_ordinal)
-    not_run = declared_not_run(context, args.attempt_ordinal)
-    malformed = declared_malformed(context, args.attempt_ordinal)
+    return Attempt(outcome, native_payload, witness_reported, capabilities, health, reason)
 
+
+def publish_attempt(
+    context,
+    *,
+    act: dict[str, Any],
+    chair: str,
+    resolved: ChairIdentity | AbsentChair,
+    ordinal: int,
+    regions: list[dict],
+    attempt: Attempt,
+) -> None:
+    """Seal one immutable Testimonium. The only write path for an attempt."""
+    attempted = attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES
+    context.publish(
+        kind="testimonium",
+        subject_id=act["act_id"],
+        outcome=attempt.outcome,
+        attempt=attempt_id(act["act_id"], f"read:{chair}", ordinal),
+        inputs=region_inputs(context, regions) if attempted else [],
+        payload=testimonium_payload(
+            chair=chair,
+            act_key=act["act_key"],
+            ordinal=ordinal,
+            regions=region_references(regions) if attempted else [],
+            provenance=provenance_for(context, resolved, attempted=attempted),
+            format_capabilities=attempt.format_capabilities,
+            native_payload=attempt.native_payload,
+            witness_reported=attempt.witness_reported,
+            health=attempt.health,
+            outcome=attempt.outcome,
+            reason=attempt.reason,
+        ),
+    )
+
+
+def attempt_pass(context, acts: list[dict[str, Any]], ordinal: int) -> tuple[int, bool]:
+    """Every configured chair's attempt at every expected act, at one ordinal.
+
+    Returns how many records were written and whether any proposal crop was
+    refused — the second is reported, never swallowed, because an act whose crop
+    no chair could be shown is a different fact from an act every chair read.
+    """
+    declarations = declarations_for(context, ordinal)
     recorded = 0
     isolated_crop_failure = False
     for act in acts:
@@ -801,7 +917,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     act=act,
                     chair=chair,
                     resolved=resolved,
-                    ordinal=args.attempt_ordinal,
+                    ordinal=ordinal,
                     reason=(
                         "the Designator held this act; its incomplete proposal was not shown "
                         "to any configured witness"
@@ -825,92 +941,142 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     act=act,
                     chair=chair,
                     resolved=resolved,
-                    ordinal=args.attempt_ordinal,
+                    ordinal=ordinal,
                     reason=f"the proposed region was refused before this chair ran: {error}",
                 )
                 recorded += 1
             isolated_crop_failure = True
             continue
 
-        region_refs = region_references(regions)
-        page_fallback = _is_page_fallback(context, act, fallback_bounds)
-
         for chair in context.witness_chairs:
             resolved = context.registry.resolve(chair)
-            key = (act["act_key"], chair)
-            response = testimony_for(context, act["act_key"], chair)
-            native_payload: Any = None
-            witness_reported: Any = None
-            capabilities = DEFAULT_FORMAT_CAPABILITIES
-            health = no_response_health(reason="not-attempted")
-            reason: str | None = None
-
-            if isinstance(resolved, AbsentChair):
-                outcome = "dead"
-                reason = f"chair is explicitly absent: {resolved.reason}"
-            elif key in not_run:
-                outcome = "not-run"
-                reason = "fixture declares that this configured chair was never attempted"
-            elif key in failures:
-                outcome = "failed"
-                health = no_response_health(reason="attempted-but-no-usable-response")
-                reason = "the chair returned no usable response"
-            elif key in malformed:
-                outcome = "failed"
-                health = {
-                    "native_type": "unrecordable",
-                    "encoding": "invalid-or-unrecordable",
-                    "recordable": False,
-                    "empty": None,
-                    "blank": None,
-                    "truncated": None,
-                    "characters": None,
-                    "truncation_basis": malformed[key],
-                }
-                reason = f"the provider response was refused without repair: {malformed[key]}"
-            elif page_fallback or key in empty:
-                outcome = "genuinely-empty"
-                native_payload = ""
-                health = content_health(native_payload, completed=True)
-            elif response is None:
-                outcome = "not-run"
-                reason = "no attempt was made for this configured chair"
-            else:
-                (
-                    native_payload,
-                    witness_reported,
-                    capabilities,
-                    health,
-                    recording_problem,
-                ) = prepared_response(response)
-                if recording_problem is None:
-                    outcome = "read"
-                else:
-                    outcome = "failed"
-                    reason = f"the provider response was refused without repair: {recording_problem}"
-
-            attempted = outcome in ATTEMPTED_WITNESS_OUTCOMES
-            context.publish(
-                kind="testimonium",
-                subject_id=act["act_id"],
-                outcome=outcome,
-                attempt=attempt_id(act["act_id"], f"read:{chair}", args.attempt_ordinal),
-                inputs=region_inputs(context, regions) if attempted else [],
-                payload=testimonium_payload(
-                    chair=chair,
-                    act_key=act["act_key"],
-                    ordinal=args.attempt_ordinal,
-                    regions=region_refs if attempted else [],
-                    provenance=provenance_for(context, resolved, attempted=attempted),
-                    format_capabilities=capabilities,
-                    native_payload=native_payload,
-                    witness_reported=witness_reported,
-                    health=health,
-                    outcome=outcome,
-                    reason=reason,
-                ),
+            publish_attempt(
+                context,
+                act=act,
+                chair=chair,
+                resolved=resolved,
+                ordinal=ordinal,
+                regions=regions,
+                attempt=resolve_attempt(context, act, chair, resolved, declarations),
             )
             recorded += 1
+    return recorded, isolated_crop_failure
+
+
+def next_attempt_ordinal(context, act_id: str, chair: str) -> int:
+    """The ordinal a reread of this one seat appends at.
+
+    Derived from that seat's own history on disk, exactly as
+    `pipeline/2_designator/run.py::_next_region_ordinal` derives the next crop
+    ordinal — so append-only is a property of what already exists rather than of
+    how many times this program has been invoked.
+    """
+    records = _existing_attempts(context, act_id, chair)
+    if not records:
+        raise ContractError(
+            f"a reread named chair {chair!r} on act {act_id!r}, which has no prior attempt for "
+            "that chair to follow — a reread is a second attempt, and there is no first"
+        )
+    current = latest_attempt(
+        records, f"Testimonium for {(act_id, chair)!r}", operation=f"read:{chair}"
+    )
+    return current["payload"]["attempt_ordinal"] + 1
+
+
+def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) -> int:
+    """Append one new attempt for one named seat on one named act.
+
+    Lane A's shape, kept because the whole-pass `--attempt-ordinal` is the wrong
+    instrument for the thing a reread is actually for. A reread happens because
+    *one* seat failed on *one* act; re-witnessing every seat on every act to
+    reach it re-reads ink nobody doubted, costs a provider call per chair per
+    act, and moves every other seat's derived-current record for no reason. This
+    path moves exactly the one seat named, and every other seat's current record
+    stays the attempt it already was.
+
+    The rest is unchanged from the whole pass: same declaration tables at the new
+    ordinal, same regions the first attempt was shown (a reread is a second look
+    at the original proposal, never a first look at ink a recovery uncovered),
+    same single write path, and no pointer anywhere — "current" stays derived.
+    """
+    act = next((row for row in acts if row["act_id"] == act_id), None)
+    if act is None:
+        raise ContractError(
+            f"a reread named act {act_id!r}, which the Designator proposal seal does not"
+        )
+    if chair not in context.witness_chairs:
+        raise ContractError(
+            f"a reread named chair {chair!r}, which this run is not sealed with"
+        )
+    if act["outcome"] == "held":
+        raise ContractError(
+            f"act {act_id} is held; no witness was shown a reading there to reread"
+        )
+    resolved = context.registry.resolve(chair)
+    if isinstance(resolved, AbsentChair):
+        raise ContractError(
+            f"chair {chair!r} is explicitly absent: {resolved.reason}; there is no witness "
+            "to reread"
+        )
+
+    ordinal = next_attempt_ordinal(context, act_id, chair)
+    require_appendable_ordinal(context, act_id, chair, ordinal)
+    publish_attempt(
+        context,
+        act=act,
+        chair=chair,
+        resolved=resolved,
+        ordinal=ordinal,
+        regions=proposed_regions(context, act_id),
+        attempt=resolve_attempt(
+            context, act, chair, resolved, declarations_for(context, ordinal)
+        ),
+    )
+    return 1
+
+
+def main(registry_factory=ChairRegistry.from_toml) -> int:
+    """Run every configured chair through one attempt, or reread one named seat."""
+    parser = stage_parser(__doc__.splitlines()[0])
+    parser.add_argument(
+        "--attempt-ordinal",
+        type=_positive_ordinal,
+        default=1,
+        help="append this ordinal for every act/chair, or repeat the current one byte-identically",
+    )
+    args = parser.parse_args()
+    context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
+    acts = expected_acts(context)
+    try:
+        has_existing_attempts = bool(context.tree.build_manifest(ATTESTATORES)["artifacts"])
+    except ContractError as error:
+        print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
+        return EXIT_HELD
+    if has_existing_attempts:
+        prior_tally = attempt_tally(
+            context.tree, context=context, acts=acts, chairs=context.witness_chairs
+        )
+        if prior_tally["hold"]:
+            print(f"Attestatores attempt tally UNKNOWN: {prior_tally['reason']}", file=sys.stderr)
+            return EXIT_HELD
+
+    isolated_crop_failure = False
+    if args.operation == "reread":
+        if not args.act or not args.chair:
+            raise ContractError(
+                "a reread names the one act and the one chair it rereads; without both it "
+                "would be a whole second pass wearing a narrower name"
+            )
+        recorded = reread_pass(context, acts, args.act, args.chair)
+    else:
+        try:
+            preflight_appendable_ordinals(context, acts, args.attempt_ordinal)
+        except ContractError as error:
+            # A damaged existing channel cannot be repaired by adding a replacement
+            # attempt. It is an UNKNOWN tally and holds the folder as it stands.
+            print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
+            return EXIT_HELD
+        recorded, isolated_crop_failure = attempt_pass(context, acts, args.attempt_ordinal)
 
     if recorded == 0:
         raise ContractError("no chair produced an outcome for any act")

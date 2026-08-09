@@ -76,7 +76,33 @@ TESTIMONY = {
 # One deliberately non-text native response verifies the Attestatores schema
 # without pretending that the current text-only Perlector bridge can consume it.
 # It is a Stage 3 boundary fixture, not an end-to-end selection surface.
+#
+# The first two rows are the pair spec 07's `format_capabilities` field exists
+# for: "a witness that cannot say 'unsure' must not be read as confident". Chair
+# 1's output format cannot express uncertainty at all and its self-report claims
+# high confidence anyway — the cautionary case. Chair 2's format can express
+# uncertainty and it uses that to report genuine doubt — the legitimate one. Both
+# self-reports are retained verbatim and neither reaches an outcome, a coverage
+# count, or `content_health`. Without both sides declared in one run the
+# distinction is representable but never exercised, which is where a later reader
+# starts treating a self-report as evidence.
 SCENARIO_TESTIMONY = (
+    {
+        "scenario": "happy",
+        "act_key": "a1",
+        "chair": "attestator_1",
+        "payload": TESTIMONY["a1"]["attestator_1"],
+        "witness_reported": {"confidence": "high"},
+        "format_capabilities": {"can_express_uncertainty": False, "can_express_layout": False},
+    },
+    {
+        "scenario": "happy",
+        "act_key": "a1",
+        "chair": "attestator_2",
+        "payload": TESTIMONY["a1"]["attestator_2"],
+        "witness_reported": {"confidence": "low", "note": "faded ink"},
+        "format_capabilities": {"can_express_uncertainty": True, "can_express_layout": False},
+    },
     {
         "scenario": "structured-witness",
         "act_key": "a1",

@@ -97,6 +97,22 @@ chair = "attestator_3"
 payload = "SYNTHETIC ACT TWO delta epsiIon zeta eta"
 
 [[testimony]]
+scenario = "happy"
+act_key = "a1"
+chair = "attestator_1"
+payload = "SYNTHETIC ACT ONE alpha beta gamma"
+witness_reported = { confidence = "high" }
+format_capabilities = { can_express_layout = false, can_express_uncertainty = false }
+
+[[testimony]]
+scenario = "happy"
+act_key = "a1"
+chair = "attestator_2"
+payload = "SYNTHETIC ACT ONE alpha beta gamna"
+witness_reported = { confidence = "low", note = "faded ink" }
+format_capabilities = { can_express_layout = false, can_express_uncertainty = true }
+
+[[testimony]]
 scenario = "structured-witness"
 act_key = "a1"
 chair = "attestator_1"

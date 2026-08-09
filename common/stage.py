@@ -354,11 +354,16 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--operation", default="initial")
-    parser.add_argument("--act", default=None, help="one act id, for a recovery operation")
+    parser.add_argument(
+        "--act", default=None, help="one act id, for a recovery or reread operation"
+    )
     parser.add_argument(
         "--recovery-request",
         default=None,
         help="the exact Recensor recovery-request artifact a Designator recrop answers",
+    )
+    parser.add_argument(
+        "--chair", default=None, help="one chair role, for an Attestatores reread operation"
     )
     return parser
 
