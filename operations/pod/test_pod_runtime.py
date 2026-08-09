@@ -1236,9 +1236,33 @@ def test_repeated_terminate_failure_reaches_a_named_non_green_shutdown_state() -
 
 
 def _lease(
-    store: LeaseStore, record: PodRecord, *, owner: str, clock: Clock, deadline_seconds: int = 60
+    store: LeaseStore,
+    record: PodRecord,
+    *,
+    owner: str,
+    clock: Clock,
+    deadline_seconds: int = 60,
+    armed: bool = True,
 ) -> PodLease:
     hard_deadline = clock.now() + timedelta(seconds=deadline_seconds)
+    if not armed:
+        lease = PodLease(
+            lease_id="c" * 32,
+            launch_token="d" * 32,
+            provider_name="fake",
+            pod_id=record.pod_id,
+            volume_id=record.volume_id,
+            pod_hourly_usd=record.estimate.pod_hourly_usd,
+            volume_hourly_usd=record.estimate.volume_hourly_usd,
+            created_at=clock.now(),
+            started_at=record.created_at,
+            hard_deadline=hard_deadline,
+            owner_token=owner,
+            heartbeat_at=clock.now(),
+            phase="active",
+        )
+        store.create(lease)
+        return lease
     lease = PodLease(
         lease_id="c" * 32,
         launch_token="d" * 32,
@@ -1398,6 +1422,70 @@ def test_pod_timer_death_leaves_laptop_supervisor_to_terminate(tmp_path: Path) -
 
     assert result.state is ControllerState.LIFETIME_EXPIRED
     assert result.close_report is not None and result.close_report.verified
+
+
+def test_a_supervisor_ticking_inside_the_arming_window_does_not_kill_its_own_pod(
+    tmp_path: Path,
+) -> None:
+    """`arm` starts the laptop supervisor; the receipt is written after it returns.
+
+    A supervisor that runs even once inside that window sees an active lease with
+    no arming evidence.  Treating that alone as a defect terminates the pod the
+    supervisor was started to guard, and the authorised launch ends non-green.
+    """
+
+    class StartsSupervisorArmer(FakeControllerArmer):
+        def arm(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.first_tick = LaptopSupervisor(
+                kwargs["store"],
+                shutdown(self.provider, self.clock),
+                owner_token=kwargs["owner_token"],
+                heartbeat_timeout=timedelta(seconds=30),
+                now=self.clock.now,
+            ).run_once()
+            return super().arm(**kwargs)
+
+    clock = Clock()
+    provider = fake(clock)
+    armer = StartsSupervisorArmer(clock, provider)
+
+    result = runtime(provider, clock, tmp_path, armer=armer).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert armer.first_tick.state is ControllerState.CONTROLLER_UNARMED
+    assert not armer.first_tick.green
+    assert armer.first_tick.close_report is None
+    assert result.state is LaunchState.CREATED_GUARDED
+    assert result.record is not None
+    assert provider.terminate_calls == []
+    assert provider.status(result.record.pod_id).presence.value == "present"
+
+
+def test_an_unarmed_lease_whose_launch_stopped_heartbeating_is_still_closed(
+    tmp_path: Path,
+) -> None:
+    """Waiting out the arming window may not become a way to leave a pod unguarded."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.14")
+    store = LeaseStore(tmp_path / "unarmed.json")
+    _lease(store, record, owner="laptop", clock=clock, deadline_seconds=300, armed=False)
+    clock.seconds = 31
+
+    result = LaptopSupervisor(
+        store,
+        shutdown(provider, clock),
+        owner_token="laptop",
+        heartbeat_timeout=timedelta(seconds=30),
+        now=clock.now,
+    ).run_once()
+
+    assert result.state is ControllerState.CONTROLLER_UNARMED
+    assert result.close_report is not None and result.close_report.verified
+    assert provider.status(record.pod_id).presence.value == "absent"
 
 
 def test_armed_launch_controller_death_drills_use_the_launch_handshake(tmp_path: Path) -> None:
@@ -1664,7 +1752,6 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
     (repository / "uv.lock").write_text("locked = true\n", encoding="utf-8")
     other = tmp_path / "other.lock"
     other.write_text("locked = false\n", encoding="utf-8")
-    calls: list[list[str]] = []
 
     actions = SubprocessBootstrapActions(
         repository=repository,
@@ -1676,7 +1763,6 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
 
     with pytest.raises(BootstrapStepFailure, match="not repository uv.lock"):
         actions.sync_uv_environment(other)
-    assert calls == []
 
 
 def test_red_preflight_details_survive_into_the_bootstrap_failure(tmp_path: Path) -> None:
@@ -2053,3 +2139,30 @@ def test_system_gpu_probe_returns_red_input_when_nvidia_smi_fails() -> None:
     assert profile.compute_capability is None
     assert profile.vram_gib == Decimal("0")
     assert profile.disk_gib == Decimal("100")
+    assert "nvidia-smi: command not found" in profile.discovery_detail
+
+
+def test_a_red_report_carries_what_happened_not_only_what_to_do_next() -> None:
+    """Spec 04 asks a red preflight for "what happened, what to do next"."""
+
+    report = _preflight(FakeCache(), FakeSmoke()).run(
+        GpuProfile(
+            "GPU discovery unavailable",
+            None,
+            None,
+            None,
+            Decimal("0"),
+            Decimal("100"),
+            "bfloat16",
+            discovery_detail="RuntimeError: nvidia-smi: command not found",
+        )
+    )
+
+    assert report.color == "red"
+    assert report.to_record()["environment"]["discovery_detail"] == (
+        "RuntimeError: nvidia-smi: command not found"
+    )
+    assert any(
+        issue.code == "cuda-driver-missing" and "nvidia-smi: command not found" in issue.message
+        for issue in report.issues
+    )

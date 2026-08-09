@@ -54,11 +54,17 @@ class TransferReport:
 
     completed_keys: tuple[str, ...]
     skipped_keys: tuple[str, ...]
+    submission_manifest_present: bool = True
 
     def to_record(self) -> dict[str, object]:
         return {
             "schema": TRANSFER_SCHEMA,
             "state": "complete",
+            # An empty receipt has two very different causes — a manifest with
+            # nothing left to send, and a manifest this pod never found. The
+            # second is a misconfigured path, and without this field a green
+            # bootstrap journal cannot tell an operator which one happened.
+            "submission_manifest": "present" if self.submission_manifest_present else "absent",
             "completed_keys": list(self.completed_keys),
             "skipped_keys": list(self.skipped_keys),
         }
@@ -92,7 +98,7 @@ class ChecksummedTransfer:
         """
 
         if not self.submission_manifest.is_file():
-            return TransferReport((), ())
+            return TransferReport((), (), submission_manifest_present=False)
         manifest = load_manifest(self.submission_manifest)
         journal = self._load_or_create(manifest)
         completed = set(journal["completed"])
@@ -104,6 +110,7 @@ class ChecksummedTransfer:
             expected_size = row["bytes"]
             source = _under(self.source_root, relative)
             key = f"{self.prefix}/{relative}"
+            sent = False
             # Open once, by name, with the leaf pinned to a regular file; every
             # later read (hash, upload) happens against this one descriptor so
             # nothing between the check and the use can swap what gets read.
@@ -129,6 +136,7 @@ class ChecksummedTransfer:
                         raise TransferFailure(
                             f"transfer of {relative!r} failed: {error}"
                         ) from error
+                    sent = True
                     remote = self.target.inspect(key)
             if remote is None or remote.sha256 != expected_sha or remote.size != expected_size:
                 raise TransferFailure(f"target {key!r} did not verify after transfer")
@@ -136,9 +144,10 @@ class ChecksummedTransfer:
                 completed.add(key)
                 journal["completed"] = sorted(completed)
                 self._write(journal)
-                uploaded.append(key)
-            else:
-                skipped.append(key)
+            # What this run actually put on the wire, not what the journal says:
+            # a row the journal already held but the target no longer had is
+            # re-sent, and reporting that as skipped would hide the re-send.
+            (uploaded if sent else skipped).append(key)
         return TransferReport(tuple(uploaded), tuple(skipped))
 
     def _load_or_create(self, manifest: dict[str, object]) -> dict[str, object]:

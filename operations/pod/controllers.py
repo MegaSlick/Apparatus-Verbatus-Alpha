@@ -124,12 +124,6 @@ class LaptopSupervisor:
             return ControllerResult(ControllerState.NO_LEASE, "no lease exists")
         if not lease.active:
             return _terminal_result(lease)
-        if lease.phase == "active" and lease.controller_record is None:
-            return self._close(
-                lease,
-                ControllerState.CONTROLLER_UNARMED,
-                "active lease lacks durable laptop-supervisor and pod-timer arming evidence",
-            )
         if lease.pod_id is None:
             return self._recover_pending_create(lease, observed)
         stale = observed - lease.heartbeat_at >= self.heartbeat_timeout
@@ -153,6 +147,27 @@ class LaptopSupervisor:
             )
         if observed >= lease.hard_deadline:
             return self._close(lease, ControllerState.LIFETIME_EXPIRED, "hard lifetime expired")
+        if lease.controller_record is None:
+            # A launch binds the pod, arms both controllers, and only then writes
+            # the receipt, so a lease whose owner is still heartbeating may
+            # legitimately be part-way through that sequence — and the supervisor
+            # doing the looking is often the one the launch just started. Closing
+            # on the absent receipt alone kills the pod it was started to guard.
+            # Nothing keeps an unarmed pod alive by waiting: this branch never
+            # refreshes the heartbeat, so an abandoned launch goes stale and is
+            # closed below, and the pod-side dead-man still holds the outer bound.
+            if not stale:
+                return ControllerResult(
+                    ControllerState.CONTROLLER_UNARMED,
+                    "active lease has no arming evidence yet and its launch owner is still "
+                    "heartbeating; not green, and not closed while that launch may complete",
+                    lease=lease,
+                )
+            return self._close(
+                lease,
+                ControllerState.CONTROLLER_UNARMED,
+                "active lease lacks durable laptop-supervisor and pod-timer arming evidence",
+            )
         if stale:
             return self._close(lease, ControllerState.HEARTBEAT_LOST, "laptop heartbeat lost")
         return self.heartbeat()

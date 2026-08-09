@@ -78,8 +78,12 @@ the way its documentation says.
   mandatory bootstrap, and an independent pod-side hard-lifetime dead-man. A launch or
   adoption is green only after a supplied controller harness starts the laptop supervisor,
   observes a pod-timer acknowledgement, and that receipt is durably recorded and bound to
-  the exact lease, pod, and hard deadline. The default is fail-closed; an active lease without
-  the receipt is immediately closed. Pod close makes no volume retention/deletion
+  the exact lease, pod, and hard deadline. The default is fail-closed: a launch that cannot
+  arm both controllers closes its own pod at once, and an active lease still carrying no
+  receipt once its launch owner has stopped heartbeating is closed by the supervisor. While
+  that owner is still heartbeating the missing receipt is reported non-green rather than
+  acted on, because the supervisor doing the looking is usually the one the launch has just
+  started. Pod close makes no volume retention/deletion
   decision; either choice requires separate authorization, and the unchanged
   volume's ongoing price is in the close report. This runtime has no volume-delete operation.
 - `spend.py` applies the same price display, ceiling calculation, and typed phrase to

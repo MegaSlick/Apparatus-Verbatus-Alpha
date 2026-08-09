@@ -38,6 +38,10 @@ class GpuProfile:
     vram_gib: Decimal
     disk_gib: Decimal
     dtype: str
+    discovery_detail: str = ""
+    """Why measurement failed, when it did.  A red report owes an operator "what
+    happened" as well as "what to do next" (spec 04, preflight 5), and the probe
+    is the only place that ever sees the driver's own error text."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "vram_gib", as_decimal(self.vram_gib, "VRAM GiB"))
@@ -112,7 +116,7 @@ class SystemGpuProbe:
                 disk_gib=disk_gib,
                 dtype=dtype,
             )
-        except Exception:
+        except Exception as error:
             return GpuProfile(
                 name="GPU discovery unavailable",
                 cuda_version=None,
@@ -121,6 +125,7 @@ class SystemGpuProbe:
                 vram_gib=Decimal("0"),
                 disk_gib=disk_gib,
                 dtype=dtype,
+                discovery_detail=f"{type(error).__name__}: {error}".strip(),
             )
 
     @staticmethod
@@ -559,6 +564,7 @@ class PreflightReport:
                 "vram_gib": str(self.profile.vram_gib),
                 "disk_gib": str(self.profile.disk_gib),
                 "dtype": self.profile.dtype,
+                "discovery_detail": self.profile.discovery_detail or None,
             },
             "placement_tier": self.tier,
             # Spec 04: "the preflight report says which plan it chose and why."
@@ -716,7 +722,12 @@ class PreflightRunner:
             issues.append(
                 PreflightIssue(
                     "cuda-driver-missing",
-                    "CUDA or the GPU driver was not measured.",
+                    "CUDA or the GPU driver was not measured."
+                    + (
+                        f" Discovery reported: {profile.discovery_detail}"
+                        if profile.discovery_detail
+                        else ""
+                    ),
                     "Install a compatible GPU driver/CUDA stack and run preflight again.",
                 )
             )

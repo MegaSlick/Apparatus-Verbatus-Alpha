@@ -116,6 +116,35 @@ def test_resume_with_no_submission_manifest_yet_is_a_vacuous_success(tmp_path: P
     assert report.completed_keys == ()
     assert report.skipped_keys == ()
     assert target.puts == []
+    # An empty receipt has to say which empty it is, or a green bootstrap journal
+    # reads the same for "nothing to send" and "I never found the manifest".
+    assert report.to_record()["submission_manifest"] == "absent"
+
+
+def test_a_journaled_row_the_target_lost_is_reported_as_sent_again(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "page.bin").write_bytes(b"synthetic page bytes")
+    manifest_path = tmp_path / "submission.json"
+    manifest(source, manifest_path)
+    target = FakeTarget()
+    transfer = ChecksummedTransfer(
+        source_root=source,
+        submission_manifest=manifest_path,
+        target=target,
+        prefix="run",
+        journal_path=tmp_path / "transfer.json",
+    )
+    first = transfer.resume()
+    assert first.completed_keys == ("run/page.bin",)
+
+    target.objects.clear()
+    second = transfer.resume()
+
+    assert second.completed_keys == ("run/page.bin",)
+    assert second.skipped_keys == ()
+    assert target.puts == ["run/page.bin", "run/page.bin"]
+    assert second.to_record()["submission_manifest"] == "present"
 
 
 def test_open_verified_regular_file_refuses_a_symlink_leaf_directly(tmp_path: Path) -> None:
