@@ -126,6 +126,13 @@ chair = "attestator_3"
 payload = "SYNTHETIC ACT ONE alpha beta"
 format_capabilities = "provider supplied a non-object capability declaration"
 
+[[testimony]]
+scenario = "reread-success"
+act_key = "a2"
+chair = "attestator_1"
+payload = "SYNTHETIC ACT TWO delta epsilon zeta eta, reread"
+attempt_ordinal = 2
+
 # The happy scenario establishes both acts. The review scenario recovers act
 # a1 once -- act identity stable, region and attempt identities changing -- and
 # holds act a2, which therefore reaches no Archetypus at all.
@@ -210,6 +217,11 @@ hold_acts = []
 
 [[scenario]]
 name = "reread-failure"
+recover_acts = []
+hold_acts = []
+
+[[scenario]]
+name = "reread-success"
 recover_acts = []
 hold_acts = []
 

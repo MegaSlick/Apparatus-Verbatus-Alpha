@@ -1,5 +1,6 @@
 """Spec 07 retention and native-Testimonium tests over the real stage program."""
 
+import ast
 import copy
 import importlib.util
 import inspect
@@ -7,12 +8,13 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.envelope import build_envelope
-from common.contracts.errors import ApprovalRefusal, IncompatibleReuse
+from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.outcomes import witness_coverage
 from common.contracts.stages import ATTESTATORES, DESIGNATOR
@@ -189,12 +191,12 @@ def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
     assert attestatores.attempt_tally(tree)["count"] == 12
 
 
-# --- The targeted reread: one seat, one act -------------------------------------
+# --- The targeted reread: one chair, one act ------------------------------------
 #
-# The whole-pass reread above re-witnesses every seat on every act to move one of
+# The whole-pass reread above re-witnesses every chair on every act to move one of
 # them. That is the right instrument for a resume and the wrong one for a reread,
 # which happens because one witness failed on one act. These tests drive the
-# narrow path: the ordinal comes from that seat's own history, and nothing else
+# narrow path: the ordinal comes from that chair's own history, and nothing else
 # in the folder moves.
 
 
@@ -219,7 +221,7 @@ def _reread(run_root: Path, scenario: str, act_id: str, chair: str, **extra):
     )
 
 
-def test_a_targeted_reread_moves_one_seat_and_leaves_every_other_seat_alone(tmp_path):
+def test_a_targeted_reread_moves_one_chair_and_leaves_every_other_chair_alone(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "reread-failure")
     assert (
         invoke_stage(
@@ -259,7 +261,7 @@ def test_a_targeted_reread_moves_one_seat_and_leaves_every_other_seat_alone(tmp_
     assert sorted(record["payload"]["attempt_ordinal"] for record in moved) == [1, 2]
     others = [record for record in records if record not in moved]
     assert others and all(record["payload"]["attempt_ordinal"] == 1 for record in others), (
-        "a reread of one seat must not append an attempt for any other seat"
+        "a reread of one chair must not append an attempt for any other chair"
     )
 
     current = next(
@@ -272,8 +274,8 @@ def test_a_targeted_reread_moves_one_seat_and_leaves_every_other_seat_alone(tmp_
     assert attestatores.attempt_tally(tree)["count"] == 7
 
 
-def test_the_whole_pass_still_resumes_over_a_folder_one_seat_has_been_reread_in(tmp_path):
-    """A reread moves one seat's ordinal and no other's, so the whole pass — which
+def test_the_whole_pass_still_resumes_over_a_folder_one_chair_has_been_reread_in(tmp_path):
+    """A reread moves one chair's ordinal and no other's, so the whole pass — which
     the orchestrator always invokes at ordinal 1 — has to stay a resume rather than
     become a hold. Every write it makes here is byte-identical to one already on
     disk, and the RunTree would refuse it outright if it were not."""
@@ -308,6 +310,28 @@ def test_the_whole_pass_still_resumes_over_a_folder_one_seat_has_been_reread_in(
     }
     assert after == before
     assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
+def test_a_successful_reread_retains_new_testimony_and_keeps_attempt_one(tmp_path):
+    """Lane A's successful-reread capability survives with ordinal-bound native data."""
+    run_root, tree = run_to_designator(tmp_path, "reread-success")
+    initial = invoke_stage(
+        run_root, "retention", "reread-success", "pipeline/3_attestatores/run.py"
+    )
+    assert initial.returncode == 0, initial.stderr
+    first = _testimonium_for(tree, act_key="a2", chair="attestator_1", ordinal=1)
+    first_path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", first["artifact_id"]))
+    first_bytes = first_path.read_bytes()
+
+    result = _reread(run_root, "reread-success", first["subject_id"], "attestator_1")
+
+    assert result.returncode == 0, result.stderr
+    second = _testimonium_for(tree, act_key="a2", chair="attestator_1", ordinal=2)
+    assert second["outcome"] == "read"
+    assert second["payload"]["payload"].endswith(", reread")
+    assert second["payload"]["reported"] == second["payload"]["payload"]
+    assert second["payload"]["payload"] != first["payload"]["payload"]
+    assert first_path.read_bytes() == first_bytes
 
 
 def test_a_whole_pass_may_not_skip_an_ordinal_over_any_seat(tmp_path):
@@ -385,7 +409,7 @@ def test_a_targeted_reread_of_a_held_act_is_refused(tmp_path):
 
 
 def test_a_targeted_reread_of_an_absent_chair_is_refused(tmp_path):
-    """A dead seat is dead. Asking it again is not a second attempt, and inventing
+    """A dead chair is dead. Asking it again is not a second attempt, and inventing
     one would put a serving moment on a chair that never served."""
     models_config = absent_third_chair_config(tmp_path)
     run_root, tree = run_to_designator(tmp_path, "happy", models_config=models_config)
@@ -470,9 +494,22 @@ def test_no_self_report_can_reach_a_coverage_count_or_an_outcome_class():
     assert "witness_reported" not in inspect.signature(attestatores.content_health).parameters
 
 
-def test_an_excluded_testimonium_without_an_approval_artifact_is_refused_at_the_schema():
+def test_conflicting_fixture_outcomes_are_refused_instead_of_selected():
+    context = SimpleNamespace(
+        scenario="conflict",
+        fixture={
+            "witness_failure": [{"scenario": "conflict", "act_key": "a1", "chair": "attestator_1"}],
+            "witness_empty": [{"scenario": "conflict", "act_key": "a1", "chair": "attestator_1"}],
+        },
+    )
+
+    with pytest.raises(SchemaRefusal, match="conflicting witness outcomes"):
+        attestatores.declarations_for(context, 1)
+
+
+def test_an_excluded_testimonium_without_an_approval_reference_is_refused_at_the_schema():
     """Spec 07 test 2: `excluded` exists only as a reference to a Tyrel
-    approval-record artifact. Absent that artifact, a seat that did not read is
+    approval-record artifact. Absent that artifact, a chair that did not read is
     `not-run`, `dead` or `failed` — all of which force visible partial status —
     and the word `excluded` alone buys nothing.
 
@@ -499,8 +536,10 @@ def test_an_excluded_testimonium_without_an_approval_artifact_is_refused_at_the_
     with pytest.raises(ApprovalRefusal, match="only Tyrel approves an exclusion"):
         build_envelope(outcome="excluded", **envelope)
 
-    # The same record with an approval-record reference is accepted, so the
-    # refusal is about the missing artifact and not about the word.
+    # The generic envelope accepts a non-empty, well-formed-looking identifier.
+    # It does not resolve or verify approval-record bytes; this assertion pins
+    # only the negative guarantee above and must not be read as proof that the
+    # positive exclusion path required by Spec 07 exists.
     approved = build_envelope(outcome="excluded", approval_ref="art_0123456789abcdef", **envelope)
     assert approved["approval_ref"] == "art_0123456789abcdef"
 
@@ -519,6 +558,23 @@ def test_an_actual_testimonium_identity_refuses_replacement_at_the_store_boundar
     with pytest.raises(IncompatibleReuse, match="immutable"):
         tree.publish_artifact(changed)
     assert path.read_bytes() == before
+
+
+def test_every_testimonium_outcome_uses_one_identity_bearing_writer():
+    """A second constructor can drift without changing either constructor's tests."""
+    module = ast.parse(inspect.getsource(attestatores))
+    publishers = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "publish":
+            continue
+        kind = next((item.value for item in node.keywords if item.arg == "kind"), None)
+        if isinstance(kind, ast.Constant) and kind.value == "testimonium":
+            publishers.append(node.lineno)
+    source_lines, start = inspect.getsourcelines(attestatores.publish_attempt)
+    assert len(publishers) == 1
+    assert start <= publishers[0] < start + len(source_lines)
 
 
 def test_parseable_native_payload_and_self_report_remain_separate_in_a_real_artifact(tmp_path):
@@ -553,7 +609,7 @@ def test_unrecordable_native_output_becomes_failed_without_replacement_text():
     )
     assert native is None
     assert self_report is None
-    assert capabilities == attestatores.DEFAULT_FORMAT_CAPABILITIES
+    assert capabilities is None
     assert health["recordable"] is False
     assert health["encoding"] == "invalid-or-unrecordable"
     assert "valid UTF-8" in problem
@@ -659,12 +715,32 @@ def test_malformed_capabilities_fail_one_attempt_without_aborting_other_chairs(t
     malformed = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
     assert malformed["outcome"] == "failed"
     assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta"
-    assert malformed["payload"]["format_capabilities"] == attestatores.DEFAULT_FORMAT_CAPABILITIES
-    assert malformed["payload"]["content_health"]["recordable"] is False
+    assert malformed["payload"]["format_capabilities"] is None
+    assert malformed["payload"]["content_health"]["recordable"] is True
+    assert "format capabilities could not be retained" in malformed["payload"]["reason"]
     assert malformed["inputs"]
     assert malformed["payload"]["provenance"]["receipt_ref"] is not None
     assert sum(record["outcome"] == "read" for record in records) == 5
     assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
+def test_witness_metadata_cannot_rewrite_native_content_health():
+    native = "verbatim native response"
+    expected = attestatores.content_health(native, completed=True)
+
+    _, _, capabilities, self_report_health, self_report_problem = attestatores.prepared_response(
+        {"payload": native, "witness_reported": "\ud800"}
+    )
+    assert capabilities == attestatores.DEFAULT_FORMAT_CAPABILITIES
+    assert self_report_health == expected
+    assert "self-report could not be retained" in self_report_problem
+
+    _, _, capabilities, capability_health, capability_problem = attestatores.prepared_response(
+        {"payload": native, "format_capabilities": "not an object"}
+    )
+    assert capabilities is None
+    assert capability_health == expected
+    assert "format capabilities could not be retained" in capability_problem
 
 
 def test_a_reading_that_claims_its_own_channel_was_unrecordable_is_unknown(tmp_path):
@@ -718,6 +794,71 @@ def test_a_failed_attempt_with_an_unrecordable_channel_and_no_reason_is_unknown(
     assert tally["state"] == "UNKNOWN"
     assert tally["hold"] is True
     assert "records no reason" in tally["reason"]
+
+
+def test_a_failed_attempt_with_recordable_native_evidence_still_requires_a_reason(tmp_path):
+    run_root, tree = run_to_designator(tmp_path, "malformed-capabilities")
+    initial = invoke_stage(
+        run_root,
+        "retention",
+        "malformed-capabilities",
+        "pipeline/3_attestatores/run.py",
+    )
+    assert initial.returncode == 0, initial.stderr
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    assert record["payload"]["content_health"]["recordable"] is True
+    changed = copy.deepcopy(record)
+    del changed["payload"]["reason"]
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    retry = invoke_stage(
+        run_root,
+        "retention",
+        "malformed-capabilities",
+        "pipeline/3_attestatores/run.py",
+        attempt_ordinal=2,
+    )
+
+    assert retry.returncode == 3
+    assert "records no reason" in retry.stderr
+    assert all(item["payload"]["attempt_ordinal"] == 1 for item in _testimonia(tree))
+
+
+@pytest.mark.parametrize(
+    ("scenario", "replacement", "message"),
+    (
+        ("happy", "different text", "differs from its verbatim native payload"),
+        ("structured-witness", "coerced text", "carries a compatibility projection"),
+    ),
+)
+def test_a_resealed_compatibility_projection_cannot_change_native_testimony(
+    tmp_path, scenario, replacement, message
+):
+    run_root, tree = run_to_designator(tmp_path, scenario)
+    initial = invoke_stage(run_root, "retention", scenario, "pipeline/3_attestatores/run.py")
+    assert initial.returncode == 0, initial.stderr
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    changed = copy.deepcopy(record)
+    changed["payload"]["reported"] = replacement
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    retry = invoke_stage(
+        run_root,
+        "retention",
+        scenario,
+        "pipeline/3_attestatores/run.py",
+        attempt_ordinal=2,
+    )
+
+    assert retry.returncode == 3
+    assert message in retry.stderr
+    assert all(item["payload"]["attempt_ordinal"] == 1 for item in _testimonia(tree))
 
 
 @pytest.mark.parametrize("damage", ("absent", "garbled", "truncated"))

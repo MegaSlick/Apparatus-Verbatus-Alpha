@@ -14,9 +14,9 @@ earlier reading remains intact in history.
 Two write paths, and both append. `--attempt-ordinal N` is the whole pass: every
 configured chair, every expected act, at that one ordinal — the same command
 twice writes the same bytes. `--operation reread --act <id> --chair <role>` moves
-exactly one seat on one act, at the ordinal that seat's own history says comes
+exactly one chair on one act, at the ordinal that chair's own history says comes
 next; a reread happens because one witness failed on one act, and re-witnessing
-the other seats to reach it would re-read ink nobody doubted.
+the other chairs to reach it would re-read ink nobody doubted.
 
     python pipeline/3_attestatores/run.py --run-root <dir> --run-id <id>
     python pipeline/3_attestatores/run.py ... --operation reread --act <id> --chair <role>
@@ -196,12 +196,14 @@ def declared_malformed(context, ordinal: int) -> dict[tuple[str, str], str]:
     return rows
 
 
-def testimony_for(context, act_key: str, chair: str) -> dict[str, Any] | None:
-    """The fixture's one native response declaration for a chair and act."""
+def testimony_for(context, act_key: str, chair: str, ordinal: int) -> dict[str, Any] | None:
+    """The fixture's one native response declaration for this exact attempt."""
     base_matches = []
     scenario_matches = []
     for row in context.fixture["testimony"]:
         if row["act_key"] != act_key or row["chair"] != chair:
+            continue
+        if not _declared_for_ordinal(row, ordinal):
             continue
         declared_scenario = row.get("scenario")
         if declared_scenario is None:
@@ -267,7 +269,7 @@ def _native_type(value: Any) -> str:
 
 
 def no_response_health(*, reason: str) -> dict[str, Any]:
-    """Health for a seat with no native response, never an empty reading."""
+    """Health for a chair with no native response, never an empty reading."""
     return {
         "native_type": None,
         "encoding": "not-applicable",
@@ -419,7 +421,7 @@ def format_capabilities_for(row: dict[str, Any]) -> dict[str, Any]:
 
 def prepared_response(
     row: dict[str, Any],
-) -> tuple[Any, Any, dict[str, Any], dict[str, Any], str | None]:
+) -> tuple[Any, Any, dict[str, Any] | None, dict[str, Any], str | None]:
     """Return native output and any recording defect without normalizing either.
 
     The final element is a reason that turns this one attempt into ``failed``.
@@ -438,33 +440,21 @@ def prepared_response(
     native_payload = row["payload"]
     health = content_health(native_payload, completed=True)
     if health["recordable"] is not True:
-        return None, None, DEFAULT_FORMAT_CAPABILITIES, health, str(health["truncation_basis"])
+        return None, None, None, health, str(health["truncation_basis"])
     witness_reported = row.get("witness_reported")
-    if problem := _native_problem(witness_reported, "witness_reported"):
-        health = {
-            **health,
-            "encoding": "invalid-or-unrecordable",
-            "recordable": False,
-            "truncation_basis": problem,
-        }
-        return (
-            native_payload,
-            None,
-            DEFAULT_FORMAT_CAPABILITIES,
-            health,
-            f"the witness self-report could not be retained: {problem}",
-        )
     try:
         capabilities = format_capabilities_for(row)
     except SchemaRefusal as error:
         reason = f"the witness format capabilities could not be retained: {error}"
-        health = {
-            **health,
-            "encoding": "invalid-or-unrecordable",
-            "recordable": False,
-            "truncation_basis": reason,
-        }
-        return native_payload, witness_reported, DEFAULT_FORMAT_CAPABILITIES, health, reason
+        return native_payload, witness_reported, None, health, reason
+    if problem := _native_problem(witness_reported, "witness_reported"):
+        return (
+            native_payload,
+            None,
+            capabilities,
+            health,
+            f"the witness self-report could not be retained: {problem}",
+        )
     return native_payload, witness_reported, capabilities, health, None
 
 
@@ -507,7 +497,7 @@ def testimonium_payload(
     ordinal: int,
     regions: list[dict[str, str]],
     provenance: dict[str, Any],
-    format_capabilities: dict[str, Any],
+    format_capabilities: dict[str, Any] | None,
     native_payload: Any,
     witness_reported: Any,
     health: dict[str, Any],
@@ -559,9 +549,9 @@ def require_appendable_ordinal(context, act_id: str, chair: str, ordinal: int) -
     differ. Only `current + 1` adds anything.
 
     The bound is `<= current + 1` rather than `in {current, current + 1}` because a
-    targeted reread moves one seat's ordinal without moving any other's. Insisting
+    targeted reread moves one chair's ordinal without moving any other's. Insisting
     every pair be at the same ordinal would mean the orchestrator — which always
-    asks for ordinal 1 — held the whole folder from the moment one seat was reread,
+    asks for ordinal 1 — held the whole folder from the moment one chair was reread,
     over five writes that would have been byte-identical no-ops.
     """
     records = _existing_attempts(context, act_id, chair)
@@ -624,10 +614,30 @@ def validate_tallied_testimonium(context, record: dict[str, Any], act: dict[str,
     ordinal = payload["attempt_ordinal"]
     if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 1:
         raise SchemaRefusal("a Testimonium tally record has no positive attempt ordinal")
-    format_capabilities_for({"format_capabilities": payload["format_capabilities"]})
+    if payload["format_capabilities"] is None:
+        if record["outcome"] != "failed":
+            raise SchemaRefusal("a non-failed Testimonium carries no format_capabilities record")
+    else:
+        format_capabilities_for({"format_capabilities": payload["format_capabilities"]})
     if problem := _native_problem(payload["witness_reported"], "witness_reported"):
         raise SchemaRefusal(problem)
     validate_content_health(payload["payload"], payload["content_health"])
+    if record["outcome"] in WITNESS_READING_OUTCOMES and isinstance(payload["payload"], str):
+        if payload.get("reported") != payload["payload"]:
+            raise SchemaRefusal(
+                "a textual Testimonium's compatibility projection differs from its "
+                "verbatim native payload"
+            )
+    elif "reported" in payload:
+        raise SchemaRefusal(
+            "a non-textual or non-reading Testimonium carries a compatibility projection"
+        )
+    if record["outcome"] in {"failed", "dead", "not-run"}:
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise SchemaRefusal(
+                f"a {record['outcome']} Testimonium records no reason for its non-reading outcome"
+            )
     attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
     validate_serving_provenance(
         context,
@@ -798,24 +808,21 @@ def _publish_not_read(
     ordinal: int,
     reason: str,
 ) -> None:
-    """Record a seat that did not reach a valid witness reading, explicitly."""
+    """Route a chair that did not read through the one Testimonium writer."""
     outcome = "dead" if isinstance(resolved, AbsentChair) else "not-run"
-    context.publish(
-        kind="testimonium",
-        subject_id=act["act_id"],
-        outcome=outcome,
-        attempt=attempt_id(act["act_id"], f"read:{chair}", ordinal),
-        payload=testimonium_payload(
-            chair=chair,
-            act_key=act["act_key"],
-            ordinal=ordinal,
-            regions=[],
-            provenance=provenance_for(context, resolved, attempted=False),
-            format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+    publish_attempt(
+        context,
+        act=act,
+        chair=chair,
+        resolved=resolved,
+        ordinal=ordinal,
+        regions=[],
+        attempt=Attempt(
+            outcome=outcome,
             native_payload=None,
             witness_reported=None,
+            format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
             health=no_response_health(reason="not-attempted"),
-            outcome=outcome,
             reason=(
                 f"chair is explicitly absent: {resolved.reason}" if outcome == "dead" else reason
             ),
@@ -845,7 +852,7 @@ class Attempt(NamedTuple):
     outcome: str
     native_payload: Any
     witness_reported: Any
-    format_capabilities: dict[str, Any]
+    format_capabilities: dict[str, Any] | None
     health: dict[str, Any]
     reason: str | None
 
@@ -856,12 +863,27 @@ def declarations_for(context, ordinal: int) -> dict[str, Any]:
     Read once per pass rather than once per chair, and bound to the ordinal, so a
     declared first-attempt failure cannot silently describe a later reread.
     """
-    return {
+    declarations = {
+        "ordinal": ordinal,
         "failures": declared_failures(context, ordinal),
         "empty": declared_empty(context, ordinal),
         "not_run": declared_not_run(context, ordinal),
         "malformed": declared_malformed(context, ordinal),
     }
+    outcome_sets = {
+        name: set(value) if isinstance(value, dict) else value
+        for name, value in declarations.items()
+        if name != "ordinal"
+    }
+    names = sorted(outcome_sets)
+    for index, left in enumerate(names):
+        for right in names[index + 1 :]:
+            if overlap := sorted(outcome_sets[left] & outcome_sets[right]):
+                raise SchemaRefusal(
+                    f"fixture declares conflicting witness outcomes {left!r} and {right!r} "
+                    f"for {overlap!r} at attempt ordinal {ordinal}"
+                )
+    return declarations
 
 
 def resolve_attempt(
@@ -914,7 +936,7 @@ def resolve_attempt(
         native_payload = ""
         health = content_health(native_payload, completed=True)
     else:
-        response = testimony_for(context, act["act_key"], chair)
+        response = testimony_for(context, act["act_key"], chair, declarations["ordinal"])
         if response is None:
             outcome = "not-run"
             reason = "no attempt was made for this configured chair"
@@ -1035,9 +1057,9 @@ def attempt_pass(context, acts: list[dict[str, Any]], ordinal: int) -> tuple[int
 
 
 def next_attempt_ordinal(context, act_id: str, chair: str) -> int:
-    """The ordinal a reread of this one seat appends at.
+    """The ordinal a reread of this one chair appends at.
 
-    Derived from that seat's own history on disk, exactly as
+    Derived from that chair's own history on disk, exactly as
     `pipeline/2_designator/run.py::_next_region_ordinal` derives the next crop
     ordinal — so append-only is a property of what already exists rather than of
     how many times this program has been invoked.
@@ -1055,14 +1077,14 @@ def next_attempt_ordinal(context, act_id: str, chair: str) -> int:
 
 
 def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) -> int:
-    """Append one new attempt for one named seat on one named act.
+    """Append one new attempt for one named chair on one named act.
 
     Lane A's shape, kept because the whole-pass `--attempt-ordinal` is the wrong
     instrument for the thing a reread is actually for. A reread happens because
-    *one* seat failed on *one* act; re-witnessing every seat on every act to
+    *one* chair failed on *one* act; re-witnessing every chair on every act to
     reach it re-reads ink nobody doubted, costs a provider call per chair per
-    act, and moves every other seat's derived-current record for no reason. This
-    path moves exactly the one seat named, and every other seat's current record
+    act, and moves every other chair's derived-current record for no reason. This
+    path moves exactly the one chair named, and every other chair's current record
     stays the attempt it already was.
 
     The rest is unchanged from the whole pass: same declaration tables at the new
@@ -1101,7 +1123,7 @@ def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) ->
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run every configured chair through one attempt, or reread one named seat."""
+    """Run every configured chair through one attempt, or reread one named chair."""
     parser = stage_parser(__doc__.splitlines()[0])
     parser.add_argument(
         "--attempt-ordinal",

@@ -50,11 +50,17 @@ an outcome, a coverage count, or `content_health`.
 
 The synthetic fixture declares complete responses, so its retained text gets
 `truncated=false`. A malformed or unrecordable provider response becomes a
-`failed` Testimonium with an explicit health reason; it is not decoded with
-replacement characters, stringified, or turned into an empty report. Arbitrary
-binary response retention remains an explicit Spec 04 response-contract decision:
-the current canonical artifact format can faithfully retain JSON-native values,
-not an invented binary encoding.
+`failed` Testimonium with an explicit reason; it is not decoded with replacement
+characters, stringified, or turned into an empty report. Malformed witness
+metadata never rewrites facts about a recordable native payload: an unavailable
+`format_capabilities` record is retained as `null`, and `content_health` continues
+to describe the native response. Arbitrary
+binary response retention remains an explicit Spec 04 response-contract decision.
+The current canonical artifact format can faithfully retain only float-free
+JSON-native values: its shared canonical writer refuses floating-point numbers,
+and this stage records that refusal as `failed` rather than coercing the number.
+That is an unresolved gap against Spec 07's unexpected-but-parseable payload
+requirement, not a claim that the float was retained verbatim.
 
 ### Temporary textual bridge
 
@@ -75,12 +81,14 @@ Every configured chair has one explicit outcome per act per attempt:
   represented by an empty file.
 - `failed` means an attempt reached the response boundary but produced no usable
   Testimonium. It also carries the attempted region inputs and a receipt.
-- `dead` means an `AbsentChair`: the seat was unavailable and no attempt reached
+- `dead` means an `AbsentChair`: the chair was unavailable and no attempt reached
   the region. It retains the absence record, with no invented receipt.
 - `not-run` means a configured chair was never attempted, including a held or
   refused proposal. It retains the resolved pin but no invented receipt.
-- `excluded` is never produced by this writer without a Tyrel approval-record
-  reference; generic envelope validation refuses such a claim.
+- `excluded` is never produced by this writer. Generic envelope validation
+  refuses a missing reference but checks only that the identifier is non-empty;
+  Stage 3 does not yet resolve that identifier to verified Tyrel approval-record
+  bytes. The positive approved-exclusion path is therefore not implemented.
 
 `provenance` holds the exact resolved identity/revision and, only for attempted
 outcomes, the digest-checked serving receipt. A failed or absent chair cannot be
@@ -104,20 +112,25 @@ Two write paths, and both append.
 every expected act, at that one ordinal. For each `(act, chair)` pair the writer
 permits only an exact byte-identical repeat of an ordinal that pair already holds,
 or its next contiguous one — so the same command twice is a resume rather than a
-second reading, and the whole pass still resumes over a folder in which one seat
+second reading, and the whole pass still resumes over a folder in which one chair
 has been reread past it. `current + 2` is refused: a gap means an attempt that
 existed is no longer here.
 
-`--operation reread --act <act_id> --chair <role>` moves exactly one seat on one
-act, at the ordinal that seat's own history says comes next. This is the path a
+`--operation reread --act <act_id> --chair <role>` moves exactly one chair on one
+act, at the ordinal that chair's own history says comes next. This is the path a
 real reread uses: a reread happens because one witness failed on one act, and
-re-witnessing the other seats to reach it would re-read ink nobody doubted and
-spend a provider call per chair per act to do it. Every other seat's current
+re-witnessing the other chairs to reach it would re-read ink nobody doubted and
+spend a provider call per chair per act to do it. Every other chair's current
 record stays the attempt it already was. It is refused, writing nothing, for an
 act the proposal seal does not name, a chair the run is not sealed with, a
 Designator-held act (no witness was shown a reading there), an absent chair
-(a dead seat asked again is not a second attempt), and a seat with no first
+(a dead chair asked again is not a second attempt), and a chair with no first
 attempt to follow. The orchestrator never invokes it.
+
+Fixture response declarations are ordinal-bound. An older row without an
+`attempt_ordinal` describes attempt 1 only; a successful reread therefore carries
+the newly declared native response for its own ordinal rather than silently
+reusing attempt 1's testimony.
 
 Each identity is `read:<chair>:<ordinal>`; the RunTree's immutable publish
 boundary atomically creates it and refuses different bytes at an existing

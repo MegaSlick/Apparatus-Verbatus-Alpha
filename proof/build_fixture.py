@@ -117,6 +117,13 @@ SCENARIO_TESTIMONY = (
         "payload": "SYNTHETIC ACT ONE alpha beta",
         "format_capabilities": "provider supplied a non-object capability declaration",
     },
+    {
+        "scenario": "reread-success",
+        "act_key": "a2",
+        "chair": "attestator_1",
+        "attempt_ordinal": 2,
+        "payload": "SYNTHETIC ACT TWO delta epsilon zeta eta, reread",
+    },
 )
 
 # The recovery region for the review scenario: an expanded recrop of act a1. It
@@ -368,6 +375,8 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             lines.append(f"witness_reported = {toml_value(row['witness_reported'])}")
         if "format_capabilities" in row:
             lines.append(f"format_capabilities = {toml_value(row['format_capabilities'])}")
+        if "attempt_ordinal" in row:
+            lines.append(f"attempt_ordinal = {row['attempt_ordinal']}")
 
     lines += [
         "",
@@ -455,6 +464,11 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "",
         "[[scenario]]",
         'name = "reread-failure"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "[[scenario]]",
+        'name = "reread-success"',
         "recover_acts = []",
         "hold_acts = []",
         "",

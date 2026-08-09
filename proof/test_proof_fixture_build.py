@@ -278,6 +278,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "structure-failure",
         "ink-free-page",
         "reread-failure",
+        "reread-success",
         "not-run-witness",
         "malformed-witness",
         "structured-witness",
