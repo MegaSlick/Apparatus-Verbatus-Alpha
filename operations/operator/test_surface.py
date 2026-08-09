@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Callable
 
@@ -687,3 +688,25 @@ def test_an_unreadable_spend_policy_never_stops_a_close(tmp_path: Path) -> None:
     report = surface.close(f"{OPERATOR_CLOSE_PREFIX} {launched.record.pod_id}")
 
     assert report.verified
+
+
+def test_a_price_that_moves_after_the_screen_is_named_a_price_change(tmp_path: Path) -> None:
+    """The operator typed a phrase built from prices they read. If the provider's
+    price has moved by the time the paid call happens, they are told that — not
+    that they typed the confirmation wrongly, which is what a re-derived phrase
+    alone would have said.
+    """
+
+    surface = _surface(tmp_path)
+    prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+    surface.provider.price_sheet["fake-48gb"] = (Decimal("0.90"), Decimal("0.05"))
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.launch(prepared, prepared.confirmation_phrase)
+
+    assert refusal.value.code is ErrorCode.PRICE_CHANGED
+    assert "was not used to authorize a different price" in refusal.value.render()
+    # The confirmation the operator did give is recorded, and no pod was created.
+    saved = surface.receipts.read(surface._descriptor_receipt("launch-confirmation"))["payload"]
+    assert saved["preview"]["spend"]["pod_hourly_usd"] == "0.77"
+    assert not any(verb == "create" for verb, _ in surface.provider.calls)
