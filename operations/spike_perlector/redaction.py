@@ -12,9 +12,10 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .encoding import is_sha256
 from .errors import PublicSafetyRefusal
 from .models import Condition
+from .normalization import PROFILES
+from .protocol import PREDECLARED_PROTOCOL_SHA256
 from .runner import (
     AggregateMetrics,
     CandidateConditionDeltas,
@@ -281,12 +282,17 @@ def validate_public_finding(finding: Any) -> None:
     root = _require_exact_keys(finding, _ROOT_KEYS, "finding")
     if root["schema"] != SCHEMA:
         raise PublicSafetyRefusal("public finding has an unknown schema")
-    if not is_sha256(root["protocol_sha256"]) or not is_sha256(
-        root["normalization_profile_sha256"]
-    ):
-        raise PublicSafetyRefusal("public finding has no valid protocol/profile digest")
-    if root["normalization_profile_id"] not in {"graphemic-v1", "allographetic-v1"}:
+    if root["protocol_sha256"] != PREDECLARED_PROTOCOL_SHA256:
+        raise PublicSafetyRefusal(
+            "public finding does not bind the predeclared Spec 05 protocol digest"
+        )
+    profile_id = root["normalization_profile_id"]
+    if profile_id not in PROFILES:
         raise PublicSafetyRefusal("public finding names an unknown normalization profile")
+    if root["normalization_profile_sha256"] != PROFILES[profile_id].digest:
+        raise PublicSafetyRefusal(
+            "public finding's normalization profile digest does not match its declared profile"
+        )
     if root["measure_quotes"] != list(MEASURE_QUOTES):
         raise PublicSafetyRefusal("public measure quotes differ from the fixed predeclared list")
     if not isinstance(root["matrix"], list):
@@ -323,10 +329,6 @@ def validate_public_finding(finding: Any) -> None:
         seen_sources.add(record["source_index"])
         if record["cell_count"] != act_count:
             raise PublicSafetyRefusal("public witness baseline does not cover every selected act")
-    # Both refusals were written, but the second sat after the first `raise` and
-    # could never run, so an empty `condition_deltas` list reached the loop below
-    # and was caught only by the closing three-subject check. Stated once, in the
-    # condition, where it says what it means.
     if not isinstance(root["condition_deltas"], list) or not root["condition_deltas"]:
         raise PublicSafetyRefusal(
             "public finding condition deltas are missing, empty, or not a list"
@@ -342,11 +344,15 @@ def validate_public_finding(finding: Any) -> None:
         if record["subject_index"] in seen_delta_slots:
             raise PublicSafetyRefusal("public finding repeats a condition-delta subject")
         seen_delta_slots.add(record["subject_index"])
-        nuda = matrix_by_key[(record["subject_index"], Condition.LECTIO_NUDA.value)]
-        primed = matrix_by_key[(record["subject_index"], Condition.WITNESS_PRIMED.value)]
-        image_absent = matrix_by_key[
+        nuda = matrix_by_key.get((record["subject_index"], Condition.LECTIO_NUDA.value))
+        primed = matrix_by_key.get((record["subject_index"], Condition.WITNESS_PRIMED.value))
+        image_absent = matrix_by_key.get(
             (record["subject_index"], Condition.IMAGE_ABSENT_CONTROL.value)
-        ]
+        )
+        if nuda is None or primed is None or image_absent is None:
+            raise PublicSafetyRefusal(
+                "condition delta names a subject index outside the sealed matrix"
+            )
         expected = {
             "priming_cer_delta": nuda["cer"] - primed["cer"],
             "priming_wer_delta": nuda["wer"] - primed["wer"],

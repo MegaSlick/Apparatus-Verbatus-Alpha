@@ -116,6 +116,36 @@ def test_public_validator_refuses_free_text_in_a_closed_metric_row():
         validate_public_finding(tampered)
 
 
+def test_public_validator_refuses_a_protocol_digest_that_is_not_predeclared():
+    """A well-formed but wrong digest must fail, not just a malformed one.
+
+    Checking only ``is_sha256`` would let a finding claim any 64-hex-character
+    string as its protocol digest; a MeasurementRun not built through the
+    sealed entry point could carry exactly such a mismatch.
+    """
+
+    finding = project_public_finding(declared_fixture_run())
+    tampered = deepcopy(finding)
+    tampered["protocol_sha256"] = "0" * 64
+    with pytest.raises(PublicSafetyRefusal, match="predeclared Spec 05 protocol"):
+        validate_public_finding(tampered)
+
+
+def test_public_validator_refuses_a_profile_digest_that_does_not_match_its_declared_name():
+    """A finding naming "graphemic-v1" must carry that profile's real digest.
+
+    Checking only that the name is one of the two known names, and separately
+    that the digest looks like a SHA-256, would accept a finding claiming
+    "graphemic-v1" while carrying a fingerprint for something else entirely.
+    """
+
+    finding = project_public_finding(declared_fixture_run())
+    tampered = deepcopy(finding)
+    tampered["normalization_profile_sha256"] = "0" * 64
+    with pytest.raises(PublicSafetyRefusal, match="does not match its declared profile"):
+        validate_public_finding(tampered)
+
+
 def test_public_validator_refuses_partial_or_arithmetically_false_matrix():
     finding = project_public_finding(declared_fixture_run())
     partial = deepcopy(finding)
@@ -131,6 +161,20 @@ def test_public_validator_refuses_partial_or_arithmetically_false_matrix():
     unmeasured["matrix"][0]["mean_elapsed_ms"] = None
     with pytest.raises(PublicSafetyRefusal, match="every act"):
         validate_public_finding(unmeasured)
+
+
+def test_public_validator_refuses_a_condition_delta_naming_an_unmatched_subject():
+    """subject_index 4 is nonnegative and >= 1, but names no row in the sealed
+
+    three-subject matrix; the lookup that recomputes the expected deltas must
+    refuse cleanly rather than raise a raw KeyError.
+    """
+
+    finding = project_public_finding(declared_fixture_run())
+    tampered = deepcopy(finding)
+    tampered["condition_deltas"][0]["subject_index"] = 4
+    with pytest.raises(PublicSafetyRefusal, match="outside the sealed matrix"):
+        validate_public_finding(tampered)
 
 
 def test_synthetic_exercise_cannot_be_projected_as_a_public_finding():
