@@ -100,7 +100,9 @@ def test_armarium_seals_a_self_verifying_product_bundle(tmp_path):
         manifest["claims"]["submission_inventory"]["status"]
         == "reconciled-at-source-page-ordinal-granularity"
     )
-    assert verify_projection_identity(tree.read_bytes(reference["relative_path"]), tmp_path / "identity")
+    assert verify_projection_identity(
+        tree.read_bytes(reference["relative_path"]), tmp_path / "identity"
+    )
 
 
 def test_run_bound_pixel_embedding_packages_page_and_crop_bytes(tmp_path):
@@ -162,9 +164,7 @@ def test_production_bundle_marks_absent_salvage_inventory_as_not_produced(tmp_pa
     tree = RunTree(root, "no-salvage")
     reference = _export(tree)["payload"]["bundle"]["reference"]
     manifest = verify_export_bundle(tree.read_bytes(reference["relative_path"]), tmp_path / "clean")
-    assert manifest["claims"]["salvage"]["status"] == (
-        "not-produced-no-sealed-salvage-inventory"
-    )
+    assert manifest["claims"]["salvage"]["status"] == ("not-produced-no-sealed-salvage-inventory")
     assert manifest["claims"]["salvage"]["count"] is None
 
 
@@ -198,25 +198,21 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     altered["payload"].pop(missing_field)
     altered["payload"]["self_hash"] = self_hash(altered["payload"])
     altered["self_hash"] = self_hash(altered)
-    artifact_path = tree.resolve(tree.artifact_path(ARCHETYPUS, "archetypus", altered["artifact_id"]))
+    artifact_path = tree.resolve(
+        tree.artifact_path(ARCHETYPUS, "archetypus", altered["artifact_id"])
+    )
     artifact_path.write_bytes(canonical_bytes(altered))
 
     result = _run_armarium(root, "refusal")
     assert result.returncode == 3, result.stderr
     export = _export(tree)
     assert export["payload"]["aggregate"]["status"] == "partial"
-    refused = [
-        entry
-        for entry in export["payload"]["review"]
-        if entry["act_id"] == refused_act_id
-    ]
+    refused = [entry for entry in export["payload"]["review"] if entry["act_id"] == refused_act_id]
     assert len(refused) == 1
     assert refused[0]["category"] == "refused-with-reason"
     assert expected_reason in refused[0]["reason"]
     assert not [
-        entry
-        for entry in export["payload"]["delivered"]
-        if entry["act_id"] == refused_act_id
+        entry for entry in export["payload"]["delivered"] if entry["act_id"] == refused_act_id
     ]
 
     reference = export["payload"]["bundle"]["reference"]
@@ -226,4 +222,6 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     row = next(item for item in rows if item["act_id"] == refused_act_id)
     assert row["category"] == "refused-with-reason"
     assert row["canonical_clean_text"] is None
-    assert verify_projection_identity(tree.read_bytes(reference["relative_path"]), tmp_path / f"id-{missing_field}")
+    assert verify_projection_identity(
+        tree.read_bytes(reference["relative_path"]), tmp_path / f"id-{missing_field}"
+    )

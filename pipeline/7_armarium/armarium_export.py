@@ -53,9 +53,7 @@ _EMBEDDED: Final = "embedded"
 _UNAVAILABLE_UNCERTAINTY: Final = "not-available-in-archetypus-contract"
 _ANNOTATION_NOT_PRODUCED: Final = "not-produced-pending-architecture-approval"
 _LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
-_PIXEL_REFERENCE_CLAIM: Final = (
-    "reference validity only; pixel resolution requires source access"
-)
+_PIXEL_REFERENCE_CLAIM: Final = "reference validity only; pixel resolution requires source access"
 _PIXEL_EMBEDDED_CLAIM: Final = (
     "embedded pixels are packaged and opened by clean-machine verification"
 )
@@ -320,9 +318,7 @@ def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
     manifest = verify_export_bundle(data, root)
     formats = _manifest_formats(manifest)
     projections: dict[str, dict[str, tuple[str, str]]] = {}
-    selected_literal_formats = [
-        name for name in _LITERAL_TEXT_FORMATS if name in formats.formats
-    ]
+    selected_literal_formats = [name for name in _LITERAL_TEXT_FORMATS if name in formats.formats]
     if len(selected_literal_formats) < 2:
         raise SchemaRefusal("projection identity needs at least two selected literal-text formats")
 
@@ -544,7 +540,9 @@ def _validate_salvage_region(region: object) -> None:
     _validate_cited_region(region, subject="salvage-tier")
 
 
-def _pages_by_ordinal(pages: tuple[dict[str, Any], ...] | list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+def _pages_by_ordinal(
+    pages: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
     """Index the measured page census before accepting a crop's claimed parent."""
     indexed: dict[int, dict[str, Any]] = {}
     for page in pages:
@@ -696,9 +694,7 @@ def _text_bundle_members(
                     # field once that layer lands.
                     f"display_convention: {DISPLAY_CONVENTION}",
                     "display:",
-                    json.dumps(
-                        render_display(act[CANONICAL_TEXT_FIELD]), ensure_ascii=False
-                    ),
+                    json.dumps(render_display(act[CANONICAL_TEXT_FIELD]), ensure_ascii=False),
                     "",
                 ]
             )
@@ -728,8 +724,9 @@ def _acts_with_source_references(
             if not isinstance(image_path, str) or not isinstance(image_sha256, str):
                 raise SchemaRefusal("an exported source region lacks its verified crop reference")
             _require_sha256(image_sha256, "an exported source region crop digest")
-            declared_path, declared_sha256 = copied.get("declared_path"), copied.get(
-                "declared_sha256"
+            declared_path, declared_sha256 = (
+                copied.get("declared_path"),
+                copied.get("declared_sha256"),
             )
             if not isinstance(declared_path, str):
                 raise SchemaRefusal("an exported source region has no declared source path")
@@ -737,7 +734,12 @@ def _acts_with_source_references(
             _require_sha256(declared_sha256, "an exported source region declared source digest")
             if "ledger_sha256" in copied:
                 _require_sha256(copied["ledger_sha256"], "an exported source region ledger digest")
-            if not isinstance(region_id, str) or not region_id or "/" in region_id or region_id == ".":
+            if (
+                not isinstance(region_id, str)
+                or not region_id
+                or "/" in region_id
+                or region_id == "."
+            ):
                 raise SchemaRefusal("an exported source region has no safe crop identity")
             if embed_pixels:
                 pixels = read_bytes(image_path)
@@ -1041,7 +1043,9 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
             connection.execute("VACUUM")
             connection.commit()
         except sqlite3.DatabaseError as error:
-            raise SchemaRefusal("SQLite FTS5 could not build the requested acts database") from error
+            raise SchemaRefusal(
+                "SQLite FTS5 could not build the requested acts database"
+            ) from error
         finally:
             connection.close()
         return open(path, "rb").read()
@@ -1170,7 +1174,9 @@ def _text_bundle_records(
                 pending = None
             elif line.startswith("source-page: "):
                 if current_id is None or index + 1 >= len(lines):
-                    raise SchemaRefusal("a text-bundle source citation has no act identity or digest")
+                    raise SchemaRefusal(
+                        "a text-bundle source citation has no act identity or digest"
+                    )
                 declared_path = line.removeprefix("source-page: ")
                 digest_line = lines[index + 1]
                 if not declared_path or not digest_line.startswith("source-sha256: "):
@@ -1255,7 +1261,11 @@ def _database_literals(path) -> dict[str, tuple[str, str]]:
             connection.close()
     records: dict[str, tuple[str, str]] = {}
     for act_id, literal, digest in rows:
-        if not isinstance(act_id, str) or not isinstance(literal, str) or not isinstance(digest, str):
+        if (
+            not isinstance(act_id, str)
+            or not isinstance(literal, str)
+            or not isinstance(digest, str)
+        ):
             raise SchemaRefusal("the acts database has an untyped literal row")
         if digest != canonical_text_sha256(literal) or act_id in records:
             raise SchemaRefusal("the acts database literal identity or hash is invalid")
@@ -1275,7 +1285,11 @@ def _jsonl_literals(path) -> dict[str, tuple[str, str]]:
         if literal is None:
             continue
         act_id, digest = record.get("act_id"), record.get("canonical_text_sha256")
-        if not isinstance(act_id, str) or not isinstance(literal, str) or not isinstance(digest, str):
+        if (
+            not isinstance(act_id, str)
+            or not isinstance(literal, str)
+            or not isinstance(digest, str)
+        ):
             raise SchemaRefusal("an acts JSONL literal row is untyped")
         if digest != canonical_text_sha256(literal) or act_id in records:
             raise SchemaRefusal("an acts JSONL literal identity or hash is invalid")
@@ -1283,9 +1297,7 @@ def _jsonl_literals(path) -> dict[str, tuple[str, str]]:
     return records
 
 
-def _page_ledger_category(
-    ordinal: int, act_categories: list[str]
-) -> tuple[str, str | None]:
+def _page_ledger_category(ordinal: int, act_categories: list[str]) -> tuple[str, str | None]:
     """One sealed page's terminal category, derived from the acts cut on it.
 
     Every rule here errs toward `held-for-review`, the category that means a human
@@ -1539,9 +1551,7 @@ def _export_manifest(
             "pixels": {
                 "embedded": formats.embed_pixels,
                 "resolution_claim": (
-                    _PIXEL_EMBEDDED_CLAIM
-                    if formats.embed_pixels
-                    else _PIXEL_REFERENCE_CLAIM
+                    _PIXEL_EMBEDDED_CLAIM if formats.embed_pixels else _PIXEL_REFERENCE_CLAIM
                 ),
             },
             "retained_run_references": {
@@ -1764,8 +1774,14 @@ def _manifest_act_categories(manifest: dict[str, Any]) -> dict[str, str]:
             if not isinstance(act_id, str) or not act_id or act_id in result:
                 raise SchemaRefusal("an act partition repeats or omits an act identity")
             result[act_id] = category
-    if seen_categories != expected_categories or len(result) != expected_count or counted != expected_count:
-        raise SchemaRefusal("EXPORT_MANIFEST.json act categories do not reconcile to its denominator")
+    if (
+        seen_categories != expected_categories
+        or len(result) != expected_count
+        or counted != expected_count
+    ):
+        raise SchemaRefusal(
+            "EXPORT_MANIFEST.json act categories do not reconcile to its denominator"
+        )
     aggregate = manifest.get("aggregate")
     expected_counts = Counter(result.values())
     nonzero_counts = {category: expected_counts[category] for category in sorted(expected_counts)}
@@ -1815,8 +1831,10 @@ def _verify_honest_status_claims(
     if not isinstance(aggregate, dict):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no run aggregate")
     status, reasons = aggregate.get("status"), aggregate.get("reasons")
-    if status not in {"complete", "partial"} or not isinstance(reasons, list) or not all(
-        isinstance(reason, str) and reason for reason in reasons
+    if (
+        status not in {"complete", "partial"}
+        or not isinstance(reasons, list)
+        or not all(isinstance(reason, str) and reason for reason in reasons)
     ):
         raise SchemaRefusal("the exported aggregate has no valid measured status and reasons")
     completed_categories = {
@@ -1829,7 +1847,9 @@ def _verify_honest_status_claims(
         page.get("outcome") != "sealed" for page in sources["pages"] if isinstance(page, dict)
     )
     if must_be_partial and (status != "partial" or not reasons):
-        raise SchemaRefusal("the exported aggregate claims complete despite measured incompleteness")
+        raise SchemaRefusal(
+            "the exported aggregate claims complete despite measured incompleteness"
+        )
     if status == "complete" and reasons:
         raise SchemaRefusal("a complete exported aggregate carries unresolved reasons")
     act_keys = _manifest_act_keys(manifest, categories)
@@ -1914,10 +1934,14 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
             or act_id in records
         ):
             raise SchemaRefusal("a source act-outcome record has no valid terminal identity")
-        if category in {
-            ArmariumCategory.HELD_FOR_REVIEW.value,
-            ArmariumCategory.REFUSED_WITH_REASON.value,
-        } and not reason:
+        if (
+            category
+            in {
+                ArmariumCategory.HELD_FOR_REVIEW.value,
+                ArmariumCategory.REFUSED_WITH_REASON.value,
+            }
+            and not reason
+        ):
             raise SchemaRefusal("a source review outcome has no explicit reason")
         records[act_id] = record
     return records
@@ -1973,7 +1997,11 @@ def _jsonl_act_records(
         if not isinstance(record, dict) or record.get("schema") != ACT_RECORD_SCHEMA:
             raise SchemaRefusal("an acts JSONL row has no recognized schema")
         _verify_retained_references(record)
-        act_id, act_key, category = record.get("act_id"), record.get("act_key"), record.get("category")
+        act_id, act_key, category = (
+            record.get("act_id"),
+            record.get("act_key"),
+            record.get("category"),
+        )
         if (
             not isinstance(act_id, str)
             or not act_id
@@ -2026,7 +2054,17 @@ def _database_act_records(
             connection.close()
     records: dict[str, dict[str, Any]] = {}
     known = {category.value for category in ArmariumCategory}
-    for act_id, act_key, category, literal, digest, provenance, source_regions, evidence, reason in rows:
+    for (
+        act_id,
+        act_key,
+        category,
+        literal,
+        digest,
+        provenance,
+        source_regions,
+        evidence,
+        reason,
+    ) in rows:
         if (
             not isinstance(act_id, str)
             or not act_id
@@ -2051,7 +2089,9 @@ def _database_act_records(
             try:
                 parsed = json.loads(encoded)
             except (TypeError, json.JSONDecodeError) as error:
-                raise SchemaRefusal("the acts database has unreadable provenance evidence") from error
+                raise SchemaRefusal(
+                    "the acts database has unreadable provenance evidence"
+                ) from error
             _verify_retained_references(parsed)
             decoded.append(parsed)
         if category == ArmariumCategory.DELIVERED.value:
@@ -2128,7 +2168,14 @@ def _salvage_product_records(path: Path) -> tuple[dict[str, Any], ...]:
         if not isinstance(record, dict) or record.get("schema") != SALVAGE_RECORD_SCHEMA:
             raise SchemaRefusal("a salvage-tier JSONL row has no recognized schema")
         _verify_retained_references(record)
-        if set(record) != {"schema", "salvage_id", "content", "source_regions", "provenance", "promotion"}:
+        if set(record) != {
+            "schema",
+            "salvage_id",
+            "content",
+            "source_regions",
+            "provenance",
+            "promotion",
+        }:
             raise SchemaRefusal("a salvage-tier JSONL row has an unrecognized field set")
         records.append({key: value for key, value in record.items() if key != "schema"})
     _validate_salvage_items(tuple(records))
@@ -2136,7 +2183,9 @@ def _salvage_product_records(path: Path) -> tuple[dict[str, Any], ...]:
 
 
 def _verify_salvage_claim(
-    manifest: dict[str, Any], records: tuple[dict[str, Any], ...], sources: dict[str, list[dict[str, Any]]]
+    manifest: dict[str, Any],
+    records: tuple[dict[str, Any], ...],
+    sources: dict[str, list[dict[str, Any]]],
 ) -> None:
     claims = manifest.get("claims")
     salvage = claims.get("salvage") if isinstance(claims, dict) else None
@@ -2153,7 +2202,11 @@ def _verify_salvage_claim(
         raise SchemaRefusal("EXPORT_MANIFEST.json has an invalid salvage-tier status")
 
     flattened = sorted(
-        ({"salvage_id": item["salvage_id"], **region} for item in records for region in item["source_regions"]),
+        (
+            {"salvage_id": item["salvage_id"], **region}
+            for item in records
+            for region in item["source_regions"]
+        ),
         key=lambda row: (row["salvage_id"], row["region_id"]),
     )
     if canonical_text(flattened) != canonical_text(sources["salvage_regions"]):
@@ -2224,7 +2277,9 @@ def _verify_product_accounting(
     _verify_honest_status_claims(manifest, expected, sources)
     act_keys = _manifest_act_keys(manifest, expected)
     delivered = {
-        act_id for act_id, category in expected.items() if category == ArmariumCategory.DELIVERED.value
+        act_id
+        for act_id, category in expected.items()
+        if category == ArmariumCategory.DELIVERED.value
     }
     outcomes = _act_outcome_sources(sources)
     if _product_categories(outcomes) != expected or any(
@@ -2239,18 +2294,24 @@ def _verify_product_accounting(
     if "text-bundle" in formats.formats:
         text_records = _text_bundle_records(root, sources["pages"])
         if set(text_records) != delivered:
-            raise SchemaRefusal("the text bundle does not contain exactly the manifest's delivered acts")
+            raise SchemaRefusal(
+                "the text bundle does not contain exactly the manifest's delivered acts"
+            )
         for act_id, (_literal, _digest, text_citations) in text_records.items():
             expected_citations = tuple(
                 (region["declared_path"], region["declared_sha256"])
                 for region in citations[act_id]["source_regions"]
             )
             if text_citations != expected_citations:
-                raise SchemaRefusal("the text bundle does not retain every delivered source citation")
+                raise SchemaRefusal(
+                    "the text bundle does not retain every delivered source citation"
+                )
     if "acts-database" in formats.formats:
         database_records = _database_act_records(root / "acts.sqlite", sources["regions"])
         if _product_categories(database_records) != expected:
-            raise SchemaRefusal("the acts database does not reconcile to the manifest act partition")
+            raise SchemaRefusal(
+                "the acts database does not reconcile to the manifest act partition"
+            )
         _verify_exact_product_outcomes(database_records, outcomes, subject="acts database")
         _verify_exact_delivered_citations(
             database_records, citations, act_keys, subject="acts database"
@@ -2260,9 +2321,7 @@ def _verify_product_accounting(
         if _product_categories(jsonl_records) != expected:
             raise SchemaRefusal("the acts JSONL does not reconcile to the manifest act partition")
         _verify_exact_product_outcomes(jsonl_records, outcomes, subject="acts JSONL")
-        _verify_exact_delivered_citations(
-            jsonl_records, citations, act_keys, subject="acts JSONL"
-        )
+        _verify_exact_delivered_citations(jsonl_records, citations, act_keys, subject="acts JSONL")
     if "review-items" in formats.formats:
         expected_review = {
             act_id
@@ -2362,7 +2421,9 @@ def _verify_manifest_source_counts(
             or ordinal in ordinals
             or not isinstance(path, str)
         ):
-            raise SchemaRefusal("the package source census has duplicate or invalid page identities")
+            raise SchemaRefusal(
+                "the package source census has duplicate or invalid page identities"
+            )
         ordinals.add(ordinal)
         paths.add(path)
     claims = manifest.get("claims")
@@ -2375,7 +2436,9 @@ def _verify_manifest_source_counts(
         or submission.get("observed_source_page_rows") != len(sources["pages"])
         or submission.get("observed_distinct_declared_paths") != len(paths)
     ):
-        raise SchemaRefusal("EXPORT_MANIFEST.json source-count claims do not reconcile to citations")
+        raise SchemaRefusal(
+            "EXPORT_MANIFEST.json source-count claims do not reconcile to citations"
+        )
 
 
 def _verify_source_references(sources: list[dict[str, Any]], root) -> None:

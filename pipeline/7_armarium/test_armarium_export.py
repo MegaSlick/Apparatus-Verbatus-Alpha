@@ -189,12 +189,8 @@ def test_projection_identity_refuses_a_self_consistent_package_with_one_drifted_
     members = _members(bundle.data)
     records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
     records[0]["canonical_clean_text"] = "a different purported reading"
-    records[0]["canonical_text_sha256"] = canonical_text_sha256(
-        records[0]["canonical_clean_text"]
-    )
-    members["acts.jsonl"] = b"".join(
-        canonical_bytes(record) + b"\n" for record in records
-    )
+    records[0]["canonical_text_sha256"] = canonical_text_sha256(records[0]["canonical_clean_text"])
+    members["acts.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in records)
     _refresh_manifest_member(members, "acts.jsonl")
 
     # The member digests now agree, so package verification alone is green. The
@@ -233,9 +229,7 @@ def test_selected_format_cannot_omit_a_self_consistent_member_inventory(tmp_path
     members = _members(bundle.data)
     members.pop(TEXT_REGISTER)
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    manifest["members"] = [
-        item for item in manifest["members"] if item["path"] != TEXT_REGISTER
-    ]
+    manifest["members"] = [item for item in manifest["members"] if item["path"] != TEXT_REGISTER]
     manifest["self_hash"] = self_hash(manifest)
     members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
 
@@ -296,9 +290,7 @@ def test_selected_products_cannot_omit_an_act_the_manifest_claims(tmp_path):
     [
         lambda manifest: manifest["claims"].update(status="complete"),
         lambda manifest: manifest["claims"].update(partial_reasons=[]),
-        lambda manifest: manifest["claims"]["submission_inventory"].update(
-            status="reconciled"
-        ),
+        lambda manifest: manifest["claims"]["submission_inventory"].update(status="reconciled"),
         lambda manifest: manifest["claims"]["terminal_ledger"].update(status="complete"),
         lambda manifest: manifest["claims"]["terminal_ledger"]["units"].pop(),
         lambda manifest: manifest["claims"]["terminal_ledger"]["by_category"].update(
@@ -329,9 +321,7 @@ def test_text_bundle_cannot_lose_its_page_and_hash_citation(tmp_path):
     lines = members[TEXT_REGISTER].decode("utf-8").splitlines()
     members[TEXT_REGISTER] = (
         "\n".join(
-            line
-            for line in lines
-            if not line.startswith(("source-page: ", "source-sha256: "))
+            line for line in lines if not line.startswith(("source-page: ", "source-sha256: "))
         )
         + "\n"
     ).encode("utf-8")
@@ -405,9 +395,7 @@ def test_review_items_cannot_replace_a_recorded_terminal_reason(tmp_path):
         json.loads(line) for line in members["review-items.jsonl"].decode("utf-8").splitlines()
     ]
     review[0]["reason"] = "a fabricated but nonempty review reason"
-    members["review-items.jsonl"] = b"".join(
-        canonical_bytes(record) + b"\n" for record in review
-    )
+    members["review-items.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in review)
     _refresh_manifest_member(members, "review-items.jsonl")
 
     with pytest.raises(SchemaRefusal, match="exact terminal reason"):
@@ -570,7 +558,9 @@ def test_pixel_claim_cannot_overstate_reference_only_clean_machine_verification(
 )
 def test_export_refuses_non_sha256_citations_before_packaging(projection):
     with pytest.raises(SchemaRefusal, match="lowercase sha256"):
-        build_armarium_bundle(projection(_projection()), _formats(embed_pixels=False), _source_bytes)
+        build_armarium_bundle(
+            projection(_projection()), _formats(embed_pixels=False), _source_bytes
+        )
 
 
 def test_clean_verifier_refuses_a_self_consistent_non_sha256_source_reference(tmp_path):
@@ -587,7 +577,10 @@ def test_clean_verifier_refuses_a_self_consistent_non_sha256_source_reference(tm
 
 def test_product_marks_retained_run_evidence_references_and_refuses_an_unmarked_one(tmp_path):
     original = _projection()
-    raw_reference = {"relative_path": "4_perlector/artifacts/perlectio/art_123.json", "sha256": "a" * 64}
+    raw_reference = {
+        "relative_path": "4_perlector/artifacts/perlectio/art_123.json",
+        "sha256": "a" * 64,
+    }
     decorated_reference = {**raw_reference, "artifact_id": "perlectio-art-123"}
     delivered = {
         **original.acts[0],
@@ -721,9 +714,7 @@ def test_embedded_page_and_crop_pixels_open_on_a_clean_machine(tmp_path):
 
 def test_salvage_stays_out_of_every_act_projection(tmp_path):
     salvage_content = "marginal material, not an established act"
-    projection = _projection(
-        salvage_items=(_salvage_item(salvage_content),)
-    )
+    projection = _projection(salvage_items=(_salvage_item(salvage_content),))
     bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
     with ZipFile(BytesIO(bundle.data)) as archive:
         assert salvage_content in archive.read("salvage/items.jsonl").decode("utf-8")

@@ -298,7 +298,10 @@ def test_armarium_exclusion_cannot_export_without_its_approval_artifact_referenc
     )
     with pytest.raises(ApprovalRefusal, match="approval-record reference"):
         armarium.exclusion_approval_ref({}, ArmariumCategory.EXCLUDED_WITH_APPROVAL)
-    assert armarium.exclusion_approval_ref(
-        {"approval_ref": "art_0123456789abcdef"},
-        ArmariumCategory.EXCLUDED_WITH_APPROVAL,
-    ) == "art_0123456789abcdef"
+    assert (
+        armarium.exclusion_approval_ref(
+            {"approval_ref": "art_0123456789abcdef"},
+            ArmariumCategory.EXCLUDED_WITH_APPROVAL,
+        )
+        == "art_0123456789abcdef"
+    )

@@ -525,7 +525,13 @@ def missing_export_provenance(payload: object) -> str | None:
     for index, region in enumerate(regions):
         if not isinstance(region, dict):
             return f"source region {index} is not an object"
-        required = ("region_id", "image_path", "image_sha256", "source_page_ordinal", "source_page_id")
+        required = (
+            "region_id",
+            "image_path",
+            "image_sha256",
+            "source_page_ordinal",
+            "source_page_id",
+        )
         missing = [field for field in required if region.get(field) is None]
         if missing:
             return f"source region {index} lacks {', '.join(missing)} provenance"
@@ -536,7 +542,9 @@ def export_evidence_refs(context, review: dict, established: dict | None) -> lis
     """The small, digest-checked record a review item keeps after text is refused."""
     references = [context.artifact_ref(RECENSOR, "review", review["artifact_id"])]
     if established is not None:
-        references.append(context.artifact_ref(ARCHETYPUS, "archetypus", established["artifact_id"]))
+        references.append(
+            context.artifact_ref(ARCHETYPUS, "archetypus", established["artifact_id"])
+        )
     return sorted(references, key=lambda reference: reference["relative_path"])
 
 
@@ -561,9 +569,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context = open_context(args, ARMARIUM, registry_factory=registry_factory)
     formats = context.armarium_formats
     if formats is None:
-        raise FatalAccounting(
-            "Armarium has no format projection bound to the run configuration"
-        )
+        raise FatalAccounting("Armarium has no format projection bound to the run configuration")
     # Verify the source ledger's final boundary before publishing even a reusable
     # manifest entry. A seal damaged after Designator must stop export at once.
     census = page_census(context)

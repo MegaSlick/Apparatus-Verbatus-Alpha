@@ -56,9 +56,7 @@ def test_format_configuration_changes_the_sealed_run_binding(tmp_path):
     assert baseline["config_digest"] != alternate["config_digest"]
 
 
-def test_format_settings_are_parsed_from_the_same_bytes_that_are_digested(
-    monkeypatch, tmp_path
-):
+def test_format_settings_are_parsed_from_the_same_bytes_that_are_digested(monkeypatch, tmp_path):
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
     fixture = load_fixture(str(ROOT / "proof"))
     formats_path = tmp_path / "formats.toml"

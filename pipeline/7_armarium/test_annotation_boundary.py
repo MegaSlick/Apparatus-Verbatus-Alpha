@@ -110,9 +110,7 @@ def _assert_read_only_annotation_boundary(source: str) -> None:
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
     wired = sorted(
-        imported
-        for imported in imports
-        if imported.startswith(_FORBIDDEN_RUNTIME_IMPORT_PREFIXES)
+        imported for imported in imports if imported.startswith(_FORBIDDEN_RUNTIME_IMPORT_PREFIXES)
     )
     assert not wired, f"annotation boundary is wired into runtime stages: {wired}"
 
@@ -129,9 +127,7 @@ def _assert_read_only_annotation_boundary(source: str) -> None:
             if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name)
         }
         unsafe_fields = sorted(output_fields & _FORBIDDEN_TEXT_RESULT_FIELDS)
-        assert not unsafe_fields, (
-            f"{output_class.name} carries literal text: {unsafe_fields}"
-        )
+        assert not unsafe_fields, f"{output_class.name} carries literal text: {unsafe_fields}"
 
 
 def _input() -> AnnotationInput:
@@ -149,7 +145,9 @@ def _result(*, act_id: str = "act-17", text_hash: str = "a" * 64) -> AnnotationR
     return AnnotationResult(
         act_id=act_id,
         canonical_text_sha256=text_hash,
-        annotations=(Annotation("annotation-1", "act-type", (TextSpan(0, 1),), act_type="baptism"),),
+        annotations=(
+            Annotation("annotation-1", "act-type", (TextSpan(0, 1),), act_type="baptism"),
+        ),
         provenance=AnnotationProvenance("future-annotator", "unapproved", "b" * 64),
     )
 
@@ -205,7 +203,6 @@ def test_annotations_are_bound_to_the_exact_act_and_established_text_hash():
         verify_annotation_binding(annotation_input, _result(act_id="act-18"))
     with pytest.raises(ValueError, match="different canonical text"):
         verify_annotation_binding(annotation_input, _result(text_hash="c" * 64))
-
 
 
 TEXT = "L'an mil sept cent trente, Pierre fils de Jean Boucher"

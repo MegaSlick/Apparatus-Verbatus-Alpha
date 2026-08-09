@@ -74,9 +74,7 @@ def search_fold(text: str) -> str:
 
     decomposed = unicodedata.normalize("NFD", text)
     without_marks = "".join(
-        character
-        for character in decomposed
-        if unicodedata.category(character) != "Mn"
+        character for character in decomposed if unicodedata.category(character) != "Mn"
     )
     substituted = "".join(_SUBSTITUTIONS.get(character, character) for character in without_marks)
     folded: list[str] = []

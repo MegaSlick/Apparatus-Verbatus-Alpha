@@ -194,7 +194,9 @@ class Annotation:
         ):
             raise ValueError("an annotation needs an identity and kind")
         if self.kind not in ANNOTATION_KINDS:
-            raise ValueError(f"annotation kind {self.kind!r} is not one of {sorted(ANNOTATION_KINDS)}")
+            raise ValueError(
+                f"annotation kind {self.kind!r} is not one of {sorted(ANNOTATION_KINDS)}"
+            )
         if not self.spans:
             raise ValueError("an annotation needs at least one anchored span")
         _require_closed_value(self, "act_type", "act-type", ACT_TYPES)
@@ -244,8 +246,7 @@ def mark_uncertainty_overlap(span: TextSpan, uncertainty_spans: tuple[TextSpan, 
     Archetypus record carries no uncertainty layer for anything to inherit from yet.
     """
     return any(
-        uncertain.start < span.end and span.start < uncertain.end
-        for uncertain in uncertainty_spans
+        uncertain.start < span.end and span.start < uncertain.end for uncertain in uncertainty_spans
     )
 
 
