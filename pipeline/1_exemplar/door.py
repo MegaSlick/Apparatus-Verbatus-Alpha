@@ -22,22 +22,25 @@ output.
 runs the walking skeleton on the repository's own declared synthetic pages, and it
 refuses to treat any other folder as a fixture — fixture status comes from the
 declared fixture root and the `load_fixture` manifest, never from a caller's word
-(ruling 2026-08-04, item 1). Everything else is real input: it is gated before a
-byte is read, and the approval that admitted it is sealed into `run.json`'s own
-self-hashed authority as the run's `ingress`, so a later reader asks the run
-authority rather than an optional field on a stage artifact that could simply be
-absent.
+(ruling 2026-08-04, item 1). Everything else is real input: it must live inside an
+approved storage location, and which of the two routes created a run is sealed into
+`run.json`'s own self-hashed authority as the run's `ingress`, so a later reader
+asks the run authority rather than an optional field on a stage artifact that could
+simply be absent.
 
-**No real image has been touched.** The real path exists, is gated, and is proven
-against synthetic bytes standing in for real input; nothing has been pointed at a
-real register page, and nothing may be until Tyrel approves the data-handling gate
-package.
+**Cut 2026-08-09, per Tyrel's ruling that session.** Real input used to also need a
+current data-gate approval-record artifact before this door would admit it. His
+ruling: none of this material ever reaches git regardless of any such sign-off — it
+runs through the pipeline on a GPU host, `workbench/` is gitignored, and an ingress
+check plus a pre-push payload scan already cover that mechanically — so the
+requirement bought nothing and is gone. `operations.submit.gate`'s storage-root check
+is untouched; only the approval artifact and its currency check are cut.
 
 Invoked as a program:
 
     python pipeline/1_exemplar/door.py --run-root <dir> --run-id <id>
     python pipeline/1_exemplar/door.py --run-root <dir> --run-id <id> \
-        --submission-folder <dir> --submission-manifest <path> --approval-record <path>
+        --submission-folder <dir> --submission-manifest <path>
 """
 
 import hashlib
@@ -72,14 +75,11 @@ from image_formats import (  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
-    APPROVAL_GATED_REAL_INGRESS,
-    ApprovalRecordReference,
-    approval_gated_real_ingress_record,
-    parse_data_gate_ingress_record,
+    real_ingress_record,
     synthetic_fixture_ingress_record,
 )
 from common.contracts.canonical import digest_bytes, digest_of, self_hash  # noqa: E402
-from common.contracts.errors import ApprovalRefusal, ContractError  # noqa: E402
+from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
@@ -431,14 +431,9 @@ def process_sources(
     *,
     policy: dict[str, str],
     pdf_settings: render_config.PdfRenderSettings | None = None,
-    data_policy: dict[str, Any] | None = None,
     open_source: Callable[[str], Any] | None = None,
 ) -> int:
     """Admit or refuse every declared source. Returns the count admitted.
-
-    Fixture status is read from the self-hashed run authority, never accepted from
-    a caller argument. The real-input gate is checked first, before a single file
-    is opened, through the approval reference that same authority carries.
 
     `read_bytes` is called once per distinct raster path within this call. A real
     PDF is different: its digest is streamed once, then PDFium holds one native
@@ -453,16 +448,8 @@ def process_sources(
     own ordinal and records the first path as a duplicate fact; it never loses a
     citation link merely because its blob is already content-addressed.
     """
-    mode, _ingress_hash, approval_reference = parse_data_gate_ingress_record(
-        context.run.get("ingress")
-    )
     if pdf_settings is None:
         pdf_settings = render_config.load_pdf_render_settings(minimum_dpi=pdf_render.MIN_RENDER_DPI)
-    if mode == APPROVAL_GATED_REAL_INGRESS:
-        if data_policy is None:
-            gate.enforce(approval=None, policy=None)
-        approval = gate.load_approval(approval_reference, root=tree.root, policy=data_policy)
-        gate.enforce(approval=approval, policy=data_policy)
     admitted = 0
     seen_sources: dict[str, tuple[str, int]] = {}
     # One entry, never a growing map. `expand_sources` assigns ordinals row by row,
@@ -532,7 +519,6 @@ def process_sources(
                     reason=admission.reason(
                         RefusalReason.TOO_LARGE, admission.too_large_detail(source.declared_size)
                     ),
-                    approval_reference=approval_reference,
                 )
                 continue
 
@@ -565,7 +551,6 @@ def process_sources(
                         source,
                         outcome="refused",
                         reason=admission.reason(RefusalReason.UNREADABLE, str(error)),
-                        approval_reference=approval_reference,
                     )
                     continue
             else:
@@ -581,7 +566,6 @@ def process_sources(
                         source,
                         outcome="refused",
                         reason=admission.reason(RefusalReason.UNREADABLE, str(error)),
-                        approval_reference=approval_reference,
                     )
                     continue
                 actual_digest, actual_size = digest_bytes(data), len(data)
@@ -596,7 +580,6 @@ def process_sources(
                         f"the source now has {actual_size} bytes, but {source.declared_size} bytes "
                         "were recorded in its filename ledger",
                     ),
-                    approval_reference=approval_reference,
                 )
                 continue
 
@@ -609,7 +592,6 @@ def process_sources(
                         RefusalReason.DIGEST_MISMATCH,
                         f"computed {actual_digest}, but {source.declared_sha256} was declared",
                     ),
-                    approval_reference=approval_reference,
                 )
                 continue
 
@@ -652,7 +634,6 @@ def process_sources(
                     source,
                     outcome="refused",
                     reason=decision.reason,
-                    approval_reference=approval_reference,
                 )
                 continue
 
@@ -666,7 +647,6 @@ def process_sources(
                         source,
                         outcome="refused",
                         reason=admission.reason(RefusalReason.DIGEST_MISMATCH, str(error)),
-                        approval_reference=approval_reference,
                     )
                     continue
 
@@ -709,7 +689,6 @@ def process_sources(
                 outcome="admitted",
                 payload_extra=extra,
                 inputs=[context.input_ref(published.relative_path)],
-                approval_reference=approval_reference,
             )
             admitted += 1
     finally:
@@ -726,7 +705,6 @@ def _publish(
     reason: str | None = None,
     payload_extra: dict | None = None,
     inputs: list[dict[str, str]] | None = None,
-    approval_reference: ApprovalRecordReference | None = None,
 ) -> None:
     payload: dict = {
         "declared_path": source.declared_path,
@@ -741,8 +719,6 @@ def _publish(
         payload["reason"] = reason
     else:
         payload.update(payload_extra or {})
-    if approval_reference is not None:
-        payload["data_gate_approval_ref"] = approval_reference.to_record()
     context.publish(
         kind="admission",
         subject_id=f"source-{source.ordinal}",
@@ -980,11 +956,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     parser = stage_parser(__doc__.splitlines()[0])
     parser.add_argument(
         "--submission-folder",
-        help="a real local submission; any input arriving this way needs a current approval",
-    )
-    parser.add_argument(
-        "--approval-record",
-        help="path to Tyrel's sealed data-gate approval record for the current policy",
+        help="a real local submission; must live inside an approved storage root",
     )
     parser.add_argument(
         "--submission-manifest",
@@ -996,18 +968,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     parser.add_argument(
         "--data-gate-policy",
         default=str(gate.DEFAULT_POLICY_PATH),
-        help="the data-handling policy whose canonical hash the approval must name",
+        help="the data-handling policy naming this run's approved storage locations",
     )
     args = parser.parse_args()
     registry = registry_factory(args.models_config)
 
     if args.submission_folder is not None:
         return real_submission(args, registry)
-    if args.approval_record is not None or args.submission_manifest is not None:
+    if args.submission_manifest is not None:
         raise ContractError(
-            "an approval record or submission filename ledger is meaningful only with a real "
-            "submission folder; the walking skeleton's declared synthetic pages are not "
-            "gated input"
+            "a submission filename ledger is meaningful only with a real submission folder; "
+            "the walking skeleton's declared synthetic pages are not gated input"
         )
     return fixture_submission(args, registry)
 
@@ -1087,22 +1058,19 @@ def fixture_submission(args, registry) -> int:
 
 
 def real_submission(args, registry) -> int:
-    """Gate a local folder, then admit its bytes into a run that says it was gated.
+    """Admit a local folder's bytes into a run, once it is proven to sit inside an
+    approved storage location.
 
-    Order matters and is the whole point: the approval is verified, then the
-    storage roots, then the folder is inventoried, then the run is created with the
-    approval sealed into its authority, and only then is a byte published. A
-    missing, stale or damaged approval means nothing was read and nothing exists.
+    Order matters: the storage roots are checked, then the folder is inventoried,
+    then the run is created, and only then is a byte published. A folder outside
+    every approved root means nothing was read and nothing exists.
     """
     data_policy = gate.load_policy(Path(args.data_gate_policy))
-    if args.approval_record is None:
-        gate.enforce(approval=None, policy=data_policy)
     if args.submission_manifest is None:
         raise ContractError(
             "a real submission requires --submission-manifest: the self-hashed filename "
             "ledger is how its copied bytes are matched back to the original set"
         )
-    approval, reference = gate.read_external_approval(Path(args.approval_record), data_policy)
 
     roots = gate.approved_storage_roots(data_policy)
     # The *resolved* paths are used from here on, as `submit.py` does and for the
@@ -1125,11 +1093,6 @@ def real_submission(args, registry) -> int:
                 "inventory includes pipeline-produced records as submitted sources"
             )
     ledger = submission_ledger.load_manifest(manifest_path)
-    if ledger["authorized_by"] != reference.to_record():
-        raise ApprovalRefusal(
-            "the submission filename ledger names a different data-gate approval than the "
-            "approval record supplied to the door"
-        )
 
     format_policy = admission.load_format_policy()
     pdf_settings = _load_pdf_render_settings(args)
@@ -1184,8 +1147,6 @@ def real_submission(args, registry) -> int:
     bindings = _real_bindings(
         registry.config,
         ledger,
-        data_policy,
-        reference,
         format_policy,
         pdf_settings,
         load_recovery_policy(args.recovery_config),
@@ -1207,15 +1168,9 @@ def real_submission(args, registry) -> int:
         config_digest=bindings["config_digest"],
         adapter_recipes=bindings["adapter_recipes"],
         witness_chairs=bindings["witness_chairs"],
-        ingress=approval_gated_real_ingress_record(gate.policy_hash(data_policy), reference),
+        ingress=real_ingress_record(),
         render_settings={"pdf": pdf_settings.to_record()},
     )
-    stored, _ = tree.write_approval_record(approval)
-    if stored.to_record() != reference.to_record():
-        raise ApprovalRefusal(
-            "the data-gate approval changed between verification and storage; the run "
-            "authority names one record and the tree holds another"
-        )
 
     context = _door_context(tree, {}, "real-submission", args, registry)
     admitted = process_sources(
@@ -1225,7 +1180,6 @@ def real_submission(args, registry) -> int:
         read_bytes,
         policy=format_policy,
         pdf_settings=pdf_settings,
-        data_policy=data_policy,
         open_source=open_source,
     )
     return _finish_door_run(context, tree, admitted)
@@ -1268,17 +1222,18 @@ def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> N
     )
 
 
-def _real_bindings(
-    models, ledger, data_policy, reference, format_policy, pdf_settings, recovery_policy
-) -> dict[str, Any]:
+def _real_bindings(models, ledger, format_policy, pdf_settings, recovery_policy) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
     The source manifest binds the bytes. The configuration digest binds everything
-    else that shaped what the door did: the model roster, the data-handling policy
-    version, the exact approval that admitted the corpus, decoder routing, and the
+    else that shaped what the door did: the model roster, decoder routing, and the
     versions/settings that render pages. A run resumed under different versions or
     routing is a different run wearing an old name, and `RunTree.create` refuses
     it before anything is written.
+
+    **Cut 2026-08-09.** This used to also bind the data-gate policy hash and the
+    approval reference that admitted the corpus. Neither exists any more: real
+    input is no longer approval-gated, so there is nothing left to bind here.
     """
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
@@ -1295,8 +1250,6 @@ def _real_bindings(
                     for source in ledger["files"]
                 ],
                 "submission_ledger_sha256": ledger["self_hash"],
-                "data_gate_policy_hash": gate.policy_hash(data_policy),
-                "data_gate_approval_ref": reference.to_record(),
                 "format_policy": format_policy,
                 "door_execution_recipe": _door_execution_recipe(pdf_settings),
                 "door_implementation_revision": REAL_DOOR_ADAPTER_REVISION,

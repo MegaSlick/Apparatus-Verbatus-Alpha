@@ -43,11 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from admission import reason_code  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.approval import (  # noqa: E402
-    APPROVAL_GATED_REAL_INGRESS,
-    approval_record_reference_from_record,
-    parse_data_gate_ingress_record,
-)
+from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import digest_bytes, self_hash, verify_self_hash  # noqa: E402
 from common.contracts.envelope import validate_envelope, verify_input_bytes  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
@@ -253,15 +249,15 @@ def _open(args, registry_factory) -> StageContext:
     A synthetic-fixture run is bound to a fixture and a scenario, and `open_context`
     refuses to run a direct stage against an unsealed configuration — spec 01's
     guard, and it stays. A real submission has no fixture at all: its
-    `config_digest` binds the submission, the policy and the approval instead, so
+    `config_digest` binds the submission and door execution recipe instead, so
     that comparison has nothing to compare and the run authority is read directly.
     The ingress record in `run.json` is what decides which of the two this is, and
     it is inside the authority's self-hash, so it cannot be quietly switched.
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
-    mode, _policy_hash, _reference = parse_data_gate_ingress_record(run.get("ingress"))
-    if mode != APPROVAL_GATED_REAL_INGRESS:
+    mode = parse_ingress_record(run.get("ingress"))
+    if mode != REAL_INGRESS:
         return open_context(args, EXEMPLAR, registry_factory=registry_factory)
     return StageContext(
         tree=tree,
@@ -307,14 +303,12 @@ def _verify_source_ledger(run: dict[str, Any], sources: dict[int, dict[str, Any]
     between-boundary check: the door cannot start from a smaller or differently
     named set while still claiming the same original filename ledger.
     """
-    mode, _policy_hash, approval_reference = parse_data_gate_ingress_record(run.get("ingress"))
+    mode = parse_ingress_record(run.get("ingress"))
     carries_ledger = any("ledger_sha256" in row for row in sources.values())
-    if mode != APPROVAL_GATED_REAL_INGRESS:
+    if mode != REAL_INGRESS:
         if carries_ledger:
             raise ContractError("a synthetic-fixture run carries a real submission filename ledger")
         return
-    if approval_reference is None:
-        raise ContractError("a real run carries no approval reference to bind its filename ledger")
     if not carries_ledger:
         raise ContractError("a real run has no filename ledger bound into its source manifest")
 
@@ -344,9 +338,8 @@ def _verify_source_ledger(run: dict[str, Any], sources: dict[int, dict[str, Any]
     if len(ledger_hashes) != 1:
         raise ContractError("run.json source rows name more than one filename ledger")
     ledger = {
-        "schema": "submission-manifest.v0",
+        "schema": "submission-manifest.v1",
         "files": sorted(files_by_path.values(), key=lambda item: item["relative_path"]),
-        "authorized_by": approval_reference.to_record(),
     }
     if self_hash(ledger) != next(iter(ledger_hashes)):
         raise ContractError(
@@ -425,7 +418,6 @@ def _checked_admissions(
             f"the door published no admission for submitted source ordinal(s) {missing}; a source "
             "may not disappear between submission and sealing"
         )
-    _verify_data_gate_evidence(tree, run, [item[1] for item in checked])
     return sorted(checked, key=lambda item: item[0])
 
 
@@ -726,41 +718,6 @@ def _verify_refusal(admission: dict[str, Any]) -> None:
     # skeleton wrote are exactly what spec 03 replaced, and a consumer that accepted
     # one because it happened to be a string would have replaced nothing.
     reason_code(admission["payload"].get("reason"))
-
-
-def _verify_data_gate_evidence(
-    tree: RunTree, run: dict[str, Any], admissions: list[dict[str, Any]]
-) -> None:
-    """Keep real-input approval evidence live across the Exemplar boundary.
-
-    The run authority is the authority: it says whether this run was synthetic or
-    approval-gated, and it is inside its own self-hash. Every door admission must
-    agree with it — all of them or none of them — so a run cannot carry a mixture
-    in which some pages were gated and others simply were not.
-    """
-    mode, ingress_hash, ingress_reference = parse_data_gate_ingress_record(run.get("ingress"))
-    references = [admission["payload"].get("data_gate_approval_ref") for admission in admissions]
-    if mode != APPROVAL_GATED_REAL_INGRESS:
-        if any(reference is not None for reference in references):
-            raise ContractError(
-                "a synthetic-fixture run's door admissions carry data-gate approval evidence"
-            )
-        return
-    if ingress_reference is None or ingress_hash is None:
-        raise ContractError("a real run's ingress carries no data-gate approval evidence")
-    if any(reference is None for reference in references):
-        raise ContractError("a real run's door admissions do not all carry approval evidence")
-
-    parsed = [approval_record_reference_from_record(reference) for reference in references]
-    if any(item.to_record() != ingress_reference.to_record() for item in parsed):
-        raise ContractError(
-            "a door admission's approval evidence disagrees with the self-hashed run ingress"
-        )
-    record = tree.read_approval_record(ingress_reference)
-    if record["action"] != "data-gate":
-        raise ContractError("a real run's approval evidence is not a data-gate approval")
-    if record["target_version_hash"] != ingress_hash:
-        raise ContractError("a real run's approval names a different data-gate policy version")
 
 
 def _verify_existing_corpus_seal(tree: RunTree) -> None:

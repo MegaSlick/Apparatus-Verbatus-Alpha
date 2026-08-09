@@ -30,14 +30,9 @@ from synthetic_sources import (
     two_page_pdf,
 )
 
-from common.contracts.approval import (
-    ApprovalRecordReference,
-    approval_gated_real_ingress_record,
-    build_approval_record,
-    synthetic_fixture_ingress_record,
-)
+from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
-from common.contracts.errors import ApprovalRefusal, ContractError
+from common.contracts.errors import ContractError
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
 from common.runtree.store import RunTree
 from common.stage import StageContext
@@ -799,15 +794,12 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
     }
-    reference = ApprovalRecordReference("receipts/sha256/" + "c" * 64 + ".json", "c" * 64)
     settings = door.render_config.load_pdf_render_settings(
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
     baseline = door._real_bindings(
         Models(),
         ledger,
-        {"policy": "synthetic"},
-        reference,
         POLICY,
         settings,
         door.load_recovery_policy(),
@@ -817,8 +809,6 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
     changed = door._real_bindings(
         Models(),
         ledger,
-        {"policy": "synthetic"},
-        reference,
         POLICY,
         settings,
         door.load_recovery_policy(),
@@ -840,15 +830,12 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
     }
-    reference = ApprovalRecordReference("receipts/sha256/" + "c" * 64 + ".json", "c" * 64)
     settings = door.render_config.load_pdf_render_settings(
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
     baseline = door._real_bindings(
         Models(),
         ledger,
-        {"policy": "synthetic"},
-        reference,
         POLICY,
         settings,
         door.load_recovery_policy(),
@@ -860,8 +847,6 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
     changed = door._real_bindings(
         Models(),
         ledger,
-        {"policy": "synthetic"},
-        reference,
         POLICY,
         settings,
         door.load_recovery_policy(),
@@ -870,7 +855,7 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
 
 
 def _approved_submission(tmp_path, files: dict[str, bytes]):
-    """Create synthetic source files, policy/approval, and the local filename ledger."""
+    """Create synthetic source files, an approved-root policy, and the filename ledger."""
     approved = tmp_path / "approved"
     source = approved / "source"
     source.mkdir(parents=True)
@@ -882,32 +867,16 @@ def _approved_submission(tmp_path, files: dict[str, bytes]):
     policy["storage_roots"] = [str(approved)]
     policy_path = tmp_path / "policy.json"
     policy_path.write_text(json.dumps(policy), encoding="utf-8")
-    approval_path = tmp_path / "approval.json"
-    approval_path.write_text(
-        json.dumps(
-            build_approval_record(
-                subject_ids=["data-handling-policy"],
-                action="data-gate",
-                reason="synthetic System 03 proof only",
-                target_version_hash=gate.policy_hash(policy),
-                timestamp="2026-08-04T12:00:00Z",
-            )
-        ),
-        encoding="utf-8",
-    )
     ledger_path = approved / "source-ledger.json"
     ledger = submit.submit(
         source,
         ledger_path,
-        approval_record=approval_path,
         policy_path=policy_path,
     )
-    return approved, source, policy, policy_path, approval_path, ledger_path, ledger
+    return approved, source, policy, policy_path, ledger_path, ledger
 
 
-def _run_real_door(
-    monkeypatch, *, run_root, source, policy_path, approval_path, ledger_path, run_id
-):
+def _run_real_door(monkeypatch, *, run_root, source, policy_path, ledger_path, run_id):
     monkeypatch.setattr(
         sys,
         "argv",
@@ -921,8 +890,6 @@ def _run_real_door(
             str(source),
             "--submission-manifest",
             str(ledger_path),
-            "--approval-record",
-            str(approval_path),
             "--data-gate-policy",
             str(policy_path),
         ],
@@ -932,7 +899,7 @@ def _run_real_door(
 
 def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, monkeypatch):
     files = {"FS-1234.png": png(4, 3), "iPhone/BATCH-7.pdf": single_gray_page_pdf()}
-    approved, source, policy, policy_path, approval, ledger_path, ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
         tmp_path, files
     )
     run_root = approved / "runs"
@@ -943,7 +910,6 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
             run_root=run_root,
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="real-ledger",
         )
@@ -956,11 +922,10 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     assert {
         (row["relative_path"], row["sha256"], row["bytes"]) for row in run["source_manifest"]
     } == {(row["relative_path"], row["sha256"], row["bytes"]) for row in ledger["files"]}
+    assert run["ingress"] == {"mode": "real"}
     for record in admissions(tree).values():
         assert record["payload"]["ledger_sha256"] == ledger["self_hash"]
-        assert (
-            record["payload"]["data_gate_approval_ref"] == run["ingress"]["data_gate_approval_ref"]
-        )
+        assert "data_gate_approval_ref" not in record["payload"]
 
     before = {
         path.relative_to(run_root): path.read_bytes()
@@ -973,7 +938,6 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
             run_root=run_root,
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="real-ledger",
         )
@@ -1006,7 +970,6 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
         if entry["kind"] == "page"
     ]
     assert {page["payload"]["ledger_sha256"] for page in pages} == {ledger["self_hash"]}
-    assert run["ingress"]["data_gate_policy_hash"] == gate.policy_hash(policy)
 
     before_designator = tree.build_manifest(DESIGNATOR)
     boundary = subprocess.run(
@@ -1044,7 +1007,7 @@ def test_real_pdf_replaced_after_its_hash_seals_the_opened_original(tmp_path, mo
     """
     original = content_page_pdf(b"", width=72, height=72)
     replacement = content_page_pdf(b"", width=144, height=72)
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"register.pdf": original}
     )
     replacement_path = tmp_path / "replacement.pdf"
@@ -1076,7 +1039,6 @@ def test_real_pdf_replaced_after_its_hash_seals_the_opened_original(tmp_path, mo
             run_root=approved / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="anchored-pdf",
         )
@@ -1110,7 +1072,7 @@ def test_the_pdf_pdfium_renders_is_the_descriptor_the_digest_was_taken_from(tmp_
     """
     original = content_page_pdf(b"", width=72, height=72)
     replacement = content_page_pdf(b"", width=144, height=72)
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"register.pdf": original}
     )
     replacement_path = tmp_path / "replacement.pdf"
@@ -1145,7 +1107,6 @@ def test_the_pdf_pdfium_renders_is_the_descriptor_the_digest_was_taken_from(tmp_
             run_root=approved / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="one-descriptor-pdf",
         )
@@ -1165,7 +1126,7 @@ def test_real_pdf_rewritten_during_render_is_refused_before_blob_publication(tmp
     """An open inode that changes in place cannot become an Exemplar page."""
     original = content_page_pdf(b"", width=72, height=72)
     replacement = content_page_pdf(b"", width=144, height=72)
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"register.pdf": original}
     )
     original_open_document = door.pdf_render.open_document
@@ -1188,7 +1149,6 @@ def test_real_pdf_rewritten_during_render_is_refused_before_blob_publication(tmp
             run_root=approved / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="rewritten-pdf",
         )
@@ -1203,7 +1163,7 @@ def test_real_pdf_rewritten_during_render_is_refused_before_blob_publication(tmp
 
 def test_real_raster_redirected_after_inventory_is_refused_and_recorded(tmp_path, monkeypatch):
     """The bounded raster reader must keep the same no-follow boundary as PDF."""
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"register.png": png(4, 3)}
     )
     outside = tmp_path / "outside.png"
@@ -1225,7 +1185,6 @@ def test_real_raster_redirected_after_inventory_is_refused_and_recorded(tmp_path
             run_root=approved / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="redirected-raster",
         )
@@ -1251,7 +1210,7 @@ def test_a_symlink_planted_after_the_walk_refuses_only_its_own_source(tmp_path, 
     outside_secret = tmp_path / "outside-secret.bin"
     outside_secret.write_bytes(b"NEVER SUBMITTED")
 
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png(5, 5), "FS-2.png": png(4, 3)}
     )
     run_root = approved / "runs"
@@ -1272,7 +1231,6 @@ def test_a_symlink_planted_after_the_walk_refuses_only_its_own_source(tmp_path, 
             run_root=run_root,
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="symlink-race",
         )
@@ -1304,7 +1262,7 @@ def test_a_forged_nul_byte_manifest_row_refuses_only_itself(tmp_path, monkeypatc
     breaks the whole folder" shape this module already fixed once for directory
     depth (harvest #2: per-file, never per-folder).
     """
-    approved, source, _policy, policy_path, approval, ledger_path, ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
         tmp_path, {"good.png": png(4, 3)}
     )
     forged = dict(ledger)
@@ -1322,7 +1280,6 @@ def test_a_forged_nul_byte_manifest_row_refuses_only_itself(tmp_path, monkeypatc
             run_root=approved / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="forged-nul-row",
         )
@@ -1352,7 +1309,7 @@ def test_a_symlinked_pdf_is_never_handed_to_pdfium_to_count_or_render(tmp_path, 
     swap_target = tmp_path / "outside-two-page.pdf"
     swap_target.write_bytes(two_page_pdf())
 
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"SCAN.pdf": single_gray_page_pdf(), "OTHER.png": png(4, 3)}
     )
     run_root = approved / "runs"
@@ -1373,7 +1330,6 @@ def test_a_symlinked_pdf_is_never_handed_to_pdfium_to_count_or_render(tmp_path, 
             run_root=run_root,
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="pdf-symlink-race",
         )
@@ -1393,7 +1349,7 @@ def test_a_corrupt_later_tiff_page_keeps_its_good_earlier_page_and_other_sources
     tmp_path, monkeypatch
 ):
     files = {"bad-volume.tiff": corrupt_later_tiff_page(), "good-page.png": png(4, 3)}
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, files
     )
     run_root = approved / "runs"
@@ -1404,7 +1360,6 @@ def test_a_corrupt_later_tiff_page_keeps_its_good_earlier_page_and_other_sources
             run_root=run_root,
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="corrupt-tiff-isolated",
         )
@@ -1432,7 +1387,7 @@ def test_a_truncated_animated_gif_cannot_erase_another_sources_admission(tmp_pat
     lose this source: it aborted the expansion and every other source in the
     submission with it. Two sources in, two records out is the whole assertion."""
     files = {"broken-animation.gif": truncated_animated_gif(), "good-page.png": png(4, 3)}
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, files
     )
     run_root = approved / "runs"
@@ -1443,7 +1398,6 @@ def test_a_truncated_animated_gif_cannot_erase_another_sources_admission(tmp_pat
             run_root=run_root,
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="truncated-gif-isolated",
         )
@@ -1460,7 +1414,7 @@ def test_a_truncated_animated_gif_cannot_erase_another_sources_admission(tmp_pat
 def test_changed_transfer_bytes_raise_a_digest_alarm_under_the_original_filename(
     tmp_path, monkeypatch
 ):
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-4321.png": png(4, 3)}
     )
     (source / "FS-4321.png").write_bytes(png(5, 3))
@@ -1471,7 +1425,6 @@ def test_changed_transfer_bytes_raise_a_digest_alarm_under_the_original_filename
             run_root=approved / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="changed-copy",
         )
@@ -1483,7 +1436,7 @@ def test_changed_transfer_bytes_raise_a_digest_alarm_under_the_original_filename
 def test_extra_copy_absent_from_the_filename_ledger_stops_before_a_run_is_created(
     tmp_path, monkeypatch
 ):
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png()}
     )
     (source / "unledgered.png").write_bytes(png())
@@ -1493,7 +1446,6 @@ def test_extra_copy_absent_from_the_filename_ledger_stops_before_a_run_is_create
             run_root=approved / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="unexpected-copy",
         )
@@ -1510,7 +1462,7 @@ def test_a_ledgered_file_absent_from_the_folder_keeps_its_ordinal_and_is_named(
     source beside it still admits. It may not vanish into a smaller corpus that
     later looks complete (GOVERNANCE 2), and it may not abort the whole census.
     """
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png(4, 3), "FS-2.png": png(5, 5)}
     )
     (source / "FS-1.png").unlink()
@@ -1521,7 +1473,6 @@ def test_a_ledgered_file_absent_from_the_folder_keeps_its_ordinal_and_is_named(
             run_root=approved / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="vanished-source",
         )
@@ -1540,7 +1491,7 @@ def test_a_ledgered_file_absent_from_the_folder_keeps_its_ordinal_and_is_named(
 def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventory(
     tmp_path, monkeypatch
 ):
-    _approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png()}
     )
     with pytest.raises(ContractError, match="run root cannot live inside the submitted folder"):
@@ -1549,39 +1500,14 @@ def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventor
             run_root=source / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="contained-run-root",
         )
     assert not (source / "runs").exists()
 
 
-def test_real_input_refuses_before_opening_a_source_when_approval_evidence_is_missing(tmp_path):
-    opened: list[str] = []
-    data = png()
-    source = SourceEntry(1, "real.png", digest_bytes(data))
-    reference = ApprovalRecordReference(f"receipts/sha256/{'a' * 64}.json", "a" * 64)
-    policy = gate.load_policy()
-    tree, context = open_door(
-        tmp_path,
-        [source],
-        ingress=approval_gated_real_ingress_record(gate.policy_hash(policy), reference),
-    )
-
-    with pytest.raises(ApprovalRefusal, match="could not be read"):
-        process_sources(
-            context,
-            tree,
-            [source],
-            lambda path: opened.append(path) or data,
-            policy=POLICY,
-            data_policy=policy,
-        )
-    assert opened == []
-
-
 def test_a_real_submission_requires_the_local_filename_ledger(tmp_path, monkeypatch):
-    approved, source, _policy, policy_path, approval, _ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, _ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-2.png": png()}
     )
     monkeypatch.setattr(
@@ -1595,8 +1521,6 @@ def test_a_real_submission_requires_the_local_filename_ledger(tmp_path, monkeypa
             "no-ledger",
             "--submission-folder",
             str(source),
-            "--approval-record",
-            str(approval),
             "--data-gate-policy",
             str(policy_path),
         ],
