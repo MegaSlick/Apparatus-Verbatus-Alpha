@@ -973,6 +973,26 @@ def test_the_manifest_says_the_display_convention_is_only_proposed(tmp_path):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
+@pytest.mark.parametrize(
+    "field", ["salvage_id", "harvested_content", "harvest_kind", "content", "promotion"]
+)
+def test_a_salvage_shaped_record_cannot_enter_the_acts_namespace(field, tmp_path):
+    """Spec 11 test 4, in the direction the reserved-field guard does not cover.
+
+    A salvage item that resembles an act must be refused by name, not left to fail on
+    a missing key somewhere downstream. Promotion re-enters the pipeline under Tyrel's
+    recorded approval; there is no export-time promotion.
+    """
+    base = _projection()
+    smuggled = {**base.acts[0], field: "a grid tiling nobody established"}
+    with pytest.raises(SchemaRefusal, match="carries salvage-tier field"):
+        build_armarium_bundle(
+            replace(base, acts=(smuggled, base.acts[1])),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
 def _members(data: bytes) -> dict[str, bytes]:
     with ZipFile(BytesIO(data)) as archive:
         return {name: archive.read(name) for name in archive.namelist()}

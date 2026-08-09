@@ -1,10 +1,34 @@
-# Armarium product projections.  EXPORT_MANIFEST.json is always present; this
-# list chooses the plainly specified companion formats.  An Obsidian vault and
-# uncertainty/gap display convention remain deliberately absent pending Tyrel's
-# decisions.
+# Which product projections the Armarium writes. Spec 11.
+#
+# These bytes are sealed into the run's `config_digest` at the door, so the format
+# choice is part of the run authority and a run's product cannot be re-projected
+# under a different selection without a new run over the same Exemplar.
+#
+# EXPORT_MANIFEST.json is always the first member and is not optional.
 schema = "armarium-formats.v1"
 formats = ["text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"]
 
-# False means the bundle proves its source/crop references and says pixels need
-# retained-source access. True copies verified pages and crops into the bundle.
+# False means the bundle carries digest-checked references to its pages and crops and
+# says plainly that resolving the pixels needs source access. True copies the verified
+# bytes into the bundle, and clean-machine verification then opens them.
+#
+# Off by default. Embedding costs real disk -- every page and every crop, copied -- for
+# a benefit (offline pixel access with no run tree present) that is Tyrel's to spend
+# rather than this build's to assume, and a bundle never claims more than it carries
+# (GOVERNANCE 10).
 embed_pixels = false
+
+# TWO DECISIONS ARE DELIBERATELY NOT HERE, and both are Tyrel's at this gate.
+#
+# 1. Whether an Obsidian vault ships at all. Spec 11: "the old vault exporter is read
+#    for its lessons; whether an Obsidian vault ships at all is Tyrel's format call at
+#    this gate." No vault writer exists, so a flag here would be a knob with nothing
+#    behind it.
+# 2. The uncertainty/gap display convention. Spec 11 proposes an EpiDoc-style rendering
+#    and leaves the choice to him. One rendering is implemented, in
+#    `pipeline/7_armarium/display.py`, and every bundle's EXPORT_MANIFEST says on its
+#    face that it is proposed rather than chosen. A configuration key with exactly one
+#    legal value would read as a decision that has been made.
+#
+# Both land here the moment he rules, and this file's schema is closed on purpose: an
+# unrecognised key is refused rather than silently ignored.

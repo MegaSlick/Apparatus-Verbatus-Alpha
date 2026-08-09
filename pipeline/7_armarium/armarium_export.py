@@ -84,6 +84,12 @@ _COMPLETED_CATEGORIES: Final = frozenset(
         ArmariumCategory.CONFIRMED_BLANK.value,
     }
 )
+# Presence of any one of these marks a record as salvage-tier whatever else it
+# carries. Checked on every act the projection accepts, so a salvage item cannot enter
+# the acts namespace by resembling one.
+_SALVAGE_DISCRIMINANT_FIELDS: Final = frozenset(
+    {"salvage_id", "harvested_content", "harvest_kind", "content", "promotion"}
+)
 _SALVAGE_RESERVED_FIELDS: Final = frozenset(
     {
         "act_id",
@@ -391,6 +397,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             raise SchemaRefusal("a non-delivered act may not carry purported clean text")
         if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
             require_approval(ARMARIUM, category, act.get("approval_ref"))
+        _reject_act_salvage_namespace(act)
     expected_aggregate = _aggregate_from_basis(
         {act["act_key"]: act["category"] for act in projection.acts},
         projection.pages,
@@ -463,6 +470,26 @@ def _validate_salvage_items(items: tuple[dict[str, Any], ...]) -> None:
         for region in regions:
             _validate_salvage_region(region)
         seen.add(salvage_id)
+
+
+def _reject_act_salvage_namespace(act: dict[str, Any]) -> None:
+    """The salvage firewall in the other direction: no salvage record becomes an act.
+
+    `_reject_salvage_act_namespace` stops a salvage item reaching into the acts
+    namespace. This stops the reverse -- a salvage-shaped record arriving where an act
+    is expected, and its harvested scrap becoming established text through a writer
+    that only ever asked whether a `canonical_clean_text` field was present. Spec 11
+    test 4 is that "no code path from this stage writes act text under any
+    circumstance": promotion is a pipeline re-entry Tyrel approves, never an export
+    act, so a record carrying any of these discriminants is refused by name rather
+    than left to fail on a missing key somewhere downstream.
+    """
+    reached = sorted(set(act) & _SALVAGE_DISCRIMINANT_FIELDS)
+    if reached:
+        raise SchemaRefusal(
+            f"an Armarium projection act carries salvage-tier field(s) {reached}; "
+            "salvage is promoted by re-entering the pipeline, never by export"
+        )
 
 
 def _reject_salvage_act_namespace(value: Any, *, subject: str) -> None:
