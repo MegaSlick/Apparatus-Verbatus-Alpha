@@ -1692,6 +1692,10 @@ def test_preflight_uses_the_configured_vram_table(vram: str, expected: str) -> N
     assert report.color == "green"
     assert report.tier == expected
     assert not report.assembly_proven, "fixture chairs are not a real pod assembly claim"
+    assert report.placements
+    planned_chairs = {item.chair for item in report.placements if item.state == "planned"}
+    assert planned_chairs == {receipt["chair"] for receipt in report.cache_receipts}
+    assert planned_chairs == {receipt["chair"] for receipt in report.smoke_receipts}
     assert all(item.residency in {"single", None} for item in report.placements)
 
 
