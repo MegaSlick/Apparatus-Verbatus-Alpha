@@ -1051,6 +1051,26 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     return fixture_submission(args, registry)
 
 
+def _load_pdf_render_settings(args) -> render_config.PdfRenderSettings:
+    """The one place a run's PDF target DPI is resolved, fixture or real."""
+    return render_config.load_pdf_render_settings(
+        Path(args.pdf_render_config),
+        target_override=args.pdf_target_dpi,
+        minimum_dpi=pdf_render.MIN_RENDER_DPI,
+    )
+
+
+def _finish_door_run(context: StageContext, tree: RunTree, admitted: int) -> int:
+    """The one shared close for both entry points: reports, then the loud check."""
+    refusal_report = publish_refusal_report(context)
+    duplicate_report = publish_duplicate_report(context)
+    context.finish(DOOR)
+    _announce_refusal_report(tree, refusal_report)
+    _announce_duplicate_report(tree, duplicate_report)
+    require_some_admitted(admitted, tree, refusal_report)
+    return EXIT_COMPLETE
+
+
 def fixture_submission(args, registry) -> int:
     """The walking skeleton: declared synthetic pages, no gate, sealed as such."""
     fixture_root = declared_synthetic_fixture_root(args.fixture_root)
@@ -1058,11 +1078,7 @@ def fixture_submission(args, registry) -> int:
     scenario_for(fixture, args.scenario)
     declared = declared_digests(fixture, args.scenario)
     policy = admission.load_format_policy()
-    pdf_settings = render_config.load_pdf_render_settings(
-        Path(args.pdf_render_config),
-        target_override=args.pdf_target_dpi,
-        minimum_dpi=pdf_render.MIN_RENDER_DPI,
-    )
+    pdf_settings = _load_pdf_render_settings(args)
     bindings = run_config_bindings(
         registry.config,
         fixture,
@@ -1106,13 +1122,7 @@ def fixture_submission(args, registry) -> int:
         policy=policy,
         pdf_settings=pdf_settings,
     )
-    refusal_report = publish_refusal_report(context)
-    duplicate_report = publish_duplicate_report(context)
-    context.finish(DOOR)
-    _announce_refusal_report(tree, refusal_report)
-    _announce_duplicate_report(tree, duplicate_report)
-    require_some_admitted(admitted, tree, refusal_report)
-    return EXIT_COMPLETE
+    return _finish_door_run(context, tree, admitted)
 
 
 def real_submission(args, registry) -> int:
@@ -1161,11 +1171,7 @@ def real_submission(args, registry) -> int:
         )
 
     format_policy = admission.load_format_policy()
-    pdf_settings = render_config.load_pdf_render_settings(
-        Path(args.pdf_render_config),
-        target_override=args.pdf_target_dpi,
-        minimum_dpi=pdf_render.MIN_RENDER_DPI,
-    )
+    pdf_settings = _load_pdf_render_settings(args)
     # Inventory streams every digest and retains no source body.  Later reads
     # reopen by directory descriptor, never by a reconstructed ordinary path: a
     # 15 GB PDF remains a stream, and the digest and PDFium renderer hold the same
@@ -1261,13 +1267,7 @@ def real_submission(args, registry) -> int:
         data_policy=data_policy,
         open_source=open_source,
     )
-    refusal_report = publish_refusal_report(context)
-    duplicate_report = publish_duplicate_report(context)
-    context.finish(DOOR)
-    _announce_refusal_report(tree, refusal_report)
-    _announce_duplicate_report(tree, duplicate_report)
-    require_some_admitted(admitted, tree, refusal_report)
-    return EXIT_COMPLETE
+    return _finish_door_run(context, tree, admitted)
 
 
 def _announce_refusal_report(tree: RunTree, refusal_report: str | None) -> None:
