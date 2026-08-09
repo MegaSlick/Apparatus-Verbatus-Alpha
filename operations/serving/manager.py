@@ -637,23 +637,23 @@ class ServingManager:
             self._active = handle
             return handle
         except ChairRefusal:
+            # The chair boundary has already named this failure. A cleanup
+            # problem is a second, different fact and gets its own refusal.
             cleanup_error = self._cleanup_unready(process, endpoint)
             if cleanup_error is not None:
                 self._refuse(identity, cleanup_error)
             raise
         except ServingError as error:
-            cleanup_error = self._cleanup_unready(process, endpoint)
-            if cleanup_error is not None:
-                self._refuse(identity, cleanup_error)
-            self._refuse(identity, error)
+            self._refuse(identity, error, also=self._cleanup_unready(process, endpoint))
             raise AssertionError(
                 "registry refusal returned unexpectedly"
             ) from error  # pragma: no cover
         except Exception as error:
-            cleanup_error = self._cleanup_unready(process, endpoint)
-            if cleanup_error is not None:
-                self._refuse(identity, cleanup_error)
-            self._refuse(identity, ProcessLaunchError(f"unexpected serving start failure: {error}"))
+            self._refuse(
+                identity,
+                ProcessLaunchError(f"unexpected serving start failure: {error}"),
+                also=self._cleanup_unready(process, endpoint),
+            )
             raise AssertionError(
                 "registry refusal returned unexpectedly"
             ) from error  # pragma: no cover
@@ -1123,8 +1123,31 @@ class ServingManager:
         if self._active is not handle:
             raise ServiceStopError("service handle is not this manager's active owned service")
 
-    def _refuse(self, identity: ChairIdentity, error: ServingError) -> None:
-        self.registry.refuse_recipe_start(identity, f"{error.code}: {error}")
+    def _refuse(
+        self,
+        identity: ChairIdentity,
+        error: ServingError,
+        *,
+        also: ServingError | None = None,
+    ) -> None:
+        """Report this chair unavailable, carrying every reason it is.
+
+        `also` exists because a failed launch can produce two independent
+        facts, and reporting either alone loses the other. Refusing with only
+        the stop failure tells an operator the process would not go away and
+        never mentions that it died of CUDA out-of-memory; refusing with only
+        the launch failure hides a child that may still hold the card. Both go
+        in one message, because the registry raises one refusal and whatever is
+        not in it is not anywhere (GOVERNANCE 2).
+        """
+
+        detail = f"{error.code}: {error}"
+        if also is not None:
+            detail += (
+                f"; additionally, cleanup after this failure could not be verified and the "
+                f"single-resident lease is retained: {also.code}: {also}"
+            )
+        self.registry.refuse_recipe_start(identity, detail)
 
 
 def _launchable(

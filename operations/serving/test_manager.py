@@ -48,6 +48,7 @@ from .errors import (
     AdapterActivityError,
     EndpointOccupiedError,
     ReadinessError,
+    ReceiptPublicationError,
     ResidencyError,
     ServiceStopError,
     ServingConfigurationError,
@@ -994,6 +995,13 @@ def test_failed_cleanup_surfaces_stop_error_and_keeps_the_residency_lease(tmp_pa
     assert process.terminate_calls == 1
     assert process.kill_calls == 1
     assert ServiceStopError.code in registry.refusals[-1][1]
+    # Both facts, in one refusal. Reporting only the stop failure would tell an
+    # operator the child would not go away and never mention why the launch
+    # failed; reporting only the launch failure would hide a child that may
+    # still hold the card.
+    assert ReceiptPublicationError.code in registry.refusals[-1][1]
+    assert "injected receipt storage failure" in registry.refusals[-1][1]
+    assert "lease is retained" in registry.refusals[-1][1]
 
     # A second start cannot silently run alongside the unverified owned child.
     with pytest.raises(ServingRecipeRefusal, match="shutdown is not verified"):
