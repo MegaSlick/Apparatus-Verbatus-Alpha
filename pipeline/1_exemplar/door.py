@@ -360,6 +360,38 @@ def expand_sources(
                 "a submitted source declares no non-negative byte count; the source "
                 "manifest names it by ordinal"
             )
+
+        def append(
+            container_page_index: int | None,
+            detected_format: str | None,
+            *,
+            path: str = path,
+            declared_sha256: str | None = declared_sha256,
+            declared_size: int | None = declared_size,
+            ledger_sha256: str | None = ledger_sha256,
+            source_path: Path | None = source_path,
+        ) -> None:
+            """One fanned-out or standalone row for this loop iteration's source.
+
+            The row-invariant fields are bound as default arguments, evaluated once
+            at definition time, rather than left as loop-variable closures a later
+            iteration's reassignment could change from under a still-live reference.
+            """
+            nonlocal ordinal
+            ordinal += 1
+            sources.append(
+                SourceEntry(
+                    ordinal,
+                    path,
+                    declared_sha256,
+                    container_page_index,
+                    declared_size,
+                    ledger_sha256,
+                    source_path,
+                    detected_format,
+                )
+            )
+
         data: bytes | None = None
         try:
             if open_source is not None:
@@ -376,52 +408,16 @@ def expand_sources(
                 # intentionally unchanged; only a PDF container can be opened by
                 # PDFium directly from its source path.
                 if declared_size is not None and declared_size > MAX_SOURCE_BYTES:
-                    ordinal += 1
-                    sources.append(
-                        SourceEntry(
-                            ordinal,
-                            path,
-                            declared_sha256,
-                            None,
-                            declared_size,
-                            ledger_sha256,
-                            source_path,
-                            detected,
-                        )
-                    )
+                    append(None, detected)
                     continue
                 data = read_bytes(path)
                 detected = sniff(data)
         except (OSError, inventory.SubmissionInputError):
-            ordinal += 1
-            sources.append(
-                SourceEntry(
-                    ordinal,
-                    path,
-                    declared_sha256,
-                    None,
-                    declared_size,
-                    ledger_sha256,
-                    source_path,
-                    None,
-                )
-            )
+            append(None, None)
             continue
         route = admission.classify_detected_format(detected, policy)
         if data is not None and len(data) > MAX_SOURCE_BYTES:
-            ordinal += 1
-            sources.append(
-                SourceEntry(
-                    ordinal,
-                    path,
-                    declared_sha256,
-                    None,
-                    declared_size,
-                    ledger_sha256,
-                    source_path,
-                    detected,
-                )
-            )
+            append(None, detected)
             continue
         try:
             if detected == "pdf" and open_source is not None:
@@ -436,67 +432,19 @@ def expand_sources(
                 )
         except (pdf_render.PdfRefusal, FormatRefusal, inventory.SubmissionInputError, OSError):
             if route != admission.RENDER_PAGES:
-                ordinal += 1
-                sources.append(
-                    SourceEntry(
-                        ordinal,
-                        path,
-                        declared_sha256,
-                        None,
-                        declared_size,
-                        ledger_sha256,
-                        source_path,
-                        detected,
-                    )
-                )
+                append(None, detected)
                 continue
-            ordinal += 1
-            sources.append(
-                SourceEntry(
-                    ordinal,
-                    path,
-                    declared_sha256,
-                    0,
-                    declared_size,
-                    ledger_sha256,
-                    source_path,
-                    detected,
-                )
-            )
+            append(0, detected)
             continue
         # PDF/TIFF are declared page containers even when there is one page. For
         # every other decoder-backed image, a reported multi-frame source is also
         # fanned out. Retaining an animation as one raster would silently drop all
         # but frame zero downstream; one-frame rasters retain their original bytes.
         if route != admission.RENDER_PAGES and page_count == 1:
-            ordinal += 1
-            sources.append(
-                SourceEntry(
-                    ordinal,
-                    path,
-                    declared_sha256,
-                    None,
-                    declared_size,
-                    ledger_sha256,
-                    source_path,
-                    detected,
-                )
-            )
+            append(None, detected)
             continue
         for page_index in range(page_count):
-            ordinal += 1
-            sources.append(
-                SourceEntry(
-                    ordinal,
-                    path,
-                    declared_sha256,
-                    page_index,
-                    declared_size,
-                    ledger_sha256,
-                    source_path,
-                    detected,
-                )
-            )
+            append(page_index, detected)
     return sources
 
 
