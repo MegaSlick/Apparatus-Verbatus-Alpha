@@ -14,9 +14,9 @@ seal. A sealed page's Door admission and pixel blob are checked again before its
 pixels are cropped. The check is deliberately before the first region write.
 
 The current structural proposer is the declared synthetic walking skeleton. On
-real, approval-gated ingress this program performs that Exemplar boundary check
-and then stops with a refusal: it does not invent proposals, holds, or text in
-place of the unbuilt real structural model.
+real ingress this program performs that Exemplar boundary check and then stops
+with a refusal: it does not invent proposals, holds, or text in place of the
+unbuilt real structural model.
 
 ## `kind="region"`
 

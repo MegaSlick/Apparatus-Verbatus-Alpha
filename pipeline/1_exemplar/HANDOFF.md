@@ -12,13 +12,13 @@ inventory directory.
 ## Input and filename ledger
 
 For a real submission, `operations/submit/submit.py` first creates a canonical,
-self-hashed `submission-manifest.v0`. It is the filename ledger: each original
+self-hashed `submission-manifest.v1`. It is the filename ledger: each original
 relative filename is bound to its SHA-256 and byte count before a copy moves.
 
 The real door requires that ledger with `--submission-manifest`. It verifies its
-self-hash and approval reference, compares the post-transfer folder to it, and
-extends `run.json`'s self-hashed `source_manifest` rather than making a second
-inventory. A source row has:
+self-hash, compares the post-transfer folder to it, and extends `run.json`'s
+self-hashed `source_manifest` rather than making a second inventory. A source row
+has:
 
 ```text
 ordinal               stable page ordinal
@@ -30,12 +30,13 @@ container_page_index  present for every fanned source page/frame, zero-based
 ```
 
 Rows repeat a container's filename/digest for its fanned-out pages. The Exemplar
-reconstructs the unique file rows and requires them to reproduce `ledger_sha256`
-against the run's sealed approval reference. A changed copy creates a
-`digest-mismatch` alarm under the original filename; a source never silently drops.
+reconstructs the unique file rows and requires them to reproduce the sealed
+`ledger_sha256`. A changed copy creates a `digest-mismatch` alarm under the original
+filename; a source never silently drops.
 
-Declared synthetic fixtures remain the only approval-free route. They carry the
-same core source rows but not a real filename ledger.
+Declared synthetic fixtures remain the only ledger-free route. They carry the
+same core source rows but not a real filename ledger. Neither route needs an
+approval-record artifact — cut 2026-08-09, see "Data handling and scope" below.
 
 ## Decoder routes and alarms
 
@@ -88,7 +89,6 @@ There is one admission artifact per source ordinal, whether its outcome is
 ```text
 ordinal, declared_path, declared_sha256
 declared_bytes, ledger_sha256             (real ledger rows)
-data_gate_approval_ref                    (real runs)
 ```
 
 An admitted payload additionally has `sha256`, `stored_at`, and `geometry`. A page
@@ -147,8 +147,12 @@ all originals it used without guessing from an ordinal.
 
 ## Data handling and scope
 
-Real input is fail-closed on a current approval record bound to
-`config/data_handling_policy.json`. The local gate package is
+Real input is fail-closed on living inside a storage root
+`config/data_handling_policy.json` names — the submitted folder, the run root, and
+the filename ledger all check against it before a byte is read. **Cut 2026-08-09,
+per Tyrel's ruling that session:** real input no longer also needs a current
+data-gate approval-record artifact; none of this material ever reaches git
+regardless of any such sign-off. The local gate package is
 [`operations/submit/README.md`](../../operations/submit/README.md).
 It retains all run material, exports, and filename ledger until the whole run is
 dead/broken or complete/exported; only the lifecycle owner may then destroy the
