@@ -15,8 +15,12 @@ dependencies = [
     "pillow-heif==1.5.0",
     # PDFium binding used to rasterise complete PDF pages once at the submit door.
     "pypdfium2==5.12.1",
-    # Spec 05's audited unit-cost edit-distance primitive.  The framework owns all
-    # normalization and calls it with processor=None; see operations/spike_perlector.
+    # Spec 05's unit-cost edit-distance primitive, MIT licence. Called bare, with
+    # processor=None, rather than through a higher-level scorer such as jiwer:
+    # jiwer's wer()/cer() bundle their own tokenization and transform pipeline, and
+    # what they normalize by default was not something either lane could confirm
+    # from the documentation in one reading. The framework owns every normalization
+    # decision instead, explicitly and tested. See operations/spike_perlector.
     "rapidfuzz==3.14.5",
     # UAX #29 extended grapheme clusters for Spec 05 CER after explicit NFC text
     # normalization; see operations/spike_perlector/README.md (MIT licence).
