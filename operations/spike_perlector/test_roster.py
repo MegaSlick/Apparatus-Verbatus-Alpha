@@ -130,6 +130,52 @@ def test_declared_run_entry_requires_the_full_sealed_three_candidate_roster():
     assert len(run.cells) == 9
 
 
+class _ForgedIdentity:
+    """A caller-controlled stand-in that agrees with anything it is compared to.
+
+    Not a ResolvedIdentity at all -- dict equality (``actual != expected``)
+    calls the *left* operand's own ``__eq__`` first, so an untrusted object
+    like this one, given the real vendor candidate's ``candidate_key``, could
+    otherwise satisfy the roster-match check regardless of what it claims
+    about itself (e.g. a ``delivery`` of "local" that would skip the
+    third-party-transmission approval a real external candidate requires).
+    """
+
+    def __init__(self, candidate_key: str) -> None:
+        self.candidate_key = candidate_key
+        self.delivery = DeliveryMode.LOCAL
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __hash__(self) -> int:
+        return 0
+
+
+def test_declared_run_refuses_a_candidate_whose_identity_is_not_really_one():
+    roster = valid_roster()
+    forged = _ForgedIdentity(roster.vendor_unaltered.candidate_key)
+    candidates = tuple(
+        FakeCandidate(forged if resolved is roster.vendor_unaltered else resolved)
+        for resolved in roster.identities()
+    )
+    act = evaluation_act(material_class=MaterialClass.CLEARED_PUBLIC)
+    witnesses = witness_configuration_for(act)
+    manifest = manifest_for(act)
+    prompts = registry(*roster.identities())
+    with pytest.raises(MatrixRefusal, match="not a stand-in"):
+        run_declared_roster_matrix(
+            candidates,
+            (act,),
+            roster=roster,
+            witness_configuration=witnesses,
+            manifest=manifest,
+            prompt_registry=prompts,
+            profile=GRAPHEMIC_V1,
+            authorization=_cleared_public_authorization(manifest, roster, witnesses, prompts),
+        )
+
+
 def test_declared_run_refuses_a_caller_supplied_protocol_digest():
     roster = valid_roster()
     act = evaluation_act(material_class=MaterialClass.CLEARED_PUBLIC)

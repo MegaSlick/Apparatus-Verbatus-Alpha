@@ -871,6 +871,18 @@ def run_declared_roster_matrix(
     )
     candidate_values = tuple(candidates)
     participants = tuple((candidate, candidate.identity) for candidate in candidate_values)
+    # dict equality below calls the *left* operand's __eq__ first -- comparing
+    # ``actual != expected`` would hand a caller-supplied identity's own __eq__
+    # first refusal on whether it "is" the sealed roster identity, which a
+    # forged object (never required to be a real ResolvedIdentity at all) could
+    # answer however it likes. Checked the same way gates.py checks an approval:
+    # every declared identity must actually be one before it is trusted to
+    # compare itself against the roster that gates the external-vendor delivery
+    # decision.
+    if any(not isinstance(identity, ResolvedIdentity) for _, identity in participants):
+        raise MatrixRefusal(
+            "every matrix participant must declare a checked ResolvedIdentity, not a stand-in"
+        )
     expected = {identity.candidate_key: identity for identity in roster.identities()}
     actual = {identity.candidate_key: identity for _, identity in participants}
     if actual != expected or len(candidate_values) != 3:
