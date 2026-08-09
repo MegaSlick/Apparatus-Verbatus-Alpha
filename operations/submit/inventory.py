@@ -65,11 +65,11 @@ _CHUNK: Final = 1024 * 1024
 # exhausts a machine. A bound nobody can reach is still the difference between a
 # named refusal and an out-of-memory kill nobody can read afterwards.
 #
-# `MAX_SUBMITTED_BYTES` counts *retained* bytes, so it is inert for `submit.py`,
-# which asks for `max_bytes=0` and holds no content at all, and live for the
-# pipeline door, which asks for 64 MiB per file and is the caller that actually
-# accumulates a corpus in memory. That asymmetry is the point: the bound sits where
-# the memory does. The other three bind both callers.
+# `MAX_SUBMITTED_BYTES` counts *retained* bytes. The production submitter and Door
+# both ask for `max_bytes=0` and stream this inventory without retaining bodies;
+# their later source reads are bounded separately. The aggregate remains live for
+# any caller that asks this reusable reader to retain content. The other three bind
+# every caller.
 MAX_SUBMITTED_FILES: Final = 100_000
 MAX_SUBMITTED_BYTES: Final = 8 * 1024 * 1024 * 1024
 MAX_DIRECTORY_DEPTH: Final = 64
@@ -90,6 +90,18 @@ class SubmittedSource(NamedTuple):
     data: bytes | None
 
 
+class _OpenStreamMetadata(NamedTuple):
+    """Descriptor facts that distinguish a rewrite from a name replacement."""
+
+    device: int
+    inode: int
+    mode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    links: int
+
+
 class OpenedSubmissionSource:
     """One submitted file held through an anchored, no-follow descriptor.
 
@@ -106,7 +118,7 @@ class OpenedSubmissionSource:
         handle: BinaryIO,
         descriptor: int,
         entry: str,
-        before: tuple[int, int, int, int, int],
+        before: _OpenStreamMetadata,
     ) -> None:
         self.handle = handle
         self._descriptor = descriptor
@@ -123,7 +135,23 @@ class OpenedSubmissionSource:
                 "bind evidence to a file it can no longer identify",
                 entry=self._entry,
             ) from error
-        if after != self._before:
+        if after == self._before:
+            return
+        # Replacing this descriptor's *name* removes exactly one hard link and
+        # updates ctime, but leaves the held inode's byte-bearing facts unchanged.
+        # That is safe: this descriptor still reads the ledgered bytes.  A rewrite
+        # that restores its original size and mtime does not change link count, so
+        # ctime still exposes it rather than letting altered pixels seal under the
+        # earlier digest.
+        name_replaced = (
+            after.device == self._before.device
+            and after.inode == self._before.inode
+            and after.mode == self._before.mode
+            and after.size == self._before.size
+            and after.mtime_ns == self._before.mtime_ns
+            and after.links == self._before.links - 1
+        )
+        if not name_replaced:
             raise SubmissionInputError(
                 "a submitted source changed while it was being read; the door refuses to "
                 "bind evidence to moving bytes",
@@ -293,22 +321,24 @@ def _stable_file_metadata(details: os.stat_result) -> tuple[int, int, int, int, 
     )
 
 
-def _open_stream_metadata(details: os.stat_result) -> tuple[int, int, int, int, int]:
+def _open_stream_metadata(details: os.stat_result) -> _OpenStreamMetadata:
     """Detect byte-affecting changes without mistaking an unlink for a rewrite.
 
     An atomic replacement removes this descriptor's name and may update only its
     ctime.  Its already-open inode still holds the exact bytes the door hashed, so
     rejecting it would recreate the pathname race this stream exists to avoid.
-    The full inventory check above retains ctime because it is binding a name at
-    submission time; the later descriptor-held reader deliberately tracks fields
-    that describe its own bytes and mode instead.
+    The later descriptor-held reader records both ctime and link count: a rewrite
+    changes ctime without removing this name, while an atomic name replacement
+    removes one link from the still-stable inode.
     """
-    return (
+    return _OpenStreamMetadata(
         details.st_dev,
         details.st_ino,
         details.st_mode,
         details.st_size,
         details.st_mtime_ns,
+        details.st_ctime_ns,
+        details.st_nlink,
     )
 
 

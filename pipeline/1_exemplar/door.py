@@ -63,7 +63,6 @@ from image_formats import (  # noqa: E402
     MAX_DIMENSION,
     MAX_PIXELS,
     MAX_SOURCE_BYTES,
-    MAX_TIFF_PAGES,
     FormatRefusal,
     count_raster_pages,
     raster_renderer_recipe,
@@ -569,7 +568,13 @@ def process_sources(
         nonlocal active_context
         try:
             if active_pdf_document is not None:
-                pdf_render.close_document(active_pdf_document)
+                try:
+                    pdf_render.close_document(active_pdf_document)
+                except pdf_render.PdfRefusal as error:
+                    # A native document that cannot be released is a pipeline
+                    # resource failure, not a property of one page. Stop loudly
+                    # without a traceback or a green stage completion.
+                    raise ContractError(str(error)) from error
         finally:
             # The stream outlives the document by construction, so it is released
             # second — and in a `finally`, because a document that fails to close
@@ -1402,7 +1407,6 @@ def _door_execution_recipe(pdf_settings) -> dict[str, Any]:
             "max_source_bytes": MAX_SOURCE_BYTES,
             "max_dimension": MAX_DIMENSION,
             "max_pixels": MAX_PIXELS,
-            "max_tiff_pages": MAX_TIFF_PAGES,
         },
     }
 

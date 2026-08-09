@@ -736,30 +736,19 @@ def _tiff_tag_value_offset(data: bytes, tag: int) -> int:
     raise AssertionError(f"the synthetic TIFF carries no tag {tag}")
 
 
-def test_a_frame_count_past_the_fan_out_limit_is_refused_by_a_named_bound(monkeypatch):
-    """A page count read out of an untrusted file is a loop bound somebody else wrote.
+def test_a_classic_tiff_past_the_retired_5000_page_cap_keeps_its_denominator():
+    """The document declares the page count; a project policy number does not."""
+    pages = 5_001
+    data = bytearray(b"II*\x00" + struct.pack("<I", 8))
+    for index in range(pages):
+        next_offset = 8 + (index + 1) * 6 if index + 1 < pages else 0
+        data.extend(struct.pack("<HI", 0, next_offset))
 
-    The limit is monkeypatched down rather than building five thousand pages: the
-    property is that the bound is applied to whatever the decoder reports, and
-    building the real thing would test the machine's patience instead.
-
-    It is checked on the decoder's own frame count, not only on a classic TIFF's
-    directory chain, because BigTIFF, animated GIF and animated WebP all reach the
-    fan-out without ever passing that chain walker.
-    """
-    monkeypatch.setattr(image_formats, "MAX_RASTER_FRAMES", 1)
-
-    with pytest.raises(FormatRefusal, match="frames exceed the 1-frame fan-out limit"):
-        decode_raster(_two_page_tiff())
+    assert count_raster_pages(bytes(data)) == pages
 
 
-def test_the_frame_bound_reaches_a_container_the_directory_walker_never_sees():
-    """BigTIFF's chain is 64-bit, so the classic walker returns without counting it.
-
-    Without the decoder-side bound this file's page count would be unbounded — the
-    exact hole the classic-only check left. One page here, and the limit is proved
-    to be the thing that would stop a large one.
-    """
+def test_bigtiff_leaves_its_page_count_to_the_decoder():
+    """BigTIFF's 64-bit chain leaves its declared count to the real decoder."""
     output = BytesIO()
     first = Image.new("L", (4, 3), 19)
     second = Image.new("L", (2, 5), 231)

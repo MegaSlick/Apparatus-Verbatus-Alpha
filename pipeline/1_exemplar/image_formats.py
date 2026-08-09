@@ -49,11 +49,6 @@ MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
 MAX_TIFF_DATA_SEGMENTS: Final = 100_000
-# One scanned register volume is hundreds of pages, not hundreds of thousands.
-# `MAX_TIFF_PAGES` bounds the classic-TIFF directory chain walk; `MAX_RASTER_FRAMES`
-# bounds whatever any decoder reports, for the containers that never reach that walk.
-MAX_TIFF_PAGES: Final = 5_000
-MAX_RASTER_FRAMES: Final = 5_000
 
 
 class ImageGeometry(NamedTuple):
@@ -1217,10 +1212,11 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         _validate_iso_bmff_image_header(data, detected_by_signature)
     classic_tiff_pages: int | None = None
     if detected_by_signature == "tiff":
-        # A resource bound, not a verdict about the layout: it propagates whatever
-        # the structural walker below decides, because a decoder that happily
-        # enumerates fifty thousand directories is not a reason to fan out fifty
-        # thousand ordinals.
+        # The structural walker proves that the document's declared chain is
+        # finite and inside the file. Its page count is the fan-out denominator;
+        # there is deliberately no policy cap, because microfilm can exceed 5,000
+        # pages and the submitted document — not a project preference — says how
+        # many pages arrived.
         classic_tiff_pages = _validate_classic_tiff_page_chain(data)
     _structural_corruption_check(detected_by_signature, data)
     try:
@@ -1250,16 +1246,6 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                 detected = _pillow_format_name(reported_format)
                 if not isinstance(frames, int) or frames < 1:
                     raise corrupt("image: decoder returned no frames")
-                # The fan-out bound, checked on whatever the decoder reports rather
-                # than only on a classic TIFF's directory chain. A BigTIFF, an
-                # animated GIF or a WebP reaches this line without ever passing the
-                # chain walker, and a frame count read out of an untrusted file is
-                # a loop bound somebody else wrote.
-                if frames > MAX_RASTER_FRAMES:
-                    raise unsupported(
-                        f"{detected}: {frames} frames exceed the "
-                        f"{MAX_RASTER_FRAMES}-frame fan-out limit"
-                    )
                 if not isinstance(page_index, int) or isinstance(page_index, bool):
                     raise corrupt("image: page index is not an integer")
                 if not 0 <= page_index < frames:
@@ -1364,10 +1350,6 @@ def count_raster_pages(data: bytes) -> int:
     if sniff(data) == "tiff":
         classic_pages = _validate_classic_tiff_page_chain(data)
         if classic_pages is not None:
-            if classic_pages > MAX_RASTER_FRAMES:
-                raise unsupported(
-                    f"TIFF: {classic_pages} frames exceed the {MAX_RASTER_FRAMES}-frame fan-out limit"
-                )
             return classic_pages
     return decode_raster(data).frame_count
 
@@ -1495,7 +1477,7 @@ def _pillow_format_name(format_name: str | None) -> str:
 
 
 def _validate_classic_tiff_page_chain(data: bytes) -> int | None:
-    """Return a bounded classic-TIFF page count without decoding later pages.
+    """Return a finite classic-TIFF page count without decoding later pages.
 
     Pillow owns actual pixel decoding and accepts several valid TIFF layouts this
     project's narrow first-page structural walker deliberately does not interpret.
@@ -1525,7 +1507,5 @@ def _validate_classic_tiff_page_chain(data: bytes) -> int | None:
         if next_offset_at + 4 > len(data):
             raise corrupt("TIFF: image-directory entries run past the file")
         pages += 1
-        if pages > MAX_TIFF_PAGES:
-            raise unsupported(f"TIFF: more than {MAX_TIFF_PAGES} pages exceed the fan-out limit")
         (offset,) = struct.unpack_from(endian + "I", data, next_offset_at)
     return pages

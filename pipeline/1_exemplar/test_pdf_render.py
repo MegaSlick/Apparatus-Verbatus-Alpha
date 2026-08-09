@@ -308,6 +308,20 @@ def test_the_stream_pdfium_read_is_left_open_for_its_owner_to_close(tmp_path):
     assert stream.closed
 
 
+def test_a_normal_document_close_failure_is_a_named_alarm():
+    """Best-effort cleanup belongs only on a path already reporting a failure."""
+
+    class BrokenClose:
+        def close(self):
+            raise RuntimeError("synthetic native close failure")
+
+    with pytest.raises(PdfRefusal) as caught:
+        close_document(pdf_render.OpenPdf(BrokenClose(), 1))
+
+    assert caught.value.reason is RefusalReason.UNREADABLE
+    assert "could not release" in str(caught.value)
+
+
 def test_a_source_that_is_neither_bytes_a_path_nor_a_stream_is_a_named_refusal():
     """Matching `pypdfium2.internal.is_stream` exactly is what keeps this a named
     refusal: a near-stream missing `readinto` would otherwise pass this module's

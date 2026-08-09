@@ -59,7 +59,7 @@ class RenderedPage(NamedTuple):
 
 
 class OpenPdf(NamedTuple):
-    """A native document handle and its bounded page count, owned by the door."""
+    """A native document handle and its declared page count, owned by the door."""
 
     document: Any
     page_count: int
@@ -132,7 +132,8 @@ def open_document(source: bytes | str | Path | BinaryIO) -> OpenPdf:
             RefusalReason.CORRUPT, f"PDFium could not prepare the document: {error}"
         ) from error
     if pages <= 0:
-        close_document(OpenPdf(document, pages))
+        # Preserve the primary corrupt-document alarm if cleanup also fails.
+        _close_native_document(document)
         raise PdfRefusal(RefusalReason.CORRUPT, "the PDF contains no pages")
     return OpenPdf(document, pages)
 
@@ -305,15 +306,21 @@ def render_page(opened: OpenPdf, page_index: int, settings: PdfRenderSettings) -
 
 
 def close_document(opened: OpenPdf) -> None:
-    """Close an owned native handle without hiding the original failure."""
-    _close_native_document(opened.document)
+    """Close an owned native handle, making a normal-path failure visible."""
+    try:
+        opened.document.close()
+    except Exception as error:
+        raise PdfRefusal(
+            RefusalReason.UNREADABLE,
+            f"PDFium could not release the document after reading: {error}",
+        ) from error
 
 
 def _close_native_document(document: Any) -> None:
-    """Best-effort cleanup for a handle that may have failed before opening fully."""
+    """Best-effort cleanup while preserving an open failure already in flight."""
     try:
         document.close()
-    except (AttributeError, pdfium.PdfiumError):
+    except Exception:
         pass
 
 

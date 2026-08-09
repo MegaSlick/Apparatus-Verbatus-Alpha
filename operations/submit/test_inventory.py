@@ -6,6 +6,7 @@ so every case here builds a real directory and reads it through the real opener.
 """
 
 import os
+import time
 
 import pytest
 
@@ -232,5 +233,29 @@ def test_a_source_rewritten_in_place_under_the_reader_is_a_named_refusal(tmp_pat
     with inventory.open_submission_source(folder, "page.png") as opened:
         assert opened.handle.read() == b"original bytes"
         source.write_bytes(b"rewritten in place")
+        with pytest.raises(SubmissionInputError, match="changed while it was being read"):
+            opened.assert_unchanged()
+
+
+def test_a_same_size_rewrite_cannot_hide_by_restoring_its_mtime(tmp_path):
+    """Size and mtime alone are not a stable identity; ctime exposes the write."""
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    source = folder / "page.png"
+    source.write_bytes(b"original bytes!")
+
+    with inventory.open_submission_source(folder, "page.png") as opened:
+        before = os.fstat(opened._descriptor)
+        assert opened.handle.read() == b"original bytes!"
+        # Some test filesystems quantize change time; cross one tick so the
+        # regression does not depend on two writes receiving distinct nanoseconds.
+        time.sleep(0.01)
+        source.write_bytes(b"changed! bytes!")
+        os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+        after = os.fstat(opened._descriptor)
+        assert after.st_size == before.st_size
+        assert after.st_mtime_ns == before.st_mtime_ns
+        assert after.st_ctime_ns != before.st_ctime_ns
         with pytest.raises(SubmissionInputError, match="changed while it was being read"):
             opened.assert_unchanged()
