@@ -171,9 +171,7 @@ WITNESS_FAILURES = (
         "attempt_ordinal": 2,
     },
 )
-WITNESS_NOT_RUN = (
-    {"scenario": "not-run-witness", "act_key": "a1", "chair": "attestator_3"},
-)
+WITNESS_NOT_RUN = ({"scenario": "not-run-witness", "act_key": "a1", "chair": "attestator_3"},)
 WITNESS_MALFORMED = (
     {
         "scenario": "malformed-witness",
@@ -240,9 +238,7 @@ def toml_value(value) -> str:
     if isinstance(value, dict):
         if not all(isinstance(key, str) for key in value):
             raise ValueError("fixture TOML object keys must be strings")
-        fields = ", ".join(
-            f"{key} = {toml_value(item)}" for key, item in sorted(value.items())
-        )
+        fields = ", ".join(f"{key} = {toml_value(item)}" for key, item in sorted(value.items()))
         return "{ " + fields + " }"
     raise ValueError(f"fixture cannot render TOML value {value!r}")
 

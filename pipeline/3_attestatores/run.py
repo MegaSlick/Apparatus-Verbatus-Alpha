@@ -389,8 +389,13 @@ def validate_content_health(native_payload: Any, health: Any) -> None:
             "characters",
         ):
             if health[field] != expected[field]:
-                raise SchemaRefusal(f"a no-response Testimonium has inconsistent content_health.{field}")
-        if not isinstance(health["truncation_basis"], str) or not health["truncation_basis"].strip():
+                raise SchemaRefusal(
+                    f"a no-response Testimonium has inconsistent content_health.{field}"
+                )
+        if (
+            not isinstance(health["truncation_basis"], str)
+            or not health["truncation_basis"].strip()
+        ):
             raise SchemaRefusal("a no-response Testimonium has no health reason")
         return
 
@@ -412,7 +417,9 @@ def format_capabilities_for(row: dict[str, Any]) -> dict[str, Any]:
     return capabilities
 
 
-def prepared_response(row: dict[str, Any]) -> tuple[Any, Any, dict[str, Any], dict[str, Any], str | None]:
+def prepared_response(
+    row: dict[str, Any],
+) -> tuple[Any, Any, dict[str, Any], dict[str, Any], str | None]:
     """Return native output and any recording defect without normalizing either.
 
     The final element is a reason that turns this one attempt into ``failed``.
@@ -565,7 +572,9 @@ def require_appendable_ordinal(context, act_id: str, chair: str, ordinal: int) -
                 f"{ordinal} across a missing history"
             )
         return
-    current = latest_attempt(records, f"Testimonium for {(act_id, chair)!r}", operation=f"read:{chair}")
+    current = latest_attempt(
+        records, f"Testimonium for {(act_id, chair)!r}", operation=f"read:{chair}"
+    )
     current_ordinal = current["payload"]["attempt_ordinal"]
     if ordinal > current_ordinal + 1:
         raise SchemaRefusal(
@@ -644,9 +653,7 @@ def validate_tallied_testimonium(context, record: dict[str, Any], act: dict[str,
         raise SchemaRefusal("a not-run Testimonium tally record does not retain a configured chair")
 
 
-def require_accounted_unrecordable_channel(
-    record: dict[str, Any], payload: dict[str, Any]
-) -> None:
+def require_accounted_unrecordable_channel(record: dict[str, Any], payload: dict[str, Any]) -> None:
     """Tell a witness whose output could not be kept from an evidence channel nobody can read.
 
     Spec 07 asks for two things that pull apart if `recordable=False` is read as
@@ -754,7 +761,9 @@ def attempt_tally(
                 require_accounted_unrecordable_channel(record, payload)
             if context is not None:
                 if acts is None:
-                    raise SchemaRefusal("a contextual attempt tally has no expected-act denominator")
+                    raise SchemaRefusal(
+                        "a contextual attempt tally has no expected-act denominator"
+                    )
                 by_act = {act["act_id"]: act for act in acts}
                 act = by_act.get(record["subject_id"])
                 if act is None:
@@ -807,7 +816,9 @@ def _publish_not_read(
             witness_reported=None,
             health=no_response_health(reason="not-attempted"),
             outcome=outcome,
-            reason=(f"chair is explicitly absent: {resolved.reason}" if outcome == "dead" else reason),
+            reason=(
+                f"chair is explicitly absent: {resolved.reason}" if outcome == "dead" else reason
+            ),
         ),
     )
 
@@ -896,8 +907,7 @@ def resolve_attempt(
             "truncation_basis": declarations["malformed"][key],
         }
         reason = (
-            "the provider response was refused without repair: "
-            f"{declarations['malformed'][key]}"
+            f"the provider response was refused without repair: {declarations['malformed'][key]}"
         )
     elif _is_page_fallback(context, act) or key in declarations["empty"]:
         outcome = "genuinely-empty"
@@ -1066,13 +1076,9 @@ def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) ->
             f"a reread named act {act_id!r}, which the Designator proposal seal does not"
         )
     if chair not in context.witness_chairs:
-        raise ContractError(
-            f"a reread named chair {chair!r}, which this run is not sealed with"
-        )
+        raise ContractError(f"a reread named chair {chair!r}, which this run is not sealed with")
     if act["outcome"] == "held":
-        raise ContractError(
-            f"act {act_id} is held; no witness was shown a reading there to reread"
-        )
+        raise ContractError(f"act {act_id} is held; no witness was shown a reading there to reread")
     resolved = context.registry.resolve(chair)
     if isinstance(resolved, AbsentChair):
         raise ContractError(
@@ -1089,9 +1095,7 @@ def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) ->
         resolved=resolved,
         ordinal=ordinal,
         regions=proposed_regions(context, act_id),
-        attempt=resolve_attempt(
-            context, act, chair, resolved, declarations_for(context, ordinal)
-        ),
+        attempt=resolve_attempt(context, act, chair, resolved, declarations_for(context, ordinal)),
     )
     return 1
 

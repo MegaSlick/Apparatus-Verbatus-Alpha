@@ -1456,10 +1456,12 @@ def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(t
     export = export_of(tree)
     assert export["aggregate"]["status"] == "partial"
     assert all(item["under_witnessed"] is True for item in export["review"])
-    assert all(item["witness_coverage"]["by_outcome"] == {"read": 2, "dead": 1} for item in export["review"])
     assert all(
-        item["witness_coverage"]["by_class"]
-        == {"completed": 2, "unresolved": 0, "failed": 1}
+        item["witness_coverage"]["by_outcome"] == {"read": 2, "dead": 1}
+        for item in export["review"]
+    )
+    assert all(
+        item["witness_coverage"]["by_class"] == {"completed": 2, "unresolved": 0, "failed": 1}
         for item in export["review"]
     )
     assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
@@ -1523,8 +1525,7 @@ def test_a_structured_testimonium_is_retained_here_and_refused_by_name_downstrea
     structured = next(
         record
         for record in artifacts(tree, ATTESTATORES, "testimonium")
-        if record["payload"]["chair"] == "attestator_1"
-        and record["payload"]["act_key"] == "a1"
+        if record["payload"]["chair"] == "attestator_1" and record["payload"]["act_key"] == "a1"
     )
     assert structured["outcome"] == "read"
     assert structured["payload"]["payload"] == {

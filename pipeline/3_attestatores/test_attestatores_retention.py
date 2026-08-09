@@ -173,9 +173,10 @@ def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
         for record in _testimonia(tree)
         if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_3"
     ]
-    assert [record["payload"]["attempt_ordinal"] for record in sorted(
-        records, key=lambda record: record["payload"]["attempt_ordinal"]
-    )] == [1, 2]
+    assert [
+        record["payload"]["attempt_ordinal"]
+        for record in sorted(records, key=lambda record: record["payload"]["attempt_ordinal"])
+    ] == [1, 2]
     assert first_path.read_bytes() == first_bytes
     assert len({record["artifact_id"] for record in records}) == 2
     current = next(
@@ -314,9 +315,7 @@ def test_a_whole_pass_may_not_skip_an_ordinal_over_any_seat(tmp_path):
     attempt that existed is no longer here, which is what a gap always means."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
-        invoke_stage(
-            run_root, "retention", "happy", "pipeline/3_attestatores/run.py"
-        ).returncode
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
         == 0
     )
     before = len(_testimonia(tree))
@@ -338,9 +337,7 @@ def test_a_targeted_reread_names_both_the_act_and_the_chair_or_is_refused(tmp_pa
     """Without both, it is a whole second pass wearing a narrower name."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
-        invoke_stage(
-            run_root, "retention", "happy", "pipeline/3_attestatores/run.py"
-        ).returncode
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
         == 0
     )
     act_id = _act_id_for(tree, "a1")
@@ -433,9 +430,7 @@ def test_a_self_report_is_retained_verbatim_whatever_its_format_can_express(tmp_
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
-        invoke_stage(
-            run_root, "retention", "happy", "pipeline/3_attestatores/run.py"
-        ).returncode
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
         == 0
     )
 
@@ -446,7 +441,10 @@ def test_a_self_report_is_retained_verbatim_whatever_its_format_can_express(tmp_
 
     can_say_unsure = _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=1)
     assert can_say_unsure["payload"]["format_capabilities"]["can_express_uncertainty"] is True
-    assert can_say_unsure["payload"]["witness_reported"] == {"confidence": "low", "note": "faded ink"}
+    assert can_say_unsure["payload"]["witness_reported"] == {
+        "confidence": "low",
+        "note": "faded ink",
+    }
     # The confident claim and the doubtful one produce the same outcome and the
     # same computed health shape. Nothing here grades a witness by what it says
     # about itself.
@@ -503,9 +501,7 @@ def test_an_excluded_testimonium_without_an_approval_artifact_is_refused_at_the_
 
     # The same record with an approval-record reference is accepted, so the
     # refusal is about the missing artifact and not about the word.
-    approved = build_envelope(
-        outcome="excluded", approval_ref="art_0123456789abcdef", **envelope
-    )
+    approved = build_envelope(outcome="excluded", approval_ref="art_0123456789abcdef", **envelope)
     assert approved["approval_ref"] == "art_0123456789abcdef"
 
 
@@ -581,7 +577,9 @@ def test_unrecordable_native_output_becomes_failed_without_replacement_text():
 
 def test_configured_never_attempted_seat_is_not_run_not_dead(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "not-run-witness")
-    result = invoke_stage(run_root, "retention", "not-run-witness", "pipeline/3_attestatores/run.py")
+    result = invoke_stage(
+        run_root, "retention", "not-run-witness", "pipeline/3_attestatores/run.py"
+    )
     assert result.returncode == 0, result.stderr
     record = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
     assert record["outcome"] == "not-run"
@@ -595,9 +593,7 @@ def test_configured_never_attempted_seat_is_not_run_not_dead(tmp_path):
 def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "happy")
     entry = next(
-        entry
-        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "region"
+        entry for entry in tree.build_manifest(DESIGNATOR)["artifacts"] if entry["kind"] == "region"
     )
     region = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
     refused_key = region["payload"]["act_key"]
@@ -630,7 +626,9 @@ def test_malformed_one_witness_response_is_a_failed_attempt_that_does_not_hold_t
     reported, and it is not a reason to stop reading ink nobody doubted.
     """
     run_root, tree = run_to_designator(tmp_path, "malformed-witness")
-    result = invoke_stage(run_root, "retention", "malformed-witness", "pipeline/3_attestatores/run.py")
+    result = invoke_stage(
+        run_root, "retention", "malformed-witness", "pipeline/3_attestatores/run.py"
+    )
     assert result.returncode == 0, result.stderr
     records = _testimonia(tree)
     assert len(records) == 6
@@ -677,9 +675,7 @@ def test_a_reading_that_claims_its_own_channel_was_unrecordable_is_unknown(tmp_p
     payload past the tally as though it were counted evidence."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
-        invoke_stage(
-            run_root, "retention", "happy", "pipeline/3_attestatores/run.py"
-        ).returncode
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
         == 0
     )
     record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
