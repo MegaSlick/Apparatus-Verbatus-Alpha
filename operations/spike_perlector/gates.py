@@ -121,11 +121,9 @@ class NormalizationApproval:
     approval_record: Mapping[str, Any]
     approval_bytes: bytes
 
-    # One builder for the sealed scope. It was written twice: once as an instance
-    # method nothing called, once as a literal inside `scope_digest`. The dead
-    # copy is the dangerous one -- it reads as the definition of what an approval
-    # binds, nothing exercises it, so it can drift from the live literal without
-    # a test going red and then be trusted by whoever reads it next.
+    # The one builder for the sealed scope; scope_sha256 and scope_digest both
+    # call it, so what an approval binds cannot drift between a live path and
+    # an unused copy.
     @staticmethod
     def _scope_record(*, profile_id: str, profile_sha256: str) -> dict[str, str]:
         return {
