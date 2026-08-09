@@ -173,6 +173,17 @@ def test_an_unresolved_chair_never_corroborates_blank():
     assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) is None
 
 
+def test_testimonia_from_original_regions_cannot_confirm_a_recovery_region_blank():
+    """Recovery ink is witness-uncovered; inherited testimony did not see it."""
+    coverage = {"under_witnessed": False, "unresolved_chairs": 0}
+    outcomes = {
+        "attestator_1": "genuinely-empty",
+        "attestator_2": "genuinely-empty",
+        "attestator_3": "genuinely-empty",
+    }
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, witness_uncovered=True) is None
+
+
 def test_zero_completed_chairs_never_corroborates_blank():
     """`under_witnessed` guards the ordinary floor, but a floor of zero must not
     let an empty completed set stand in for positive evidence of absence."""

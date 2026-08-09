@@ -70,7 +70,7 @@ def write_policy(tmp_path, text: str) -> Path:
 # --- The shipped default -------------------------------------------------------
 
 
-def test_the_shipped_default_config_loads_and_is_below_the_ruled_ceiling():
+def test_the_shipped_default_config_loads_at_the_ruled_boundary():
     policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
     assert policy["threshold"] == RULED_THRESHOLD
     assert (PERLECTOR, "failed") in policy["kinds"]
@@ -93,11 +93,13 @@ def test_the_shipped_default_config_loads_and_is_below_the_ruled_ceiling():
 # --- Policy validation: refuse before any tally is trusted ----------------------
 
 
-def test_a_threshold_above_the_ruled_ceiling_is_refused(tmp_path):
+@pytest.mark.parametrize("threshold", [0, 1, 3])
+def test_a_threshold_other_than_the_ruled_value_is_refused(tmp_path, threshold):
     path = write_policy(
-        tmp_path, 'threshold = 3\n[[kind]]\nstage = "perlector"\noutcome = "failed"\n'
+        tmp_path,
+        f'threshold = {threshold}\n[[kind]]\nstage = "perlector"\noutcome = "failed"\n',
     )
-    with pytest.raises(ContractError, match="ruled maximum"):
+    with pytest.raises(ContractError, match="ruled value is exactly"):
         load_hard_failure_policy(path)
 
 
@@ -287,6 +289,25 @@ def test_a_recovered_act_still_counts_the_incident_that_happened(tmp_path):
     tally = tally_hard_failures(tree, policy)
     assert tally["count"] == 1
     assert tally["subjects"] == ["perlector:act_0000000000000001"]
+    assert tally["by_kind"]["perlector:failed"] == ["act_0000000000000001"]
+
+
+def test_repeated_failed_attempts_are_one_incident_in_the_total_and_evidence(tmp_path):
+    """The per-kind evidence must use the same incident identity as the count."""
+    tree = make_run(tmp_path)
+    for attempt in ("att_0000000000000001", "att_0000000000000002"):
+        publish(
+            tree,
+            stage=PERLECTOR,
+            kind="perlectio",
+            subject="act_0000000000000001",
+            outcome="failed",
+            adapter_revision="fake-perlector-v0",
+            attempt=attempt,
+        )
+    tally = tally_hard_failures(tree, load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH))
+    assert tally["count"] == 1
+    assert tally["by_kind"]["perlector:failed"] == ["act_0000000000000001"]
 
 
 def test_two_failing_stages_on_the_same_act_count_as_two_incidents(tmp_path):

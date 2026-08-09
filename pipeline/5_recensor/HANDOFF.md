@@ -38,8 +38,9 @@ link — carries this fact under `payload["continuation"]`.
 
 ## `kind="review"`
 
-Every review payload has `act_key`, `attempt_ordinal`, coverage, the recovery
-counts/bounds, `continuation`, a reason where applicable, and `perlectio_ref`.
+Every readable-act review payload has `act_key`, `attempt_ordinal`, coverage,
+the applicable recovery counts/bounds, `continuation`, a reason where
+applicable, and `perlectio_ref`.
 The Perlectio reference is both a payload fact and a direct input: it names
 exactly the reading the review assessed. Ordinary terminal records use
 `accepted` or `held-for-review`; held Designator acts instead directly input
@@ -70,6 +71,10 @@ act does. Every other non-completed Perlector outcome (`failed`, `truncated`,
 always holds. A continuation shortfall or a scenario-declared hold also
 disqualifies confirmation, for the same reason they disqualify acceptance:
 there is unread or human-flagged evidence the corroboration cannot see.
+So does any recovery region: inherited Testimonia remain bound to the original
+proposal regions, and cannot corroborate absence in witness-uncovered ink they
+never saw. The expanded act remains held even when every inherited Testimonium
+reported `genuinely-empty`.
 
 `confirmed-blank` is COMPLETED-class and terminal at the Recensor
 (`ArmariumCategory.CONFIRMED_BLANK`) — Archetypus's existing `review["outcome"]

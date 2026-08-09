@@ -12,8 +12,8 @@
 # in flight finishes; nothing already running is torn down mid-stage.
 #
 # `threshold` is the count a run may reach without halting; the cap trips at
-# threshold + 1. Configuration may lower it, never raise it above 2, mirroring
-# `recovery.toml`'s own ruled-ceiling pattern.
+# threshold + 1. This is the ruled value, not a tunable ceiling: two continues
+# as an early warning and the third stops.
 threshold = 2
 
 # PROPOSED, NOT YET APPROVED. The closed list below is this build's proposal

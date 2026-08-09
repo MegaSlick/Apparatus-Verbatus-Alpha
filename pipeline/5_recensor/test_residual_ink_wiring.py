@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from common.contracts.errors import FatalAccounting
 from common.contracts.stages import DESIGNATOR
 from common.runtree.store import RunTree
 
@@ -107,6 +108,27 @@ def test_sealed_page_images_reads_every_real_sealed_page(tmp_path):
     for record in pages.values():
         assert record["outcome"] == "sealed"
         assert isinstance(record["payload"]["image_path"], str)
+
+
+def test_sealed_page_images_refuses_duplicate_ordinals_instead_of_selecting_one():
+    class DuplicatePageTree:
+        def build_manifest(self, _stage):
+            return {
+                "artifacts": [
+                    {"kind": "page", "artifact_id": "page-a"},
+                    {"kind": "page", "artifact_id": "page-b"},
+                ]
+            }
+
+        def read_artifact(self, _stage, _kind, artifact_id):
+            return {
+                "artifact_id": artifact_id,
+                "outcome": "sealed",
+                "payload": {"ordinal": 1, "image_path": f"{artifact_id}.png"},
+            }
+
+    with pytest.raises(FatalAccounting, match="more than one sealed page for ordinal 1"):
+        RUN.sealed_page_images(_FakeContext(DuplicatePageTree()))
 
 
 def test_page_coverage_findings_does_not_flag_the_real_fully_covered_fixture(tmp_path):

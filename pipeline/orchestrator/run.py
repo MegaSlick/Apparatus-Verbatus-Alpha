@@ -219,7 +219,16 @@ def main() -> int:
     scenario_for(fixture, args.scenario)
 
     halted = None
+    # A resumed run may already be over the cap. Recompute before re-entering
+    # any stage, not only after the first idempotent replay: "stop" bounds work,
+    # and replaying a model stage before rediscovering durable failure evidence
+    # would spend work after the run was already known to need Tyrel.
+    tree = RunTree(Path(args.run_root), args.run_id)
+    if tree.resolve("run.json").exists():
+        halted = checkpoint(args, "resume-preflight", hard_failure_policy)
     for name, program in SEQUENCE:
+        if halted is not None:
+            break
         if name == "archetypus":
             halted = drive_recovery(args, hard_failure_policy)
             if halted is not None:
@@ -233,7 +242,6 @@ def main() -> int:
         report_halt(args, halted)
         return EXIT_RUN_HALTED
 
-    tree = RunTree(Path(args.run_root), args.run_id)
     export = tree.read_artifact(
         "armarium",
         "export",

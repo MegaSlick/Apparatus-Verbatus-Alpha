@@ -18,6 +18,7 @@ alongside the forged failures, so these tests also stand as the end-to-end
 proof that a real truncation does not, by itself, move the tally.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -125,7 +126,7 @@ def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_pa
     result = orchestrate(root, "r", "truncated-reading")
     assert result.returncode == 4, result.stdout + result.stderr
     assert "halted at the" in result.stdout
-    assert "perlector" in result.stdout
+    assert "resume-preflight" in result.stdout
 
     # The section already in flight (perlector) finished -- its manifest exists --
     # but nothing past the checkpoint that tripped the cap was ever invoked.
@@ -152,8 +153,11 @@ def test_re_running_a_halted_orchestration_halts_again_the_same_way(tmp_path):
     forge_perlector_failure(tree, "fake-hard-failure-subject-3")
 
     first = orchestrate(root, "r", "truncated-reading")
+    door_manifest = tree.resolve(tree.manifest_path("door"))
+    os.utime(door_manifest, ns=(1_000_000_000, 1_000_000_000))
     second = orchestrate(root, "r", "truncated-reading")
     assert first.returncode == second.returncode == 4
+    assert door_manifest.stat().st_mtime_ns == 1_000_000_000
     assert not has_any_artifact(tree, RECENSOR)
 
 

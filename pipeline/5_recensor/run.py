@@ -11,9 +11,10 @@ recovery recovers coverage and not quality (GOVERNANCE 11). Every request is an
 artifact, so nothing can disappear inside a loop.
 
 **It does not select among witnesses.** Witness outcomes are aggregated into a
-coverage record and used for exactly two things: marking an act under-witnessed,
-and forcing the run's aggregate visibly partial. They never decide an act's
-outcome, and no count of agreeing chairs can change a reading.
+    coverage record used to mark an act under-witnessed and force the run's
+    aggregate visibly partial. On an explicit Perlector `no-readable-text`
+    finding, unanimous region-bound absence may additionally corroborate a blank;
+    it never supplies characters, and no count of chairs can change a reading.
 
     python pipeline/5_recensor/run.py --run-root <dir> --run-id <id>
 """
@@ -111,7 +112,9 @@ def chair_outcomes(context, act_id: str) -> dict[str, str]:
     }
 
 
-def blank_corroboration(coverage: dict, outcomes: dict[str, str]) -> list[str] | None:
+def blank_corroboration(
+    coverage: dict, outcomes: dict[str, str], *, witness_uncovered: bool = False
+) -> list[str] | None:
     """The corroborating chairs if every witness that read this act's ink agrees
     nothing was there, or `None` if the evidence does not support that.
 
@@ -131,12 +134,16 @@ def blank_corroboration(coverage: dict, outcomes: dict[str, str]) -> list[str] |
     says must never be silently resolved — it holds the act for a human,
     never outvotes the dissenter.
 
+    A recovery region is witness-uncovered by contract: the inherited
+    testimonia remain bound to the original proposal regions. They therefore
+    cannot corroborate absence in an expanded region they never saw.
+
     Requires the configured witness floor to have been met by chairs that
     actually completed a read (not merely configured), and no chair still
     unresolved — a floor met only by `failed`/`dead` chairs, or a run that
     has not yet heard from every configured chair, corroborates nothing.
     """
-    if coverage["under_witnessed"] or coverage["unresolved_chairs"]:
+    if witness_uncovered or coverage["under_witnessed"] or coverage["unresolved_chairs"]:
         return None
     completed = sorted(
         chair for chair, outcome in outcomes.items() if outcome in WITNESS_READING_OUTCOMES
@@ -530,6 +537,11 @@ def sealed_page_images(context) -> dict[int, dict]:
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
             raise FatalAccounting(
                 f"Exemplar page {record.get('artifact_id')} carries no integer ordinal"
+            )
+        if ordinal in pages:
+            raise FatalAccounting(
+                f"the Exemplar carries more than one sealed page for ordinal {ordinal}; "
+                "the Recensor has no rule for selecting one page image"
             )
         pages[ordinal] = record
     return pages
@@ -937,7 +949,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # them is a positive claim of absence, so there is no absence here
             # to confirm.
             corroborating_chairs = (
-                blank_corroboration(coverage, chair_outcomes(context, act_id))
+                blank_corroboration(
+                    coverage,
+                    chair_outcomes(context, act_id),
+                    witness_uncovered=bool(state["recovery_regions"]),
+                )
                 if (
                     latest["outcome"] == "no-readable-text"
                     and not continuation_shortfall

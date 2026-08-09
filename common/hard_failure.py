@@ -29,9 +29,9 @@ DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "hard_failure.toml"
 )
 
-# Tyrel's ruled ceiling, 2026-08-05: "more then 2 failures... is a failure that
-# needs fixing". Configuration may choose a lower threshold; it may not raise
-# this one, mirroring `common/recovery.py`'s RULED_ABSOLUTE_CAP pattern.
+# Tyrel's ruled boundary, 2026-08-05: two continues as an early warning and the
+# third stops. Unlike the recovery budget, the hard-failure threshold was not
+# delegated for downward tuning, so configuration cannot move it either way.
 RULED_THRESHOLD: Final = 2
 
 
@@ -88,11 +88,10 @@ def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH
     threshold = config.get("threshold")
     if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 0:
         raise ContractError("the hard-failure configuration has no non-negative integer threshold")
-    if threshold > RULED_THRESHOLD:
+    if threshold != RULED_THRESHOLD:
         raise ContractError(
-            f"the hard-failure configuration names threshold {threshold}, above the ruled "
-            f"maximum of {RULED_THRESHOLD}; more than {RULED_THRESHOLD} hard failures in a run "
-            "needs fixing, not a higher ceiling"
+            f"the hard-failure configuration names threshold {threshold}, but the ruled value "
+            f"is exactly {RULED_THRESHOLD}: two is an early warning and the third stops"
         )
 
     raw_kinds = config.get("kind")
@@ -165,24 +164,28 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
     subjects: set[tuple[str, str]] = set()
     for stage, outcome in sorted(policy["kinds"]):
         matches = sorted(
-            entry["subject_id"]
-            for entry in tree.build_manifest(stage)["artifacts"]
-            if entry["outcome"] == outcome
+            {
+                entry["subject_id"]
+                for entry in tree.build_manifest(stage)["artifacts"]
+                if entry["outcome"] == outcome
+            }
         )
         by_kind[f"{stage}:{outcome}"] = matches
         subjects.update((stage, subject_id) for subject_id in matches)
 
     for stage, outcome, reason in sorted(policy.get("reason_kinds") or ()):
         matches = sorted(
-            entry["subject_id"]
-            for entry in tree.build_manifest(stage)["artifacts"]
-            if entry["outcome"] == outcome
-            and _reason_code(
-                tree.read_artifact(stage, entry["kind"], entry["artifact_id"])["payload"].get(
-                    "reason"
+            {
+                entry["subject_id"]
+                for entry in tree.build_manifest(stage)["artifacts"]
+                if entry["outcome"] == outcome
+                and _reason_code(
+                    tree.read_artifact(stage, entry["kind"], entry["artifact_id"])["payload"].get(
+                        "reason"
+                    )
                 )
-            )
-            == reason
+                == reason
+            }
         )
         by_kind[f"{stage}:{outcome}:{reason}"] = matches
         subjects.update((stage, subject_id) for subject_id in matches)

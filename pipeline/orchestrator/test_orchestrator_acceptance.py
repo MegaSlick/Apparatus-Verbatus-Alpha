@@ -105,8 +105,13 @@ FIXTURE = "synthetic-two-page-v0"
 #     disk rather than from any stage manifest.
 #
 # Recomputed against the real orchestrator with the whole merge landed.
-HAPPY_RUN_TREE_DIGEST = "11e3b261f1646c2d0b3e839975201b2414e5a4d49f055926ae509e5cc19c5257"
-REVIEW_RUN_TREE_DIGEST = "d3d24441ff3b862b8b7eb641272442b3c40064ed48e63b7ee957590416ba5811"
+# Re-pinned by the System 09 audit: `config/hard_failure.toml` now says what its
+# validator enforces — the ruled threshold is exact, not a ceiling configuration
+# may tune downward. The shipped value remains 2 (the third failure stops), so
+# file counts and scenario behaviour are unchanged; the deliberately sealed
+# policy bytes, and therefore every downstream config digest, moved.
+HAPPY_RUN_TREE_DIGEST = "eb38bd6a31b07c4e68d3832252aa351de821f6e373ff0ce8b589626d8164b526"
+REVIEW_RUN_TREE_DIGEST = "11fbcd4ec7208f2304ec02ae17ad555b082b3b62ca02bd8084a9987b2ac78c64"
 
 
 def orchestrate(
