@@ -28,7 +28,11 @@ from common.imaging import decode_grayscale_png
 from proof.build_fixture import (
     ACTS,
     RECOVERY_BOUNDS,
+    SCENARIO_TESTIMONY,
     TESTIMONY,
+    WITNESS_FAILURES,
+    WITNESS_MALFORMED,
+    WITNESS_NOT_RUN,
     act_descriptor,
     build_ingress_manifest,
     build_skeleton_fixture,
@@ -229,17 +233,33 @@ def test_testimony_differs_from_the_established_text_somewhere(skeleton):
     """Dissent must be exercisable. If every witness agreed with the reading
     everywhere, the Perlectio's dissent record would be structurally untested."""
     texts = {act["key"]: act["text"] for act in ACTS}
-    disagreeing = [row for row in skeleton["testimony"] if row["reported"] != texts[row["act_key"]]]
+    disagreeing = [
+        row
+        for row in skeleton["testimony"]
+        if "scenario" not in row and row["payload"] != texts[row["act_key"]]
+    ]
     assert len(disagreeing) == 4
+
+
+def test_fixture_testimonia_declare_native_payloads_not_the_retired_body_field(skeleton):
+    assert all("payload" in row and "reported" not in row for row in skeleton["testimony"])
+    scenario_rows = [row for row in skeleton["testimony"] if "scenario" in row]
+    assert scenario_rows == list(SCENARIO_TESTIMONY)
 
 
 def test_the_review_scenario_exercises_the_repaired_failed_state(skeleton, models_config):
     """Sol B-2 / blocker 4: `failed` is a member of the witness vocabulary. The
     fixture drives it end to end rather than leaving it only unit-tested."""
     failures = skeleton["witness_failure"]
-    assert len(failures) == 1
-    assert failures[0]["scenario"] == "review"
-    assert failures[0]["chair"] in configured_witness_chairs(models_config)
+    assert failures == list(WITNESS_FAILURES)
+    assert {failure["scenario"] for failure in failures} == {"review", "reread-failure"}
+    assert all(failure["chair"] in configured_witness_chairs(models_config) for failure in failures)
+    assert failures[1]["attempt_ordinal"] == 2
+
+
+def test_fixture_declares_the_explicit_non_reading_and_malformed_attempts(skeleton):
+    assert skeleton["witness_not_run"] == list(WITNESS_NOT_RUN)
+    assert skeleton["witness_malformed"] == list(WITNESS_MALFORMED)
 
 
 def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
@@ -257,6 +277,11 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "no-readable-text-reading",
         "structure-failure",
         "ink-free-page",
+        "reread-failure",
+        "not-run-witness",
+        "malformed-witness",
+        "structured-witness",
+        "malformed-capabilities",
     ]
     by_name = {scenario["name"]: scenario for scenario in skeleton["scenario"]}
     assert by_name["happy"]["recover_acts"] == []

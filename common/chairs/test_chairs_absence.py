@@ -11,7 +11,7 @@ absent chair stays in the roster, resolves to a value rather than an exception,
 and is one fewer configured witness against a floor that does not shrink to match.
 
 The end of that sentence — that a run carries the absence all the way into its
-export — is `test_an_explicit_absent_witness_is_a_visible_not_run_and_counts_against_floor`
+export — is `test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor`
 in `pipeline/orchestrator/test_orchestrator_acceptance.py`, over the real stage
 programs. This file covers the registry's half.
 """
@@ -107,23 +107,24 @@ def test_the_floor_is_met_when_every_chair_it_counts_is_configured(tmp_path):
     assert status.meets_floor is True
 
 
-def test_the_absence_reaches_the_coverage_record_as_an_unresolved_chair(roster):
+def test_the_absence_reaches_the_coverage_record_as_a_dead_chair(roster):
     """The roster's own arithmetic and the act-level arithmetic have to agree.
 
     `witness_coverage` counts completed-class outcomes against the same floor, so
-    an absent chair recorded `not-run` for an act lands as unresolved and forces
+    an absent chair recorded `dead` for an act lands in the failed class and forces
     `under_witnessed` — which is what "counts against the witness floor" means
     once the run is running rather than only being configured.
     """
     status = roster.config.witness_floor_status()
     outcomes = {role: "read" for role in status.configured_roles}
-    outcomes.update({role: "not-run" for role in status.absent_roles})
+    outcomes.update({role: "dead" for role in status.absent_roles})
 
     coverage = witness_coverage(outcomes, configured_floor=status.floor)
 
     assert coverage["configured"] == 4
     assert coverage["by_class"]["completed"] == 3
-    assert coverage["unresolved_chairs"] == 1
+    assert coverage["unresolved_chairs"] == 0
+    assert coverage["by_class"]["failed"] == 1
     assert coverage["under_witnessed"] is True
 
 

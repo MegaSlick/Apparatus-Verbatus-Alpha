@@ -623,10 +623,17 @@ def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
     )
     assert empty["payload"]["chair"] == "attestator_3"
     assert empty["payload"]["content_health"] == {
+        "native_type": "string",
+        "encoding": "utf-8-json-native",
+        "recordable": True,
         "empty": True,
+        "blank": True,
         "truncated": False,
         "characters": 0,
+        "truncation_basis": "trusted-response-boundary",
     }
+    assert empty["payload"]["payload"] == ""
+    assert empty["payload"]["witness_reported"] is None
     reading = next(
         tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
         for entry in tree.build_manifest(PERLECTOR)["artifacts"]
@@ -1392,7 +1399,7 @@ def test_the_config_digest_still_binds_the_scenario_as_well_as_the_chairs(happy_
     assert run_config_bindings(config, altered, "happy")["config_digest"] != happy
 
 
-def test_an_explicit_absent_witness_is_a_visible_not_run_and_counts_against_floor(tmp_path):
+def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(tmp_path):
     """Exercise absence through real stage programs, not only the config parser."""
     config_root = tmp_path / "chair-config"
     shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
@@ -1428,10 +1435,13 @@ reason = \"fixture test removes this witness without replacing it\"
         record for record in testimonia if record["payload"]["chair"] == "attestator_3"
     ]
     assert len(absent_records) == 2
-    assert all(record["outcome"] == "not-run" for record in absent_records)
+    assert all(record["outcome"] == "dead" for record in absent_records)
     for record in absent_records:
         provenance = record["payload"]["provenance"]
         assert provenance["chair_state"] == "absent"
+        assert provenance["receipt_ref"] is None
+        assert record["inputs"] == []
+        assert record["payload"]["regions"] == []
         assert provenance["absence"] == {
             "role": "attestator_3",
             "state": "absent",
@@ -1440,7 +1450,29 @@ reason = \"fixture test removes this witness without replacing it\"
     export = export_of(tree)
     assert export["aggregate"]["status"] == "partial"
     assert all(item["under_witnessed"] is True for item in export["review"])
+    assert all(item["witness_coverage"]["by_outcome"] == {"read": 2, "dead": 1} for item in export["review"])
+    assert all(
+        item["witness_coverage"]["by_class"]
+        == {"completed": 2, "unresolved": 0, "failed": 1}
+        for item in export["review"]
+    )
     assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
+
+
+def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):
+    """A damaged independent count cannot hide behind an old complete export."""
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    tally_path = tree.resolve(tree.manifest_path(ATTESTATORES))
+    tally_path.write_bytes(b"{")
+    before = snapshot(root)
+
+    result = orchestrate(root, "r", "happy")
+
+    assert result.returncode == 3
+    assert "UNKNOWN" in result.stderr
+    assert snapshot(root) == before
 
 
 def test_perlector_refuses_a_tampered_testimonium_model_provenance(tmp_path):
@@ -1503,7 +1535,7 @@ def test_a_perlectio_retains_digest_checked_testimonia_it_used(tmp_path):
     )
     path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", testimony["artifact_id"]))
     changed = json.loads(path.read_text(encoding="utf-8"))
-    changed["payload"]["reported"] = "changed after Perlectio"
+    changed["payload"]["payload"] = "changed after Perlectio"
     changed["self_hash"] = self_hash(changed)
     path.write_bytes(canonical_bytes(changed))
     before = snapshot(root)
@@ -2288,7 +2320,7 @@ def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
     _, tree = review_run
     export = export_of(tree)
     testimony = {
-        record["payload"]["reported"]
+        record["payload"]["payload"]
         for record in artifacts(tree, ATTESTATORES, "testimonium")
         if record["outcome"] == "read" and record["payload"]["act_key"] == "a1"
     }

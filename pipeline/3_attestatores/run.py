@@ -1,33 +1,29 @@
-"""Attestatores: every configured chair reports, and every absence is a record.
+"""Attestatores: retain every witness attempt without changing its history.
 
-The biggest change from the old stage is the write path. Attempts are append-only:
-nothing overwrites attempt 1 to record attempt 2, and "current" is *derived* — the
-latest attempt with its honest status — so a failed re-read shows as `failed` with
-the earlier success intact and visible as history, never hidden behind it. That is
-Tyrel's retention ruling of 2026-07-30 and GOVERNANCE 4.
+Each Testimonium has two deliberately separate witness-facing fields. ``payload``
+is the witness's native response, retained without shaping it into an imagined
+common body schema. ``witness_reported`` is a witness's own confidence or status
+claim, retained as a claim but never used to compute channel health. The latter is
+computed here from the native response and the transport boundary.
 
-Every configured chair gets an explicit outcome for every act, drawn from the closed
-six-member vocabulary the contracts define. `failed` is the member Sol's finding
-B-2 added: an attempt was made and produced no usable Testimonium, as against
-`dead` (unavailable, never attempted) and `not-run` (configured, never tried). The
-old stage collapsed every one of these into a single indistinguishable empty file.
-
-The payload is the witness's own words, verbatim. Coercing testimony into a shared
-body schema is where detail dies silently, so `reported` is stored as it arrived
-and `content_health` is computed here rather than self-reported — a witness is not
-asked to grade its own output.
+Attempts are append-only. A re-read receives a new ordinal and artifact identity;
+there is no current pointer to update. Consumers derive current from the newest
+contiguous ordinal, so a later failed attempt remains visibly failed while the
+earlier reading remains intact in history.
 
     python pipeline/3_attestatores/run.py --run-root <dir> --run-id <id>
 """
 
+import json
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
+from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import act_id as derive_act_id  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
@@ -35,33 +31,30 @@ from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
+    EXIT_HELD,
     FALLBACK_PAGE_ACT_ORDINAL,
+    WITNESS_READING_OUTCOMES,
     expected_acts,
     fixture_serving_details,
+    latest_attempt,
     open_context,
     run_stage,
     stage_parser,
     validate_serving_provenance,
 )
 
+DEFAULT_FORMAT_CAPABILITIES = {
+    "can_express_uncertainty": False,
+    "can_express_layout": False,
+}
+
 
 def proposed_regions(context, act_id: str) -> list[dict]:
-    """Every region the Designator originally marked out for this act.
+    """Every original Designator region the chair was actually shown.
 
-    Plural, because an act that runs over a page break has two of them, and a
-    witness shown only the near side would have read half an act while the record
-    said it had read the act.
-
-    A Testimonium binds to the exact region it read, and a later recrop never
-    silently inherits it (spec 07). Reading whichever region was *current* would
-    do exactly that: after a recovery, the same chair-and-attempt identity would
-    describe different pixels, and the run tree rightly refuses to let one
-    identity mean two things.
-
-    So witnesses read what they were shown, and the ink a recovery uncovers is
-    **witness-uncovered** — a fact the Perlector records rather than papers over.
-    Spec 01 says the skeleton need not rerun witnesses during recovery; this is
-    what that means in the record.
+    A later recovery region is intentionally not substituted. A Testimonium binds
+    to these exact pixel blobs, not to whichever crop happens to be current when a
+    later consumer reads the run tree.
     """
     regions = []
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
@@ -82,62 +75,69 @@ def proposed_regions(context, act_id: str) -> list[dict]:
 
 
 def _region_ordinal(record: dict) -> int:
-    """The sort key, refused by name rather than escaping as a raw `KeyError`.
-
-    Same reasoning as `pipeline/4_perlector/run.py`: a resealed region that lost
-    its `attempt_ordinal` is a named refusal, never a traceback out of a sort.
-    """
     ordinal = record.get("payload", {}).get("attempt_ordinal")
     if not isinstance(ordinal, int) or isinstance(ordinal, bool):
         raise SchemaRefusal("a Designator region carries no integer attempt ordinal to order by")
     return ordinal
 
 
-def declared_failures(context) -> set[tuple[str, str]]:
+def region_references(regions: list[dict]) -> list[dict[str, str]]:
+    """The public identity facts of the exact crops a chair saw."""
+    return [
+        {
+            "region_id": record["payload"]["region_id"],
+            "image_path": record["payload"]["image_path"],
+            "image_sha256": record["payload"]["image_sha256"],
+        }
+        for record in regions
+    ]
+
+
+def region_inputs(context, regions: list[dict]) -> list[dict[str, str]]:
+    """The direct pixel-blob inputs for an attempted Testimonium."""
+    return sorted(
+        [context.input_ref(record["payload"]["image_path"]) for record in regions],
+        key=lambda reference: (reference["relative_path"], reference["sha256"]),
+    )
+
+
+def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
+    """Whether a fixture declaration belongs to this immutable attempt.
+
+    Older fixture rows mean attempt one explicitly. Silently applying a declared
+    first-attempt failure to every re-read would make the test seam a mutable
+    outcome selector rather than a description of one attempt.
+    """
+    declared = row.get("attempt_ordinal", 1)
+    if not isinstance(declared, int) or isinstance(declared, bool) or declared < 1:
+        raise SchemaRefusal("a fixture witness declaration has no positive attempt ordinal")
+    return declared == ordinal
+
+
+def declared_failures(context, ordinal: int) -> set[tuple[str, str]]:
     return {
         (row["act_key"], row["chair"])
         for row in context.fixture.get("witness_failure", [])
-        if row["scenario"] == context.scenario
+        if row["scenario"] == context.scenario and _declared_for_ordinal(row, ordinal)
     }
 
 
-def declared_empty(context) -> set[tuple[str, str]]:
-    """Fixture-declared completed empty readings, distinct from no attempt."""
+def declared_empty(context, ordinal: int) -> set[tuple[str, str]]:
+    """Completed empty readings, distinct from an absent response."""
     return {
         (row["act_key"], row["chair"])
         for row in context.fixture.get("witness_empty", [])
-        if row["scenario"] == context.scenario
+        if row["scenario"] == context.scenario and _declared_for_ordinal(row, ordinal)
     }
 
 
-def testimony_for(context, act_key: str, chair: str) -> str | None:
-    for row in context.fixture["testimony"]:
-        if row["act_key"] == act_key and row["chair"] == chair:
-            return row["reported"]
-    return None
-
-
-def content_health(reported: str | None) -> dict:
-    """Computed here, deterministically. Never self-reported by the witness."""
-    if reported is None:
-        return {"empty": True, "truncated": False, "characters": 0}
+def declared_not_run(context, ordinal: int) -> set[tuple[str, str]]:
+    """Configured chairs deliberately never asked for this attempt."""
     return {
-        "empty": reported.strip() == "",
-        # A report ending mid-token is the shape of a truncation. The skeleton's
-        # check is crude on purpose; what matters is that the channel exists and
-        # is computed rather than trusted.
-        "truncated": reported.endswith("-"),
-        "characters": len(reported),
+        (row["act_key"], row["chair"])
+        for row in context.fixture.get("witness_not_run", [])
+        if row["scenario"] == context.scenario and _declared_for_ordinal(row, ordinal)
     }
-
-
-def _unique_region_inputs(context, regions: list[dict]) -> list[dict]:
-    """Bind each distinct crop blob once while retaining every region in payloads."""
-    inputs = {}
-    for record in regions:
-        reference = context.input_ref(record["payload"]["image_path"])
-        inputs[reference["relative_path"]] = reference
-    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
 
 
 def _page_fallback_bounds(context) -> dict[str, dict]:
@@ -166,16 +166,294 @@ def _is_page_fallback(context, act: dict, bounds_by_act: dict[str, dict] | None 
     page_bounds = bounds_by_act.get(act["act_id"])
     if page_bounds is None:
         return False
-    return act["act_id"] == derive_act_id(act["page_id"], FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
+    return act["act_id"] == derive_act_id(
+        act["page_id"], FALLBACK_PAGE_ACT_ORDINAL, page_bounds
+    )
+
+
+def declared_malformed(context, ordinal: int) -> dict[tuple[str, str], str]:
+    """Fixture stand-in for a provider response the recording channel could not keep."""
+    rows: dict[tuple[str, str], str] = {}
+    for row in context.fixture.get("witness_malformed", []):
+        if row["scenario"] != context.scenario or not _declared_for_ordinal(row, ordinal):
+            continue
+        key = (row["act_key"], row["chair"])
+        if key in rows:
+            raise SchemaRefusal(f"fixture declares malformed witness output twice for {key!r}")
+        reason = row.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise SchemaRefusal("a malformed witness declaration has no reason")
+        rows[key] = reason
+    return rows
+
+
+def testimony_for(context, act_key: str, chair: str) -> dict[str, Any] | None:
+    """The fixture's one native response declaration for a chair and act."""
+    base_matches = []
+    scenario_matches = []
+    for row in context.fixture["testimony"]:
+        if row["act_key"] != act_key or row["chair"] != chair:
+            continue
+        declared_scenario = row.get("scenario")
+        if declared_scenario is None:
+            base_matches.append(row)
+        elif declared_scenario == context.scenario:
+            scenario_matches.append(row)
+    matches = scenario_matches or base_matches
+    if len(matches) > 1:
+        raise SchemaRefusal(f"fixture declares more than one response for {(act_key, chair)!r}")
+    return matches[0] if matches else None
+
+
+def _native_problem(value: Any, path: str = "payload") -> str | None:
+    """Return why a native response cannot be retained as canonical JSON.
+
+    The generic artifact writer rejects floats and malformed Unicode later, but a
+    witness response must become a retained ``failed`` attempt rather than make a
+    whole folder crash or be quietly repaired with ``str()``, replacement Unicode,
+    or a shared text schema. This is deliberately strict until Spec 04 defines a
+    binary provider-body contract.
+    """
+    if value is None or isinstance(value, (bool, int)):
+        return None
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8", "strict")
+        except UnicodeEncodeError:
+            return f"{path} contains text that is not valid UTF-8"
+        return None
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            if problem := _native_problem(item, f"{path}[{index}]"):
+                return problem
+        return None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                return f"{path} has a non-string object key"
+            try:
+                key.encode("utf-8", "strict")
+            except UnicodeEncodeError:
+                return f"{path} has an object key that is not valid UTF-8"
+            if problem := _native_problem(item, f"{path}.{key}"):
+                return problem
+        return None
+    return f"{path} has unsupported native type {type(value).__name__!r}"
+
+
+def _native_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def no_response_health(*, reason: str) -> dict[str, Any]:
+    """Health for a seat with no native response, never an empty reading."""
+    return {
+        "native_type": None,
+        "encoding": "not-applicable",
+        "recordable": None,
+        "empty": None,
+        "blank": None,
+        "truncated": None,
+        "characters": None,
+        "truncation_basis": reason,
+    }
+
+
+def content_health(native_payload: Any, *, completed: bool | None = None) -> dict[str, Any]:
+    """Compute deterministic channel facts from native output alone.
+
+    ``witness_reported`` intentionally is not an argument. A witness's assertion
+    that it was confident, complete, or uncertain cannot become health merely by
+    being present. The synthetic fixture is an explicit complete transport seam;
+    real serving code must pass a trusted response-boundary fact or leave
+    truncation unknown.
+    """
+    if (problem := _native_problem(native_payload)) is not None:
+        return {
+            "native_type": _native_type(native_payload),
+            "encoding": "invalid-or-unrecordable",
+            "recordable": False,
+            "empty": None,
+            "blank": None,
+            "truncated": None,
+            "characters": None,
+            "truncation_basis": problem,
+        }
+
+    if isinstance(native_payload, str):
+        empty = native_payload == ""
+        blank = native_payload.strip() == ""
+        characters: int | None = len(native_payload)
+    elif isinstance(native_payload, (dict, list)):
+        empty = len(native_payload) == 0
+        blank = None
+        characters = None
+    else:
+        empty = False
+        blank = None
+        characters = None
+    return {
+        "native_type": _native_type(native_payload),
+        "encoding": "utf-8-json-native",
+        "recordable": True,
+        "empty": empty,
+        "blank": blank,
+        "truncated": None if completed is None else not completed,
+        "characters": characters,
+        "truncation_basis": (
+            "trusted-response-boundary" if completed is not None else "not-recorded"
+        ),
+    }
+
+
+def validate_content_health(native_payload: Any, health: Any) -> None:
+    """Refuse a resealed health record that is not this stage's deterministic shape.
+
+    A self-hashed artifact can still have been re-sealed with a damaged health
+    field.  The tally must not count it as known simply because its envelope and
+    JSON syntax remain valid.  `recordable=False` is allowed through this shape
+    check only so the caller can turn that explicitly unrecordable channel into
+    UNKNOWN and hold the folder.
+    """
+    if not isinstance(health, dict):
+        raise SchemaRefusal("a Testimonium carries no object content_health record")
+    required = {
+        "native_type",
+        "encoding",
+        "recordable",
+        "empty",
+        "blank",
+        "truncated",
+        "characters",
+        "truncation_basis",
+    }
+    if missing := sorted(required - set(health)):
+        raise SchemaRefusal(f"a Testimonium content_health record lacks field(s) {missing}")
+
+    recordable = health["recordable"]
+    if recordable is True:
+        if problem := _native_problem(native_payload):
+            raise SchemaRefusal(problem)
+        expected = content_health(native_payload, completed=None)
+        for field in ("native_type", "encoding", "recordable", "empty", "blank", "characters"):
+            if health[field] != expected[field]:
+                raise SchemaRefusal(f"a Testimonium has inconsistent content_health.{field}")
+        truncated = health["truncated"]
+        basis = health["truncation_basis"]
+        if truncated is None:
+            if basis != "not-recorded":
+                raise SchemaRefusal(
+                    "a Testimonium with unknown truncation lacks the not-recorded basis"
+                )
+        elif isinstance(truncated, bool):
+            if basis != "trusted-response-boundary":
+                raise SchemaRefusal(
+                    "a Testimonium with a known truncation state lacks a trusted boundary"
+                )
+        else:
+            raise SchemaRefusal("a Testimonium content_health.truncated is not boolean or null")
+        return
+
+    if recordable is None:
+        if native_payload is not None:
+            raise SchemaRefusal("a no-response Testimonium retains a native payload")
+        expected = no_response_health(reason="ignored")
+        for field in (
+            "native_type",
+            "encoding",
+            "recordable",
+            "empty",
+            "blank",
+            "truncated",
+            "characters",
+        ):
+            if health[field] != expected[field]:
+                raise SchemaRefusal(f"a no-response Testimonium has inconsistent content_health.{field}")
+        if not isinstance(health["truncation_basis"], str) or not health["truncation_basis"].strip():
+            raise SchemaRefusal("a no-response Testimonium has no health reason")
+        return
+
+    if recordable is False:
+        return
+    raise SchemaRefusal("a Testimonium content_health.recordable is not boolean or null")
+
+
+def format_capabilities_for(row: dict[str, Any]) -> dict[str, Any]:
+    """The output format's declared expressiveness, not a confidence score."""
+    capabilities = row.get("format_capabilities", DEFAULT_FORMAT_CAPABILITIES)
+    if not isinstance(capabilities, dict):
+        raise SchemaRefusal("a witness format_capabilities declaration is not an object")
+    for field in ("can_express_uncertainty", "can_express_layout"):
+        if not isinstance(capabilities.get(field), bool):
+            raise SchemaRefusal(f"witness format_capabilities.{field} is not a boolean")
+    if problem := _native_problem(capabilities, "format_capabilities"):
+        raise SchemaRefusal(problem)
+    return capabilities
+
+
+def prepared_response(row: dict[str, Any]) -> tuple[Any, Any, dict[str, Any], dict[str, Any], str | None]:
+    """Return native output and any recording defect without normalizing either.
+
+    The final element is a reason that turns this one attempt into ``failed``.
+    The raw object is left untouched for every recordable response, including an
+    unexpected-but-parseable JSON shape.
+    """
+    if "payload" not in row:
+        health = no_response_health(reason="fixture response declared no native payload")
+        return (
+            None,
+            None,
+            DEFAULT_FORMAT_CAPABILITIES,
+            health,
+            "the witness response had no native payload",
+        )
+    native_payload = row["payload"]
+    health = content_health(native_payload, completed=True)
+    if health["recordable"] is not True:
+        return None, None, DEFAULT_FORMAT_CAPABILITIES, health, str(health["truncation_basis"])
+    witness_reported = row.get("witness_reported")
+    if problem := _native_problem(witness_reported, "witness_reported"):
+        health = {
+            **health,
+            "encoding": "invalid-or-unrecordable",
+            "recordable": False,
+            "truncation_basis": problem,
+        }
+        return (
+            native_payload,
+            None,
+            DEFAULT_FORMAT_CAPABILITIES,
+            health,
+            f"the witness self-report could not be retained: {problem}",
+        )
+    try:
+        capabilities = format_capabilities_for(row)
+    except SchemaRefusal as error:
+        reason = f"the witness format capabilities could not be retained: {error}"
+        health = {
+            **health,
+            "encoding": "invalid-or-unrecordable",
+            "recordable": False,
+            "truncation_basis": reason,
+        }
+        return native_payload, witness_reported, DEFAULT_FORMAT_CAPABILITIES, health, reason
+    return native_payload, witness_reported, capabilities, health, None
 
 
 def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted: bool) -> dict:
-    """The exact configured identity for one witness outcome.
-
-    An absent chair has no model identity and no serving moment. A configured chair
-    gets a receipt only when it actually attempted a reading; `not-run` records
-    retain the resolved pin but do not invent a serving event that never happened.
-    """
+    """The exact configured identity and actual serving moment for one outcome."""
     if isinstance(resolved, AbsentChair):
         return {
             "chair": resolved.role,
@@ -206,116 +484,431 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
     }
 
 
-def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run through the explicitly supplied chair implementation.
+def testimonium_payload(
+    *,
+    chair: str,
+    act_key: str,
+    ordinal: int,
+    regions: list[dict[str, str]],
+    provenance: dict[str, Any],
+    format_capabilities: dict[str, Any],
+    native_payload: Any,
+    witness_reported: Any,
+    health: dict[str, Any],
+    outcome: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Build the stage schema without letting a compatibility field define it."""
+    record: dict[str, Any] = {
+        "chair": chair,
+        "act_key": act_key,
+        "attempt_ordinal": ordinal,
+        "regions": regions,
+        "provenance": provenance,
+        "format_capabilities": format_capabilities,
+        "payload": native_payload,
+        "witness_reported": witness_reported,
+        "content_health": health,
+    }
+    if reason is not None:
+        record["reason"] = reason
 
-    Production passes the default registry. The test-only injection is a
-    dependency seam, not a runtime choice among models or chairs.
+    # Temporary consumer bridge: Perlector's current skeleton input contract only
+    # accepts a textual `reported` field. It is a projection of a *textual native
+    # payload*, never a self-report, and structured native payloads deliberately
+    # receive no coerced text substitute. The bridge can be deleted only by the
+    # Perlector owner when its consumer reads `payload` natively.
+    if outcome in WITNESS_READING_OUTCOMES and isinstance(native_payload, str):
+        record["reported"] = native_payload
+    return record
+
+
+def _existing_attempts(context, act_id: str, chair: str) -> list[dict[str, Any]]:
+    records = []
+    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "testimonium" or entry["subject_id"] != act_id:
+            continue
+        record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        if record.get("payload", {}).get("chair") == chair:
+            records.append(record)
+    return records
+
+
+def require_appendable_ordinal(context, act_id: str, chair: str, ordinal: int) -> None:
+    """Allow only an idempotent rerun or exactly the next immutable attempt."""
+    records = _existing_attempts(context, act_id, chair)
+    if not records:
+        if ordinal != 1:
+            raise SchemaRefusal(
+                f"Testimonium for {(act_id, chair)!r} has no attempt 1; cannot append ordinal "
+                f"{ordinal} across a missing history"
+            )
+        return
+    current = latest_attempt(records, f"Testimonium for {(act_id, chair)!r}", operation=f"read:{chair}")
+    current_ordinal = current["payload"]["attempt_ordinal"]
+    if ordinal not in {current_ordinal, current_ordinal + 1}:
+        raise SchemaRefusal(
+            f"Testimonium for {(act_id, chair)!r} is current at ordinal {current_ordinal}; "
+            f"ordinal {ordinal} is neither its idempotent rerun nor its next append-only attempt"
+        )
+
+
+def preflight_appendable_ordinals(context, acts: list[dict[str, Any]], ordinal: int) -> None:
+    """Refuse a damaged history before adding any new attempt to this invocation."""
+    for act in acts:
+        for chair in context.witness_chairs:
+            require_appendable_ordinal(context, act["act_id"], chair, ordinal)
+
+
+def validate_tallied_testimonium(context, record: dict[str, Any], act: dict[str, Any]) -> None:
+    """Refuse a resealed Testimonium that this stage could not have produced.
+
+    The generic envelope proves a record is syntactically sealed; the attempt
+    tally also has to prove its stage-specific channel remains interpretable
+    before authorizing another immutable append. This deliberately validates no
+    witness's *content* and makes no quality decision.
     """
-    args = stage_parser(__doc__.splitlines()[0]).parse_args()
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        raise SchemaRefusal("a Testimonium tally record has no object payload")
+    required = {
+        "chair",
+        "act_key",
+        "attempt_ordinal",
+        "regions",
+        "provenance",
+        "format_capabilities",
+        "payload",
+        "witness_reported",
+        "content_health",
+    }
+    missing = sorted(required - set(payload))
+    if missing:
+        raise SchemaRefusal(f"a Testimonium tally record lacks required field(s) {missing}")
+    chair = payload["chair"]
+    if not isinstance(chair, str) or chair not in context.witness_chairs:
+        raise SchemaRefusal("a Testimonium tally record names no configured chair")
+    if payload["act_key"] != act["act_key"]:
+        raise SchemaRefusal("a Testimonium tally record disagrees with its act key")
+    ordinal = payload["attempt_ordinal"]
+    if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 1:
+        raise SchemaRefusal("a Testimonium tally record has no positive attempt ordinal")
+    format_capabilities_for({"format_capabilities": payload["format_capabilities"]})
+    if problem := _native_problem(payload["witness_reported"], "witness_reported"):
+        raise SchemaRefusal(problem)
+    validate_content_health(payload["payload"], payload["content_health"])
+    attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
+    validate_serving_provenance(
+        context,
+        payload["provenance"],
+        producer_stage=ATTESTATORES,
+        require_receipt=attempted,
+    )
+    if attempted:
+        if act["outcome"] != "proposed":
+            raise SchemaRefusal("a Testimonium attempted a Designator-held act")
+        regions = proposed_regions(context, act["act_id"])
+        if payload["regions"] != region_references(regions) or record["inputs"] != region_inputs(
+            context, regions
+        ):
+            raise SchemaRefusal(
+                "a Testimonium tally record does not bind exactly the proposal regions and inputs"
+            )
+    elif payload["regions"] != [] or record["inputs"] != []:
+        raise SchemaRefusal("a non-attempted Testimonium tally record carries regions or inputs")
+    if record["outcome"] == "dead" and payload["provenance"].get("chair_state") != "absent":
+        raise SchemaRefusal("a dead Testimonium tally record does not retain an absent chair")
+    if record["outcome"] == "not-run" and payload["provenance"].get("chair_state") != "configured":
+        raise SchemaRefusal("a not-run Testimonium tally record does not retain a configured chair")
+
+
+def attempt_tally(
+    tree,
+    *,
+    context=None,
+    acts: list[dict[str, Any]] | None = None,
+    chairs: list[str] | None = None,
+) -> dict[str, Any]:
+    """Rebuild and check the stage's attempt inventory.
+
+    The stored manifest is derived state, not the evidence: it is checked against
+    a fresh tree walk and the immutable Testimonia. Any unreadable, malformed,
+    missing, divergent, or unrecordable evidence channel makes the count UNKNOWN.
+    A caller must hold rather than turn that uncertainty into a favourable count.
+    """
+    try:
+        stored_path = tree.resolve(tree.manifest_path(ATTESTATORES))
+        stored = json.loads(stored_path.read_bytes().decode("utf-8"))
+        rebuilt = tree.build_manifest(ATTESTATORES)
+    except (ContractError, OSError, UnicodeDecodeError, ValueError) as error:
+        return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
+    if stored != rebuilt:
+        return {
+            "state": "UNKNOWN",
+            "count": None,
+            "hold": True,
+            "reason": "the stored Attestatores manifest does not equal its rebuilt inventory",
+        }
+
+    testimonia = [entry for entry in rebuilt["artifacts"] if entry["kind"] == "testimonium"]
+    try:
+        by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for entry in testimonia:
+            record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                raise SchemaRefusal("a Testimonium carries no object payload")
+            required = {
+                "chair",
+                "act_key",
+                "attempt_ordinal",
+                "regions",
+                "provenance",
+                "format_capabilities",
+                "payload",
+                "witness_reported",
+                "content_health",
+            }
+            if missing := sorted(required - set(payload)):
+                raise SchemaRefusal(f"a Testimonium carries no required field(s) {missing}")
+            chair = payload.get("chair")
+            if not isinstance(chair, str) or not chair:
+                raise SchemaRefusal("a Testimonium carries no named chair")
+            by_pair.setdefault((record["subject_id"], chair), []).append(record)
+            health = record.get("payload", {}).get("content_health")
+            validate_content_health(payload["payload"], health)
+            if health["recordable"] is False:
+                raise SchemaRefusal(
+                    "a Testimonium's native evidence channel was unrecordable; its tally "
+                    "cannot be counted as known"
+                )
+            if context is not None:
+                if acts is None:
+                    raise SchemaRefusal("a contextual attempt tally has no expected-act denominator")
+                by_act = {act["act_id"]: act for act in acts}
+                act = by_act.get(record["subject_id"])
+                if act is None:
+                    raise SchemaRefusal("a Testimonium tally record names no expected act")
+                validate_tallied_testimonium(context, record, act)
+        if (acts is None) != (chairs is None):
+            raise SchemaRefusal("attempt tally received only half its act/chair denominator")
+        if acts is not None and chairs is not None:
+            expected_pairs = {(act["act_id"], chair) for act in acts for chair in chairs}
+            if set(by_pair) != expected_pairs:
+                raise SchemaRefusal(
+                    "the rebuilt Testimonium inventory does not account for every expected "
+                    "act/chair pair"
+                )
+            for (act_id, chair), records in by_pair.items():
+                latest_attempt(
+                    records,
+                    f"Testimonium tally for {(act_id, chair)!r}",
+                    operation=f"read:{chair}",
+                )
+    except (ContractError, OSError) as error:
+        return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
+    return {"state": "KNOWN", "count": len(testimonia), "hold": False, "reason": None}
+
+
+def _publish_not_read(
+    context,
+    *,
+    act: dict[str, Any],
+    chair: str,
+    resolved: ChairIdentity | AbsentChair,
+    ordinal: int,
+    reason: str,
+) -> None:
+    """Record a seat that did not reach a valid witness reading, explicitly."""
+    outcome = "dead" if isinstance(resolved, AbsentChair) else "not-run"
+    context.publish(
+        kind="testimonium",
+        subject_id=act["act_id"],
+        outcome=outcome,
+        attempt=attempt_id(act["act_id"], f"read:{chair}", ordinal),
+        payload=testimonium_payload(
+            chair=chair,
+            act_key=act["act_key"],
+            ordinal=ordinal,
+            regions=[],
+            provenance=provenance_for(context, resolved, attempted=False),
+            format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+            native_payload=None,
+            witness_reported=None,
+            health=no_response_health(reason="not-attempted"),
+            outcome=outcome,
+            reason=(f"chair is explicitly absent: {resolved.reason}" if outcome == "dead" else reason),
+        ),
+    )
+
+
+def _positive_ordinal(value: str) -> int:
+    try:
+        ordinal = int(value)
+    except ValueError as error:
+        raise ValueError("attempt ordinal must be an integer") from error
+    if ordinal < 1:
+        raise ValueError("attempt ordinal must be positive")
+    return ordinal
+
+
+def main(registry_factory=ChairRegistry.from_toml) -> int:
+    """Run every configured chair through one explicitly requested attempt ordinal."""
+    parser = stage_parser(__doc__.splitlines()[0])
+    parser.add_argument(
+        "--attempt-ordinal",
+        type=_positive_ordinal,
+        default=1,
+        help="append this ordinal for every act/chair, or repeat the current one byte-identically",
+    )
+    args = parser.parse_args()
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
-    failures = declared_failures(context)
-    empty = declared_empty(context)
     acts = expected_acts(context)
     fallback_bounds = _page_fallback_bounds(context)
+    try:
+        has_existing_attempts = bool(context.tree.build_manifest(ATTESTATORES)["artifacts"])
+    except ContractError as error:
+        print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
+        return EXIT_HELD
+    if has_existing_attempts:
+        prior_tally = attempt_tally(
+            context.tree, context=context, acts=acts, chairs=context.witness_chairs
+        )
+        if prior_tally["hold"]:
+            print(f"Attestatores attempt tally UNKNOWN: {prior_tally['reason']}", file=sys.stderr)
+            return EXIT_HELD
+    try:
+        preflight_appendable_ordinals(context, acts, args.attempt_ordinal)
+    except ContractError as error:
+        # A damaged existing channel cannot be repaired by adding a replacement
+        # attempt. It is an UNKNOWN tally and holds the folder as it stands.
+        print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
+        return EXIT_HELD
+
+    failures = declared_failures(context, args.attempt_ordinal)
+    empty = declared_empty(context, args.attempt_ordinal)
+    not_run = declared_not_run(context, args.attempt_ordinal)
+    malformed = declared_malformed(context, args.attempt_ordinal)
 
     recorded = 0
+    isolated_crop_failure = False
     for act in acts:
         if act["outcome"] == "held":
-            # The Designator held this act: its proposal is incomplete, and a
-            # witness shown only what exists would have read part of an act
-            # while the record said it read the act. Every configured chair
-            # still gets an explicit outcome — `not-run`, an unresolved unit —
-            # because a chair that simply never appears is a silent skip, and a
-            # silent skip is the shape of the original defect.
             for chair in context.witness_chairs:
                 resolved = context.registry.resolve(chair)
-                context.publish(
-                    kind="testimonium",
-                    subject_id=act["act_id"],
-                    outcome="not-run",
-                    attempt=attempt_id(act["act_id"], f"read:{chair}", 1),
-                    payload={
-                        "chair": chair,
-                        "act_key": act["act_key"],
-                        "attempt_ordinal": 1,
-                        "regions": [],
-                        "provenance": provenance_for(context, resolved, attempted=False),
-                        "format_capabilities": {
-                            "can_express_uncertainty": False,
-                            "can_express_layout": False,
-                        },
-                        "content_health": content_health(None),
-                        "reason": (
-                            "the Designator held this act; its incomplete proposal "
-                            "was not shown to any witness"
-                        ),
-                    },
+                _publish_not_read(
+                    context,
+                    act=act,
+                    chair=chair,
+                    resolved=resolved,
+                    ordinal=args.attempt_ordinal,
+                    reason=(
+                        "the Designator held this act; its incomplete proposal was not shown "
+                        "to any configured witness"
+                    ),
                 )
                 recorded += 1
             continue
 
-        regions = proposed_regions(context, act["act_id"])
+        try:
+            regions = proposed_regions(context, act["act_id"])
+        except ContractError as error:
+            if isinstance(error, FatalAccounting):
+                raise
+            # A refused crop is isolated to its act. No witness is claimed to
+            # have read pixels whose lineage failed; every chair instead receives
+            # an explicit non-reading record and the remaining acts proceed.
+            for chair in context.witness_chairs:
+                resolved = context.registry.resolve(chair)
+                _publish_not_read(
+                    context,
+                    act=act,
+                    chair=chair,
+                    resolved=resolved,
+                    ordinal=args.attempt_ordinal,
+                    reason=f"the proposed region was refused before this chair ran: {error}",
+                )
+                recorded += 1
+            isolated_crop_failure = True
+            continue
+
+        region_refs = region_references(regions)
         page_fallback = _is_page_fallback(context, act, fallback_bounds)
-        region_references = [
-            {
-                "region_id": record["payload"]["region_id"],
-                "image_path": record["payload"]["image_path"],
-                "image_sha256": record["payload"]["image_sha256"],
-            }
-            for record in regions
-        ]
 
         for chair in context.witness_chairs:
             resolved = context.registry.resolve(chair)
-            reported = "" if page_fallback else testimony_for(context, act["act_key"], chair)
-            failed = (act["act_key"], chair) in failures
+            key = (act["act_key"], chair)
+            response = testimony_for(context, act["act_key"], chair)
+            native_payload: Any = None
+            witness_reported: Any = None
+            capabilities = DEFAULT_FORMAT_CAPABILITIES
+            health = no_response_health(reason="not-attempted")
+            reason: str | None = None
 
             if isinstance(resolved, AbsentChair):
-                # An explicitly absent witness remains in the run roster and
-                # therefore receives a visible outcome. Fixture testimony never
-                # turns an absent chair into a different configured model.
+                outcome = "dead"
+                reason = f"chair is explicitly absent: {resolved.reason}"
+            elif key in not_run:
                 outcome = "not-run"
-                payload = {"reason": f"chair is explicitly absent: {resolved.reason}"}
-            elif failed:
-                outcome, payload = "failed", {"reason": "the chair returned no usable report"}
-            elif page_fallback or (act["act_key"], chair) in empty:
-                outcome, payload = "genuinely-empty", {"reported": ""}
-            elif reported is None:
-                # Configured, nothing declared for it: not-run, which is an
-                # unresolved unit and forces the run visibly partial. It is not
-                # an empty reading and must never be counted as one.
-                outcome, payload = "not-run", {"reason": "no attempt was made for this chair"}
+                reason = "fixture declares that this configured chair was never attempted"
+            elif key in failures:
+                outcome = "failed"
+                health = no_response_health(reason="attempted-but-no-usable-response")
+                reason = "the chair returned no usable response"
+            elif key in malformed:
+                outcome = "failed"
+                health = {
+                    "native_type": "unrecordable",
+                    "encoding": "invalid-or-unrecordable",
+                    "recordable": False,
+                    "empty": None,
+                    "blank": None,
+                    "truncated": None,
+                    "characters": None,
+                    "truncation_basis": malformed[key],
+                }
+                reason = f"the provider response was refused without repair: {malformed[key]}"
+            elif page_fallback or key in empty:
+                outcome = "genuinely-empty"
+                native_payload = ""
+                health = content_health(native_payload, completed=True)
+            elif response is None:
+                outcome = "not-run"
+                reason = "no attempt was made for this configured chair"
             else:
-                outcome, payload = "read", {"reported": reported}
+                (
+                    native_payload,
+                    witness_reported,
+                    capabilities,
+                    health,
+                    recording_problem,
+                ) = prepared_response(response)
+                if recording_problem is None:
+                    outcome = "read"
+                else:
+                    outcome = "failed"
+                    reason = f"the provider response was refused without repair: {recording_problem}"
 
-            # Derived from the outcome, never set beside it: the Perlector reads
-            # the same set to decide whether a testimonium must carry a receipt,
-            # and a producer and a consumer disagreeing about which outcomes mean
-            # "a chair actually served" is a refusal nobody could act on.
             attempted = outcome in ATTEMPTED_WITNESS_OUTCOMES
-
             context.publish(
                 kind="testimonium",
                 subject_id=act["act_id"],
                 outcome=outcome,
-                attempt=attempt_id(act["act_id"], f"read:{chair}", 1),
-                inputs=(_unique_region_inputs(context, regions) if attempted else []),
-                payload={
-                    "chair": chair,
-                    "act_key": act["act_key"],
-                    "attempt_ordinal": 1,
-                    "regions": region_references if attempted else [],
-                    "provenance": provenance_for(context, resolved, attempted=attempted),
-                    # What this witness's output format can even express. A chair
-                    # that cannot say "unsure" must not be read as confident.
-                    "format_capabilities": {
-                        "can_express_uncertainty": False,
-                        "can_express_layout": False,
-                    },
-                    "content_health": content_health(payload.get("reported")),
-                    **payload,
-                },
+                attempt=attempt_id(act["act_id"], f"read:{chair}", args.attempt_ordinal),
+                inputs=region_inputs(context, regions) if attempted else [],
+                payload=testimonium_payload(
+                    chair=chair,
+                    act_key=act["act_key"],
+                    ordinal=args.attempt_ordinal,
+                    regions=region_refs if attempted else [],
+                    provenance=provenance_for(context, resolved, attempted=attempted),
+                    format_capabilities=capabilities,
+                    native_payload=native_payload,
+                    witness_reported=witness_reported,
+                    health=health,
+                    outcome=outcome,
+                    reason=reason,
+                ),
             )
             recorded += 1
 
@@ -323,6 +916,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         raise ContractError("no chair produced an outcome for any act")
 
     context.finish()
+    tally = attempt_tally(context.tree, context=context, acts=acts, chairs=context.witness_chairs)
+    if tally["hold"]:
+        print(f"Attestatores attempt tally UNKNOWN: {tally['reason']}", file=sys.stderr)
+        return EXIT_HELD
+    if isolated_crop_failure:
+        # Every chair still has its explicit non-reading artifact, so retention
+        # completed and later stages can make that partial state visible. This is
+        # distinct from an UNKNOWN evidence tally, which is the only stage-3 hold.
+        print("Attestatores recorded one or more refused proposal crops", file=sys.stderr)
     return EXIT_COMPLETE
 
 

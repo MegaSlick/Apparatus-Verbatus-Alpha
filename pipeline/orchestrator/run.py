@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.outcomes import check_algebra_is_total  # noqa: E402
-from common.contracts.stages import DESIGNATOR, RECENSOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
     load_hard_failure_policy,
@@ -259,7 +259,14 @@ def main() -> int:
             halted = drive_recovery(args, hard_failure_policy)
             if halted is not None:
                 break
-        invoke(program, args)
+        result = invoke(program, args)
+        # A held Attestatores exit is not an ordinary partial act result: it means
+        # its independent attempt tally is UNKNOWN. Continuing would let later
+        # stages rebuild old artifacts and make a damaged evidence channel look
+        # complete merely because an older Armarium export still exists.
+        if name == ATTESTATORES and result == EXIT_HELD:
+            print(f"run {args.run_id}: held (Attestatores attempt tally is UNKNOWN)")
+            return EXIT_HELD
         halted = checkpoint(args, name, hard_failure_policy)
         if halted is not None:
             break

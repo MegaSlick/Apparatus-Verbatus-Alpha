@@ -59,9 +59,11 @@ repeating an identical command leaves every byte unchanged.
 
 A chair configured `state = "absent"` resolves to an `AbsentChair` — not an
 exception, and not a silent omission from the roster. It stays in `run.json`'s
-`witness_chairs`, it earns a visible `not-run` record for every act, and it is one
-fewer configured witness against a floor that does not shrink to match. A run
-short a witness is therefore visibly short one, all the way into the export.
+`witness_chairs`, it earns a visible `dead` record for every act, and it is one
+fewer configured witness against a floor that does not shrink to match. `dead`
+means unavailable before any attempt reached the region; `not-run` remains the
+separate record for a configured chair that was never attempted. A run short a
+witness is therefore visibly short one, all the way into the export.
 
 ## What this system does not own
 

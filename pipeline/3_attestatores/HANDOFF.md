@@ -1,56 +1,116 @@
 # Attestatores — handoff
 
-The Attestatores records one append-only `kind="testimonium"` outcome for every
-configured witness and every act in the Designator's proposal seal. It writes
-ordinary `skeleton.v1` artifacts under `3_attestatores/artifacts/`; the derived
-manifest is only inventory. A missing record is never a witness outcome.
+The Attestatores retains one immutable `kind="testimonium"` for every configured
+chair and every Designator act, on every attempted read. It does not merge, rank,
+select, or turn a Testimonium into established text. A missing artifact is never a
+witness outcome.
 
-## Input boundary
+## Exact input boundary
 
-The stage reads the self-hashed proposal denominator and its exact Designator
-evidence. For a proposed act it accepts only `origin="proposal"` regions,
-validates each crop against the exact Exemplar page and transform, and gives all
-configured witnesses that same original proposal set. A recovery crop is not
-silently substituted for what a witness saw. For a Designator-held act, every
-witness receives an explicit `not-run` outcome instead of a partial reading.
+For a proposed act, the stage accepts only Designator regions whose provenance and
+Exemplar crop lineage verify. Each attempted Testimonium names precisely the
+original proposal regions and their pixel blobs. A later recovery crop is not
+silently substituted for what a chair saw.
 
-The current writer is the deterministic synthetic skeleton. It is a contract
-exercise, not a live witness/model integration; a real run does not reach it
-because System 03 stops before real structural proposal work.
+The current writer is the declared synthetic skeleton. Its `fixture://` serving
+facts are fixture declarations, not measurements of a live model. Spec 04 has not
+landed a serving response/body contract, and Spec 06's capture-as-Testimonium
+intake is not present in this tree; no fake capture intake is claimed here.
 
-## `kind="testimonium"`
+## Testimonium schema
 
-Each record is subject-bound to the act and attempt-bound to
-`read:<chair>:<ordinal>`. The current fixture writer emits `read`,
-`genuinely-empty`, `failed`, or `not-run`; all remain visible as history. Its
-payload includes:
+Every record payload has these fields:
 
 ```text
 chair, act_key, attempt_ordinal
 regions = [{region_id, image_path, image_sha256}, ...]
-provenance, format_capabilities, content_health
-reported                for read and genuinely-empty outcomes
-reason                  for failed/not-run outcomes
+provenance, format_capabilities
+payload, witness_reported, content_health
+reason                         only when a named non-reading/failure needs one
 ```
 
-For `read`, `genuinely-empty`, and `failed`, the direct input set is precisely
-the pixel blobs of the proposal regions attempted, and provenance includes the
-resolved chair identity, revision, adapter recipe, and a serving receipt. A
-genuinely-empty report is a completed read of the pixels (`reported=""` and
-`content_health.empty=true`), not an absent attempt; it counts as witness
-coverage. It is still one fallible Testimonium, not evidence that the act or page
-is blank, and it never authorizes `confirmed-blank`; that diagnosis belongs to
-the unbuilt Recensor. `not-run` carries no invented receipt or region input.
+`payload` is the witness's JSON-native output, retained as its own shape. An
+object, array, integer, boolean, null, or text response is not flattened into a
+common body schema. `witness_reported` is the witness's separate self-report — a
+confidence/status claim remains evidence, but it is not health and cannot make
+the stage treat a channel as complete. `content_health` is stage-computed from
+native output and a trusted response-boundary fact: recordability, UTF-8 validity,
+emptiness, blankness, character count for text, and truncation. It never reads
+`witness_reported`; when the real serving boundary cannot supply completion,
+truncation is `null`, not guessed from punctuation.
 
-## Consumer obligations
+The synthetic fixture declares complete responses, so its retained text gets
+`truncated=false`. A malformed or unrecordable provider response becomes a
+`failed` Testimonium with an explicit health reason; it is not decoded with
+replacement characters, stringified, or turned into an empty report. Arbitrary
+binary response retention remains an explicit Spec 04 response-contract decision:
+the current canonical artifact format can faithfully retain JSON-native values,
+not an invented binary encoding.
 
-Perlector reads every Testimonium for an act, verifies its direct inputs and
-serving provenance, and requires its `regions` payload to be exactly the current
-original-proposal region set (not a recovery crop added after the witness ran).
-It then derives the current record for each chair by unique attempt ordinal while
-leaving every historical attempt in the tree, and retains a digest-checked
-reference to every current record it consulted in the Perlectio basis. It may
-record disagreement structurally, but it does not choose
-a witness, count agreement to determine text, or promote a missing/failed result
-to coverage. Recensor uses the same current-per-chair derivation and refuses
-duplicate ordinals rather than choosing an arbitrary record.
+### Temporary textual bridge
+
+The prohibited-to-edit Perlector still consumes `payload.reported` as a string.
+Until its owner migrates that reader, a recordable *textual* native payload also
+carries `reported` as a deprecated compatibility projection. It is never derived
+from `witness_reported`, never used by Attestatores health, and no structured
+native payload is coerced into it. A structured Testimonium therefore lands
+verbatim here but the current Perlector visibly refuses it; that integration work
+belongs to the Perlector/serving-contract owners.
+
+## Outcomes and provenance
+
+Every configured chair has one explicit outcome per act per attempt:
+
+- `read` and `genuinely-empty` mean a chair actually read the exact regions and
+  carry a serving receipt. `genuinely-empty` has native `payload=""`; it is never
+  represented by an empty file.
+- `failed` means an attempt reached the response boundary but produced no usable
+  Testimonium. It also carries the attempted region inputs and a receipt.
+- `dead` means an `AbsentChair`: the seat was unavailable and no attempt reached
+  the region. It retains the absence record, with no invented receipt.
+- `not-run` means a configured chair was never attempted, including a held or
+  refused proposal. It retains the resolved pin but no invented receipt.
+- `excluded` is never produced by this writer without a Tyrel approval-record
+  reference; generic envelope validation refuses such a claim.
+
+`provenance` holds the exact resolved identity/revision and, only for attempted
+outcomes, the digest-checked serving receipt. A failed or absent chair cannot be
+replaced by another chair.
+
+A malformed proposal crop is isolated to its act: every chair receives its
+explicit `not-run` or `dead` record, no chair is said to have read the refused
+pixels, and other acts continue. Malformed native output or malformed capability
+metadata similarly becomes one `failed` attempt with the remaining chair records
+retained; neither case is silently repaired into a reading.
+
+A refused crop completes this retention stage because each configured chair has
+been accounted for; its explicit non-reading records force the later partial
+status. Only an `UNKNOWN` attempt tally holds Stage 3 and stops orchestration.
+
+## Retention and current state
+
+Run with `--attempt-ordinal N` (default `1`). The writer permits only an exact
+byte-identical repeat of the current ordinal or the next contiguous ordinal for
+every `(act, chair)` pair. Each identity is `read:<chair>:<ordinal>`; the RunTree's
+immutable publish boundary atomically creates it and refuses different bytes at an
+existing identity. The stage has no pointer and no artifact overwrite path.
+
+Consumers derive current per chair through `common.stage.latest_per_chair()`.
+Thus a later `failed` attempt is current and visible, while the earlier successful
+attempt remains retained history. A missing or gapped history is refused rather
+than repaired or selected around.
+
+## Attempt tally
+
+The stage's derived manifest is rebuilt from immutable Testimonia, compared to its
+stored inventory, reconciled to the full act/chair denominator, and checked against
+the Testimonium schema, provenance, receipts, and exact region inputs before a
+re-read may append. `attempt_tally()` returns `KNOWN` only when that evidence
+channel is whole and recordable. An absent, garbled, truncated, divergent,
+malformed, or unrecordable channel returns `UNKNOWN`, `count=null`, `hold=true`; a
+re-read then exits held and writes no replacement attempt.
+
+This check runs immediately after Stage 3 and before a later re-read; the
+orchestrator stops at an Attestatores `UNKNOWN` hold, so an older complete export
+cannot mask it. Direct invocation of a later owner stage still needs that owner's
+own evidence-boundary check and is not simulated here.
