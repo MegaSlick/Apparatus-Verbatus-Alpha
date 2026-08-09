@@ -544,7 +544,19 @@ def _existing_attempts(context, act_id: str, chair: str) -> list[dict[str, Any]]
 
 
 def require_appendable_ordinal(context, act_id: str, chair: str, ordinal: int) -> None:
-    """Allow only an idempotent rerun or exactly the next immutable attempt."""
+    """Allow only a rerun of an attempt that exists, or exactly the next one.
+
+    Ordinals are the contiguous run 1..N — `latest_attempt` refuses a gap — so any
+    ordinal at or below the current one names an attempt that is already on disk,
+    and rewriting it is a resume: the RunTree refuses it outright if the bytes
+    differ. Only `current + 1` adds anything.
+
+    The bound is `<= current + 1` rather than `in {current, current + 1}` because a
+    targeted reread moves one seat's ordinal without moving any other's. Insisting
+    every pair be at the same ordinal would mean the orchestrator — which always
+    asks for ordinal 1 — held the whole folder from the moment one seat was reread,
+    over five writes that would have been byte-identical no-ops.
+    """
     records = _existing_attempts(context, act_id, chair)
     if not records:
         if ordinal != 1:
@@ -555,10 +567,11 @@ def require_appendable_ordinal(context, act_id: str, chair: str, ordinal: int) -
         return
     current = latest_attempt(records, f"Testimonium for {(act_id, chair)!r}", operation=f"read:{chair}")
     current_ordinal = current["payload"]["attempt_ordinal"]
-    if ordinal not in {current_ordinal, current_ordinal + 1}:
+    if ordinal > current_ordinal + 1:
         raise SchemaRefusal(
             f"Testimonium for {(act_id, chair)!r} is current at ordinal {current_ordinal}; "
-            f"ordinal {ordinal} is neither its idempotent rerun nor its next append-only attempt"
+            f"ordinal {ordinal} is neither a rerun of an attempt it holds nor its next "
+            "append-only attempt"
         )
 
 
@@ -631,6 +644,54 @@ def validate_tallied_testimonium(context, record: dict[str, Any], act: dict[str,
         raise SchemaRefusal("a not-run Testimonium tally record does not retain a configured chair")
 
 
+def require_accounted_unrecordable_channel(
+    record: dict[str, Any], payload: dict[str, Any]
+) -> None:
+    """Tell a witness whose output could not be kept from an evidence channel nobody can read.
+
+    Spec 07 asks for two things that pull apart if `recordable=False` is read as
+    one fact. Its isolation bullet: "one bad crop, one dead witness, one malformed
+    response never kills the folder ... Malformed provider output is recorded as a
+    failed attempt and refused, not repaired silently". Its retention bullet, on
+    invariant #23: "a damaged or unrecordable evidence channel makes the count
+    UNKNOWN, and UNKNOWN holds the folder".
+
+    Both are true, because they are about different channels. #23's evidence
+    channel is *the attempt tally itself* — the independent count of what was
+    attempted, which is what the old pipeline could not produce. A provider
+    response this stage could not retain is not that: it is one witness's own
+    output, and the `failed` attempt naming it is exactly the record the isolation
+    bullet asks for. That attempt is countable, counted, and visibly failed
+    downstream; the act it belongs to goes under-witnessed and the run goes
+    partial. Holding the whole folder for it would stop the Perlector reading ink
+    that is not in doubt because one witness of three returned rubbish — and with
+    real providers and damaged registers that is the common case, not the edge
+    one.
+
+    So an unrecordable channel is accounted only inside an honestly `failed`
+    attempt that says why. A record that claims to be a *reading* while saying its
+    own channel could not be recorded is incoherent — the one shape that cannot be
+    resolved in the run's favour — and it is #23's UNKNOWN.
+    """
+    if record["outcome"] in WITNESS_READING_OUTCOMES:
+        raise SchemaRefusal(
+            f"a Testimonium claims outcome {record['outcome']!r} while recording that its own "
+            "native channel was unrecordable; a reading nothing could retain is not a reading, "
+            "and its tally cannot be counted as known"
+        )
+    if record["outcome"] != "failed":
+        raise SchemaRefusal(
+            f"a Testimonium with outcome {record['outcome']!r} records an unrecordable native "
+            "channel; only an attempted-and-failed reading has a channel to be unrecordable"
+        )
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise SchemaRefusal(
+            "a failed Testimonium with an unrecordable native channel records no reason; an "
+            "absence with no reason is the silent loss this stage exists to refuse"
+        )
+
+
 def attempt_tally(
     tree,
     *,
@@ -641,9 +702,12 @@ def attempt_tally(
     """Rebuild and check the stage's attempt inventory.
 
     The stored manifest is derived state, not the evidence: it is checked against
-    a fresh tree walk and the immutable Testimonia. Any unreadable, malformed,
-    missing, divergent, or unrecordable evidence channel makes the count UNKNOWN.
-    A caller must hold rather than turn that uncertainty into a favourable count.
+    a fresh tree walk and the immutable Testimonia. An unreadable, malformed,
+    missing or divergent inventory makes the count UNKNOWN, and a caller must hold
+    rather than turn that uncertainty into a favourable count.
+
+    A witness whose own output could not be retained is a different fact and does
+    not make the count unknown — see `require_accounted_unrecordable_channel`.
     """
     try:
         stored_path = tree.resolve(tree.manifest_path(ATTESTATORES))
@@ -687,10 +751,7 @@ def attempt_tally(
             health = record.get("payload", {}).get("content_health")
             validate_content_health(payload["payload"], health)
             if health["recordable"] is False:
-                raise SchemaRefusal(
-                    "a Testimonium's native evidence channel was unrecordable; its tally "
-                    "cannot be counted as known"
-                )
+                require_accounted_unrecordable_channel(record, payload)
             if context is not None:
                 if acts is None:
                     raise SchemaRefusal("a contextual attempt tally has no expected-act denominator")

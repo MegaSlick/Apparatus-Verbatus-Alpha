@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 
 from common.contracts.canonical import canonical_bytes, self_hash
-from common.contracts.errors import IncompatibleReuse
+from common.contracts.envelope import build_envelope
+from common.contracts.errors import ApprovalRefusal, IncompatibleReuse
+from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.outcomes import witness_coverage
 from common.contracts.stages import ATTESTATORES, DESIGNATOR
 from common.runtree.store import RunTree
@@ -269,6 +271,69 @@ def test_a_targeted_reread_moves_one_seat_and_leaves_every_other_seat_alone(tmp_
     assert attestatores.attempt_tally(tree)["count"] == 7
 
 
+def test_the_whole_pass_still_resumes_over_a_folder_one_seat_has_been_reread_in(tmp_path):
+    """A reread moves one seat's ordinal and no other's, so the whole pass — which
+    the orchestrator always invokes at ordinal 1 — has to stay a resume rather than
+    become a hold. Every write it makes here is byte-identical to one already on
+    disk, and the RunTree would refuse it outright if it were not."""
+    run_root, tree = run_to_designator(tmp_path, "reread-failure")
+    assert (
+        invoke_stage(
+            run_root, "retention", "reread-failure", "pipeline/3_attestatores/run.py"
+        ).returncode
+        == 0
+    )
+    assert (
+        _reread(run_root, "reread-failure", _act_id_for(tree, "a1"), "attestator_3").returncode == 0
+    )
+    before = {
+        record["artifact_id"]: tree.resolve(
+            tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"])
+        ).read_bytes()
+        for record in _testimonia(tree)
+    }
+    assert len(before) == 7
+
+    resumed = invoke_stage(
+        run_root, "retention", "reread-failure", "pipeline/3_attestatores/run.py"
+    )
+
+    assert resumed.returncode == 0, resumed.stderr
+    after = {
+        record["artifact_id"]: tree.resolve(
+            tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"])
+        ).read_bytes()
+        for record in _testimonia(tree)
+    }
+    assert after == before
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
+def test_a_whole_pass_may_not_skip_an_ordinal_over_any_seat(tmp_path):
+    """The other half of the same bound: `current + 2` would leave a hole where an
+    attempt that existed is no longer here, which is what a gap always means."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(
+            run_root, "retention", "happy", "pipeline/3_attestatores/run.py"
+        ).returncode
+        == 0
+    )
+    before = len(_testimonia(tree))
+
+    skipped = invoke_stage(
+        run_root,
+        "retention",
+        "happy",
+        "pipeline/3_attestatores/run.py",
+        attempt_ordinal=3,
+    )
+
+    assert skipped.returncode == 3
+    assert "UNKNOWN" in skipped.stderr
+    assert len(_testimonia(tree)) == before
+
+
 def test_a_targeted_reread_names_both_the_act_and_the_chair_or_is_refused(tmp_path):
     """Without both, it is a whole second pass wearing a narrower name."""
     run_root, tree = run_to_designator(tmp_path, "happy")
@@ -407,6 +472,43 @@ def test_no_self_report_can_reach_a_coverage_count_or_an_outcome_class():
     assert "witness_reported" not in inspect.signature(attestatores.content_health).parameters
 
 
+def test_an_excluded_testimonium_without_an_approval_artifact_is_refused_at_the_schema():
+    """Spec 07 test 2: `excluded` exists only as a reference to a Tyrel
+    approval-record artifact. Absent that artifact, a seat that did not read is
+    `not-run`, `dead` or `failed` — all of which force visible partial status —
+    and the word `excluded` alone buys nothing.
+
+    The refusal is generic (`common/contracts/envelope.py` calls `require_approval`
+    on the way out as well as on the way in), and it is pinned here because spec 07
+    names it as this stage's test and a generic guarantee nobody exercises for a
+    stage is one a later change can quietly stop covering.
+    """
+    envelope = dict(
+        run_id="r",
+        subject_id="act_0123456789abcdef",
+        stage=ATTESTATORES,
+        kind="testimonium",
+        config_digest="0" * 64,
+        adapter_revision="test",
+        inputs=[],
+        payload={"chair": "attestator_1"},
+        attempt=attempt_id("act_0123456789abcdef", "read:attestator_1", 1),
+    )
+    envelope["artifact_id"] = artifact_id(
+        ATTESTATORES, "testimonium", envelope["subject_id"], envelope["attempt"]
+    )
+
+    with pytest.raises(ApprovalRefusal, match="only Tyrel approves an exclusion"):
+        build_envelope(outcome="excluded", **envelope)
+
+    # The same record with an approval-record reference is accepted, so the
+    # refusal is about the missing artifact and not about the word.
+    approved = build_envelope(
+        outcome="excluded", approval_ref="art_0123456789abcdef", **envelope
+    )
+    assert approved["approval_ref"] == "art_0123456789abcdef"
+
+
 def test_an_actual_testimonium_identity_refuses_replacement_at_the_store_boundary(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "happy")
     result = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
@@ -515,22 +617,34 @@ def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(tmp
     assert all(record["outcome"] == "read" for record in intact)
 
 
-def test_malformed_one_witness_response_is_retained_as_failed_and_holds_the_tally(tmp_path):
+def test_malformed_one_witness_response_is_a_failed_attempt_that_does_not_hold_the_folder(
+    tmp_path,
+):
+    """Spec 07's isolation bullet: "one malformed response never kills the folder".
+
+    The response is refused without repair — no replacement characters, no
+    `str()`, no empty reading — and the refusal is one `failed` attempt with its
+    reason. That attempt is countable and counted, so the tally stays KNOWN and
+    the other two chairs' readings of the same act reach the Perlector. The act
+    goes under-witnessed and the run goes visibly partial; that is where this is
+    reported, and it is not a reason to stop reading ink nobody doubted.
+    """
     run_root, tree = run_to_designator(tmp_path, "malformed-witness")
     result = invoke_stage(run_root, "retention", "malformed-witness", "pipeline/3_attestatores/run.py")
-    assert result.returncode == 3, result.stderr
+    assert result.returncode == 0, result.stderr
     records = _testimonia(tree)
     assert len(records) == 6
     malformed = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
     assert malformed["outcome"] == "failed"
     assert malformed["payload"]["payload"] is None
     assert malformed["payload"]["content_health"]["recordable"] is False
+    assert malformed["payload"]["reason"]
     assert "reported" not in malformed["payload"]
     assert sum(record["outcome"] == "read" for record in records) == 5
     tally = attestatores.attempt_tally(tree)
-    assert tally["state"] == "UNKNOWN"
-    assert tally["count"] is None
-    assert tally["hold"] is True
+    assert tally["state"] == "KNOWN"
+    assert tally["count"] == 6
+    assert tally["hold"] is False
 
 
 def test_malformed_capabilities_fail_one_attempt_without_aborting_other_chairs(tmp_path):
@@ -541,7 +655,7 @@ def test_malformed_capabilities_fail_one_attempt_without_aborting_other_chairs(t
         "malformed-capabilities",
         "pipeline/3_attestatores/run.py",
     )
-    assert result.returncode == 3, result.stderr
+    assert result.returncode == 0, result.stderr
     records = _testimonia(tree)
     assert len(records) == 6
     malformed = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
@@ -552,6 +666,62 @@ def test_malformed_capabilities_fail_one_attempt_without_aborting_other_chairs(t
     assert malformed["inputs"]
     assert malformed["payload"]["provenance"]["receipt_ref"] is not None
     assert sum(record["outcome"] == "read" for record in records) == 5
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
+def test_a_reading_that_claims_its_own_channel_was_unrecordable_is_unknown(tmp_path):
+    """The one `recordable=False` shape that is #23's UNKNOWN rather than an
+    accounted failure: a record claiming to be a *reading* while recording that
+    nothing could retain what it read. A reading nothing could keep is not a
+    reading, and it is the shape a resealed artifact would take to slip a lost
+    payload past the tally as though it were counted evidence."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(
+            run_root, "retention", "happy", "pipeline/3_attestatores/run.py"
+        ).returncode
+        == 0
+    )
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    assert record["outcome"] == "read"
+    changed = copy.deepcopy(record)
+    changed["payload"]["content_health"]["recordable"] = False
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    tally = attestatores.attempt_tally(tree)
+
+    assert tally["state"] == "UNKNOWN"
+    assert tally["count"] is None
+    assert tally["hold"] is True
+    assert "is not a reading" in tally["reason"]
+
+
+def test_a_failed_attempt_with_an_unrecordable_channel_and_no_reason_is_unknown(tmp_path):
+    """An absence with no reason is the silent loss this stage exists to refuse,
+    so it cannot buy its way into the count by wearing `failed`."""
+    run_root, tree = run_to_designator(tmp_path, "malformed-witness")
+    assert (
+        invoke_stage(
+            run_root, "retention", "malformed-witness", "pipeline/3_attestatores/run.py"
+        ).returncode
+        == 0
+    )
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    changed = copy.deepcopy(record)
+    del changed["payload"]["reason"]
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    tally = attestatores.attempt_tally(tree)
+
+    assert tally["state"] == "UNKNOWN"
+    assert tally["hold"] is True
+    assert "records no reason" in tally["reason"]
 
 
 @pytest.mark.parametrize("damage", ("absent", "garbled", "truncated"))

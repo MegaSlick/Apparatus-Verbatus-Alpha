@@ -1495,6 +1495,48 @@ def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(tmp_path):
     assert by_chair["attestator_2"]["outcome"] == "not-run"
 
 
+def test_a_structured_testimonium_is_retained_here_and_refused_by_name_downstream(tmp_path):
+    """The known edge of the Testimonium split, pinned rather than left to be found.
+
+    Spec 07 requires `payload` to be the witness's native output, verbatim, never
+    coerced into a shared body schema — so a witness whose real output is an object
+    lands here as an object. The Perlector's current dissent comparison still reads
+    a textual `reported` field, and this stage deliberately projects that only for a
+    *textual* native payload: picking a field out of a structured one to stand in
+    for the whole would be the coercion the spec refuses, one step further on.
+
+    So the pipeline cannot yet carry a structured witness end to end, and this test
+    exists to say exactly how it fails: a named `SchemaRefusal` at the Perlector
+    boundary naming the chair, with the Testimonium retained intact behind it —
+    never a reading assembled from part of a payload, and never a silent skip.
+    Removing this test is the Perlector owner's to do, once its reader consumes
+    `payload` natively; until then it is the honest record of a gap.
+    """
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "structured-witness")
+
+    assert result.returncode == 2, result.stderr
+    assert "carries no text to compare" in result.stderr
+    assert "attestator_1" in result.stderr
+
+    tree = RunTree(root, "r")
+    structured = next(
+        record
+        for record in artifacts(tree, ATTESTATORES, "testimonium")
+        if record["payload"]["chair"] == "attestator_1"
+        and record["payload"]["act_key"] == "a1"
+    )
+    assert structured["outcome"] == "read"
+    assert structured["payload"]["payload"] == {
+        "tokens": ["μ", "beta"],
+        "layout": {"line": 4},
+        "uncertain": True,
+    }
+    assert "reported" not in structured["payload"], (
+        "no field of a structured payload may be promoted to stand in for the whole"
+    )
+
+
 def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):
     """A damaged independent count cannot hide behind an old complete export."""
     root = tmp_path / "runs"

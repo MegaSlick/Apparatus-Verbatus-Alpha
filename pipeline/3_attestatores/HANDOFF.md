@@ -101,10 +101,12 @@ status. Only an `UNKNOWN` attempt tally holds Stage 3 and stops orchestration.
 Two write paths, and both append.
 
 `--attempt-ordinal N` (default `1`) is the whole pass: every configured chair on
-every expected act, at that one ordinal. The writer permits only an exact
-byte-identical repeat of the current ordinal or the next contiguous ordinal for
-every `(act, chair)` pair, so the same command twice is a resume rather than a
-second reading.
+every expected act, at that one ordinal. For each `(act, chair)` pair the writer
+permits only an exact byte-identical repeat of an ordinal that pair already holds,
+or its next contiguous one — so the same command twice is a resume rather than a
+second reading, and the whole pass still resumes over a folder in which one seat
+has been reread past it. `current + 2` is refused: a gap means an attempt that
+existed is no longer here.
 
 `--operation reread --act <act_id> --chair <role>` moves exactly one seat on one
 act, at the ordinal that seat's own history says comes next. This is the path a
@@ -131,10 +133,20 @@ than repaired or selected around.
 The stage's derived manifest is rebuilt from immutable Testimonia, compared to its
 stored inventory, reconciled to the full act/chair denominator, and checked against
 the Testimonium schema, provenance, receipts, and exact region inputs before a
-re-read may append. `attempt_tally()` returns `KNOWN` only when that evidence
-channel is whole and recordable. An absent, garbled, truncated, divergent,
-malformed, or unrecordable channel returns `UNKNOWN`, `count=null`, `hold=true`; a
-re-read then exits held and writes no replacement attempt.
+re-read may append. `attempt_tally()` returns `KNOWN` only when that inventory is
+whole. An absent, garbled, truncated or divergent inventory returns `UNKNOWN`,
+`count=null`, `hold=true`; a re-read then exits held and writes no replacement
+attempt.
+
+**This channel is the count of attempts, not a witness's own output.** A provider
+response the stage could not retain is one witness's channel, and the `failed`
+attempt naming it — with `content_health.recordable=false` and a reason — is a
+counted, accounted record. It leaves the tally `KNOWN`, the act under-witnessed
+and the run visibly partial, and it does not stop the Perlector reading ink that
+was never in doubt. Two `recordable=false` shapes are still `UNKNOWN`, because
+neither can be resolved in the run's favour: a record claiming `read` or
+`genuinely-empty` while saying nothing could retain what it read, and a `failed`
+record carrying no reason.
 
 This check runs immediately after Stage 3 and before a later re-read; the
 orchestrator stops at an Attestatores `UNKNOWN` hold, so an older complete export
