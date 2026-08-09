@@ -31,6 +31,7 @@ from .models import (
     PendingCreateIntent,
     PodRecord,
     as_decimal,
+    assert_nonsecret_receipt,
     require_utc,
     utc_now,
 )
@@ -523,7 +524,7 @@ def _validate_controller_record(
     if pod_id is None:
         raise ValueError("controller receipt cannot prove a pod before exact pod binding")
     receipt = value["receipt"]
-    _assert_nonsecret_receipt(receipt)
+    assert_nonsecret_receipt(receipt)
     required_receipt = {
         "lease_id",
         "pod_id",
@@ -594,20 +595,6 @@ def _validate_close_record(
             raise ValueError("verified lease phase requires complete verified close evidence")
     elif value.get("state") == "verified":
         raise ValueError("unverified lease phase cannot carry verified close evidence")
-
-
-def _assert_nonsecret_receipt(value: Mapping[str, object]) -> None:
-    """Leases are durable evidence, never a place for a termination capability."""
-
-    forbidden = ("key", "secret", "password", "credential", "bearer", "token")
-    for item_key, item_value in value.items():
-        if not isinstance(item_key, str):
-            raise ValueError("controller receipt keys must be strings")
-        normalized = item_key.lower().replace("-", "_")
-        if any(marker in normalized for marker in forbidden):
-            raise ValueError("controller receipt must not retain credential or token material")
-        if isinstance(item_value, Mapping):
-            _assert_nonsecret_receipt(item_value)
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:

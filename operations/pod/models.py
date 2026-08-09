@@ -220,6 +220,25 @@ def _looks_like_credential_field(value: str) -> bool:
     )
 
 
+def assert_nonsecret_receipt(value: Mapping[str, object]) -> None:
+    """Controller receipts are durable evidence; capability material is forbidden.
+
+    Shared by arming.py (checked when a receipt is first constructed) and
+    lease.py (checked again when a persisted lease is reloaded, e.g. after a
+    controller restart) — one marker list for both triggers.
+    """
+
+    forbidden = ("key", "secret", "password", "credential", "bearer", "token")
+    for item_key, item_value in value.items():
+        if not isinstance(item_key, str):
+            raise ValueError("controller receipt keys must be strings")
+        normalized = item_key.lower().replace("-", "_")
+        if any(marker in normalized for marker in forbidden):
+            raise ValueError("controller receipt must not retain credential or token material")
+        if isinstance(item_value, Mapping):
+            assert_nonsecret_receipt(item_value)
+
+
 @dataclass(frozen=True, slots=True)
 class PendingCreateIntent:
     """Non-secret facts needed to recover one pre-armed create after a crash.

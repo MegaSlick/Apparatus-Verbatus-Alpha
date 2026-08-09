@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Callable, Mapping, Protocol
 
 from .lease import LeaseStore, PodLease
-from .models import PodCreateRequest, PodRecord, require_utc
+from .models import PodCreateRequest, PodRecord, assert_nonsecret_receipt, require_utc
 from .spend import SpendPolicy
 
 
@@ -32,7 +32,7 @@ class ControllerReadiness:
             raise ValueError("controller readiness detail must be non-blank")
         if not isinstance(self.receipt, Mapping):
             raise ValueError("controller readiness receipt must be a mapping")
-        _assert_nonsecret_receipt(self.receipt)
+        assert_nonsecret_receipt(self.receipt)
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -59,7 +59,7 @@ class ControllerArming:
             raise ValueError("controller arming detail must be non-blank")
         if not isinstance(self.receipt, Mapping):
             raise ValueError("controller arming receipt must be a mapping")
-        _assert_nonsecret_receipt(self.receipt)
+        assert_nonsecret_receipt(self.receipt)
 
     @property
     def armed(self) -> bool:
@@ -170,17 +170,3 @@ class CallbackControllerArmer:
         policy: SpendPolicy,
     ) -> ControllerArming:
         return self.arm_callback(action, request, record, lease, store, owner_token, policy)
-
-
-def _assert_nonsecret_receipt(value: Mapping[str, object]) -> None:
-    """Controller receipts live in leases, so capability material is forbidden."""
-
-    forbidden = ("key", "secret", "password", "credential", "bearer", "token")
-    for item_key, item_value in value.items():
-        if not isinstance(item_key, str):
-            raise ValueError("controller receipt keys must be strings")
-        normalized = item_key.lower().replace("-", "_")
-        if any(marker in normalized for marker in forbidden):
-            raise ValueError("controller receipt must not retain credential or token material")
-        if isinstance(item_value, Mapping):
-            _assert_nonsecret_receipt(item_value)
