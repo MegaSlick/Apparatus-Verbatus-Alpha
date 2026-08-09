@@ -17,7 +17,13 @@ from decimal import Decimal
 import pytest
 
 from .models import BillingState, PodCreateRequest, Presence, ProviderFailure
-from .provider_runpod import HttpResponse, RunPodProvider, timer_context_from_environment
+from .provider_runpod import (
+    _MAX_RESPONSE_BYTES,
+    HttpResponse,
+    RunPodProvider,
+    _bounded_read,
+    timer_context_from_environment,
+)
 
 UTC = timezone.utc
 NOW = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
@@ -431,3 +437,26 @@ def test_provider_endpoint_vocabulary_is_isolated_to_the_runpod_adapter() -> Non
     for marker in ("rest.runpod.io", "api.runpod.io", "RUNPOD_"):
         occurrences = [source for source in sources if marker in source.read_text(encoding="utf-8")]
         assert occurrences == [pod_root / "provider_runpod.py"], marker
+
+
+# -- response-size bound ----------------------------------------------------
+
+
+class _OversizedStream:
+    def read(self, amount: int) -> bytes:
+        return b"x" * amount
+
+
+class _ExactSizedStream:
+    def read(self, amount: int) -> bytes:
+        return b"y" * _MAX_RESPONSE_BYTES
+
+
+def test_bounded_read_refuses_a_response_over_the_size_cap() -> None:
+    with pytest.raises(ProviderFailure, match="exceeded"):
+        _bounded_read(_OversizedStream())  # type: ignore[arg-type]
+
+
+def test_bounded_read_allows_a_response_exactly_at_the_size_cap() -> None:
+    body = _bounded_read(_ExactSizedStream())  # type: ignore[arg-type]
+    assert len(body) == _MAX_RESPONSE_BYTES

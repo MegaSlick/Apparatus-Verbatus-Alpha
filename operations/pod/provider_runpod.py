@@ -36,6 +36,7 @@ Nothing here reads a credential from a tracked file (`operations/pod/README.md`)
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
@@ -78,6 +79,13 @@ _POD_STATES = frozenset({"RUNNING", "EXITED", "TERMINATED"})
 
 _BUCKET_WIDTH = timedelta(hours=1)
 """Matches the `bucketSize=hour` this adapter always requests."""
+
+_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+"""No documented RunPod response (one pod, a pod list, a billing window) is
+anywhere near this size. Refusing to buffer past it bounds memory against a
+malformed, MITM'd, or pathologically large response on every call this
+adapter makes — including from inside the pod-side dead-man timer, the
+independent kill-switch spec 04 requires because the provider offers none."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,9 +141,9 @@ class UrllibRunPodTransport:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return HttpResponse(int(response.status), response.read())
+                return HttpResponse(int(response.status), _bounded_read(response))
         except urllib.error.HTTPError as error:
-            return HttpResponse(int(error.code), error.read())
+            return HttpResponse(int(error.code), _bounded_read(error))
         except (urllib.error.URLError, OSError) as error:
             raise ProviderFailure(f"RunPod HTTP request failed: {error}") from error
 
@@ -633,6 +641,17 @@ def _unavailable(pod_id: str, window_start: datetime, cutoff: datetime, reason: 
         source="RunPod REST v1 GET /billing/pods",
         window_start_at=window_start,
     )
+
+
+def _bounded_read(stream: http.client.HTTPResponse | urllib.error.HTTPError) -> bytes:
+    """Refuse to buffer a response past ``_MAX_RESPONSE_BYTES``, never truncate it silently."""
+
+    chunk = stream.read(_MAX_RESPONSE_BYTES + 1)
+    if len(chunk) > _MAX_RESPONSE_BYTES:
+        raise ProviderFailure(
+            f"RunPod response exceeded {_MAX_RESPONSE_BYTES} bytes; refusing to buffer it"
+        )
+    return chunk
 
 
 def _json(body: bytes, label: str) -> object:
