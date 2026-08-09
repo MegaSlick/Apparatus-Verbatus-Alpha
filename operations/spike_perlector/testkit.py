@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 
 from common.contracts.approval import ApprovalRecordReference, build_approval_record
@@ -34,7 +33,7 @@ from .protocol import PREDECLARED_PROTOCOL_SHA256
 
 
 def digest(label: str) -> str:
-    return hashlib.sha256(label.encode("utf-8")).hexdigest()
+    return sha256_bytes(label.encode("utf-8"))
 
 
 def identity(

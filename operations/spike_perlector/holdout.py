@@ -439,10 +439,6 @@ class HeldOutUseGuard:
         self._manifest = manifest
         self._capability = object()
 
-    @property
-    def manifest(self) -> EvaluationManifest:
-        return self._manifest
-
     def bind_selected_payload(
         self, opaque_act_id: str, payload: bytes | str
     ) -> "BoundEvaluationMaterial":
