@@ -107,11 +107,6 @@ class SourceEntry(NamedTuple):
     container_page_index: int | None = None
     declared_size: int | None = None
     ledger_sha256: str | None = None
-    # Unit callers can supply a local PDF path without allocating its whole body.
-    # The real-submission route deliberately leaves this empty and opens its PDF
-    # through inventory.open_submission_source(), so the descriptor that PDFium
-    # reads cannot be switched between the ledger digest and rasterisation.
-    source_path: Path | None = None
     detected_format: str | None = None
 
 
@@ -136,12 +131,6 @@ _SNIFF_BYTES: Final = 4096
 REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v2"
 
 
-def _source_digest(path: Path) -> tuple[str, int]:
-    """Hash a source path in bounded chunks, returning its exact byte count too."""
-    with path.open("rb") as handle:
-        return _source_digest_stream(handle)
-
-
 def _source_digest_stream(handle: BinaryIO) -> tuple[str, int]:
     """Hash an already-open source and reset it for the PDF decoder."""
     digest = hashlib.sha256()
@@ -152,12 +141,6 @@ def _source_digest_stream(handle: BinaryIO) -> tuple[str, int]:
         size += len(chunk)
     handle.seek(0)
     return digest.hexdigest(), size
-
-
-def _sniff_source_path(path: Path) -> str | None:
-    """Route a path after reading only the bounded signature prefix."""
-    with path.open("rb") as handle:
-        return sniff(handle.read(_SNIFF_BYTES))
 
 
 def _sniff_source_stream(handle: BinaryIO) -> str | None:
@@ -212,9 +195,7 @@ def decide(
             raise ValueError("a streamed decision needs its source digest")
         detected = detected_format or source.detected_format
         if detected is None:
-            if source.source_path is None:
-                raise ValueError("a streamed decision needs its detected PDF format")
-            detected = _sniff_source_path(source.source_path)
+            raise ValueError("a streamed decision needs its detected PDF format")
         whole_digest = source_digest
     else:
         detected = detected_format or sniff(data)
@@ -258,11 +239,9 @@ def decide(
 
     try:
         if detected == "pdf":
-            if data is None and opened_pdf is None and source.source_path is None:
+            if data is None and opened_pdf is None:
                 raise ValueError("a streamed PDF has no open document")
-            opened = opened_pdf or pdf_render.open_document(
-                source.source_path if data is None else data
-            )
+            opened = opened_pdf or pdf_render.open_document(data)
             try:
                 rendered = pdf_render.render_page(opened, source.container_page_index, pdf_settings)
             finally:
@@ -345,9 +324,6 @@ def expand_sources(
         path, declared_sha256 = row["relative_path"], row["sha256"]
         declared_size = row.get("bytes")
         ledger_sha256 = row.get("ledger_sha256")
-        source_path = row.get("source_path")
-        if source_path is not None and not isinstance(source_path, Path):
-            raise ContractError("a source path for local PDF opening is not a filesystem path")
         if declared_size is not None and (
             not isinstance(declared_size, int)
             or isinstance(declared_size, bool)
@@ -369,7 +345,6 @@ def expand_sources(
             declared_sha256: str | None = declared_sha256,
             declared_size: int | None = declared_size,
             ledger_sha256: str | None = ledger_sha256,
-            source_path: Path | None = source_path,
         ) -> None:
             """One fanned-out or standalone row for this loop iteration's source.
 
@@ -387,7 +362,6 @@ def expand_sources(
                     container_page_index,
                     declared_size,
                     ledger_sha256,
-                    source_path,
                     detected_format,
                 )
             )
@@ -402,7 +376,10 @@ def expand_sources(
                     detected = _sniff_source_stream(opened_source.handle)
                     opened_source.assert_unchanged()
             else:
-                detected = _sniff_source_path(source_path) if source_path is not None else None
+                # A caller with no anchored opener supplies bytes directly; there is
+                # no second, path-based way to classify a source (the door hands
+                # PDFium an open stream or nothing, never a reopenable pathname).
+                detected = None
             if detected != "pdf":
                 # Rasters remain byte-backed. Their existing bounded path is
                 # intentionally unchanged; only a PDF container can be opened by
@@ -426,9 +403,7 @@ def expand_sources(
                     opened_source.assert_unchanged()
             else:
                 page_count = (
-                    pdf_render.count_pages(source_path if source_path is not None else data)
-                    if detected == "pdf"
-                    else count_raster_pages(data)
+                    pdf_render.count_pages(data) if detected == "pdf" else count_raster_pages(data)
                 )
         except (pdf_render.PdfRefusal, FormatRefusal, inventory.SubmissionInputError, OSError):
             if route != admission.RENDER_PAGES:
@@ -537,9 +512,7 @@ def process_sources(
 
     try:
         for source in sorted(sources, key=lambda item: item.ordinal):
-            stream_backed_pdf = open_source is not None and source.detected_format == "pdf"
-            path_backed_pdf = source.source_path is not None and source.detected_format == "pdf"
-            streamed_pdf = stream_backed_pdf or path_backed_pdf
+            streamed_pdf = open_source is not None and source.detected_format == "pdf"
             source_key = source.declared_path
             if active_pdf_key is not None and (not streamed_pdf or source_key != active_pdf_key):
                 close_active_pdf()
@@ -567,25 +540,19 @@ def process_sources(
             if streamed_pdf:
                 try:
                     if active_pdf_key is None:
-                        candidate_context: ExitStack | None = None
-                        if stream_backed_pdf:
-                            assert open_source is not None  # narrowed by stream_backed_pdf
-                            candidate_context = ExitStack()
-                            try:
-                                candidate_source = candidate_context.enter_context(
-                                    open_source(source.declared_path)
-                                )
-                                actual_digest, actual_size = _source_digest_stream(
-                                    candidate_source.handle
-                                )
-                                candidate_source.assert_unchanged()
-                            except BaseException:
-                                candidate_context.close()
-                                raise
-                        else:
-                            assert source.source_path is not None  # narrowed by path_backed_pdf
-                            actual_digest, actual_size = _source_digest(source.source_path)
-                            candidate_source = None
+                        assert open_source is not None  # narrowed by streamed_pdf
+                        candidate_context = ExitStack()
+                        try:
+                            candidate_source = candidate_context.enter_context(
+                                open_source(source.declared_path)
+                            )
+                            actual_digest, actual_size = _source_digest_stream(
+                                candidate_source.handle
+                            )
+                            candidate_source.assert_unchanged()
+                        except BaseException:
+                            candidate_context.close()
+                            raise
                         active_pdf_key = source_key
                         active_pdf_digest = (actual_digest, actual_size)
                         active_opened_source = candidate_source
@@ -650,14 +617,8 @@ def process_sources(
             if streamed_pdf:
                 try:
                     if active_pdf_document is None:
-                        if stream_backed_pdf:
-                            assert active_opened_source is not None
-                            active_pdf_document = pdf_render.open_document(
-                                active_opened_source.handle
-                            )
-                        else:
-                            assert source.source_path is not None  # narrowed by path_backed_pdf
-                            active_pdf_document = pdf_render.open_document(source.source_path)
+                        assert active_opened_source is not None
+                        active_pdf_document = pdf_render.open_document(active_opened_source.handle)
                     opened_pdf = active_pdf_document
                 except pdf_render.PdfRefusal as error:
                     decision = _Decision("refused", str(error), None, None, None)
@@ -695,7 +656,7 @@ def process_sources(
                 )
                 continue
 
-            if stream_backed_pdf:
+            if streamed_pdf:
                 try:
                     assert active_opened_source is not None
                     active_opened_source.assert_unchanged()

@@ -1728,36 +1728,37 @@ def test_an_oversized_source_is_named_too_large_without_ever_being_read(tmp_path
     assert payload["declared_path"] == "enormous.tif"
 
 
-def test_a_path_backed_pdf_is_not_refused_by_the_retired_bytes_allocation_cap(
+def test_a_stream_backed_pdf_is_not_refused_by_the_retired_bytes_allocation_cap(
     tmp_path, monkeypatch
 ):
-    """The source remains a path for both its streamed digest and PDFium open.
+    """The source stays a stream for both its digest and PDFium open, never bytes.
 
     The cap is monkeypatched below this tiny synthetic PDF rather than allocating a
-    64 MiB fixture. If the retired branch returns, it refuses before the reader is
-    called; the page admission below is therefore a direct proof that a path-backed
-    PDF is not treated like a raster bytes allocation.
+    64 MiB fixture. If a PDF were ever routed through the raster allocation guard,
+    it would refuse here before the reader is called; the page admission below is
+    therefore a direct proof that the real anchored-descriptor route -- the one
+    every real submission actually takes -- is exempt.
     """
-    source_path = tmp_path / "microfilm-reel.pdf"
+    folder = tmp_path / "batch"
+    folder.mkdir()
     data = single_gray_page_pdf()
-    source_path.write_bytes(data)
-    source = SourceEntry(
-        1,
-        "microfilm-reel.pdf",
-        digest_bytes(data),
-        0,
-        len(data),
-        None,
-        source_path,
-        "pdf",
-    )
+    (folder / "microfilm-reel.pdf").write_bytes(data)
+    source = SourceEntry(1, "microfilm-reel.pdf", digest_bytes(data), 0, len(data), None, "pdf")
 
     def unexpected_reader(_relative_path: str) -> bytes:
-        raise AssertionError("a path-backed PDF was read as one bytes object")
+        raise AssertionError("a stream-backed PDF was read as one bytes object")
+
+    def open_source(relative_path: str):
+        return door.inventory.open_submission_source(folder, relative_path)
 
     tree, context = open_door(tmp_path, [source])
     monkeypatch.setattr(door, "MAX_SOURCE_BYTES", 1)
-    assert process_sources(context, tree, [source], unexpected_reader, policy=POLICY) == 1
+    assert (
+        process_sources(
+            context, tree, [source], unexpected_reader, policy=POLICY, open_source=open_source
+        )
+        == 1
+    )
     context.finish(DOOR)
     assert admissions(tree)[1]["outcome"] == "admitted"
 
