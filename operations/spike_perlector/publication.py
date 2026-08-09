@@ -9,7 +9,7 @@ repository-wide history policy remains a separate governance boundary.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from .errors import PublicSafetyRefusal
@@ -24,8 +24,12 @@ def write_public_finding(
 
     if not isinstance(history_directory, Path):
         raise PublicSafetyRefusal("history_directory must be a Path")
-    if not isinstance(finding_date, date):
-        raise PublicSafetyRefusal("finding_date must be a datetime.date")
+    # datetime is a subclass of date; accepting one would embed a time-of-day into
+    # the "date-only filename" this docstring promises and let two calls on the
+    # same real day each pick a distinct microsecond-precision name, defeating the
+    # write-once duplicate guard below.
+    if not isinstance(finding_date, date) or isinstance(finding_date, datetime):
+        raise PublicSafetyRefusal("finding_date must be a date, not a datetime")
     finding = project_public_finding(run)
     validate_public_finding(finding)
     payload = (

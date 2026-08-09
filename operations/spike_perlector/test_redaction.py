@@ -1,6 +1,6 @@
 import json
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -155,6 +155,17 @@ def test_supported_history_writer_validates_and_never_overwrites(tmp_path):
     with pytest.raises(PublicSafetyRefusal, match="write-once"):
         write_public_finding(
             declared_fixture_run(), history_directory=tmp_path, finding_date=date(2026, 8, 8)
+        )
+
+
+def test_history_writer_refuses_a_datetime_because_it_is_not_date_only(tmp_path):
+    """``datetime`` subclasses ``date``; accepting one would defeat write-once-per-day."""
+
+    with pytest.raises(PublicSafetyRefusal, match="datetime"):
+        write_public_finding(
+            declared_fixture_run(),
+            history_directory=tmp_path,
+            finding_date=datetime(2026, 8, 8, 13, 45, 9),
         )
 
 
