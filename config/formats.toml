@@ -1,0 +1,10 @@
+# Armarium product projections.  EXPORT_MANIFEST.json is always present; this
+# list chooses the plainly specified companion formats.  An Obsidian vault and
+# uncertainty/gap display convention remain deliberately absent pending Tyrel's
+# decisions.
+schema = "armarium-formats.v1"
+formats = ["text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"]
+
+# False means the bundle proves its source/crop references and says pixels need
+# retained-source access. True copies verified pages and crops into the bundle.
+embed_pixels = false

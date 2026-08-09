@@ -23,12 +23,21 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# This stage's own directory second, so it lands ahead of the repository root and
+# `from armarium_export import ...` below resolves wherever `run.py` is loaded from
+# -- including through `importlib.util.spec_from_file_location` from another
+# directory's tests, which does not otherwise put this directory on `sys.path`.
+# `pipeline/orchestrator/test_terminal_guards.py` loads this file exactly that way.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from armarium_export import ArmariumProjection, build_armarium_bundle  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes, verify_self_hash  # noqa: E402
-from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
+from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     ArmariumCategory,
+    require_approval,
     run_aggregate,
     terminal_category,
 )
@@ -118,6 +127,14 @@ def page_census(context) -> dict[int, dict]:
             "declared_sha256": source["sha256"],
             "page_id": record["subject_id"] if record["outcome"] == "sealed" else None,
         }
+        if record["outcome"] == "sealed":
+            image_path, image_sha256 = payload.get("image_path"), payload.get("source_sha256")
+            if not isinstance(image_path, str) or not isinstance(image_sha256, str):
+                raise FatalAccounting(
+                    f"the sealed Exemplar page for ordinal {ordinal} has no pixel reference"
+                )
+            item["image_path"] = image_path
+            item["image_sha256"] = image_sha256
         if "bytes" in source:
             item["declared_bytes"] = source["bytes"]
         if "ledger_sha256" in source:
@@ -489,10 +506,64 @@ def verify_established_record(context, act: dict, review: dict, established: dic
     return payload
 
 
+def missing_export_provenance(payload: object) -> str | None:
+    """Name a reading that cannot travel as an exportable, cited result.
+
+    This is deliberately narrower than the lineage checks in
+    ``verify_established_record``.  A damaged envelope or a disagreement with a
+    parent remains fatal accounting; an otherwise sealed established reading
+    that simply lacks identity or region provenance is a refused unit with a
+    visible review record, not a dropped one.
+    """
+    if not isinstance(payload, dict) or not verify_self_hash(payload):
+        return None
+    if not isinstance(payload.get("provenance"), dict):
+        return "the established reading has no model identity provenance"
+    regions = payload.get("regions")
+    if not isinstance(regions, list) or not regions:
+        return "the established reading has no source-region provenance"
+    for index, region in enumerate(regions):
+        if not isinstance(region, dict):
+            return f"source region {index} is not an object"
+        required = ("region_id", "image_path", "image_sha256", "source_page_ordinal", "source_page_id")
+        missing = [field for field in required if region.get(field) is None]
+        if missing:
+            return f"source region {index} lacks {', '.join(missing)} provenance"
+    return None
+
+
+def export_evidence_refs(context, review: dict, established: dict | None) -> list[dict[str, str]]:
+    """The small, digest-checked record a review item keeps after text is refused."""
+    references = [context.artifact_ref(RECENSOR, "review", review["artifact_id"])]
+    if established is not None:
+        references.append(context.artifact_ref(ARCHETYPUS, "archetypus", established["artifact_id"]))
+    return sorted(references, key=lambda reference: reference["relative_path"])
+
+
+def exclusion_approval_ref(act: dict, category: ArmariumCategory) -> str | None:
+    """Carry an exclusion's recorded approval, or refuse it before export.
+
+    The current Designator contract does not yet emit exclusions.  This boundary
+    is intentionally present now: when that contract is widened, a bare
+    ``excluded-with-approval`` category cannot become an apparently complete
+    export with its required approval citation silently missing.
+    """
+    if category is not ArmariumCategory.EXCLUDED_WITH_APPROVAL:
+        return None
+    approval_ref = act.get("approval_ref")
+    require_approval(ARMARIUM, category.value, approval_ref)
+    return approval_ref
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, ARMARIUM, registry_factory=registry_factory)
+    formats = context.armarium_formats
+    if formats is None:
+        raise FatalAccounting(
+            "Armarium has no format projection bound to the run configuration"
+        )
     # Verify the source ledger's final boundary before publishing even a reusable
     # manifest entry. A seal damaged after Designator must stop export at once.
     census = page_census(context)
@@ -506,8 +577,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     marked_out_pages = pages_marked_out(context)
     delivered: list[dict] = []
     review_items: list[dict] = []
+    projected_acts: list[dict] = []
+    expected = expected_acts(context)
 
-    for act in expected_acts(context):
+    for act in expected:
         act_id = act["act_key"]
         category, review, established = categorize(context, act["act_id"])
 
@@ -523,75 +596,159 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "disagree about a terminal act"
             )
 
-        categories[act_id] = category
-        coverages[act_id] = review["payload"]["coverage"]
-        act_pages[act_id] = marked_out_pages[act["act_id"]]
-
         entry = {
             "act_id": act["act_id"],
             "act_key": act["act_key"],
             "category": category.value,
             "under_witnessed": review["payload"]["coverage"]["under_witnessed"],
             "witness_coverage": review["payload"]["coverage"],
+            "evidence_refs": export_evidence_refs(context, review, established),
         }
+        approval_ref = exclusion_approval_ref(act, category)
+        if approval_ref is not None:
+            entry["approval_ref"] = approval_ref
 
-        if established is not None:
-            payload = verify_established_record(context, act, review, established)
-            validate_serving_provenance(
-                context,
-                payload.get("provenance"),
-                producer_stage=PERLECTOR,
-                require_receipt=True,
+        if established is not None and category is ArmariumCategory.DELIVERED:
+            refusal = missing_export_provenance(established.get("payload"))
+            if refusal is None:
+                payload = verify_established_record(context, act, review, established)
+                try:
+                    validate_serving_provenance(
+                        context,
+                        payload.get("provenance"),
+                        producer_stage=PERLECTOR,
+                        require_receipt=True,
+                    )
+                    provenance = payload["provenance"]
+                    source_regions = export_source_regions(context.tree, payload["regions"], census)
+                    reading = context.tree.read_artifact_reference(
+                        payload["perlectio_ref"],
+                        stage=PERLECTOR,
+                        kind="perlectio",
+                        subject_id=act["act_id"],
+                    )
+                    witnesses = export_witnesses(context, reading, act["act_id"])
+                except SchemaRefusal as error:
+                    refusal = f"the established reading's provenance was refused: {error}"
+                else:
+                    entry.update(
+                        {
+                            # The established reading, and nothing else. No witness text
+                            # reaches this field by any path.
+                            "text": payload["text"],
+                            "provenance": provenance,
+                            # The link back to the exact ink: every region, with the
+                            # transform that produced it and the digest of its bytes.
+                            "source_regions": source_regions,
+                            "perlectio_ref": payload["perlectio_ref"],
+                            "recensor_ref": payload["recensor_ref"],
+                            "witnesses": witnesses,
+                            "dissent_ref": payload["dissent_ref"],
+                        }
+                    )
+                    delivered.append(entry)
+            if refusal is not None:
+                category = ArmariumCategory.REFUSED_WITH_REASON
+                entry["category"] = category.value
+                entry["reason"] = refusal
+                review_items.append(entry)
+        elif established is not None:
+            refused_payload = established.get("payload")
+            entry["reason"] = (
+                refused_payload.get("reason", "")
+                if isinstance(refused_payload, dict)
+                else review["payload"].get("reason", "")
             )
-            provenance = payload.get("provenance")
-            reading = context.tree.read_artifact_reference(
-                payload["perlectio_ref"],
-                stage=PERLECTOR,
-                kind="perlectio",
-                subject_id=act["act_id"],
-            )
-            entry.update(
-                {
-                    # The established reading, and nothing else. No witness text
-                    # reaches this field by any path.
-                    "text": payload["text"],
-                    "provenance": provenance,
-                    # The link back to the exact ink: every region, with the
-                    # transform that produced it and the digest of its bytes.
-                    "source_regions": export_source_regions(
-                        context.tree, payload["regions"], census
-                    ),
-                    "perlectio_ref": payload["perlectio_ref"],
-                    "recensor_ref": payload["recensor_ref"],
-                    "witnesses": export_witnesses(context, reading, act["act_id"]),
-                    "dissent_ref": payload["dissent_ref"],
-                }
-            )
-            delivered.append(entry)
+            review_items.append(entry)
         else:
             entry["reason"] = review["payload"].get("reason", "")
             review_items.append(entry)
+
+        categories[act_id] = category
+        coverages[act_id] = review["payload"]["coverage"]
+        act_pages[act_id] = marked_out_pages[act["act_id"]]
+        if category is ArmariumCategory.DELIVERED:
+            try:
+                canonical_clean_text = entry["text"]
+            except KeyError as error:
+                raise FatalAccounting(
+                    "a delivered Armarium entry has no literal Archetypus text; an export "
+                    "may not substitute or fall back to another reading"
+                ) from error
+            if not isinstance(canonical_clean_text, str):
+                raise FatalAccounting(
+                    "a delivered Armarium entry has no literal Archetypus text; an export "
+                    "may not substitute or fall back to another reading"
+                )
+        else:
+            canonical_clean_text = None
+        projected_acts.append(
+            {
+                "act_id": entry["act_id"],
+                "act_key": entry["act_key"],
+                "category": category.value,
+                # This is intentionally the same literal object value just read
+                # from the Archetypus; no writer receives another text source.
+                "canonical_clean_text": canonical_clean_text,
+                "provenance": entry.get("provenance"),
+                "source_regions": entry.get("source_regions", []),
+                "reason": entry.get("reason"),
+                "evidence_refs": entry["evidence_refs"],
+                "witnesses": entry.get("witnesses", []),
+                "perlectio_ref": entry.get("perlectio_ref"),
+                "recensor_ref": entry.get("recensor_ref"),
+                "dissent_ref": entry.get("dissent_ref"),
+                "approval_ref": entry.get("approval_ref"),
+            }
+        )
 
         context.publish(
             kind="manifest-entry",
             subject_id=act["act_id"],
             outcome=category.value,
             payload=entry,
+            approval_ref=entry.get("approval_ref"),
         )
 
+    unaddressed = list(unaddressed_chairs(context.registry.config))
     aggregate = run_aggregate(
         categories,
         coverages,
         census,
-        unaddressed_chairs=unaddressed_chairs(context.registry.config),
+        unaddressed_chairs=unaddressed,
         act_pages=act_pages,
     )
-    expected_count = len(expected_acts(context))
+    expected_count = len(expected)
     if len(categories) != expected_count:
         raise FatalAccounting(
             f"the seal expected {expected_count} acts and the export categorized "
             f"{len(categories)}. Conservation failed at the last boundary"
         )
+
+    pages = [{"ordinal": ordinal, **census[ordinal]} for ordinal in sorted(census)]
+    bundle = build_armarium_bundle(
+        ArmariumProjection(
+            fixture_id=context.fixture["fixture_id"],
+            scenario=context.scenario,
+            config_digest=context.config_digest,
+            aggregate=aggregate,
+            acts=tuple(projected_acts),
+            pages=tuple(pages),
+            source_manifest=tuple(context.run["source_manifest"]),
+            expected_acts=expected_count,
+            witness_chairs=tuple(context.witness_chairs),
+            witness_floor=context.witness_floor,
+            aggregate_basis={
+                "coverage_records": coverages,
+                "unaddressed_chairs": unaddressed,
+                "act_pages": act_pages,
+            },
+        ),
+        formats,
+        context.tree.read_bytes,
+    )
+    bundle_digest, bundle_result = context.tree.put_blob(ARMARIUM, bundle.data)
+    bundle_ref = context.input_ref(bundle_result.relative_path)
 
     context.publish(
         kind="export",
@@ -612,10 +769,20 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # run declared, with the Exemplar's outcome for it. A page that was
             # refused is named here and in the aggregate's reasons, never only
             # implied by an act count that came up short.
-            "pages": [{"ordinal": ordinal, **census[ordinal]} for ordinal in sorted(census)],
+            "pages": pages,
             "witness_chairs": context.witness_chairs,
             "witness_floor": context.witness_floor,
+            "bundle": {
+                "filename": "armarium-export.zip",
+                "format": "zip",
+                "reference": bundle_ref,
+                "sha256": bundle_digest,
+                "manifest_member": "EXPORT_MANIFEST.json",
+                "manifest_self_hash": bundle.manifest["self_hash"],
+                "claims_status": bundle.manifest["claims"]["status"],
+            },
         },
+        inputs=[bundle_ref],
     )
 
     context.finish()

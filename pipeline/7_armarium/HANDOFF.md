@@ -3,12 +3,14 @@
 The Armarium publishes the terminal `kind="export"` record and one
 `kind="manifest-entry"` per expected act. Both are ordinary artifacts under
 `7_armarium/artifacts/`; the stage manifest is derived inventory, never a competing
-output file.
+output file. The `export` record's `bundle.reference` is a digest-checked input
+reference to the content-addressed Armarium ZIP blob. That ZIP is the product
+which leaves the pipeline; the internal artifact is only its accounting record.
 
 ## Export contract
 
 The export payload contains the aggregate result, the expected-act count, delivered
-and review entries, witness coverage, and `pages`. Every `pages` row is one submitted
+and review entries, witness coverage, `pages`, and the bundle reference. Every `pages` row is one submitted
 source ordinal and retains:
 
 ```text
@@ -31,6 +33,55 @@ by its text. A source-region row carries `source_page_ordinal`,
 count, ledger hash, and `container_page_index`, alongside the crop digest. A
 continuation therefore names both original pages it used rather than relying on a
 reader to search intermediate artifacts.
+
+## Product bundle
+
+`EXPORT_MANIFEST.json` is the first ZIP member and self-hashes its own contents.
+It inventories every other member by digest, names the exact `canonical_clean_text`
+field and its UTF-8 SHA-256 identity, and reports the selected `formats.toml`
+projection configuration. The bundle may contain these plainly specified formats:
+
+- `text/_source_folder/<source-folder>/readings.txt` (or
+  `text/_source_root/readings.txt` for the source root) — readable sections with a source page and
+  source digest, retaining the literal `canonical_clean_text` value. It makes no
+  uncertainty/gap display choice pending Tyrel's decision.
+- `acts.sqlite` — an `acts` table with the literal Archetypus field, and a
+  separate `act_search` / FTS5 layer whose search fold is visibly derived and
+  revision-marked.
+- `acts.jsonl` — one record per expected act, with canonical text only for a
+  delivered act, provenance, source regions, and explicit unavailable/pending
+  annotation fields.
+- `review-items.jsonl` — held and refused act records with reasons and
+  digest-checked evidence references.
+- `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
+  act identifiers or canonical-text fields; promotion requires recorded approval
+  and pipeline re-entry, never an export-time act.
+- `sources.json` — cited source-page/frame rows with filename and digest, plus
+  text-free per-act citation/outcome records and the non-text accounting basis.
+  The clean verifier uses these to require every selected projection to retain
+  the exact delivered provenance, every continuation region, and every held or
+  refused reason; it does not treat a merely nonempty replacement as equivalent.
+
+If `embed_pixels = true`, verified page and crop bytes are included beneath
+`pixels/` and clean-machine verification opens them. If it is false, source and
+crop references remain valid and digest-named, but the manifest says plainly that
+pixel resolution requires retained-source access.
+
+The current run authority binds source-page/frame rows, not a type-aware submission
+file inventory with a terminal category per file. The manifest therefore reports a
+reconciled five-category **act** partition and a separate page census, but marks the
+bundle `partial` and the submission denominator `unreconciled` rather than claiming
+the spec's requested file-level closure.
+
+Non-pixel references to receipts, Testimonia, and intermediate artifacts are
+labelled `requires-retained-run-access`; the product carries their paths and
+digests, not an invented claim that it contains the separate evidence package.
+If no sealed salvage inventory reaches this boundary, the salvage format is present
+but the manifest says `not-produced-no-sealed-salvage-inventory`, rather than
+claiming a measured zero.
+
+The annotation boundary in `common/annotation_boundary.py` is not wired into this
+stage, configuration, or orchestrator. It is a future read-only contract only.
 
 ## Boundary checks
 

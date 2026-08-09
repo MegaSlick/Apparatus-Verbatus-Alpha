@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.outcomes import check_algebra_is_total  # noqa: E402
@@ -104,6 +105,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.pdf_render_config),
         "--designator-padding-config",
         str(args.designator_padding_config),
+        "--formats-config",
+        str(args.formats_config),
         "--recovery-config",
         str(args.recovery_config),
         "--hard-failure-config",
@@ -189,6 +192,11 @@ def main() -> int:
         "--designator-padding-config",
         default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH),
         help="the capture padding applied to every act crop, sealed into this run",
+    )
+    parser.add_argument(
+        "--formats-config",
+        default=str(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH),
+        help="the sealed Armarium product projections for this run",
     )
     parser.add_argument(
         "--pdf-target-dpi",

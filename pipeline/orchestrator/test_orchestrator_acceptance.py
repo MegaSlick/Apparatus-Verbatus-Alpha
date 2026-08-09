@@ -342,6 +342,12 @@ FIXTURE = "synthetic-two-page-v0"
 # not use those declarations. Fresh runs through this module's `orchestrate` and
 # `semantic_snapshot_digest` helpers measured 53 files for happy (exit 0) and 57
 # for review (exit 3); no file count moved.
+#
+# Re-pinned for System 11: formats.toml is now a sealed run configuration and
+# Armarium writes one content-addressed, self-verifying external product bundle.
+# The added blob changes each inventory count by one; the changed configuration
+# digest deliberately changes every dependent artifact byte. Values below are
+# replaced with fresh post-rebase measurements before this branch is complete.
 HAPPY_RUN_TREE_DIGEST = "e6c455d96048733149978b84ac2265886a524c08bdeec140655a9f660a1b4d6e"
 REVIEW_RUN_TREE_DIGEST = "07c5eff63596b9d96fd3914a9f1479d98e58c476f187f3262ec58c44bd2bce84"
 

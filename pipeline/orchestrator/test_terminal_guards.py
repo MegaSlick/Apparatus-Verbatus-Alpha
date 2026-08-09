@@ -14,9 +14,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.armarium_formats import ArmariumFormats
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import synthetic_fixture_ingress_record
-from common.contracts.errors import FatalAccounting
+from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
 from common.contracts.stages import DOOR, EXEMPLAR
 from common.runtree.store import RunTree
@@ -48,9 +49,22 @@ class _RecordingContext:
         self.finished = False
         self.fixture = {"fixture_id": "synthetic-terminal-guard-v0"}
         self.scenario = "synthetic-terminal-guard"
+        self.config_digest = "a" * 64
+        self.run = {"source_manifest": []}
         self.registry = SimpleNamespace(config=object())
         self.witness_chairs: list[str] = []
         self.witness_floor = 0
+        self.armarium_formats = ArmariumFormats(
+            ("text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"),
+            False,
+        )
+        self.tree = SimpleNamespace(
+            read_bytes=lambda _path: b"synthetic bundle input",
+            put_blob=lambda _stage, _data: (
+                "b" * 64,
+                SimpleNamespace(relative_path="synthetic/armarium-export.zip"),
+            ),
+        )
 
     def publish(self, **record) -> None:
         self.published.append(record)
@@ -256,7 +270,7 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     monkeypatch.setattr(
         armarium,
         "categorize",
-        lambda _context, _act_id: (ArmariumCategory.DELIVERED, accepted_review, None),
+        lambda _context, _act_id: (ArmariumCategory.HELD_FOR_REVIEW, accepted_review, None),
     )
     monkeypatch.setattr(
         armarium,
@@ -264,7 +278,27 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
         lambda *_args, **_kwargs: {"status": "complete", "reasons": []},
     )
     monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
+    monkeypatch.setattr(
+        armarium,
+        "build_armarium_bundle",
+        lambda *_args: SimpleNamespace(
+            data=b"synthetic bundle",
+            manifest={"self_hash": "c" * 64, "claims": {"status": "partial"}},
+        ),
+    )
 
     assert armarium.main() == EXIT_COMPLETE
     assert context.finished
     assert [record["kind"] for record in context.published] == ["manifest-entry", "export"]
+
+
+def test_armarium_exclusion_cannot_export_without_its_approval_artifact_reference():
+    armarium = _stage_module(
+        "armarium_exclusion_approval_test", ROOT / "pipeline" / "7_armarium" / "run.py"
+    )
+    with pytest.raises(ApprovalRefusal, match="approval-record reference"):
+        armarium.exclusion_approval_ref({}, ArmariumCategory.EXCLUDED_WITH_APPROVAL)
+    assert armarium.exclusion_approval_ref(
+        {"approval_ref": "art_0123456789abcdef"},
+        ArmariumCategory.EXCLUDED_WITH_APPROVAL,
+    ) == "art_0123456789abcdef"
