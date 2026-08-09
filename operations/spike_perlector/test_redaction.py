@@ -154,7 +154,10 @@ def test_supported_history_writer_validates_and_never_overwrites(tmp_path):
 
 
 def test_public_schema_is_present_parseable_and_declares_no_free_text_field():
-    path = Path("history/reading_claim_public_finding.schema.json")
+    # Resolved from this file, not from the working directory: a relative
+    # `Path("history/...")` passes or fails on where pytest was invoked from,
+    # which is not a property of the schema.
+    path = Path(__file__).with_name("reading_claim_public_finding.schema.json")
     schema = json.loads(path.read_text(encoding="utf-8"))
     assert schema["additionalProperties"] is False
     assert schema["properties"]["matrix"]["minItems"] == 9

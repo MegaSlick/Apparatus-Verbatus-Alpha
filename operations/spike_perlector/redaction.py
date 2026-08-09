@@ -312,9 +312,14 @@ def validate_public_finding(finding: Any) -> None:
         seen_sources.add(record["source_index"])
         if record["cell_count"] != act_count:
             raise PublicSafetyRefusal("public witness baseline does not cover every selected act")
-    if not isinstance(root["condition_deltas"], list):
-        raise PublicSafetyRefusal("public finding condition deltas are not a list")
-        raise PublicSafetyRefusal("public finding has no predeclared condition deltas")
+    # Both refusals were written, but the second sat after the first `raise` and
+    # could never run, so an empty `condition_deltas` list reached the loop below
+    # and was caught only by the closing three-subject check. Stated once, in the
+    # condition, where it says what it means.
+    if not isinstance(root["condition_deltas"], list) or not root["condition_deltas"]:
+        raise PublicSafetyRefusal(
+            "public finding condition deltas are missing, empty, or not a list"
+        )
     seen_delta_slots: set[int] = set()
     for item in root["condition_deltas"]:
         record = _require_exact_keys(item, _DELTA_KEYS, "condition delta row")

@@ -121,11 +121,17 @@ class NormalizationApproval:
     approval_record: Mapping[str, Any]
     approval_bytes: bytes
 
-    def _scope_record(self) -> dict[str, str]:
+    # One builder for the sealed scope. It was written twice: once as an instance
+    # method nothing called, once as a literal inside `scope_digest`. The dead
+    # copy is the dangerous one -- it reads as the definition of what an approval
+    # binds, nothing exercises it, so it can drift from the live literal without
+    # a test going red and then be trusted by whoever reads it next.
+    @staticmethod
+    def _scope_record(*, profile_id: str, profile_sha256: str) -> dict[str, str]:
         return {
             "schema": "spec05-normalization-approval.v1",
-            "profile_id": self.profile_id,
-            "profile_sha256": self.profile_sha256,
+            "profile_id": profile_id,
+            "profile_sha256": profile_sha256,
         }
 
     @property
@@ -135,11 +141,7 @@ class NormalizationApproval:
     @classmethod
     def scope_digest(cls, *, profile_id: str, profile_sha256: str) -> str:
         return _approval_digest(
-            {
-                "schema": "spec05-normalization-approval.v1",
-                "profile_id": profile_id,
-                "profile_sha256": profile_sha256,
-            }
+            cls._scope_record(profile_id=profile_id, profile_sha256=profile_sha256)
         )
 
     def __post_init__(self) -> None:
@@ -202,13 +204,21 @@ class ThirdPartyTransmissionApproval:
     approval_record: Mapping[str, Any]
     approval_bytes: bytes
 
-    def _scope_record(self) -> dict[str, object]:
+    # One builder, for the reason given on NormalizationApproval._scope_record.
+    @staticmethod
+    def _scope_record(
+        *,
+        vendor: str,
+        candidate_artifact_digest: str,
+        page_ids: frozenset[str],
+        manifest_sha256: str,
+    ) -> dict[str, object]:
         return {
             "schema": "spec05-third-party-transmission-approval.v1",
-            "vendor": self.vendor,
-            "candidate_artifact_digest": self.candidate_artifact_digest,
-            "page_ids": sorted(self.page_ids),
-            "manifest_sha256": self.manifest_sha256,
+            "vendor": vendor,
+            "candidate_artifact_digest": candidate_artifact_digest,
+            "page_ids": sorted(page_ids),
+            "manifest_sha256": manifest_sha256,
         }
 
     @property
@@ -230,13 +240,12 @@ class ThirdPartyTransmissionApproval:
         manifest_sha256: str,
     ) -> str:
         return _approval_digest(
-            {
-                "schema": "spec05-third-party-transmission-approval.v1",
-                "vendor": vendor,
-                "candidate_artifact_digest": candidate_artifact_digest,
-                "page_ids": sorted(page_ids),
-                "manifest_sha256": manifest_sha256,
-            }
+            cls._scope_record(
+                vendor=vendor,
+                candidate_artifact_digest=candidate_artifact_digest,
+                page_ids=page_ids,
+                manifest_sha256=manifest_sha256,
+            )
         )
 
     def __post_init__(self) -> None:
@@ -310,23 +319,46 @@ class RunPlanApproval:
     approval_record: Mapping[str, Any]
     approval_bytes: bytes
 
-    def _scope_record(self) -> dict[str, str]:
+    # One builder, for the reason given on NormalizationApproval._scope_record.
+    @staticmethod
+    def _scope_record(
+        *,
+        protocol_sha256: str,
+        manifest_sha256: str,
+        candidate_roster_sha256: str,
+        witness_configuration_sha256: str,
+        prompt_registry_sha256: str,
+        normalization_profile_id: str,
+        normalization_profile_sha256: str,
+        budget_evidence_sha256: str,
+        private_sample_accounting_sha256: str,
+    ) -> dict[str, str]:
         return {
             "schema": "spec05-run-plan-approval.v1",
-            "protocol_sha256": self.protocol_sha256,
-            "manifest_sha256": self.manifest_sha256,
-            "candidate_roster_sha256": self.candidate_roster_sha256,
-            "witness_configuration_sha256": self.witness_configuration_sha256,
-            "prompt_registry_sha256": self.prompt_registry_sha256,
-            "normalization_profile_id": self.normalization_profile_id,
-            "normalization_profile_sha256": self.normalization_profile_sha256,
-            "budget_evidence_sha256": self.budget_evidence_sha256,
-            "private_sample_accounting_sha256": self.private_sample_accounting_sha256,
+            "protocol_sha256": protocol_sha256,
+            "manifest_sha256": manifest_sha256,
+            "candidate_roster_sha256": candidate_roster_sha256,
+            "witness_configuration_sha256": witness_configuration_sha256,
+            "prompt_registry_sha256": prompt_registry_sha256,
+            "normalization_profile_id": normalization_profile_id,
+            "normalization_profile_sha256": normalization_profile_sha256,
+            "budget_evidence_sha256": budget_evidence_sha256,
+            "private_sample_accounting_sha256": private_sample_accounting_sha256,
         }
 
     @property
     def scope_sha256(self) -> str:
-        return _approval_digest(self._scope_record())
+        return self.scope_digest(
+            protocol_sha256=self.protocol_sha256,
+            manifest_sha256=self.manifest_sha256,
+            candidate_roster_sha256=self.candidate_roster_sha256,
+            witness_configuration_sha256=self.witness_configuration_sha256,
+            prompt_registry_sha256=self.prompt_registry_sha256,
+            normalization_profile_id=self.normalization_profile_id,
+            normalization_profile_sha256=self.normalization_profile_sha256,
+            budget_evidence_sha256=self.budget_evidence_sha256,
+            private_sample_accounting_sha256=self.private_sample_accounting_sha256,
+        )
 
     @classmethod
     def scope_digest(
@@ -343,18 +375,17 @@ class RunPlanApproval:
         private_sample_accounting_sha256: str,
     ) -> str:
         return _approval_digest(
-            {
-                "schema": "spec05-run-plan-approval.v1",
-                "protocol_sha256": protocol_sha256,
-                "manifest_sha256": manifest_sha256,
-                "candidate_roster_sha256": candidate_roster_sha256,
-                "witness_configuration_sha256": witness_configuration_sha256,
-                "prompt_registry_sha256": prompt_registry_sha256,
-                "normalization_profile_id": normalization_profile_id,
-                "normalization_profile_sha256": normalization_profile_sha256,
-                "budget_evidence_sha256": budget_evidence_sha256,
-                "private_sample_accounting_sha256": private_sample_accounting_sha256,
-            }
+            cls._scope_record(
+                protocol_sha256=protocol_sha256,
+                manifest_sha256=manifest_sha256,
+                candidate_roster_sha256=candidate_roster_sha256,
+                witness_configuration_sha256=witness_configuration_sha256,
+                prompt_registry_sha256=prompt_registry_sha256,
+                normalization_profile_id=normalization_profile_id,
+                normalization_profile_sha256=normalization_profile_sha256,
+                budget_evidence_sha256=budget_evidence_sha256,
+                private_sample_accounting_sha256=private_sample_accounting_sha256,
+            )
         )
 
     def __post_init__(self) -> None:
