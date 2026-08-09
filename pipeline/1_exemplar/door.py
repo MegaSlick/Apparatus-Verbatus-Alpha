@@ -609,9 +609,7 @@ def process_sources(
                     source,
                     outcome="refused",
                     reason=admission.reason(
-                        RefusalReason.TOO_LARGE,
-                        f"{source.declared_size} bytes exceeds the "
-                        f"{MAX_SOURCE_BYTES}-byte admission limit",
+                        RefusalReason.TOO_LARGE, admission.too_large_detail(source.declared_size)
                     ),
                     approval_reference=approval_reference,
                 )
@@ -781,11 +779,13 @@ def process_sources(
             extra: dict[str, Any] = {
                 "sha256": decision.digest,
                 # The digest of the submitted source file, as this door computed it.
-                # Deliberately three separate names for three separate facts:
-                # `declared_sha256` is what the ledger claimed and is contractually
-                # optional; `sha256` is the stored bytes, which for a PDF page is a
-                # render and not the source at all; this is what duplicate accounting
-                # groups on, and the door always knows it for anything it admitted.
+                # For an ordinary raster this equals `sha256` above and, when the
+                # ledger declared one, `declared_sha256` too -- the digest check
+                # earlier in this loop refuses before `decide()` runs otherwise. The
+                # three names genuinely diverge only for a rendered PDF/TIFF page,
+                # where `sha256` is the *render's* digest rather than the source's.
+                # Duplicate accounting groups on this field because the door always
+                # knows it for anything admitted, render or not.
                 "admitted_source_sha256": actual_digest,
                 "stored_at": published.relative_path,
                 "geometry": {"width": decision.geometry[0], "height": decision.geometry[1]},
@@ -843,6 +843,15 @@ def _publish(
     )
 
 
+def _iter_admissions(context: StageContext, outcome: str):
+    """Every published admission artifact with the given outcome, entry and payload."""
+    for entry in context.tree.build_manifest(DOOR)["artifacts"]:
+        if entry["kind"] != "admission" or entry["outcome"] != outcome:
+            continue
+        record = context.tree.read_artifact(DOOR, "admission", entry["artifact_id"])
+        yield entry, record["payload"]
+
+
 def publish_refusal_report(context: StageContext) -> str | None:
     """Seal every door alarm into one private, filename-bearing report.
 
@@ -853,11 +862,7 @@ def publish_refusal_report(context: StageContext) -> str | None:
     """
     rows: list[dict[str, Any]] = []
     inputs: list[dict[str, str]] = []
-    for entry in context.tree.build_manifest(DOOR)["artifacts"]:
-        if entry["kind"] != "admission" or entry["outcome"] != "refused":
-            continue
-        record = context.tree.read_artifact(DOOR, "admission", entry["artifact_id"])
-        payload = record["payload"]
+    for entry, payload in _iter_admissions(context, "refused"):
         ordinal, path, refusal = (
             payload.get("ordinal"),
             payload.get("declared_path"),
@@ -898,11 +903,7 @@ def publish_duplicate_report(context: StageContext) -> str | None:
     asking a later stage to rediscover it from blobs.
     """
     grouped: dict[str, list[tuple[int, str, dict[str, str]]]] = {}
-    for entry in context.tree.build_manifest(DOOR)["artifacts"]:
-        if entry["kind"] != "admission" or entry["outcome"] != "admitted":
-            continue
-        record = context.tree.read_artifact(DOOR, "admission", entry["artifact_id"])
-        payload = record["payload"]
+    for entry, payload in _iter_admissions(context, "admitted"):
         ordinal = payload.get("ordinal")
         path = payload.get("declared_path")
         # Not `declared_sha256`: that one is optional on a `SourceEntry`, so grouping

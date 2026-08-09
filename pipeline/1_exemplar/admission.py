@@ -84,6 +84,11 @@ def reason(code: RefusalReason, detail: str) -> str:
     return f"{code.value}: {detail}"
 
 
+def too_large_detail(byte_count: int) -> str:
+    """The one spelling of a TOO_LARGE detail, by whichever caller counted it."""
+    return f"{byte_count} bytes exceeds the {MAX_SOURCE_BYTES}-byte admission limit"
+
+
 def reason_code(text: object) -> RefusalReason:
     """Read and validate an alarm code from a published reason."""
     if not isinstance(text, str) or ":" not in text:
@@ -163,10 +168,7 @@ def inspect_source(
     if len(data) > MAX_SOURCE_BYTES:
         return AdmissionOutcome(
             "refused",
-            reason(
-                RefusalReason.TOO_LARGE,
-                f"{len(data)} bytes exceeds the {MAX_SOURCE_BYTES}-byte admission limit",
-            ),
+            reason(RefusalReason.TOO_LARGE, too_large_detail(len(data))),
             sniff(data),
             digest,
             None,
