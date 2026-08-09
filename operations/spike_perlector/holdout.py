@@ -349,6 +349,24 @@ class PrivateSampleAccounting:
                 )
 
 
+def _payload_digest(payload: bytes | str) -> str:
+    """Hash protected material at ingress, whichever of the two forms it arrives in.
+
+    An unpaired surrogate is a ``str`` Python will not encode, so it refuses by
+    name here rather than raising UnicodeEncodeError out of a guard whose whole
+    job is to refuse cleanly.
+    """
+
+    if isinstance(payload, bytes):
+        return sha256_bytes(payload)
+    if not isinstance(payload, str):
+        raise HoldoutRefusal("protected material payloads must be bytes or Unicode text")
+    try:
+        return sha256_bytes(payload.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise HoldoutRefusal("protected material text contains an unpaired surrogate") from error
+
+
 def frame_digest(members: Iterable[FrameMember]) -> str:
     """Hash a full frame after deterministic ordering, before selection."""
 
@@ -450,12 +468,7 @@ class HeldOutUseGuard:
 
         if not isinstance(opaque_act_id, str) or not opaque_act_id:
             raise HoldoutRefusal("held-out payload binding needs an opaque act ID")
-        if isinstance(payload, bytes):
-            digest = sha256_bytes(payload)
-        elif isinstance(payload, str):
-            digest = sha256_bytes(payload.encode("utf-8"))
-        else:
-            raise HoldoutRefusal("held-out payload must be bytes or Unicode text")
+        digest = _payload_digest(payload)
         member = next(
             (item for item in self._manifest.members if item.opaque_act_id == opaque_act_id),
             None,
@@ -517,15 +530,7 @@ class HeldOutUseGuard:
     ) -> None:
         """Hash raw text/bytes at ingress before applying the held-out-use refusal."""
 
-        digests: list[str] = []
-        for payload in payloads:
-            if isinstance(payload, bytes):
-                digests.append(sha256_bytes(payload))
-            elif isinstance(payload, str):
-                digests.append(sha256_bytes(payload.encode("utf-8")))
-            else:
-                raise HoldoutRefusal("protected material payloads must be bytes or Unicode text")
-        self.require_allowed(digests, use=use)
+        self.require_allowed([_payload_digest(payload) for payload in payloads], use=use)
 
 
 class BoundEvaluationMaterial:

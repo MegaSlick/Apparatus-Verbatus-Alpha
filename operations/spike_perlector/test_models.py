@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import operations.spike_perlector.models as models
@@ -106,6 +108,68 @@ def test_ground_truth_refuses_text_over_the_one_act_bound():
             adjudication_digest=digest("adjudication"),
             reference_revision="rev-1",
         )
+
+
+# `json.loads('"\\ud800"')` returns this: a valid str Python will not encode.
+LONE_SURROGATE = json.loads('"alpha \\ud800 beta"')
+
+
+def test_candidate_response_refuses_text_python_cannot_encode():
+    """A vendor JSON body can carry an unpaired surrogate, and this one does.
+
+    It passes every "is it a non-blank string" check, then raises a bare
+    UnicodeEncodeError inside the first digest or score -- losing every cell
+    already measured, with an error naming neither the act nor the reason.
+    Refused at the boundary, an adapter can record `malformed` for that cell
+    and the matrix survives.
+    """
+
+    with pytest.raises(MeasurementRefusal, match="unpaired surrogate"):
+        CandidateResponse(
+            status=OutputStatus.COMPLETE,
+            text=LONE_SURROGATE,
+            elapsed_ms=None,
+            cost_usd=None,
+            observed_prompt_sha256=digest("prompt"),
+            observed_dossier_sha256=digest("dossier"),
+            observed_delivery_sha256=digest("delivery"),
+        )
+
+
+def test_ground_truth_refuses_a_reference_python_cannot_encode():
+    with pytest.raises(MeasurementRefusal, match="unpaired surrogate"):
+        models.GroundTruth(
+            text=LONE_SURROGATE,
+            adjudication_digest=digest("adjudication"),
+            reference_revision="rev-1",
+        )
+
+
+def test_a_stack_of_combining_marks_is_bounded_where_segmentation_is_quadratic():
+    """uniseg segments one long grapheme cluster in time quadratic in its length.
+
+    Measured against uniseg 0.10.1 on 2026-08-09: 4,000 marks on one base
+    character take 5.9s and 8,000 take 23.5s, so the 20,000-character bound
+    alone would admit minutes of CPU per scored cell from one response. The cap
+    is UAX #15's stream-safe limit; three marks is already unusual in polytonic
+    Greek, so nothing a transcriber writes comes near it.
+    """
+
+    def response(text):
+        return CandidateResponse(
+            status=OutputStatus.COMPLETE,
+            text=text,
+            elapsed_ms=None,
+            cost_usd=None,
+            observed_prompt_sha256=digest("prompt"),
+            observed_dossier_sha256=digest("dossier"),
+            observed_delivery_sha256=digest("delivery"),
+        )
+
+    at_the_cap = "a" + "́" * models.MAX_COMBINING_RUN
+    assert response(at_the_cap).text == at_the_cap
+    with pytest.raises(MeasurementRefusal, match="combining marks"):
+        response("a" + "́" * (models.MAX_COMBINING_RUN + 1))
 
 
 def test_dossier_refuses_a_condition_that_is_not_a_condition():

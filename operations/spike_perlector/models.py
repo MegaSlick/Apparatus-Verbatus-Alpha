@@ -7,6 +7,7 @@ public history finding; ``redaction.py`` is the only public projection boundary.
 from __future__ import annotations
 
 import math
+import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
@@ -67,9 +68,53 @@ class ReferenceStatus(StrEnum):
     UNRESOLVED_GAP = "unresolved_gap"
 
 
+# UAX #15's Stream-Safe Text Format caps a run of non-starters at 30, and this
+# instrument adopts that cap for a measured reason: uniseg's grapheme
+# segmentation is quadratic in the length of a *single* cluster. Measured
+# 2026-08-09 against uniseg 0.10.1 -- one base character carrying 4,000
+# combining marks segments in 5.9s and 8,000 in 23.5s, so MAX_TEXT_LENGTH alone
+# would let 20 KB of vendor output cost minutes of CPU per scored cell. Real
+# diplomatic transcription never stacks more than a handful of marks on one
+# character; polytonic Greek reaches three.
+MAX_COMBINING_RUN = 30
+
+
+def require_measurable_text(value: str, field: str) -> None:
+    """Refuse text this instrument can hold but cannot hash or segment.
+
+    Both failure modes arrive from an ordinary vendor JSON body, because
+    ``json.loads`` decodes ``"\\ud800"`` into a perfectly valid ``str`` and a
+    model may emit any number of combining marks. Refused here, at the boundary
+    where a response or a Testimonium is built, so an adapter can record the
+    predeclared ``malformed`` state for that cell; discovered later, inside a
+    digest or a score, it takes the whole matrix down with an error naming
+    neither the act nor the reason.
+    """
+
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise MeasurementRefusal(
+            f"{field} contains an unpaired surrogate, which no digest or comparison in "
+            "this instrument can encode; that is a malformed response, not a reading"
+        ) from error
+    run = 0
+    for character in value:
+        if unicodedata.category(character).startswith("M"):
+            run += 1
+            if run > MAX_COMBINING_RUN:
+                raise MeasurementRefusal(
+                    f"{field} stacks more than {MAX_COMBINING_RUN} combining marks on one "
+                    "character; no reading does that, and segmenting it is quadratic"
+                )
+        else:
+            run = 0
+
+
 def _require_nonempty(value: str, field: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise MeasurementRefusal(f"{field} must be a non-empty string")
+    require_measurable_text(value, field)
 
 
 # The one text bound in this instrument, for every field that can reach a
@@ -99,6 +144,7 @@ def _require_status_conditioned_text(status: OutputStatus, text: str | None, lab
                 f"a {label} of {len(text)} characters exceeds the {MAX_TEXT_LENGTH}-character "
                 "bound for one act"
             )
+        require_measurable_text(text, label)
     elif text is not None:
         raise MeasurementRefusal(f"a non-reading {label} carries status, not text")
 

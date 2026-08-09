@@ -33,8 +33,14 @@ from difflib import SequenceMatcher
 from typing import Iterable, Mapping
 
 from .encoding import canonical_json_bytes, sha256_bytes
-from .errors import AdjudicationRefusal
-from .models import MAX_TEXT_LENGTH, GapSpan, GroundTruth, ReferenceStatus
+from .errors import AdjudicationRefusal, MeasurementRefusal
+from .models import (
+    MAX_TEXT_LENGTH,
+    GapSpan,
+    GroundTruth,
+    ReferenceStatus,
+    require_measurable_text,
+)
 
 ILLEGIBLE = "ILLEGIBLE"
 """The one resolution that produces a gap instead of characters.
@@ -71,6 +77,10 @@ class TranscriptionDraft:
                 f"{MAX_TEXT_LENGTH}-character bound for one act; this is not a "
                 "single act's diplomatic transcription"
             )
+        try:
+            require_measurable_text(self.text, "a transcription draft")
+        except MeasurementRefusal as error:
+            raise AdjudicationRefusal(str(error)) from error
 
     def record(self) -> dict[str, str]:
         return {
@@ -178,6 +188,10 @@ def _derive_adjudication(
     for span, resolution in supplied.items():
         if not isinstance(resolution, str):
             raise AdjudicationRefusal(f"the resolution for span {span} is not text")
+        try:
+            require_measurable_text(resolution, f"the resolution for span {span}")
+        except MeasurementRefusal as error:
+            raise AdjudicationRefusal(str(error)) from error
 
     pieces: list[str] = []
     gaps: list[GapSpan] = []
