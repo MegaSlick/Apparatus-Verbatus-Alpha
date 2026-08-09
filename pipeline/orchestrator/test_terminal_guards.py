@@ -292,6 +292,48 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     assert [record["kind"] for record in context.published] == ["manifest-entry", "export"]
 
 
+def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch):
+    """The state the control test above used to stand in, now refused rather than run.
+
+    Before the product bundle existed this fake could report `delivered` with no
+    Archetypus record and complete, because nothing downstream needed the text. The
+    projection does, and there is no reading to substitute for it -- so the category
+    and the evidence disagreeing is a fatal imbalance and not a row with an empty
+    text field.
+    """
+    armarium = _stage_module(
+        "armarium_delivered_without_record_test", ROOT / "pipeline" / "7_armarium" / "run.py"
+    )
+    context = _RecordingContext()
+    proposed = {
+        "act_id": "act_proposed",
+        "act_key": "proposed",
+        "page_id": "pg_proposed",
+        "outcome": "proposed",
+    }
+    accepted_review = {
+        "artifact_id": "art_accepted",
+        "outcome": "accepted",
+        "payload": {"coverage": {"under_witnessed": False}},
+    }
+
+    monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
+    monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
+    monkeypatch.setattr(armarium, "pages_marked_out", lambda _context: {"act_proposed": [1]})
+    monkeypatch.setattr(armarium, "expected_acts", lambda _context: [proposed])
+    monkeypatch.setattr(
+        armarium,
+        "categorize",
+        lambda _context, _act_id: (ArmariumCategory.DELIVERED, accepted_review, None),
+    )
+    monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
+
+    with pytest.raises(FatalAccounting, match="no literal Archetypus text"):
+        armarium.main()
+    assert not context.finished
+
+
 def test_armarium_exclusion_cannot_export_without_its_approval_artifact_reference():
     armarium = _stage_module(
         "armarium_exclusion_approval_test", ROOT / "pipeline" / "7_armarium" / "run.py"
