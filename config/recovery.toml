@@ -12,14 +12,22 @@
 # stops. This file governs the per-act budget only; the run-level threshold lives
 # in `config/hard_failure.toml`. Nothing here is queued for him any more.
 #
+# The two allowances below are two DISTINCT recovery OPERATIONS, not one pooled
+# total. Every `recovery-request` names which one it means in `recovery_kind`
+# (`fallback-recrop` or `page-level-reread`, spelled in `common/recovery.py`),
+# and each kind's usage is counted against its own line here. Only
+# `fallback-recrop` has a real implementation today -- a Designator recrop. The
+# Recensor never spends a page-level allowance as though it were another crop,
+# the Designator refuses to answer one, and the orchestrator refuses to dispatch
+# one; the operation belongs to the Perlector lane, which has not built it yet.
+#
 # The skeleton's own request gate (`pipeline/5_recensor/run.py`'s `wants_recovery`)
-# grants an act at most one recovery-request in its whole lifetime regardless of
-# the value below, so with the shipped budget of 2 the "held, budget is spent"
-# branch is structurally unreachable -- an act never gets far enough into its
-# budget to spend it. That branch is genuinely correct (a regression test drives
-# it directly with a zero budget and confirms so), but this file's own number is
-# not what proves it, and raising fallback_recrop/page_level_reread alone will
-# not make a second recovery round actually happen until that gate changes too.
+# still grants an act at most one recovery-request in its whole lifetime, so
+# raising either number below does not create a second recovery round until a
+# real deterministic signal supplies a second, separately justified request. The
+# "held, the fallback-recrop budget is spent" branch is driven directly by
+# regression tests with a zero fallback budget and with a page-level-only budget,
+# so it is not a branch no configuration can falsify.
 #
 # Recovery recovers COVERAGE, never quality (GOVERNANCE 11). A suspected
 # fabrication or a poor reading may be flagged for review; it may never be

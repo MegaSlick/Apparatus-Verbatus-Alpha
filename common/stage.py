@@ -27,7 +27,13 @@ from common.contracts.errors import ContractError, FatalAccounting, Incompatible
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.outcomes import classify
 from common.contracts.stages import DESIGNATOR, PERLECTOR, RECENSOR
-from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH, load_recovery_policy
+from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
+from common.recovery import (
+    DEFAULT_RECOVERY_CONFIG_PATH,
+    RECOVERY_KINDS,
+    load_recovery_policy,
+    recovery_kind_budget,
+)
 from common.runtree.store import PublishResult, RunTree
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
@@ -220,6 +226,7 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--models-config", default="config/models.toml")
     parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
+    parser.add_argument("--hard-failure-config", default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH))
     parser.add_argument("--pdf-target-dpi", type=int, default=None)
     parser.add_argument("--operation", default="initial")
     parser.add_argument("--act", default=None, help="one act id, for a recovery operation")
@@ -259,6 +266,7 @@ def run_config_bindings(
     pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
+    hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -266,7 +274,8 @@ def run_config_bindings(
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
     behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    and recovery policy. The synthetic fixture declares byte-backed pages only, so
+    recovery policy, and the run-level hard-failure policy. The synthetic fixture
+    declares byte-backed pages only, so
     it does not claim to bind the real Door's PDFium/Pillow/libheif execution
     recipe; ``door._real_bindings`` binds that recipe on actual ingress.
 
@@ -285,6 +294,7 @@ def run_config_bindings(
             f"the PDF render configuration binding at {pdf_render_config_path} could not be read"
         ) from error
     recovery_policy = load_recovery_policy(recovery_config_path)
+    hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
@@ -295,6 +305,7 @@ def run_config_bindings(
                 "pdf_render_config_sha256": pdf_render_config_digest,
                 "pdf_target_dpi_override": pdf_target_dpi,
                 "recovery_policy": recovery_policy,
+                "hard_failure_policy": hard_failure_policy,
             }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
@@ -762,6 +773,7 @@ def open_context(
         pdf_render_config_path=args.pdf_render_config,
         pdf_target_dpi=args.pdf_target_dpi,
         recovery_config_path=args.recovery_config,
+        hard_failure_config_path=args.hard_failure_config,
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
@@ -956,6 +968,29 @@ def current_recovery_request(
             f"recovery-requested review of {act_id} does not match its exact request, "
             "Perlectio, and policy"
         )
+    recovery_kind = request_payload.get("recovery_kind")
+    if (
+        not isinstance(recovery_kind, str)
+        or recovery_kind not in RECOVERY_KINDS
+        or review_payload.get("recovery_kind") != recovery_kind
+    ):
+        raise ContractError(
+            f"recovery-requested review of {act_id} does not carry one exact recovery kind"
+        )
+    _reconcile_recovery_request_counters(tree, act_id, recovery_policy)
+    kind_allowed = recovery_kind_budget(recovery_policy, recovery_kind)
+    kind_used = request_payload.get("kind_budget_used")
+    if (
+        request_payload.get("kind_budget_allowed") != kind_allowed
+        or not isinstance(kind_used, int)
+        or isinstance(kind_used, bool)
+        or kind_used < 0
+        or kind_used >= kind_allowed
+    ):
+        raise ContractError(
+            f"recovery-requested review of {act_id} does not carry a usable {recovery_kind!r} "
+            "budget boundary"
+        )
     tree.read_artifact_reference(
         reading_ref,
         stage=PERLECTOR,
@@ -963,6 +998,81 @@ def current_recovery_request(
         subject_id=act_id,
     )
     return request
+
+
+def _reconcile_recovery_request_counters(
+    tree: RunTree, act_id: str, recovery_policy: dict[str, Any]
+) -> None:
+    """Rebuild request counters before a non-Recensor consumer acts on one.
+
+    The Recensor performs the fuller request/recrop/reread reconciliation. The
+    Designator and orchestrator also read a current request directly, though, so
+    their shared boundary must not trust a counter merely because it is written
+    inside a self-hashed request payload: the self-hash proves the payload was
+    not edited after publication, not that its numbers ever agreed with the
+    requests that came before it.
+    """
+    by_ordinal: dict[int, dict[str, Any]] = {}
+    for entry in tree.build_manifest(RECENSOR)["artifacts"]:
+        if entry["kind"] != "recovery-request" or entry["subject_id"] != act_id:
+            continue
+        request = tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
+        payload = request.get("payload")
+        ordinal = payload.get("attempt_ordinal") if isinstance(payload, dict) else None
+        recovery_kind = payload.get("recovery_kind") if isinstance(payload, dict) else None
+        if (
+            request.get("outcome") != "recovery-requested"
+            or not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or not isinstance(recovery_kind, str)
+            or recovery_kind not in RECOVERY_KINDS
+            or request.get("attempt_id") != attempt_id(act_id, "recover", ordinal)
+            or request.get("artifact_id")
+            != artifact_id(RECENSOR, "recovery-request", act_id, request["attempt_id"])
+            or ordinal in by_ordinal
+        ):
+            raise ContractError(
+                f"recovery request history for {act_id} has no unambiguous bounded ordinal"
+            )
+        by_ordinal[ordinal] = request
+
+    if set(by_ordinal) != set(range(1, len(by_ordinal) + 1)):
+        raise ContractError(
+            f"recovery request history for {act_id} has non-contiguous ordinal(s) "
+            f"{sorted(by_ordinal)}"
+        )
+    used_by_kind = {kind: 0 for kind in RECOVERY_KINDS}
+    for total_used, ordinal in enumerate(sorted(by_ordinal)):
+        payload = by_ordinal[ordinal]["payload"]
+        recovery_kind = payload["recovery_kind"]
+        kind_allowed = recovery_kind_budget(recovery_policy, recovery_kind)
+        counts = ("budget_allowed", "budget_used", "kind_budget_allowed", "kind_budget_used")
+        if (
+            any(
+                not isinstance(payload.get(field), int) or isinstance(payload.get(field), bool)
+                for field in counts
+            )
+            or payload.get("recovery_policy") != recovery_policy
+            or payload.get("budget_allowed") != recovery_policy["allowed"]
+            or payload.get("budget_used") != total_used
+            or payload.get("kind_budget_allowed") != kind_allowed
+            or payload.get("kind_budget_used") != used_by_kind[recovery_kind]
+        ):
+            raise ContractError(
+                f"recovery request history for {act_id} has a counter that does not reconcile "
+                "to its preceding immutable requests"
+            )
+        used_by_kind[recovery_kind] += 1
+    if (
+        len(by_ordinal) > recovery_policy["allowed"]
+        or len(by_ordinal) > recovery_policy["absolute_cap"]
+    ):
+        raise ContractError(f"recovery request history for {act_id} exceeds its sealed total budget")
+    for recovery_kind, used in used_by_kind.items():
+        if used > recovery_kind_budget(recovery_policy, recovery_kind):
+            raise ContractError(
+                f"recovery request history for {act_id} exceeds its {recovery_kind!r} budget"
+            )
 
 
 def reading_basis_regions(reading: dict[str, Any], what: str) -> list[dict[str, Any]]:

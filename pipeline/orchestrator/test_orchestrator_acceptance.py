@@ -86,8 +86,27 @@ FIXTURE = "synthetic-two-page-v0"
 # run-level threshold at more than two). A stale question standing in a merged config is
 # how a settled decision gets re-litigated, so the prose was corrected and these two pins
 # moved with it. Nothing about the pipeline's behaviour changed.
-HAPPY_RUN_TREE_DIGEST = "bb76b02db65475659388d97e1863d88b05a8a68a3f44da99b62a4f6093b5130b"
-REVIEW_RUN_TREE_DIGEST = "a83a0c69cf85bfbdd8147b38ed6051ef26bc6b60966c8739aa5d5d25e3a0f059"
+#
+# Re-pinned 2026-08-09 for the System 09 (Recensor) merge, and the counts move with
+# them for the first time in a while — 42 → 43 and 46 → 47. Four deliberate changes,
+# all of them recorded facts rather than behavioural drift in the pinned scenarios:
+#
+#   - Every Recensor `review` payload now carries `continuation` (the Recensor's own
+#     authoritative continuation link, derived from region evidence rather than
+#     trusted from the Designator's `has_continuation` seal flag) and `page_coverage`
+#     (the residual-ink finding for every page this act's regions were cut from).
+#   - Every `recovery-request` payload now names its `recovery_kind` and that kind's
+#     own budget counters, so a page-level allowance can never be spent as a crop.
+#   - `config/recovery.toml`'s prose changed, and the new `config/hard_failure.toml`
+#     is now sealed into `config_digest` alongside it — the run-level cap is
+#     run-bound configuration exactly as the recovery budget is.
+#   - The one extra file in each tree is the scoped Recensor partition receipt at
+#     `run-health/recensor-partition-receipt.json`, recomputed from the artifacts on
+#     disk rather than from any stage manifest.
+#
+# Recomputed against the real orchestrator with the whole merge landed.
+HAPPY_RUN_TREE_DIGEST = "11e3b261f1646c2d0b3e839975201b2414e5a4d49f055926ae509e5cc19c5257"
+REVIEW_RUN_TREE_DIGEST = "d3d24441ff3b862b8b7eb641272442b3c40064ed48e63b7ee957590416ba5811"
 
 
 def orchestrate(
@@ -97,6 +116,7 @@ def orchestrate(
     *,
     models_config: Path | None = None,
     recovery_config: Path | None = None,
+    hard_failure_config: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
     command = [
@@ -115,6 +135,8 @@ def orchestrate(
         command.extend(("--models-config", str(models_config)))
     if recovery_config is not None:
         command.extend(("--recovery-config", str(recovery_config)))
+    if hard_failure_config is not None:
+        command.extend(("--hard-failure-config", str(hard_failure_config)))
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -1055,7 +1077,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    assert len(before) == 42
+    assert len(before) == 43
     assert digest_of(before) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -1072,7 +1094,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    assert len(before) == 46
+    assert len(before) == 47
     assert digest_of(before) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
@@ -1411,6 +1433,33 @@ def test_recovery_policy_is_a_run_bound_configuration_not_a_late_local_default(t
         encoding="utf-8",
     )
     result = orchestrate(root, "r", "happy", recovery_config=policy)
+    assert result.returncode == 2
+    assert "different config_digest" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_hard_failure_policy_is_a_run_bound_configuration_not_a_late_local_default(tmp_path):
+    """A revised closed list cannot reinterpret an already-sealed run's failures.
+
+    The run-level cap decides whether a run may keep invoking stages at all, so a
+    later edit to what counts as a hard failure is exactly as run-shaping as an
+    edit to the recovery budget beside it — and refuses the sealed run for the
+    same reason, before any stage reads a failure under a list it did not run
+    under.
+    """
+    root = tmp_path / "runs"
+    policy = tmp_path / "hard_failure.toml"
+    policy.write_text(
+        (ROOT / "config/hard_failure.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    assert orchestrate(root, "r", "happy", hard_failure_config=policy).returncode == 0
+    before = snapshot(root)
+
+    policy.write_text(
+        'threshold = 2\n\n[[kind]]\nstage = "perlector"\noutcome = "failed"\n',
+        encoding="utf-8",
+    )
+    result = orchestrate(root, "r", "happy", hard_failure_config=policy)
     assert result.returncode == 2
     assert "different config_digest" in result.stderr
     assert snapshot(root) == before

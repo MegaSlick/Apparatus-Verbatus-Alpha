@@ -240,6 +240,8 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "refused-first-page",
         "truncated-reading",
         "genuinely-empty-witness",
+        "confirmed-blank",
+        "blank-with-dissent",
     ]
     by_name = {scenario["name"]: scenario for scenario in skeleton["scenario"]}
     assert by_name["happy"]["recover_acts"] == []
@@ -257,6 +259,10 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     assert by_name["truncated-reading"]["hold_acts"] == []
     assert by_name["genuinely-empty-witness"]["recover_acts"] == []
     assert by_name["genuinely-empty-witness"]["hold_acts"] == []
+    assert by_name["confirmed-blank"]["recover_acts"] == []
+    assert by_name["confirmed-blank"]["hold_acts"] == []
+    assert by_name["blank-with-dissent"]["recover_acts"] == []
+    assert by_name["blank-with-dissent"]["hold_acts"] == []
 
 
 def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
@@ -268,19 +274,40 @@ def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
             "scenario": "genuinely-empty-witness",
             "act_key": "a1",
             "chair": "attestator_3",
-        }
+        },
+        # Every configured chair, so `confirmed-blank` has a genuine unanimous
+        # absence for the Recensor's blank corroboration to confirm.
+        {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_1"},
+        {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_2"},
+        {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_3"},
+        # Two of three: the third dissents by reporting its ordinary declared
+        # (non-empty) testimony instead.
+        {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_1"},
+        {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_2"},
     ]
-    assert rows[0]["chair"] in configured_witness_chairs(models_config)
+    for row in rows:
+        assert row["chair"] in configured_witness_chairs(models_config)
 
 
-def test_the_declared_reading_failure_is_a_failed_class_outcome_carrying_text(skeleton):
-    """The hazard is a reading that did not succeed but still carries text. A
-    declaration that named a completed-class outcome would exercise nothing."""
+def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleton):
+    """Every declared reading-failure scenario drives a real hazard: a reading
+    that did not succeed. A declaration that named a completed-class outcome
+    would exercise nothing, whichever class it actually belongs to."""
     failures = skeleton["reading_failure"]
-    assert len(failures) == 1
-    assert failures[0]["scenario"] == "truncated-reading"
-    assert failures[0]["act_key"] in {act["key"] for act in skeleton["act"]}
-    assert classify(PERLECTOR, failures[0]["outcome"]) is OutcomeClass.FAILED
+    assert len(failures) == 3
+    for row in failures:
+        assert row["act_key"] in {act["key"] for act in skeleton["act"]}
+        assert classify(PERLECTOR, row["outcome"]) is not OutcomeClass.COMPLETED
+
+    by_scenario = {row["scenario"]: row["outcome"] for row in failures}
+    # `truncated` is FAILED-class and still carries text -- the hazard the
+    # Archetypus's own guard (spec 09) exists to refuse.
+    assert classify(PERLECTOR, by_scenario["truncated-reading"]) is OutcomeClass.FAILED
+    # `no-readable-text` is UNRESOLVED-class: the Perlector's own direct claim
+    # of absence, which the Recensor's blank confirmation may or may not be
+    # able to corroborate depending on what the witnesses say.
+    assert classify(PERLECTOR, by_scenario["confirmed-blank"]) is OutcomeClass.UNRESOLVED
+    assert classify(PERLECTOR, by_scenario["blank-with-dissent"]) is OutcomeClass.UNRESOLVED
 
 
 def test_each_page_refusal_declares_a_digest_the_bytes_cannot_match(skeleton):

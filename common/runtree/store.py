@@ -66,6 +66,7 @@ MANIFEST_FILE: Final = "manifest.json"
 ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
 RECEIPTS_DIR: Final = "receipts/sha256"
+RECENSOR_PARTITION_RECEIPT_FILE: Final = "run-health/recensor-partition-receipt.json"
 
 # The facts a run id is bound to. Changing any of them means this is a different
 # run wearing an old name, and reuse is refused rather than resumed.
@@ -286,6 +287,10 @@ class RunTree:
             raise SchemaRefusal(f"receipt digest {digest!r} is not a lowercase sha256")
         return f"{RECEIPTS_DIR}/{digest}.json"
 
+    def recensor_partition_receipt_path(self) -> str:
+        """The current derived partition receipt at the Recensor boundary."""
+        return RECENSOR_PARTITION_RECEIPT_FILE
+
     def resolve(self, relative_path: str) -> Path:
         """A path inside this run tree, refusing anything that leaves it.
 
@@ -354,6 +359,45 @@ class RunTree:
         digest = digest_bytes(data)
         result = self._publish_bytes(self.receipt_path(digest), data)
         return ApprovalRecordReference(result.relative_path, digest), result
+
+    def write_recensor_partition_receipt(self, record: dict[str, Any]) -> PublishResult:
+        """Atomically replace the derived current Recensor partition receipt.
+
+        Unlike an artifact, the receipt legitimately changes after a bounded
+        recovery: the immutable review and request evidence stays beside it, while
+        this one record describes the current partition reconstructed from that
+        evidence. It is therefore replaced in place rather than published as a new
+        immutable object — and it is still inside `inventory_scope()`, because a
+        record a reviewer recomputes denominators from may not be a file nothing
+        accounts for.
+        """
+        from common.recensor_receipt import validate_recensor_partition_receipt
+
+        checked = validate_recensor_partition_receipt(record)
+        if checked["run_id"] != self.run_id or checked["config_digest"] != self._run_authority():
+            raise SchemaRefusal("Recensor partition receipt does not belong to this run authority")
+        relative = self.recensor_partition_receipt_path()
+        target = self.resolve(relative)
+        data = canonical_bytes(checked)
+        if target.exists() and target.read_bytes() == data:
+            return PublishResult(relative, reused=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(target, data)
+        return PublishResult(relative, reused=False)
+
+    def read_recensor_partition_receipt(self) -> dict[str, Any]:
+        """Read the current derived receipt only when it binds to this run."""
+        from common.recensor_receipt import validate_recensor_partition_receipt
+
+        path = self.resolve(self.recensor_partition_receipt_path())
+        try:
+            record = _read_json(path)
+        except OSError as error:  # pragma: no cover - _read_json already refuses
+            raise SchemaRefusal(f"Recensor partition receipt could not be read: {error}") from error
+        checked = validate_recensor_partition_receipt(record)
+        if checked["run_id"] != self.run_id or checked["config_digest"] != self._run_authority():
+            raise SchemaRefusal("Recensor partition receipt does not belong to this run authority")
+        return checked
 
     def read_run_receipt(self, reference: RunReceiptReference | dict[str, str]) -> dict[str, Any]:
         """Read a receipt only when both its reference and bytes still verify.
@@ -689,7 +733,7 @@ class RunTree:
         the scope fails a static drift test, loudly, naming the path. The test
         beside this module reads the writers from source and compares.
         """
-        prefixes = [RUN_FILE, f"{RECEIPTS_DIR}/"]
+        prefixes = [RUN_FILE, f"{RECEIPTS_DIR}/", RECENSOR_PARTITION_RECEIPT_FILE]
         for directory in sorted(set(_all_writing_directories())):
             prefixes.append(f"{directory}/{ARTIFACTS_DIR}/")
             prefixes.append(f"{directory}/{BLOBS_DIR}/")

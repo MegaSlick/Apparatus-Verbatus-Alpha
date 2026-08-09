@@ -50,7 +50,7 @@ from common.exemplar_boundary import (  # noqa: E402
     verify_sealed_page_pixels,
 )
 from common.imaging import crop_png  # noqa: E402
-from common.recovery import load_recovery_policy  # noqa: E402
+from common.recovery import FALLBACK_RECROP, load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
@@ -405,6 +405,19 @@ def recovery_pass(context, act_id: str, request_id: str) -> int:
     if request_payload.get("act_key") != match[0]["act_key"]:
         raise ContractError(
             "the exact current Recensor recovery request does not bind this proposal-seal act"
+        )
+    # Two distinct recovery operations exist in the policy and the payload
+    # schema (a Designator recrop, a Perlector page-level/continuation-aware
+    # reread) and only one of them is this stage's to answer. Answering any
+    # other kind here would silently substitute a crop for whatever the
+    # Recensor actually asked for — exactly the conflation naming the kind
+    # exists to stop.
+    recovery_kind = request_payload.get("recovery_kind")
+    if recovery_kind != FALLBACK_RECROP:
+        raise ContractError(
+            f"recovery for {act_id} names recovery_kind {recovery_kind!r}; the Designator "
+            f"only answers {FALLBACK_RECROP!r} requests (a recrop). A different recovery "
+            "kind names a different owning stage, not a substitute crop"
         )
 
     act = next(item for item in context.fixture["act"] if item["key"] == match[0]["act_key"])

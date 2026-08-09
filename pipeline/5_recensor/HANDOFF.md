@@ -16,36 +16,186 @@ fatal accounting error; it is never resolved by sort order. Completed coverage i
 shortfalls.
 
 It reads the current Perlectio in the same unique-ordinal manner, verifies its
-direct evidence, and verifies that a claimed continuation has all of its original
-proposal regions. A non-completed reading, short continuation, exhausted recovery
-budget, or declared hold is recorded as held-for-review rather than accepted.
+direct evidence, and reconciles the Designator's proposed continuation flag
+against its own authoritative continuation link (see below). A non-completed
+reading, short continuation, exhausted recovery budget, or declared hold is
+recorded as held-for-review rather than accepted.
+
+## The continuation link is the Recensor's, not the Designator's
+
+ARCHITECTURE and spec 09: "the Designator proposes continuations; the
+Recensor's link is the authoritative relation." `recensor_continuation_link`
+derives `is_continuation`/`page_ordinals`/`region_ids` directly from the
+act's *original proposal* regions — never from the Designator's own
+`has_continuation` seal flag, which is that stage's proposal, not a settled
+fact this stage inherits unexamined. `reconcile_continuation` then checks the
+seal's claim against this link: a claim the evidence does not confirm is held
+for review (a continuation shortfall); the seal denying a continuation its own
+evidence already proves is fatal accounting, because silently agreeing with an
+under-claiming seal would let it override this stage's own authority over the
+fact. Every review payload — including a Designator-held act's, with an empty
+link — carries this fact under `payload["continuation"]`.
 
 ## `kind="review"`
 
 Every review payload has `act_key`, `attempt_ordinal`, coverage, the recovery
-counts/bounds, a reason where applicable, and `perlectio_ref`. The Perlectio
-reference is both a payload fact and a direct input: it names exactly the reading
-the review assessed. Ordinary terminal records use `accepted` or
-`held-for-review`; held Designator acts instead directly input their hold evidence.
+counts/bounds, `continuation`, a reason where applicable, and `perlectio_ref`.
+The Perlectio reference is both a payload fact and a direct input: it names
+exactly the reading the review assessed. Ordinary terminal records use
+`accepted` or `held-for-review`; held Designator acts instead directly input
+their hold evidence.
 
 An accepted review is not a new reading and does not select among witnesses. It
 only records that this precise Perlectio and the conserved geometry/coverage
 reconciled.
 
+## Blank confirmation: `confirmed-blank`, the other terminal outcome for a non-completed reading
+
+ARCHITECTURE and spec 09 name it: "a zero-output unit is diagnosed, then either
+sealed confirmed-blank with evidence or held unresolved-with-evidence. Never
+quietly completed." `blank_corroboration` is the gate. It fires only when the
+Perlector's own reading — its direct examination of the ink, never testimony —
+returned `no-readable-text`, and every witness that reached a completed-class
+outcome for that act independently reports `genuinely-empty` too, with the
+configured witness floor met and no chair left unresolved.
+
+This is **unanimity about an absence, never a selection among presences**
+(GOVERNANCE 3): nothing here chooses a reading, and no text is established
+either way. The Perlector already made the direct claim; the witnesses only
+corroborate or contradict it. A single chair that actually read text refuses
+corroboration outright — the act falls through to the ordinary
+`held-for-review` path instead, exactly as an under-witnessed or unresolved
+act does. Every other non-completed Perlector outcome (`failed`, `truncated`,
+`not-run`) is not a positive claim of absence and never reaches this gate; it
+always holds. A continuation shortfall or a scenario-declared hold also
+disqualifies confirmation, for the same reason they disqualify acceptance:
+there is unread or human-flagged evidence the corroboration cannot see.
+
+`confirmed-blank` is COMPLETED-class and terminal at the Recensor
+(`ArmariumCategory.CONFIRMED_BLANK`) — Archetypus's existing `review["outcome"]
+!= "accepted": continue` guard and Armarium's existing generic
+`terminal_category(RECENSOR, review["outcome"])` routing already handle it
+correctly with no code of their own; both were built to this shape before this
+outcome was ever produced.
+
+## Residual-ink page coverage: `payload["page_coverage"]`
+
+ARCHITECTURE's candidate list, spec 09's own words: "coverage vs the proposal-
+set seal **plus a residual-ink check whose input is the page image itself,
+never the proposal set** — a denominator derived only from proposals cannot
+see an act nobody proposed (GOALS 1)." `pipeline/5_recensor/residual_ink.py`
+is that check: a pure function over one sealed page's own decoded pixels and
+the page-pixel bounds of every region currently cut on it (proposal and
+recovery, from every act that touches the page), with no witness, no reading,
+and no stage's claim about what it found anywhere in it. `run.py`'s
+`page_coverage_findings` computes this once per run, for every sealed page
+with at least one region cut on it, and caches it for every act that reaches
+one of those pages.
+
+A flagged page — enough ink outside every currently-cut region, past both a
+minimum pixel count and a minimum fraction (both PROPOSED, not measured; see
+that module's own comment) — holds **every act that touches it**, not a
+guessed "responsible" one: nobody yet knows which act, if any, the uncovered
+ink belongs to, and a human needs the whole page. A successful recovery crop
+that reaches the missed ink clears the finding on the very next Recensor pass,
+with no code path here that requests one — recovery requests are per-act, and
+there is no act to request a recrop for when the ink belongs to nobody's
+proposal at all. `payload["page_coverage"]` (`checked_pages`, `flagged_pages`)
+is recorded for every act, the same way `continuation` is, not only when it
+flags something.
+
+**A page with zero regions cut on it at all has no finding here.** The
+classic silent-failure shape this check exists to catch — the old pipeline's
+own measured 218-of-29,950 pages that claimed success while producing nothing
+— is a page the Designator marked out *nothing* on, and this check has no
+evidence to read a region's absence against there: nothing ever examined
+those pixels. Closing that gap needs either a real structural Designator that
+can be *wrong* about finding zero acts (the walking skeleton's synthetic
+proposer always agrees with the declared fixture) or a page-level reread
+capability neither this pass nor spec 08 builds yet. Left named, not
+papered over — see `/out/report.md`.
+
 ## `kind="recovery-request"`
 
-When the bounded policy permits a recrop, Recensor appends a
+ARCHITECTURE and spec 09 both name two distinct recovery operations: a
+Designator recrop (`fallback-recrop`) and a Perlector page-level or
+continuation-aware reread (`page-level-reread`). `config/recovery.toml`
+budgets them separately, and every request now names which one it means in
+`payload["recovery_kind"]` — a request or review missing or misnaming it is
+fatal accounting, never a silent default. The kind names are the pipeline's
+own hyphenated vocabulary and are deliberately not the snake_case TOML keys
+they are budgeted under, so renaming a config key never moves a sealed
+artifact's words. Only `fallback-recrop` has a real
+downstream implementation today: the Designator refuses to answer any other
+kind, and the orchestrator refuses to dispatch one, rather than silently
+treating it as a recrop. So the Recensor requests only `fallback-recrop`, even
+where ARCHITECTURE's "full-page or continuation-aware pass" would suggest
+`page-level-reread` (a continuation shortfall) — asking for an operation
+nothing downstream can honor would trade a graceful hold for a hard crash, and
+that is a regression, not a fix. `recovery_state` also tracks each kind's own
+sub-budget (`requests_by_kind`) rather than pooling every request into one
+shared count.
+
+When the bounded per-kind budget permits a recrop, Recensor appends a
 `recovery-requested` request. Its direct input is the exact Perlectio, and its
-payload carries the act key, ordinal, coverage, budget used/allowed, the complete
-resolved recovery policy, and `perlectio_ref`. It appends a matching
-`recovery-requested` review whose direct inputs are that same Perlectio and exact
-request, with `recovery_request_ref` and the same policy in its payload.
+payload carries the act key, ordinal, recovery kind, coverage, budget
+used/allowed, the complete resolved recovery policy, and `perlectio_ref`. It
+appends a matching `recovery-requested` review whose direct inputs are that
+same Perlectio and exact request, with `recovery_request_ref` and the same
+policy in its payload.
 
 `config/recovery.toml` is read through `common.recovery`, is included in the
 run configuration digest, and records its file digest, absolute cap, and resolved
 allowed budget. The orchestrator reads the latest review, rechecks its request and
 policy bindings, then invokes the Designator with the request id. Neither a bare
 CLI command nor an unbound request may cause a recrop.
+
+## The run-level hard-failure cap is the orchestrator's, not this stage's
+
+Distinct from the per-act recovery budget above: `common/hard_failure.py` and
+`config/hard_failure.toml` bound how many accounted hard failures (a closed,
+configured list of `(stage, outcome)` pairs — see that config's own comments
+for the proposed list and its reasoning) ONE RUN may carry before it needs
+Tyrel rather than another automatic stage invocation. It is computed fresh
+from the artifacts on disk at every stage boundary and every recovery round,
+by `pipeline/orchestrator/run.py`, never by this stage — the Recensor has no
+run-level view and no authority to halt a sequence it does not control. Two
+hard failures is Tyrel's named early warning and does not stop anything; more
+than two halts the orchestrator at the next stage boundary, with whatever
+finished intact. A recovery round is three sections — every outstanding act's
+recrop, then every reread, then one Recensor pass — and the cap is judged at
+each of those three boundaries, never between two acts of the same batch.
+
+`config/hard_failure.toml` is sealed into `run.json`'s `config_digest` exactly
+as `config/recovery.toml` is: a later edit to what counts as a hard failure
+refuses the sealed run rather than reinterpreting failures already on disk.
+
+## The partition receipt
+
+Spec 09: "a self-hashed run receipt that **recomputes every denominator from
+the artifacts on disk** rather than trusting stage manifests. The receipt is
+what makes 'complete' a refutable claim." After its own manifest is refreshed,
+this stage writes `run-health/recensor-partition-receipt.json`
+(`common/recensor_receipt.py`). It refuses to build at all if any upstream
+stage manifest disagrees with its on-disk artifacts, rederives the act
+denominator through `expected_acts`, recomputes every act's witness coverage
+from the testimonia themselves, and refuses a review whose recorded act key or
+coverage does not match what disk says. Its summary — `by_partition_class`,
+`recensor_status`, `reasons` — is derived from its own items and revalidated on
+the way out, so a hand-edited count cannot survive a read.
+
+**Its scope is part of the record and is narrower than "the run is complete".**
+`scope` says so literally: the proposal-act and configured-witness denominators
+at the moment the Recensor reviewed them. The residual-ink and continuation
+facts live in the review payloads it cites, and a page nobody cut a region on
+is outside every denominator here. The Armarium's own export aggregate remains
+the run-level statement.
+
+Unlike an artifact it is replaced in place rather than appended: a bounded
+recovery legitimately changes the current partition, while the immutable review
+and request evidence it was derived from stays beside it. It is inside
+`inventory_scope()` all the same — a record a reviewer recomputes denominators
+from may not be a file nothing accounts for.
 
 ## Consumer obligations
 

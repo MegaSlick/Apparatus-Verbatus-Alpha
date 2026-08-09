@@ -28,6 +28,7 @@ from common.contracts.envelope import build_envelope
 from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR
+from common.recensor_receipt import build_recensor_partition_receipt
 from common.runtree import store as runtree_store
 from common.runtree.store import RECEIPTS_DIR, RUN_FILE, RunTree
 
@@ -104,6 +105,38 @@ def make_approval_record(**overrides):
     )
     record.update(overrides)
     return record
+
+
+def make_recensor_partition_receipt():
+    return build_recensor_partition_receipt(
+        run_id="r1",
+        config_digest=CONFIG_DIGEST,
+        proposal_seal_ref={
+            "relative_path": "2_designator/artifacts/proposal-seal.json",
+            "sha256": "a" * 64,
+        },
+        items=[
+            {
+                "act_id": "act-1",
+                "act_key": "a1",
+                "designator_outcome": "proposed",
+                "review_ref": {
+                    "relative_path": "5_recensor/artifacts/review.json",
+                    "sha256": "b" * 64,
+                },
+                "review_outcome": "accepted",
+                "partition_class": "completed",
+                "coverage": {
+                    "configured": 3,
+                    "floor": 3,
+                    "by_outcome": {"read": 3},
+                    "by_class": {"completed": 3, "unresolved": 0, "failed": 0},
+                    "under_witnessed": False,
+                    "unresolved_chairs": 0,
+                },
+            }
+        ],
+    )
 
 
 # --- The run authority ---------------------------------------------------------
@@ -774,9 +807,9 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
     fails a static drift test, loudly, naming the path.
 
     Driven against real writes rather than a list of strings, so a new writer that
-    forgot to extend the scope is caught by what it actually does. Spec 03 adds a
-    sixth real write — the approval record — and it is exercised here for the same
-    reason as the other five, by writing one.
+    forgot to extend the scope is caught by what it actually does. Spec 03 adds
+    the approval record and System 09 adds the Recensor partition receipt; each is
+    exercised here through its real writer rather than a guessed path.
     """
     tree = make_run(tmp_path)
     scope = tree.inventory_scope()
@@ -787,8 +820,11 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
     written.append(tree.write_manifest(DESIGNATOR).relative_path)
     written.append(tree.write_run_receipt(make_receipt())[0].relative_path)
     written.append(tree.write_approval_record(make_approval_record())[0].relative_path)
+    written.append(
+        tree.write_recensor_partition_receipt(make_recensor_partition_receipt()).relative_path
+    )
 
-    assert len(written) == 6
+    assert len(written) == 7
     for path in written:
         assert any(path == prefix or path.startswith(prefix) for prefix in scope), (
             f"{path} is written by the store but falls outside the inventory scope"
@@ -798,8 +834,8 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
 def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
     """The static half of harvest #13, read from source rather than from a fixture.
 
-    The runtime test above proves the six writers we know about stay in scope. It
-    cannot prove that a *seventh* writer added later was exercised at all — an
+    The runtime test above proves the writers we know about stay in scope. It
+    cannot prove that a later writer was exercised at all — an
     un-called writer leaves no trace to check. So this reads every immutable
     publication in `RunTree` and requires it to route through one of the path
     constructors `inventory_scope()` is derived from. A new writer that invents a
@@ -814,6 +850,14 @@ def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
         f"a store writer publishes through unknown path constructor(s) {sorted(constructors)}; "
         "inventory_scope() is derived from artifact_path/blob_path/manifest_path/receipt_path "
         "and cannot name a fifth"
+    )
+    receipt_writer = inspect.getsource(runtree_store.RunTree.write_recensor_partition_receipt)
+    assert (
+        "recensor_partition_receipt_path" in receipt_writer and "_atomic_write" in receipt_writer
+    ), (
+        "the mutable Recensor partition receipt must use its named run-health path and atomic "
+        "publication; a replace-in-place writer is invisible to the _publish_bytes scan above, "
+        "so this is the only thing that keeps it from becoming a hidden unscoped write"
     )
     assert passed_through <= indirect, (
         "a store writer publishes bytes at a path that did not come from "

@@ -28,6 +28,7 @@ from common.imaging import (
     decode_grayscale_png,
     dimensions,
     encode_grayscale_png,
+    grayscale_rows,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -209,6 +210,52 @@ def test_a_decompression_bomb_is_refused_as_a_value_error_not_a_pillow_exception
             crop_png(data, {"x": 0, "y": 0, "w": 1, "h": 1})
     finally:
         Image.MAX_IMAGE_PIXELS = original
+
+
+# --- grayscale_rows: the one place outside decode_grayscale_png that reads ------
+# --- pixel VALUES rather than only dimensions or a cropped rectangle ------------
+
+
+def test_grayscale_rows_decodes_the_fast_native_path():
+    rows_in = [bytearray([10, 20, 30, 40]), bytearray([200, 210, 220, 230])]
+    width, height, rows = grayscale_rows(encode_grayscale_png(4, 2, rows_in))
+    assert (width, height) == (4, 2)
+    assert [list(row) for row in rows] == [list(row) for row in rows_in]
+
+
+def test_grayscale_rows_falls_back_to_pillow_for_a_page_this_codec_cannot_decode():
+    """An RGB page is not this module's own 8-bit-grayscale format, so it takes
+    the Pillow fallback -- exactly the branch `dimensions` and `crop_png` also
+    fall back through, proven here against actual pixel VALUES rather than only
+    a size."""
+    source = BytesIO()
+    page = Image.new("RGB", (2, 1))
+    page.putdata([(0, 0, 0), (255, 255, 255)])
+    page.save(source, format="PNG")
+
+    width, height, rows = grayscale_rows(source.getvalue())
+    assert (width, height) == (2, 1)
+    assert list(rows[0]) == [0, 255]
+
+
+def test_grayscale_rows_refuses_a_decompression_bomb_without_materializing_it():
+    huge = BytesIO()
+    Image.new("RGB", (2, 2)).save(huge, format="PNG")
+    data = huge.getvalue()
+
+    original = Image.MAX_IMAGE_PIXELS
+    try:
+        Image.MAX_IMAGE_PIXELS = 1
+        with pytest.raises(ValueError):
+            grayscale_rows(data)
+    finally:
+        Image.MAX_IMAGE_PIXELS = original
+
+
+def test_grayscale_rows_refuses_undecodable_input_rather_than_guessing():
+    for bad in (b"", b"not an image", PNG_SIGNATURE):
+        with pytest.raises(ValueError):
+            grayscale_rows(bad)
 
 
 def test_this_modules_pixel_bound_matches_the_door_that_admits_the_pages():

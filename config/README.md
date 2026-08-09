@@ -6,6 +6,7 @@ The knobs. One question per planned file, each answerable without reading code.
 |---|---|
 | `models.toml` | present — which model and revision fills each numbered role |
 | `recovery.toml` | present — how many times rework may be asked for before review |
+| `hard_failure.toml` | present — how many accounted hard failures one run may carry before it stops |
 | `pdf_render.toml` | present — what whole-page PDF resolution the next run targets |
 | `data_handling_policy.json` | present — how real material is stored, logged, retained and disposed of |
 | `spend.toml` | present, deliberately unconfigured — Tyrel's pod-plus-attached-volume money caps; both paid paths refuse it until configured |

@@ -234,6 +234,45 @@ def dimensions(png_bytes: bytes) -> tuple[int, int]:
             raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
 
 
+def grayscale_rows(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
+    """Every pixel of a sealed page as 8-bit grayscale intensity, 0 (black) to
+    255 (white) -- the one place outside `decode_grayscale_png` that reads pixel
+    VALUES rather than only dimensions (`dimensions`) or a cropped rectangle of
+    them (`crop_png`).
+
+    The fast path is this module's own lossless codec, so a synthetic fixture
+    page decodes through exactly the same reader that verifies its crops. Real
+    imagery -- anything this module's own encoder never wrote -- falls back to
+    Pillow's own grayscale conversion, under the same `MAX_PIXELS` bound and the
+    same decode failures as `dimensions`. A third hand-rolled decode-and-fallback
+    pair here, beside the two `dimensions` and `crop_png` already carry, is
+    exactly the drift this module exists to prevent.
+    """
+    try:
+        return decode_grayscale_png(png_bytes)
+    except ValueError:
+        pass
+    try:
+        with Image.open(BytesIO(png_bytes)) as image:
+            if image.width * image.height > MAX_PIXELS:
+                raise ValueError(
+                    f"a {image.width}x{image.height} page is past this pipeline's "
+                    f"{MAX_PIXELS}-pixel bound"
+                )
+            image.load()
+            grayscale = image if image.mode == "L" else image.convert("L")
+            width, height = grayscale.width, grayscale.height
+            data = grayscale.tobytes()
+    except (*_DECODE_FAILURES, ValueError) as error:
+        raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
+    stride = width
+    return (
+        width,
+        height,
+        [bytearray(data[row * stride : (row + 1) * stride]) for row in range(height)],
+    )
+
+
 def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> bytes:
     """Crop a decoded page and encode a PNG-compatible, display-ready result.
 
