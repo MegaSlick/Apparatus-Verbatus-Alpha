@@ -130,6 +130,35 @@ def test_dossier_carries_no_order_bearing_field(evidence):
     dossier.assert_no_order_bearing_field(built)
 
 
+def test_the_sweep_runs_on_every_dossier_the_build_actually_produces(evidence, monkeypatch):
+    """A guard the production path does not run is a guard in name only, and
+    this one was exactly that until the merge: the tests called it, the handoff
+    said it swept every key, and `build_dossier` never invoked it.
+
+    The sweep checks field *names*, and every field name in a dossier comes from
+    this module's own code -- so no forged input can trip it, and the only
+    honest test of the wiring is that the build really calls it. A future edit
+    that drops the call fails here rather than silently removing the one guard
+    standing over GOVERNANCE 3."""
+    context, act_id, act_key, regions, testimonia = evidence
+    swept = []
+    monkeypatch.setattr(
+        dossier,
+        "assert_no_order_bearing_field",
+        # A deep copy, because the real call is handed the dossier dict itself
+        # and the digest is added to that same object a line later -- keeping
+        # the reference would record the value as it looks *after* the step
+        # this test exists to order.
+        lambda value, path="$": swept.append(copy.deepcopy(value)),
+    )
+    built = _build(context, act_id, act_key, regions, testimonia)
+    assert swept == [{key: value for key, value in built.items() if key != "dossier_digest"}], (
+        "build_dossier must sweep the whole dossier, and must do it before the "
+        "digest is taken -- a preference-bearing field sealed into the digest is "
+        "already in the record by the time anyone could object"
+    )
+
+
 def test_the_no_order_bearing_sweep_is_not_vacuous(evidence):
     """Prove the guard can go red: a dossier carrying a trust/preference field
     must be caught."""

@@ -256,6 +256,13 @@ def build_dossier(
         "page_renders": page_render_rows,
         "testimonia": testimonia_rows,
     }
+    # Swept before the digest is taken, so nothing that names a preference among
+    # witnesses can be sealed into a dossier at all. This function said it was
+    # "cheap enough to run on every dossier this build produces" and the handoff
+    # said it swept every key -- and nothing outside the tests ever called it.
+    # A guard the production path does not run is a guard in name only, and this
+    # is the one guarding GOVERNANCE 3.
+    assert_no_order_bearing_field(dossier)
     dossier["dossier_digest"] = digest_of(dossier)
     return dossier
 
