@@ -27,6 +27,12 @@ from common.contracts.canonical import digest_of
 LECTIO_NUDA_KIND: Final = "lectio-nuda"
 MAX_PER_MILLE: Final = 1000
 
+# The selection rule, named so the record says which design produced the
+# sample rather than leaving it implicit in whichever revision of this file
+# happened to run. Spec 08 asks for "`nuda_fraction` plus selection rule, fixed
+# before the run"; the rate is sealed in `config_digest` and the rule is this.
+SELECTION_RULE: Final = "digest-threshold-over-run-id-and-act-id.v1"
+
 
 def validate_nuda_per_mille(value: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or not (0 <= value <= MAX_PER_MILLE):
@@ -51,3 +57,21 @@ def is_nuda_sampled(act_id: str, *, run_id: str, nuda_per_mille: int) -> bool:
     digest = digest_of({"purpose": "nuda-sample", "run_id": run_id, "act_id": act_id})
     threshold = int(digest[:8], 16) % MAX_PER_MILLE
     return threshold < nuda_per_mille
+
+
+def sampling_design(*, nuda_per_mille: int, approval_ref: str) -> dict[str, object]:
+    """The design record every Lectio nuda carries.
+
+    GOVERNANCE 10: "cost is recorded but never silently narrows the
+    instrument". A nuda record that did not say what fraction it was drawn
+    under, by which rule, and on whose approval could not later be read as
+    evidence about anything -- a sample of unknown design measures nothing.
+    """
+    validate_nuda_per_mille(nuda_per_mille)
+    if not approval_ref:
+        raise ValueError("a Lectio nuda was drawn with no predeclared approval reference")
+    return {
+        "nuda_per_mille": nuda_per_mille,
+        "selection_rule": SELECTION_RULE,
+        "approval_ref": approval_ref,
+    }

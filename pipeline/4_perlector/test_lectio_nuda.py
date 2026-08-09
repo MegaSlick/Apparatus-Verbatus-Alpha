@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from nuda import LECTIO_NUDA_KIND, is_nuda_sampled
+from nuda import LECTIO_NUDA_KIND, SELECTION_RULE, is_nuda_sampled
 
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import attempt_id
@@ -22,7 +22,21 @@ ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
-def orchestrate(run_root: Path, run_id: str, scenario: str, *, nuda_per_mille: int = 0):
+# A stand-in for the reference Tyrel's own approval would carry. It is required
+# whenever anything is sampled, so these tests must supply one exactly as a real
+# run would; a test that could sample without it would be testing a pipeline
+# nobody is allowed to run.
+APPROVAL = "fixture-nuda-design/test-only"
+
+
+def orchestrate(
+    run_root: Path,
+    run_id: str,
+    scenario: str,
+    *,
+    nuda_per_mille: int = 0,
+    approval_ref: str = APPROVAL,
+):
     command = [
         sys.executable,
         str(ORCHESTRATOR),
@@ -36,6 +50,8 @@ def orchestrate(run_root: Path, run_id: str, scenario: str, *, nuda_per_mille: i
         str(run_root),
         "--nuda-per-mille",
         str(nuda_per_mille),
+        "--nuda-approval-ref",
+        approval_ref,
     ]
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
@@ -145,6 +161,33 @@ def test_a_forged_review_naming_a_nuda_artifact_as_its_perlectio_is_refused(nuda
         nuda_run.read_artifact_reference(
             reference, stage=PERLECTOR, kind="perlectio", subject_id=entry["subject_id"]
         )
+
+
+def test_a_sampled_nuda_records_the_design_it_was_drawn_under(nuda_run):
+    """GOVERNANCE 10: a sample of unknown design measures nothing. Each record
+    names the rate, the selection rule, and the approval it was drawn under."""
+    entry = next(
+        entry
+        for entry in nuda_run.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == LECTIO_NUDA_KIND
+    )
+    record = nuda_run.read_artifact(PERLECTOR, LECTIO_NUDA_KIND, entry["artifact_id"])
+    assert record["payload"]["sampling"] == {
+        "nuda_per_mille": 1000,
+        "selection_rule": SELECTION_RULE,
+        "approval_ref": APPROVAL,
+    }
+
+
+def test_a_run_may_not_sample_nuda_without_tyrels_predeclared_design(tmp_path):
+    """Hard rule 1: the sampling design is his to approve. A rate with no
+    approval reference refuses before anything is written, rather than drawing
+    an instrument sample nobody asked for."""
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "happy", nuda_per_mille=1000, approval_ref="")
+    assert result.returncode != 0
+    assert "predeclared sampling design reference" in result.stderr
+    assert not (root / "r").exists()
 
 
 def test_nuda_per_mille_zero_produces_no_nuda_records_at_all(tmp_path):

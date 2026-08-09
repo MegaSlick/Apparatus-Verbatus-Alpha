@@ -53,7 +53,17 @@ class FixtureReader:
         raise KeyError(f"the fixture declares no act {act_key!r}")
 
     def _declared_stop_reason(self, act_key: str) -> str | None:
+        """The engine's own word on why it stopped.
+
+        A reader always reports one, because a real serving engine always
+        answers something -- the fixture table only declares the *unusual*
+        answer, and every act it does not name stopped normally. Returning
+        `None` here instead would say "this engine reported nothing", which is
+        a different fact: `truncation.classify` holds on it rather than
+        calling the reading complete, and nothing in this offline chamber is
+        entitled to claim an engine went silent.
+        """
         for row in self._fixture.get("stop_reason", []):
             if row["scenario"] == self._scenario and row["act_key"] == act_key:
                 return row["stop_reason"]
-        return None
+        return "stop"

@@ -113,6 +113,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.witness_context_config),
         "--nuda-per-mille",
         str(args.nuda_per_mille),
+        "--nuda-approval-ref",
+        str(args.nuda_approval_ref),
     ]
     for key, value in extra.items():
         command += [f"--{key.replace('_', '-')}", str(value)]
@@ -210,6 +212,11 @@ def main() -> int:
         type=int,
         default=0,
         help="the sealed Lectio nuda sampling rate, in thousandths (0 disables it)",
+    )
+    parser.add_argument(
+        "--nuda-approval-ref",
+        default="",
+        help="Tyrel's reference for the predeclared Lectio nuda sampling design",
     )
     args = parser.parse_args()
 

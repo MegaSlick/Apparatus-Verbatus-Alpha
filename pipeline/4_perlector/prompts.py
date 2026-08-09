@@ -12,11 +12,22 @@ tokenizer/template files for whichever model finally sits in the chair, which
 this offline, no-model chamber does not fetch. What this module proves is the
 mechanism: a declared, tested builder per recipe, and a closed refusal for
 every recipe that has none yet.
+
+**And the prompt that was actually built is recorded on the reading.** A
+builder nothing calls proves only that a builder exists; invariant #49 is
+about the prompt a *reading* was produced through, so `prompt_evidence` binds
+the rendered bytes, the recipe, and the resolved identity that supplied the
+recipe into one record the Perlectio carries. That is what lets a later
+comparison of two checkpoints establish that they were prompted the same way,
+rather than assume it.
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable, Final
+
+from common.chairs.models import ChairIdentity
+from common.contracts.canonical import digest_bytes, digest_of
 
 
 def _fake_perlector_v0(chair_role: str, dossier: dict[str, Any]) -> str:
@@ -49,3 +60,29 @@ def build_prompt(serving_recipe: str, chair_role: str, dossier: dict[str, Any]) 
             "a chair with no registered builder is never silently served a default template"
         )
     return builder(chair_role, dossier)
+
+
+def prompt_evidence(chair: ChairIdentity, dossier: dict[str, Any]) -> dict[str, str]:
+    """The record of the prompt one reading was actually produced through.
+
+    Keyed on the chair's *resolved* serving recipe rather than on its role: a
+    role is a chair, and a chair can be occupied by a stock model, a vendor
+    model, a local checkpoint or an unmerged adapter in turn. Two occupants of
+    the same role prompted through the same template because nobody noticed
+    they were different models is exactly the harness failure invariant #49
+    exists to make visible, so the identity digest travels beside the recipe
+    and a reader comparing two Perlectiones can see whether they were prompted
+    the same way.
+
+    The rendered bytes are recorded by digest, not verbatim: they contain every
+    testimonium the reader was shown, which already travels once on the
+    Perlectio's own `dossier`, and a second verbatim copy is a second thing to
+    drift.
+    """
+    rendered = build_prompt(chair.serving_recipe, chair.role, dossier)
+    return {
+        "serving_recipe": chair.serving_recipe,
+        "chair_identity_sha256": digest_of(chair.to_record()),
+        "dossier_digest": dossier["dossier_digest"],
+        "rendered_sha256": digest_bytes(rendered.encode("utf-8")),
+    }

@@ -34,6 +34,13 @@ def test_a_witness_that_agrees_after_whitespace_normalization_departs_only_raw()
             "compared": True,
             "departed": False,
             "departed_raw": True,
+            # The one whitespace character, located rather than merely counted.
+            "departures": [
+                {
+                    "reading_span": {"start": 5, "end": 5},
+                    "testimonium_span": {"start": 5, "end": 6},
+                }
+            ],
             "comparison_loss": {"reading_dropped_characters": 0, "witness_dropped_characters": 1},
         }
     ]
@@ -46,6 +53,49 @@ def test_a_witness_that_actually_disagrees_departs_on_both_views():
     rows = dissent.dissent_against("alpha beta gamma", testimonia)
     assert rows[0]["departed"] is True
     assert rows[0]["departed_raw"] is True
+
+
+def test_departures_locate_the_one_character_the_witness_read_differently():
+    """The instrument's whole point: one wrong letter in an otherwise identical
+    reading must look different from wholesale disagreement, which one boolean
+    per chair cannot express."""
+    reading = "alpha beta gamma"
+    testimonia = [
+        {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "alpha beta gamna"}}
+    ]
+    spans = dissent.dissent_against(reading, testimonia)[0]["departures"]
+    assert spans == [
+        {"reading_span": {"start": 14, "end": 15}, "testimonium_span": {"start": 14, "end": 15}}
+    ]
+    assert reading[14:15] == "m"
+
+
+def test_an_agreeing_witness_produces_no_departures_at_all():
+    """Zero dissent on an easy line is the correct output, not a missing
+    measurement -- ARCHITECTURE, verbatim: "a metric that rewards disagreement
+    rewards hallucination"."""
+    testimonia = [
+        {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "alpha beta gamma"}}
+    ]
+    assert dissent.dissent_against("alpha beta gamma", testimonia)[0]["departures"] == []
+
+
+def test_departures_are_an_alignment_and_expose_no_similarity_number():
+    """The line this module must not cross. `get_opcodes` describes *where* two
+    strings differ; `ratio()` is the metric a fuzzy-match picker would be built
+    from, and no row may carry one."""
+    testimonia = [
+        {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "entirely other"}}
+    ]
+    row = dissent.dissent_against("alpha beta gamma", testimonia)[0]
+    for span in row["departures"]:
+        assert set(span) == {"reading_span", "testimonium_span"}
+        for bounds in span.values():
+            assert set(bounds) == {"start", "end"}
+            assert all(isinstance(value, int) for value in bounds.values())
+    assert not any(
+        isinstance(value, float) for value in row.values() if not isinstance(value, (dict, list))
+    )
 
 
 def test_a_non_reading_outcome_is_recorded_as_no_opinion_not_agreement():

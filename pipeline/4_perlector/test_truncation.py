@@ -10,15 +10,27 @@ import pytest
 import truncation
 
 
-def test_a_clean_short_reading_over_a_small_region_is_complete():
-    record = truncation.classify("alpha beta gamma.", region_pixels=1000)
+def test_a_clean_short_reading_whose_engine_reported_stop_is_complete():
+    record = truncation.classify("alpha beta gamma.", region_pixels=1000, stop_reason="stop")
     assert record["classification"] == truncation.COMPLETE
     assert record["signals"] == {
-        "stop_reason_declared": None,
+        "stop_reason_declared": "stop",
         "unclosed_structure": False,
         "length_suspicious": False,
         "ends_abruptly": False,
     }
+
+
+def test_a_clean_reading_with_no_engine_observation_at_all_holds_as_unknown():
+    """The fail-closed half of the rule. Three clean computed signals say the
+    reading does not *look* cut off, which is not the same claim as "the engine
+    ran to its own end" -- an engine cut off at a sentence boundary produces
+    exactly this text. With nothing observed from the engine the classification
+    holds rather than reading as complete."""
+    record = truncation.classify("alpha beta gamma.", region_pixels=1000)
+    assert record["classification"] == truncation.UNKNOWN
+    assert record["signals"]["stop_reason_declared"] is None
+    assert truncation.holds_as_failure(record["classification"]) is True
 
 
 def test_an_engine_declared_length_stop_reason_is_authoritative_over_clean_text():
@@ -83,9 +95,11 @@ def test_a_tiny_reading_under_a_huge_region_is_length_suspicious():
 def test_all_three_computed_signals_agreeing_suspicious_is_truncated_not_unknown():
     """The all-suspicious case the design note names explicitly: a split vote
     holds as `unknown`, but unanimous suspicion is confident enough to call
-    `truncated` outright."""
+    `truncated` outright -- even when the engine claims it stopped normally,
+    which is the direction that matters. An engine's `stop` never forces
+    `complete`; it only permits it."""
     text = "unclosed (mid-"
-    record = truncation.classify(text, region_pixels=1_000_000)
+    record = truncation.classify(text, region_pixels=1_000_000, stop_reason="stop")
     assert record["signals"]["unclosed_structure"] is True
     assert record["signals"]["length_suspicious"] is True
     assert record["signals"]["ends_abruptly"] is True
@@ -94,7 +108,7 @@ def test_all_three_computed_signals_agreeing_suspicious_is_truncated_not_unknown
 
 def test_a_split_vote_among_computed_signals_holds_as_unknown_never_complete():
     text = "unclosed (parenthetical but otherwise a normal length reading here"
-    record = truncation.classify(text, region_pixels=1000)
+    record = truncation.classify(text, region_pixels=1000, stop_reason="stop")
     votes = sum(
         (
             record["signals"]["unclosed_structure"],

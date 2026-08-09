@@ -26,10 +26,26 @@ the untouched strings. Both are recorded, because when either side's
 normalization drops characters, view-equality alone cannot say whether the raw
 strings actually matched -- and GOVERNANCE 2 does not let that distinction go
 unrecorded merely because it is cheap to recompute.
+
+**`departures` says *where*, and a boolean cannot.** Spec_08's own dissent test
+asks that "dissent matches expected spans", and the reason is the instrument's
+purpose: a checkpoint that has learned to echo witnesses instead of reading ink
+shows up as agreement everywhere *except* a few short spans, which one boolean
+per chair cannot distinguish from wholesale disagreement. The spans are an
+alignment produced by `difflib.SequenceMatcher.get_opcodes`, over the raw
+strings so the offsets are valid in the Perlectio's own `text`.
+
+That is not the distance metric pinned against above, and the difference is
+worth stating because it is exactly the line a later edit will cross by
+accident: an opcode list is a *description* of where two strings differ, with
+no number attached and nothing to compare against a threshold.
+`SequenceMatcher.ratio()` is the metric, it is not called here, and it is the
+thing a reviewer should refuse if it appears.
 """
 
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 from typing import Any
 
 from common.contracts.errors import SchemaRefusal
@@ -43,6 +59,33 @@ def comparison_view(text: str) -> dict[str, object]:
     real disagreement about the ink, not a formatting artifact."""
     normalized = " ".join(text.split())
     return {"normalized": normalized, "dropped_characters": len(text) - len(normalized)}
+
+
+def departures(reading: str, reported: str) -> list[dict[str, dict[str, int]]]:
+    """Every span where the established reading and one witness's report differ.
+
+    `autojunk=False` is load-bearing rather than stylistic: with it on,
+    `SequenceMatcher` treats any element appearing in more than 1% of a
+    sequence longer than 200 characters as junk, which on French prose means
+    spaces and common letters stop counting as matches. The alignment would
+    then change shape purely because the act was long, and a dissent record
+    that means something different on long acts than on short ones is not a
+    structural record.
+
+    An equal reading and report produce no departures at all -- the correct
+    output on the easy line every witness agrees about (ARCHITECTURE: "a metric
+    that rewards disagreement rewards hallucination").
+    """
+    return [
+        {
+            "reading_span": {"start": reading_start, "end": reading_end},
+            "testimonium_span": {"start": witness_start, "end": witness_end},
+        }
+        for tag, reading_start, reading_end, witness_start, witness_end in SequenceMatcher(
+            a=reading, b=reported, autojunk=False
+        ).get_opcodes()
+        if tag != "equal"
+    ]
 
 
 def is_comparable(record: dict[str, Any]) -> bool:
@@ -115,6 +158,12 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 "compared": True,
                 "departed": witness_view["normalized"] != reading_view["normalized"],
                 "departed_raw": reported != reading,
+                # Spans over the raw strings, so `reading_span` indexes the
+                # Perlectio's own `text`. A whitespace-only difference therefore
+                # shows departures here while `departed` above stays False:
+                # those are two honest answers to two different questions, and
+                # collapsing them would lose the one the instrument needs.
+                "departures": departures(reading, reported),
                 "comparison_loss": {
                     "reading_dropped_characters": reading_view["dropped_characters"],
                     "witness_dropped_characters": witness_view["dropped_characters"],

@@ -10,10 +10,27 @@ testimony.
 Four declared signals. Three are genuinely computed, over the actual reading
 text and the actual region area. The fourth -- the serving engine's own
 stop-reason -- needs a real engine to observe honestly, which this chamber does
-not have; it is read from a declared value exactly the way
-`pipeline/4_perlector/run.py::declared_reading_failure` already reads a
-fixture-declared outcome, and named here as a stand-in rather than disguised as
-a computed one.
+not have; it is reported by the reader implementation
+(`pipeline/4_perlector/reader.py`), which is where a real engine's own answer
+will arrive, and named here as a stand-in rather than disguised as a computed
+one.
+
+**A reading whose engine reported nothing is never `complete`.** The three
+computed signals can only ever say a reading does not *look* cut off, and
+"does not look cut off" is not "ran to its own end" -- an engine cut off at a
+sentence boundary produces clean-looking text. So `complete` requires a
+positive engine observation as well as three clean computed signals; with no
+engine observation at all the classification is `unknown`, which holds.
+
+That case is real rather than theoretical, and the old pipeline is where it
+was learned: its Chandra serving adapter discarded the OpenAI `finish_reason`
+entirely and preserved only `usage.completion_tokens`, so the old code had to
+derive truncation from `completion_tokens >= attempt_cap` instead
+(`remote/run_batch.py`, read through the window; no line carried). A serving
+path here whose adapter drops the stop-reason therefore holds every reading
+until it declares a second engine signal of its own -- which is the correct
+outcome, and the reason the rule is written as "an engine observation" rather
+than "a stop-reason".
 """
 
 from __future__ import annotations
@@ -106,9 +123,17 @@ def classify(text: str, *, region_pixels: int, stop_reason: str | None = None) -
 
     The engine's declared stop-reason is authoritative when it says `length`:
     an engine that reports it ran out of budget is not something the other
-    three signals get to overrule. Otherwise the three computed signals vote:
-    unanimous clean is `complete`, unanimous suspicious is `truncated`, and a
-    split vote is `unknown` -- held, never resolved toward `complete`, because
+    three signals get to overrule. Otherwise the three computed signals vote,
+    and `complete` needs both an engine that said it stopped of its own accord
+    and a unanimous clean vote:
+
+      engine `length`                          -> truncated
+      engine `stop`, three clean signals       -> complete
+      three suspicious signals                 -> truncated
+      anything else, including no engine word  -> unknown, which holds
+
+    A split vote is `unknown` for the reason the module docstring gives, and so
+    is silence from the engine: neither is resolved toward `complete`, because
     an ambiguous signal is exactly what "unknown holds" means.
     """
     signals: TruncationSignals = {
@@ -125,10 +150,10 @@ def classify(text: str, *, region_pixels: int, stop_reason: str | None = None) -
     suspicious_votes = sum(
         (signals["unclosed_structure"], signals["length_suspicious"], signals["ends_abruptly"])
     )
-    if suspicious_votes == 0:
-        classification = COMPLETE
-    elif suspicious_votes == 3:
+    if suspicious_votes == 3:
         classification = TRUNCATED
+    elif suspicious_votes == 0 and declared == COMPLETE:
+        classification = COMPLETE
     else:
         classification = UNKNOWN
     return {"classification": classification, "signals": signals}

@@ -31,7 +31,13 @@ GAP_POSITIONS: Final = frozenset({"leading", "internal", "trailing", "whole-act"
 
 _SPAN_FIELDS: Final = frozenset({"start", "end", "alternatives", "confidence"})
 _GAP_FIELDS: Final = frozenset({"position", "start", "end", "witness_evidence"})
-_EVIDENCE_FIELDS: Final = frozenset({"chair", "variant"})
+# A gap's evidence names the chair, what it reported, and *which artifact said
+# so*. The chair alone is a claim about a witness; the digest-checked reference
+# is the witness's own sealed record, which is what GOALS 5 means by a result
+# returning to the witnesses that saw it. Without it a displayed
+# "(illegible -- witnesses agree: Tyrel)" cannot be traced back to the
+# Testimonium it came from.
+_EVIDENCE_FIELDS: Final = frozenset({"chair", "testimonium_id", "reference", "variant"})
 
 
 def validate_uncertain_spans(spans: Any, text: str) -> list[dict]:
@@ -121,16 +127,22 @@ def validate_gaps(gaps: Any, text: str) -> list[dict]:
         if not isinstance(evidence, list):
             raise SchemaRefusal(f"gaps[{index}] has no witness_evidence list")
         for item_index, item in enumerate(evidence):
+            reference = item.get("reference") if isinstance(item, dict) else None
             if (
                 not isinstance(item, dict)
                 or set(item) != _EVIDENCE_FIELDS
                 or not isinstance(item.get("chair"), str)
                 or not item["chair"]
+                or not isinstance(item.get("testimonium_id"), str)
+                or not item["testimonium_id"]
                 or not isinstance(item.get("variant"), str)
+                or not isinstance(reference, dict)
+                or set(reference) != {"relative_path", "sha256"}
+                or not all(isinstance(value, str) and value for value in reference.values())
             ):
                 raise SchemaRefusal(
                     f"gaps[{index}].witness_evidence[{item_index}] is not a "
-                    "{chair, variant} record"
+                    "{chair, testimonium_id, reference, variant} record"
                 )
         validated.append(gap)
     if whole_act_rows and (whole_act_rows != 1 or len(validated) != 1):

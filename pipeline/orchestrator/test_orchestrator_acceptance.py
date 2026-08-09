@@ -148,6 +148,15 @@ FIXTURE = "synthetic-two-page-v0"
 # moves both pins. File counts are unchanged again; only the sealed configuration text
 # is bigger.
 #
+# And re-pinned once more when the two independent builds of System 08 were merged.
+# Every payload change is additive and none of them moves a file: each Perlectio now
+# carries the declared prompt it was produced through, span-level dissent beside the
+# per-chair booleans, and gap evidence naming the Testimonium it came from; the
+# page-context render caps its long edge instead of dividing by two and records its
+# whole transform; `nuda_approval_ref` joined the sealed configuration. File counts
+# stay at 44 and 48 -- the same two page-context blobs, different bytes inside the
+# records that reference them.
+#
 # Re-pinned for the rebase of the System 08 build onto the merged System 09 tree:
 # both movements above are now in one tree, so the counts are 45 (happy) and 49
 # (review) -- main's Recensor partition receipt plus this branch's two page-render

@@ -179,6 +179,15 @@ class StageContext:
         """The sealed Lectio nuda sampling rate, in thousandths. See `witness_context`."""
         return self.args.nuda_per_mille
 
+    @property
+    def nuda_approval_ref(self) -> str:
+        """Tyrel's reference for the sampling design this run draws nuda under.
+
+        Empty when nothing is sampled. `run_config_bindings` refuses a non-zero
+        rate that carries none, so a populated rate always has one.
+        """
+        return self.args.nuda_approval_ref
+
     def publish(
         self,
         *,
@@ -283,6 +292,14 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
         default=0,
         help="the sealed Lectio nuda sampling rate, in thousandths (0 disables it)",
     )
+    parser.add_argument(
+        "--nuda-approval-ref",
+        default="",
+        help=(
+            "Tyrel's reference for the predeclared Lectio nuda sampling design; "
+            "required whenever --nuda-per-mille is not 0"
+        ),
+    )
     parser.add_argument("--operation", default="initial")
     parser.add_argument("--act", default=None, help="one act id, for a recovery operation")
     parser.add_argument(
@@ -325,6 +342,7 @@ def run_config_bindings(
     witness_context: str = "named",
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     nuda_per_mille: int = 0,
+    nuda_approval_ref: str = "",
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -365,6 +383,20 @@ def run_config_bindings(
         raise ContractError(
             f"nuda_per_mille must be an integer in [0, {MAX_NUDA_PER_MILLE}], got {nuda_per_mille!r}"
         )
+    if not isinstance(nuda_approval_ref, str):
+        raise ContractError("nuda_approval_ref must be a string")
+    # Spec 08: Lectio nuda "runs on a predeclared, Tyrel-approved sampling
+    # design... fixed before the run". Hard rule 1 is what makes that a refusal
+    # rather than a note: the sampling design is his to approve, and a run that
+    # draws an unapproved sample has decided something nobody asked it to. The
+    # reference is sealed beside the rate, so a run cannot later claim an
+    # approval it was not started under.
+    if nuda_per_mille and not nuda_approval_ref:
+        raise ContractError(
+            f"a Lectio nuda rate of {nuda_per_mille}/1000 needs Tyrel's predeclared sampling "
+            "design reference in --nuda-approval-ref; an unapproved instrument sample is a "
+            "decision this pipeline does not get to make for him"
+        )
     try:
         witness_context_config_digest = digest_bytes(Path(witness_context_config_path).read_bytes())
     except OSError as error:
@@ -392,6 +424,7 @@ def run_config_bindings(
                 "witness_context_regime": witness_context,
                 "witness_context_declaration_sha256": witness_context_config_digest,
                 "nuda_per_mille": nuda_per_mille,
+                "nuda_approval_ref": nuda_approval_ref,
             }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
@@ -863,6 +896,7 @@ def open_context(
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
         nuda_per_mille=args.nuda_per_mille,
+        nuda_approval_ref=args.nuda_approval_ref,
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()

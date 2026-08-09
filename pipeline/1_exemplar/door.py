@@ -1033,6 +1033,7 @@ def fixture_submission(args, registry) -> int:
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
         nuda_per_mille=args.nuda_per_mille,
+        nuda_approval_ref=args.nuda_approval_ref,
     )
 
     # The door creates the run: it is the first thing that knows what arrived, so

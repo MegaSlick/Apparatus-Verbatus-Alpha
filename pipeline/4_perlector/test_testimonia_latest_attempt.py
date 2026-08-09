@@ -340,6 +340,16 @@ def test_dissent_compares_a_genuinely_empty_witness():
             "compared": True,
             "departed": True,
             "departed_raw": True,
+            # A witness that read the pixels and found nothing to report departs
+            # across the whole reading -- one span covering every character the
+            # Perlector established and none of the witness's, which is exactly
+            # what "it saw nothing there and we read eighteen characters" means.
+            "departures": [
+                {
+                    "reading_span": {"start": 0, "end": len("visible characters")},
+                    "testimonium_span": {"start": 0, "end": 0},
+                }
+            ],
             "comparison_loss": {"reading_dropped_characters": 0, "witness_dropped_characters": 0},
         }
     ]

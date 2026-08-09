@@ -65,6 +65,16 @@ def test_an_uncertain_span_with_an_unexpected_field_refuses():
 
 # --- Gaps: the establishment firewall itself ----------------------------------
 
+# One well-formed evidence row, spelled once. A gap's evidence names the chair,
+# the Testimonium artifact that reported the variant, and the digest-checked
+# reference to it -- the variant alone would be a claim nobody can trace back.
+EVIDENCE = {
+    "chair": "attestator_1",
+    "testimonium_id": "testimonium-0001",
+    "reference": {"relative_path": "3_attestatores/artifacts/t.json", "sha256": "a" * 64},
+    "variant": "Tyrel",
+}
+
 
 def test_a_well_formed_zero_width_gap_validates():
     gaps = [
@@ -72,7 +82,7 @@ def test_a_well_formed_zero_width_gap_validates():
             "position": "internal",
             "start": 3,
             "end": 3,
-            "witness_evidence": [{"chair": "attestator_1", "variant": "Tyrel"}],
+            "witness_evidence": [EVIDENCE],
         }
     ]
     assert annotations.validate_gaps(gaps, "abcxyz") == gaps
@@ -95,7 +105,7 @@ def test_the_firewall_refuses_a_fake_seat_that_fills_a_gap_from_testimony():
             # "helpfully" filled an illegible name from testimony.
             "start": text.index(witness_variant),
             "end": text.index(witness_variant) + len(witness_variant),
-            "witness_evidence": [{"chair": "attestator_1", "variant": witness_variant}],
+            "witness_evidence": [EVIDENCE],
         }
     ]
     with pytest.raises(SchemaRefusal, match="establishment firewall"):
@@ -113,7 +123,7 @@ def test_the_firewall_check_is_not_vacuous():
         "position": "internal",
         "start": text.index(witness_variant),
         "end": text.index(witness_variant) + len(witness_variant),
-        "witness_evidence": [{"chair": "attestator_1", "variant": witness_variant}],
+        "witness_evidence": [EVIDENCE],
     }
 
     def validate_gaps_without_the_firewall_check(gaps, text):
@@ -162,7 +172,7 @@ def test_a_whole_act_gap_must_be_the_only_gap():
         annotations.validate_gaps(gaps, "")
 
 
-def test_witness_evidence_entries_are_a_closed_chair_variant_record():
+def test_witness_evidence_entries_are_a_closed_record():
     with pytest.raises(SchemaRefusal, match="witness_evidence"):
         annotations.validate_gaps(
             [
@@ -170,9 +180,25 @@ def test_witness_evidence_entries_are_a_closed_chair_variant_record():
                     "position": "internal",
                     "start": 0,
                     "end": 0,
-                    "witness_evidence": [
-                        {"chair": "attestator_1", "variant": "x", "trust": "high"}
-                    ],
+                    "witness_evidence": [EVIDENCE | {"trust": "high"}],
+                }
+            ],
+            "abc",
+        )
+
+
+def test_witness_evidence_must_name_the_testimonium_it_came_from():
+    """A variant with no artifact behind it is a claim about a witness rather
+    than the witness's own sealed record (GOALS 5)."""
+    without_reference = {key: value for key, value in EVIDENCE.items() if key != "reference"}
+    with pytest.raises(SchemaRefusal, match="witness_evidence"):
+        annotations.validate_gaps(
+            [
+                {
+                    "position": "internal",
+                    "start": 0,
+                    "end": 0,
+                    "witness_evidence": [without_reference],
                 }
             ],
             "abc",

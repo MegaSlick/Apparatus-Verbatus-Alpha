@@ -42,6 +42,9 @@ basis = {
 }
 dossier          -- the full spec_08 input contract, persisted as evidence
                     (see below); a superset of `basis`, never a replacement
+prompt           -- {serving_recipe, chair_identity_sha256, dossier_digest,
+                    rendered_sha256}: the declared prompt this reading was
+                    actually produced through (invariant #49, see below)
 dissent          -- derived-comparison-view rows (see below)
 truncation       -- {classification, signals}, present on every attempted
                     reading regardless of outcome (see below)
@@ -54,13 +57,21 @@ provenance
 consumers actually read (`common/stage.py::reading_basis_regions` walks
 `basis.regions`). Nothing here may ever remove or repurpose it.
 
+**The field set above is closed and checked before publication**
+(`run.py::validate_reading_payload`). Three of the four failures spec 08's
+schema test names — missing identity, missing dissent, missing regime record —
+are *absent* fields rather than wrong ones, which is the failure a per-field
+type check never sees. An empty `dissent` list is a real and ordinary answer;
+an absent one means nobody computed it, and the two may never look the same in
+the record.
+
 ### `dossier` — the input contract, persisted as evidence (spec 08)
 
 ```text
 act_id, act_key, witness_regime
 regions       = [{region_id, image_path, image_sha256, witness_covered}, ...]
-page_renders  = [{source_page_id, source_page_ordinal, image_path, image_sha256,
-                   transform, width, height}, ...]
+page_renders  = [{source_page_id, source_page_ordinal, source, image_path,
+                   image_sha256, transform}, ...]
 testimonia    = [{witness_label, training_domain, outcome, reported}, ...]
 dossier_digest
 ```
@@ -83,10 +94,17 @@ Testimonium's own provenance, one step downstream. The pseudonym has no stored
 reversible map: reversal is recomputing the same deterministic digest over the
 public roster in `run.json["witness_chairs"]`.
 
-**Page renders.** One downscaled (factor 2, box-filtered) render per distinct
-page an act's regions touch, with its transform recorded — reproducible from the
-Exemplar plus the recorded transform (ARCHITECTURE invariant 3), stored
-content-addressed under this stage's own blob store.
+**Page renders.** One layout-context render per distinct page an act's regions
+touch, stored content-addressed under this stage's own blob store. The long edge
+is capped at `dossier.PAGE_CONTEXT_MAX_EDGE` (1024) rather than divided by a
+fixed factor: a divisor is not a bound, and halving a 6000-pixel archival scan
+hands the reader the page again rather than an overview of it. `transform`
+records `{operation, source_dimensions, target_dimensions, maximum_edge,
+resampler}` and `source` names the sealed page it came from, so the render is
+reproducible from the Exemplar plus the record (ARCHITECTURE invariant 3) by
+someone who does not also have this module. A page already inside the bound
+records `resampler: "identity"` rather than reporting a resize that did not
+happen.
 
 **Training-domain context.** `config/witness_context.toml`, a new
 Perlector-owned declaration (not part of `common/chairs`/`ChairIdentity`),
@@ -97,7 +115,7 @@ refuses by name.
 ### `dissent` — derived comparison views, never raw-string voting
 
 ```text
-[{chair, compared: true, departed, departed_raw, comparison_loss}, ...]
+[{chair, compared: true, departed, departed_raw, departures, comparison_loss}, ...]
 [{chair, compared: false, reason}, ...]                 -- did not report
 [{chair, compared: "unknown", reason}, ...]              -- format not yet comparable
 ```
@@ -112,6 +130,33 @@ agreed. A witness whose declared format cannot yet be reduced to a comparison
 view (`format_capabilities.can_express_uncertainty`) is recorded `"unknown"` —
 never guessed, and never dropped from the list.
 
+`departures` says *where*: `[{reading_span: {start, end}, testimonium_span:
+{start, end}}, ...]`, an alignment from `difflib.SequenceMatcher.get_opcodes`
+over the raw strings, so `reading_span` indexes this Perlectio's own `text`. A
+boolean per chair cannot tell one wrong letter from wholesale disagreement, and
+that distinction is the instrument's entire purpose. An alignment is not the
+distance metric this module refuses: it carries no number and nothing to
+threshold. `SequenceMatcher.ratio()` is that metric, is not called, and is the
+thing to refuse if it ever appears here.
+
+### `prompt` — invariant #49, on the record
+
+```text
+{serving_recipe, chair_identity_sha256, dossier_digest, rendered_sha256}
+```
+
+Built by `prompts.py` from the resolved chair's own declared serving recipe,
+*before* the reader is called, from the dossier the reader is then shown. A
+recipe with no registered builder refuses outright rather than falling back to
+some other seat's template — the silent fallback is the exact harness failure
+invariant #49 exists to prevent. The identity digest travels beside the recipe
+because a chair is a role and a role can be occupied by a stock model, a vendor
+model, a local checkpoint or an unmerged adapter in turn; two Perlectiones can
+therefore be compared for whether they were prompted the same way rather than
+assumed to have been. The rendered bytes are recorded by digest only: they
+contain every testimonium the reader was shown, which already travels once on
+`dossier`.
+
 ### `truncation` — the instrument, not an assumption
 
 ```text
@@ -122,9 +167,16 @@ never guessed, and never dropped from the list.
 Computed by `truncation.py` for every attempted reading, primed or nuda,
 regardless of what outcome it ends up producing — so the record is never
 optional detail dropped exactly when it would matter most. An engine-declared
-`stop_reason_declared == "length"` is authoritative for `truncated`; otherwise the
-three computed signals vote, and a split vote holds as `"unknown"` — never
-resolved toward complete. Both `truncated` and `unknown` classifications map to
+`stop_reason_declared == "length"` is authoritative for `truncated`; three
+suspicious computed signals are `truncated` on their own; and `complete`
+requires **both** an engine that said it stopped of its own accord and three
+clean computed signals. A split vote holds as `"unknown"`, and so does silence
+from the engine — three clean signals say a reading does not *look* cut off,
+which is not the claim that it ran to its own end. Neither is ever resolved
+toward complete. (A serving adapter that drops the engine's stop-reason
+therefore holds every reading until it declares a second engine signal of its
+own; the old pipeline's Chandra adapter did exactly that and derived truncation
+from `completion_tokens >= cap` instead.) Both `truncated` and `unknown` classifications map to
 the existing outcome `"truncated"` (already `FAILED`-class): **`outcome ==
 "truncated"` therefore means "not established complete," which covers an honest
 ambiguity as well as a confirmed cut-off** — the payload's `truncation` field is
@@ -140,6 +192,9 @@ because that is what "read, with alternatives" means; validated only for shape
 `start` must equal its `end` — zero-width inside `text` — so a gap cannot carry
 characters regardless of what `witness_evidence` says. `witness_evidence`
 attaches witness variants as linked, displayable evidence, never as text.
+Each evidence row is `{chair, testimonium_id, reference, variant}` — the
+digest-checked reference to the witness's own sealed record, not just a chair
+name a reader would then have to go looking for (GOALS 5).
 `position` is one of `leading | internal | trailing | whole-act`, each with its
 own bound (leading starts at 0, trailing ends at `len(text)`, whole-act requires
 `text == ""` and is the gap's only entry). **Bidirectional**: an outcome of
@@ -160,15 +215,20 @@ end to end; Recensor treats every non-completed outcome as a visible hold.
 **Never `kind="perlectio"`.** The subject is the act identity and the attempt is
 `lectio-nuda:<ordinal>` (never `perlegere:<ordinal>` — the two operations occupy
 disjoint identity spaces by construction, so nothing can ever confuse a nuda
-attempt with an establishing one). Same payload shape as a Perlectio, except its
-`dossier.testimonia` is always `[]` and its `dissent` is always `[]` — nuda
-withholds testimony, never sight, so its dossier still carries the same regions
-and page renders a primed pass would.
+attempt with an establishing one). Same payload shape as a Perlectio, except it
+carries no `basis` (there is no witness basis to record), it carries a
+`sampling` record, its `dossier.testimonia` is always `[]` and its `dissent` is
+always `[]` — nuda withholds testimony, never sight, so its dossier still
+carries the same regions and page renders a primed pass would.
 
 Sampled by a predeclared, run-sealed design: `--nuda-per-mille` (0–1000,
 `nuda.py`), a deterministic hash-threshold rule over `(run_id, act_id)` — never
 `random`, so the identical command samples the identical acts. Default `0`
-(off) for every scenario that predates this build.
+(off) for every scenario that predates this build. **A non-zero rate refuses
+without `--nuda-approval-ref`**: spec 08 requires a predeclared, Tyrel-approved
+sampling design, and hard rule 1 makes that a refusal rather than a note. Each
+record carries `sampling = {nuda_per_mille, selection_rule, approval_ref}`,
+because a sample of unknown design measures nothing (GOVERNANCE 10).
 
 **Module boundary, not convention.** Every real consumer (`5_recensor`,
 `6_archetypus`, `7_armarium`, the orchestrator's own recovery dispatch) filters
@@ -210,6 +270,19 @@ ever have recorded for a real reading.
   reconciles them itself, against the image") is not modeled: nothing upstream
   produces two independent readings of one attempt today, only re-reads driven
   by Recensor's own bounded recovery loop (already never a pick).
+- The closed-schema check above is producer-local. `validate_serving_provenance`
+  already refuses a wrong-schema provenance wherever a Perlectio is *consumed*,
+  but no consumer refuses a Perlectio that carries no `dissent` record at all —
+  a reading with the instrument missing could still be established. Closing that
+  belongs in `6_archetypus`, whose file another lane owns this round.
+- A real vLLM launch declaration (pinned `--revision` and `--tokenizer-revision`,
+  an explicit `--chat-template` rather than an ambient tokenizer default,
+  unmerged `--enable-lora` with its base verified separately, a bounded
+  readiness probe with named failure signatures) was built during this stage's
+  second lane and is deliberately **not** carried here: it is spec 04's
+  territory and the serving-manager branch's file, and two implementations of
+  one serving path is the drift this handoff exists to prevent. It is worth
+  reading before that lane writes its own.
 - Spec 10's `text_status` (a closed `established | partial | no_readable_text`
   enum on the Archetypus payload) has not landed — `pipeline/6_archetypus/run.py`
   still writes a hardcoded, unvalidated `"status": "established"` string. This

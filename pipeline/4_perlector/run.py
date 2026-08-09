@@ -27,6 +27,7 @@ and zero dissent there is the correct output.
 
 import sys
 from pathlib import Path
+from typing import Final
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -34,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import annotations  # noqa: E402
 import dossier as dossier_module  # noqa: E402
 import nuda  # noqa: E402
+import prompts  # noqa: E402
 import truncation  # noqa: E402
 from dissent import dissent_against  # noqa: E402
 from reader import FixtureReader  # noqa: E402
@@ -316,12 +318,23 @@ def _page_renders_for(context, bases: list[dict]) -> list[dict]:
     return list(by_page.values())
 
 
-def _whole_act_gap(testimonia: list[dict]) -> list[dict]:
+def _whole_act_gap(testimonia: list[dict], references: dict[str, dict]) -> list[dict]:
     """The one gap an unreadable act carries: zero-width, evidence attached,
     never a character inside `text` (the establishment firewall,
-    `annotations.py`)."""
+    `annotations.py`).
+
+    Each variant travels with the digest-checked reference to the Testimonium
+    that reported it, so a displayed "⟨illegible — witnesses agree: …⟩" leads
+    back to the sealed record rather than to a chair name somebody would then
+    have to go looking for.
+    """
     evidence = [
-        {"chair": record["payload"]["chair"], "variant": record["payload"]["reported"]}
+        {
+            "chair": record["payload"]["chair"],
+            "testimonium_id": record["artifact_id"],
+            "reference": references[record["artifact_id"]],
+            "variant": record["payload"]["reported"],
+        }
         for record in testimonia
         if record["outcome"] in WITNESS_READING_OUTCOMES and record["payload"].get("reported")
     ]
@@ -332,6 +345,95 @@ def _region_pixels(bases: list[dict]) -> int:
     return sum(
         basis["transform"]["bounds"]["w"] * basis["transform"]["bounds"]["h"] for basis in bases
     )
+
+
+# Every field an established-reading Perlectio payload carries. Closed, and
+# checked before publication rather than described in the handoff and hoped
+# for: spec 08's schema test asks that a Perlectio "missing identity, missing
+# dissent, missing regime record, or with annotation spans outside text bounds"
+# be refused, and three of those four are fields that would simply be absent
+# rather than wrong. An absent field is the failure mode a per-field type check
+# never sees.
+_PERLECTIO_FIELDS: Final = frozenset(
+    {
+        "act_key",
+        "attempt_ordinal",
+        "text",
+        "basis",
+        "dossier",
+        "prompt",
+        "dissent",
+        "truncation",
+        "uncertain_spans",
+        "gaps",
+        "provenance",
+    }
+)
+
+# The same, for the instrument record. It carries no `basis` -- a nuda reading
+# has no witness basis to record, which is the whole point of it -- and it does
+# carry the sampling design it was drawn under.
+_LECTIO_NUDA_FIELDS: Final = frozenset(
+    {
+        "act_key",
+        "attempt_ordinal",
+        "text",
+        "dossier",
+        "prompt",
+        "sampling",
+        "dissent",
+        "truncation",
+        "uncertain_spans",
+        "gaps",
+        "provenance",
+    }
+)
+
+
+def validate_reading_payload(payload: dict, *, outcome: str, fields: frozenset) -> None:
+    """Refuse a reading payload that is missing part of the record it claims.
+
+    This is producer-local and deliberately so: `validate_serving_provenance`
+    already refuses a wrong-schema provenance wherever a Perlectio is
+    *consumed*, and this is the matching check at the moment one is written, so
+    a defect surfaces where it was introduced rather than one stage later.
+
+    The dissent record is required even when it is empty. An empty list is a
+    real answer -- every witness agreed, or none reported -- and the absent
+    field is a different fact entirely: nobody computed it. Collapsing the two
+    would blind the one instrument ARCHITECTURE names for catching a reader
+    that has learned to echo witnesses rather than read ink.
+    """
+    missing = sorted(fields - set(payload))
+    unexpected = sorted(set(payload) - fields)
+    if missing or unexpected:
+        raise SchemaRefusal(
+            f"a Perlector reading payload is not its closed schema: missing {missing}, "
+            f"unexpected {unexpected}"
+        )
+    if not isinstance(payload["dissent"], list):
+        raise SchemaRefusal("a Perlector reading carries no dissent record")
+    provenance = payload["provenance"]
+    if not isinstance(provenance, dict) or provenance.get("witness_regime") not in (
+        "named",
+        "blinded",
+    ):
+        raise SchemaRefusal(
+            "a Perlector reading records no witness regime; a reading's provenance includes "
+            "what its reader was shown"
+        )
+    if provenance.get("chair_state") == "configured" and not provenance.get("resolved_identity"):
+        raise SchemaRefusal(
+            "a Perlector reading by a configured chair records no resolved identity"
+        )
+    if not isinstance(payload["truncation"], dict) or payload["truncation"].get(
+        "classification"
+    ) not in (truncation.COMPLETE, truncation.TRUNCATED, truncation.UNKNOWN):
+        raise SchemaRefusal(
+            "a Perlector reading carries no truncation classification; truncation is detected "
+            "by an instrument, never assumed"
+        )
+    annotations.validate_annotations(payload, outcome=outcome)
 
 
 def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, text: str) -> str:
@@ -382,6 +484,7 @@ def _publish_lectio_nuda(
         page_renders=page_renders,
         witness_context=witness_context_table,
     )
+    prompt = prompts.prompt_evidence(chair, nuda_dossier)
     result = reader.read(nuda_dossier, primed=False)
     truncation_record = truncation.classify(
         result["text"], region_pixels=region_pixels, stop_reason=result["stop_reason"]
@@ -394,15 +497,22 @@ def _publish_lectio_nuda(
         "attempt_ordinal": ordinal,
         "text": result["text"],
         "dossier": nuda_dossier,
+        "prompt": prompt,
+        "sampling": nuda.sampling_design(
+            nuda_per_mille=context.nuda_per_mille,
+            approval_ref=context.nuda_approval_ref,
+        ),
         # Nothing to dissent against: nuda's dossier carries no testimonia, so
         # there is no witness opinion for this reading to have departed from.
         "dissent": [],
         "truncation": truncation_record,
         "uncertain_spans": [],
-        "gaps": _whole_act_gap([]) if outcome == "no-readable-text" else [],
+        # No testimonia were shown, so there is no witness evidence to attach:
+        # a nuda gap is the bare fact that sight failed here.
+        "gaps": _whole_act_gap([], {}) if outcome == "no-readable-text" else [],
         "provenance": provenance_for(context, chair, attempted=True),
     }
-    annotations.validate_annotations(payload, outcome=outcome)
+    validate_reading_payload(payload, outcome=outcome, fields=_LECTIO_NUDA_FIELDS)
     context.publish(
         kind=nuda.LECTIO_NUDA_KIND,
         subject_id=act_id,
@@ -549,6 +659,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             page_renders=page_renders,
             witness_context=witness_context_table,
         )
+        # Built before the reader is called, from the dossier the reader is
+        # about to be shown, so what is recorded is the prompt this reading was
+        # produced through rather than one reconstructed afterwards.
+        prompt = prompts.prompt_evidence(chair, primed_dossier)
         result = reader.read(primed_dossier, primed=True)
 
         # The scenario's declared engine behaviour stands in for a real
@@ -563,17 +677,21 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         outcome = _resolve_outcome(
             declared_failure=declared_failure, truncation_record=truncation_record, text=reading
         )
-        gaps = _whole_act_gap(testimonia) if outcome == "no-readable-text" else []
-
-        # A real reading attempt, so the pinned snapshot is re-verified here, at
-        # the moment this reading is produced, and its receipt written.
-        provenance = provenance_for(context, chair, attempted=True)
         testimonium_references = {
             record["artifact_id"]: context.artifact_ref(
                 ATTESTATORES, "testimonium", record["artifact_id"]
             )
             for record in testimonia
         }
+        gaps = (
+            _whole_act_gap(testimonia, testimonium_references)
+            if outcome == "no-readable-text"
+            else []
+        )
+
+        # A real reading attempt, so the pinned snapshot is re-verified here, at
+        # the moment this reading is produced, and its receipt written.
+        provenance = provenance_for(context, chair, attempted=True)
         payload = {
             "act_key": act["act_key"],
             "attempt_ordinal": ordinal,
@@ -591,13 +709,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 ],
             },
             "dossier": primed_dossier,
+            "prompt": prompt,
             "dissent": dissent_against(reading, testimonia),
             "truncation": truncation_record,
             "uncertain_spans": [],
             "gaps": gaps,
             "provenance": provenance,
         }
-        annotations.validate_annotations(payload, outcome=outcome)
+        validate_reading_payload(payload, outcome=outcome, fields=_PERLECTIO_FIELDS)
         context.publish(
             kind="perlectio",
             subject_id=act_id,

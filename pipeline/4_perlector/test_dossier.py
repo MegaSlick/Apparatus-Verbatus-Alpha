@@ -6,14 +6,17 @@ import copy
 import importlib.util
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_text, digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.stages import ATTESTATORES, DESIGNATOR
+from common.imaging import dimensions
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -196,17 +199,42 @@ def test_load_witness_context_refuses_a_chair_with_no_declared_entry(tmp_path, e
         _build(context, act_id, act_key, regions, testimonia, witness_context=table)
 
 
-def test_build_page_render_is_a_genuine_downscale(evidence):
+def test_build_page_render_records_its_whole_transform_not_only_a_factor(evidence):
+    """ARCHITECTURE invariant 3 asks that the exact image shown be reproducible
+    from the Exemplar plus the recorded transforms. A bare factor is only
+    reproducible by someone who also has this module's code, so the record
+    names the source size, the target size and the resampler."""
     context, act_id, act_key, regions, testimonia = evidence
     render = dossier.build_page_render(
         context,
         source_page_id=regions[0]["transform"]["source_page_id"],
         source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
     )
-    assert render["transform"] == {"operation": "downscale", "factor": 2}
-    assert render["width"] == 200 // 2
-    assert render["height"] == 260 // 2
+    assert render["transform"] == {
+        "operation": "downscale-for-page-context",
+        "source_dimensions": {"w": 200, "h": 260},
+        # The synthetic fixture page is far inside the bound, so the honest
+        # record is that nothing was resampled -- not a decorative resize
+        # reported as a downscale.
+        "target_dimensions": {"w": 200, "h": 260},
+        "maximum_edge": dossier.PAGE_CONTEXT_MAX_EDGE,
+        "resampler": "identity",
+    }
+    assert render["source"]["sha256"]
     assert context.tree.read_bytes(render["image_path"])
+
+
+def test_a_page_past_the_bound_is_actually_downscaled_to_it():
+    """The branch the 200x260 fixture page never reaches. Proved on real bytes
+    rather than asserted, because a page-context render that quietly returned
+    the full-resolution page would satisfy every other test in this file."""
+    big = BytesIO()
+    Image.new("L", (4000, 3000), color=200).save(big, format="PNG")
+    rendered, transform = dossier._downscale_page(big.getvalue(), maximum_edge=1024)
+    assert transform["source_dimensions"] == {"w": 4000, "h": 3000}
+    assert transform["target_dimensions"] == {"w": 1024, "h": 768}
+    assert transform["resampler"] == "pillow-lanczos"
+    assert dimensions(rendered) == (1024, 768)
 
 
 def test_build_page_render_is_reused_byte_identically_on_a_repeat_call(evidence):

@@ -32,20 +32,48 @@ from PIL import Image
 from regime import NAMED, witness_label
 
 from common.contracts.canonical import digest_of
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR, PERLECTOR
+from common.imaging import crop_png, dimensions
 from common.stage import WITNESS_READING_OUTCOMES
 
 DEFAULT_WITNESS_CONTEXT_PATH: Final = (
     Path(__file__).resolve().parents[2] / "config" / "witness_context.toml"
 )
 
-# A fixed factor, not configuration: the dossier's job is to hand the reader a
-# genuine layout overview, not a second full-resolution copy of the page.
-PAGE_RENDER_DOWNSCALE_FACTOR: Final = 2
+# A fixed bound, not configuration: the dossier's job is to hand the reader a
+# genuine layout overview, not a second full-resolution copy of the page. A
+# *bound* rather than a divisor because a divisor is not a bound -- halving a
+# 6000-pixel archival scan still hands the reader a 3000-pixel image, which is
+# not page context, it is the page again at some cost. Capping the long edge
+# gives every page the same kind of overview whatever it was scanned at.
+PAGE_CONTEXT_MAX_EDGE: Final = 1024
 
-_FORBIDDEN_KEY_FRAGMENTS: Final = ("primary", "preferred", "order", "rank", "trust", "weight")
+# Fragments, not exact names, because the field that reintroduces a preference
+# will be called `trust_score` or `witness_priority` rather than `trust`. The
+# list is deliberately longer than the words this build could plausibly emit:
+# it is a tripwire for a later edit, and a tripwire that only names today's
+# spellings catches nothing. Every fragment is checked against the whole
+# dossier, so a new field whose name trips one is a conversation at review
+# rather than a silent landing.
+_FORBIDDEN_KEY_FRAGMENTS: Final = (
+    "primary",
+    "prefer",
+    "order",
+    "rank",
+    "trust",
+    "weight",
+    "score",
+    "reliab",
+    "select",
+    "winner",
+    "chosen",
+    "priority",
+    "better",
+    "best",
+    "picker",
+)
 
 
 def load_witness_context(path: Path = DEFAULT_WITNESS_CONTEXT_PATH) -> dict[str, dict[str, str]]:
@@ -65,20 +93,45 @@ def load_witness_context(path: Path = DEFAULT_WITNESS_CONTEXT_PATH) -> dict[str,
     return raw
 
 
-def _downscale_page(page_bytes: bytes, *, factor: int) -> tuple[bytes, int, int]:
+def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dict[str, Any]]:
     """A genuine downscale of the sealed page, deterministic for a fixed input.
 
-    Box filtering (an honest area-average, not a single-pixel sample) so the
-    render is a real layout overview rather than a decorative resize.
+    The sealed page goes through `common.imaging.crop_png` first, at its own
+    full bounds, so this render inherits the one decode-and-display policy the
+    rest of the pipeline uses -- including the high-precision handling that
+    stops a 16-bit scan rendering as near-white. Pillow then does the resize
+    with a named resampler.
+
+    The transform record names the source size, the target size and the
+    resampler rather than only a factor, because ARCHITECTURE invariant 3 asks
+    that the exact image shown be reproducible from the Exemplar plus the
+    recorded transforms -- and "downscaled by 2" is only reproducible by
+    someone who also has this function. A page already inside the bound is
+    recorded as `identity` rather than silently resampled to itself.
     """
-    with Image.open(BytesIO(page_bytes)) as image:
+    width, height = dimensions(page_bytes)
+    display = crop_png(page_bytes, {"x": 0, "y": 0, "w": width, "h": height})
+    with Image.open(BytesIO(display)) as image:
         image.load()
-        width = max(1, image.width // factor)
-        height = max(1, image.height // factor)
-        downscaled = image.resize((width, height), Image.BOX)
+        if max(image.width, image.height) <= maximum_edge:
+            rendered = image.copy()
+            resampler = "identity"
+        else:
+            scale = maximum_edge / max(image.width, image.height)
+            rendered = image.resize(
+                (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+                resample=Image.Resampling.LANCZOS,
+            )
+            resampler = "pillow-lanczos"
         output = BytesIO()
-        downscaled.save(output, format="PNG", optimize=False, compress_level=9)
-        return output.getvalue(), width, height
+        rendered.save(output, format="PNG", optimize=False, compress_level=9)
+        return output.getvalue(), {
+            "operation": "downscale-for-page-context",
+            "source_dimensions": {"w": width, "h": height},
+            "target_dimensions": {"w": rendered.width, "h": rendered.height},
+            "maximum_edge": maximum_edge,
+            "resampler": resampler,
+        }
 
 
 def build_page_render(context, *, source_page_id: str, source_page_ordinal: int) -> dict[str, Any]:
@@ -88,17 +141,26 @@ def build_page_render(context, *, source_page_id: str, source_page_ordinal: int)
     page = context.tree.read_artifact(
         EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", source_page_id)
     )
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-    downscaled, width, height = _downscale_page(page_bytes, factor=PAGE_RENDER_DOWNSCALE_FACTOR)
+    source_path = page["payload"].get("image_path")
+    if not isinstance(source_path, str) or not source_path:
+        raise SchemaRefusal("a sealed Exemplar page carries no image to render page context from")
+    page_bytes = context.tree.read_bytes(source_path)
+    try:
+        downscaled, transform = _downscale_page(page_bytes, maximum_edge=PAGE_CONTEXT_MAX_EDGE)
+    except (OSError, ValueError) as error:
+        raise SchemaRefusal(
+            "a sealed Exemplar page could not be rendered as Perlector page context"
+        ) from error
     digest, published = context.tree.put_blob(PERLECTOR, downscaled)
     return {
         "source_page_id": source_page_id,
         "source_page_ordinal": source_page_ordinal,
+        # The sealed page this render was derived from, named so the derivation
+        # can be checked rather than believed.
+        "source": context.input_ref(source_path),
         "image_path": published.relative_path,
         "image_sha256": digest,
-        "transform": {"operation": "downscale", "factor": PAGE_RENDER_DOWNSCALE_FACTOR},
-        "width": width,
-        "height": height,
+        "transform": transform,
     }
 
 
