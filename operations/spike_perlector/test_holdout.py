@@ -1,3 +1,4 @@
+import hashlib
 from dataclasses import replace
 
 import pytest
@@ -227,3 +228,29 @@ def test_held_out_guard_refuses_an_unknown_runtime_use_name():
     )
     with pytest.raises(HoldoutRefusal, match="declared MaterialUse"):
         HeldOutUseGuard(manifest).require_allowed((digest("other"),), use="untyped")  # type: ignore[arg-type]
+
+
+def test_the_sealed_draw_selects_exactly_these_acts_and_a_reader_can_recompute_it():
+    """Determinism is not enough on its own: the answer has to be checkable.
+
+    A predeclared sampling frame is only auditable if a third party can recompute
+    the draw and get the same members. This pins the actual outcome for a fixed
+    frame under the sealed seed, so a change to the ordering algorithm goes red
+    here rather than quietly producing a different, equally "deterministic" sample.
+    The rule is `sha256(seed || 0x00 || opaque_act_id)` ascending, within stratum.
+    """
+    frame = tuple(member(number, "clear") for number in range(1, 6))
+    manifest = select_manifest(
+        frame,
+        protocol_sha256=digest("protocol"),
+        plan=SamplingPlan(SPEC05_SELECTION_SEED, {"clear": 2}),
+    )
+    assert [item.opaque_act_id for item in manifest.members] == ["opaque-3", "opaque-4"]
+
+    recomputed = sorted(
+        frame,
+        key=lambda item: hashlib.sha256(
+            SPEC05_SELECTION_SEED.encode("utf-8") + b"\0" + item.opaque_act_id.encode("utf-8")
+        ).digest(),
+    )[:2]
+    assert {item.opaque_act_id for item in recomputed} == {"opaque-3", "opaque-4"}

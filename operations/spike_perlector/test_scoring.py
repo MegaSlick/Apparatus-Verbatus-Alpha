@@ -62,3 +62,24 @@ def test_truncation_scores_the_observed_partial_text():
 def test_blank_checked_reference_is_not_given_a_perfect_score():
     with pytest.raises(MeasurementRefusal, match="blank checked"):
         score_text("", "", profile=GRAPHEMIC_V1)
+
+
+def test_the_textbook_levenshtein_example():
+    """kitten -> sitting: three edits, the standard worked example.
+
+    Grafted from lane A. Its value is that a reader can check it against the
+    literature rather than against this repository: two substitutions (k->s, e->i)
+    and one insertion (g), over a six-character reference.
+    """
+    score = score_text("kitten", "sitting", profile=GRAPHEMIC_V1).cer
+    assert (score.edits.substitutions, score.edits.insertions, score.edits.deletions) == (2, 1, 0)
+    assert score.reference_units == 6
+    assert score.rate == pytest.approx(3 / 6)
+
+
+def test_the_textbook_word_error_rate_example():
+    """ "this is a test" -> "this is test": one deletion of four words, WER 0.25."""
+    score = score_text("this is a test", "this is test", profile=GRAPHEMIC_V1).wer
+    assert (score.edits.substitutions, score.edits.insertions, score.edits.deletions) == (0, 0, 1)
+    assert score.reference_units == 4
+    assert score.rate == pytest.approx(0.25)
