@@ -10,12 +10,13 @@ import hashlib
 import json
 import os
 import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Protocol
 
 from operations.submit.submit import load_manifest
+
+from .durable import atomic_write, canonical_json
 
 TRANSFER_SCHEMA = "pod-transfer.v1"
 
@@ -179,45 +180,7 @@ class ChecksummedTransfer:
         return record
 
     def _write(self, record: dict[str, object]) -> None:
-        payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-        self.journal_path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=f".{self.journal_path.name}.", dir=self.journal_path.parent
-        )
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                os.fchmod(handle.fileno(), 0o600)
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, self.journal_path)
-            _sync_directory(self.journal_path.parent)
-        except Exception:
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
-            raise
-
-
-def _sync_directory(path: Path) -> None:
-    """Make the atomic journal replacement durable across a machine crash.
-
-    bootstrap.py, lease.py, and pod_timer.py each carry the same durable-write
-    pattern and each calls this after ``os.replace``; this copy previously
-    stopped short of it, which is the one gap among the four.
-    """
-
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError:  # pragma: no cover - unusual filesystems may refuse directory opens
-        return
-    try:
-        os.fsync(descriptor)
-    except OSError:  # pragma: no cover - same filesystem caveat
-        pass
-    finally:
-        os.close(descriptor)
+        atomic_write(self.journal_path, canonical_json(record))
 
 
 def _prefix(value: str) -> str:

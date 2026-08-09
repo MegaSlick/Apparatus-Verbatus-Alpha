@@ -322,90 +322,70 @@ class VerifiedShutdown:
                     break
             if attempt < self.billing_attempts:
                 self.sleeper(self.billing_retry_seconds)
-        if isinstance(capture, BaseException):
-            error = capture
+
+        def report(
+            state: CloseState,
+            report_cutoff: datetime,
+            evidence: CostCapture | None,
+            detail: str,
+            manual_action: str | None,
+        ) -> CloseReport:
+            # Reached only where both absence observations already agreed, which
+            # is why the two absence flags below are unconditional.
             return CloseReport(
                 record.pod_id,
-                CloseState.UNVERIFIED_BILLING,
+                state,
                 reason,
-                cutoff,
+                report_cutoff,
                 attempts,
                 attempt,
                 True,
                 True,
-                None,
+                evidence,
                 record.volume_id,
                 record.estimate.volume_hourly_usd,
-                _join_details(last_detail, f"billing capture failed: {error}"),
-                "Review the provider billing console for this pod; no zero cost was inferred.",
+                detail,
+                manual_action,
+            )
+
+        console = "Review the provider billing console for this pod; no zero cost was inferred."
+        if isinstance(capture, BaseException):
+            return report(
+                CloseState.UNVERIFIED_BILLING,
+                cutoff,
+                None,
+                _join_details(last_detail, f"billing capture failed: {capture}"),
+                console,
             )
         evidence_error = _billing_evidence_error(record, capture, requested_cutoff=cutoff)
         if evidence_error is not None:
-            return CloseReport(
-                record.pod_id,
+            return report(
                 CloseState.UNVERIFIED_BILLING,
-                reason,
                 cutoff,
-                attempts,
-                attempt,
-                True,
-                True,
                 capture if isinstance(capture, CostCapture) else None,
-                record.volume_id,
-                record.estimate.volume_hourly_usd,
                 _join_details(last_detail, evidence_error),
                 "Review the provider billing console for this pod; returned billing evidence did not prove the requested pod and time window.",
             )
         assert isinstance(capture, CostCapture)
-        # CostCapture.__post_init__ refuses to construct a CAPTURED capture
-        # with empty lines, so state alone already implies non-empty lines here.
         if capture.state is BillingState.CAPTURED:
-            return CloseReport(
-                record.pod_id,
-                CloseState.VERIFIED,
-                reason,
-                capture.cutoff_at,
-                attempts,
-                attempt,
-                True,
-                True,
-                capture,
-                record.volume_id,
-                record.estimate.volume_hourly_usd,
-                last_detail,
-                None,
-            )
+            # CostCapture refuses to construct a CAPTURED capture with empty
+            # lines, so the state alone already implies non-empty lines here.
+            return report(CloseState.VERIFIED, capture.cutoff_at, capture, last_detail, None)
         if capture.state is BillingState.PENDING_RECONCILIATION:
-            return CloseReport(
-                record.pod_id,
+            return report(
                 CloseState.PENDING_RECONCILIATION,
-                reason,
                 capture.cutoff_at,
-                attempts,
-                attempt,
-                True,
-                True,
                 capture,
-                record.volume_id,
-                record.estimate.volume_hourly_usd,
                 _join_details(last_detail, capture.reason),
                 "Re-run billing reconciliation after the provider posts this pod's charges.",
             )
         # An empty billing result for a pod that ran is specifically non-green.
-        return CloseReport(
-            record.pod_id,
+        return report(
             CloseState.UNVERIFIED_BILLING,
-            reason,
             capture.cutoff_at,
-            attempts,
-            attempt,
-            True,
-            True,
             capture,
-            record.volume_id,
-            record.estimate.volume_hourly_usd,
             _join_details(last_detail, capture.reason or "billing returned no verifiable records"),
-            "Review the provider billing console for this pod; no zero cost was inferred.",
+            console,
         )
 
     def _failed_shutdown(

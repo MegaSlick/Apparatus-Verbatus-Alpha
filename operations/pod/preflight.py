@@ -424,18 +424,6 @@ def _load_card_profiles(raw: object) -> tuple[CardProfile, ...]:
     return tuple(profiles)
 
 
-def card_price_resolver(table: PlacementTable) -> Callable[[str], Decimal]:
-    """Bind a provider adapter's `pod_price` seam to the reviewed card table.
-
-    RunPod REST v1 publishes no endpoint that quotes a GPU's price without
-    creating a pod, so this reviewed table is the price sheet. It is only ever
-    an *estimate*: `launch.py` re-checks the price the provider actually
-    returned against the same ceilings before a launch can be green.
-    """
-
-    return table.price_for
-
-
 def _validate_tiers(tiers: list[PlacementTier]) -> None:
     identifiers = [tier.identifier for tier in tiers]
     if len(identifiers) != len(set(identifiers)):
@@ -456,16 +444,14 @@ class UtilizationSample:
     cpu_percent: Decimal
 
     def __post_init__(self) -> None:
-        for label, value in (
-            ("GPU utilization", self.gpu_percent),
-            ("CPU utilization", self.cpu_percent),
+        for field_name, label in (
+            ("gpu_percent", "GPU utilization"),
+            ("cpu_percent", "CPU utilization"),
         ):
-            parsed = as_decimal(value, label)
+            parsed = as_decimal(getattr(self, field_name), label)
             if parsed > 100:
                 raise ValueError(f"{label} cannot exceed 100 percent")
-            object.__setattr__(
-                self, "gpu_percent" if label.startswith("GPU") else "cpu_percent", parsed
-            )
+            object.__setattr__(self, field_name, parsed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -650,7 +636,8 @@ class PreflightRunner:
                     f"computed from measured VRAM; prebuilt profile {matched.name!r} expects tier "
                     f"{matched.tier!r} but {profile.vram_gib} GiB was measured"
                 )
-        if not self.fixture.is_file():
+        fixture_present = self.fixture.is_file()
+        if not fixture_present:
             issues.append(
                 PreflightIssue(
                     "proof-fixture-missing",
@@ -693,7 +680,7 @@ class PreflightRunner:
                 )
             )
             verified = self._verify_cache(configured, issues, cache_receipts)
-            if not verified or not self.fixture.is_file():
+            if not verified or not fixture_present:
                 continue
             self._smoke(configured, tier, issues, smoke_receipts, utilization)
         # This stage runs against injected/fake probes and the repository's
@@ -795,7 +782,7 @@ class PreflightRunner:
         try:
             receipt = self.cache_verifier.verify(identity)
         except Exception as initial_error:
-            if not _is_cache_mismatch(initial_error):
+            if not is_cache_mismatch(initial_error):
                 issues.append(
                     PreflightIssue(
                         "cache-verification-failed",
@@ -945,5 +932,5 @@ class PreflightRunner:
         )
 
 
-def _is_cache_mismatch(error: BaseException) -> bool:
+def is_cache_mismatch(error: BaseException) -> bool:
     return isinstance(error, (CacheMismatch, DigestMismatchRefusal, CacheRevisionRefusal))

@@ -153,8 +153,9 @@ class RunPodProvider:
 
     `pod_price` / `volume_price` are injected resolvers rather than a live quote
     call, because v1 publishes no "quote this GPU" endpoint independent of
-    actually creating a pod. `operations.pod.preflight.card_price_resolver` binds
-    them to `config/pod_placement.toml`'s reviewed `card_profile` table. A stale
+    actually creating a pod. `operations.pod.preflight.PlacementTable.price_for`
+    is the price sheet, read from `config/pod_placement.toml`'s reviewed
+    `card_profile` table. A stale
     sheet can drift: `launch.py` re-assesses the provider-observed undiscounted
     `costPerHr` from `create`/`adopt` against the same ceilings before a launch
     is ever green.

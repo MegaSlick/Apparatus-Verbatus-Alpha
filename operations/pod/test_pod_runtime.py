@@ -1245,24 +1245,26 @@ def _lease(
     armed: bool = True,
 ) -> PodLease:
     hard_deadline = clock.now() + timedelta(seconds=deadline_seconds)
-    if not armed:
-        lease = PodLease(
-            lease_id="c" * 32,
-            launch_token="d" * 32,
-            provider_name="fake",
-            pod_id=record.pod_id,
-            volume_id=record.volume_id,
-            pod_hourly_usd=record.estimate.pod_hourly_usd,
-            volume_hourly_usd=record.estimate.volume_hourly_usd,
-            created_at=clock.now(),
-            started_at=record.created_at,
-            hard_deadline=hard_deadline,
-            owner_token=owner,
-            heartbeat_at=clock.now(),
-            phase="active",
-        )
-        store.create(lease)
-        return lease
+    stamp = clock.now().isoformat().replace("+00:00", "Z")
+    receipt = {
+        "laptop_supervisor_started": True,
+        "pod_timer_acknowledged": True,
+        "observed_at": stamp,
+        "detail": "pre-armed fake controller fixture",
+        "receipt": {
+            "lease_id": "c" * 32,
+            "pod_id": record.pod_id,
+            "hard_deadline": hard_deadline.isoformat().replace("+00:00", "Z"),
+            "laptop_supervisor": {
+                "identity": "pre-armed-fake-laptop-supervisor",
+                "started_at": stamp,
+            },
+            "pod_timer": {
+                "report_path": "/workspace/private/pod-runtime-report.json",
+                "acknowledged_at": stamp,
+            },
+        },
+    }
     lease = PodLease(
         lease_id="c" * 32,
         launch_token="d" * 32,
@@ -1277,25 +1279,7 @@ def _lease(
         owner_token=owner,
         heartbeat_at=clock.now(),
         phase="active",
-        controller_record={
-            "laptop_supervisor_started": True,
-            "pod_timer_acknowledged": True,
-            "observed_at": clock.now().isoformat().replace("+00:00", "Z"),
-            "detail": "pre-armed fake controller fixture",
-            "receipt": {
-                "lease_id": "c" * 32,
-                "pod_id": record.pod_id,
-                "hard_deadline": hard_deadline.isoformat().replace("+00:00", "Z"),
-                "laptop_supervisor": {
-                    "identity": "pre-armed-fake-laptop-supervisor",
-                    "started_at": clock.now().isoformat().replace("+00:00", "Z"),
-                },
-                "pod_timer": {
-                    "report_path": "/workspace/private/pod-runtime-report.json",
-                    "acknowledged_at": clock.now().isoformat().replace("+00:00", "Z"),
-                },
-            },
-        },
+        controller_record=receipt if armed else None,
     )
     store.create(lease)
     return lease

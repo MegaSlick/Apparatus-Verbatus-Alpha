@@ -27,10 +27,6 @@ class ProviderFailure(PodRuntimeError):
     """The provider failed a requested observation or action."""
 
 
-class ProviderTimeout(ProviderFailure):
-    """The provider did not answer an observation before its own deadline."""
-
-
 class LeaseOwnershipError(PodRuntimeError):
     """A lease owner attempted to overwrite another controller's record."""
 
@@ -437,12 +433,6 @@ class PodEstimate:
         if not isinstance(self.source, str) or not self.source.strip():
             raise ValueError("estimate source must be non-blank")
         require_utc(self.observed_at, "estimate observed_at")
-
-    @property
-    def hourly_usd(self) -> Decimal:
-        """The current metered pod rate; volume cost stays separately visible."""
-
-        return self.pod_hourly_usd
 
 
 @dataclass(frozen=True, slots=True)

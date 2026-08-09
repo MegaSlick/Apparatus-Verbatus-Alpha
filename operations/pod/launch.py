@@ -225,15 +225,20 @@ class PodRuntime:
         try:
             bound = store.bind_pod(owner_token=owner_token, record=record, now=self.now())
         except Exception as error:
-            close = self.shutdown.close(
-                record, reason="create returned before lease binding failed"
+            close, detail = self._close_and_record(
+                record=record,
+                reason="create returned before lease binding failed",
+                store=store,
+                owner_token=owner_token,
+                situation=f"created pod could not be bound to its lease: {error}",
             )
             return LaunchResult(
                 LaunchState.CREATE_UNLEASED,
                 preview_result.preview,
                 record=record,
                 lease_path=store.path,
-                detail=f"created pod could not be bound to its lease: {error}",
+                owner_token=owner_token,
+                detail=detail,
                 close_report=close,
             )
         if record.runtime_contract is None or not record.runtime_contract.matches(sealed):

@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -25,6 +24,7 @@ from typing import Iterator, Mapping
 
 from common.contracts.canonical import self_hash, verify_self_hash
 
+from .durable import atomic_write, canonical_json, sync_directory
 from .models import (
     LeaseFormatError,
     LeaseOwnershipError,
@@ -130,15 +130,7 @@ class PodLease:
             "closed-verified",
         }:
             raise ValueError("lease phase is unsupported")
-        if (
-            self.phase != "pending-create"
-            and self.pod_id is None
-            and self.phase
-            not in {
-                "close-unverified",
-                "closed-verified",
-            }
-        ):
+        if self.phase == "active" and self.pod_id is None:
             raise ValueError("non-pending active lease must name an exact pod id")
         if self.controller_record is not None:
             _validate_controller_record(
@@ -317,14 +309,14 @@ class LeaseStore:
         with self._lock():
             if self.path.exists():
                 raise LeaseOwnershipError(f"lease already exists at {self.path}")
-            payload = _canonical_json(lease.to_record())
+            payload = canonical_json(lease.to_record())
             descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
                 with os.fdopen(descriptor, "wb") as handle:
                     handle.write(payload)
                     handle.flush()
                     os.fsync(handle.fileno())
-                _sync_directory(self.path.parent)
+                sync_directory(self.path.parent)
             except Exception:
                 try:
                     self.path.unlink(missing_ok=True)
@@ -482,13 +474,7 @@ class LeaseStore:
         return PodLease.from_record(raw)
 
     def _write_unlocked(self, lease: PodLease) -> None:
-        _atomic_write(self.path, _canonical_json(lease.to_record()))
-
-
-def _canonical_json(value: Mapping[str, object]) -> bytes:
-    return (
-        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
-    ).encode()
+        atomic_write(self.path, canonical_json(lease.to_record()))
 
 
 def _validate_controller_record(
@@ -594,35 +580,3 @@ def _validate_close_record(
             raise ValueError("verified lease phase requires complete verified close evidence")
     elif value.get("state") == "verified":
         raise ValueError("unverified lease phase cannot carry verified close evidence")
-
-
-def _atomic_write(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
-    except Exception:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
-
-
-def _sync_directory(path: Path) -> None:
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError:  # pragma: no cover - exotic filesystems may not permit directory fsync
-        return
-    try:
-        os.fsync(descriptor)
-    except OSError:  # pragma: no cover - same filesystem caveat
-        pass
-    finally:
-        os.close(descriptor)

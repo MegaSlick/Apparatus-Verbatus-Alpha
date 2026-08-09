@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -16,8 +14,9 @@ from typing import Callable, Protocol
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.chairs.registry import ChairRegistry
 
+from .durable import atomic_write, canonical_json
 from .models import require_utc, utc_now
-from .preflight import _is_cache_mismatch
+from .preflight import is_cache_mismatch
 
 BOOTSTRAP_SCHEMA = "pod-bootstrap.v1"
 
@@ -244,7 +243,7 @@ class BootstrapJournal:
             )
 
     def _write(self, record: dict[str, object]) -> None:
-        _atomic_write(self.path, _json(record))
+        atomic_write(self.path, canonical_json(record))
 
 
 class Bootstrapper:
@@ -278,7 +277,6 @@ class Bootstrapper:
             # A process killed between _execute and this line keeps the step absent;
             # retrying calls only that action, whose contract is idempotent.
             self.journal.mark_complete(record, step, receipt)
-            completed.add(step.value)
         self.journal.mark_green(record)
         return _report_from_record(record)
 
@@ -318,7 +316,7 @@ class ChairCacheBootstrapAction:
             try:
                 snapshot = self.registry.ensure(configured)
             except Exception as initial_error:
-                if not _is_cache_mismatch(initial_error) or self.refetch_same_pin is None:
+                if not is_cache_mismatch(initial_error) or self.refetch_same_pin is None:
                     raise BootstrapStepFailure(
                         BootstrapStep.CHAIR_CACHE,
                         f"chair {role} cache verification failed: {initial_error}",
@@ -457,43 +455,3 @@ def _report_from_record(record: dict[str, object]) -> BootstrapReport:
 
 def _stamp(value: datetime) -> str:
     return require_utc(value, "bootstrap timestamp").isoformat().replace("+00:00", "Z")
-
-
-def _json(value: dict[str, object]) -> bytes:
-    return (
-        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
-    ).encode()
-
-
-def _atomic_write(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
-    except Exception:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
-
-
-def _sync_directory(path: Path) -> None:
-    """Make an atomic journal replacement durable across a machine crash."""
-
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError:  # pragma: no cover - unusual filesystems may refuse directory opens
-        return
-    try:
-        os.fsync(descriptor)
-    except OSError:  # pragma: no cover - the same filesystem caveat
-        pass
-    finally:
-        os.close(descriptor)

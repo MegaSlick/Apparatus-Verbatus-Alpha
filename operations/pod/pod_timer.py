@@ -10,15 +10,14 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
-import os
 import subprocess
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
 from .controllers import ControllerResult, PodDeadmanTimer
+from .durable import atomic_write, canonical_json
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,22 +25,6 @@ class TimerContext:
     """A generic timer already supplied with its provider-neutral close path."""
 
     timer: PodDeadmanTimer
-
-
-def wait_for_deadline(
-    timer: PodDeadmanTimer,
-    *,
-    sleeper: Callable[[float], None] = time.sleep,
-    interval_seconds: float = 15.0,
-) -> ControllerResult:
-    """Sleep only until the immutable deadline, then run the independent close path."""
-
-    if interval_seconds <= 0:
-        raise ValueError("pod timer interval must be positive")
-    while timer.now() < timer.lease.hard_deadline:
-        remaining = (timer.lease.hard_deadline - timer.now()).total_seconds()
-        sleeper(min(interval_seconds, max(0.01, remaining)))
-    return timer.run_once()
 
 
 def load_timer_context(reference: str) -> TimerContext:
@@ -187,38 +170,9 @@ def _bootstrap_argv(value: str) -> list[str]:
 
 
 def _write_report(path: Path, value: dict[str, object]) -> None:
-    """Atomically retain pod bootstrap/close evidence on the attached volume."""
+    """Retain pod bootstrap/close evidence on the attached volume."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
-    except Exception:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
-
-
-def _sync_directory(path: Path) -> None:
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError:  # pragma: no cover - unusual volume filesystem
-        return
-    try:
-        os.fsync(descriptor)
-    except OSError:  # pragma: no cover - unusual volume filesystem
-        pass
-    finally:
-        os.close(descriptor)
+    atomic_write(path, canonical_json(value))
 
 
 def _persist_or_close(context: TimerContext, path: Path, value: dict[str, object]) -> None:
