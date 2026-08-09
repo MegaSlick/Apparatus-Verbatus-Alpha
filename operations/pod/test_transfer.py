@@ -183,3 +183,18 @@ def test_submission_path_cannot_traverse_a_source_symlink(tmp_path: Path) -> Non
             prefix="run",
             journal_path=tmp_path / "transfer.json",
         ).resume()
+
+
+@pytest.mark.parametrize("declared", ["page\x00.bin", "./page.bin", "sub//page.bin", "."])
+def test_every_unsafe_declared_path_becomes_a_named_refusal(declared: str) -> None:
+    """Spec 03 stops at non-empty, not-absolute, no dot-dot, so these all arrive here.
+
+    An embedded NUL used to reach `os.lstat` and raise a bare ValueError, and
+    the un-normalized spellings resolved to a file whose object key would still
+    have carried the spelling rather than the path that was opened.
+    """
+
+    from .transfer import _under
+
+    with pytest.raises(TransferFailure, match="unsafe relative path"):
+        _under(Path("/tmp"), declared)

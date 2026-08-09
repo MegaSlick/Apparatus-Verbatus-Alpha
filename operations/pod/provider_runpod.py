@@ -105,6 +105,21 @@ class HttpTransport(Protocol):
         """Return a provider HTTP response, including non-2xx response bodies."""
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Stop urllib following a 3xx, because it re-sends the bearer token when it does.
+
+    Measured against two loopback servers: a 302 from the first to the second
+    arrived at the second carrying ``Authorization: Bearer …`` unchanged, and
+    across hosts. ``requests`` strips that header on a cross-host redirect;
+    urllib does not. The API root is a fixed constant here, so no redirect is one
+    this adapter has reason to follow — and the capability is the one thing a
+    redirect buys whoever can answer for the endpoint.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
 class UrllibRunPodTransport:
     """Explicit live transport. It reads no tracked credential or config file."""
 
@@ -122,6 +137,7 @@ class UrllibRunPodTransport:
         self.capability = capability
         self.timeout_seconds = timeout_seconds
         self.root = root.rstrip("/")
+        self.opener = urllib.request.build_opener(_RefuseRedirects)
 
     def request(
         self, method: str, path: str, body: dict[str, object] | None = None
@@ -140,12 +156,18 @@ class UrllibRunPodTransport:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return HttpResponse(int(response.status), _bounded_read(response))
+            with self.opener.open(request, timeout=self.timeout_seconds) as response:
+                observed = HttpResponse(int(response.status), _bounded_read(response))
         except urllib.error.HTTPError as error:
-            return HttpResponse(int(error.code), _bounded_read(error))
+            observed = HttpResponse(int(error.code), _bounded_read(error))
         except (urllib.error.URLError, OSError) as error:
             raise ProviderFailure(f"RunPod HTTP request failed: {error}") from error
+        if 300 <= observed.status < 400:
+            raise ProviderFailure(
+                f"RunPod answered {method} {path} with HTTP {observed.status}; the API root is "
+                "fixed and a redirect was not followed"
+            )
+        return observed
 
 
 class RunPodProvider:

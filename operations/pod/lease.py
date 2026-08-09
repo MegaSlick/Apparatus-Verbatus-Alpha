@@ -8,6 +8,11 @@ Every record carries a ``self_hash`` computed by this repository's existing
 refused rather than acted on.  A lease is what tells a restarting controller
 which pod is still billing; a hand-edited or half-written one that still parsed
 would be a money-path decision made on evidence nobody checked.
+
+The seal catches an edit and a torn write, and claims nothing beyond that:
+anyone who can write the file can recompute the hash over what they wrote.  It
+is an accident detector, not an authenticator, and the lease directory's own
+permissions are what stand between the two.
 """
 
 from __future__ import annotations

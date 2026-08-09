@@ -21,6 +21,7 @@ from .provider_runpod import (
     _MAX_RESPONSE_BYTES,
     HttpResponse,
     RunPodProvider,
+    UrllibRunPodTransport,
     _bounded_read,
     timer_context_from_environment,
 )
@@ -460,3 +461,58 @@ def test_bounded_read_refuses_a_response_over_the_size_cap() -> None:
 def test_bounded_read_allows_a_response_exactly_at_the_size_cap() -> None:
     body = _bounded_read(_ExactSizedStream())  # type: ignore[arg-type]
     assert len(body) == _MAX_RESPONSE_BYTES
+
+
+# -- the live transport's own behaviour ------------------------------------
+#
+# The one thing in this file that cannot be proven through the fake transport:
+# the leak is in urllib, underneath the seam. Two loopback servers, no network.
+
+
+def test_the_live_transport_does_not_hand_the_bearer_token_to_a_redirect() -> None:
+    """urllib re-sends Authorization across a redirect, cross-host included."""
+
+    import http.server
+    import threading
+
+    seen: dict[str, str | None] = {}
+
+    class Target(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen["authorization"] = self.headers.get("Authorization")
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    class Redirector(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{target.server_address[1]}/stolen")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+    redirector = http.server.HTTPServer(("127.0.0.1", 0), Redirector)
+    for server in (target, redirector):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        transport = UrllibRunPodTransport(
+            "test-capability-value",
+            timeout_seconds=5.0,
+            root=f"http://127.0.0.1:{redirector.server_address[1]}",
+        )
+        with pytest.raises(ProviderFailure, match="redirect was not followed"):
+            transport.request("GET", "/pods")
+    finally:
+        for server in (target, redirector):
+            server.shutdown()
+            server.server_close()
+
+    assert "authorization" not in seen

@@ -2150,3 +2150,22 @@ def test_a_red_report_carries_what_happened_not_only_what_to_do_next() -> None:
         issue.code == "cuda-driver-missing" and "nvidia-smi: command not found" in issue.message
         for issue in report.issues
     )
+
+
+def test_a_credential_nested_in_a_receipt_list_is_refused() -> None:
+    """A receipt reaches the durable lease and the operator's terminal.
+
+    A harness describing two controllers writes a list, so a scrubber that
+    walked only mappings would let real capability material through a shape
+    nobody had to be devious to produce.
+    """
+
+    from .models import assert_nonsecret_receipt
+
+    # The value is deliberately not key-shaped: the scrubber reads field names,
+    # and this repository's own ingress hook refuses a credential-shaped literal
+    # in a tracked file — including one written to demonstrate a scrubber.
+    with pytest.raises(ValueError, match="credential or token material"):
+        assert_nonsecret_receipt({"controllers": [{"api_key": "would be a capability"}]})
+    with pytest.raises(ValueError, match="credential or token material"):
+        ControllerReadiness(False, START, "armer refused", {"seen": [[{"bearer": "value"}]]})

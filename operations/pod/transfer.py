@@ -190,11 +190,18 @@ def _prefix(value: str) -> str:
 
 
 def _under(root: Path, relative: object) -> Path:
+    # Spec 03's own manifest check is non-empty, not absolute, no "..", and it
+    # stops there — so "a\x00b" reaches here (and made `os.lstat` raise a bare
+    # ValueError, the one unsafe path that did not become a named refusal), and
+    # so do "./x" and "a//b", which resolve to a file whose object key would
+    # still carry the un-normalized spelling. Every component is checked here
+    # because this is the last look before the open.
     if (
         not isinstance(relative, str)
         or not relative
         or relative.startswith("/")
-        or ".." in relative.split("/")
+        or "\x00" in relative
+        or any(component in {"", ".", ".."} for component in relative.split("/"))
     ):
         raise TransferFailure("submission manifest contains an unsafe relative path")
     candidate = root

@@ -208,12 +208,12 @@ def _required_timer_arguments(command: tuple[str, ...], volume_mount_path: str) 
         raise ValueError("pod timer report path must be inside the attached volume mount")
 
 
+_CREDENTIAL_MARKERS = ("key", "secret", "password", "credential", "bearer", "token")
+
+
 def _looks_like_credential_field(value: str) -> bool:
     normalized = value.lower().replace("-", "_")
-    return any(
-        marker in normalized
-        for marker in ("key", "secret", "password", "credential", "bearer", "token")
-    )
+    return any(marker in normalized for marker in _CREDENTIAL_MARKERS)
 
 
 def assert_nonsecret_receipt(value: Mapping[str, object]) -> None:
@@ -222,17 +222,28 @@ def assert_nonsecret_receipt(value: Mapping[str, object]) -> None:
     Shared by arming.py (checked when a receipt is first constructed) and
     lease.py (checked again when a persisted lease is reloaded, e.g. after a
     controller restart) — one marker list for both triggers.
+
+    Nested lists are walked as well as nested mappings.  A receipt comes from a
+    supplied controller harness and travels to both the durable lease and the
+    operator's terminal, so a scrubber that stopped at the first list would pass
+    ``{"controllers": [{"api_key": ...}]}`` — a shape a harness reaches by
+    describing two controllers rather than by trying to evade anything.
     """
 
-    forbidden = ("key", "secret", "password", "credential", "bearer", "token")
     for item_key, item_value in value.items():
         if not isinstance(item_key, str):
             raise ValueError("controller receipt keys must be strings")
-        normalized = item_key.lower().replace("-", "_")
-        if any(marker in normalized for marker in forbidden):
+        if _looks_like_credential_field(item_key):
             raise ValueError("controller receipt must not retain credential or token material")
-        if isinstance(item_value, Mapping):
-            assert_nonsecret_receipt(item_value)
+        _assert_nonsecret_value(item_value)
+
+
+def _assert_nonsecret_value(value: object) -> None:
+    if isinstance(value, Mapping):
+        assert_nonsecret_receipt(value)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _assert_nonsecret_value(item)
 
 
 @dataclass(frozen=True, slots=True)
