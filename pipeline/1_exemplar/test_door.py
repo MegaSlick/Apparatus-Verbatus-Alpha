@@ -436,6 +436,41 @@ def test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs(tmp_path):
         assert validate_png(tree.read_bytes(payload["stored_at"])).format == "png"
 
 
+def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp_path):
+    """The offset-0 TIFF gap: a real file must never vanish from the census.
+
+    Before the fix, `expand_sources` fanned this source to zero ordinals -- not
+    admitted, not refused, absent even from the run's source_manifest, exactly the
+    silent loss GOVERNANCE 2 forbids. The file beside it must be unaffected
+    (harvest #2: per-file, never per-folder).
+    """
+    import struct as _struct
+
+    corrupt_tiff = b"II*\x00" + _struct.pack("<I", 0) + b"\x00" * 4
+    files = {"corrupt-no-ifd.tif": corrupt_tiff, "good.png": png(4, 3)}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
+            for path, data in files.items()
+        ],
+        reader(files),
+        POLICY,
+    )
+    assert [source.declared_path for source in sources] == ["corrupt-no-ifd.tif", "good.png"]
+    tree, context = open_door(tmp_path, sources)
+
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 1
+    context.finish(DOOR)
+
+    records = admissions(tree)
+    assert len(records) == 2
+    assert records[1]["payload"]["declared_path"] == "corrupt-no-ifd.tif"
+    assert records[1]["outcome"] == "refused"
+    assert reason_code(records[1]["payload"]["reason"]) is RefusalReason.CORRUPT
+    assert records[2]["payload"]["declared_path"] == "good.png"
+    assert records[2]["outcome"] == "admitted"
+
+
 def test_a_pdf_with_a_bounded_transport_preamble_still_routes_and_admits(tmp_path):
     """The Door routes the same preamble PDF that PDFium can actually open."""
     data = b"\n\n" + single_gray_page_pdf()

@@ -1494,6 +1494,15 @@ def _validate_classic_tiff_page_chain(data: bytes) -> int | None:
     if magic != 42:
         return None
     (offset,) = struct.unpack_from(endian + "I", data, 4)
+    if offset == 0:
+        # `validate_tiff` refuses this identical shape as CORRUPT (no image
+        # directory at all). Returning 0 here instead let it read as "an empty
+        # container", not "damaged" -- `count_raster_pages` took that 0 as a page
+        # count rather than an alarm, and the source was fanned out to zero
+        # ordinals: admitted nowhere, refused nowhere, absent from the run's own
+        # source_manifest. Raising here is what makes the two TIFF entry points
+        # agree on the one fact that matters: a directory-less header is damage.
+        raise corrupt("TIFF: the header names no image directory")
     seen: set[int] = set()
     pages = 0
     while offset:

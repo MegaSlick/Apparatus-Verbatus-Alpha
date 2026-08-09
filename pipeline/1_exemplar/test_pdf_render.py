@@ -23,6 +23,7 @@ from synthetic_sources import (
     content_page_pdf,
     form_text_pdf,
     gray_image,
+    page_tree_bomb_pdf,
     single_gray_page_pdf,
     two_page_pdf,
 )
@@ -255,6 +256,23 @@ def test_a_pdf_page_count_past_the_retired_policy_cap_remains_the_fan_out_denomi
     """A long reel's declared page tree, not an old 5,000-page policy, fans out."""
     pages = 5_001
     assert count_pages(blank_pages_pdf(pages)) == pages
+
+
+def test_a_page_tree_that_shares_one_leaf_declares_no_more_pages_than_its_bytes_allow():
+    """Ruling 17 retired the absolute page cap for a genuine reel; it did not clear a
+    few-KB file to declare hundreds of thousands of pages via shared page-tree
+    nodes. PDFium itself trusts the declared, compounding ``/Count`` -- confirmed
+    directly: a 19-level, 2-way fan-out tree (22 objects, ~2KB) opens and reports
+    524,288 pages -- so nothing stops `door.expand_sources` from fanning out and
+    rendering that many pages from an attacker-sized file unless something checks
+    plausibility before the fan-out denominator is trusted.
+    """
+    data, declared = page_tree_bomb_pdf(19, fanout=2)
+    assert declared == 524_288
+    with pytest.raises(PdfRefusal) as caught:
+        open_document(data)
+    assert caught.value.reason is RefusalReason.CORRUPT
+    assert "far below" in str(caught.value)
 
 
 def test_an_open_binary_pdf_stream_is_handed_to_pdfium_without_a_path_reopen(tmp_path, monkeypatch):

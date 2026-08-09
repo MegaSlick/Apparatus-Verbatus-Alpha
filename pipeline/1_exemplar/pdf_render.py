@@ -135,7 +135,56 @@ def open_document(source: bytes | str | Path | BinaryIO) -> OpenPdf:
         # Preserve the primary corrupt-document alarm if cleanup also fails.
         _close_native_document(document)
         raise PdfRefusal(RefusalReason.CORRUPT, "the PDF contains no pages")
+    try:
+        _refuse_implausible_page_count(pages, _source_size(source))
+    except PdfRefusal:
+        _close_native_document(document)
+        raise
     return OpenPdf(document, pages)
+
+
+# A page tree's `/Pages` nodes may share one child object across several `/Kids`
+# entries, so PDFium's own page count trusts the declared, compounding `/Count`
+# rather than the number of distinct page objects on disk (confirmed against the
+# installed pdfium: a ~2KB file built from ~20 nested, self-sharing `/Pages` nodes
+# opens cleanly and reports 500,000+ pages). Ruling 17 retired the old absolute
+# `MAX_PAGES` policy cap deliberately, because a genuine microfilm reel is honestly
+# that large in bytes. This is a different question: whether the *declared* page
+# count is even physically possible for the bytes actually submitted, which is the
+# same "structural validation as corruption detection" this project already keeps
+# for PNG chunk CRCs and the TIFF IFD chain. The floor is deliberately far below
+# any real page: `blank_pages_pdf`'s most degenerate legitimate synthetic page (a
+# 1x1-pixel page with no content stream at all) still averages ~98 bytes/page, and
+# a real scanned or text page is far larger than that.
+MIN_BYTES_PER_DECLARED_PAGE: Final = 32
+
+
+def _source_size(source: bytes | str | Path | BinaryIO) -> int:
+    """Byte length of a PDF source, however it is represented.
+
+    For the page-count plausibility check only — never for reading a single byte of
+    page content. A stream's position is restored to the start, matching the
+    invariant `_pdf_header` already established before PDFium opens it.
+    """
+    if isinstance(source, bytes):
+        return len(source)
+    if isinstance(source, (str, Path)):
+        return Path(source).stat().st_size
+    source.seek(0, 2)
+    size = source.tell()
+    source.seek(0)
+    return size
+
+
+def _refuse_implausible_page_count(pages: int, container_size: int) -> None:
+    """Refuse a declared page count no real container of this size could hold."""
+    if container_size < pages * MIN_BYTES_PER_DECLARED_PAGE:
+        raise PdfRefusal(
+            RefusalReason.CORRUPT,
+            f"the document declares {pages} pages in {container_size} bytes, far below "
+            f"the {MIN_BYTES_PER_DECLARED_PAGE} bytes any real page needs; this is a "
+            "malformed or hostile page tree, not a large document",
+        )
 
 
 # Exactly what `pypdfium2.internal.is_stream` requires of a custom-buffer source,

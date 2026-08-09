@@ -463,6 +463,21 @@ def test_a_cyclic_ifd_chain_is_still_a_named_decoder_failure():
         count_raster_pages(bytes(data))
 
 
+def test_a_classic_tiff_naming_no_image_directory_is_corrupt_not_silently_empty():
+    """A first-IFD offset of 0 is damage, not an empty container of zero pages.
+
+    `validate_tiff` already refuses this exact header shape as CORRUPT. Before this
+    test, `_validate_classic_tiff_page_chain`'s `while offset:` loop disagreed: it
+    returned a page count of 0 for the identical bytes, which routed the source to
+    zero fanned ordinals -- admitted nowhere, refused nowhere, and absent from the
+    run's own source manifest. A page count of zero must never be how a real file
+    goes unaccounted for.
+    """
+    data = b"II*\x00" + struct.pack("<I", 0) + b"\x00" * 4
+    with pytest.raises(FormatRefusal, match="the header names no image directory"):
+        count_raster_pages(data)
+
+
 def test_a_bad_later_tiff_page_keeps_a_good_earlier_page_counted_and_decodable():
     """A per-page tag defect must not erase a good earlier TIFF page.
 
