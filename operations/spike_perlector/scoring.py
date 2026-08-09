@@ -107,9 +107,9 @@ def _score_units(reference: Sequence[str], hypothesis: Sequence[str]) -> UnitSco
 def hypothesis_for_status(status: OutputStatus, text: str | None) -> str:
     """Translate non-answers to an empty hypothesis, never an omitted measurement.
 
-    A truncated response retains its partial text.  Refused, missing, unavailable,
-    and malformed responses receive no accidental credit: against nonempty checked
-    text they become all-deletion CER/WER rows.
+    A truncated response retains its partial text.  ``no_readable_text`` is a
+    distinct positive response state, but like refused, missing, unavailable, and
+    malformed it supplies an empty scoring hypothesis against checked readable ink.
     """
 
     if status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):

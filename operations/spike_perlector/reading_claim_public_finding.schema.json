@@ -26,9 +26,9 @@
         "enum": [
           "reference_length_cer_wer_v1",
           "missing_or_refused_is_empty_hypothesis_v1",
-          "condition_matrix_complete_or_refused_v1",
+          "condition_matrix_fully_accounted_v1",
           "dissent_is_structural_not_quality_v1",
-          "cost_and_wall_time_observed_or_not_measured_v1"
+          "cost_and_wall_time_per_candidate_act_v1"
         ]
       }
     },
@@ -43,7 +43,7 @@
       "required": [
         "cell_count", "cer_errors", "cer_reference_units", "cer_matches", "cer", "wer_errors",
         "wer_reference_units", "wer_matches", "wer", "completeness", "complete_cells",
-        "truncated_cells", "refused_cells", "missing_cells", "unavailable_cells",
+        "truncated_cells", "no_readable_text_cells", "refused_cells", "missing_cells", "unavailable_cells",
         "malformed_cells", "dissent_compared", "dissent_departed", "dissent_unavailable",
         "dissent_rate", "elapsed_observed_cells", "mean_elapsed_ms",
         "cost_observed_cells", "mean_cost_usd"
@@ -61,6 +61,7 @@
         "completeness": {"type": "number", "minimum": 0},
         "complete_cells": {"type": "integer", "minimum": 0},
         "truncated_cells": {"type": "integer", "minimum": 0},
+        "no_readable_text_cells": {"type": "integer", "minimum": 0},
         "refused_cells": {"type": "integer", "minimum": 0},
         "missing_cells": {"type": "integer", "minimum": 0},
         "unavailable_cells": {"type": "integer", "minimum": 0},

@@ -126,6 +126,11 @@ def test_public_validator_refuses_partial_or_arithmetically_false_matrix():
     inconsistent["matrix"][0]["cer"] = 0.5
     with pytest.raises(PublicSafetyRefusal, match="CER"):
         validate_public_finding(inconsistent)
+    unmeasured = deepcopy(finding)
+    unmeasured["matrix"][0]["elapsed_observed_cells"] = 0
+    unmeasured["matrix"][0]["mean_elapsed_ms"] = None
+    with pytest.raises(PublicSafetyRefusal, match="every act"):
+        validate_public_finding(unmeasured)
 
 
 def test_synthetic_exercise_cannot_be_projected_as_a_public_finding():

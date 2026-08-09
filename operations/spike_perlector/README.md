@@ -1,14 +1,13 @@
 # Spec 05 — Perlector reading-claim measurement framework
 
-Status: this is a durable instrument protocol written before this checkout has an
+Status: this is a disposable spike instrument written before this checkout has an
 evaluation image, ground-truth transcription, model call, pod, or reading-quality
 number. It is not a result. Tests exercise the single candidate interface with
 synthetic fakes only.
 
-The original disposable-spike framing has deliberately become a durable measurement
-framework: the protocol, scorers, controls, gates, and public evidence shape survive
-the spike. This document is the predeclaration that later bench and dress-rehearsal
-work must use, not a retrospective explanation.
+Spec 08's landing removes this harness. Its protocol and evidence can inform the later
+bench and dress rehearsal, but this package is not their implementation and does not
+silently turn a spike into durable pipeline architecture.
 
 The declared-run entry point hashes this exact document and compares it with a
 reviewable protocol pin in the code. A caller-supplied protocol digest is insufficient:
@@ -16,7 +15,7 @@ the sealed manifest and its run-plan approval must name this document's digest.
 
 Spec 05 was built twice, independently and blind, by two seats from different
 vendors. This protocol is lane B's, with lane A's human-adjudication procedure,
-gap-span handling, no-transport proof and literature citations merged into it; every
+gap-span handling, direct-import no-transport guard and literature citations merged into it; every
 divergence between the two builds and what was done about it is recorded in the merge
 report that accompanied this branch. Nothing in either lane ran against real
 material, and the merge did not either.
@@ -58,7 +57,7 @@ Every selected act runs for every candidate under all three conditions:
 
 The runner constructs all dossiers and prompt requests before any candidate call. It refuses a missing prompt format, unscoreable reference, incomplete act, altered prompt-declaration snapshot, incomplete witness roster, unapproved run plan, or missing vendor approval before a partial matrix can exist. It never silently skips a cell. A response with a matching delivery receipt but missing/refused text remains a scored cell; an adapter error before delivery invalidates the measurement rather than becoming a model score.
 
-Dissent is calculated only after candidate text is fixed. It counts comparable and departing Testimonia after the same normalization. It neither changes text nor weights, merges, selects, or rewards a witness.
+Dissent is calculated only after candidate text is fixed. It counts comparable and departing Testimonia after the same normalization in every condition, including Lectio nuda; the nuda candidate still receives none of them. It neither changes text nor weights, merges, selects, or rewards a witness.
 
 A cell with no reading in it records **no** dissent — not dissent from everyone.
 This matches the shape the landed `pipeline/4_perlector/run.py` already settles for
@@ -112,12 +111,13 @@ records are damaged", and a damaged page yielding three readable words is "a
 successful partial reading of three words plus honest gaps — not a failure". A
 `GapSpan` marks unread ink at its place in the reference; `start == end` is a
 legitimate zero-width anchor, which is the structural reason a gap cannot carry
-characters whatever evidence hangs off it. The gap-excised text is what CER/WER
-compares against, so neither the adjudicators' inability to read a span nor a
-candidate's guess at it is scored. **Named limitation:** this is a text-only
-exclusion, not a spatial alignment, so it cannot by itself detect a candidate that
-fabricates *inside* a marked gap. That is a harder problem this instrument does not
-solve and does not claim to.
+characters whatever evidence hangs off it. The gap-excised text is what CER/WER uses
+as its reference, so unread reference characters never enter its denominator.
+**Named limitation:** this is a text-only exclusion, not a spatial alignment. The
+scorer cannot locate candidate characters at the gap, so a candidate's guess may
+align as an insertion or substitution elsewhere; it cannot be called either correct
+or fabricated *inside* the marked gap. That is a harder problem this instrument does
+not solve and does not claim to.
 
 `no_readable_text` is a positive fact about a truly blank crop, never an empty string. `unresolved_gap` means ink exists but cannot be adjudicated — for the whole crop; unread ink *within* a reading is a gap, above. Neither has a CER/WER denominator, so neither gets an artificial perfect score. Both remain accounted for in `PrivateSampleAccounting` until a separately predeclared masked-alignment method exists.
 
@@ -229,16 +229,17 @@ scores below 1.0 and therefore better than declining.
 
 | Observed response state | CER/WER hypothesis | Extra accounting |
 |---|---|---|
-| complete | supplied text, including an explicit empty string | complete count |
+| complete | supplied non-blank text | complete count |
 | truncated | supplied partial text | truncation count; missing tail deletes |
-| refused, missing, unavailable, malformed | empty text | named state count; all reference units delete |
+| no_readable_text | empty scoring hypothesis, no text on the record | explicit blank-finding count; all checked reference units delete |
+| refused, missing, unavailable, malformed | empty scoring hypothesis | named state count; all reference units delete |
 | unproved adapter delivery | none | invalidate the measurement; do not score a harness defect as a model failure |
 
 A refusal cannot improve by disappearing. Synthetic hand-worked tests pin exact match, one substitution/deletion/insertion on `abc`, empty against `abc`, two-error WER, composed/decomposed acute, whitespace, and preservation of case/punctuation/diacritics.
 
 ## 8. Measures and evidence, never a picker
 
-For each candidate slot × condition, report CER/WER numerator, denominator, and rate; character completeness; every state count; structural dissent counts/rate; observed wall-time mean; and observed cost mean. Unknown time/cost is `null` plus observed count, never zero.
+For each candidate slot × condition, report CER/WER numerator, denominator, and rate; character completeness; every state count; structural dissent counts/rate; wall-time mean; and cost mean. A publishable run requires a wall-time and cost observation for every candidate × act × condition cell. Synthetic interface exercises may leave either unknown, but they cannot become a finding.
 
 For each Testimonium source index, report the same direct baseline. No source is called best and none is merged. The fixed within-candidate evidence is `priming_delta = CER_nuda - CER_primed` and `image_delta = CER_image_absent - CER_primed`.
 
@@ -259,5 +260,6 @@ A dated finding validates against `reading_claim_public_finding.schema.json`, wh
 | RapidFuzz | 3.14.5 | Unit-cost Levenshtein distance and edit operations over already-normalized units. | [source](https://github.com/rapidfuzz/RapidFuzz/tree/v3.14.5), [MIT licence](https://github.com/rapidfuzz/RapidFuzz/blob/v3.14.5/LICENSE) |
 | uniseg | 0.10.1 | UAX #29 extended grapheme-cluster segmentation after framework normalization. | [source](https://github.com/rivo/uniseg-python/tree/v0.10.1), [MIT licence](https://github.com/rivo/uniseg-python/blob/v0.10.1/LICENSE) |
 
-The framework owns normalization; neither dependency gets to normalize text. Every real
-run records these pins and the profile digest.
+The framework owns normalization; neither dependency gets to normalize text. This
+protocol and the repository lock record the dependency pins; every real run records the
+profile digest and binds this protocol by digest.

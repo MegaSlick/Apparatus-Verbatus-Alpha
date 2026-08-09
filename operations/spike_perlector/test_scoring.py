@@ -45,7 +45,13 @@ def test_case_punctuation_and_diacritic_remain_errors():
 
 @pytest.mark.parametrize(
     "status",
-    [OutputStatus.REFUSED, OutputStatus.MISSING, OutputStatus.UNAVAILABLE, OutputStatus.MALFORMED],
+    [
+        OutputStatus.NO_READABLE_TEXT,
+        OutputStatus.REFUSED,
+        OutputStatus.MISSING,
+        OutputStatus.UNAVAILABLE,
+        OutputStatus.MALFORMED,
+    ],
 )
 def test_non_answers_score_as_empty_hypotheses(status):
     score = score_response("abc", status=status, text="would be ignored", profile=GRAPHEMIC_V1)

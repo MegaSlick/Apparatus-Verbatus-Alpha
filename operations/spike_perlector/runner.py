@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from math import fsum
+from math import fsum, isfinite
 from typing import Iterable
 
 from .errors import MatrixRefusal, PromptFidelityRefusal
@@ -71,6 +71,7 @@ class AggregateMetrics:
     wer_matches: int
     complete_count: int
     truncated_count: int
+    no_readable_text_count: int
     refused_count: int
     missing_count: int
     unavailable_count: int
@@ -94,6 +95,7 @@ class AggregateMetrics:
             self.wer_matches,
             self.complete_count,
             self.truncated_count,
+            self.no_readable_text_count,
             self.refused_count,
             self.missing_count,
             self.unavailable_count,
@@ -113,6 +115,7 @@ class AggregateMetrics:
         if (
             self.complete_count
             + self.truncated_count
+            + self.no_readable_text_count
             + self.refused_count
             + self.missing_count
             + self.unavailable_count
@@ -120,6 +123,16 @@ class AggregateMetrics:
             != self.cell_count
         ):
             raise MatrixRefusal("response states do not account for all planned cells")
+        if (
+            self.elapsed_observed_count > self.cell_count
+            or self.cost_observed_count > self.cell_count
+        ):
+            raise MatrixRefusal("metric observation counts may not exceed planned cells")
+        if not all(
+            value >= 0 and isfinite(value)
+            for value in (self.elapsed_total_ms, self.cost_total_usd)
+        ):
+            raise MatrixRefusal("elapsed and cost totals must be finite and non-negative")
 
     @property
     def cer(self) -> float:
@@ -252,6 +265,63 @@ class MeasurementRun:
             )
         if self.witness_configuration is not None:
             self.witness_configuration.require_distinct_from_candidates(self.candidates)
+        acts_by_id = {act.opaque_act_id: act for act in self.acts}
+        identities_by_key = {identity.candidate_key: identity for identity in self.candidates}
+        for cell in self.cells:
+            if cell.opaque_act_id != cell.perlectio.opaque_act_id:
+                raise MatrixRefusal("candidate cell and Perlectio name different acts")
+            identity = identities_by_key.get(cell.perlectio.identity.candidate_key)
+            if identity is None or cell.perlectio.identity != identity:
+                raise MatrixRefusal(
+                    "candidate cell carries a resolved identity different from its run"
+                )
+            act = acts_by_id.get(cell.opaque_act_id)
+            if act is None:
+                raise MatrixRefusal("candidate cell names an act outside its run")
+            dossier = dossier_for(act, cell.perlectio.condition)
+            if cell.perlectio.dossier_sha256 != dossier.wire_sha256:
+                raise MatrixRefusal("candidate cell does not bind the run's exact dossier")
+            if (
+                cell.perlectio.image_present is not (dossier.image is not None)
+                or cell.perlectio.testimonia_count != len(dossier.testimonia)
+            ):
+                raise MatrixRefusal("Perlectio input counts differ from its retained dossier")
+            expected_text = (
+                cell.raw_response_text
+                if cell.perlectio.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED)
+                else None
+            )
+            if cell.perlectio.text != expected_text:
+                raise MatrixRefusal("Perlectio text differs from its retained raw response")
+            comparison_testimonia = tuple(
+                DossierTestimonium(
+                    public_source_index=item.public_source_index,
+                    text=item.text,
+                    status=item.status,
+                )
+                for item in act.testimonia
+            )
+            response = CandidateResponse(
+                status=cell.perlectio.status,
+                text=cell.raw_response_text,
+                elapsed_ms=cell.perlectio.elapsed_ms,
+                cost_usd=cell.perlectio.cost_usd,
+                observed_prompt_sha256=cell.perlectio.prompt_format_sha256,
+                observed_dossier_sha256=cell.perlectio.dossier_sha256,
+                observed_delivery_sha256=cell.perlectio.delivery_sha256,
+            )
+            if cell.perlectio.dissent != _dissent_for(
+                response, comparison_testimonia, self.profile
+            ):
+                raise MatrixRefusal("Perlectio dissent differs from the retained witness evidence")
+            expected_score = score_response(
+                act.ground_truth.scoreable_text,
+                status=cell.perlectio.status,
+                text=cell.raw_response_text,
+                profile=self.profile,
+            )
+            if cell.score != expected_score:
+                raise MatrixRefusal("candidate cell score differs from its retained evidence")
         expected = {
             (identity.candidate_key, act.opaque_act_id, condition)
             for identity in self.candidates
@@ -283,6 +353,23 @@ class MeasurementRun:
             expected_baselines
         ):
             raise MatrixRefusal("every Testimonium baseline must be accounted for exactly once")
+        for baseline in self.witness_baselines:
+            act = acts_by_id[baseline.opaque_act_id]
+            testimonium = next(
+                item
+                for item in act.testimonia
+                if item.public_source_index == baseline.public_source_index
+            )
+            expected_score = score_response(
+                act.ground_truth.scoreable_text,
+                status=testimonium.status,
+                text=testimonium.text,
+                profile=self.profile,
+            )
+            if baseline.status is not testimonium.status or baseline.score != expected_score:
+                raise MatrixRefusal(
+                    "Testimonium baseline differs from the retained witness evidence"
+                )
 
     def require_publishable(self) -> None:
         """Refuse fixture/partial evidence before the public redaction boundary."""
@@ -293,6 +380,13 @@ class MeasurementRun:
             raise MatrixRefusal("only a sealed declared-roster run can become a public finding")
         if self.sample_accounting is None:
             raise MatrixRefusal("only a declared run with private sample accounting can publish")
+        if any(
+            cell.perlectio.elapsed_ms is None or cell.perlectio.cost_usd is None
+            for cell in self.cells
+        ):
+            raise MatrixRefusal(
+                "a publishable run must measure wall time and cost for every candidate cell"
+            )
         self.roster.validate()
 
     def condition_aggregates(self) -> tuple[ConditionAggregate, ...]:
@@ -424,6 +518,9 @@ def _aggregate_rows(
         wer_matches=sum(score.wer.edits.matches for score in scores),
         complete_count=sum(status is OutputStatus.COMPLETE for status in statuses),
         truncated_count=sum(status is OutputStatus.TRUNCATED for status in statuses),
+        no_readable_text_count=sum(
+            status is OutputStatus.NO_READABLE_TEXT for status in statuses
+        ),
         refused_count=sum(status is OutputStatus.REFUSED for status in statuses),
         missing_count=sum(status is OutputStatus.MISSING for status in statuses),
         unavailable_count=sum(status is OutputStatus.UNAVAILABLE for status in statuses),
@@ -506,16 +603,25 @@ def _perlectio_for(
     response: CandidateResponse,
     *,
     dossier,
+    comparison_testimonia: tuple[DossierTestimonium, ...],
     delivery_sha256: str,
     profile: NormalizationProfile,
 ) -> Perlectio:
-    dissent = _dissent_for(response, dossier.testimonia, profile)
+    # Comparison happens only after the response is fixed. Lectio nuda still sees
+    # no Testimonia in its dossier, but its independent reading must remain
+    # comparable with the same witnesses or the nuda/primed dissent instrument is
+    # missing its baseline.
+    dissent = _dissent_for(response, comparison_testimonia, profile)
     return Perlectio(
         identity=identity,
         opaque_act_id=dossier.opaque_act_id,
         condition=dossier.condition,
         status=response.status,
-        text=hypothesis_for_status(response.status, response.text),
+        text=(
+            response.text
+            if response.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED)
+            else None
+        ),
         dossier_sha256=dossier.wire_sha256,
         prompt_format_sha256=response.observed_prompt_sha256,
         delivery_sha256=delivery_sha256,
@@ -622,6 +728,14 @@ def _execute_matrix(
 
     cells: list[CandidateCell] = []
     for act in act_values:
+        comparison_testimonia = tuple(
+            DossierTestimonium(
+                public_source_index=item.public_source_index,
+                text=item.text,
+                status=item.status,
+            )
+            for item in act.testimonia
+        )
         for condition in ALL_CONDITIONS:
             for candidate, identity in participant_values:
                 dossier, request = prepared[(act.opaque_act_id, condition, identity.candidate_key)]
@@ -650,6 +764,7 @@ def _execute_matrix(
                     identity,
                     response,
                     dossier=dossier,
+                    comparison_testimonia=comparison_testimonia,
                     delivery_sha256=request.delivery_sha256,
                     profile=profile,
                 )

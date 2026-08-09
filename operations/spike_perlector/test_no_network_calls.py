@@ -1,9 +1,9 @@
-"""No transport, anywhere in this package -- proved, not asserted.
+"""Guard against direct transport imports anywhere in this package.
 
 `__init__.py` says this package "contains no model client, network transport,
 pod control, or real register data". A sentence in a docstring is a claim; this
-is the check that makes it a fact. An `ast` import scan over every file in this
-directory refuses anything capable of reaching the network, and refuses
+is checked here against ordinary imports. An `ast` import scan over every file in
+this directory refuses the named transport modules, and refuses
 `subprocess` too, because an import scan that stops at `httpx` is trivially
 defeated by shelling out to `curl`.
 
@@ -16,6 +16,10 @@ forever while proving nothing, which is the failure mode
 guards against for its own population.
 
 To see it work, add `import requests` to any file here: this test goes red.
+
+Named limit: an import scan cannot prove the absence of dynamic imports or transport
+hidden behind an otherwise allowed dependency. The package is also inspected as code;
+this test is a regression guard, not a complete capability proof.
 """
 
 import ast

@@ -27,9 +27,9 @@ SCHEMA = "reading-claim-public-finding.v1"
 MEASURE_QUOTES = (
     "reference_length_cer_wer_v1",
     "missing_or_refused_is_empty_hypothesis_v1",
-    "condition_matrix_complete_or_refused_v1",
+    "condition_matrix_fully_accounted_v1",
     "dissent_is_structural_not_quality_v1",
-    "cost_and_wall_time_observed_or_not_measured_v1",
+    "cost_and_wall_time_per_candidate_act_v1",
 )
 
 _ROOT_KEYS = {
@@ -57,6 +57,7 @@ _MATRIX_KEYS = {
     "completeness",
     "complete_cells",
     "truncated_cells",
+    "no_readable_text_cells",
     "refused_cells",
     "missing_cells",
     "unavailable_cells",
@@ -94,6 +95,7 @@ def _metrics_record(metrics: AggregateMetrics) -> dict[str, int | float | None]:
         "completeness": metrics.completeness,
         "complete_cells": metrics.complete_count,
         "truncated_cells": metrics.truncated_count,
+        "no_readable_text_cells": metrics.no_readable_text_count,
         "refused_cells": metrics.refused_count,
         "missing_cells": metrics.missing_count,
         "unavailable_cells": metrics.unavailable_count,
@@ -187,6 +189,7 @@ def _validate_metric_fields(record: dict[str, Any], *, baseline: bool) -> None:
         "wer_matches",
         "complete_cells",
         "truncated_cells",
+        "no_readable_text_cells",
         "refused_cells",
         "missing_cells",
         "unavailable_cells",
@@ -206,6 +209,7 @@ def _validate_metric_fields(record: dict[str, Any], *, baseline: bool) -> None:
     if (
         record["complete_cells"]
         + record["truncated_cells"]
+        + record["no_readable_text_cells"]
         + record["refused_cells"]
         + record["missing_cells"]
         + record["unavailable_cells"]
@@ -258,6 +262,13 @@ def _validate_metric_fields(record: dict[str, Any], *, baseline: bool) -> None:
         )
     if (record["mean_cost_usd"] is None) != (record["cost_observed_cells"] == 0):
         raise PublicSafetyRefusal("public cost mean nullness does not match its observation count")
+    if not baseline and (
+        record["elapsed_observed_cells"] != record["cell_count"]
+        or record["cost_observed_cells"] != record["cell_count"]
+    ):
+        raise PublicSafetyRefusal(
+            "public candidate row does not measure wall time and cost for every act"
+        )
     index = record["source_index"] if baseline else record["subject_index"]
     _require_nonnegative_int(index, "source_index" if baseline else "subject_index")
     if index < 1:

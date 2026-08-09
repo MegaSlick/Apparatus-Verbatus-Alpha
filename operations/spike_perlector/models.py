@@ -6,6 +6,7 @@ public history finding; ``redaction.py`` is the only public projection boundary.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
@@ -31,6 +32,7 @@ class OutputStatus(StrEnum):
 
     COMPLETE = "complete"
     TRUNCATED = "truncated"
+    NO_READABLE_TEXT = "no_readable_text"
     REFUSED = "refused"
     MISSING = "missing"
     UNAVAILABLE = "unavailable"
@@ -141,11 +143,11 @@ def _validated_gaps(text: str, gaps: tuple[GapSpan, ...]) -> None:
 def excise_gaps(text: str, gaps: tuple[GapSpan, ...]) -> str:
     """The reference text CER/WER actually compares against, with unread ink removed.
 
-    Neither the adjudicators' inability to read a span nor a candidate's guess at
-    it is scored.  Named limitation, carried over from lane A, which found it:
-    this is a text-only exclusion, not a spatial alignment, so it cannot by itself
-    detect a candidate that fabricates *inside* a marked gap.  That is a harder
-    problem this instrument does not solve and does not pretend to.
+    Unread reference characters do not enter the denominator. Named limitation,
+    carried over from lane A, which found it: this is a text-only exclusion, not a
+    spatial alignment. Candidate characters cannot be located at the gap and may
+    align as edits elsewhere, so the scorer cannot determine whether they were
+    produced *inside* it. That is a harder problem this instrument does not solve.
     """
 
     if not gaps:
@@ -355,9 +357,17 @@ class Testimonium:
             raise MeasurementRefusal("public_source_index must be an integer")
         if self.public_source_index < 1:
             raise MeasurementRefusal("public_source_index must be positive")
+        if not isinstance(self.status, OutputStatus):
+            raise MeasurementRefusal("Testimonium status must be an OutputStatus")
         if self.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
-            if not isinstance(self.text, str):
-                raise MeasurementRefusal("a complete or truncated Testimonium must carry text")
+            if not isinstance(self.text, str) or not self.text.strip():
+                raise MeasurementRefusal(
+                    "a complete or truncated Testimonium must carry non-blank text"
+                )
+        elif self.status is OutputStatus.NO_READABLE_TEXT and self.text is not None:
+            raise MeasurementRefusal(
+                "a no_readable_text Testimonium is an explicit status, never empty text"
+            )
         elif self.text is not None and not isinstance(self.text, str):
             raise MeasurementRefusal("Testimonium text must be a string or None")
 
@@ -400,9 +410,17 @@ class DossierTestimonium:
             raise MeasurementRefusal("dossier witness index must be an integer")
         if self.public_source_index < 1:
             raise MeasurementRefusal("dossier witness index must be positive")
+        if not isinstance(self.status, OutputStatus):
+            raise MeasurementRefusal("dossier testimony status must be an OutputStatus")
         if self.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
-            if not isinstance(self.text, str):
-                raise MeasurementRefusal("complete or truncated dossier testimony needs text")
+            if not isinstance(self.text, str) or not self.text.strip():
+                raise MeasurementRefusal(
+                    "complete or truncated dossier testimony needs non-blank text"
+                )
+        elif self.status is OutputStatus.NO_READABLE_TEXT and self.text is not None:
+            raise MeasurementRefusal(
+                "no_readable_text dossier testimony is an explicit status, never empty text"
+            )
         elif self.text is not None and not isinstance(self.text, str):
             raise MeasurementRefusal("dossier testimony text must be a string or None")
 
@@ -672,11 +690,29 @@ class CandidateResponse:
     observed_delivery_sha256: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.status, OutputStatus):
+            raise MeasurementRefusal("candidate response status must be an OutputStatus")
         if self.text is not None and not isinstance(self.text, str):
             raise MeasurementRefusal("candidate response text must be a string or None")
+        if self.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
+            if not isinstance(self.text, str) or not self.text.strip():
+                raise MeasurementRefusal(
+                    "a complete or truncated response must carry non-blank text"
+                )
+        elif self.status is OutputStatus.NO_READABLE_TEXT and self.text is not None:
+            raise MeasurementRefusal(
+                "no_readable_text is an explicit response status, never empty text"
+            )
         for field, value in (("elapsed_ms", self.elapsed_ms), ("cost_usd", self.cost_usd)):
-            if value is not None and (not isinstance(value, (int, float)) or value < 0):
-                raise MeasurementRefusal(f"candidate response {field} must be non-negative or None")
+            if value is not None and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise MeasurementRefusal(
+                    f"candidate response {field} must be finite, non-negative, or None"
+                )
         for name, value in (
             ("prompt", self.observed_prompt_sha256),
             ("dossier", self.observed_dossier_sha256),
@@ -737,8 +773,19 @@ class Perlectio:
 
     def __post_init__(self) -> None:
         _require_nonempty(self.opaque_act_id, "Perlectio opaque_act_id")
+        if not isinstance(self.condition, Condition):
+            raise MeasurementRefusal("Perlectio condition must be a Condition")
+        if not isinstance(self.status, OutputStatus):
+            raise MeasurementRefusal("Perlectio status must be an OutputStatus")
         if self.text is not None and not isinstance(self.text, str):
             raise MeasurementRefusal("Perlectio text must be a string or None")
+        if self.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
+            if not isinstance(self.text, str) or not self.text.strip():
+                raise MeasurementRefusal(
+                    "a complete or truncated Perlectio must carry non-blank text"
+                )
+        elif self.text is not None:
+            raise MeasurementRefusal("a non-reading Perlectio carries status, not text")
         if not (
             is_sha256(self.dossier_sha256)
             and is_sha256(self.prompt_format_sha256)
@@ -751,3 +798,13 @@ class Perlectio:
             raise MeasurementRefusal("image-absent Perlectio claims an image was present")
         if self.condition is Condition.LECTIO_NUDA and self.testimonia_count:
             raise MeasurementRefusal("Lectio nuda Perlectio claims it saw Testimonia")
+        for field, value in (("elapsed_ms", self.elapsed_ms), ("cost_usd", self.cost_usd)):
+            if value is not None and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise MeasurementRefusal(
+                    f"Perlectio {field} must be finite, non-negative, or None"
+                )

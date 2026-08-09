@@ -8,6 +8,7 @@ import pytest
 
 from operations.spike_perlector.adjudication import (
     ILLEGIBLE,
+    AdjudicationRecord,
     AdjudicationRefusal,
     TranscriptionDraft,
     disagreement_spans,
@@ -183,6 +184,23 @@ def test_both_drafts_and_every_resolution_survive_on_the_record():
     assert record.resolutions == ((spans[0], "Jeh"),)
 
 
+def test_a_directly_constructed_adjudication_record_cannot_disagree_with_its_drafts():
+    """The dataclass constructor must enforce the same identity-bearing trail as reconcile."""
+
+    first, second = drafts("Jean Baptiste", "Jehan Baptiste")
+    spans = disagreement_spans(first.text, second.text)
+    with pytest.raises(AdjudicationRefusal, match="replayed against its drafts"):
+        AdjudicationRecord(
+            first=first,
+            second=second,
+            adjudicator_id="adjudicator-c",
+            resolutions=((spans[0], "h"),),
+            reference_revision=REVISION,
+            reconciled_text="forged reading",
+            gaps=(),
+        )
+
+
 # --- the gap span itself, once it is on a GroundTruth -------------------------
 
 
@@ -201,11 +219,19 @@ def test_a_gap_is_removed_from_the_reference_before_it_is_scored():
     assert truth.scoreable_text == "Jean Baptiste"
 
 
-def test_a_candidate_is_neither_credited_nor_penalized_inside_a_gap():
+def test_reference_gap_characters_are_removed_before_scoring():
     truth = checked("Jean UNREAD Baptiste", (GapSpan(5, 12),))
     perfect = score_text(truth.scoreable_text, "Jean Baptiste", profile=GRAPHEMIC_V1)
     assert perfect.cer.edits.errors == 0
     assert perfect.cer.reference_units == len("Jean Baptiste")
+
+
+def test_text_at_a_gap_cannot_be_located_and_may_score_as_an_insertion():
+    """The text-only scorer has no spatial alignment; this pins the named limitation."""
+
+    truth = checked("Jean UNREAD Baptiste", (GapSpan(5, 12),))
+    score = score_text(truth.scoreable_text, "Jean guessed Baptiste", profile=GRAPHEMIC_V1)
+    assert score.cer.edits.errors > 0
 
 
 def test_an_all_gap_checked_reference_is_refused():

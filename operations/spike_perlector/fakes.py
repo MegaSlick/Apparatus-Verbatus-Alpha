@@ -13,7 +13,7 @@ class FakeReply:
     """A scripted response with no relation to any real page or model."""
 
     status: OutputStatus = OutputStatus.COMPLETE
-    text: str | None = ""
+    text: str | None = "alpha beta"
     elapsed_ms: float | None = 1.0
     cost_usd: float | None = 0.0
     prompt_digest_override: str | None = None

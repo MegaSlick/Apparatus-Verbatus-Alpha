@@ -96,6 +96,78 @@ def disagreement_spans(first: str, second: str) -> tuple[tuple[int, int], ...]:
     return tuple((i1, i2) for tag, i1, i2, _j1, _j2 in matcher.get_opcodes() if tag != "equal")
 
 
+def _derive_adjudication(
+    *,
+    first: TranscriptionDraft,
+    second: TranscriptionDraft,
+    adjudicator_id: str,
+    resolutions: Mapping[tuple[int, int], str],
+    reference_revision: str,
+) -> tuple[tuple[tuple[tuple[int, int], str], ...], str, tuple[GapSpan, ...]]:
+    """Validate and replay the one authoritative adjudication construction path."""
+
+    if not isinstance(first, TranscriptionDraft) or not isinstance(second, TranscriptionDraft):
+        raise AdjudicationRefusal("adjudication requires two TranscriptionDraft values")
+    if not isinstance(adjudicator_id, str) or not adjudicator_id.strip():
+        raise AdjudicationRefusal("adjudication requires a named adjudicator")
+    if not isinstance(reference_revision, str) or not reference_revision.strip():
+        raise AdjudicationRefusal("adjudication requires a reference revision to record")
+    if first.transcriber_id == second.transcriber_id:
+        raise AdjudicationRefusal(
+            "the two drafts name the same transcriber; that is one person's reading twice, "
+            "not two independent transcriptions"
+        )
+    if adjudicator_id in (first.transcriber_id, second.transcriber_id):
+        raise AdjudicationRefusal(
+            "the adjudicator is one of the two transcribers; a third person resolves the "
+            "disagreement, or the resolution is just one draft winning"
+        )
+
+    matcher = SequenceMatcher(None, first.text, second.text, autojunk=False)
+    opcodes = matcher.get_opcodes()
+    spans = tuple((i1, i2) for tag, i1, i2, _j1, _j2 in opcodes if tag != "equal")
+    if len(set(spans)) != len(spans):
+        raise AdjudicationRefusal(
+            "two disagreements share one span, so a resolution could not be attributed "
+            "to either; this pair of drafts cannot be adjudicated span-by-span"
+        )
+    supplied = dict(resolutions)
+    if set(supplied) != set(spans):
+        missing = sorted(set(spans) - set(supplied))
+        unexpected = sorted(set(supplied) - set(spans))
+        raise AdjudicationRefusal(
+            "resolutions must cover exactly the computed disagreement spans and nothing "
+            f"else -- missing {missing}, unexpected {unexpected}"
+        )
+    for span, resolution in supplied.items():
+        if not isinstance(resolution, str):
+            raise AdjudicationRefusal(f"the resolution for span {span} is not text")
+
+    pieces: list[str] = []
+    gaps: list[GapSpan] = []
+    written = 0
+    for tag, i1, i2, _j1, _j2 in opcodes:
+        if tag == "equal":
+            pieces.append(first.text[i1:i2])
+            written += i2 - i1
+            continue
+        resolution = supplied[(i1, i2)]
+        if resolution == ILLEGIBLE:
+            gaps.append(GapSpan(start=written, end=written))
+            continue
+        pieces.append(resolution)
+        written += len(resolution)
+
+    reconciled_text = "".join(pieces)
+    if not reconciled_text.strip():
+        raise AdjudicationRefusal(
+            "nothing readable survived adjudication; an act nobody could read is "
+            "unresolved_gap, recorded in the private sample accounting, never a checked "
+            "reference with no ink in it"
+        )
+    return tuple(sorted(supplied.items())), reconciled_text, tuple(gaps)
+
+
 @dataclass(frozen=True, slots=True)
 class AdjudicationRecord:
     """One act's full adjudication trail, and the checked reference it produced."""
@@ -107,6 +179,19 @@ class AdjudicationRecord:
     reference_revision: str
     reconciled_text: str
     gaps: tuple[GapSpan, ...]
+
+    def __post_init__(self) -> None:
+        expected = _derive_adjudication(
+            first=self.first,
+            second=self.second,
+            adjudicator_id=self.adjudicator_id,
+            resolutions=dict(self.resolutions),
+            reference_revision=self.reference_revision,
+        )
+        if (self.resolutions, self.reconciled_text, self.gaps) != expected:
+            raise AdjudicationRefusal(
+                "AdjudicationRecord differs from the resolutions replayed against its drafts"
+            )
 
     def record(self) -> dict[str, object]:
         """The exact private trail this record's digest is taken over.
@@ -173,70 +258,20 @@ def reconcile(
     forced into a checked reference with no ink in it.
     """
 
-    if not isinstance(adjudicator_id, str) or not adjudicator_id.strip():
-        raise AdjudicationRefusal("reconcile() requires a named adjudicator")
-    if not isinstance(reference_revision, str) or not reference_revision.strip():
-        raise AdjudicationRefusal("reconcile() requires a reference revision to record")
-    if first.transcriber_id == second.transcriber_id:
-        raise AdjudicationRefusal(
-            "the two drafts name the same transcriber; that is one person's reading twice, "
-            "not two independent transcriptions"
-        )
-    if adjudicator_id in (first.transcriber_id, second.transcriber_id):
-        raise AdjudicationRefusal(
-            "the adjudicator is one of the two transcribers; a third person resolves the "
-            "disagreement, or the resolution is just one draft winning"
-        )
-
-    matcher = SequenceMatcher(None, first.text, second.text, autojunk=False)
-    opcodes = matcher.get_opcodes()
-    spans = tuple((i1, i2) for tag, i1, i2, _j1, _j2 in opcodes if tag != "equal")
-    if len(set(spans)) != len(spans):
-        raise AdjudicationRefusal(
-            "two disagreements share one span, so a resolution could not be attributed "
-            "to either; this pair of drafts cannot be adjudicated span-by-span"
-        )
-    supplied = dict(resolutions)
-    if set(supplied) != set(spans):
-        missing = sorted(set(spans) - set(supplied))
-        unexpected = sorted(set(supplied) - set(spans))
-        raise AdjudicationRefusal(
-            "resolutions must cover exactly the computed disagreement spans and nothing "
-            f"else -- missing {missing}, unexpected {unexpected}"
-        )
-    for span, resolution in supplied.items():
-        if not isinstance(resolution, str):
-            raise AdjudicationRefusal(f"the resolution for span {span} is not text")
-
-    pieces: list[str] = []
-    gaps: list[GapSpan] = []
-    written = 0
-    for tag, i1, i2, _j1, _j2 in opcodes:
-        if tag == "equal":
-            pieces.append(first.text[i1:i2])
-            written += i2 - i1
-            continue
-        resolution = supplied[(i1, i2)]
-        if resolution == ILLEGIBLE:
-            gaps.append(GapSpan(start=written, end=written))
-            continue
-        pieces.append(resolution)
-        written += len(resolution)
-
-    reconciled_text = "".join(pieces)
-    if not reconciled_text.strip():
-        raise AdjudicationRefusal(
-            "nothing readable survived adjudication; an act nobody could read is "
-            "unresolved_gap, recorded in the private sample accounting, never a checked "
-            "reference with no ink in it"
-        )
+    canonical_resolutions, reconciled_text, gaps = _derive_adjudication(
+        first=first,
+        second=second,
+        adjudicator_id=adjudicator_id,
+        resolutions=resolutions,
+        reference_revision=reference_revision,
+    )
 
     return AdjudicationRecord(
         first=first,
         second=second,
         adjudicator_id=adjudicator_id,
-        resolutions=tuple(sorted(supplied.items())),
+        resolutions=canonical_resolutions,
         reference_revision=reference_revision,
         reconciled_text=reconciled_text,
-        gaps=tuple(gaps),
+        gaps=gaps,
     )

@@ -2,11 +2,16 @@ from dataclasses import replace
 
 import pytest
 
-from operations.spike_perlector.errors import MatrixRefusal, PromptFidelityRefusal
+from operations.spike_perlector.errors import (
+    MatrixRefusal,
+    MeasurementRefusal,
+    PromptFidelityRefusal,
+)
 from operations.spike_perlector.fakes import FakeCandidate, FakeReply
 from operations.spike_perlector.gates import RunAuthorization
 from operations.spike_perlector.models import (
     ALL_CONDITIONS,
+    CandidateResponse,
     Condition,
     GapSpan,
     GroundTruth,
@@ -107,6 +112,49 @@ def test_missing_but_proved_response_remains_a_scored_matrix_cell():
     assert primed.metrics.cell_count == 1
     assert primed.metrics.missing_count == 1
     assert primed.metrics.cer == 1
+
+
+def test_no_readable_text_is_explicit_and_never_complete_empty_text():
+    resolved = identity("candidate-private", 1)
+    act = evaluation_act()
+    candidate = FakeCandidate(
+        resolved,
+        replies={
+            (act.opaque_act_id, condition): FakeReply(OutputStatus.NO_READABLE_TEXT, None)
+            for condition in ALL_CONDITIONS
+        },
+    )
+    run = run_matrix(
+        (candidate,),
+        (act,),
+        prompt_registry=registry(resolved),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert all(cell.perlectio.text is None for cell in run.cells)
+    assert all(
+        row.metrics.no_readable_text_count == row.metrics.cell_count
+        for row in run.condition_aggregates()
+    )
+    request = candidate.requests[0]
+    with pytest.raises(MeasurementRefusal, match="non-blank text"):
+        CandidateResponse(
+            status=OutputStatus.COMPLETE,
+            text="",
+            elapsed_ms=1.0,
+            cost_usd=0.0,
+            observed_prompt_sha256=request.prompt_format_sha256,
+            observed_dossier_sha256=request.dossier.wire_sha256,
+            observed_delivery_sha256=request.delivery_sha256,
+        )
+
+
+def test_measurement_run_replays_scores_instead_of_trusting_a_second_constructor():
+    run, _, _ = run_three_candidates()
+    first = run.cells[0]
+    forged = replace(first, opaque_act_id=run.acts[0].opaque_act_id + "-other")
+    with pytest.raises(MatrixRefusal, match="different acts"):
+        replace(run, cells=(forged, *run.cells[1:]))
 
 
 def test_prompt_preflight_fails_before_any_candidate_is_called():
@@ -251,8 +299,9 @@ def test_a_gapped_reference_is_scored_against_its_readable_ink_only():
         (act.opaque_act_id, condition): FakeReply(OutputStatus.COMPLETE, "alpha beta")
         for condition in ALL_CONDITIONS
     }
+    candidate = FakeCandidate(reader, replies)
     run = run_matrix(
-        (FakeCandidate(reader, replies),),
+        (candidate,),
         (act,),
         prompt_registry=registry(reader),
         profile=GRAPHEMIC_V1,
@@ -302,14 +351,19 @@ def test_a_reading_that_matches_a_witness_exactly_is_recorded_as_agreement():
         (act.opaque_act_id, condition): FakeReply(OutputStatus.COMPLETE, "alpha beta")
         for condition in ALL_CONDITIONS
     }
+    candidate = FakeCandidate(reader, replies)
     run = run_matrix(
-        (FakeCandidate(reader, replies),),
+        (candidate,),
         (act,),
         prompt_registry=registry(reader),
         profile=GRAPHEMIC_V1,
         authorization=RunAuthorization.synthetic_fixture(),
     )
-    primed = [cell for cell in run.cells if cell.perlectio.condition is not Condition.LECTIO_NUDA]
-    assert primed
-    assert all(cell.perlectio.dissent.compared == 1 for cell in primed)
-    assert all(cell.perlectio.dissent.departed == 0 for cell in primed)
+    assert all(cell.perlectio.dissent.compared == 1 for cell in run.cells)
+    assert all(cell.perlectio.dissent.departed == 0 for cell in run.cells)
+    nuda_request = next(
+        request
+        for request in candidate.requests
+        if request.dossier.condition is Condition.LECTIO_NUDA
+    )
+    assert nuda_request.dossier.testimonia == ()
