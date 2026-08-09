@@ -7,6 +7,7 @@ from typing import Sequence
 
 from rapidfuzz.distance import Levenshtein
 
+from .encoding import sha256_bytes
 from .errors import MeasurementRefusal
 from .models import OutputStatus
 from .normalization import NormalizationProfile, character_units, normalize_text, word_units
@@ -53,12 +54,6 @@ class UnitScore:
 
         return self.edits.errors / self.reference_units
 
-    @property
-    def completeness(self) -> float:
-        """The fraction of checked reference units reproduced exactly, not a pass/fail gate."""
-
-        return self.edits.matches / self.reference_units
-
 
 @dataclass(frozen=True, slots=True)
 class ActScore:
@@ -85,7 +80,17 @@ def _edit_counts(reference: Sequence[str], hypothesis: Sequence[str]) -> EditCou
     distance = Levenshtein.distance(reference, hypothesis, weights=(1, 1, 1), processor=None)
     if errors != distance:
         raise MeasurementRefusal("RapidFuzz edit script and distance disagree")
-    matches = len(reference) - substitutions - deletions
+    # matches is derived from which reference positions the edit script actually
+    # touches, not from the substitution/deletion tag counts above: if editops
+    # ever named the same reference position twice, those counts would overcount
+    # it, and this is what would catch that -- not UnitScore.__post_init__'s own
+    # arithmetic check, which holds by construction however matches is computed.
+    touched_reference_positions = {
+        operation.src_pos for operation in operations if operation.tag in ("replace", "delete")
+    }
+    if len(touched_reference_positions) != substitutions + deletions:
+        raise MeasurementRefusal("RapidFuzz edit script touches one reference position twice")
+    matches = len(reference) - len(touched_reference_positions)
     return EditCounts(
         matches=matches,
         substitutions=substitutions,
@@ -127,8 +132,6 @@ def score_text(
 
     normalized_reference = normalize_text(reference, profile)
     normalized_hypothesis = normalize_text(hypothesis, profile)
-    from .encoding import sha256_bytes
-
     return ActScore(
         cer=_score_units(character_units(reference, profile), character_units(hypothesis, profile)),
         wer=_score_units(word_units(reference, profile), word_units(hypothesis, profile)),
