@@ -96,9 +96,9 @@ def make_receipt(*, endpoint="http://fixture.invalid/seat", started_at="2026-08-
 
 def make_approval_record(**overrides):
     record = build_approval_record(
-        subject_ids=["data-handling-policy"],
-        action="data-gate",
-        reason="approved for this exact synthetic policy",
+        subject_ids=["some-exclusion-subject"],
+        action="exclusion",
+        reason="approved for this exact synthetic record",
         target_version_hash="b" * 64,
         timestamp="2026-08-04T12:00:00Z",
     )
@@ -222,17 +222,7 @@ def test_reusing_a_run_id_with_changed_ingress_evidence_is_refused(tmp_path):
     make_run(tmp_path, ingress={"mode": "synthetic-fixture"})
 
     with pytest.raises(IncompatibleReuse, match="ingress"):
-        make_run(
-            tmp_path,
-            ingress={
-                "mode": "approval-gated-real",
-                "data_gate_policy_hash": "a" * 64,
-                "data_gate_approval_ref": {
-                    "relative_path": f"{RECEIPTS_DIR}/{'b' * 64}.json",
-                    "sha256": "b" * 64,
-                },
-            },
-        )
+        make_run(tmp_path, ingress={"mode": "real"})
 
 
 def test_an_incompatible_reuse_writes_nothing(tmp_path):

@@ -16,25 +16,31 @@ approval, which is the honest behaviour.
 Deterministic artifacts carry no timestamps, because two identical runs must
 produce identical bytes. An approval is not deterministic output — it is a record
 of a human act at a moment — so the moment is the point.
+
+**Cut 2026-08-09, per Tyrel's ruling that session.** `data-gate` used to be a third
+action here, backing a per-run approval-record requirement for real input: none of
+this pipeline's material ever reaches git (it runs on a GPU host, `workbench/` is
+gitignored, and an ingress check plus a pre-push payload scan already cover that
+mechanically), so the extra sign-off bought nothing and is gone. `exclusion` and
+`salvage-promotion` remain — GOVERNANCE 1 still requires Tyrel's approval for an
+exclusion, and that is governance, not something this cut touches.
 """
 
-import json
-from collections.abc import Callable
 from typing import Any, Final
 
-from .canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
+from .canonical import self_hash, verify_self_hash
 from .errors import ApprovalRefusal
 
 # The only human in these rules. Recorded as a value rather than assumed, so an
 # artifact naming anyone else is refused by the schema rather than by convention.
 APPROVER: Final = "Tyrel"
 
-ACTIONS: Final = ("exclusion", "salvage-promotion", "data-gate", "other")
+ACTIONS: Final = ("exclusion", "salvage-promotion", "other")
 
-# Ingress status must be part of self-hashed run authority. An absent gate field
-# in a mutable door artifact is never proof that the run began as a fixture.
+# Ingress status must be part of self-hashed run authority. An absent field in a
+# mutable door artifact is never proof that the run began as a fixture.
 SYNTHETIC_FIXTURE_INGRESS: Final = "synthetic-fixture"
-APPROVAL_GATED_REAL_INGRESS: Final = "approval-gated-real"
+REAL_INGRESS: Final = "real"
 
 _REQUIRED: Final = (
     "subject_ids",
@@ -69,60 +75,35 @@ class ApprovalRecordReference:
         return f"ApprovalRecordReference({self.relative_path!r}, sha256={self.sha256!r})"
 
 
-def approval_record_reference_from_record(value: Any) -> ApprovalRecordReference:
-    """Decode a persisted reference once into the typed approval boundary.
-
-    Artifact payloads are JSON records, so a consumer must decode that transport
-    shape at its edge.  The returned object, rather than the raw dictionary,
-    is what every approval reader receives thereafter.
-    """
-    if not isinstance(value, dict) or set(value) != {"relative_path", "sha256"}:
-        raise ApprovalRefusal(
-            "data-gate approval reference record must contain exactly relative_path and sha256"
-        )
-    return _approval_record_reference(
-        ApprovalRecordReference(value["relative_path"], value["sha256"])
-    )
-
-
 def synthetic_fixture_ingress_record() -> dict[str, str]:
-    """Return the only approval-free ingress record System 03 recognizes."""
+    """Return the ingress record for the walking skeleton's declared synthetic pages."""
     return {"mode": SYNTHETIC_FIXTURE_INGRESS}
 
 
-def approval_gated_real_ingress_record(
-    policy_hash: str, reference: ApprovalRecordReference
-) -> dict[str, Any]:
-    """Serialize real-input approval evidence into self-hashed run authority."""
-    if not _is_sha256(policy_hash):
-        raise ApprovalRefusal("data-gate ingress has no lowercase policy hash")
-    parsed = _approval_record_reference(reference)
-    return {
-        "mode": APPROVAL_GATED_REAL_INGRESS,
-        "data_gate_policy_hash": policy_hash,
-        "data_gate_approval_ref": parsed.to_record(),
-    }
+def real_ingress_record() -> dict[str, str]:
+    """Return the ingress record for a real submission.
+
+    Carries no approval evidence: cut 2026-08-09, this mode used to bind a
+    data-gate policy hash and an approval reference here. Real material never
+    reaches git regardless of any run-level sign-off, so the record now says only
+    which of the two known routes created the run.
+    """
+    return {"mode": REAL_INGRESS}
 
 
-def parse_data_gate_ingress_record(
-    value: Any,
-) -> tuple[str, str | None, ApprovalRecordReference | None]:
-    """Decode the closed ingress record from a run authority."""
-    if not isinstance(value, dict):
-        raise ApprovalRefusal("run ingress evidence is missing or not an object")
-    if value == synthetic_fixture_ingress_record():
-        return SYNTHETIC_FIXTURE_INGRESS, None, None
-    expected = {"mode", "data_gate_policy_hash", "data_gate_approval_ref"}
-    if set(value) != expected or value.get("mode") != APPROVAL_GATED_REAL_INGRESS:
-        raise ApprovalRefusal("run ingress evidence is not a closed fixture or real-input record")
-    policy_hash = value["data_gate_policy_hash"]
-    if not _is_sha256(policy_hash):
-        raise ApprovalRefusal("real run ingress has no lowercase data-gate policy hash")
-    return (
-        APPROVAL_GATED_REAL_INGRESS,
-        policy_hash,
-        approval_record_reference_from_record(value["data_gate_approval_ref"]),
-    )
+def parse_ingress_record(value: Any) -> str:
+    """Decode the closed ingress record from a run authority: fixture or real."""
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"mode"}
+        or value.get("mode")
+        not in (
+            SYNTHETIC_FIXTURE_INGRESS,
+            REAL_INGRESS,
+        )
+    ):
+        raise ApprovalRefusal("run ingress evidence is not a closed fixture-or-real record")
+    return value["mode"]
 
 
 def build_approval_record(
@@ -220,102 +201,6 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
             "sealed, and an edited approval is not an approval"
         )
     return record
-
-
-def data_gate_policy_hash(policy_content: Any) -> str:
-    """Hash the policy's recorded content through the canonical serialization.
-
-    The policy version is its content, not a caller-supplied label.  A policy that
-    cannot be represented canonically has no checkable version and therefore
-    cannot be approved.
-    """
-    try:
-        return digest_bytes(canonical_bytes(policy_content))
-    except (TypeError, ValueError) as error:
-        raise ApprovalRefusal(f"canonical policy hash could not be computed: {error}") from error
-
-
-def require_current_data_gate_approval(
-    policy_content: Any,
-    reference: ApprovalRecordReference | None,
-    read_bytes: Callable[[str], bytes],
-) -> dict[str, Any]:
-    """Return the current data-gate approval or refuse by the failed check.
-
-    ``read_bytes`` is the door's path-resolution boundary.  This contract owns
-    the reference and record checks, but it does not invent a policy file, a
-    storage root, or a sixth run-tree shape.  The callback receives only the
-    checked relative path carried by the reference.
-    """
-    if reference is None:
-        raise ApprovalRefusal(
-            "data-gate approval is missing; real input requires a current approval-record artifact"
-        )
-
-    parsed = _approval_record_reference(reference)
-    try:
-        data = read_bytes(parsed.relative_path)
-    except OSError as error:
-        raise ApprovalRefusal(
-            f"data-gate approval reference {parsed.relative_path!r} could not be read: {error}"
-        ) from error
-    if not isinstance(data, bytes):
-        raise ApprovalRefusal(
-            f"data-gate approval reference {parsed.relative_path!r} did not resolve to bytes"
-        )
-
-    actual_digest = digest_bytes(data)
-    if actual_digest != parsed.sha256:
-        raise ApprovalRefusal(
-            "data-gate approval reference digest mismatch: "
-            f"{parsed.relative_path!r} has {actual_digest}, not {parsed.sha256}"
-        )
-
-    try:
-        decoded = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as error:
-        raise ApprovalRefusal(
-            f"data-gate approval reference {parsed.relative_path!r} is not a JSON "
-            f"approval record: {error}"
-        ) from error
-    record = validate_approval_record(decoded)
-    if record["action"] != "data-gate":
-        raise ApprovalRefusal(
-            f"data-gate approval record has action {record['action']!r}, not 'data-gate'"
-        )
-
-    current_hash = data_gate_policy_hash(policy_content)
-    if record["target_version_hash"] != current_hash:
-        raise ApprovalRefusal(
-            "data-gate approval is stale: it names policy hash "
-            f"{record['target_version_hash']}, not the current {current_hash}"
-        )
-    return record
-
-
-def _approval_record_reference(value: ApprovalRecordReference) -> ApprovalRecordReference:
-    if isinstance(value, ApprovalRecordReference):
-        relative_path, digest = value.relative_path, value.sha256
-    else:
-        raise ApprovalRefusal(
-            "data-gate approval reference must be an ApprovalRecordReference, not a raw dictionary"
-        )
-
-    if not isinstance(relative_path, str) or not relative_path:
-        raise ApprovalRefusal("data-gate approval reference has no relative_path")
-    if relative_path.startswith("/") or ".." in relative_path.split("/"):
-        raise ApprovalRefusal(
-            f"data-gate approval reference {relative_path!r} is not a safe relative path"
-        )
-    if not _is_sha256(digest):
-        raise ApprovalRefusal("data-gate approval reference has no lowercase sha256")
-    expected_path = f"receipts/sha256/{digest}.json"
-    if relative_path != expected_path:
-        raise ApprovalRefusal(
-            f"data-gate approval reference {relative_path!r} is not its "
-            f"content-addressed path {expected_path!r}"
-        )
-    return ApprovalRecordReference(relative_path, digest)
 
 
 def _is_sha256(value: Any) -> bool:
