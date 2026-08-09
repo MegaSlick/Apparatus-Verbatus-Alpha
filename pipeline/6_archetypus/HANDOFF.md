@@ -1,46 +1,174 @@
 # Archetypus — handoff
 
 The Archetypus is the first and only current stage that calls one machine reading
-established. It writes a once-only `kind="archetypus"` record under
-`6_archetypus/artifacts/` for an act whose current Recensor review is exactly
-`accepted`. A held act deliberately has no Archetypus record; that absence is part
-of the terminal accounting, not a gap to fill.
+established. It is not a correction, a witness consensus, or a truth claim. It writes
+a once-only `kind="archetypus"` record under `6_archetypus/artifacts/` for an act whose
+current Recensor review is exactly `accepted`. A held act deliberately has no Archetypus
+record; that absence is part of the terminal accounting, not a gap to fill.
 
 ## Input boundary
 
-The stage derives the current review by unique attempt ordinal. For an accepted
-review it takes the digest-checked `perlectio_ref` carried by that review and
-resolves that exact Perlectio. It does not independently select whatever
-Perlectio is now latest. The Perlectio must be a completed-class reading with
-valid serving provenance; a held Designator act may not be resurrected by an
+The stage derives the current review by unique attempt ordinal. For an accepted review
+it takes the digest-checked `perlectio_ref` carried by that review and resolves that
+exact Perlectio — through `RunTree.read_artifact_reference`, which refuses a reference
+whose actual bytes name a different stage or kind. That single check is what makes a
+Testimonium, a hypothetical salvage-tier record, or any other non-Perlectio artifact
+unable to reach this stage by being named in `perlectio_ref`. It does not independently
+select whatever Perlectio is now latest. The Perlectio must be a completed-class reading
+with valid serving provenance; a held Designator act may not be resurrected by an
 accepted later review.
+
+`accepted_primed_perlectio` closes the rest of spec 10's test 1 by name, so a producer
+that later starts labelling its readings cannot slip bad material through on a field this
+stage does not look at:
+
+- an explicitly unprimed reading — `lectio_kind` naming anything but `primed`, or
+  `primed: false` — is refused;
+- `tier`, `source_tier` or `reading_tier` of `salvage` is refused (invariant #31's
+  boundary);
+- the reading must retain a non-empty Testimonium basis, and every entry's reference
+  must be a direct sealed input of that reading and resolve as an
+  `(attestatores, testimonium)` artifact for this act.
+
+**A named assumption.** No Perlectio in this build records primed/unprimed at all; adding
+that field is the Perlector lane's work. Until it exists, an *unlabeled* reading is
+accepted and the retained Testimonium basis is the transitional indication that it was
+primed. That is a compatibility assumption, not proof — the refusals above are real, the
+positive claim "this reading was primed" rests on the producer eventually writing the
+field.
 
 ## `kind="archetypus"`
 
-The artifact subject is the stable act identity. Its payload is separately
-self-hashed and contains:
+The artifact subject is the stable act identity. Its payload is separately self-hashed,
+its field set is **closed and checked** (`validate_record_fields`), and it contains:
 
 ```text
-act_id, act_key, page_id, status = "established", text
-regions, provenance, dissent_ref
-perlectio_ref, recensor_ref, self_hash
+act_id, act_key, page_id
+text, text_hash
+status = "established", text_status
+regions, provenance, annotations, evidence_ref
+dissent_ref, perlectio_ref, recensor_ref, self_hash
 ```
 
-`text`, `regions`, and provenance are exact copies of the one reviewed
-Perlectio; `dissent_ref` names that Perlectio artifact rather than making a
-second mutable dissent copy. `perlectio_ref` and `recensor_ref` are typed,
-digest-checked references and both are direct inputs, together with the exact
-crop blobs named by the reading. The normal envelope also carries its own
-self-hash and derived identity.
+The closed field set is the mechanical half of "exactly one `text` field": the old
+pipeline's export reached through `consolidated_literal`, `reader_text`, `literal`,
+`text`, `markdown` for whichever was non-empty, and a closed set is what stops that being
+rebuilt one field at a time. A record missing a field, or carrying one it is not defined
+to carry, is refused before it is written.
 
-There is no alternate text, no witness text field, and no branch that chooses
-among readings. A later run cannot write a second different record under the
-same once-only identity.
+**`status` vs `text_status`.** `status` is a fixed literal, `"established"`, required
+verbatim by the Armarium's own (frozen, off-limits this round)
+`verify_established_record` — it means "this act has exactly one Archetypus record,"
+record-level. `text_status` is the richer, separate claim spec 10 asks for:
+`established | partial | no_readable_text`, describing what the record's `text` actually
+contains. The two are deliberately different fields answering different questions. They
+are **not** mirrors: mirroring them would make every damaged act fail the Armarium's
+literal check, and would put a second status decision where there is meant to be one.
+
+**`text_status` derivation.** Computed from the reading's own text and its carried
+annotations, never stored upstream:
+
+- any `illegible` gap present → `partial`, regardless of whether `text` is otherwise
+  empty or full (ink is known and unread somewhere in the act);
+- otherwise, empty or all-whitespace `text` → `no_readable_text`;
+- otherwise → `established`.
+
+An empty-text `established` record is refused at the schema (`validate_text_status`).
+`no_readable_text` requires `evidence_ref` — see below. A blank page is **not** a fatal
+error (Tyrel, 2026-08-05: "It is not a fatal error there might be blank pages"); what is
+refused is the opposite collapse, ink that is merely unread reported as ink that was
+never there.
+
+**`evidence_ref` — a named assumption.** There is no dedicated Recensor blank-proof
+artifact in this build. The Recensor's `confirmed-blank` outcome (already in the closed
+outcome vocabulary, `common/contracts/outcomes.py`) is reserved for the genuinely-blank
+diagnosis and is terminal *at the Recensor*, bypassing this stage entirely — an act with
+that outcome never reaches `main()`'s per-act loop at all, the same way `held-for-review`
+and `recovery-requested` do not. `no_readable_text` can therefore only be produced here
+from an **`accepted`** review whose reviewed Perlectio has empty text — a path the landed
+Recensor's own logic already refuses to produce, so in the real skeleton pipeline this
+status is reachable only by direct tamper of the run tree (proven in
+`pipeline/orchestrator/test_orchestrator_acceptance.py::
+test_archetypus_establishes_no_readable_text_for_an_accepted_empty_reading`). Given that,
+`evidence_ref` is set to the accepted review's own reference (`recensor_ref`'s value) —
+the only completeness evidence this build actually has. **When the Recensor lane adds a
+real blank proof, this should carry that reference specifically** rather than the review
+that merely accepted the act; the field exists so that change is a substitution rather
+than a schema migration.
+
+**`annotations` — carried whole, never in `text`.** A list of:
+
+- `uncertain` — `{kind, start, end, certainty, alternatives}`. A span of at least one
+  character that IS in `text`, with a closed certainty (`high | medium | low | unknown`)
+  and the reader's own candidate readings for that span. The alternatives are the
+  Perlector's, not a witness's: the Perlector reads the ink, so its uncertainty about a
+  span it did read is its own. There is no witness-reference field on this shape at all.
+- `illegible` — `{kind, start, end, witness_evidence}`. A **zero-width anchor**
+  (`start == end`, structurally, so a gap can never carry a character), representable at
+  leading, internal, trailing and whole-act positions. `witness_evidence` may be empty —
+  every witness may have found the same damage — and each entry is exactly
+  `{witness_ref, variant}`: the witness must be one of this reading's own basis
+  testimonia, and **the quoted variant must be a substring of what that witness actually
+  reported**. A variant that is neither the ink nor something a witness said is a
+  reconstruction, and the record carries none (Tyrel, 2026-08-05: "we don't want it
+  making shit up"). The comparison is exact; normalizing here would be a place for the
+  record to differ from the testimony it quotes.
+
+The shapes map onto the mature convention rather than inventing markup: `<unclear
+cert="">` and `<gap>` (TEI P5, "Representation of Primary Sources"; EpiDoc Guidelines).
+Rendering either of them — brackets, underdots, sigla — is the Armarium's business at
+export time and is deliberately not stored here. `annotations` is optional on the wire
+today: nothing upstream of this stage populates it yet, and it defaults to `[]`, which is
+exactly today's behaviour.
+
+`text`, `regions`, and provenance are exact copies of the one reviewed Perlectio;
+`dissent_ref` names that Perlectio artifact rather than making a second mutable dissent
+copy. **`dissent_ref` and `perlectio_ref` are the same value by design, not by
+accident**: `perlectio_ref` is the parent evidence this record establishes from,
+`dissent_ref` is where a reader finds this act's dissent (Tyrel's 4d — by reference,
+never copied); the dissent lives inside the Perlectio itself, so the two pointers
+coincide. The Armarium's own frozen verification requires them equal, so carrying only
+one under two names is not available without breaking that consumer. `perlectio_ref` and
+`recensor_ref` are typed, digest-checked references and both are direct inputs, together
+with the exact crop blobs named by the reading. `text_hash` is the canonical digest of
+`text` alone (`digest_of(text)`), so any export format can prove it carries the same
+clean text without re-hashing the whole record.
+
+There is no alternate text, no witness text field, and no branch that chooses among
+readings. A later run cannot write a second different record under the same once-only
+identity.
+
+## `6_archetypus/index.json`
+
+A rebuildable per-run summary, derived from the immutable per-act records on disk exactly
+as `manifest.json` is — never the only evidence. Written through `RunTree.write_index`,
+so it is rewritable (unlike an artifact) and safe to delete and rebuild identically.
+
+Each row is `{act_id, act_key, artifact_id, text_status, text_hash, relative_path,
+sha256}`. The stage rebuilds it, reads it back, and reconciles it before finishing:
+rows, records on disk, and **the acts the Recensor accepted** must be the same set, and a
+missing or duplicate row is FATAL rather than a warning. The reconciliation target is
+deliberately the Recensor's accepted set, recomputed from the immutable review records —
+an index checked only against the writer's own list would agree with itself about an act
+the writer had skipped. `validate_index` is available to any consumer that wants to
+prove the same thing before relying on it.
 
 ## Consumer obligations
 
 Armarium requires exactly one Archetypus record for an accepted act, rather than
-selecting one. Before export it verifies the nested self-hash, both parent
-references and direct-input chains, and exact equality of text, regions,
-provenance, and dissent reference with the reviewed Perlectio. It then links each
-region back to the original Exemplar filename ledger.
+selecting one. Before export it verifies the nested self-hash, both parent references and
+direct-input chains, and exact equality of `text`, `regions`, `provenance`, `status`, and
+`dissent_ref` with the reviewed Perlectio. It then links each region back to the original
+Exemplar filename ledger.
+
+It does **not** read `text_status`, `annotations`, `evidence_ref`, `text_hash`, or
+`index.json` today — those are fields this stage carries for their own sake and for the
+Armarium lane's export and rendering work, not yet projected into the terminal export.
+Two consequences worth stating plainly for whoever picks that up:
+
+- an act delivered with `text_status: partial` or `no_readable_text` is currently
+  exported and aggregated exactly like a fully established one, so the export's own
+  honesty about damage is spec 11's to build; and
+- the projection-identity test (`pipeline/orchestrator/test_projection_identity.py`)
+  checks the one export format that exists. A second format must be added to it, or it
+  will pass over the new one in silence.
