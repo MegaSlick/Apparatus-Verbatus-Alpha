@@ -225,7 +225,7 @@ def decide(
                 None,
             )
         if data is None:
-            raise ValueError("only a PDF container may be decided from a source path")
+            raise ValueError("only a PDF container may be decided without its bytes")
         result = admission.inspect_source(
             data, declared_sha256=source.declared_sha256, policy=policy
         )

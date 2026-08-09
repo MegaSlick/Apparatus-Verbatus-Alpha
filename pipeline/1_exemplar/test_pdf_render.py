@@ -266,13 +266,20 @@ def test_a_page_tree_that_shares_one_leaf_declares_no_more_pages_than_its_bytes_
     524,288 pages -- so nothing stops `door.expand_sources` from fanning out and
     rendering that many pages from an attacker-sized file unless something checks
     plausibility before the fan-out denominator is trusted.
+
+    The refusal is `UNSUPPORTED_VARIANT`, not `CORRUPT`, and that is not a detail.
+    A blind audit built a *valid* PDF 1.5 at 9.4 bytes per page -- 10,000 distinct
+    page objects, true `/Count`, packed into a Flate object stream -- which PDFium
+    opens and renders. So this ratio cannot establish damage, and `CORRUPT` is the
+    code that tells Tyrel his original is broken. What the ratio does establish is
+    that this reader cannot yet tell the two apart, which is a gap in this pipeline.
     """
     data, declared = page_tree_bomb_pdf(19, fanout=2)
     assert declared == 524_288
     with pytest.raises(PdfRefusal) as caught:
         open_document(data)
-    assert caught.value.reason is RefusalReason.CORRUPT
-    assert "far below" in str(caught.value)
+    assert caught.value.reason is RefusalReason.UNSUPPORTED_VARIANT
+    assert "cannot yet tell" in str(caught.value)
 
 
 def test_an_open_binary_pdf_stream_is_handed_to_pdfium_without_a_path_reopen(tmp_path, monkeypatch):

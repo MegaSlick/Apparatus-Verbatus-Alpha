@@ -143,19 +143,11 @@ def open_document(source: bytes | str | Path | BinaryIO) -> OpenPdf:
     return OpenPdf(document, pages)
 
 
-# A page tree's `/Pages` nodes may share one child object across several `/Kids`
-# entries, so PDFium's own page count trusts the declared, compounding `/Count`
-# rather than the number of distinct page objects on disk (confirmed against the
-# installed pdfium: a ~2KB file built from ~20 nested, self-sharing `/Pages` nodes
-# opens cleanly and reports 500,000+ pages). Ruling 17 retired the old absolute
-# `MAX_PAGES` policy cap deliberately, because a genuine microfilm reel is honestly
-# that large in bytes. This is a different question: whether the *declared* page
-# count is even physically possible for the bytes actually submitted, which is the
-# same "structural validation as corruption detection" this project already keeps
-# for PNG chunk CRCs and the TIFF IFD chain. The floor is deliberately far below
-# any real page: `blank_pages_pdf`'s most degenerate legitimate synthetic page (a
-# 1x1-pixel page with no content stream at all) still averages ~98 bytes/page, and
-# a real scanned or text page is far larger than that.
+# `/Pages` nodes may share one child across several `/Kids`, so PDFium's page count
+# trusts a compounding `/Count` rather than the distinct page objects on disk: a ~2KB
+# file of self-sharing nodes opens cleanly and reports 500,000+ pages. This floor is
+# not the page cap ruling 17 retired — a reel's count stays the document's to declare.
+# It is also not a corruption test; see `_refuse_implausible_page_count`.
 MIN_BYTES_PER_DECLARED_PAGE: Final = 32
 
 
@@ -177,13 +169,24 @@ def _source_size(source: bytes | str | Path | BinaryIO) -> int:
 
 
 def _refuse_implausible_page_count(pages: int, container_size: int) -> None:
-    """Refuse a declared page count no real container of this size could hold."""
+    """Hold a declared page count this reader cannot tell from a shared page tree.
+
+    `UNSUPPORTED_VARIANT`, not `CORRUPT`, and the distinction is the whole point.
+    A blind audit built a *valid* PDF 1.5 — 10,000 distinct page objects, true
+    `/Count`, no shared kids, packed into a Flate object stream — at 9.4 bytes per
+    page, and PDFium opens and renders it. So this ratio does not establish damage,
+    and `CORRUPT` would tell Tyrel his original is broken when it is not: the one
+    thing ruling 2 says a refusal must never do. What it does establish is that this
+    reader cannot yet distinguish that file from the page-tree bomb it is here to
+    stop, which is a gap in this pipeline and is recorded as one.
+    """
     if container_size < pages * MIN_BYTES_PER_DECLARED_PAGE:
         raise PdfRefusal(
-            RefusalReason.CORRUPT,
-            f"the document declares {pages} pages in {container_size} bytes, far below "
-            f"the {MIN_BYTES_PER_DECLARED_PAGE} bytes any real page needs; this is a "
-            "malformed or hostile page tree, not a large document",
+            RefusalReason.UNSUPPORTED_VARIANT,
+            f"the document declares {pages} pages in {container_size} bytes, under the "
+            f"{MIN_BYTES_PER_DECLARED_PAGE} bytes a page normally needs; this reader "
+            "cannot yet tell a densely packed document from a shared page tree, so it "
+            "is held rather than read",
         )
 
 
