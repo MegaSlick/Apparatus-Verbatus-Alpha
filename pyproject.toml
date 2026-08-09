@@ -27,6 +27,9 @@ dependencies = [
     "uniseg==0.10.1",
 ]
 
+[project.scripts]
+verbatus = "operations.operator.entry:main"
+
 # Dependencies are pinned from the first line rather than retrofitted.
 # Nothing is added here without a reason recorded in the pull request that adds it.
 
@@ -40,7 +43,7 @@ build-backend = "setuptools.build_meta"
 audit = ["pip-audit==2.10.1"]
 
 [tool.setuptools.packages.find]
-include = ["common", "common.*"]
+include = ["common", "common.*", "operations", "operations.*"]
 namespaces = false
 
 [tool.ruff]
