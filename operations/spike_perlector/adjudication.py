@@ -60,11 +60,29 @@ class TranscriptionDraft:
     transcriber_id: str
     text: str
 
+    # disagreement_spans/_derive_adjudication run difflib.SequenceMatcher with
+    # autojunk=False (deliberately: autojunk's heuristic would let it silently
+    # ignore a heavily-repeated character run, exactly the kind of scribal
+    # abbreviation or damage pattern this instrument must not treat as noise).
+    # That is also what removes SequenceMatcher's own defence against its
+    # quadratic worst case: two 40,000-character drafts built from a repetitive
+    # pattern measured at over 100 seconds in one comparison. A single act's
+    # diplomatic transcription -- an entry, or at most a short letter or essay
+    # (GLOSSARY's "act") -- is never near this length; a draft this long is a
+    # mis-pasted file, not a transcription, and is refused rather than hung on.
+    MAX_TEXT_LENGTH = 20_000
+
     def __post_init__(self) -> None:
         if not isinstance(self.transcriber_id, str) or not self.transcriber_id.strip():
             raise AdjudicationRefusal("a transcription draft must name its transcriber")
         if not isinstance(self.text, str):
             raise AdjudicationRefusal("a transcription draft must carry Unicode text")
+        if len(self.text) > self.MAX_TEXT_LENGTH:
+            raise AdjudicationRefusal(
+                f"a transcription draft of {len(self.text)} characters exceeds the "
+                f"{self.MAX_TEXT_LENGTH}-character bound for one act; this is not a "
+                "single act's diplomatic transcription"
+            )
 
     def record(self) -> dict[str, str]:
         return {
@@ -78,22 +96,33 @@ class TranscriptionDraft:
         return sha256_bytes(canonical_json_bytes(self.record()))
 
 
+def _opcodes(first: str, second: str) -> list[tuple[str, int, int, int, int]]:
+    """The one matcher construction every disagreement computation replays.
+
+    ``autojunk=False`` is deliberate: its heuristic would silently treat a
+    heavily-repeated character run as noise, exactly the kind of scribal
+    abbreviation or damage pattern this instrument must not discount.
+    """
+
+    return SequenceMatcher(None, first, second, autojunk=False).get_opcodes()
+
+
 def disagreement_spans(first: str, second: str) -> tuple[tuple[int, int], ...]:
     """Every span where two drafts disagree, in the first draft's own offsets.
 
-    One ``(start, end)`` per non-"equal" opcode from
-    ``difflib.SequenceMatcher.get_opcodes()``, in order.  Text present in the
-    second draft but not the first is a zero-width span at the point in the first
-    where it would have gone.
+    One ``(start, end)`` per non-"equal" opcode from ``_opcodes``, in order.
+    Text present in the second draft but not the first is a zero-width span at
+    the point in the first where it would have gone.
 
     ``SequenceMatcher`` is deterministic for a given pair of strings, which is
     what lets this double as the required key set for ``reconcile``: an
     adjudicator can recompute exactly the keys that will be demanded of them
-    without running anything else.
+    without running anything else -- ``_derive_adjudication`` calls this same
+    function rather than reimplementing the comparison, so that guarantee is
+    enforced by sharing the one computation, not by keeping two in step by hand.
     """
 
-    matcher = SequenceMatcher(None, first, second, autojunk=False)
-    return tuple((i1, i2) for tag, i1, i2, _j1, _j2 in matcher.get_opcodes() if tag != "equal")
+    return tuple((i1, i2) for tag, i1, i2, _j1, _j2 in _opcodes(first, second) if tag != "equal")
 
 
 def _derive_adjudication(
@@ -123,8 +152,7 @@ def _derive_adjudication(
             "disagreement, or the resolution is just one draft winning"
         )
 
-    matcher = SequenceMatcher(None, first.text, second.text, autojunk=False)
-    opcodes = matcher.get_opcodes()
+    opcodes = _opcodes(first.text, second.text)
     spans = tuple((i1, i2) for tag, i1, i2, _j1, _j2 in opcodes if tag != "equal")
     if len(set(spans)) != len(spans):
         raise AdjudicationRefusal(
@@ -243,11 +271,12 @@ def reconcile(
 ) -> AdjudicationRecord:
     """Reconcile two drafts into one adjudicated record, or refuse and say why.
 
-    Walks the first draft left to right using the opcodes ``disagreement_spans``
-    computed.  An "equal" block is copied verbatim -- both transcribers agree, so
-    either source is correct.  A disputed block becomes its resolution's literal
-    text, or, for ``ILLEGIBLE``, a zero-width ``GapSpan`` at that point and no
-    characters at all.
+    Walks the first draft left to right using the same opcodes computation
+    ``disagreement_spans`` uses (the shared ``_opcodes`` helper, so the two can
+    never silently diverge).  An "equal" block is copied verbatim -- both
+    transcribers agree, so either source is correct.  A disputed block becomes
+    its resolution's literal text, or, for ``ILLEGIBLE``, a zero-width
+    ``GapSpan`` at that point and no characters at all.
 
     Refuses when a computed span has no resolution, when a resolution names a
     span that was not computed (most likely a stale input from a different pair

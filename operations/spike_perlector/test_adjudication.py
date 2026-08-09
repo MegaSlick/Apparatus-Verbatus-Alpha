@@ -64,6 +64,18 @@ def test_the_same_draft_counted_twice_is_refused():
         )
 
 
+def test_an_oversized_draft_is_refused_rather_than_hung_on():
+    """difflib.SequenceMatcher with autojunk=False is quadratic on repetitive input.
+
+    A draft this large is a mis-pasted file, not one act's transcription; refusing
+    it here keeps reconcile()/disagreement_spans() from ever being handed one.
+    """
+
+    oversized = "x" * (TranscriptionDraft.MAX_TEXT_LENGTH + 1)
+    with pytest.raises(AdjudicationRefusal, match="exceeds"):
+        TranscriptionDraft("transcriber-a", oversized)
+
+
 def test_an_adjudicator_who_is_one_of_the_transcribers_is_refused():
     first, second = drafts("Jean", "Jehan")
     with pytest.raises(AdjudicationRefusal, match="one of the two transcribers"):
