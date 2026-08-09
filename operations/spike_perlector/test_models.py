@@ -78,6 +78,36 @@ def test_perlectio_refuses_stray_text_on_a_non_reading_status(status):
         )
 
 
+def test_candidate_response_refuses_text_over_the_one_act_bound():
+    """scoring.py's Levenshtein.editops is worse-than-linear in the product of its
+
+    two input lengths; an unbounded adapter response is a denial-of-service
+    surface the same way an unbounded transcription draft is (adjudication.py).
+    """
+
+    oversized = "x" * (models.MAX_TEXT_LENGTH + 1)
+    with pytest.raises(MeasurementRefusal, match="exceeds"):
+        CandidateResponse(
+            status=OutputStatus.COMPLETE,
+            text=oversized,
+            elapsed_ms=None,
+            cost_usd=None,
+            observed_prompt_sha256=digest("prompt"),
+            observed_dossier_sha256=digest("dossier"),
+            observed_delivery_sha256=digest("delivery"),
+        )
+
+
+def test_ground_truth_refuses_text_over_the_one_act_bound():
+    oversized = "x" * (models.MAX_TEXT_LENGTH + 1)
+    with pytest.raises(MeasurementRefusal, match="exceeds"):
+        models.GroundTruth(
+            text=oversized,
+            adjudication_digest=digest("adjudication"),
+            reference_revision="rev-1",
+        )
+
+
 def test_resolved_identity_refuses_a_delivery_mode_that_is_not_a_delivery_mode():
     with pytest.raises(MeasurementRefusal, match="DeliveryMode"):
         ResolvedIdentity(

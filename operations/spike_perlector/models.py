@@ -72,6 +72,17 @@ def _require_nonempty(value: str, field: str) -> None:
         raise MeasurementRefusal(f"{field} must be a non-empty string")
 
 
+# One act's diplomatic transcription -- an entry, or at most a short letter or
+# essay (GLOSSARY's "act") -- is never near this length; text this long is a
+# mis-pasted file, not a transcription. Kept equal to, but not imported from,
+# adjudication.TranscriptionDraft.MAX_TEXT_LENGTH (adjudication.py imports
+# from this module, so the reverse import would be circular): scoring.py's
+# Levenshtein.editops call is worse-than-linear in the product of its two
+# input lengths, and every one of these fields can reach it as either the
+# reference or the hypothesis.
+MAX_TEXT_LENGTH = 20_000
+
+
 def _require_status_conditioned_text(status: OutputStatus, text: str | None, label: str) -> None:
     """Text is present and non-blank exactly when status is complete or truncated.
 
@@ -85,6 +96,11 @@ def _require_status_conditioned_text(status: OutputStatus, text: str | None, lab
     if status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
         if not isinstance(text, str) or not text.strip():
             raise MeasurementRefusal(f"a complete or truncated {label} must carry non-blank text")
+        if len(text) > MAX_TEXT_LENGTH:
+            raise MeasurementRefusal(
+                f"a {label} of {len(text)} characters exceeds the {MAX_TEXT_LENGTH}-character "
+                "bound for one act"
+            )
     elif text is not None:
         raise MeasurementRefusal(f"a non-reading {label} carries status, not text")
 
@@ -295,6 +311,11 @@ class GroundTruth:
             raise MeasurementRefusal("ground-truth gaps must be GapSpan values")
         if self.status is ReferenceStatus.CHECKED:
             _require_nonempty(self.text or "", "ground-truth text")
+            if len(self.text or "") > MAX_TEXT_LENGTH:
+                raise MeasurementRefusal(
+                    f"a ground-truth text of {len(self.text or '')} characters exceeds the "
+                    f"{MAX_TEXT_LENGTH}-character bound for one act"
+                )
             _validated_gaps(self.text or "", self.gaps)
             if not excise_gaps(self.text or "", self.gaps).strip():
                 raise MeasurementRefusal(
