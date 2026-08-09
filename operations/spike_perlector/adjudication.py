@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from .encoding import canonical_json_bytes, sha256_bytes
 from .errors import AdjudicationRefusal
@@ -101,10 +101,30 @@ def _opcodes(first: str, second: str) -> list[tuple[str, int, int, int, int]]:
 
     ``autojunk=False`` is deliberate: its heuristic would silently treat a
     heavily-repeated character run as noise, exactly the kind of scribal
-    abbreviation or damage pattern this instrument must not discount.
+    abbreviation or damage pattern this instrument must not discount -- and is
+    also what removes ``SequenceMatcher``'s own defence against its quadratic
+    worst case (see ``TranscriptionDraft.MAX_TEXT_LENGTH``).  The bound is
+    enforced here, not only at ``TranscriptionDraft`` construction, so every
+    caller of this function is covered, including ``disagreement_spans``
+    called directly on bare strings.
     """
 
+    for text in (first, second):
+        if len(text) > TranscriptionDraft.MAX_TEXT_LENGTH:
+            raise AdjudicationRefusal(
+                f"a text of {len(text)} characters exceeds the "
+                f"{TranscriptionDraft.MAX_TEXT_LENGTH}-character bound for one act's "
+                "diplomatic transcription"
+            )
     return SequenceMatcher(None, first, second, autojunk=False).get_opcodes()
+
+
+def _spans_from_opcodes(
+    opcodes: Iterable[tuple[str, int, int, int, int]],
+) -> tuple[tuple[int, int], ...]:
+    """Every non-"equal" opcode's ``(start, end)`` offsets in the first draft, in order."""
+
+    return tuple((i1, i2) for tag, i1, i2, _j1, _j2 in opcodes if tag != "equal")
 
 
 def disagreement_spans(first: str, second: str) -> tuple[tuple[int, int], ...]:
@@ -118,11 +138,12 @@ def disagreement_spans(first: str, second: str) -> tuple[tuple[int, int], ...]:
     what lets this double as the required key set for ``reconcile``: an
     adjudicator can recompute exactly the keys that will be demanded of them
     without running anything else -- ``_derive_adjudication`` calls this same
-    function rather than reimplementing the comparison, so that guarantee is
-    enforced by sharing the one computation, not by keeping two in step by hand.
+    ``_opcodes``/``_spans_from_opcodes`` pair rather than reimplementing the
+    comparison, so that guarantee is enforced by sharing the one computation,
+    not by keeping two in step by hand.
     """
 
-    return tuple((i1, i2) for tag, i1, i2, _j1, _j2 in _opcodes(first, second) if tag != "equal")
+    return _spans_from_opcodes(_opcodes(first, second))
 
 
 def _derive_adjudication(
@@ -153,7 +174,7 @@ def _derive_adjudication(
         )
 
     opcodes = _opcodes(first.text, second.text)
-    spans = tuple((i1, i2) for tag, i1, i2, _j1, _j2 in opcodes if tag != "equal")
+    spans = _spans_from_opcodes(opcodes)
     if len(set(spans)) != len(spans):
         raise AdjudicationRefusal(
             "two disagreements share one span, so a resolution could not be attributed "

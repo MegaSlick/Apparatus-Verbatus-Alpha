@@ -76,6 +76,19 @@ def test_an_oversized_draft_is_refused_rather_than_hung_on():
         TranscriptionDraft("transcriber-a", oversized)
 
 
+def test_disagreement_spans_refuses_an_oversized_bare_string_directly():
+    """The bound must hold for the function itself, not only for TranscriptionDraft.
+
+    disagreement_spans takes bare strings -- it is what the protocol tells an
+    adjudicator to call to recompute their keys -- so a caller who never builds a
+    TranscriptionDraft must still be protected from the same quadratic blowup.
+    """
+
+    oversized = "x" * (TranscriptionDraft.MAX_TEXT_LENGTH + 1)
+    with pytest.raises(AdjudicationRefusal, match="exceeds"):
+        disagreement_spans(oversized, "short")
+
+
 def test_an_adjudicator_who_is_one_of_the_transcribers_is_refused():
     first, second = drafts("Jean", "Jehan")
     with pytest.raises(AdjudicationRefusal, match="one of the two transcribers"):
