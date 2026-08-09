@@ -114,6 +114,36 @@ def test_missing_but_proved_response_remains_a_scored_matrix_cell():
     assert primed.metrics.cer == 1
 
 
+def test_a_refused_cell_retaining_stray_raw_text_is_refused_on_replay():
+    """A non-reading cell's raw_response_text must actually be re-checked, not
+
+    just its already-self-consistent Perlectio.text (which is always None for
+    a non-reading status by Perlectio's own __post_init__, so comparing it to
+    itself could never catch anything).
+    """
+
+    base = identity("base-private", 1)
+    act = evaluation_act()
+    candidate = FakeCandidate(
+        base,
+        replies={(act.opaque_act_id, Condition.LECTIO_NUDA): FakeReply(OutputStatus.REFUSED, None)},
+    )
+    run = run_matrix(
+        (candidate,),
+        (act,),
+        prompt_registry=registry(base),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    refused_cell = next(
+        cell for cell in run.cells if cell.perlectio.condition is Condition.LECTIO_NUDA
+    )
+    tampered_cell = replace(refused_cell, raw_response_text="stray text")
+    tampered_cells = tuple(tampered_cell if cell is refused_cell else cell for cell in run.cells)
+    with pytest.raises(MatrixRefusal, match="retains stray raw response text"):
+        replace(run, cells=tampered_cells)
+
+
 def test_no_readable_text_is_explicit_and_never_complete_empty_text():
     resolved = identity("candidate-private", 1)
     act = evaluation_act()

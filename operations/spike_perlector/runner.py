@@ -284,13 +284,15 @@ class MeasurementRun:
                 dossier.image is not None
             ) or cell.perlectio.testimonia_count != len(dossier.testimonia):
                 raise MatrixRefusal("Perlectio input counts differ from its retained dossier")
-            expected_text = (
-                cell.raw_response_text
-                if cell.perlectio.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED)
-                else None
-            )
-            if cell.perlectio.text != expected_text:
-                raise MatrixRefusal("Perlectio text differs from its retained raw response")
+            if cell.perlectio.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
+                if cell.perlectio.text != cell.raw_response_text:
+                    raise MatrixRefusal("Perlectio text differs from its retained raw response")
+            elif cell.raw_response_text is not None:
+                # Perlectio.text is already None here by its own __post_init__, so
+                # comparing it to raw_response_text (gated on this same status)
+                # would always pass -- checking raw_response_text itself is what
+                # actually catches a non-reading cell that retains stray text.
+                raise MatrixRefusal("a non-reading cell retains stray raw response text")
             comparison_testimonia = tuple(
                 DossierTestimonium(
                     public_source_index=item.public_source_index,
