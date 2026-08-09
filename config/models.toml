@@ -21,6 +21,11 @@
 # absolute paths and symlink escapes are all refused. Off-pod the model root is
 # still an open question — spec 02's "Not owned here" flags it, and this file
 # does not settle it.
+#
+# `serving_recipe` below is a vLLM profile-family key, not an executable command
+# or a model choice. `config/serving_recipes.toml` must resolve it together with
+# this exact chair and the measured single-resident GPU tier; no nearest-tier or
+# alternate-chair fallback exists.
 model_root = "model-fixtures"
 
 # The minimum count of completed-class witness outcomes an act needs before it is

@@ -1,0 +1,140 @@
+# Serving-manager profile catalogue.  This is data, not a measurement and not a
+# pod authorization.
+#
+# `models.toml` remains the only roster/model authority.  Its `serving_recipe`
+# field is a family key; a profile is resolved only by the triple (recipe,
+# chair, measured placement tier).  There is deliberately no nearest-tier,
+# nearest-chair, or fallback lookup: zero matches and several matches are both
+# a refusal before any process can start.
+#
+# `kind` says whether a row is ever launched.
+#
+#   kind = "vllm"     a complete flag profile for a chair that really is served
+#   kind = "fixture"  the offline walking skeleton's stand-in, never launched
+#
+# A fixture row carries no flags at all, and that is the point.  The walking
+# skeleton's readings are answered by `common/stage.py::fixture_serving_details`
+# — declared values that say `fixture://` out loud — so a fixture chair has no
+# engine, no port, and no memory fraction.  Writing plausible-looking planning
+# numbers beside one would put fifteen unbenchmarked figures in a reviewed
+# config file for chairs that nothing will ever start.
+# `operations/serving/manager.py` refuses a fixture row by that name, through
+# the registry's own no-substitution door.
+#
+# Every configured chair must resolve at every tier in
+# `config/pod_placement.toml`; `operations/serving/config.py::
+# verify_recipes_cover_chairs` proves it offline, in this repository's test
+# suite, so a misspelt recipe or a newly added tier is caught here rather than
+# on a rented GPU.
+#
+# The tier ids below are the ones `config/pod_placement.toml` defines.  The
+# active roster is the offline fixture roster: no real chair is configured to
+# serve, and none is proposed here.  Roster membership is Tyrel's decision at
+# S8, and a real profile needs reviewed, locked vLLM and model-stack versions,
+# a verified manifest, and real-silicon preflight before it can be written.
+schema = "serving-recipes.v1"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-designator-v0"
+chair = "designator_structure"
+tier = "generic-24gb"
+description = "offline walking-skeleton fixture for the Designator-structure chair"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-designator-v0"
+chair = "designator_structure"
+tier = "generic-48gb"
+description = "offline walking-skeleton fixture for the Designator-structure chair"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-designator-v0"
+chair = "designator_structure"
+tier = "generic-80gb-plus"
+description = "offline walking-skeleton fixture for the Designator-structure chair"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-attestatores-v0"
+chair = "attestator_1"
+tier = "generic-24gb"
+description = "offline walking-skeleton fixture for Attestator 1"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-attestatores-v0"
+chair = "attestator_1"
+tier = "generic-48gb"
+description = "offline walking-skeleton fixture for Attestator 1"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-attestatores-v0"
+chair = "attestator_1"
+tier = "generic-80gb-plus"
+description = "offline walking-skeleton fixture for Attestator 1"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-attestatores-v0"
+chair = "attestator_2"
+tier = "generic-24gb"
+description = "offline walking-skeleton fixture for Attestator 2"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-attestatores-v0"
+chair = "attestator_2"
+tier = "generic-48gb"
+description = "offline walking-skeleton fixture for Attestator 2"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-attestatores-v0"
+chair = "attestator_2"
+tier = "generic-80gb-plus"
+description = "offline walking-skeleton fixture for Attestator 2"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-attestatores-v0"
+chair = "attestator_3"
+tier = "generic-24gb"
+description = "offline walking-skeleton fixture for Attestator 3"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-attestatores-v0"
+chair = "attestator_3"
+tier = "generic-48gb"
+description = "offline walking-skeleton fixture for Attestator 3"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-attestatores-v0"
+chair = "attestator_3"
+tier = "generic-80gb-plus"
+description = "offline walking-skeleton fixture for Attestator 3"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-perlector-v0"
+chair = "perlector"
+tier = "generic-24gb"
+description = "offline walking-skeleton fixture for the Perlector chair"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-perlector-v0"
+chair = "perlector"
+tier = "generic-48gb"
+description = "offline walking-skeleton fixture for the Perlector chair"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-perlector-v0"
+chair = "perlector"
+tier = "generic-80gb-plus"
+description = "offline walking-skeleton fixture for the Perlector chair"

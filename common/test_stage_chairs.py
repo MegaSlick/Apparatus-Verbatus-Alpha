@@ -65,6 +65,7 @@ def _context(tmp_path) -> tuple[StageContext, ChairIdentity]:
         adapter_revision=adapter_recipe_for(run, ATTESTATORES),
         args=object(),
         registry=registry,
+        serving_config_inputs=bindings["serving_config_inputs"],
     )
     identity = registry.resolve("attestator_1")
     assert isinstance(identity, ChairIdentity)
@@ -123,6 +124,58 @@ def test_serving_receipts_are_refused_as_stage_artifacts_and_accepted_as_run_rec
     receipt = context.tree.read_run_receipt(reference)
     assert receipt["chair"] == identity.role
     assert receipt["revision"] == identity.receipt_revision
+
+
+def test_serving_launch_audit_is_a_content_addressed_stage_blob(tmp_path):
+    context, _ = _context(tmp_path)
+    audit = {
+        "schema": "serving-launch-audit.v1",
+        "chair": "attestator_1",
+        "started_at": "2026-08-09T12:00:00Z",
+        "configuration_inputs": dict(context.serving_config_inputs),
+    }
+
+    first = context.write_serving_launch_audit(audit)
+    second = context.write_serving_launch_audit(audit)
+
+    assert first == second
+    stored = context.tree.read_bytes(first["relative_path"])
+    assert b'"configuration_inputs"' in stored
+    assert context.serving_config_inputs["serving_recipes_sha256"].encode() in stored
+    with pytest.raises(SchemaRefusal, match="non-empty"):
+        context.write_serving_launch_audit({})
+    with pytest.raises(SchemaRefusal, match="differ from the run-sealed"):
+        context.write_serving_launch_audit(
+            {
+                **audit,
+                "configuration_inputs": {
+                    **context.serving_config_inputs,
+                    "pod_placement_sha256": "0" * 64,
+                },
+            }
+        )
+
+
+def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_path):
+    context, identity = _context(tmp_path)
+    receipt_reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
+    audit_reference = context.write_serving_launch_audit(
+        {
+            "schema": "serving-launch-audit.v1",
+            "chair": identity.role,
+            "started_at": "2026-08-09T12:00:00Z",
+            "configuration_inputs": dict(context.serving_config_inputs),
+        }
+    )
+
+    evidence_reference = context.write_serving_evidence_manifest(receipt_reference, audit_reference)
+    evidence = context.tree.read_bytes(evidence_reference["relative_path"])
+    assert receipt_reference["relative_path"].encode() in evidence
+    assert audit_reference["relative_path"].encode() in evidence
+    with pytest.raises(SchemaRefusal, match="malformed"):
+        context.write_serving_evidence_manifest(
+            {"relative_path": "/absolute", "sha256": "c" * 64}, audit_reference
+        )
 
 
 def test_receipt_reuse_is_by_full_serving_moment_not_only_model_identity(tmp_path):

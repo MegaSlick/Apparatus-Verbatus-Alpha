@@ -17,6 +17,17 @@
 # before the first live launch.  Nothing here chooses a card: that is Tyrel's
 # call at this gate, and `config/spend.toml` refuses every paid path until he
 # has configured it.
+#
+# UNITS, because two of these are easy to read wrong and one already was.
+# `context_cap` is tokens.  `batch_size` is concurrent sequences.
+# `engine_memory_fraction` is a fraction of the card.  **`pixel_cap` is a
+# LONGEST-EDGE cap in pixels**, not a pixel count — 1344, 1792 and 2304 are
+# side lengths, and as counts they would describe a 36x36 image.  A serving
+# profile's `max_pixels` in `config/serving_recipes.toml` is the other thing:
+# a total pixel count, passed straight to vLLM's `--mm-processor-kwargs`,
+# where the old pipeline's proven values were 3136 (56x56) and 2359296
+# (1536x1536).  The two must never be compared directly; the sound relation is
+# that a longest edge of L admits at most L*L pixels.
 schema = "pod-placement.v1"
 
 [dtype_floor]
