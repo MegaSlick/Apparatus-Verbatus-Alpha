@@ -220,8 +220,20 @@ FIXTURE = "synthetic-two-page-v0"
 # `common.imaging.encode_grayscale_png_deterministic` (filter 0, stored-block
 # DEFLATE, every byte fixed by the spec), so these two values are the same on
 # every machine that can run the suite. Counts unchanged; digests re-measured.
-HAPPY_RUN_TREE_DIGEST = "4a99aad0dacb4015e023633f2308d414d541a9f4901bdba43178c1e3f781e0cb"
-REVIEW_RUN_TREE_DIGEST = "2495d250b8a3a8041498be9be9476a3cb76a426929568989c01921a2c4ad4158"
+#
+# Re-pinned for spec 10, the Archetypus rebuild, and this one *is* a behaviour change:
+# every established record now carries `text_hash`, `text_status`, `annotations` and
+# `evidence_ref`, and each run writes one genuinely new file, `6_archetypus/index.json`
+# — a rebuildable summary reconciled 1:1 against the acts the Recensor accepted. Both
+# trees therefore gain one file each and every downstream digest moves with the
+# payload shape. A deliberate record change, not drift.
+#
+# Re-pinned for the rebase onto the merged System 08 tree (PR #31): the counts are
+# 46 (happy) and 50 (review) -- the merged tree's 45/49 plus this branch's
+# index.json per run -- and both digests were re-measured from real orchestrator
+# runs under `semantic_snapshot_digest`.
+HAPPY_RUN_TREE_DIGEST = "REPIN_AT_TIP_HAPPY"
+REVIEW_RUN_TREE_DIGEST = "REPIN_AT_TIP_REVIEW"
 
 
 def orchestrate(
@@ -1147,8 +1159,15 @@ def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
     assert "newer Perlectio" in result.stderr
 
 
-def test_archetypus_refuses_an_accepted_empty_reading(tmp_path):
-    """An empty string is not evidence that the act was blank."""
+def test_archetypus_establishes_no_readable_text_for_an_accepted_empty_reading(tmp_path):
+    """Tyrel, 2026-08-05: "It is not a fatal error there might be blank pages."
+
+    An accepted review pointing at an empty-text completed reading used to crash
+    the Archetypus with a FatalAccounting. He ruled that wrong: a blank page is
+    ordinary material, and `no_readable_text` is the ordinary terminal status for
+    one — a positive finding carrying its evidence reference, never an unlabeled
+    empty string (4c), and never a rescued error path.
+    """
     root = tmp_path / "runs"
     run_through_recensor(root, "r")
     tree = RunTree(root, "r")
@@ -1175,10 +1194,21 @@ def test_archetypus_refuses_an_accepted_empty_reading(tmp_path):
     review["payload"]["perlectio_ref"] = new_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    act_id = review["subject_id"]
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 2
-    assert "establishes no readable text" in result.stderr
+    assert result.returncode == 0, result.stderr
+    established = tree.read_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+    )
+    payload = established["payload"]
+    assert payload["text"] == ""
+    # The record-level literal the Armarium checks, and the richer claim about
+    # what this record's text actually holds. Deliberately different fields.
+    assert payload["status"] == "established"
+    assert payload["text_status"] == "no_readable_text"
+    assert payload["evidence_ref"] == payload["recensor_ref"]
+    assert payload["annotations"] == []
 
 
 def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):
@@ -1265,7 +1295,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    assert len(before) == 45
+    assert len(before) == 46
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -1310,7 +1340,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    assert len(before) == 49
+    assert len(before) == 50
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
