@@ -30,7 +30,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR
 from common.recensor_receipt import build_recensor_partition_receipt
 from common.runtree import store as runtree_store
-from common.runtree.store import RECEIPTS_DIR, RUN_FILE, RunTree
+from common.runtree.store import INDEX_FILE, RECEIPTS_DIR, RUN_FILE, RunTree
 
 PAGE_BYTES = b"synthetic page one"
 SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTES), "ordinal": 1}]
@@ -866,8 +866,9 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
 
     Driven against real writes rather than a list of strings, so a new writer that
     forgot to extend the scope is caught by what it actually does. Spec 03 adds
-    the approval record and System 09 adds the Recensor partition receipt; each is
-    exercised here through its real writer rather than a guessed path.
+    the approval record, System 09 the Recensor partition receipt, and spec 10
+    the rebuildable stage index; each is exercised here through its real writer
+    rather than a guessed path.
     """
     tree = make_run(tmp_path)
     scope = tree.inventory_scope()
@@ -876,6 +877,7 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
     written.append(tree.publish_artifact(make_envelope()).relative_path)
     written.append(tree.put_blob(DESIGNATOR, b"a crop")[1].relative_path)
     written.append(tree.write_manifest(DESIGNATOR).relative_path)
+    written.append(tree.write_index(DESIGNATOR, {"schema": "test-index", "rows": []}).relative_path)
     written.append(tree.write_run_receipt(make_receipt())[0].relative_path)
     written.append(tree.write_approval_record(make_approval_record())[0].relative_path)
     written.append(
@@ -888,7 +890,7 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
     # scope_cannot_name` checks separately, for a different reason).
     assert written[-1] == runtree_store.RECENSOR_PARTITION_RECEIPT_FILE
 
-    assert len(written) == 7
+    assert len(written) == 8
     for path in written:
         assert any(path == prefix or path.startswith(prefix) for prefix in scope), (
             f"{path} is written by the store but falls outside the inventory scope"
@@ -898,8 +900,8 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
 def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
     """The static half of harvest #13, read from source rather than from a fixture.
 
-    The runtime test above proves the writers we know about stay in scope. It
-    cannot prove that a later writer was exercised at all — an
+    The runtime test above proves the eight writers we know about stay in scope.
+    It cannot prove that a *ninth* writer added later was exercised at all — an
     un-called writer leaves no trace to check. So this reads every immutable
     publication in `RunTree` and requires it to route through one of the path
     constructors `inventory_scope()` is derived from. A new writer that invents a
@@ -907,13 +909,15 @@ def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
     """
     source = inspect.getsource(runtree_store.RunTree)
     constructors = set(re.findall(r"self\._publish_bytes\(\s*self\.(\w+)\(", source))
-    indirect = set(re.findall(r"(\w+)\s*=\s*self\.(?:artifact_path|manifest_path)\(", source))
+    indirect = set(
+        re.findall(r"(\w+)\s*=\s*self\.(?:artifact_path|manifest_path|index_path)\(", source)
+    )
     passed_through = set(re.findall(r"self\._publish_bytes\(\s*(\w+)\s*,", source))
 
     assert constructors <= {"blob_path", "receipt_path"}, (
         f"a store writer publishes through unknown path constructor(s) {sorted(constructors)}; "
-        "inventory_scope() is derived from artifact_path/blob_path/manifest_path/receipt_path "
-        "and cannot name a fifth"
+        "inventory_scope() is derived from artifact_path/blob_path/manifest_path/index_path/"
+        "receipt_path and cannot name another"
     )
     receipt_writer = inspect.getsource(runtree_store.RunTree.write_recensor_partition_receipt)
     assert (
@@ -925,13 +929,32 @@ def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
     )
     assert passed_through <= indirect, (
         "a store writer publishes bytes at a path that did not come from "
-        "artifact_path() or manifest_path(); harvest #13 requires every managed "
+        "artifact_path(), manifest_path() or index_path(); harvest #13 requires every managed "
         f"path to be one the inventory scope can name (found {sorted(passed_through - indirect)})"
     )
     assert constructors and passed_through, (
         "no publication sites were found at all — this test would pass vacuously, "
         "which is the false green meta-invariant #88 refuses"
     )
+
+
+def test_a_rebuildable_index_is_atomic_and_separate_from_immutable_artifacts(tmp_path):
+    """An index may be rewritten; the artifacts it summarizes may not."""
+    tree = make_run(tmp_path)
+    first = {"schema": "test-index", "rows": [{"act_id": "a1"}]}
+    tree.write_index(DESIGNATOR, first)
+    assert tree.index_path(DESIGNATOR).endswith(f"/{INDEX_FILE}")
+    assert tree.read_index(DESIGNATOR) == first
+
+    second = {"schema": "test-index", "rows": [{"act_id": "a1"}, {"act_id": "a2"}]}
+    tree.write_index(DESIGNATOR, second)
+    assert tree.read_index(DESIGNATOR) == second
+
+
+def test_a_derived_index_that_is_not_an_object_is_refused(tmp_path):
+    tree = make_run(tmp_path)
+    with pytest.raises(SchemaRefusal, match="must be an object"):
+        tree.write_index(DESIGNATOR, ["not", "an", "object"])
 
 
 def test_the_inventory_scope_covers_every_producer(tmp_path):

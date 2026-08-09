@@ -69,6 +69,7 @@ from common.contracts.stages import writing_directory
 
 RUN_FILE: Final = "run.json"
 MANIFEST_FILE: Final = "manifest.json"
+INDEX_FILE: Final = "index.json"
 ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
 RECEIPTS_DIR: Final = "receipts/sha256"
@@ -286,6 +287,16 @@ class RunTree:
 
     def manifest_path(self, stage: str) -> str:
         return f"{writing_directory(stage)}/{MANIFEST_FILE}"
+
+    def index_path(self, stage: str) -> str:
+        """The stage-local, rebuildable derived index path.
+
+        An index has the same standing as a manifest: an inventory made from
+        immutable artifacts, never the evidence that an artifact exists. The
+        store owns the path and the atomic rewrite so stage code cannot invent
+        an untracked side file beside the evidence it summarizes.
+        """
+        return f"{writing_directory(stage)}/{INDEX_FILE}"
 
     def receipt_path(self, digest: str) -> str:
         """The one content-addressed location for a validated receipt-backed record."""
@@ -809,6 +820,30 @@ class RunTree:
         _atomic_write(target, canonical_bytes(manifest))
         return PublishResult(relative, reused=False)
 
+    def write_index(self, stage: str, index: dict[str, Any]) -> PublishResult:
+        """Atomically replace a stage's derived index.
+
+        Rewritable on purpose, exactly as `write_manifest` is: an index is
+        regenerated from the immutable records it summarizes on every run, so a
+        deleted or stale one repairs itself. The caller remains responsible for
+        proving the rows reconcile against those records before anything treats
+        the index as accounting.
+        """
+        if not isinstance(index, dict):
+            raise SchemaRefusal("a derived stage index must be an object")
+        relative = self.index_path(stage)
+        target = self.resolve(relative)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(target, canonical_bytes(index))
+        return PublishResult(relative, reused=False)
+
+    def read_index(self, stage: str) -> dict[str, Any]:
+        """Read a derived index as JSON; reconciliation belongs to its stage."""
+        value = _read_json(self.resolve(self.index_path(stage)))
+        if not isinstance(value, dict):
+            raise SchemaRefusal("a derived stage index is not an object")
+        return value
+
     def manifest_agrees_with_disk(self, stage: str) -> bool:
         """True when the stored manifest still describes what the tree holds."""
         stored_path = self.resolve(self.manifest_path(stage))
@@ -830,6 +865,7 @@ class RunTree:
             prefixes.append(f"{directory}/{ARTIFACTS_DIR}/")
             prefixes.append(f"{directory}/{BLOBS_DIR}/")
             prefixes.append(f"{directory}/{MANIFEST_FILE}")
+            prefixes.append(f"{directory}/{INDEX_FILE}")
         return tuple(prefixes)
 
 
