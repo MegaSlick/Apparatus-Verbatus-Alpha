@@ -20,7 +20,7 @@ from typing import Mapping
 import pytest
 
 from common.chairs.config import load_models_toml
-from common.chairs.errors import ServingRecipeRefusal
+from common.chairs.errors import ReceiptRefusal, ServingRecipeRefusal
 from common.chairs.models import ChairIdentity, ModelsConfig, ServingDetails, VerifiedSnapshot
 from common.chairs.receipts import build_receipt
 from common.stage import run_config_bindings
@@ -180,7 +180,9 @@ class FakeHttp:
                 raise EndpointUnavailable(
                     f"fake loopback outcome at {url} is ambiguous", definitively_absent=False
                 )
-            raise EndpointUnavailable(f"fake loopback is unavailable at {url}")
+            raise EndpointUnavailable(
+                f"fake loopback is unavailable at {url}", definitively_absent=True
+            )
         if url.endswith("/health"):
             return HttpResponse(self.health_status, b'{"status":"ok"}')
         if url.endswith("/models"):
@@ -415,10 +417,11 @@ class FakeStageContext:
     """The run-sealed context shape required by dormant pod assembly."""
 
     serving_config_inputs: Mapping[str, str]
+    registry: object
 
 
-def assembly_context(root: Path) -> FakeStageContext:
-    return FakeStageContext(sealed_config_inputs(root))
+def assembly_context(root: Path, registry: object) -> FakeStageContext:
+    return FakeStageContext(sealed_config_inputs(root), registry)
 
 
 def manager_for(
@@ -546,6 +549,13 @@ def test_start_proves_exact_model_answer_then_publishes_and_stops(tmp_path: Path
     assert handle.launch_audit["profile"]["request_logging"] is False  # type: ignore[index]
     assert handle.launch_audit["profile"]["readiness_probe"]["seed"] == 0  # type: ignore[index]
     assert len(publisher.calls) == 1
+    audit_profile = handle.launch_audit["profile"]
+    assert isinstance(audit_profile, Mapping)
+    with pytest.raises(TypeError):
+        audit_profile["tier"] = "substituted-tier"  # type: ignore[index]
+    published_profile = publisher.calls[0][1]["profile"]
+    assert isinstance(published_profile, Mapping)
+    assert published_profile["tier"] == TIER
     assert registry.refusals == []
 
     result = handle.request("chat-completions", {"messages": [{"role": "user", "content": "read"}]})
@@ -1020,6 +1030,66 @@ def test_failed_cleanup_surfaces_stop_error_and_keeps_the_residency_lease(tmp_pa
     assert http.inference_calls >= 2
 
 
+def test_registry_refusal_and_failed_cleanup_are_reported_together(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, registry, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        ignore_terminate=True,
+        ignore_kill=True,
+    )
+
+    def refuse_receipt(identity: ChairIdentity, details: ServingDetails):
+        del details
+        raise ReceiptRefusal(identity.role, "injected identity-bearing receipt refusal")
+
+    registry.receipt = refuse_receipt  # type: ignore[method-assign]
+
+    with pytest.raises(ServingRecipeRefusal) as caught:
+        manager.start(chair, TIER)
+
+    detail = str(caught.value)
+    assert ReceiptRefusal.code in detail
+    assert "injected identity-bearing receipt refusal" in detail
+    assert ServiceStopError.code in detail
+    assert "lease is retained" in detail
+    assert launcher.processes[0].kill_calls == 1
+
+
+def test_interrupt_during_start_stops_the_child_and_preserves_the_interrupt(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+
+    def interrupt(*unused):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt("injected operator interrupt")
+
+    publisher.publish = interrupt  # type: ignore[method-assign]
+
+    with pytest.raises(KeyboardInterrupt, match="operator interrupt"):
+        manager.start(chair, TIER)
+
+    process = launcher.processes[0]
+    assert process.terminate_calls == 1
+    assert process.poll() == 0
+
+
 def test_stop_refuses_to_release_residency_while_its_endpoint_still_answers(
     tmp_path: Path,
 ) -> None:
@@ -1212,6 +1282,21 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
         model_and_tokenizer_pins(identity("reader", "reader-v1", revision="not-a-commit"))
 
 
+def test_readiness_probe_request_is_sealed_against_nested_mutation() -> None:
+    catalogue = recipes(
+        profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    )
+    profile = catalogue.profiles[0]
+    assert not isinstance(profile, FixtureProfile)
+    messages = profile.readiness_probe.payload["messages"]
+    assert isinstance(messages, list)
+    assert isinstance(messages[0], dict)
+    messages[0]["content"] = "a substituted readiness claim"
+
+    sealed = profile.readiness_probe.request_payload()
+    assert sealed["messages"][0]["content"] == "READY"  # type: ignore[index]
+
+
 def fixture_row(
     *, recipe: str, chair: str, tier: str = TIER, description: str = "never launched"
 ) -> dict[str, object]:
@@ -1318,6 +1403,22 @@ def test_recipe_coverage_names_every_chair_and_tier_a_catalogue_misses() -> None
     with pytest.raises(ServingConfigurationError, match="perlector"):
         verify_recipes_cover_chairs(models, misspelt, tiers)
 
+    # Iterable means iterable: consuming a generator for the first chair must
+    # not silently skip coverage for every chair after it.
+    verify_recipes_cover_chairs(models, complete, (tier for tier in tiers))
+
+    extra = recipes(
+        *[
+            fixture_row(recipe=value.serving_recipe, chair=role, tier=tier)
+            for role, value in models.chairs.items()
+            if isinstance(value, ChairIdentity)
+            for tier in tiers
+        ],
+        fixture_row(recipe="stale-v0", chair="unconfigured", tier="generic-24gb"),
+    )
+    with pytest.raises(ServingConfigurationError, match="unexpected=.*unconfigured"):
+        verify_recipes_cover_chairs(models, extra, tiers)
+
 
 def test_a_local_repository_chair_serves_its_verified_snapshot_without_revision_flags(
     tmp_path: Path,
@@ -1381,7 +1482,7 @@ def test_pod_assembly_factory_builds_the_lifecycle_smoke_reader_without_effects(
     http = FakeHttp(model_ids=("reader-api",))
     launcher = FakeLauncher(http)
     root = Path(__file__).resolve().parents[2]
-    context = assembly_context(root)
+    context = assembly_context(root, registry)
     publisher = FakePublisher(http, context=context)
 
     reader = assemble_serving_smoke_reader(
@@ -1400,6 +1501,16 @@ def test_pod_assembly_factory_builds_the_lifecycle_smoke_reader_without_effects(
 
     assert isinstance(reader, ServingSmokeReader)
     assert reader.manager.recipes.source_path == root / "config/serving_recipes.toml"
+    forged_placement = PlacementTier(
+        identifier=TIER,
+        min_vram_gib="40",
+        max_vram_gib_exclusive="64",
+        residency="single",
+        detector_device="cpu",
+        recipe=PlacementRecipe("0.99", 9999, 9999, 99),
+    )
+    with pytest.raises(ServingConfigurationError, match="run-sealed placement table"):
+        reader.read(chair, tmp_path / "unused.png", forged_placement, measured_gpu())
     assert launcher.calls == []
     assert http.calls == []
 
@@ -1414,7 +1525,7 @@ def test_pod_assembly_builds_bootstrap_preflight_callback_without_running_it(
     fixture = tmp_path / "golden-page.png"
     fixture.write_bytes(b"fixture")
     root = Path(__file__).resolve().parents[2]
-    context = assembly_context(root)
+    context = assembly_context(root, registry)
     publisher = FakePublisher(http, context=context)
 
     class Cache:
@@ -1465,7 +1576,7 @@ def test_pod_assembly_refuses_recipe_or_placement_path_substitution_before_effec
     http = FakeHttp(model_ids=("reader-api",))
     launcher = FakeLauncher(http)
     root = Path(__file__).resolve().parents[2]
-    context = assembly_context(root)
+    context = assembly_context(root, registry)
     publisher = FakePublisher(http, context=context)
     copied_recipes = tmp_path / "recipes.toml"
     copied_placement = tmp_path / "placement.toml"
@@ -1516,8 +1627,8 @@ def test_pod_assembly_requires_the_same_stage_context_as_receipt_publication(
     http = FakeHttp(model_ids=("reader-api",))
     launcher = FakeLauncher(http)
     root = Path(__file__).resolve().parents[2]
-    context = assembly_context(root)
-    publisher = FakePublisher(http, context=assembly_context(root))
+    context = assembly_context(root, registry)
+    publisher = FakePublisher(http, context=assembly_context(root, registry))
 
     with pytest.raises(ServingConfigurationError, match="publisher must belong"):
         assemble_serving_smoke_reader(
@@ -1537,6 +1648,60 @@ def test_pod_assembly_requires_the_same_stage_context_as_receipt_publication(
     assert http.calls == []
 
 
+def test_pod_assembly_requires_the_stage_contexts_registry(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    registry = FakeRegistry({chair.role: chair}, tmp_path)
+    other_registry = FakeRegistry({chair.role: chair}, tmp_path / "other")
+    http = FakeHttp(model_ids=("reader-api",))
+    root = Path(__file__).resolve().parents[2]
+    context = assembly_context(root, registry)
+    publisher = FakePublisher(http, context=context)
+
+    with pytest.raises(ServingConfigurationError, match="registry must be the registry owned"):
+        assemble_serving_smoke_reader(
+            registry=other_registry,
+            stage_context=context,
+            receipt_publisher=publisher,
+            smoke_call=lambda *args: pytest.fail("mismatched registry must not start"),
+            log_root=tmp_path / "logs",
+            recipes_path=root / "config/serving_recipes.toml",
+            placement_path=root / "config/pod_placement.toml",
+            residency_lease=FileResidencyLease(tmp_path / "pod-gpu.lock"),
+        )
+
+
+def test_stage_context_publisher_preserves_internal_attribute_errors() -> None:
+    chair = identity("reader", "reader-v1")
+    details = ServingDetails(
+        tokenizer_revision=REVISION,
+        seed=0,
+        context_cap=2048,
+        pixel_cap=1024,
+        engine="vllm",
+        engine_version="0.test",
+        dtype="bfloat16",
+        adapter_identity=None,
+        endpoint="http://127.0.0.1:8000/v1",
+        started_at="2026-08-09T12:00:00Z",
+    )
+
+    class Context:
+        def write_serving_receipt(self, *unused):  # type: ignore[no-untyped-def]
+            return {"relative_path": "receipts/value.json", "sha256": "c" * 64}
+
+        def write_serving_launch_audit(self, audit):  # type: ignore[no-untyped-def]
+            del audit
+            raise AttributeError("injected audit-store defect")
+
+        def write_serving_evidence_manifest(self, *unused):  # type: ignore[no-untyped-def]
+            pytest.fail("evidence must not follow a failed audit write")
+
+    with pytest.raises(AttributeError, match="audit-store defect"):
+        StageContextReceiptPublisher(Context()).publish(
+            build_receipt(chair, details), {"schema": "test-audit"}
+        )
+
+
 def test_preflight_assembly_prepares_a_new_log_root_before_default_disk_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1547,7 +1712,7 @@ def test_preflight_assembly_prepares_a_new_log_root_before_default_disk_probe(
     fixture = tmp_path / "golden-page.png"
     fixture.write_bytes(b"fixture")
     root = Path(__file__).resolve().parents[2]
-    context = assembly_context(root)
+    context = assembly_context(root, registry)
     publisher = FakePublisher(http, context=context)
     new_log_root = tmp_path / "new" / "logs"
     observed_disk_paths: list[Path] = []
@@ -1632,6 +1797,8 @@ def test_serving_recipe_and_placement_bytes_are_bound_into_the_run_configuration
 
 
 def test_http_parsers_reject_substrings_wrong_response_models_and_empty_output() -> None:
+    assert not EndpointUnavailable("unspecified transport failure").definitively_absent
+
     models = HttpResponse(200, b'{"data":[{"id":"reader-api-shadow"}]}')
     with pytest.raises(ReadinessError, match="VLLM_MODEL_ID_MISSING"):
         require_exact_model_id(models, "reader-api")

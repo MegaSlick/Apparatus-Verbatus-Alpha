@@ -184,12 +184,9 @@ class ChairRegistry:
     def refuse_recipe_start(self, identity: ChairIdentity, difference: str) -> None:
         """Represent a serving-manager start failure without offering another recipe.
 
-        **Nothing in `pipeline/` calls this yet, and that is a gap, not a design.**
-        No stage reaches a serving-manager start until spec 04 builds one, so the
-        serving-recipe door of `test_chairs_no_substitution.py` is currently
-        discharged against this method alone: it proves the refusal is the only
-        outcome available here, not that the production start path uses it. Whoever
-        wires the serving manager owns making that test exercise the real path.
+        Spec 04's serving manager routes every failure of a named chair through
+        this door. The pipeline still uses fixture serving details until its
+        owner adopts that manager's injected preflight callback.
         """
 
         self._require_current_identity(identity)

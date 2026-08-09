@@ -67,7 +67,7 @@ digest, byte-count, and fanned-page-index rows into `run.json`; an export carrie
 the same linkage back out. The policy permits no per-stage deletion: retain the whole run until it is
 dead/broken or complete/exported, then its lifecycle owner may destroy the whole
 volume. See `operations/submit/README.md` for the package being handed to Tyrel;
-transfer/pod/UI work is not built here.
+the transfer and pod runtime live under `operations/`, while UI work is not built.
 
 `models.toml` is the operational cast list. Model assignments belong there rather
 than in stage code or stage documentation, which keeps a swap to one configuration

@@ -69,11 +69,11 @@ witness is therefore visibly short one, all the way into the export.
 
 Lifecycle and health belong to the serving manager (spec 04). This package
 produces identity and verification; it does not start a process. `receipt()`
-accepts the serving details some future serving manager observed, and
+accepts the serving details the serving manager observed, and
 `refuse_recipe_start()` is how a failed start is represented — as a refusal
-naming the chair, never as a second route under the same role name. It has no
-caller outside its own test yet, because nothing here starts anything; the door
-it discharges is covered against the method, not against a production start path.
+naming the chair, never as a second route under the same role name. Spec 04's
+manager calls both doors; pipeline stages still use declared fixture details
+until their owner adopts its injected preflight callback.
 
 Where the model root lives off-pod is still open; spec 02 flags it rather than
 resolving it, and `model_root` in `config/models.toml` is relative to that file.

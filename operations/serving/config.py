@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import MappingProxyType
@@ -81,9 +81,36 @@ class ProbeSpec:
 
     kind: str
     payload: Mapping[str, object]
+    _canonical_payload: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
+        if not isinstance(self.payload, Mapping):
+            raise ServingConfigurationError("readiness probe payload must be an object")
+        try:
+            canonical_payload = json.dumps(
+                _json_copy(self.payload),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            normalized_payload = json.loads(canonical_payload)
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ServingConfigurationError(
+                f"readiness probe payload must be JSON-compatible: {error}"
+            ) from error
+        if not isinstance(normalized_payload, dict):  # defensive after Mapping validation
+            raise ServingConfigurationError("readiness probe payload must encode to an object")
+        object.__setattr__(self, "payload", MappingProxyType(normalized_payload))
+        object.__setattr__(self, "_canonical_payload", canonical_payload)
+
+    def request_payload(self) -> Mapping[str, object]:
+        """Return the sealed request, unaffected by mutation of its public projection."""
+
+        payload = json.loads(self._canonical_payload)
+        if not isinstance(payload, dict):  # pragma: no cover - set only above
+            raise ServingConfigurationError("sealed readiness probe is not an object")
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -484,19 +511,24 @@ def verify_recipes_cover_chairs(
     already recorded.
     """
 
-    missing: list[str] = []
+    tier_values = tuple(tiers)
+    if not tier_values:
+        raise ServingConfigurationError("serving recipe coverage requires at least one tier")
+    if len(tier_values) != len(set(tier_values)):
+        raise ServingConfigurationError("serving recipe coverage tiers must be unique")
+
+    expected: set[tuple[str, str, str]] = set()
     for role, value in sorted(models.chairs.items()):
         if isinstance(value, AbsentChair):
             continue
-        for tier in tiers:
-            try:
-                recipes.for_identity(value, tier)
-            except ServingConfigurationError as error:
-                missing.append(f"{role} -> {value.serving_recipe!r} at {tier!r}: {error}")
-    if missing:
+        expected.update((value.serving_recipe, role, tier) for tier in tier_values)
+    actual = {profile.key for profile in recipes.profiles}
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected)
+    if missing or unexpected:
         raise ServingConfigurationError(
-            "config/serving_recipes.toml does not cover every configured chair at every "
-            f"configured placement tier: {missing}"
+            "config/serving_recipes.toml must match exactly every configured chair at every "
+            f"configured placement tier; missing={missing}, unexpected={unexpected}"
         )
 
 
@@ -576,3 +608,22 @@ def _nonnegative_int(value: Any, field: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ServingConfigurationError(f"{field} must be a non-negative integer")
     return value
+
+
+def _json_copy(value: object) -> object:
+    """Copy and validate the JSON data sealed into a readiness probe."""
+
+    if isinstance(value, Mapping):
+        result: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ServingConfigurationError("readiness probe object keys must be strings")
+            result[key] = _json_copy(item)
+        return result
+    if isinstance(value, (list, tuple)):
+        return [_json_copy(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise ServingConfigurationError(
+        f"readiness probe payload has non-JSON value {type(value).__name__}"
+    )

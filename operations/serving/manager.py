@@ -422,24 +422,22 @@ class StageContextReceiptPublisher:
         receipt_reference = self.context.write_serving_receipt(receipt.identity, receipt.details)
         if not isinstance(receipt_reference, Mapping):
             raise ReceiptPublicationError("StageContext returned a non-object receipt reference")
-        try:
-            audit_reference = self.context.write_serving_launch_audit(dict(launch_audit))
-        except AttributeError as error:
+        write_audit = getattr(self.context, "write_serving_launch_audit", None)
+        if not callable(write_audit):
             raise ReceiptPublicationError(
                 "StageContext has no serving launch-audit publication seam"
-            ) from error
+            )
+        audit_reference = write_audit(dict(launch_audit))
         if not isinstance(audit_reference, Mapping):
             raise ReceiptPublicationError(
                 "StageContext returned a non-object launch-audit reference"
             )
-        try:
-            evidence_reference = self.context.write_serving_evidence_manifest(
-                dict(receipt_reference), dict(audit_reference)
-            )
-        except AttributeError as error:
+        write_evidence = getattr(self.context, "write_serving_evidence_manifest", None)
+        if not callable(write_evidence):
             raise ReceiptPublicationError(
                 "StageContext has no serving evidence-manifest publication seam"
-            ) from error
+            )
+        evidence_reference = write_evidence(dict(receipt_reference), dict(audit_reference))
         if not isinstance(evidence_reference, Mapping):
             raise ReceiptPublicationError(
                 "StageContext returned a non-object serving evidence-manifest reference"
@@ -616,8 +614,14 @@ class ServingManager:
                 runtime_packages=observed_packages,
                 started_at=started_at,
             )
+            sealed_audit = _immutable_json_value(audit)
+            if not isinstance(sealed_audit, Mapping):  # pragma: no cover - audit is an object above
+                raise ReceiptPublicationError("serving launch audit is not an object")
             try:
-                reference = self.receipt_publisher.publish(receipt, audit)
+                publication_audit = _json_copy(sealed_audit)
+                if not isinstance(publication_audit, dict):  # pragma: no cover - copied object
+                    raise ReceiptPublicationError("serving launch audit is not an object")
+                reference = self.receipt_publisher.publish(receipt, publication_audit)
             except Exception as error:
                 raise ReceiptPublicationError(
                     f"receipt publisher refused ready service: {error}"
@@ -630,18 +634,19 @@ class ServingManager:
                 process,
                 receipt,
                 publication.receipt_reference,
-                audit,
+                sealed_audit,
                 publication.audit_reference,
                 publication.evidence_reference,
             )
             self._active = handle
             return handle
-        except ChairRefusal:
-            # The chair boundary has already named this failure. A cleanup
-            # problem is a second, different fact and gets its own refusal.
+        except ChairRefusal as error:
+            # The chair boundary has already named this failure. If cleanup is
+            # also unverified, both facts must leave through the one refusal
+            # the registry raises; a second call would mask the first.
             cleanup_error = self._cleanup_unready(process, endpoint)
             if cleanup_error is not None:
-                self._refuse(identity, cleanup_error)
+                self._refuse(identity, error, also=cleanup_error)
             raise
         except ServingError as error:
             self._refuse(identity, error, also=self._cleanup_unready(process, endpoint))
@@ -657,6 +662,17 @@ class ServingManager:
             raise AssertionError(
                 "registry refusal returned unexpectedly"
             ) from error  # pragma: no cover
+        except BaseException as error:
+            # KeyboardInterrupt/SystemExit must not strand a child between
+            # launch and handle publication. Preserve the control-flow signal
+            # after exact cleanup; if cleanup is also unverified, report both.
+            cleanup_error = self._cleanup_unready(process, endpoint)
+            if cleanup_error is not None:
+                raise ServiceStopError(
+                    "serving start was interrupted and cleanup could not be verified: "
+                    f"start={type(error).__name__}: {error}; stop={cleanup_error}"
+                ) from error
+            raise
 
     def request(
         self, handle: ServiceHandle, kind: str, payload: Mapping[str, object]
@@ -818,7 +834,7 @@ class ServingManager:
                 probe = self._post_probe(
                     endpoint=profile.endpoint,
                     kind=profile.readiness_probe.kind,
-                    payload=profile.readiness_probe.payload,
+                    payload=profile.readiness_probe.request_payload(),
                     model_id=profile.served_model_id,
                     seed=profile.seed,
                     deterministic=True,
@@ -990,7 +1006,7 @@ class ServingManager:
                     "readiness_probe": {
                         "kind": profile.readiness_probe.kind,
                         "request_payload_sha256": _canonical_object_sha256(
-                            profile.readiness_probe.payload
+                            profile.readiness_probe.request_payload()
                         ),
                         "temperature": 0,
                         "seed": profile.seed,
@@ -1126,9 +1142,9 @@ class ServingManager:
     def _refuse(
         self,
         identity: ChairIdentity,
-        error: ServingError,
+        error: BaseException,
         *,
-        also: ServingError | None = None,
+        also: BaseException | None = None,
     ) -> None:
         """Report this chair unavailable, carrying every reason it is.
 
@@ -1141,11 +1157,13 @@ class ServingManager:
         not in it is not anywhere (GOVERNANCE 2).
         """
 
-        detail = f"{error.code}: {error}"
+        error_code = getattr(error, "code", type(error).__name__)
+        detail = f"{error_code}: {error}"
         if also is not None:
+            also_code = getattr(also, "code", type(also).__name__)
             detail += (
                 f"; additionally, cleanup after this failure could not be verified and the "
-                f"single-resident lease is retained: {also.code}: {also}"
+                f"single-resident lease is retained: {also_code}: {also}"
             )
         self.registry.refuse_recipe_start(identity, detail)
 
@@ -1469,7 +1487,7 @@ def _json_copy(value: object) -> object:
         result: dict[str, object] = {}
         for key, item in value.items():
             if not isinstance(key, str):
-                raise ServingConfigurationError("adapter calibration object keys must be strings")
+                raise ServingConfigurationError("JSON object keys must be strings")
             result[key] = _json_copy(item)
         return result
     if isinstance(value, (list, tuple)):
@@ -1504,3 +1522,13 @@ def _seal_json_request_payload(payload: Mapping[str, object], *, label: str) -> 
     if not isinstance(snapshot, dict):  # defensive after the Mapping annotation
         raise ServingConfigurationError(f"{label} must encode to a JSON object")
     return snapshot
+
+
+def _immutable_json_value(value: object) -> object:
+    """Deep-freeze one already-validated JSON value exposed on a live handle."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _immutable_json_value(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_immutable_json_value(item) for item in value)
+    return value

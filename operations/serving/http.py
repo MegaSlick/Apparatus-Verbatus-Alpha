@@ -23,7 +23,7 @@ class EndpointUnavailable(OSError):
     may be released only after the former.
     """
 
-    def __init__(self, detail: str, *, definitively_absent: bool = True) -> None:
+    def __init__(self, detail: str, *, definitively_absent: bool = False) -> None:
         self.definitively_absent = definitively_absent
         super().__init__(detail)
 

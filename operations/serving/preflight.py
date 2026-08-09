@@ -22,7 +22,13 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from common.chairs.models import ChairIdentity, is_sha256
-from operations.pod.preflight import GpuProfile, PlacementTier, SmokeResult
+from operations.pod.preflight import (
+    GpuProfile,
+    PlacementRefusal,
+    PlacementTable,
+    PlacementTier,
+    SmokeResult,
+)
 
 from .config import ServingProfile
 from .errors import AdapterActivityError, ServiceStopError, ServingConfigurationError
@@ -47,10 +53,12 @@ class ServingSmokeReader:
         smoke_call: SmokeCall,
         *,
         calibration_for: CalibrationFor | None = None,
+        placement_table: PlacementTable | None = None,
     ) -> None:
         self.manager = manager
         self.smoke_call = smoke_call
         self.calibration_for = calibration_for
+        self.placement_table = placement_table
 
     def read(
         self,
@@ -61,6 +69,18 @@ class ServingSmokeReader:
     ) -> SmokeResult:
         """Start → prove → smoke → stop one named chair for this measured tier."""
 
+        if self.placement_table is not None:
+            try:
+                sealed_placement = self.placement_table.choose(gpu_profile.vram_gib)
+            except PlacementRefusal as error:
+                raise ServingConfigurationError(
+                    f"sealed placement table cannot place the measured GPU: {error}"
+                ) from error
+            if placement != sealed_placement:
+                raise ServingConfigurationError(
+                    "smoke placement differs from the run-sealed placement table for the "
+                    f"measured {gpu_profile.vram_gib} GiB GPU"
+                )
         serving_profile = self.manager.recipes.for_identity(identity, placement.identifier)
         if isinstance(serving_profile, ServingProfile):
             # These two coherence checks only mean something for a profile that

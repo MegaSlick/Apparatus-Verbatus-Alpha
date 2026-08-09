@@ -843,9 +843,9 @@ def fixture_serving_details(identity: ChairIdentity) -> ServingDetails:
     measurement of a real serving moment would be exactly the confusion
     GOVERNANCE 10 forbids.
 
-    Two consequences worth knowing before spec 04 replaces this with a real
-    serving manager. Endpoint and start time are confined to the run receipt, so
-    a stage payload carries only the content-addressed reference to one. And
+    Two consequences worth knowing until the pipeline adopts spec 04's real
+    serving-manager callback. Endpoint and start time are confined to the run
+    receipt, so a stage payload carries only the content-addressed reference to one. And
     `started_at` is a constant *because* the skeleton's receipts sit inside the
     tree the determinism tests hash; a real receipt is honestly
     non-deterministic, and the run at which that becomes true is the run at which

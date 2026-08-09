@@ -11,8 +11,9 @@ provider API, download a model, or claim a GPU fit.
 `(identity.serving_recipe, identity.role, measured placement tier)` from
 `config/serving_recipes.toml`. Zero or multiple matches refuse before launch.
 `verify_recipes_cover_chairs` proves that lookup offline for every configured
-chair at every configured tier, so a misspelt `serving_recipe` or a newly added
-placement tier is a test failure here rather than a refusal on a rented GPU.
+chair at every configured tier and refuses extra stale rows, so a misspelt
+`serving_recipe`, an unconfigured chair profile, or a newly added placement tier
+is a test failure here rather than a refusal on a rented GPU.
 A profile whose `kind` is `fixture` is the walking skeleton's stand-in and is
 refused *by that name* before any pin, lease, probe or process — it carries no
 vLLM flags to be refused by, and blocking it with an unsatisfiable version pin
@@ -20,7 +21,9 @@ would report the wrong cause.
 The recipe and `config/pod_placement.toml` byte digests are both part of the
 run configuration digest. Production assembly requires the `StageContext` that
 `open_context()` revalidated and the `StageContextReceiptPublisher` for that
-same context; it parses each supplied TOML from the hashed bytes and refuses a
+same context, and the registry must be that context's own registry. This keeps
+one authority behind construction and publication of the identity-bearing
+receipt. Assembly parses each supplied TOML from the hashed bytes and refuses a
 path substitution before any probe, lease, or subprocess action.
 
 Before launch it re-verifies the named snapshot, asserts every exact profile
@@ -148,6 +151,11 @@ capacity above the measured placement plan before it can launch. The pipeline is
 untouched and still uses fixture serving details until its owner adopts this
 injected seam.
 
+A smoke result with no GPU/CPU utilization samples makes preflight red with
+`utilization-missing`; an empty instrument cannot leave as a green measurement.
+The sampler remains the injected responsibility of the page-specific smoke
+callable, and no threshold here claims a card is saturated.
+
 **The capacity check knows that `pixel_cap` and `max_pixels` are not the same
 unit.** `config/pod_placement.toml` caps a longest edge in pixels; a serving
 profile's `max_pixels` is a total count going straight to vLLM. Compared
@@ -170,7 +178,7 @@ preflight has run.
 **Not built here, and named rather than left implicit.** Nothing calls this
 package yet: `assemble_serving_preflight_callback` produces the callable
 `SubprocessBootstrapActions` already accepts, but no bootstrap step passes it.
-And spec 04's preflight point 6 — GPU/CPU utilization recorded *during* the
-smoke reads — has no measurement here; `SmokeResult.utilization` stays empty
-unless the page-specific smoke callable fills it. Neither lane built either,
-and a report that shows no utilization must not be read as a card at rest.
+And spec 04's preflight point 6 still has no sampler implementation here: the
+page-specific smoke callable must supply the readings, and preflight is red if
+it does not. Neither lane built the sampler itself; this repair only prevents
+its absence from reporting green.

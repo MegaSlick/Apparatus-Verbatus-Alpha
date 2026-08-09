@@ -72,8 +72,8 @@ def assemble_serving_smoke_reader(
     ``PreflightRunner``/bootstrap injection point.
     """
 
-    recipes, _, config_inputs = _load_bound_configuration(
-        sealed_config_inputs=_sealed_config_inputs(stage_context, receipt_publisher),
+    recipes, placement, config_inputs = _load_bound_configuration(
+        sealed_config_inputs=_sealed_config_inputs(stage_context, receipt_publisher, registry),
         recipes_path=recipes_path,
         placement_path=placement_path,
     )
@@ -83,6 +83,7 @@ def assemble_serving_smoke_reader(
         smoke_call=smoke_call,
         log_root=log_root,
         recipes=recipes,
+        placement=placement,
         config_inputs=config_inputs,
         calibration_for=calibration_for,
         launcher=launcher,
@@ -125,7 +126,7 @@ def assemble_serving_preflight_callback(
     """
 
     recipes, placement, config_inputs = _load_bound_configuration(
-        sealed_config_inputs=_sealed_config_inputs(stage_context, receipt_publisher),
+        sealed_config_inputs=_sealed_config_inputs(stage_context, receipt_publisher, registry),
         recipes_path=recipes_path,
         placement_path=placement_path,
     )
@@ -137,6 +138,7 @@ def assemble_serving_preflight_callback(
         residency_lease=residency_lease,
         calibration_for=calibration_for,
         recipes=recipes,
+        placement=placement,
         config_inputs=config_inputs,
         launcher=launcher,
         http=http,
@@ -179,7 +181,7 @@ def _load_bound_configuration(
 
 
 def _sealed_config_inputs(
-    stage_context: Any, receipt_publisher: ReceiptPublisher
+    stage_context: Any, receipt_publisher: ReceiptPublisher, registry: Any
 ) -> Mapping[str, object]:
     """Take launch-input authority only from the context that publishes evidence."""
 
@@ -191,6 +193,10 @@ def _sealed_config_inputs(
     if getattr(receipt_publisher, "context", None) is not stage_context:
         raise ServingConfigurationError(
             "serving assembly receipt publisher must belong to the supplied StageContext"
+        )
+    if getattr(stage_context, "registry", None) is not registry:
+        raise ServingConfigurationError(
+            "serving assembly registry must be the registry owned by the supplied StageContext"
         )
     if not isinstance(inputs, Mapping):
         raise ServingConfigurationError("StageContext serving configuration inputs are malformed")
@@ -204,6 +210,7 @@ def _make_reader(
     smoke_call: SmokeCall,
     log_root: str | Path,
     recipes: ServingRecipes,
+    placement: PlacementTable,
     config_inputs: ServingConfigInputs,
     residency_lease: ResidencyLease,
     calibration_for: CalibrationFor | None,
@@ -228,7 +235,12 @@ def _make_reader(
         residency_lease=residency_lease,
         producer=producer,
     )
-    return ServingSmokeReader(manager, smoke_call, calibration_for=calibration_for)
+    return ServingSmokeReader(
+        manager,
+        smoke_call,
+        calibration_for=calibration_for,
+        placement_table=placement,
+    )
 
 
 def _prepare_log_root(log_root: str | Path) -> Path:
