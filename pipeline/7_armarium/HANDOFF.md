@@ -67,11 +67,33 @@ If `embed_pixels = true`, verified page and crop bytes are included beneath
 crop references remain valid and digest-named, but the manifest says plainly that
 pixel resolution requires retained-source access.
 
-The current run authority binds source-page/frame rows, not a type-aware submission
-file inventory with a terminal category per file. The manifest therefore reports a
-reconciled five-category **act** partition and a separate page census, but marks the
-bundle `partial` and the submission denominator `unreconciled` rather than claiming
-the spec's requested file-level closure.
+### The terminal ledger
+
+`claims.terminal_ledger` is the honesty ledger's total partition: every submitted
+source page or frame, every sealed page, and every proposed act lands in exactly one
+of the five closed categories, and a unit in none of them — or in two — stops the
+export. The three populations overlap on purpose, so `by_unit_type` is published
+beside `by_category`: an act, the page it was cut from, and the source that sealed
+that page are three units describing one piece of material.
+
+A source unit inherits the category of the page it sealed into, and a refused source
+is `refused-with-reason` with the door's own reason. A sealed page is `delivered` when
+any act on it was delivered, `excluded-with-approval` or `confirmed-blank` only when
+every act on it was, and `held-for-review` otherwise — including when no act was
+marked out on it at all, because silence cannot tell a blank page from a detection
+failure and nothing here can prove one blank.
+
+**What the denominator does not cover, said rather than implied.** `run.json` binds one
+ordinal per submitted source *page or frame*, so a multi-page PDF or TIFF container is
+represented by one unit per page and not by one unit for the file. Every submitted file
+is therefore represented, but a reader counting files off this ledger would be counting
+pages. `claims.submission_inventory.limit` says exactly that.
+
+`claims.status` is the ledger's own measured status, not a constant: a run that loses
+nothing says `complete`, and every unresolved unit appears by name in
+`claims.partial_reasons`. The clean verifier recomputes the whole ledger from the
+package's `sources.json` rather than reading it out of the manifest — a self-hash
+proves the manifest was not edited afterwards, never that what it says was true.
 
 Non-pixel references to receipts, Testimonia, and intermediate artifacts are
 labelled `requires-retained-run-access`; the product carries their paths and
@@ -80,7 +102,7 @@ If no sealed salvage inventory reaches this boundary, the salvage format is pres
 but the manifest says `not-produced-no-sealed-salvage-inventory`, rather than
 claiming a measured zero.
 
-The annotation boundary in `common/annotation_boundary.py` is not wired into this
+The annotation boundary in `annotation_boundary.py` is not wired into this
 stage, configuration, or orchestrator. It is a future read-only contract only.
 
 ## Boundary checks

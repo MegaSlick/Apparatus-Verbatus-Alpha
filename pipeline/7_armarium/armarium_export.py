@@ -29,7 +29,12 @@ from textnorm import TEXTNORM_REVISION, search_fold
 from common.armarium_formats import ArmariumFormats, armarium_formats_from_record
 from common.contracts.canonical import canonical_bytes, canonical_text, digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.outcomes import ArmariumCategory, require_approval, run_aggregate
+from common.contracts.outcomes import (
+    SILENT_PAGE_REASON,
+    ArmariumCategory,
+    require_approval,
+    run_aggregate,
+)
 from common.contracts.stages import ARMARIUM
 from common.imaging import dimensions
 
@@ -53,10 +58,30 @@ _PIXEL_REFERENCE_CLAIM: Final = (
 _PIXEL_EMBEDDED_CLAIM: Final = (
     "embedded pixels are packaged and opened by clean-machine verification"
 )
-_SUBMISSION_INVENTORY_GAP_REASON: Final = (
-    "run.json binds source-page/frame rows, not a submission-file inventory with one "
-    "type-aware terminal category per submitted file; the five-category act partition "
-    "therefore cannot reconcile against the requested submission denominator yet"
+TERMINAL_LEDGER_SCHEMA: Final = "armarium-terminal-ledger.v1"
+_LEDGER_DENOMINATOR: Final = (
+    "every submitted source page or frame, every sealed page, and every proposed act"
+)
+_SOURCE_GRANULARITY: Final = (
+    "one unit per source page or frame ordinal bound into run.json at admission, door "
+    "refusals and duplicates included"
+)
+# The one thing the denominator genuinely cannot say, said rather than implied: a
+# multi-page container arrives as one submitted *file* and is bound as one ordinal per
+# page or frame, so the ledger gives the container's pages a category each and the file
+# itself none.  Every submitted file is therefore represented, but not always by exactly
+# one unit, and a reader counting files off this ledger would count pages.
+_CONTAINER_GRANULARITY_LIMIT: Final = (
+    "a multi-page PDF/TIFF container is represented by one unit per page or frame rather "
+    "than one unit for the submitted file; the file's own single terminal category is not "
+    "represented and cannot be counted off this ledger"
+)
+_COMPLETED_CATEGORIES: Final = frozenset(
+    {
+        ArmariumCategory.DELIVERED.value,
+        ArmariumCategory.EXCLUDED_WITH_APPROVAL.value,
+        ArmariumCategory.CONFIRMED_BLANK.value,
+    }
 )
 _SALVAGE_RESERVED_FIELDS: Final = frozenset(
     {
@@ -1196,6 +1221,169 @@ def _jsonl_literals(path) -> dict[str, tuple[str, str]]:
     return records
 
 
+def _page_ledger_category(
+    ordinal: int, act_categories: list[str]
+) -> tuple[str, str | None]:
+    """One sealed page's terminal category, derived from the acts cut on it.
+
+    Every rule here errs toward `held-for-review`, the category that means a human
+    must look.  A sealed page nobody marked an act out on is held, never
+    `confirmed-blank`: silence cannot tell a genuinely blank page from a detection
+    failure, and `run_aggregate` already refuses to infer blank from silence.
+    Nothing in this stage can prove a page blank, so nothing here ever writes that
+    category for a page -- what artifact would prove it is open (HANDOFF.md).
+    """
+    if not act_categories:
+        return ArmariumCategory.HELD_FOR_REVIEW.value, SILENT_PAGE_REASON.format(ordinal=ordinal)
+    distinct = sorted(set(act_categories))
+    if ArmariumCategory.DELIVERED.value in distinct:
+        return ArmariumCategory.DELIVERED.value, None
+    if distinct == [ArmariumCategory.EXCLUDED_WITH_APPROVAL.value]:
+        return ArmariumCategory.EXCLUDED_WITH_APPROVAL.value, None
+    if distinct == [ArmariumCategory.CONFIRMED_BLANK.value]:
+        return ArmariumCategory.CONFIRMED_BLANK.value, None
+    return (
+        ArmariumCategory.HELD_FOR_REVIEW.value,
+        f"page {ordinal} delivered no act; its acts are {', '.join(distinct)}",
+    )
+
+
+def _terminal_ledger(
+    act_outcomes: list[dict[str, Any]],
+    pages: list[dict[str, Any]],
+    act_pages: dict[str, Any],
+    aggregate: dict[str, Any],
+) -> dict[str, Any]:
+    """The honesty ledger: one closed category for every unit the run accounted for.
+
+    Spec 11's first test asks for a *total partition* -- "every submitted file ... and
+    every sealed page and proposed act is accounted as delivered / held-for-review /
+    excluded-with-approval / confirmed-blank / refused-with-reason ... so a unit in no
+    set is FATAL". Neither lane's build closed it: one accounted acts alone and marked
+    the whole export permanently partial for the gap; the other emitted source rows
+    only for refusals and page rows only for silent pages, so a sealed page that
+    produced acts, and a source that sealed, appeared in no set at all.
+
+    So all three unit types are enumerated here and each lands in exactly one of the
+    five categories. A source unit inherits the category of the page it sealed into --
+    they are two questions with one answer, and giving the source its own vocabulary
+    would have meant inventing a sixth meaning for `delivered`. `by_unit_type` is
+    published beside `by_category` because the three populations overlap by design: an
+    act, the page it was cut from, and the source that sealed that page are three units
+    describing one piece of material, and a reader adding the category counts up is
+    counting units, not acts.
+
+    Refusing rather than reporting is deliberate here: a unit outside the five sets, a
+    repeated unit identity, or a count that does not reconcile is invariant #10's
+    imbalance, and the export stops.
+    """
+    by_act_id: dict[str, dict[str, Any]] = {}
+    categories_by_key: dict[str, str] = {}
+    for record in act_outcomes:
+        by_act_id[record["act_id"]] = record
+        categories_by_key[record["act_key"]] = record["category"]
+
+    if not isinstance(act_pages, dict):
+        raise SchemaRefusal("an Armarium terminal ledger has no act page attribution")
+    acts_on_page: dict[int, list[str]] = {}
+    for act_key, ordinals in act_pages.items():
+        category = categories_by_key.get(act_key)
+        if category is None:
+            raise SchemaRefusal(
+                "an Armarium terminal ledger attributes pages to an act it does not account for"
+            )
+        if not isinstance(ordinals, (list, tuple)):
+            raise SchemaRefusal("an Armarium terminal ledger act has no page ordinal list")
+        for ordinal in ordinals:
+            if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+                raise SchemaRefusal("an Armarium terminal ledger act names a non-integer page")
+            acts_on_page.setdefault(ordinal, []).append(category)
+
+    page_units: list[dict[str, Any]] = []
+    source_units: list[dict[str, Any]] = []
+    for page in sorted(pages, key=lambda row: row["ordinal"]):
+        ordinal = page["ordinal"]
+        if page.get("outcome") == "sealed":
+            category, reason = _page_ledger_category(ordinal, acts_on_page.get(ordinal, []))
+            page_units.append(
+                {
+                    "unit_type": "page",
+                    "unit_id": f"page:{ordinal}",
+                    "category": category,
+                    "reason": reason,
+                    "declared_path": page.get("declared_path"),
+                    "declared_sha256": page.get("declared_sha256"),
+                }
+            )
+        else:
+            category = ArmariumCategory.REFUSED_WITH_REASON.value
+            reason = page.get("reason") or "no reason was recorded"
+        source_units.append(
+            {
+                "unit_type": "source",
+                "unit_id": f"source:{ordinal}",
+                "category": category,
+                "reason": reason,
+                "declared_path": page.get("declared_path"),
+                "declared_sha256": page.get("declared_sha256"),
+            }
+        )
+
+    act_units = [
+        {
+            "unit_type": "act",
+            "unit_id": f"act:{act_id}",
+            "category": record["category"],
+            "reason": record["reason"],
+            "act_key": record["act_key"],
+        }
+        for act_id, record in sorted(by_act_id.items())
+    ]
+
+    units = source_units + page_units + act_units
+    known = {category.value for category in ArmariumCategory}
+    by_category = {category: 0 for category in sorted(known)}
+    by_unit_type = {"source": 0, "page": 0, "act": 0}
+    seen: set[str] = set()
+    for unit in units:
+        if unit["category"] not in known:
+            raise SchemaRefusal(
+                f"terminal ledger unit {unit['unit_id']} carries category "
+                f"{unit['category']!r}, which is not one of the five closed categories"
+            )
+        if unit["unit_id"] in seen:
+            raise SchemaRefusal(f"terminal ledger unit {unit['unit_id']} is accounted twice")
+        seen.add(unit["unit_id"])
+        by_category[unit["category"]] += 1
+        by_unit_type[unit["unit_type"]] += 1
+    if sum(by_category.values()) != len(units):
+        raise SchemaRefusal("a terminal ledger unit landed in no category at all")
+
+    unresolved = [
+        f"{unit['unit_type']} {unit['unit_id'].split(':', 1)[1]} is {unit['category']}"
+        + (f": {unit['reason']}" if unit["reason"] else "")
+        for unit in units
+        if unit["category"] not in _COMPLETED_CATEGORIES
+    ]
+    reasons = list(unresolved)
+    if aggregate.get("status") != "complete":
+        for reason in aggregate.get("reasons", []):
+            if reason not in reasons:
+                reasons.append(reason)
+    return {
+        "schema": TERMINAL_LEDGER_SCHEMA,
+        "denominator": _LEDGER_DENOMINATOR,
+        "source_granularity": _SOURCE_GRANULARITY,
+        "granularity_limit": _CONTAINER_GRANULARITY_LIMIT,
+        "unit_count": len(units),
+        "by_unit_type": by_unit_type,
+        "by_category": by_category,
+        "units": units,
+        "status": "complete" if not reasons else "partial",
+        "unresolved_reasons": reasons,
+    }
+
+
 def _export_manifest(
     projection: ArmariumProjection,
     formats: ArmariumFormats,
@@ -1233,6 +1421,14 @@ def _export_manifest(
             "promotion": "recorded approval then pipeline re-entry; never export-time act promotion",
         }
     )
+    ledger = _terminal_ledger(
+        _act_outcomes(projection.acts),
+        list(projection.pages),
+        projection.aggregate_basis.get("act_pages")
+        if isinstance(projection.aggregate_basis, dict)
+        else None,
+        projection.aggregate,
+    )
     manifest: dict[str, Any] = {
         "schema": EXPORT_MANIFEST_SCHEMA,
         "canonical_text": {
@@ -1248,8 +1444,13 @@ def _export_manifest(
         },
         "formats": formats.to_record(),
         "claims": {
-            "status": "partial",
-            "partial_reasons": [_SUBMISSION_INVENTORY_GAP_REASON],
+            # Measured, not constant. A status that says `partial` on every run
+            # whatever happened cannot distinguish the run that lost something from
+            # the run that did not, which is the distinction GOVERNANCE 2 exists to
+            # keep visible.
+            "status": ledger["status"],
+            "partial_reasons": ledger["unresolved_reasons"],
+            "terminal_ledger": ledger,
             "act_partition": {
                 "denominator": "proposal-seal expected acts",
                 "expected_count": projection.expected_acts,
@@ -1262,15 +1463,16 @@ def _export_manifest(
                 },
             },
             "submission_inventory": {
-                "status": "unreconciled",
-                "reason": _SUBMISSION_INVENTORY_GAP_REASON,
+                "status": "reconciled-at-source-page-ordinal-granularity",
+                "granularity": _SOURCE_GRANULARITY,
+                "limit": _CONTAINER_GRANULARITY_LIMIT,
                 "observed_source_page_rows": len(projection.source_manifest),
                 "observed_distinct_declared_paths": len(submission_paths),
             },
             "page_census": {
                 "denominator": "run.json source-page/frame rows",
                 "counted": len(projection.pages),
-                "status": "measured-separately",
+                "status": "accounted-in-the-terminal-ledger",
             },
             "pixels": {
                 "embedded": formats.embed_pixels,
@@ -1515,23 +1717,23 @@ def _verify_honest_status_claims(
 ) -> None:
     """Refuse a self-hashed package that changes a measured partial result to green.
 
-    The product cannot yet measure the submission-file denominator, so its
-    top-level claim is always visibly partial.  The internal run aggregate is a
-    different measurement, but it still cannot call a held/refused act or an
-    unsealed page complete.
+    The top-level claim is the terminal ledger's own status, and the ledger is
+    recomputed here from the package's source graph rather than read out of the
+    manifest -- a self-hash proves the manifest was not edited after it was written,
+    not that what it says was ever true. The internal run aggregate is a separate
+    measurement and is recomputed the same way.
     """
     claims = manifest.get("claims")
     if not isinstance(claims, dict):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no export claims")
     submission = claims.get("submission_inventory")
     if (
-        claims.get("status") != "partial"
-        or claims.get("partial_reasons") != [_SUBMISSION_INVENTORY_GAP_REASON]
-        or not isinstance(submission, dict)
-        or submission.get("status") != "unreconciled"
-        or submission.get("reason") != _SUBMISSION_INVENTORY_GAP_REASON
+        not isinstance(submission, dict)
+        or submission.get("status") != "reconciled-at-source-page-ordinal-granularity"
+        or submission.get("granularity") != _SOURCE_GRANULARITY
+        or submission.get("limit") != _CONTAINER_GRANULARITY_LIMIT
     ):
-        raise SchemaRefusal("the export falsely claims submission-inventory reconciliation")
+        raise SchemaRefusal("the export misstates what its submission denominator covers")
 
     aggregate = manifest.get("aggregate")
     if not isinstance(aggregate, dict):
@@ -1565,6 +1767,28 @@ def _verify_honest_status_claims(
     )
     if canonical_text(aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("the exported aggregate does not match its measured accounting basis")
+
+    expected_ledger = _terminal_ledger(
+        list(_act_outcome_sources(sources).values()),
+        sources["pages"],
+        sources["aggregate_basis"].get("act_pages")
+        if isinstance(sources["aggregate_basis"], dict)
+        else None,
+        aggregate,
+    )
+    if canonical_text(claims.get("terminal_ledger")) != canonical_text(expected_ledger):
+        raise SchemaRefusal("the exported terminal ledger does not match its measured accounting")
+    if (
+        claims.get("status") != expected_ledger["status"]
+        or claims.get("partial_reasons") != expected_ledger["unresolved_reasons"]
+    ):
+        raise SchemaRefusal("the export status does not match its own terminal ledger")
+    page_census = claims.get("page_census")
+    if (
+        not isinstance(page_census, dict)
+        or page_census.get("status") != "accounted-in-the-terminal-ledger"
+    ):
+        raise SchemaRefusal("the export page census makes no terminal-ledger claim")
 
 
 def _verify_delivered_product_provenance(

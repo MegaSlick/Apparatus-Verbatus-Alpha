@@ -23,6 +23,7 @@ from textnorm import TEXTNORM_REVISION, search_fold
 from common.armarium_formats import ArmariumFormats
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
+from common.contracts.outcomes import ArmariumCategory, run_aggregate
 from common.imaging import encode_grayscale_png
 
 TEXT_REGISTER = "text/_source_folder/register/readings.txt"
@@ -171,7 +172,7 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
 
     manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
     assert manifest["claims"]["status"] == "partial"
-    assert "submission-file inventory" in manifest["claims"]["partial_reasons"][0]
+    assert manifest["claims"]["partial_reasons"][0].startswith("act act-2 is held-for-review")
     assert manifest["claims"]["pixels"]["resolution_claim"].startswith("reference validity")
     assert verify_projection_identity(bundle.data, tmp_path / "identity") == {
         "act-1": "Cǣsar d’Amours"
@@ -289,8 +290,14 @@ def test_selected_products_cannot_omit_an_act_the_manifest_claims(tmp_path):
     "mutate",
     [
         lambda manifest: manifest["claims"].update(status="complete"),
+        lambda manifest: manifest["claims"].update(partial_reasons=[]),
         lambda manifest: manifest["claims"]["submission_inventory"].update(
             status="reconciled"
+        ),
+        lambda manifest: manifest["claims"]["terminal_ledger"].update(status="complete"),
+        lambda manifest: manifest["claims"]["terminal_ledger"]["units"].pop(),
+        lambda manifest: manifest["claims"]["terminal_ledger"]["by_category"].update(
+            {"held-for-review": 0}
         ),
         lambda manifest: manifest["aggregate"].update(status="complete", reasons=[]),
         lambda manifest: manifest["aggregate"].update(reasons=["a different partial reason"]),
@@ -305,7 +312,8 @@ def test_self_hashed_bundle_cannot_claim_unmeasured_completeness(mutate, tmp_pat
 
     with pytest.raises(
         SchemaRefusal,
-        match="claims.*reconciliation|aggregate claims complete|aggregate does not match",
+        match="submission denominator|terminal ledger does not match|status does not match"
+        "|aggregate claims complete|aggregate does not match",
     ):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
@@ -813,6 +821,96 @@ def test_bundle_bytes_are_deterministic_for_the_same_sealed_projection():
     first = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     second = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     assert first.data == second.data
+
+
+def test_the_terminal_ledger_partitions_sources_pages_and_acts_totally(tmp_path):
+    """Spec 11 test 1: a total partition, not an act-only one.
+
+    The fixture projection is one submitted source, one sealed page, and two acts, so
+    the ledger is six units and every one of them carries a closed category. The
+    counts are checked to sum, because a partition that misses a unit is exactly what
+    invariant #10 calls an imbalance and the failure mode is silence.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    ledger = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])["claims"]["terminal_ledger"]
+
+    assert ledger["by_unit_type"] == {"source": 1, "page": 1, "act": 2}
+    assert ledger["unit_count"] == 4 == sum(ledger["by_category"].values())
+    assert {unit["unit_id"] for unit in ledger["units"]} == {
+        "source:1",
+        "page:1",
+        "act:act-1",
+        "act:act-2",
+    }
+    # The page delivered an act, so its source did too; the held act is the only
+    # unresolved unit and it is named rather than counted.
+    assert {unit["unit_id"]: unit["category"] for unit in ledger["units"]} == {
+        "source:1": "delivered",
+        "page:1": "delivered",
+        "act:act-1": "delivered",
+        "act:act-2": "held-for-review",
+    }
+    assert ledger["status"] == "partial"
+    assert ledger["unresolved_reasons"][0].startswith("act act-2 is held-for-review")
+    assert "one unit per page or frame" in ledger["granularity_limit"]
+
+
+def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
+    """A door refusal and a sealed page nobody marked out are the two units the
+    act-only partition could not see at all. Neither may be inferred blank."""
+    base = _projection()
+    pages = (
+        *base.pages,
+        {
+            "ordinal": 2,
+            "outcome": "refused",
+            "reason": "the submitted bytes were not a readable image",
+            "declared_path": "register/folio-2.png",
+            "declared_sha256": "b" * 64,
+            "page_id": None,
+        },
+        {
+            "ordinal": 3,
+            "outcome": "sealed",
+            "reason": "",
+            "declared_path": "register/folio-3.png",
+            "declared_sha256": "c" * 64,
+            "page_id": "pg-3",
+            "image_path": "1_exemplar/blobs/sha256/page",
+            "image_sha256": digest_bytes(_source_bytes("1_exemplar/blobs/sha256/page")),
+        },
+    )
+    projection = replace(
+        base,
+        pages=pages,
+        source_manifest=tuple(
+            {
+                "ordinal": page["ordinal"],
+                "relative_path": page["declared_path"],
+                "sha256": page["declared_sha256"],
+            }
+            for page in pages
+        ),
+        aggregate=run_aggregate(
+            {"one": ArmariumCategory.DELIVERED, "two": ArmariumCategory.HELD_FOR_REVIEW},
+            base.aggregate_basis["coverage_records"],
+            {page["ordinal"]: page for page in pages},
+            unaddressed_chairs=[],
+            act_pages=base.aggregate_basis["act_pages"],
+        ),
+    )
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    ledger = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])["claims"]["terminal_ledger"]
+
+    units = {unit["unit_id"]: unit for unit in ledger["units"]}
+    assert units["source:2"]["category"] == "refused-with-reason"
+    assert units["source:2"]["reason"] == "the submitted bytes were not a readable image"
+    assert "page:2" not in units, "a refused source sealed no page to account for"
+    assert units["page:3"]["category"] == "held-for-review"
+    assert units["source:3"]["category"] == "held-for-review"
+    assert "blank page is proved" in units["page:3"]["reason"]
+    assert ledger["by_unit_type"] == {"source": 3, "page": 2, "act": 2}
+    assert sum(ledger["by_category"].values()) == ledger["unit_count"] == 7
 
 
 def _members(data: bytes) -> dict[str, bytes]:

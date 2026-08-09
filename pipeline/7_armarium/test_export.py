@@ -88,8 +88,18 @@ def test_armarium_seals_a_self_verifying_product_bundle(tmp_path):
 
     clean = tmp_path / "clean"
     manifest = verify_export_bundle(tree.read_bytes(reference["relative_path"]), clean)
-    assert manifest["claims"]["status"] == "partial"
-    assert manifest["claims"]["submission_inventory"]["status"] == "unreconciled"
+    # The happy fixture loses nothing, so the ledger says so. A status that reads
+    # `partial` on every run whatever happened could not report the run that did.
+    assert manifest["claims"]["status"] == "complete"
+    assert manifest["claims"]["partial_reasons"] == []
+    ledger = manifest["claims"]["terminal_ledger"]
+    assert ledger["by_unit_type"] == {"source": 2, "page": 2, "act": 2}
+    assert ledger["by_unit_type"]["source"] == manifest["claims"]["page_census"]["counted"]
+    assert sum(ledger["by_category"].values()) == ledger["unit_count"] == 6
+    assert (
+        manifest["claims"]["submission_inventory"]["status"]
+        == "reconciled-at-source-page-ordinal-granularity"
+    )
     assert verify_projection_identity(tree.read_bytes(reference["relative_path"]), tmp_path / "identity")
 
 
