@@ -261,3 +261,57 @@ def test_a_gapped_reference_is_scored_against_its_readable_ink_only():
     for cell in run.cells:
         assert cell.score.cer.edits.errors == 0
         assert cell.score.cer.reference_units == len("alpha beta")
+
+
+def test_a_cell_with_no_reading_in_it_records_no_dissent():
+    """Dissent measures parroting, so a refusal is not maximal independence.
+
+    `pipeline/4_perlector/run.py` publishes `"dissent": []` for an act it could not
+    read; this matches that. The refusal is still counted in the cell's response
+    state, so nothing is lost by not inventing a comparison.
+    """
+    reader = identity("base-private", 1)
+    act = evaluation_act()
+    replies = {
+        (act.opaque_act_id, condition): FakeReply(OutputStatus.REFUSED, None)
+        for condition in ALL_CONDITIONS
+    }
+    run = run_matrix(
+        (FakeCandidate(reader, replies),),
+        (act,),
+        prompt_registry=registry(reader),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert all(cell.perlectio.dissent.compared == 0 for cell in run.cells)
+    assert all(cell.perlectio.dissent.departed == 0 for cell in run.cells)
+    for aggregate in run.condition_aggregates():
+        assert aggregate.metrics.dissent_rate is None
+        assert aggregate.metrics.refused_count == aggregate.metrics.cell_count
+
+
+def test_a_reading_that_matches_a_witness_exactly_is_recorded_as_agreement():
+    """The other half of the same instrument: agreement is the correct output.
+
+    Most lines in a register are easy and every witness agrees. A measure that
+    rewarded disagreement would reward hallucination.
+    """
+    reader = identity("base-private", 1)
+    act = evaluation_act(text="alpha beta")
+    replies = {
+        (act.opaque_act_id, condition): FakeReply(OutputStatus.COMPLETE, "alpha beta")
+        for condition in ALL_CONDITIONS
+    }
+    run = run_matrix(
+        (FakeCandidate(reader, replies),),
+        (act,),
+        prompt_registry=registry(reader),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    primed = [
+        cell for cell in run.cells if cell.perlectio.condition is not Condition.LECTIO_NUDA
+    ]
+    assert primed
+    assert all(cell.perlectio.dissent.compared == 1 for cell in primed)
+    assert all(cell.perlectio.dissent.departed == 0 for cell in primed)

@@ -60,6 +60,17 @@ The runner constructs all dossiers and prompt requests before any candidate call
 
 Dissent is calculated only after candidate text is fixed. It counts comparable and departing Testimonia after the same normalization. It neither changes text nor weights, merges, selects, or rewards a witness.
 
+A cell with no reading in it records **no** dissent — not dissent from everyone.
+This matches the shape the landed `pipeline/4_perlector/run.py` already settles for
+the real stage, which publishes an empty dissent record for an act it could not
+read. Counting a refusal as departure from every witness would be true as a string
+comparison and backwards as a measure: dissent exists to make parroting visible, and
+a candidate that refused every act would otherwise read as maximally independent.
+The refusal is not lost; it is counted in that cell's response state. And agreement
+is not a fault: most lines in a register are easy and every witness agrees, so zero
+dissent there is the correct output. A metric that rewarded disagreement would
+reward hallucination.
+
 ## 4. Sampling frame, seed, and held-out rule
 
 The frame is every Tyrel-approved manually cropped act with opaque act ID, source-page SHA-256, crop SHA-256, provenance class, predeclared century/record/damage stratum, and potential for a checked human reference. No criterion may depend on model output, inter-annotator agreement, cost, or apparent ease. The full pre-reference frame may be selected without text hashes; every selected member must then bind its reference status plus checked-reference, independent-draft, adjudication, and Testimonium hashes before a run can open. `no_readable_text` and `unresolved_gap` must have a private reason-evidence digest in `PrivateSampleAccounting`; that accounting must partition every selected act into scoreable or excluded, is itself in the run-plan approval, and cannot replace a selected act.

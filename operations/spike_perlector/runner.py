@@ -469,9 +469,23 @@ def _dissent_for(
     testimonia: tuple[DossierTestimonium, ...],
     profile: NormalizationProfile,
 ) -> DissentSummary:
-    """Compare after a candidate text is fixed; no witness can influence that text."""
+    """Compare after a candidate text is fixed; no witness can influence that text.
+
+    A cell with no reading in it has no dissent. `pipeline/4_perlector/run.py`
+    already settles this shape for the real stage: an act the Perlector could not
+    read publishes `"dissent": []`, and only a published reading -- complete or
+    truncated, whatever text it managed -- is compared against the witnesses.
+
+    Recording a refused cell as having departed from every witness would be
+    literally true as a string comparison and exactly backwards as a measure.
+    Dissent is the parroting instrument; a candidate that refused every act would
+    otherwise score as maximally independent of its witnesses. The refusal is not
+    lost -- it is already counted in this cell's response state.
+    """
 
     if not testimonia:
+        return DissentSummary(compared=0, departed=0, unavailable=0)
+    if response.status not in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
         return DissentSummary(compared=0, departed=0, unavailable=0)
     hypothesis = normalize_text(hypothesis_for_status(response.status, response.text), profile)
     compared = 0
