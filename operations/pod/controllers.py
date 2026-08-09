@@ -50,6 +50,11 @@ class ControllerResult:
             return True
         if self.state is ControllerState.ACTIVE:
             return self.lease is not None and self.lease.controller_record is not None
+        if self.state is ControllerState.LEASE_RECORD_FAILURE:
+            # A verified shutdown whose result never reached the durable lease
+            # is not safe to report green: a restart has nothing on disk
+            # telling it the pod is gone (GOVERNANCE 2, nothing lost silently).
+            return False
         return self.close_report is not None and self.close_report.verified
 
 
