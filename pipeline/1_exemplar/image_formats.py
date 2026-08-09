@@ -49,21 +49,12 @@ MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
 MAX_TIFF_DATA_SEGMENTS: Final = 100_000
-# A classic-TIFF image directory the chain walk accepts costs six bytes: two of
-# entry count and four of next-offset. Nothing in that shape requires an actual
-# image, so a chain of empty directories six bytes apart declares one page per six
-# submitted bytes — measured, not theorised: 1.2 MB of them fanned out to 200,000
-# ordinals through the real `expand_sources` in 0.25 seconds, and the 64 MiB source
-# ceiling puts the worst case near eleven million.
-#
-# This is the same question `pdf_render.MIN_BYTES_PER_DECLARED_PAGE` asks of a PDF
-# page tree, and it is deliberately *not* the page cap ruling 17 retired. A real
-# microfilm reel is honestly enormous and its page count is the document's to
-# declare; what is refused here is a declared count no container of this size could
-# physically hold. The floor sits far below any decodable page — a real TIFF page
-# needs the tags for geometry, strip offsets and bit depth before a single pixel,
-# well past a hundred bytes — so no genuine document can reach it.
+# A declared page count has to fit in the bytes that arrived. This is not the page
+# cap ruling 17 retired — a reel's page count stays the document's to declare — it
+# refuses a count no container of that size could physically hold. Pillow's smallest
+# real page costs ~128 bytes, so no genuine document reaches either floor.
 MIN_BYTES_PER_DECLARED_TIFF_PAGE: Final = 32
+MIN_BYTES_PER_DECLARED_FRAME: Final = 32
 
 
 class ImageGeometry(NamedTuple):
@@ -1261,6 +1252,14 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                 detected = _pillow_format_name(reported_format)
                 if not isinstance(frames, int) or frames < 1:
                     raise corrupt("image: decoder returned no frames")
+                # Whatever the decoder reports still has to fit in the bytes that
+                # arrived. APNG reads its frame count straight out of the acTL chunk,
+                # so it does not scale with file size at all: a measured 125-byte APNG
+                # declared a million frames, and an animated GIF reached the same fan-out
+                # at 15 bytes a frame. The classic-TIFF walk is bounded by its own chain
+                # and has already returned above; this is the bound for every container
+                # that never reaches that walk.
+                _refuse_implausible_frame_count(detected, frames, len(data))
                 if not isinstance(page_index, int) or isinstance(page_index, bool):
                     raise corrupt("image: page index is not an integer")
                 if not 0 <= page_index < frames:
@@ -1489,6 +1488,15 @@ def _pillow_format_name(format_name: str | None) -> str:
         return "unknown-raster"
     aliases = {"JPEG": "jpeg", "TIFF": "tiff", "PNG": "png", "WEBP": "webp"}
     return aliases.get(format_name, format_name.lower())
+
+
+def _refuse_implausible_frame_count(detected: str, frames: int, container_size: int) -> None:
+    """Refuse a decoder-reported frame count the submitted bytes could not hold."""
+    if frames * MIN_BYTES_PER_DECLARED_FRAME > container_size:
+        raise corrupt(
+            f"{detected}: {frames} declared frames in {container_size} bytes, below the "
+            f"{MIN_BYTES_PER_DECLARED_FRAME} bytes any real frame needs"
+        )
 
 
 def _validate_classic_tiff_page_chain(data: bytes) -> int | None:

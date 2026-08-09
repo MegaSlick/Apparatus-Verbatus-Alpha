@@ -20,6 +20,7 @@ import image_formats
 import pytest
 from image_formats import (
     MAX_DIMENSION,
+    MIN_BYTES_PER_DECLARED_FRAME,
     MIN_BYTES_PER_DECLARED_TIFF_PAGE,
     DecodedRaster,
     FormatRefusal,
@@ -505,6 +506,57 @@ def test_a_chain_of_empty_directories_cannot_declare_more_pages_than_bytes_allow
 
     with pytest.raises(FormatRefusal, match="below the .* bytes any real page needs"):
         count_raster_pages(data)
+
+
+def test_an_apng_cannot_declare_more_frames_than_its_bytes_could_hold():
+    """A frame count read out of a header is a loop bound somebody else wrote.
+
+    APNG takes its count straight from the `acTL` chunk, so unlike the TIFF chain it
+    does not scale with file size at all: measured before this floor existed, a
+    125-byte APNG declaring a million frames was counted as a million pages and
+    `expand_sources` fanned it out. The classic-TIFF walk returns before this check,
+    so this is the bound for every container that walk never sees.
+    """
+
+    def chunk(kind, payload):
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    data = (
+        PNG_MAGIC
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+        + chunk(b"acTL", struct.pack(">II", 1_000_000, 0))
+        + chunk(b"fcTL", struct.pack(">IIIIIHHBB", 0, 1, 1, 0, 0, 1, 1, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00\x00", 9))
+        + chunk(b"IEND", b"")
+    )
+
+    assert len(data) < 32 * 1_000_000
+    with pytest.raises(FormatRefusal, match="declared frames in"):
+        count_raster_pages(data)
+
+
+def test_a_real_animation_is_counted_and_never_reaches_the_frame_floor():
+    """The floor above must never refuse a genuine multi-frame raster."""
+    frames = []
+    for index in range(60):
+        image = Image.new("P", (16, 16), 0)
+        pixels = image.load()
+        for x in range(16):
+            for y in range(16):
+                pixels[x, y] = (x * y + index * 7) % 256
+        frames.append(image)
+    output = BytesIO()
+    frames[0].save(output, format="GIF", save_all=True, append_images=frames[1:])
+    data = output.getvalue()
+
+    counted = count_raster_pages(data)
+    assert counted > 1
+    assert len(data) / counted > MIN_BYTES_PER_DECLARED_FRAME
 
 
 def test_a_real_thousand_page_tiff_is_counted_and_never_reaches_the_page_floor():
