@@ -428,6 +428,66 @@ def _witness_refs_of(reading_payload: dict) -> list[dict]:
     return [item["reference"] for item in reading_payload["basis"]["testimonia"]]
 
 
+def invoke_armarium(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/7_armarium/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            run_id,
+            "--scenario",
+            scenario,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_partial_record_is_exportable_by_the_frozen_armarium(tmp_path):
+    """The record this stage writes for a damaged act must survive its consumer.
+
+    This is why `status` stays the literal `"established"` and does not mirror
+    `text_status`: the Armarium's `verify_established_record` checks that field
+    verbatim, so a record whose `status` said `partial` would be refused at
+    export -- every damaged act, and damage is the common case.
+
+    **And a gap this test names rather than fixes.** The delivered entry carries
+    no trace of the damage today, and the run still aggregates to `complete`: the
+    Armarium does not read `text_status` or `annotations` at all. Making the
+    export honest about a partial reading is spec 11's work, not this stage's, and
+    the assertions below record what is true now so that whoever changes it reads
+    this. Stage 7 was off-limits this round.
+    """
+    root = tmp_path / "runs"
+    _run_through_recensor(root, "r")
+
+    def mutate(payload):
+        payload["annotations"] = [gap(3)]
+
+    tree, act_id = _tamper_reading_annotations(root, "r", mutate)
+    assert invoke_archetypus(root, "r", "happy").returncode == 0
+    record = tree.read_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+    )
+    assert record["payload"]["text_status"] == "partial"
+
+    result = invoke_armarium(root, "r", "happy")
+    assert result.returncode == 0, result.stderr
+
+    export = tree.read_artifact(
+        "armarium", "export", artifact_id("armarium", "export", "export", None)
+    )["payload"]
+    delivered = next(item for item in export["delivered"] if item["act_id"] == act_id)
+    assert delivered["text"] == record["payload"]["text"]
+    # Named, not endorsed: the export shows no gap and the aggregate says complete.
+    assert "text_status" not in delivered
+    assert "annotations" not in delivered
+    assert export["aggregate"]["status"] == "complete"
+
+
 def _reported_by(tree: RunTree, reference: dict) -> str:
     """What that witness actually said, so a test variant can be a real quotation."""
     record = json.loads(tree.resolve(reference["relative_path"]).read_text(encoding="utf-8"))
