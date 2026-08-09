@@ -309,9 +309,7 @@ def test_a_reading_that_matches_a_witness_exactly_is_recorded_as_agreement():
         profile=GRAPHEMIC_V1,
         authorization=RunAuthorization.synthetic_fixture(),
     )
-    primed = [
-        cell for cell in run.cells if cell.perlectio.condition is not Condition.LECTIO_NUDA
-    ]
+    primed = [cell for cell in run.cells if cell.perlectio.condition is not Condition.LECTIO_NUDA]
     assert primed
     assert all(cell.perlectio.dissent.compared == 1 for cell in primed)
     assert all(cell.perlectio.dissent.departed == 0 for cell in primed)
