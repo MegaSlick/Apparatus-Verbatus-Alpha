@@ -502,22 +502,13 @@ class PodRuntime:
                     ),
                     controller_arming=arming,
                 )
-        try:
-            close = self.shutdown.close(record, reason=f"{action} controller arming failed")
-        except Exception as error:
-            close = None
-            close_detail = f"controller arming failed and immediate close raised: {error}"
-        else:
-            close_detail = f"controller arming failed; immediate close is {close.state.value}"
-            try:
-                store.record_close(
-                    owner_token=owner_token,
-                    close_record=close.to_record(),
-                    verified=close.verified,
-                    now=self.now(),
-                )
-            except Exception as error:
-                close_detail = f"{close_detail}; close evidence could not be recorded: {error}"
+        close, close_detail = self._close_and_record(
+            record=record,
+            reason=f"{action} controller arming failed",
+            store=store,
+            owner_token=owner_token,
+            situation="controller arming failed",
+        )
         return LaunchResult(
             LaunchState.CONTROLLERS_UNARMED,
             preview,
@@ -554,6 +545,39 @@ class PodRuntime:
         if timer.get("report_path") != expected_path:
             raise ValueError("pod timer acknowledged a different durable report path")
 
+    def _close_and_record(
+        self,
+        *,
+        record: PodRecord,
+        reason: str,
+        store: LeaseStore,
+        owner_token: str,
+        situation: str,
+    ) -> tuple[CloseReport | None, str]:
+        """Attempt an immediate verified close, durably record it, and describe both.
+
+        Shared by every non-green path that must close a pod that already
+        exists rather than leave it running: `situation` names why closing
+        was necessary; the returned detail always says what the close did
+        and, separately, whether the close evidence itself could be persisted.
+        """
+
+        try:
+            close = self.shutdown.close(record, reason=reason)
+        except Exception as error:
+            return None, f"{situation}; immediate close raised: {error}"
+        detail = f"{situation}; immediate close is {close.state.value}"
+        try:
+            store.record_close(
+                owner_token=owner_token,
+                close_record=close.to_record(),
+                verified=close.verified,
+                now=self.now(),
+            )
+        except Exception as error:
+            detail = f"{detail}; close evidence could not be recorded: {error}"
+        return close, detail
+
     def _reassess_actual_price(
         self,
         *,
@@ -580,28 +604,17 @@ class PodRuntime:
         if assessment.allowed:
             return None
         actual_preview = PaidActionPreview(preview.action, preview.subject, assessment)
-        try:
-            close = self.shutdown.close(
-                record, reason=f"{action} price on the created pod exceeded its ceiling"
-            )
-        except Exception as error:
-            close = None
-            detail = f"created pod bills outside the configured ceiling and immediate close raised: {error}"
-        else:
-            detail = (
+        close, detail = self._close_and_record(
+            record=record,
+            reason=f"{action} price on the created pod exceeded its ceiling",
+            store=store,
+            owner_token=owner_token,
+            situation=(
                 "created pod bills outside the configured ceiling ("
                 + "; ".join(assessment.reasons)
-                + f"); immediate close is {close.state.value}"
-            )
-            try:
-                store.record_close(
-                    owner_token=owner_token,
-                    close_record=close.to_record(),
-                    verified=close.verified,
-                    now=self.now(),
-                )
-            except Exception as error:
-                detail = f"{detail}; close evidence could not be recorded: {error}"
+                + ")"
+            ),
+        )
         return LaunchResult(
             LaunchState.REFUSED_CEILING,
             actual_preview,
@@ -623,26 +636,13 @@ class PodRuntime:
     ) -> LaunchResult:
         """A created pod with an unproven effective shape is never a green launch."""
 
-        try:
-            close = self.shutdown.close(
-                record, reason=f"{action} effective runtime contract was unproven"
-            )
-        except Exception as error:
-            close = None
-            detail = f"effective runtime contract was unproven and immediate close raised: {error}"
-        else:
-            detail = (
-                f"effective runtime contract was unproven; immediate close is {close.state.value}"
-            )
-            try:
-                store.record_close(
-                    owner_token=owner_token,
-                    close_record=close.to_record(),
-                    verified=close.verified,
-                    now=self.now(),
-                )
-            except Exception as error:
-                detail = f"{detail}; close evidence could not be recorded: {error}"
+        close, detail = self._close_and_record(
+            record=record,
+            reason=f"{action} effective runtime contract was unproven",
+            store=store,
+            owner_token=owner_token,
+            situation="effective runtime contract was unproven",
+        )
         return LaunchResult(
             LaunchState.REFUSED_RUNTIME_CONTRACT,
             preview,
