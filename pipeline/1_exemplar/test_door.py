@@ -775,6 +775,17 @@ def test_expansion_ordinals_are_stable_by_filename_and_page_index():
     ]
 
 
+@pytest.mark.parametrize("bad_bytes", [True, False, -1, "5", 5.0])
+def test_a_row_with_no_non_negative_byte_count_is_a_contract_error(bad_bytes):
+    """`validate_manifest` already refuses this for a real ledger; this proves the
+    guard inside expand_sources itself actually fires too, for a caller that
+    reaches it some other way.
+    """
+    rows = [{"relative_path": "a.png", "sha256": "0" * 64, "bytes": bad_bytes}]
+    with pytest.raises(ContractError, match="no non-negative byte count"):
+        expand_sources(rows, reader({}), POLICY)
+
+
 def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_written(monkeypatch):
     class Models:
         witness_chairs = ("attestator_1",)
