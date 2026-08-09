@@ -174,12 +174,26 @@ def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_p
     act_id = review["subject_id"]
     request_id = review["payload"]["recovery_request_ref"]["relative_path"].rsplit("/", 1)[-1][:-5]
 
+    # The already-cut proposal region's *final* (padded) bounds, not the
+    # fixture's raw declared act rectangle: `cut_region` expands a proposal
+    # crop by the configured capture padding before cutting it, so the bounds
+    # that would actually collide with an existing region are the padded
+    # ones, not the pre-padding rectangle identity is bound to.
+    existing_proposal = next(
+        record
+        for record in (
+            tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+            for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+            if entry["kind"] == "region"
+        )
+        if record["subject_id"] == act_id and record["payload"]["origin"] == "proposal"
+    )
+    existing_bounds = existing_proposal["payload"]["transform"]["bounds"]
+
     context = _designator_context(designator, root)
-    act = next(row for row in context.fixture["act"] if row["key"] == "a1")
-    original_bounds = {key: act[key] for key in ("x", "y", "w", "h")}
     for row in context.fixture["recovery"]:
         if row["act_key"] == "a1":
-            row.update(original_bounds)
+            row.update(existing_bounds)
 
     with pytest.raises(ContractError, match="already has a region cut"):
         designator.recovery_pass(context, act_id, request_id)

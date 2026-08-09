@@ -29,6 +29,14 @@ the region identity is bound to the transform and so must change. ARCHITECTURE's
 first invariant therefore falls out of the derivation rather than being maintained
 by hand.
 
+Four sibling modules in this directory do the actual marking-out: `structure.py`
+finds every ink-bearing region on a decoded page, `grouping.py` assembles those
+regions into acts by geometry and structural cues alone — no election among
+candidates, GOVERNANCE 3's whole shape — `geometry.py` pads a structural
+rectangle into the capture rectangle actually cut, and `conservation.py`
+independently reconciles every page's own ink against what was actually
+claimed. See their module docstrings and `HANDOFF.md` for what each publishes.
+
     python pipeline/2_designator/run.py --run-root <dir> --run-id <id>
     python pipeline/2_designator/run.py ... --operation recover --act <act_id>
 """
@@ -37,24 +45,39 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# This stage's own directory, so its sibling geometry/structure/grouping/
+# conservation modules import as plain names. `2_designator` cannot be a
+# dotted package path -- it starts with a digit -- so every module beside
+# this file is loaded the way a script's own directory always is, made
+# explicit here because this file is also loaded directly by tests via
+# `importlib`, which does not set it automatically the way running it as
+# `python run.py` would.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import conservation  # noqa: E402
+import geometry  # noqa: E402
+import grouping  # noqa: E402
+import structure  # noqa: E402
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import self_hash  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
+from common.contracts.identities import act_id as derive_residual_act_id  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, RECENSOR  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
     verify_sealed_page_pixels,
 )
-from common.imaging import crop_png  # noqa: E402
+from common.imaging import crop_png, decode_grayscale_png, dimensions  # noqa: E402
 from common.recovery import FALLBACK_RECROP, load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
+    SECONDARY_PROPOSER_CHAIR,
     StageContext,
     act_bounds,
     act_identity,
@@ -64,9 +87,35 @@ from common.stage import (  # noqa: E402
     fixture_serving_details,
     open_context,
     page_identity,
+    residual_act_ordinal,
     run_stage,
     stage_parser,
 )
+
+# Fields a Designator artifact may never carry, at any depth of its payload.
+# `acts/`-equivalent artifacts (`kind="act-group"`) "contain no text" per the
+# spec's contracts section, and this is the schema-boundary enforcement of
+# that sentence rather than a convention nobody checks: a payload carrying a
+# transcription would still be geometry-shaped JSON and pass every other
+# check silently. Named for *content* fields specifically -- "reason" and
+# "rationale" describe a mechanism (which rule fired), never the ink itself,
+# and stay allowed.
+_FORBIDDEN_TEXT_KEYS = frozenset({"text", "reported", "transcription", "content", "reading"})
+
+
+def _refuse_text_fields(value, path: str = "$") -> None:
+    """Walk a payload and refuse any forbidden content-bearing key, at any depth."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _FORBIDDEN_TEXT_KEYS:
+                raise ContractError(
+                    f"payload at {path}.{key} carries a forbidden content field; a "
+                    "Designator act-group artifact carries no text at the schema boundary"
+                )
+            _refuse_text_fields(item, f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _refuse_text_fields(item, f"{path}[{index}]")
 
 
 def structure_provenance(context) -> dict:
@@ -96,6 +145,116 @@ def structure_provenance(context) -> dict:
         "receipt_ref": receipt_ref,
         "adapter_revision": context.adapter_revision,
     }
+
+
+def secondary_provenance(context) -> dict:
+    """Resolve and record the secondary proposer chair, absent or configured.
+
+    Unlike `structure_provenance`, an absence here is not a refusal: spec 06's
+    secondary proposer never carries crop authority, so its absence changes no
+    authority decision (test 5's own words). But the role must still be
+    *resolved*, every run, and the decision recorded — the shape Perlector's
+    `provenance_for` already uses for its own optional chair — because
+    `common/stage.py::unaddressed_chairs` only stays accurate about this role
+    if something genuinely asks the registry for it. Recording nothing and
+    relying on the config happening to say "absent" today is exactly the trap
+    the day this roster is enabled would fall into.
+    """
+    resolved = context.registry.resolve(SECONDARY_PROPOSER_CHAIR)
+    if isinstance(resolved, AbsentChair):
+        return {
+            "chair": resolved.role,
+            "chair_state": "absent",
+            "absence": resolved.to_record(),
+            "resolved_identity": None,
+            "resolved_revision": None,
+            "receipt_ref": None,
+            "adapter_revision": context.adapter_revision,
+        }
+    if not isinstance(resolved, ChairIdentity):
+        raise ContractError(
+            "secondary proposer resolution returned neither an identity nor an absence"
+        )
+    receipt_ref = context.write_serving_receipt(resolved, fixture_serving_details(resolved))
+    return {
+        "chair": resolved.role,
+        "chair_state": "configured",
+        "resolved_identity": resolved.to_record(),
+        "resolved_revision": {
+            "kind": resolved.receipt_revision_kind,
+            "value": resolved.receipt_revision,
+        },
+        "receipt_ref": receipt_ref,
+        "adapter_revision": context.adapter_revision,
+    }
+
+
+def page_pixels(context, page_record: dict) -> tuple[int, int, list, int]:
+    """Decode one sealed page and infer its own background value.
+
+    Grayscale PNG only: the synthetic walking skeleton's pages are the only
+    pixels this stage ever sees, and `common/imaging.py` states its own
+    narrowness plainly — a codec that quietly half-handled a real photograph
+    would be worse than one that says no. Real ingress never reaches here at
+    all (`_open` stops before it).
+    """
+    page_bytes = context.tree.read_bytes(page_record["payload"]["image_path"])
+    width, height, rows = decode_grayscale_png(page_bytes)
+    background = structure.infer_background(width, height, rows)
+    return width, height, rows, background
+
+
+def _bounds_of(row: dict) -> dict:
+    """The one reader of a fixture row's `x, y, w, h` fields as a `Bounds` dict.
+
+    A continuation row and a recovery row each carry their rectangle this way,
+    and three call sites once each rebuilt the same four-key comprehension by
+    hand: the act-group evidence, the continuation crop, and the recovery crop.
+    Three independent copies of one projection is the same risk class as two
+    independent copies of a transform (`_proposal_transform`) -- a fourth field
+    added to a fixture row and read by only some of the copies would silently
+    change what one call site cuts or compares without the others noticing.
+    `common.stage.act_bounds` is the sibling of this for a declared act row;
+    this is what a continuation or recovery row uses, since neither is an act
+    row itself.
+    """
+    return {key: row[key] for key in ("x", "y", "w", "h")}
+
+
+def _overlap_area(a: dict, b: dict) -> int:
+    x0, y0 = max(a["x"], b["x"]), max(a["y"], b["y"])
+    x1 = min(a["x"] + a["w"], b["x"] + b["w"])
+    y1 = min(a["y"] + a["h"], b["y"] + b["h"])
+    return max(0, x1 - x0) * max(0, y1 - y0)
+
+
+def _match_structural_group(groups: list[dict], declared_bounds: dict, what: str) -> dict:
+    """The detected act-group that best overlaps a declared act's bounds.
+
+    Grouping runs on real decoded pixels, and the synthetic pages' own
+    deliberately-striped ink (`proof/synthetic_pages.py`: "distinguishable
+    pixel-by-pixel from a crop of flat fill") means a detected component's
+    exact bounding box is never pixel-identical to the declared rectangle —
+    a striped fill's first and last rows/columns are frequently background by
+    construction. Majority overlap is therefore the right correspondence
+    test, not equality: if structural detection found nothing covering even
+    half of where an act is declared to be, that is a real finding — the
+    detector missed it — and is refused rather than silently accepted as a
+    match of convenience.
+    """
+    declared_area = declared_bounds["w"] * declared_bounds["h"]
+    best, best_overlap = None, 0
+    for group in groups:
+        overlap = _overlap_area(group["bounds"], declared_bounds)
+        if overlap > best_overlap:
+            best, best_overlap = group, overlap
+    if best is None or best_overlap * 2 < declared_area:
+        raise ContractError(
+            f"{what}: structural grouping found no detected region covering at least "
+            f"half of the declared bounds {declared_bounds}; the structure pass may "
+            "have missed this act entirely"
+        )
+    return best
 
 
 def page_records(context) -> dict[int, dict]:
@@ -173,6 +332,30 @@ def sealed_pages(records: dict[int, dict]) -> dict[int, dict]:
     }
 
 
+def _proposal_transform(page_ordinal: int, page_id: str, bounds: dict) -> dict:
+    """The one construction of a crop transform: `verify_exemplar_crop_lineage`'s
+    exact four fields, and every caller that must know a region's identity uses
+    this rather than hand-building the shape again.
+
+    This used to have two independent authors: `cut_region` built it to
+    actually publish a region, and `recovery_pass` built a second, separately
+    typed copy of the identical shape purely to predict what `region_id` a
+    would-be duplicate recrop would carry before ever cutting one. A field
+    added to one and not the other would have let the two silently diverge —
+    `recovery_pass`'s duplicate check would then compute a `region_id` for a
+    transform `cut_region` could never actually produce, and the check would
+    stop firing without either function's own code changing shape in a way a
+    reader would notice. One builder removes the seam entirely rather than
+    documenting a discipline for keeping two hand-written copies in lockstep.
+    """
+    return {
+        "operation": "crop",
+        "source_page_ordinal": page_ordinal,
+        "source_page_id": page_id,
+        "bounds": bounds,
+    }
+
+
 def cut_region(
     context,
     act,
@@ -182,6 +365,8 @@ def cut_region(
     page_ordinal,
     origin,
     recovery_request: dict[str, str] | None = None,
+    *,
+    padding: dict | None = None,
 ):
     """Cut one region of one act and publish it.
 
@@ -193,19 +378,49 @@ def cut_region(
     ink a recovery uncovers was never shown to them. Numbering alone cannot say
     which is which, and reading it as an attempt count made this stage skip the
     far side of a page break.
+
+    `bounds` is always the *structural* rectangle — the one act identity is
+    bound to (`common/contracts/identities.py::act_bindings`) — never the
+    padded one. `padding`, supplied only for a proposal cut, expands it into
+    the *capture* rectangle actually cut; a recovery crop passes none, because
+    a Recensor recovery request already names the exact rectangle it wants
+    (structural pad and capture pad "must never be conflated" — see
+    `geometry.py`'s module docstring).
+
+    `transform` itself keeps exactly the four fields
+    `common/exemplar_boundary.py::verify_exemplar_crop_lineage` has always
+    required — `bounds` there is the *final* rectangle, so it alone is enough
+    to reproduce this crop from the Exemplar. `raw_bounds` and `padding` are
+    sibling provenance beside it, explaining how `bounds` was derived rather
+    than changing what has to be reproduced; they were briefly nested inside
+    `transform` and that broke the shared Exemplar-lineage boundary check,
+    which reads `transform` as a closed four-field schema.
     """
     act_id = act_identity(context.fixture, act)
     provenance = structure_provenance(context)
     image_path = page_record["payload"]["image_path"]
     page_bytes = context.tree.read_bytes(image_path)
 
-    transform = {
-        "operation": "crop",
-        "source_page_ordinal": page_ordinal,
-        "source_page_id": page_record["subject_id"],
-        "bounds": bounds,
-    }
-    crop_bytes = crop_png(page_bytes, bounds)
+    if padding is not None:
+        page_w, page_h = dimensions(page_bytes)
+        padded = geometry.apply_padding(bounds, page_w, page_h, padding)
+        final_bounds = padded["bounds"]
+        padding_record = {
+            "applied_px": padded["applied_px"],
+            "configured_bp": padded["configured_bp"],
+            "config_sha256": padding["config_sha256"],
+            # Travels with the evidence itself, not only with a repository file
+            # a reviewer may never open: whether this padding was actually
+            # calibrated for this corpus, and if not, what is known and unknown
+            # about where it came from (`geometry.load_padding_config`).
+            "provenance": padding["provenance"],
+        }
+    else:
+        final_bounds = bounds
+        padding_record = None
+
+    transform = _proposal_transform(page_ordinal, page_record["subject_id"], final_bounds)
+    crop_bytes = crop_png(page_bytes, final_bounds)
     digest, stored = context.tree.put_blob(DESIGNATOR, crop_bytes)
 
     return context.publish(
@@ -220,6 +435,9 @@ def cut_region(
             "attempt_ordinal": ordinal,
             "origin": origin,
             "transform": transform,
+            "transform_digest": geometry.transform_digest(transform),
+            "raw_bounds": bounds,
+            "padding": padding_record,
             "image_path": stored.relative_path,
             "image_sha256": digest,
             "provenance": provenance,
@@ -257,12 +475,343 @@ def hold_act(context, act, act_id: str, unsealed_ordinal: int, records, reason: 
     )
 
 
+def _analyze_page(cache: dict, context, ordinal: int, page_record: dict) -> dict:
+    """Structure-pass and grouping results for one sealed page, computed once.
+
+    This is the genuinely visual half of "may use textual as well as visual
+    cues" (ARCHITECTURE), run for real on the page's own decoded pixels —
+    never assumed, never a fixture value standing in for it.
+    """
+    if ordinal not in cache:
+        width, height, rows, background = page_pixels(context, page_record)
+        components = structure.primary_scan(width, height, rows, background=background)
+        groups = grouping.group_page(components, width, height)
+        cache[ordinal] = {
+            "width": width,
+            "height": height,
+            "rows": rows,
+            "background": background,
+            "groups": groups,
+        }
+    return cache[ordinal]
+
+
+def _publish_act_group(
+    context,
+    act: dict,
+    act_id: str,
+    page_record: dict,
+    analysis: dict,
+    continuation: dict | None,
+    continuation_page_record: dict | None,
+    continuation_analysis: dict | None,
+):
+    """Record how geometry and structural cues grouped this act — no text.
+
+    Every field here is geometry or a code-generated rationale describing
+    which grouping rule fired; `_refuse_text_fields` is the schema-boundary
+    proof that nothing else got in. This artifact is evidence *for* the act
+    the fixture already bound identity to (`act_bounds`); it never becomes the
+    source of that identity, so a grouping disagreement is a refusal
+    (`_match_structural_group`), never a silent substitution.
+    """
+    primary_group = _match_structural_group(
+        analysis["groups"], act_bounds(act), f"act {act['key']}"
+    )
+    payload: dict = {
+        "act_key": act["key"],
+        "declared_bounds": act_bounds(act),
+        "detected_bounds": primary_group["bounds"],
+        "body_member_count": len(primary_group["body_members"]),
+        "anchor_count": len(primary_group["anchors"]),
+        "rationale": primary_group["rationale"],
+        "continuation": None,
+    }
+    inputs = [context.input_ref(page_record["payload"]["image_path"])]
+    if continuation is not None:
+        continuation_bounds = _bounds_of(continuation)
+        continuation_group = _match_structural_group(
+            continuation_analysis["groups"], continuation_bounds, f"act {act['key']} continuation"
+        )
+        # Recorded, not gated: the synthetic fixture's continuation rectangles
+        # do not touch either page's edge (`proof/synthetic_pages.py` says
+        # linking them is "a different unit's job"), so honest geometry here
+        # is usually `False` for this fixture even though the continuation
+        # itself is genuine. Forcing a match would be fabricating corroboration
+        # a real page's geometry has not offered.
+        corroborated = (
+            grouping.find_continuation_candidate(
+                analysis["groups"], analysis["height"], continuation_analysis["groups"]
+            )
+            is not None
+        )
+        payload["continuation"] = {
+            "declared_bounds": continuation_bounds,
+            "detected_bounds": continuation_group["bounds"],
+            "rationale": continuation_group["rationale"],
+            "geometric_corroboration": corroborated,
+        }
+        inputs.append(context.input_ref(continuation_page_record["payload"]["image_path"]))
+    _refuse_text_fields(payload)
+    return context.publish(
+        kind="act-group", subject_id=act_id, outcome="proposed", inputs=inputs, payload=payload
+    )
+
+
+def _claimed_regions(context, page_ordinal: int) -> list[dict]:
+    """Every proposal region's final (capture) bounds cut on this page so far."""
+    claimed = []
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "region":
+            continue
+        record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        payload = record["payload"]
+        if payload.get("origin") != "proposal":
+            continue
+        if payload["transform"]["source_page_ordinal"] != page_ordinal:
+            continue
+        claimed.append({"act_id": record["subject_id"], "bounds": payload["transform"]["bounds"]})
+    return claimed
+
+
+def _secondary_rescue_candidates(
+    claimed: list[dict], candidates: list[dict], page_ordinal: int
+) -> list[dict]:
+    """Every secondary-scan candidate that genuinely adds coverage, none that refine one.
+
+    A candidate touching zero already-claimed acts is real rescue material. One
+    touching exactly one is already inside ordinary coverage and is not a find.
+    One touching two or more is refused outright — the P0-incident-shaped rule,
+    as a hard error rather than a silent decision: a detector box that would
+    reach two already-established acts at once may not decide which one it
+    belongs to, and may not merge or split either.
+    """
+    rescues = []
+    for candidate in candidates:
+        overlapping_acts = {
+            entry["act_id"]
+            for entry in claimed
+            if _overlap_area(entry["bounds"], candidate["bounds"]) > 0
+        }
+        if len(overlapping_acts) >= 2:
+            raise ContractError(
+                f"secondary proposer candidate {candidate['bounds']} on page {page_ordinal} "
+                f"overlaps {len(overlapping_acts)} already-claimed acts; a secondary "
+                "proposer may add recall, never refine or split an established act"
+            )
+        if overlapping_acts:
+            continue
+        rescues.append(candidate)
+    return rescues
+
+
+def _publish_secondary_proposals(
+    context, ordinal: int, page_record: dict, analysis: dict, claimed: list[dict], secondary: dict
+) -> None:
+    """Publish every rescue candidate the secondary proposer's own scan adds.
+
+    Split from `_publish_conservation_and_secondary` so it can be exercised
+    against a hand-fed page analysis without needing to also be the first
+    (and, since a conservation record is a once-only artifact, therefore the
+    only) publisher of that page's conservation record.
+    """
+    if secondary["chair_state"] != "configured":
+        # Nothing to add: the secondary proposer is explicitly absent, and its
+        # absence changes no authority decision here either -- there is simply
+        # no additive recall pass to run.
+        return
+    candidates = structure.secondary_scan(
+        analysis["width"], analysis["height"], analysis["rows"], background=analysis["background"]
+    )
+    for index, candidate in enumerate(_secondary_rescue_candidates(claimed, candidates, ordinal)):
+        proposal_payload = {
+            "page_ordinal": ordinal,
+            "bounds": candidate["bounds"],
+            "pixel_count": candidate["pixel_count"],
+            "authoritative": False,
+            "provenance": secondary,
+        }
+        _refuse_text_fields(proposal_payload)
+        context.publish(
+            kind="secondary-proposal",
+            subject_id=f"{page_identity(context.fixture, ordinal)}-secondary-{index}",
+            outcome="proposed",
+            inputs=[context.input_ref(page_record["payload"]["image_path"])],
+            payload=proposal_payload,
+        )
+
+
+def residual_act_key(page_ordinal: int, index: int) -> str:
+    """The human-readable label for a conservation-residual act.
+
+    This string is for a reviewer's eye and this stage's own duplicate-act-key
+    refusal in `common.stage.expected_acts`; it is not what keeps a residual's
+    identity from colliding with a real proposal's. `residual_act_ordinal`'s
+    disjoint ordinal space does that, by construction, whatever a fixture
+    author happens to name their own acts.
+    """
+    return f"residual:{page_ordinal}:{index}"
+
+
+def hold_residual_act(
+    context,
+    page_id: str,
+    page_ordinal: int,
+    index: int,
+    bounds: dict,
+    pixel_count: int,
+    conservation_ref: dict[str, str],
+):
+    """Mint and hold the one act a conservation residual becomes.
+
+    The residual was never a structural proposal: structural grouping claimed
+    no region over this ink at all, so it could never have been witnessed or
+    read. It is therefore `held` from the moment it exists — the same
+    terminal shape an unsealed page already produces, extended to ink no
+    structural pass claimed rather than to a page that never sealed.
+
+    `common.stage.residual_act_ordinal` gives it an identity that cannot
+    collide with any real proposal's, present or future, by construction of
+    the ordinal space rather than by convention. The hold record carries the
+    exact ordinal and bounds a reader needs to recompute that identity, because
+    `common.stage._verify_residual_act_rows` does exactly that recomputation —
+    every act beyond the fixture's own denominator must prove itself against
+    evidence, never merely appear because this stage's own seal says so.
+    """
+    ordinal = residual_act_ordinal(index)
+    minted_act_id = derive_residual_act_id(page_id, ordinal, bounds)
+    hold = context.publish(
+        kind="hold",
+        subject_id=minted_act_id,
+        outcome="held",
+        inputs=[conservation_ref],
+        payload={
+            "act_key": residual_act_key(page_ordinal, index),
+            "page_ordinal": page_ordinal,
+            "residual_ordinal": ordinal,
+            "residual_bounds": bounds,
+            "residual_pixel_count": pixel_count,
+            "reason": (
+                "structural grouping claimed no region covering this ink; the residual "
+                "is held for review, never witnessed and never read, because no "
+                "structural proposal exists for it"
+            ),
+        },
+    )
+    return minted_act_id, hold
+
+
+def _publish_residual_holds(
+    context,
+    page_id: str,
+    page_ordinal: int,
+    residual_components: list[dict],
+    conservation_ref: dict[str, str],
+) -> list[dict]:
+    """Mint one held act per conservation residual, closing HANDOFF.md's own gap.
+
+    Every residual is minted, never only the high-priority ones:
+    `review_priority` orders which residual a reviewer looks at first and must
+    never decide whether a region exists in the accounting at all — spec 06's
+    own words, and `conservation.py`'s module docstring says the same of the
+    artifact this extends. `residual_components` already arrives in the
+    deterministic (top, then left) order `structure.label_components`
+    produces, so `index` — and therefore `residual_act_ordinal(index)` — names
+    the same residual on every run over an unchanged page.
+    """
+    rows = []
+    for index, component in enumerate(residual_components):
+        minted_act_id, hold = hold_residual_act(
+            context,
+            page_id,
+            page_ordinal,
+            index,
+            component["bounds"],
+            component["pixel_count"],
+            conservation_ref,
+        )
+        rows.append(
+            {
+                "act_id": minted_act_id,
+                "act_key": residual_act_key(page_ordinal, index),
+                "page_id": page_id,
+                "page_ordinal": page_ordinal,
+                "has_continuation": False,
+                "outcome": "held",
+                "evidence": [context.input_ref(hold.relative_path)],
+            }
+        )
+    return rows
+
+
+def _publish_conservation_and_secondary(
+    context, ordinal: int, page_record: dict, analysis: dict, secondary: dict
+) -> list[dict]:
+    """Independent ink-vs-crop reconciliation, plus non-authoritative rescue crops.
+
+    Conservation rescans this page's own pixels rather than trusting what
+    grouping already claimed to have found — closing the gap an independent
+    audit of the old pipeline named precisely: its conservation proved
+    coverage of units a structural model had already emitted, and could not
+    prove the model had not missed ink entirely. This can.
+
+    Returns the expected-act row for every residual this page's reconciliation
+    found, so `initial_pass` can extend the proposal seal's own denominator
+    with them. A residual is no longer only a passive audit-trail entry: it is
+    a unit this run accounts for exactly as it accounts for a page that never
+    sealed, closing the gap `HANDOFF.md` named as unclosed pending this exact
+    change to `common.stage.expected_acts`.
+    """
+    claimed = _claimed_regions(context, ordinal)
+    result = conservation.reconcile(
+        analysis["width"],
+        analysis["height"],
+        analysis["rows"],
+        background=analysis["background"],
+        claimed_bounds=[entry["bounds"] for entry in claimed],
+    )
+    conservation_payload = {
+        "page_ordinal": ordinal,
+        "total_ink_pixel_count": result["total_ink_pixel_count"],
+        "claimed_pixel_count": result["claimed_pixel_count"],
+        "residual_pixel_count": result["residual_pixel_count"],
+        "residual_components": result["residual_components"],
+    }
+    _refuse_text_fields(conservation_payload)
+    published = context.publish(
+        kind="conservation",
+        subject_id=page_identity(context.fixture, ordinal),
+        outcome="proposed",
+        inputs=[context.input_ref(page_record["payload"]["image_path"])],
+        payload=conservation_payload,
+    )
+    _publish_secondary_proposals(context, ordinal, page_record, analysis, claimed, secondary)
+    return _publish_residual_holds(
+        context,
+        page_identity(context.fixture, ordinal),
+        ordinal,
+        result["residual_components"],
+        context.input_ref(published.relative_path),
+    )
+
+
 def initial_pass(context) -> int:
     records = page_records(context)
     pages = sealed_pages(records)
     if not pages:
         raise ContractError("the Designator found no sealed page to mark out")
 
+    padding = geometry.load_padding_config()
+    secondary = secondary_provenance(context)
+    context.publish(
+        kind="secondary-provenance",
+        subject_id="secondary-provenance",
+        outcome="proposed",
+        inputs=[],
+        payload=secondary,
+    )
+
+    page_cache: dict[int, dict] = {}
     expected = []
     seal_inputs = []
     for act in context.fixture["act"]:
@@ -289,23 +838,39 @@ def initial_pass(context) -> int:
             )
             evidence.append(context.input_ref(hold.relative_path))
         else:
+            analysis = _analyze_page(page_cache, context, page_ordinal, pages[page_ordinal])
             primary = cut_region(
-                context, act, pages[page_ordinal], act_bounds(act), 1, page_ordinal, "proposal"
+                context,
+                act,
+                pages[page_ordinal],
+                act_bounds(act),
+                1,
+                page_ordinal,
+                "proposal",
+                padding=padding,
             )
             evidence.append(context.input_ref(primary.relative_path))
 
             # An act that runs over the page break gets a second region of the
             # SAME act. A continuation that became its own act would quietly turn
             # one entry into two and break identity where it is hardest to see.
+            continuation_analysis = None
             if continuation and continuation["page_ordinal"] in pages:
+                continuation_analysis = _analyze_page(
+                    page_cache,
+                    context,
+                    continuation["page_ordinal"],
+                    pages[continuation["page_ordinal"]],
+                )
                 continuation_region = cut_region(
                     context,
                     act,
                     pages[continuation["page_ordinal"]],
-                    {key: continuation[key] for key in ("x", "y", "w", "h")},
+                    _bounds_of(continuation),
                     2,
                     continuation["page_ordinal"],
                     "proposal",
+                    padding=padding,
                 )
                 evidence.append(context.input_ref(continuation_region.relative_path))
                 continuation_cut = True
@@ -328,6 +893,16 @@ def initial_pass(context) -> int:
                 evidence.append(context.input_ref(hold.relative_path))
             else:
                 outcome = "proposed"
+                _publish_act_group(
+                    context,
+                    act,
+                    act_id,
+                    pages[page_ordinal],
+                    analysis,
+                    continuation if continuation_cut else None,
+                    pages[continuation["page_ordinal"]] if continuation_cut else None,
+                    continuation_analysis if continuation_cut else None,
+                )
 
         expected.append(
             {
@@ -348,6 +923,21 @@ def initial_pass(context) -> int:
 
     if not expected:
         raise ContractError("no act was marked out on any sealed page")
+
+    # Conservation runs over every sealed page this run reached, not only the
+    # pages a declared act happened to touch — a page nothing was assigned to
+    # is exactly the case a coverage proof must not skip by construction. Any
+    # residual it finds extends the seal's own denominator, held from the
+    # start, so it reaches expected_acts()/the seal exactly like every other
+    # act rather than sitting inert inside the conservation artifact alone.
+    for ordinal, page_record in pages.items():
+        analysis = _analyze_page(page_cache, context, ordinal, page_record)
+        residual_rows = _publish_conservation_and_secondary(
+            context, ordinal, page_record, analysis, secondary
+        )
+        expected.extend(residual_rows)
+        for row in residual_rows:
+            seal_inputs.extend(row["evidence"])
 
     # The seal, emitted once and never rewritten: this is what downstream stages
     # reconcile against, so "every expected act has exactly one outcome" is a
@@ -429,14 +1019,13 @@ def recovery_pass(context, act_id: str, request_id: str) -> int:
         )
 
     pages = sealed_pages(page_records(context))
-    bounds = {key: recovery[0][key] for key in ("x", "y", "w", "h")}
+    bounds = _bounds_of(recovery[0])
     page_record = pages[act["page_ordinal"]]
-    transform = {
-        "operation": "crop",
-        "source_page_ordinal": act["page_ordinal"],
-        "source_page_id": page_record["subject_id"],
-        "bounds": bounds,
-    }
+    # The same builder `cut_region` uses, so this duplicate check is computed
+    # against the exact shape that would actually be published -- see
+    # `_proposal_transform`'s docstring for why two independent copies of this
+    # shape was a real defect class rather than a style preference.
+    transform = _proposal_transform(act["page_ordinal"], page_record["subject_id"], bounds)
     duplicate = region_id(act_id, transform)
     existing_regions = _regions_of(context, act_id)
     already_recovered = [

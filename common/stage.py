@@ -23,8 +23,15 @@ from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import digest_bytes, digest_of, verify_self_hash
 from common.contracts.envelope import build_envelope
-from common.contracts.errors import ContractError, FatalAccounting, IncompatibleReuse, SchemaRefusal
-from common.contracts.identities import artifact_id, attempt_id
+from common.contracts.errors import (
+    ContractError,
+    FatalAccounting,
+    IdentityRefusal,
+    IncompatibleReuse,
+    SchemaRefusal,
+)
+from common.contracts.identities import act_bindings, artifact_id, attempt_id
+from common.contracts.identities import verify as verify_identity
 from common.contracts.outcomes import classify
 from common.contracts.stages import DESIGNATOR, PERLECTOR, RECENSOR
 from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
@@ -510,6 +517,15 @@ def run_config_bindings(
 DESIGNATOR_CHAIR = "designator_structure"
 PERLECTOR_CHAIR = PERLECTOR
 
+# `config/models.toml` already carries `secondary_proposer`, absent by default
+# ("no secondary proposer is configured for the offline walking skeleton") —
+# but an absence is only a recorded decision if something actually resolves the
+# role and writes that decision down. Naming it here, in the one set
+# `unaddressed_chairs` checks against, is what stops the day someone flips the
+# roster to a real detector from silently turning every run `partial`: the
+# resolution path has to exist *before* that flip, not be discovered by it.
+SECONDARY_PROPOSER_CHAIR = "secondary_proposer"
+
 
 def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
     """Configured roles no stage in this pipeline will ever ask for.
@@ -531,7 +547,11 @@ def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
     roster to `partial` for a chair that *is* accounted for, one indirection away.
     Found by CodeRabbit on pull request 16.
     """
-    addressed = set(models.witness_chairs) | {DESIGNATOR_CHAIR, PERLECTOR_CHAIR}
+    addressed = set(models.witness_chairs) | {
+        DESIGNATOR_CHAIR,
+        PERLECTOR_CHAIR,
+        SECONDARY_PROPOSER_CHAIR,
+    }
     for role in list(addressed):
         value = models.chairs.get(role)
         while isinstance(value, ChairIdentity) and value.adapter_of is not None:
@@ -837,6 +857,15 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     Designator derives every act from fixture data, and the run configuration
     seals those fixture bytes.  Real ingress intentionally stops before any
     proposal seal exists, so no unbuilt structural model is being prescribed.
+
+    The fixture's own acts are still a *floor*, never a ceiling: every one of
+    them must appear, exactly as before. But the seal may now also carry acts
+    the fixture never declared, minted from an ink residual conservation found
+    that structural grouping never claimed (`pipeline/2_designator/run.py`'s
+    `_publish_residual_holds`). Those extra rows are not fixture data and
+    cannot be checked against it — `_verify_residual_act_rows` checks them
+    against the one thing they *can* be checked against: their own hold
+    record's residual facts, recomputed rather than trusted.
     """
     fixture_acts = context.fixture.get("act", [])
     if not fixture_acts:
@@ -851,7 +880,8 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
         for row in fixture_acts
     }
     observed = {act["act_id"]: act for act in acts}
-    if set(observed) != set(expected):
+    missing = set(expected) - set(observed)
+    if missing:
         raise FatalAccounting(
             "the proposal seal expected-act denominator does not reconcile to every synthetic "
             "act bound into this run"
@@ -872,6 +902,100 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
             raise FatalAccounting(
                 f"proposed act {act_id} does not account for its declared continuation"
             )
+    _verify_residual_act_rows(
+        context, {act_id: observed[act_id] for act_id in set(observed) - set(expected)}
+    )
+
+
+def residual_act_ordinal(index: int) -> int:
+    """The disjoint ordinal namespace a conservation-residual act's identity uses.
+
+    `identities.act_id`'s own `proposal_ordinal` is always the non-negative "nth
+    region a structure pass proposed on a page" — a residual was never such a
+    proposal, so it cannot borrow that ordinal space without risking collision
+    with a real one, present or future. `-(index + 1)` is disjoint from every
+    non-negative ordinal by construction rather than by convention, so no
+    structure pass — this fixture's or a real one's — can ever mint a genuine
+    proposal whose identity collides with a residual's. `index` is the
+    residual's position in `conservation.reconcile`'s own `residual_components`
+    list, which is already deterministically ordered (top, then left) by the
+    shared `structure.label_components`, so the same page reconciles to the
+    same ordinal on every run.
+
+    A single function used by both the minting code
+    (`pipeline/2_designator/run.py`) and this module's own verification of what
+    was minted is what keeps the two from becoming a second instance of the
+    duplicate-construction risk class this build's report names — one
+    definition, not two hand-typed copies of `-(index + 1)`.
+    """
+    if index < 0:
+        raise ContractError(f"a residual index {index} is negative and names no residual")
+    return -(index + 1)
+
+
+def _verify_residual_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> None:
+    """Every expected-act row beyond the fixture's own denominator.
+
+    The only unit the Designator may add beyond what the fixture declares is a
+    conservation residual it could never structurally propose — GOALS 1's "a
+    missed act is worse than a poorly read act", extended to ink no structural
+    pass claimed at all. Such an act is `held` from the moment it exists, never
+    `proposed`: nothing witnessed it and nothing read it, so it may not carry a
+    continuation either. Its identity must independently *recompute* from facts
+    a reviewer can check against the conservation record that found it — an
+    extra row is not trustworthy merely because the seal's own producer wrote
+    it down, which is the same reasoning `expected_acts` already applies to
+    every fixture-derived row above.
+    """
+    for act_id, row in extra_rows.items():
+        if row["outcome"] != "held":
+            raise FatalAccounting(
+                f"act {act_id} is not declared in the sealed fixture and is not 'held'; the "
+                "only unit that may extend the denominator beyond the fixture is a conservation "
+                "residual, and a residual is never structurally proposed"
+            )
+        if row["has_continuation"]:
+            raise FatalAccounting(
+                f"act {act_id} extends the denominator beyond the fixture but claims a "
+                "continuation; a residual has no declared continuation to claim"
+            )
+        hold = _residual_hold_for(context, act_id)
+        payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
+        ordinal, bounds = payload.get("residual_ordinal"), payload.get("residual_bounds")
+        if (
+            not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or ordinal >= 0
+            or not isinstance(bounds, dict)
+        ):
+            raise FatalAccounting(
+                f"act {act_id}'s hold record carries no valid residual ordinal and bounds to "
+                "recompute its identity from"
+            )
+        try:
+            verify_identity(act_id, "act", act_bindings(row["page_id"], ordinal, bounds))
+        except IdentityRefusal as error:
+            raise FatalAccounting(
+                f"act {act_id} does not verify against the residual ordinal and bounds its own "
+                f"hold record names: {error}"
+            ) from error
+
+
+def _residual_hold_for(context, act_id: str) -> dict[str, Any]:
+    """The one Designator hold record for an act extending the denominator.
+
+    Read the same way `_verify_proposal_seal_evidence` reads every act's
+    evidence below, but ahead of it: the denominator check runs first, so an
+    extra row must already name a real hold before that later, more general
+    evidence check ever sees it.
+    """
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] == "hold" and entry["subject_id"] == act_id:
+            return context.tree.read_artifact(DESIGNATOR, "hold", entry["artifact_id"])
+    raise FatalAccounting(
+        f"act {act_id} extends the denominator beyond the fixture but the Designator "
+        "published no hold record for it"
+    )
 
 
 def _verify_proposal_seal_evidence(

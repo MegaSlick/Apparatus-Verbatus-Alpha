@@ -8,6 +8,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `recovery.toml` | present — how many times rework may be asked for before review |
 | `hard_failure.toml` | present — how many accounted hard failures one run may carry before it stops; the threshold is Tyrel's ruling, the `[[kind]]` list is proposed and not yet approved (see the file's own header) |
 | `pdf_render.toml` | present — what whole-page PDF resolution the next run targets |
+| `designator_padding.toml` | present — how far a proposal crop is expanded past its structural bounds before it is cut |
 | `data_handling_policy.json` | present — how real material is stored, logged, retained and disposed of |
 | `spend.toml` | present, deliberately unconfigured — Tyrel's pod-plus-attached-volume money caps; both paid paths refuse it until configured |
 | `pod_placement.toml` | present — planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
@@ -36,6 +37,16 @@ those beside its `effective_dpi`. The 72-DPI floor, pixel ceiling, and decoded-b
 ceiling remain in code; configuration cannot weaken them. The default is **unmeasured**:
 making it adjustable does not prove it suitable, and it should be checked against a
 real sample of real material (GOVERNANCE 9).
+
+`designator_padding.toml` is the asymmetric capture-padding policy
+`pipeline/2_designator/geometry.py` applies to a structural proposal before
+cutting it: top/bottom/left/right, in integer basis points of the crop's own
+width or height, clamped to the page edge. It is **not** currently bound into
+`run.json`'s `config_digest` the way `pdf_render.toml` and `recovery.toml`
+are — a run does not yet refuse to reuse an id whose padding policy changed —
+but every crop's own payload carries the exact fraction and pixel amount
+applied plus the file's digest, so a padding change is still traceable per
+artifact even though the run authority does not yet seal it.
 
 `data_handling_policy.json` names the storage roots real material may occupy, and
 `operations/submit/gate.py` refuses a submission folder, run root or ledger outside

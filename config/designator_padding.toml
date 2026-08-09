@@ -1,0 +1,45 @@
+# Crop padding: how far a proposal region is expanded before it is cut, beyond
+# the raw bounds that carry the act's identity.
+#
+# Values are integer basis points (1/10000) of the crop's OWN width or height —
+# never the page's — because canonical artifacts carry integers, not floats
+# (`common/contracts/canonical.py`), and a padding fraction that reached a
+# payload as a float would be a determinism defect the moment it was hashed.
+# `top_bp = 600` means "6.00% of this crop's own height", applied before
+# clamping to the page edges.
+#
+# Asymmetric on purpose. A symmetric pad under-covers the bottom and right of a
+# register entry, where a signature commonly extends past the body text —
+# that shape of finding (not these exact numbers) is the reason padding is
+# asymmetric at all. Structural pad (which raw region belongs to which act)
+# and capture pad (how many pixels are actually cut) must never be conflated,
+# or a change made for one silently moves the other. This file governs
+# capture pad only: how much extra image a witness is shown around a region
+# whose bounds — and therefore whose act identity — were already decided by
+# grouping.
+#
+# **These four numbers are evidence about a different corpus, not a validated
+# default for this one.** A second-pass window read (2026-08-05) traced them
+# past the phrase "gold annotations" this file used to carry alone, to their
+# actual source: `[padding.provenance]` below states plainly what that source
+# was, what could and could not be verified about it, and that nothing in this
+# repository has re-run the calibration against this project's own pages.
+# `pipeline/2_designator/padding_calibration.py` is a ready-to-run harness for
+# doing exactly that once a gold set of this project's own hand-marked act
+# rectangles exists — it computes fresh numbers from real samples; it does not
+# invent them, and none has been invented here to replace the ones below.
+
+[padding]
+top_bp = 600
+bottom_bp = 1800
+left_bp = 500
+right_bp = 2200
+
+[padding.provenance]
+source = "carried forward from the old pipeline's own calibration record (pilot_crops_dai.py, act_dossier.py), read through the window on 2026-08-05 rather than re-measured"
+corpus = "a third-party dataset: Teklia's published French parish-register gold annotations (~4,572 records), not this project's own pages -- the old pipeline used the same vendor's model as a witness, never as this project's ground truth"
+sample_unit = "record (a French parish-register act), not this project's own page or act unit"
+sample_count = 4572
+statistic = "reported as \"p75 edge shortfall\" against that corpus; the window mounted for this build did not include the document defining that statistic precisely (docs/SEGMENTATION_CALIBRATION_2026-07-06.md was not mounted), so its exact arithmetic could not be independently verified -- only the plain-language description could be"
+calibrated_for_this_corpus = false
+caveat = "re-derive against this project's own gold set before treating these four numbers as more than a starting point; pipeline/2_designator/padding_calibration.py computes fresh basis-point values from real (detected, true-content) rectangle pairs and names the minimum sample size a defensible percentile needs -- it has not been run, because no such gold set exists here yet"

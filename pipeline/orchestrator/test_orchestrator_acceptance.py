@@ -23,6 +23,7 @@ from common.chairs import ChairIdentity, load_models_toml
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.envelope import build_envelope, validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import (
     ARCHETYPUS,
@@ -37,7 +38,14 @@ from common.contracts.stages import (
 )
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
-from common.stage import load_fixture, run_config_bindings
+from common.stage import (
+    load_fixture,
+    open_context,
+    page_identity,
+    residual_act_ordinal,
+    run_config_bindings,
+    stage_parser,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -238,8 +246,36 @@ FIXTURE = "synthetic-two-page-v0"
 # `validate_index` proving the tie to the Recensor's accepted set), which
 # changes `index.json`'s bytes under both scenarios. Counts unchanged at 46 and
 # 50; both digests re-measured from real orchestrator runs.
-HAPPY_RUN_TREE_DIGEST = "889dfadd21596e23c3f55efcb4c94ed5c9b3b51e1502af8c929f29ee48889d3e"
-REVIEW_RUN_TREE_DIGEST = "ee6b295637d84883341f86a1714db2bfbeaa588514a6d80fdb795b4226c8301a"
+#
+# Re-pinned for the System 06 (Designator) deepening. The Designator now writes five
+# new artifacts per happy run and stays proportionally larger under recovery: one
+# `secondary-provenance` record (the secondary-proposer chair, resolved and addressed
+# every run rather than left unaddressed the day the roster is enabled), one
+# `act-group` per proposed act (real geometric grouping evidence, reconciled against
+# the declared act bounds — 2 in the shared fixture), and one `conservation` record per
+# sealed page this run reached (independent ink-vs-crop reconciliation — 2 pages). Every
+# proposal region's crop bounds also changed: capture padding is now genuinely applied
+# and clamped to the page edge before cutting, so `region` payloads carry different
+# transform bounds, a `raw_bounds`/`padding` provenance pair, and a `transform_digest`
+# that were not there before. On this branch's original base the counts moved from
+# 42/46 to 47/51 (both scenarios gain the same five kinds; the review scenario's
+# recovery loop does not add or remove any of them, since conservation and act-group
+# evidence are produced only in `initial_pass`). The merged tree's counts are
+# re-measured in the rebase entry below, never carried by arithmetic.
+# Re-pinned again for the System 06 deepening's second pass. File counts stay at
+# 47/51 — no scenario here produces a conservation residual, so the new
+# residual-holding-act mechanism (`common.stage.residual_act_ordinal`,
+# `_verify_residual_act_rows`) never fires and adds no artifact to either
+# scenario. What moved: every proposal region's `padding` field now carries a
+# `provenance` sub-object (`geometry.load_padding_config` / `cut_region`),
+# stating plainly that the shipped basis-point values are carried forward from
+# a third-party corpus and have not been calibrated against this project's own
+# pages — a fact that used to live only in a comment in
+# `config/designator_padding.toml` and now travels with the evidence itself.
+# That new field, present on every region artifact in both scenarios, is a
+# deliberate record change and moves both whole-tree pins with it.
+HAPPY_RUN_TREE_DIGEST = "a5874cd1efdb654230787afa112fcc29180814b8213888bb4d3106677898f180"
+REVIEW_RUN_TREE_DIGEST = "ec43262411316817d16e5fd5a17bab97a9180f8e5a0063b9fb0e95e52a31a75e"
 
 
 def orchestrate(
@@ -564,6 +600,237 @@ def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_
     assert result.returncode == 2
     assert "does not reconcile to every synthetic act" in result.stderr
     assert snapshot(root) == before
+
+
+def _designator_context_for(root: Path, run_id: str, scenario: str):
+    """A real Designator `StageContext` over an already-created run tree.
+
+    Opened the way `pipeline/2_designator/run.py`'s own CLI would open one,
+    not fabricated — the same seam `test_recovery_idempotency.py` uses. This
+    is enough to publish a well-formed `hold` artifact with `context.publish`,
+    which is all these tests need: the actual minting logic under test lives
+    in `common.stage._verify_residual_act_rows`, exercised by real subprocess
+    consumers below, per meta-invariant #86.
+    """
+    args = stage_parser("test-only residual denominator context").parse_args(
+        ["--run-root", str(root), "--run-id", run_id, "--scenario", scenario]
+    )
+    return open_context(args, DESIGNATOR)
+
+
+def _mint_test_residual_row(
+    context,
+    page_id: str,
+    page_ordinal: int,
+    index: int,
+    bounds: dict,
+    *,
+    hold_bounds: dict | None = None,
+) -> dict:
+    """Publish one residual-shaped `hold` and return its expected-act seal row.
+
+    Mirrors `pipeline/2_designator/run.py::hold_residual_act` exactly enough to
+    exercise `common.stage`'s verification of it, independent of a real
+    conservation residual — the mechanism under test here is the *denominator
+    check*, not the pixel scan. `hold_bounds`, when different from `bounds`,
+    lets a test forge a hold whose recorded facts do not match the identity
+    the row claims — the one thing `_verify_residual_act_rows` must catch.
+    """
+    ordinal = residual_act_ordinal(index)
+    act_id = derive_act_id(page_id, ordinal, bounds)
+    hold = context.publish(
+        kind="hold",
+        subject_id=act_id,
+        outcome="held",
+        inputs=[],
+        payload={
+            "act_key": f"residual:{page_ordinal}:{index}",
+            "page_ordinal": page_ordinal,
+            "residual_ordinal": ordinal,
+            "residual_bounds": hold_bounds if hold_bounds is not None else bounds,
+            "residual_pixel_count": bounds["w"] * bounds["h"],
+            "reason": "test-minted residual hold",
+        },
+    )
+    context.finish()
+    return {
+        "act_id": act_id,
+        "act_key": f"residual:{page_ordinal}:{index}",
+        "page_id": page_id,
+        "page_ordinal": page_ordinal,
+        "has_continuation": False,
+        "outcome": "held",
+        "evidence": [context.input_ref(hold.relative_path)],
+    }
+
+
+def _reseal_with_extra_row(tree: RunTree, row: dict, *, include_hold_evidence: bool = True) -> None:
+    """Append one expected-act row to the real, on-disk proposal seal.
+
+    Recomputes both self-hashes exactly as the precedent shortened-denominator
+    test above does, so this stays a well-formed, digest-checked artifact —
+    the seal's OWN identity does not change, only the append-only inventory
+    a real second `hold` publish already added to the tree.
+    """
+    seal_id = artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal")
+    path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal-seal", seal_id))
+    seal = json.loads(path.read_text(encoding="utf-8"))
+    seal["payload"]["expected_acts"].append(row)
+    seal["payload"]["count"] = len(seal["payload"]["expected_acts"])
+    if include_hold_evidence:
+        seal["inputs"].extend(row["evidence"])
+    seal["payload"]["self_hash"] = self_hash(seal["payload"])
+    seal["self_hash"] = self_hash(seal)
+    path.write_bytes(canonical_bytes(seal))
+
+
+def test_a_well_formed_residual_act_extends_the_denominator_and_the_first_consumer_accepts_it(
+    tmp_path,
+):
+    """A conservation residual's held act is not a fixture act, and is accepted anyway.
+
+    `expected_acts`'s floor is still every fixture act; a residual is the one
+    kind of *additional* row it may carry, verified against its own hold
+    record rather than trusted because the seal says so.
+    """
+    root = tmp_path / "runs"
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = invoke_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+    result = invoke_stage(root, "r", "happy", "pipeline/2_designator/run.py")
+    assert result.returncode == 0, result.stderr
+
+    tree = RunTree(root, "r")
+    context = _designator_context_for(root, "r", "happy")
+    page_id = page_identity(context.fixture, 1)
+    row = _mint_test_residual_row(context, page_id, 1, 0, {"x": 1, "y": 1, "w": 2, "h": 2})
+    _reseal_with_extra_row(tree, row)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    assert result.returncode == 0, result.stderr
+    testimonia = [
+        record
+        for record in artifacts(tree, ATTESTATORES, "testimonium")
+        if record["payload"]["act_key"] == "residual:1:0"
+    ]
+    # Held from the moment it exists: every configured chair still gets an
+    # explicit not-run, exactly as any other held act, and never a read —
+    # nothing witnessed this ink and this stage may not manufacture a witness.
+    assert len(testimonia) == 3
+    assert {record["outcome"] for record in testimonia} == {"not-run"}
+
+
+def test_a_residual_act_claiming_to_be_proposed_is_refused(tmp_path):
+    """A residual may only ever be `held`; it was never a structural proposal."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+    ):
+        result = invoke_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "r")
+    context = _designator_context_for(root, "r", "happy")
+    page_id = page_identity(context.fixture, 1)
+    row = _mint_test_residual_row(context, page_id, 1, 0, {"x": 1, "y": 1, "w": 2, "h": 2})
+    row["outcome"] = "proposed"
+    _reseal_with_extra_row(tree, row)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    assert result.returncode == 2
+    assert "is not 'held'" in result.stderr
+
+
+def test_a_residual_act_claiming_a_continuation_is_refused(tmp_path):
+    """A residual has no declared continuation to claim."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+    ):
+        result = invoke_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "r")
+    context = _designator_context_for(root, "r", "happy")
+    page_id = page_identity(context.fixture, 1)
+    row = _mint_test_residual_row(context, page_id, 1, 0, {"x": 1, "y": 1, "w": 2, "h": 2})
+    row["has_continuation"] = True
+    _reseal_with_extra_row(tree, row)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    assert result.returncode == 2
+    assert "has no declared continuation to claim" in result.stderr
+
+
+def test_a_residual_act_whose_hold_bounds_do_not_verify_is_refused(tmp_path):
+    """A residual's identity must recompute from its own hold record, not be trusted.
+
+    The seal row's `act_id` is derived from one rectangle; the hold record
+    published beside it names a different one. A reader that trusted the seal
+    row alone would never notice — this is exactly the forged-evidence shape
+    `_verify_residual_act_rows` exists to catch.
+    """
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+    ):
+        result = invoke_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "r")
+    context = _designator_context_for(root, "r", "happy")
+    page_id = page_identity(context.fixture, 1)
+    row = _mint_test_residual_row(
+        context,
+        page_id,
+        1,
+        0,
+        {"x": 1, "y": 1, "w": 2, "h": 2},
+        hold_bounds={"x": 9, "y": 9, "w": 2, "h": 2},
+    )
+    _reseal_with_extra_row(tree, row)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    assert result.returncode == 2
+    assert "does not verify against the residual ordinal and bounds" in result.stderr
+
+
+def test_a_residual_act_with_no_hold_record_is_refused(tmp_path):
+    """An extra act is not accounted for merely because the seal names it."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+    ):
+        result = invoke_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "r")
+    context = _designator_context_for(root, "r", "happy")
+    page_id = page_identity(context.fixture, 1)
+    ordinal = residual_act_ordinal(0)
+    bounds = {"x": 1, "y": 1, "w": 2, "h": 2}
+    row = {
+        "act_id": derive_act_id(page_id, ordinal, bounds),
+        "act_key": "residual:1:0",
+        "page_id": page_id,
+        "page_ordinal": 1,
+        "has_continuation": False,
+        "outcome": "held",
+        "evidence": [],
+    }
+    _reseal_with_extra_row(tree, row, include_hold_evidence=False)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    assert result.returncode == 2
+    assert "published no hold record" in result.stderr
 
 
 def test_recensor_refuses_duplicate_witness_attempt_ordinals_instead_of_selecting_one(tmp_path):
@@ -2198,18 +2465,28 @@ def test_the_refused_page_scenario_is_deterministic_on_rerun(tmp_path):
 def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_first_page_run):
     """Half one of the defect, driven end to end: an act whose own page was never
     sealed used to disappear from the seal entirely. Now it appears, held, with a
-    hold artifact each, and the run is partial with the page loss named."""
+    hold artifact each, and the run is partial with the page loss named.
+
+    Page 2 (a2's continuation page) is sealed but, in this scenario, never has a
+    region cut on it at all -- a2 is held entirely on page 1's loss before its
+    continuation is ever attempted. Page 2's own real ink therefore reconciles
+    as 100% residual, and conservation now mints that residual its own held act
+    (`residual:2:0`) rather than leaving it inert inside the conservation
+    artifact alone -- a third, independent account of the same underlying loss,
+    which is why three holds and three review items are expected rather than two.
+    """
     _, tree = refused_first_page_run
     seal = proposal_seal(tree)
     assert {entry["act_key"]: entry["outcome"] for entry in seal["expected_acts"]} == {
         "a1": "held",
         "a2": "held",
+        "residual:2:0": "held",
     }
     assert artifacts(tree, DESIGNATOR, "region") == [], (
         "no region may be cut for an act that cannot be fully marked out — an "
         "orphan continuation crop would be evidence of an act nothing accounts for"
     )
-    assert len(artifacts(tree, DESIGNATOR, "hold")) == 2
+    assert len(artifacts(tree, DESIGNATOR, "hold")) == 3
 
     export = export_of(tree)
     assert export["aggregate"]["status"] == "partial"
@@ -2220,13 +2497,14 @@ def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_firs
     assert [item["category"] for item in export["review"]] == [
         "held-for-review",
         "held-for-review",
+        "held-for-review",
     ]
     entries = [
         entry
         for entry in tree.build_manifest(ARMARIUM)["artifacts"]
         if entry["kind"] == "manifest-entry"
     ]
-    assert len(entries) == 2, "conservation: every expected act still has exactly one category"
+    assert len(entries) == 3, "conservation: every expected act still has exactly one category"
 
 
 def test_the_recensor_refuses_a_continuation_claim_with_one_region(tmp_path):
