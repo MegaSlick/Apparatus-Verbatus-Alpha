@@ -925,6 +925,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # GOALS 2 is accuracy against the ink; text nobody successfully read is
         # not a reading, and GOVERNANCE 2 says it may not vanish behind a
         # successful status either. So it is held, visibly, with the outcome named.
+        blank_evidence = None
         if reading_class is not OutcomeClass.COMPLETED:
             # `no-readable-text` is the one non-completed Perlector outcome that
             # can end here rather than in the ordinary hold below: it is the
@@ -952,6 +953,22 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     f"that actually read this act ({', '.join(corroborating_chairs)}) "
                     "independently reports the same absence; sealed blank with that evidence",
                 )
+                # Spec 09 seals a blank "with evidence", and a sentence is not
+                # evidence a consumer can read. The review queue, the Armarium
+                # and anyone re-deriving this outcome get the same facts as
+                # data: what the reading itself found, which chairs corroborated
+                # it, and which pages the residual-ink check had already cleared.
+                # The `reason` above stays, for a human reading one record.
+                blank_evidence = {
+                    "perlector_outcome": latest["outcome"],
+                    "corroborating_chairs": corroborating_chairs,
+                    "residual_ink_clear_pages": sorted(
+                        {
+                            region["payload"]["transform"]["source_page_ordinal"]
+                            for region in state["regions"]
+                        }
+                    ),
+                }
             else:
                 outcome, reason = (
                     "held-for-review",
@@ -1038,6 +1055,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     ),
                     "flagged_pages": flagged_pages,
                 },
+                # Present only on a `confirmed-blank`, because it is the evidence
+                # that outcome rests on and nothing else has any. Every other
+                # review carries the fields above and no more.
+                **({"blank_evidence": blank_evidence} if blank_evidence is not None else {}),
             },
         )
 

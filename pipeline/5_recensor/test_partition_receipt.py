@@ -18,7 +18,9 @@ from common.runtree.store import RunTree
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def invoke(root: Path, run_id: str, scenario: str, program: str, **extra) -> subprocess.CompletedProcess:
+def invoke(
+    root: Path, run_id: str, scenario: str, program: str, **extra
+) -> subprocess.CompletedProcess:
     command = [
         sys.executable,
         str(ROOT / program),
@@ -145,3 +147,57 @@ def test_a_tampered_partition_receipt_is_refused_by_its_self_hash(tmp_path):
 
     with pytest.raises(SchemaRefusal, match="self-hash"):
         tree.read_recensor_partition_receipt()
+
+
+def test_a_run_that_proposed_no_acts_gets_a_visibly_partial_receipt_not_a_refusal():
+    """An empty denominator is a fact about the run, not a malformed receipt.
+
+    The Designator proposing nothing at all is the silent-failure shape this whole
+    pipeline exists to catch (GOALS 1), and the Armarium's own aggregate already
+    treats a sealed page nobody marked out as a named partial rather than an
+    error. Refusing to build the receipt would have turned that into a traceback
+    at the one boundary whose job is making it visible -- neither lane noticed,
+    because no shipped scenario produces a run with zero expected acts.
+    """
+    from common.recensor_receipt import (
+        EMPTY_DENOMINATOR_REASON,
+        build_recensor_partition_receipt,
+        validate_recensor_partition_receipt,
+    )
+
+    receipt = build_recensor_partition_receipt(
+        run_id="r",
+        config_digest="a" * 64,
+        proposal_seal_ref={
+            "relative_path": "2_designator/artifacts/proposal-seal.json",
+            "sha256": "b" * 64,
+        },
+        items=[],
+    )
+    assert receipt["expected_act_count"] == 0
+    assert receipt["recensor_status"] == "partial"
+    assert receipt["reasons"] == [EMPTY_DENOMINATOR_REASON]
+    assert validate_recensor_partition_receipt(receipt) == receipt
+
+
+def test_an_empty_receipt_may_not_claim_to_be_complete():
+    """The status derives from the reasons, and the reason is not optional."""
+    from common.contracts.canonical import self_hash
+    from common.recensor_receipt import (
+        build_recensor_partition_receipt,
+        validate_recensor_partition_receipt,
+    )
+
+    receipt = build_recensor_partition_receipt(
+        run_id="r",
+        config_digest="a" * 64,
+        proposal_seal_ref={
+            "relative_path": "2_designator/artifacts/proposal-seal.json",
+            "sha256": "b" * 64,
+        },
+        items=[],
+    )
+    forged = dict(receipt, recensor_status="complete", reasons=[])
+    forged["self_hash"] = self_hash({k: v for k, v in forged.items() if k != "self_hash"})
+    with pytest.raises(SchemaRefusal, match="does not derive from its items"):
+        validate_recensor_partition_receipt(forged)

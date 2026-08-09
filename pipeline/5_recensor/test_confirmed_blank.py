@@ -100,6 +100,14 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     assert "attestator_2" in review["payload"]["reason"]
     assert "attestator_3" in review["payload"]["reason"]
 
+    # Spec 09 seals a blank "with evidence", and a sentence is not evidence a
+    # consumer can read. The same facts are recorded as data beside the prose.
+    assert review["payload"]["blank_evidence"] == {
+        "perlector_outcome": "no-readable-text",
+        "corroborating_chairs": ["attestator_1", "attestator_2", "attestator_3"],
+        "residual_ink_clear_pages": [1],
+    }
+
     # The act this scenario does not touch reads and accepts exactly as ever --
     # blank confirmation is additive, not a change to the ordinary path.
     other = _review_of(tree, "a2")
@@ -119,6 +127,9 @@ def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):
     assert review["outcome"] == "held-for-review"
     assert "no-readable-text" in review["payload"]["reason"]
     assert review["payload"]["coverage"]["by_outcome"] == {"read": 1, "genuinely-empty": 2}
+    # No evidence field at all, rather than an empty one: nothing was sealed, so
+    # there is nothing this act was sealed on.
+    assert "blank_evidence" not in review["payload"]
 
 
 def test_confirmed_blank_is_a_completed_class_terminal_outcome(tmp_path):

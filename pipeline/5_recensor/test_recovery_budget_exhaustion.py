@@ -147,7 +147,8 @@ def test_a_page_level_allowance_never_becomes_a_fallback_recrop(tmp_path):
         tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
         for entry in tree.build_manifest(RECENSOR)["artifacts"]
         if entry["kind"] == "review"
-        and tree.read_artifact(RECENSOR, "review", entry["artifact_id"])["payload"]["act_key"] == "a1"
+        and tree.read_artifact(RECENSOR, "review", entry["artifact_id"])["payload"]["act_key"]
+        == "a1"
     )
     assert "page-level reread is not a substitute" in review["payload"]["reason"]
 

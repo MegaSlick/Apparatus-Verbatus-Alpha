@@ -83,7 +83,6 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
         or isinstance(record["expected_act_count"], bool)
         or record["expected_act_count"] < 0
         or not isinstance(record["items"], list)
-        or not record["items"]
         or record["expected_act_count"] != len(record["items"])
     ):
         raise SchemaRefusal("Recensor partition receipt has invalid run or denominator facts")
@@ -212,7 +211,21 @@ def _validate_reference(reference: Any, what: str) -> None:
         raise SchemaRefusal(f"Recensor partition receipt has malformed {what}")
 
 
+EMPTY_DENOMINATOR_REASON: Final = (
+    "the Designator proposed no acts at all, so this receipt has no denominator to "
+    "reconcile; a run that marked nothing out on its pages cannot be complete "
+    "(GOALS 1: a missed act is worse than a poorly read one)"
+)
+
+
 def _reasons(items: list[dict[str, Any]]) -> list[str]:
+    # An empty denominator is a fact about the run, not a malformed receipt. The
+    # Designator proposing nothing at all is exactly the silent-failure shape this
+    # pipeline exists to catch, and refusing to build the receipt would turn it
+    # into a traceback at the one boundary whose job is to make it visible. The
+    # Armarium's own aggregate already treats a page nobody marked out this way.
+    if not items:
+        return [EMPTY_DENOMINATOR_REASON]
     reasons: list[str] = []
     for item in items:
         act_id = item["act_id"]

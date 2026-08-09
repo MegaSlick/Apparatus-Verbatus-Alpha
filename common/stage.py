@@ -1067,7 +1067,9 @@ def _reconcile_recovery_request_counters(
         len(by_ordinal) > recovery_policy["allowed"]
         or len(by_ordinal) > recovery_policy["absolute_cap"]
     ):
-        raise ContractError(f"recovery request history for {act_id} exceeds its sealed total budget")
+        raise ContractError(
+            f"recovery request history for {act_id} exceeds its sealed total budget"
+        )
     for recovery_kind, used in used_by_kind.items():
         if used > recovery_kind_budget(recovery_policy, recovery_kind):
             raise ContractError(
