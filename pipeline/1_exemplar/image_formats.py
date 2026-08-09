@@ -119,8 +119,8 @@ JPEG_SIGNATURE: Final = b"\xff\xd8"
 TIFF_SIGNATURES: Final = (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")
 PDF_SIGNATURE: Final = b"%PDF-"
 # PDFium accepts a PDF header after a bounded transport preamble. The Door reads
-# this much for a path-backed source, so the route stays byte-based while a
-# preamble cannot make an otherwise readable document look unrecognized.
+# this much from the head of a streamed source, so the route stays byte-based while
+# a preamble cannot make an otherwise readable document look unrecognized.
 PDF_HEADER_PREFIX_BYTES: Final = 1024
 GIF_SIGNATURES: Final = (b"GIF87a", b"GIF89a")
 BMP_SIGNATURES: Final = (b"BM", b"BA", b"CI", b"CP", b"IC", b"PT")

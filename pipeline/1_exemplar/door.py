@@ -256,7 +256,7 @@ def decide(
             }
         else:
             if data is None:
-                raise ValueError("only a PDF container may be decided from a source path")
+                raise ValueError("only a PDF container may be decided without its bytes")
             page_count = count_raster_pages(data)
             if page_count == 1 and verdict != admission.RENDER_PAGES:
                 raise ContractError(
@@ -382,8 +382,8 @@ def expand_sources(
                 detected = None
             if detected != "pdf":
                 # Rasters remain byte-backed. Their existing bounded path is
-                # intentionally unchanged; only a PDF container can be opened by
-                # PDFium directly from its source path.
+                # intentionally unchanged; only a PDF container is handed to PDFium
+                # as an open stream instead of being read into one bytes object.
                 if declared_size is not None and declared_size > MAX_SOURCE_BYTES:
                     append(None, detected)
                     continue
