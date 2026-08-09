@@ -219,14 +219,6 @@ class EvaluationManifest:
             "members": [member.record() for member in self.members],
         }
 
-    def require_selected_acts(
-        self,
-        acts: Iterable[tuple[str, str, str, MaterialClass, ReferenceStatus, tuple[str, ...]]],
-    ) -> None:
-        """Bind execution data/classification/evidence to this exact approved draw."""
-
-        self.require_scoreable_acts(acts, excluded_opaque_act_ids=())
-
     def require_scoreable_acts(
         self,
         acts: Iterable[tuple[str, str, str, MaterialClass, ReferenceStatus, tuple[str, ...]]],
