@@ -287,6 +287,80 @@ def test_non_synthetic_authorization_requires_a_checked_run_plan_approval():
         )
 
 
+def test_run_authorization_refuses_a_forged_in_memory_approval_object():
+    """A SHA-shaped string or an in-memory approver field is not authority (README section 1).
+
+    Each approval field must have actually been built through its own checked
+    ``.load()`` classmethod; a duck-typed stand-in with the right method names but
+    none of the underlying content-addressed verification must not be accepted in
+    its place.
+    """
+
+    class _Forged:
+        def require_scope(self, **_kwargs):
+            return None
+
+        def require_profile(self, _profile):
+            return None
+
+    forged = _Forged()
+    roster = private_roster()
+    manifest = manifest_for(evaluation_act(material_class=MaterialClass.PRIVATE_REGISTER))
+    with pytest.raises(DisclosureRefusal, match="DataGateAuthority"):
+        RunAuthorization(
+            material_class=MaterialClass.PRIVATE_REGISTER,
+            data_gate_authority=forged,
+            run_plan_approval=run_plan_approval_for(
+                manifest=manifest,
+                roster=roster,
+                witness_configuration=witness_configuration_for(
+                    evaluation_act(material_class=MaterialClass.PRIVATE_REGISTER)
+                ),
+                prompt_registry=registry(*roster.identities()),
+                profile=GRAPHEMIC_V1,
+            ),
+            normalization_approval=normalization_approval_for(GRAPHEMIC_V1),
+        )
+    with pytest.raises(DisclosureRefusal, match="RunPlanApproval"):
+        RunAuthorization(
+            material_class=MaterialClass.PRIVATE_REGISTER,
+            data_gate_authority=checked_data_gate_authority(),
+            run_plan_approval=forged,
+            normalization_approval=normalization_approval_for(GRAPHEMIC_V1),
+        )
+    with pytest.raises(DisclosureRefusal, match="NormalizationApproval"):
+        RunAuthorization(
+            material_class=MaterialClass.PRIVATE_REGISTER,
+            data_gate_authority=checked_data_gate_authority(),
+            run_plan_approval=run_plan_approval_for(
+                manifest=manifest,
+                roster=roster,
+                witness_configuration=witness_configuration_for(
+                    evaluation_act(material_class=MaterialClass.PRIVATE_REGISTER)
+                ),
+                prompt_registry=registry(*roster.identities()),
+                profile=GRAPHEMIC_V1,
+            ),
+            normalization_approval=forged,
+        )
+    with pytest.raises(DisclosureRefusal, match="ThirdPartyTransmissionApproval"):
+        RunAuthorization(
+            material_class=MaterialClass.PRIVATE_REGISTER,
+            data_gate_authority=checked_data_gate_authority(),
+            run_plan_approval=run_plan_approval_for(
+                manifest=manifest,
+                roster=roster,
+                witness_configuration=witness_configuration_for(
+                    evaluation_act(material_class=MaterialClass.PRIVATE_REGISTER)
+                ),
+                prompt_registry=registry(*roster.identities()),
+                profile=GRAPHEMIC_V1,
+            ),
+            normalization_approval=normalization_approval_for(GRAPHEMIC_V1),
+            external_approvals={roster.vendor_unaltered.candidate_key: forged},
+        )
+
+
 def test_generic_matrix_refuses_real_material_before_any_adapter_call():
     roster = private_roster()
     act = evaluation_act(material_class=MaterialClass.PRIVATE_REGISTER)
