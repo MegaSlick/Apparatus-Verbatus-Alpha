@@ -129,8 +129,7 @@ class AggregateMetrics:
         ):
             raise MatrixRefusal("metric observation counts may not exceed planned cells")
         if not all(
-            value >= 0 and isfinite(value)
-            for value in (self.elapsed_total_ms, self.cost_total_usd)
+            value >= 0 and isfinite(value) for value in (self.elapsed_total_ms, self.cost_total_usd)
         ):
             raise MatrixRefusal("elapsed and cost totals must be finite and non-negative")
 
@@ -281,10 +280,9 @@ class MeasurementRun:
             dossier = dossier_for(act, cell.perlectio.condition)
             if cell.perlectio.dossier_sha256 != dossier.wire_sha256:
                 raise MatrixRefusal("candidate cell does not bind the run's exact dossier")
-            if (
-                cell.perlectio.image_present is not (dossier.image is not None)
-                or cell.perlectio.testimonia_count != len(dossier.testimonia)
-            ):
+            if cell.perlectio.image_present is not (
+                dossier.image is not None
+            ) or cell.perlectio.testimonia_count != len(dossier.testimonia):
                 raise MatrixRefusal("Perlectio input counts differ from its retained dossier")
             expected_text = (
                 cell.raw_response_text
@@ -518,9 +516,7 @@ def _aggregate_rows(
         wer_matches=sum(score.wer.edits.matches for score in scores),
         complete_count=sum(status is OutputStatus.COMPLETE for status in statuses),
         truncated_count=sum(status is OutputStatus.TRUNCATED for status in statuses),
-        no_readable_text_count=sum(
-            status is OutputStatus.NO_READABLE_TEXT for status in statuses
-        ),
+        no_readable_text_count=sum(status is OutputStatus.NO_READABLE_TEXT for status in statuses),
         refused_count=sum(status is OutputStatus.REFUSED for status in statuses),
         missing_count=sum(status is OutputStatus.MISSING for status in statuses),
         unavailable_count=sum(status is OutputStatus.UNAVAILABLE for status in statuses),
