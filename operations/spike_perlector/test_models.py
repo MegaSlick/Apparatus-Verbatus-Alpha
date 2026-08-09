@@ -160,6 +160,31 @@ def test_perlectio_refuses_a_witness_primed_cell_that_claims_no_testimonia():
         )
 
 
+def test_perlectio_refuses_an_identity_that_is_not_a_resolved_identity():
+    """``public_slot`` is read off this field and aggregated into the public finding.
+
+    Every other field here is type-checked; a stand-in accepted for this one would
+    put a caller-chosen slot number into a history record.
+    """
+
+    with pytest.raises(MeasurementRefusal, match="checked ResolvedIdentity"):
+        Perlectio(
+            identity="private-model-name-one",
+            opaque_act_id="act-1",
+            condition=Condition.LECTIO_NUDA,
+            status=OutputStatus.COMPLETE,
+            text="a reading",
+            dossier_sha256=digest("dossier"),
+            prompt_format_sha256=digest("prompt"),
+            delivery_sha256=digest("delivery"),
+            image_present=True,
+            testimonia_count=0,
+            dissent=DissentSummary(0, 0, 0),
+            elapsed_ms=None,
+            cost_usd=None,
+        )
+
+
 def test_resolved_identity_refuses_a_delivery_mode_that_is_not_a_delivery_mode():
     with pytest.raises(MeasurementRefusal, match="DeliveryMode"):
         ResolvedIdentity(

@@ -18,6 +18,9 @@ from operations.spike_perlector.models import (
     OutputStatus,
     ReferenceStatus,
 )
+from operations.spike_perlector.models import (
+    Testimonium as WitnessTestimonium,  # bare `Testimonium` is collected as a test class
+)
 from operations.spike_perlector.normalization import GRAPHEMIC_V1
 from operations.spike_perlector.runner import run_matrix
 from operations.spike_perlector.testkit import evaluation_act, identity, registry
@@ -367,6 +370,50 @@ def test_a_cell_with_no_reading_in_it_records_no_dissent():
     for aggregate in run.condition_aggregates():
         assert aggregate.metrics.dissent_rate is None
         assert aggregate.metrics.refused_count == aggregate.metrics.cell_count
+
+
+def test_each_witness_is_scored_directly_against_the_same_checked_ink():
+    """ "Beats any witness alone" is unmeasurable without measuring the witnesses alone.
+
+    The counts are hand-worked against the reference "alpha beta": an exact
+    witness, one that reads the second word wrong (four character edits of ten,
+    one word of two), and one that reported nothing (the whole reference deletes).
+    """
+    reader = identity("base-private", 1)
+    act = evaluation_act(
+        text="alpha beta",
+        testimonia=(
+            WitnessTestimonium(
+                private_source_id="w-exact", public_source_index=1, text="alpha beta"
+            ),
+            WitnessTestimonium(
+                private_source_id="w-wrong", public_source_index=2, text="alpha gamma"
+            ),
+            WitnessTestimonium(
+                private_source_id="w-silent",
+                public_source_index=3,
+                text=None,
+                status=OutputStatus.REFUSED,
+            ),
+        ),
+    )
+    run = run_matrix(
+        (FakeCandidate(reader),),
+        (act,),
+        prompt_registry=registry(reader),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    by_index = {row.public_source_index: row.metrics for row in run.witness_aggregates()}
+    assert (by_index[1].cer, by_index[1].wer) == (0.0, 0.0)
+    assert (by_index[2].cer_errors, by_index[2].cer_reference_units) == (4, 10)
+    assert (by_index[2].wer_errors, by_index[2].wer_reference_units) == (1, 2)
+    assert (by_index[3].cer, by_index[3].wer) == (1.0, 1.0)
+    assert by_index[3].refused_count == 1
+    # A witness baseline is an accuracy row, not a candidate cell: this instrument
+    # observes no wall time or cost for one, and says so rather than reporting zero.
+    assert by_index[1].mean_elapsed_ms is None
+    assert by_index[1].mean_cost_usd is None
 
 
 def test_a_reading_that_matches_a_witness_exactly_is_recorded_as_agreement():

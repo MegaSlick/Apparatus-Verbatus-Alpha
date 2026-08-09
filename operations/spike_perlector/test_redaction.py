@@ -10,13 +10,23 @@ from operations.spike_perlector.fakes import FakeCandidate, FakeReply
 from operations.spike_perlector.gates import RunAuthorization
 from operations.spike_perlector.models import (
     ALL_CONDITIONS,
+    Condition,
     DeliveryMode,
     MaterialClass,
     OutputStatus,
 )
-from operations.spike_perlector.normalization import GRAPHEMIC_V1
+from operations.spike_perlector.normalization import GRAPHEMIC_V1, PROFILES
 from operations.spike_perlector.publication import write_public_finding
-from operations.spike_perlector.redaction import project_public_finding, validate_public_finding
+from operations.spike_perlector.redaction import (
+    _BASELINE_KEYS,
+    _DELTA_KEYS,
+    _MATRIX_KEYS,
+    _ROOT_KEYS,
+    MEASURE_QUOTES,
+    SCHEMA,
+    project_public_finding,
+    validate_public_finding,
+)
 from operations.spike_perlector.roster import STOCK_BASE_SOURCE, CandidateRoster
 from operations.spike_perlector.runner import run_declared_roster_matrix, run_matrix
 from operations.spike_perlector.testkit import (
@@ -30,7 +40,7 @@ from operations.spike_perlector.testkit import (
 )
 
 
-def declared_fixture_run():
+def declared_fixture_run(*, elapsed_ms: float | None = 1.0, cost_usd: float | None = 0.0):
     roster = CandidateRoster(
         stock_base=identity("private-model-name-one", 1, source_ref=STOCK_BASE_SOURCE),
         vendor_unaltered=identity(
@@ -49,7 +59,10 @@ def declared_fixture_run():
     )
     replies = {
         (act.opaque_act_id, condition): FakeReply(
-            OutputStatus.COMPLETE, "synthetic secret transcription"
+            OutputStatus.COMPLETE,
+            "synthetic secret transcription",
+            elapsed_ms=elapsed_ms,
+            cost_usd=cost_usd,
         )
         for condition in ALL_CONDITIONS
     }
@@ -175,6 +188,64 @@ def test_public_validator_refuses_a_condition_delta_naming_an_unmatched_subject(
     tampered["condition_deltas"][0]["subject_index"] = 4
     with pytest.raises(PublicSafetyRefusal, match="outside the sealed matrix"):
         validate_public_finding(tampered)
+
+
+@pytest.mark.parametrize(("elapsed_ms", "cost_usd"), [(None, 0.0), (1.0, None)])
+def test_a_run_missing_wall_time_or_cost_cannot_become_a_finding(elapsed_ms, cost_usd):
+    """Section 8 predeclares an observation of both for every candidate cell.
+
+    An interface exercise may leave either unknown; what it may not do is publish.
+    Without this, an unmeasured cell would reach the validator as a null mean and
+    be reported as a measured run with a missing number in it.
+    """
+
+    run = declared_fixture_run(elapsed_ms=elapsed_ms, cost_usd=cost_usd)
+    with pytest.raises(PublicSafetyRefusal, match="wall time and cost"):
+        project_public_finding(run)
+
+
+def test_the_published_schema_and_the_stricter_validator_describe_one_shape():
+    """The schema is what an outside reader checks a `history/` finding against.
+
+    Nothing executes it -- the validator in `redaction.py` is what runs, and it is
+    deliberately stricter -- so the two can only be kept honest by pinning them to
+    the same closed key sets and enumerations here. Drift shows up as a schema that
+    accepts a finding the code would never write, or refuses one it does.
+    """
+
+    schema = json.loads(
+        Path(__file__).with_name("reading_claim_public_finding.schema.json").read_text("utf-8")
+    )
+    metric_keys = _MATRIX_KEYS - {"subject_index", "condition"}
+    definitions = schema["$defs"]
+
+    assert schema["properties"]["schema"]["const"] == SCHEMA
+    assert set(schema["required"]) == set(schema["properties"]) == _ROOT_KEYS
+    assert (
+        set(definitions["metrics"]["required"])
+        == set(definitions["metrics"]["properties"])
+        == metric_keys
+    )
+    assert _row_keys(definitions["matrix_row"], metric_keys) == _MATRIX_KEYS
+    assert _row_keys(definitions["baseline_row"], metric_keys) == _BASELINE_KEYS
+    assert set(definitions["delta_row"]["required"]) == _DELTA_KEYS
+
+    conditions = {condition.value for condition in Condition}
+    matrix_row = definitions["matrix_row"]["allOf"][1]["properties"]
+    assert set(matrix_row["condition"]["enum"]) == conditions
+    assert set(schema["properties"]["normalization_profile_id"]["enum"]) == set(PROFILES)
+    assert set(schema["properties"]["measure_quotes"]["items"]["enum"]) == set(MEASURE_QUOTES)
+    # The sealed three slots by three conditions, as a count the schema can express.
+    assert schema["properties"]["matrix"]["minItems"] == len(conditions) * 3
+    assert schema["properties"]["matrix"]["maxItems"] == len(conditions) * 3
+
+
+def _row_keys(row_schema: dict, metric_keys: set[str]) -> set[str]:
+    """Every property a metric row may carry: the shared metrics plus its own index."""
+
+    assert row_schema["unevaluatedProperties"] is False
+    assert row_schema["allOf"][0]["$ref"] == "#/$defs/metrics"
+    return metric_keys | set(row_schema["allOf"][1]["properties"])
 
 
 def test_synthetic_exercise_cannot_be_projected_as_a_public_finding():

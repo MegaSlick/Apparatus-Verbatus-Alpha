@@ -8,7 +8,7 @@ from .encoding import sha256_bytes
 from .errors import MatrixRefusal
 
 # Updated only in the same reviewable change as the protocol document itself.
-PREDECLARED_PROTOCOL_SHA256 = "b7268af61e89108723b673d34b94c1ceee3de5fd0e8f44ba795a3cfe7989950d"
+PREDECLARED_PROTOCOL_SHA256 = "fbadc58a5689184e566b445f72d6879db547ec1fc17ffb4d3d4de36be62db777"
 
 
 def protocol_document_sha256() -> str:

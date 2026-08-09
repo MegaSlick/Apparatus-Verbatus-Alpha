@@ -781,6 +781,11 @@ class Perlectio:
 
     def __post_init__(self) -> None:
         _require_nonempty(self.opaque_act_id, "Perlectio opaque_act_id")
+        # public_slot travels from here into the public aggregation, so the object
+        # it comes from has to be a checked identity rather than anything that
+        # answers to the name.
+        if not isinstance(self.identity, ResolvedIdentity):
+            raise MeasurementRefusal("Perlectio must carry a checked ResolvedIdentity")
         if not isinstance(self.condition, Condition):
             raise MeasurementRefusal("Perlectio condition must be a Condition")
         if not isinstance(self.status, OutputStatus):

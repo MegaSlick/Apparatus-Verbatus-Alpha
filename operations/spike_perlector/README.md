@@ -59,6 +59,15 @@ The runner constructs all dossiers and prompt requests before any candidate call
 
 Dissent is calculated only after candidate text is fixed. It counts comparable and departing Testimonia after the same normalization in every condition, including Lectio nuda; the nuda candidate still receives none of them. It neither changes text nor weights, merges, selects, or rewards a witness.
 
+**The prior on parroting, predeclared with everything else.** Spec 05 records
+Tyrel's stated basis that the checkpoint rarely saw witness output in training, so
+the prior that it parrots is low. That is written down here, before any material is
+shown, because a prior produced *after* results appear is a rationalisation. It
+lowers the prior and removes no test: the image-absent control and the nuda/primed
+dissent comparison run for every candidate on every act regardless. This paragraph
+records spec 05's own sentence, which is the form the basis reached this harness in;
+it is not a quotation of Tyrel and does not stand in for one.
+
 A cell with no reading in it records **no** dissent — not dissent from everyone.
 This matches the shape the landed `pipeline/4_perlector/run.py` already settles for
 the real stage, which publishes an empty dissent record for an act it could not
@@ -251,7 +260,7 @@ An image carries an explicit provenance class: `synthetic`, `cleared_public`, or
 
 Raw requests, prompt bytes, model identities, image bytes/paths, Testimonia, human transcriptions, candidate responses, adjudication records, and limitations stay under approved private roots. They never go to git, `/out`, or `history/`.
 
-A dated finding validates against `reading_claim_public_finding.schema.json`, which lives beside this document rather than in `history/` — `history/README.md` says that directory holds dated evidence and that anything there telling you what to do is out of date by definition, and a schema is exactly a document that tells you what to do. The finding itself is still written into `history/`. Validation is by that schema and by `redaction.validate_public_finding`, which is deliberately the stricter of the two. It permits only fixed metric keys, integer slots, condition enums, SHA-256 digests, and fixed measure-quote IDs. It requires the exact three-slot × three-condition matrix, matching deltas, equal act denominators, and arithmetic-consistent CER/WER before the only supported writer, `publication.write_public_finding`, performs an exclusive dated write. It has no free-text path. Tests plant synthetic transcript, name, image, and identity fields and prove the projector omits them or validation refuses them. This build writes no finding because it measured nothing.
+A dated finding conforms to `reading_claim_public_finding.schema.json`, which lives beside this document rather than in `history/` — `history/README.md` says that directory holds dated evidence and that anything there telling you what to do is out of date by definition, and a schema is exactly a document that tells you what to do. The finding itself is still written into `history/`. That schema is the published shape, for a reader checking a finding without this code; nothing here executes it, and this framework takes on no JSON-Schema dependency to do so. What runs before every write is `redaction.validate_public_finding`, deliberately the stricter of the two, and a test pins both to the same closed key sets and enumerations so they cannot drift apart unnoticed. It permits only fixed metric keys, integer slots, condition enums, SHA-256 digests, and fixed measure-quote IDs. It requires the exact three-slot × three-condition matrix, matching deltas, equal act denominators, and arithmetic-consistent CER/WER before the only supported writer, `publication.write_public_finding`, performs an exclusive dated write. It has no free-text path. Tests plant synthetic transcript, name, image, and identity fields and prove the projector omits them or validation refuses them. This build writes no finding because it measured nothing.
 
 ## 10. Pinned scoring dependencies
 
