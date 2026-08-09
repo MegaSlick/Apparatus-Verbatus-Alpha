@@ -131,6 +131,24 @@ allow. It is a decision for Tyrel, not for this document: either the blank-page
 control is predeclared as a measure of its own before an evaluation manifest opens,
 or the instrument goes on being honest that it does not take it.
 
+**If he does want it, the shape is already known, and it is not "score the blank act
+into CER".** The old pipeline built this measure and its design answers the two
+questions this one would face. Read through the window at
+`deploy/lean/reader_quality_gate.py` (2026-08-09; understanding carried across, no
+line of it): it scores invention as a **separate, explicitly labelled block beside
+the accuracy aggregate and never inside it**, on the stated reasoning that a page
+which is ten percent probe must not read as a page the reader partly failed. It
+splits the question in two rather than averaging them — did the reader reproduce a
+legibly-rendered non-word verbatim, or replace it with a real word it recognised
+(fabrication by normalisation); and did the reader abstain on a span the page
+physically destroyed, or conjure content into the occlusion. And it obtains both by
+**constructing probes** — curated non-words and destroyed spans on synthetic canary
+pages, with the probe tokens removed from the ordinary checks so nothing is counted
+twice — rather than by trying to align a hypothesis against a real gap after the
+fact. That last point is the answer to the named limitation above: detecting
+fabrication inside a gap is not an alignment problem to be solved, it is a probe set
+to be built, and building one is a predeclaration of its own.
+
 ## 6. Normalization: recommended `graphemic-v1`
 
 Raw text is retained privately. Apply this sequence identically to reference, candidate, and Testimonium text before CER/WER:
