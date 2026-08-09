@@ -56,11 +56,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         lease_root=args.leases,
         controller_armer=_controller_armer(args.controller_armer_factory),
     )
+    request = _request(args.request)
     if args.command == "create":
-        request = _request(args.request)
         preview = runtime.preview_create(request)
     else:
-        request = _request(args.request)
         preview = runtime.preview_adopt(args.pod_id, expected=request)
     # The operator sees the precise current estimate and all checked ceilings
     # before the terminal asks for the exact phrase. A non-green preview never

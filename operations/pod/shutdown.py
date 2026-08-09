@@ -357,7 +357,9 @@ class VerifiedShutdown:
                 "Review the provider billing console for this pod; returned billing evidence did not prove the requested pod and time window.",
             )
         assert isinstance(capture, CostCapture)
-        if capture.state is BillingState.CAPTURED and capture.lines:
+        # CostCapture.__post_init__ refuses to construct a CAPTURED capture
+        # with empty lines, so state alone already implies non-empty lines here.
+        if capture.state is BillingState.CAPTURED:
             return CloseReport(
                 record.pod_id,
                 CloseState.VERIFIED,

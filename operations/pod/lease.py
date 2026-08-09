@@ -126,7 +126,6 @@ class PodLease:
         if self.phase not in {
             "pending-create",
             "active",
-            "closing",
             "close-unverified",
             "closed-verified",
         }:
@@ -160,7 +159,7 @@ class PodLease:
 
     @property
     def active(self) -> bool:
-        return self.phase in {"pending-create", "active", "closing"}
+        return self.phase in {"pending-create", "active"}
 
     def to_record(self) -> dict[str, object]:
         record = self._unsealed_record()
