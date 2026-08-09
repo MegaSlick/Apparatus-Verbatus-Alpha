@@ -1281,6 +1281,52 @@ def test_a_symlink_planted_after_the_walk_refuses_only_its_own_source(tmp_path, 
             assert b"NEVER SUBMITTED" not in path.read_bytes()
 
 
+def test_a_forged_nul_byte_manifest_row_refuses_only_itself(tmp_path, monkeypatch):
+    """A hand-forged ledger row cannot crash admission for every file beside it.
+
+    No real directory listing can ever produce a NUL byte in a name, so this row
+    could only reach the door through a manifest built by hand rather than by
+    `submit.py`. Before this fix, `os.open`'s bare `ValueError` for an embedded
+    NUL was not caught anywhere between `inventory.open_submission_source` and
+    `door.expand_sources`'s own except clause, so it escaped as an uncaught
+    traceback and admitted nothing in the same run -- the same "one bad name
+    breaks the whole folder" shape this module already fixed once for directory
+    depth (harvest #2: per-file, never per-folder).
+    """
+    approved, source, _policy, policy_path, approval, ledger_path, ledger = _approved_submission(
+        tmp_path, {"good.png": png(4, 3)}
+    )
+    forged = dict(ledger)
+    forged["files"] = sorted(
+        [*ledger["files"], {"relative_path": "a\x00b", "sha256": "0" * 64, "bytes": 5}],
+        key=lambda row: row["relative_path"],
+    )
+    del forged["self_hash"]
+    forged["self_hash"] = self_hash(forged)
+    ledger_path.write_bytes(canonical_bytes(forged))
+
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            approval_path=approval,
+            ledger_path=ledger_path,
+            run_id="forged-nul-row",
+        )
+        == 0
+    )
+
+    records = admissions(RunTree(approved / "runs", "forged-nul-row"))
+    assert len(records) == 2
+    forged_record = next(r for r in records.values() if r["payload"]["declared_path"] == "a\x00b")
+    good_record = next(r for r in records.values() if r["payload"]["declared_path"] == "good.png")
+    assert forged_record["outcome"] == "refused"
+    assert reason_code(forged_record["payload"]["reason"]) is RefusalReason.UNREADABLE
+    assert good_record["outcome"] == "admitted"
+
+
 def test_a_symlinked_pdf_is_never_handed_to_pdfium_to_count_or_render(tmp_path, monkeypatch):
     """The PDF path is the sharper half of the same gap: PDFium parses whatever it
     opens, in `expand_sources`'s page count *before* any digest is even computed.

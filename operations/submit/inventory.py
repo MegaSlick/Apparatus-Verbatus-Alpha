@@ -294,11 +294,24 @@ def _open_submission_root(folder: Path) -> int:
 
 
 def _source_components(relative_path: str) -> tuple[str, ...]:
-    """Accept only the canonical slash-relative names an inventory can emit."""
+    """Accept only the canonical slash-relative names an inventory can emit.
+
+    No real directory listing can ever produce a NUL byte in a name -- the kernel
+    itself forbids it. A hand-built manifest is not bound by that, and `os.open`
+    raises a bare `ValueError` for one rather than `OSError`, which is not this
+    project's alarm vocabulary and is not caught anywhere above this call: it
+    would otherwise escape as a raw traceback and take the rest of the submission
+    down with it, the exact "one bad name breaks the whole folder" shape this
+    module's docstring already names as fixed for directory depth.
+    """
     if not isinstance(relative_path, str) or not relative_path:
         raise SubmissionInputError(
             "a requested submitted source has no plain relative filename",
             entry=relative_path if isinstance(relative_path, str) else None,
+        )
+    if "\x00" in relative_path:
+        raise SubmissionInputError(
+            "a requested submitted source name contains a NUL byte", entry=relative_path
         )
     components = tuple(relative_path.split("/"))
     if any(component in {"", ".", ".."} for component in components):

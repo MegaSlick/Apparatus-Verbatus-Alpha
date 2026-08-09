@@ -88,14 +88,26 @@ def test_an_oversized_source_keeps_its_exact_digest_and_drops_only_its_bytes(tmp
 
 
 def test_a_source_changed_while_its_digest_is_read_is_a_named_refusal(tmp_path, monkeypatch):
-    """A ledger may only bind one stable file, never a sequence of its revisions."""
+    """A ledger may only bind one stable file, never a sequence of its revisions.
+
+    The real in-place rewrite still happens mid-read, so `_read_once` genuinely
+    reads a file that changed under it. What is mocked is only the *detection*
+    side (`_stable_file_metadata`, called exactly once before and once after):
+    a same-size rewrite's real effect on `mtime_ns`/`ctime_ns` is at the mercy of
+    the filesystem's clock resolution, and under enough scheduler load two writes
+    microseconds apart can land in the same tick -- making this test flake on a
+    real timer without the check itself being wrong. Forcing the two metadata
+    reads to disagree proves `_walk`'s own comparison, not the host clock.
+    """
     folder = tmp_path / "batch"
     folder.mkdir()
     source = folder / "page.png"
     payload = b"a" * (inventory._CHUNK + 17)
     source.write_bytes(payload)
     original_read = inventory.os.read
+    original_metadata = inventory._stable_file_metadata
     reads = 0
+    metadata_calls = 0
 
     def replace_after_first_chunk(descriptor: int, count: int) -> bytes:
         nonlocal reads
@@ -107,7 +119,14 @@ def test_a_source_changed_while_its_digest_is_read_is_a_named_refusal(tmp_path, 
             source.write_bytes(b"b" * len(payload))
         return chunk
 
+    def force_disagreement_on_the_second_read(details):
+        nonlocal metadata_calls
+        metadata_calls += 1
+        real = original_metadata(details)
+        return real if metadata_calls == 1 else (*real[:-1], real[-1] + 1)
+
     monkeypatch.setattr(inventory.os, "read", replace_after_first_chunk)
+    monkeypatch.setattr(inventory, "_stable_file_metadata", force_disagreement_on_the_second_read)
 
     with pytest.raises(SubmissionInputError, match="changed while it was being read") as caught:
         read_submission(folder, max_bytes=0)
@@ -199,6 +218,21 @@ def test_reopening_refuses_anything_that_is_not_a_plain_relative_name(tmp_path, 
     folder.mkdir()
     with pytest.raises(SubmissionInputError, match="plain relative filename"):
         with inventory.open_submission_source(folder, requested):
+            pass
+
+
+def test_reopening_a_name_with_an_embedded_nul_is_a_named_refusal_not_a_crash(tmp_path):
+    """No real directory listing can produce this; only a forged manifest row can.
+
+    `os.open` raises a bare `ValueError` for an embedded NUL, which is not this
+    project's alarm vocabulary. Left unguarded, that error is not caught by any
+    handler above `open_submission_source`, so it does not merely refuse the one
+    forged source -- it crashes the whole run mid-submission.
+    """
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    with pytest.raises(SubmissionInputError, match="NUL byte"):
+        with inventory.open_submission_source(folder, "a\x00b"):
             pass
 
 
