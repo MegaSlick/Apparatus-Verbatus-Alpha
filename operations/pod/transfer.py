@@ -76,8 +76,16 @@ class ChecksummedTransfer:
         self.journal_path = Path(journal_path)
 
     def resume(self) -> TransferReport:
-        """Verify source, target, and journal row by row; retry only unfinished rows."""
+        """Verify source, target, and journal row by row; retry only unfinished rows.
 
+        A submission manifest is Spec 03's output, not this pod's: a freshly
+        launched pod that has processed nothing yet has none to transfer.  That
+        is a vacuous success, not a failure — only a manifest that exists and
+        fails to parse or verify is a named `TransferFailure`.
+        """
+
+        if not self.submission_manifest.is_file():
+            return TransferReport((), ())
         manifest = load_manifest(self.submission_manifest)
         journal = self._load_or_create(manifest)
         completed = set(journal["completed"])

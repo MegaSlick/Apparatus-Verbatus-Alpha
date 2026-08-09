@@ -97,6 +97,26 @@ def test_conflicting_remote_bytes_are_refused_not_overwritten(tmp_path: Path) ->
     assert target.puts == []
 
 
+def test_resume_with_no_submission_manifest_yet_is_a_vacuous_success(tmp_path: Path) -> None:
+    """A freshly launched pod that has processed nothing yet has nothing to transfer."""
+
+    source = tmp_path / "source"
+    source.mkdir()
+    target = FakeTarget()
+
+    report = ChecksummedTransfer(
+        source_root=source,
+        submission_manifest=tmp_path / "no-submission-yet.json",
+        target=target,
+        prefix="run",
+        journal_path=tmp_path / "transfer.json",
+    ).resume()
+
+    assert report.completed_keys == ()
+    assert report.skipped_keys == ()
+    assert target.puts == []
+
+
 def test_submission_path_cannot_traverse_a_source_symlink(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
