@@ -106,7 +106,9 @@ class SystemGpuProbe:
                 cuda_version=cuda,
                 driver_version=driver or None,
                 compute_capability=(int(major_text), int(minor_text)),
-                vram_gib=Decimal(vram),
+                # nvidia-smi's memory.total is MiB even with --format=...,nounits
+                # (nounits only strips the text suffix, it does not rescale).
+                vram_gib=Decimal(vram) / Decimal(1024),
                 disk_gib=disk_gib,
                 dtype=dtype,
             )

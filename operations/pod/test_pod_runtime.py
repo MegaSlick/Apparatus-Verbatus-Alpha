@@ -1299,6 +1299,37 @@ def test_laptop_lifetime_expiry_terminates_through_verified_path(tmp_path: Path)
     assert provider.status(record.pod_id).presence.value == "absent"
 
 
+def test_lease_record_failure_after_a_verified_close_is_never_green(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close whose durable evidence failed to persist must never report green."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.12")
+    store = LeaseStore(tmp_path / "lease.json")
+    _lease(store, record, owner="laptop", clock=clock, deadline_seconds=5)
+    clock.seconds = 5
+
+    def _broken_record_close(*args: object, **kwargs: object) -> PodLease:
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(LeaseStore, "record_close", _broken_record_close)
+
+    result = LaptopSupervisor(
+        store,
+        shutdown(provider, clock),
+        owner_token="laptop",
+        heartbeat_timeout=timedelta(seconds=2),
+        now=clock.now,
+    ).run_once()
+
+    assert result.state is ControllerState.LEASE_RECORD_FAILURE
+    assert result.close_report is not None and result.close_report.verified
+    assert result.green is False
+
+
 def test_heartbeat_loss_and_orphan_reconciliation_each_terminate(tmp_path: Path) -> None:
     clock = Clock(seconds=10)
     provider = fake(clock)
@@ -1955,7 +1986,8 @@ def test_system_gpu_probe_measures_fields_or_returns_red_input_without_a_gpu() -
         calls.append(argv)
         if len(argv) == 1:
             return subprocess.CompletedProcess(argv, 0, "CUDA Version: 12.4\n", "")
-        return subprocess.CompletedProcess(argv, 0, "Synthetic GPU, 550.54, 48, 8.0\n", "")
+        # nvidia-smi's memory.total is MiB, not GiB: 49152 MiB is a real 48 GiB card.
+        return subprocess.CompletedProcess(argv, 0, "Synthetic GPU, 550.54, 49152, 8.0\n", "")
 
     profile = SystemGpuProbe(disk_path="/", runner=runner, disk_usage=lambda path: Disk()).profile(
         "bfloat16"
@@ -1968,3 +2000,24 @@ def test_system_gpu_probe_measures_fields_or_returns_red_input_without_a_gpu() -
     assert profile.vram_gib == Decimal("48")
     assert profile.disk_gib == Decimal("100")
     assert len(calls) == 2
+
+
+def test_system_gpu_probe_returns_red_input_when_nvidia_smi_fails() -> None:
+    class Disk:
+        free = 100 * 1024**3
+
+    def runner(argv: list[str]):  # type: ignore[no-untyped-def]
+        import subprocess
+
+        return subprocess.CompletedProcess(argv, 1, "", "nvidia-smi: command not found")
+
+    profile = SystemGpuProbe(disk_path="/", runner=runner, disk_usage=lambda path: Disk()).profile(
+        "bfloat16"
+    )
+
+    assert profile.name == "GPU discovery unavailable"
+    assert profile.cuda_version is None
+    assert profile.driver_version is None
+    assert profile.compute_capability is None
+    assert profile.vram_gib == Decimal("0")
+    assert profile.disk_gib == Decimal("100")
