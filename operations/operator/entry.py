@@ -23,6 +23,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except OperatorError as error:
         print(error.render())
         return 2
+    except KeyboardInterrupt:
+        print(OperatorError(ErrorCode.INTERRUPTED).render())
+        return 2
     except Exception as error:
         print(OperatorError(ErrorCode.UNEXPECTED, detail=str(error)).render())
         return 2

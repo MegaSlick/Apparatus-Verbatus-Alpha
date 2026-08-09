@@ -48,6 +48,7 @@ class ErrorCode(StrEnum):
     CLOSE_REFUSED = "close-refused"
     STATUS_EMPTY = "status-empty"
     STATUS_UNREADABLE = "status-unreadable"
+    INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
 
 
@@ -92,13 +93,13 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ),
     ErrorCode.CONFIRMATION_RECORD_FAILED: ErrorCopy(
         "Verbatus could not save your confirmation before acting.",
-        "No paid or destructive action was started, because the record is missing.",
+        "No paid or destructive action was started, because a usable indexed record is missing.",
         "Check that the project folder can be written, then try the command again; this is safe.",
     ),
     ErrorCode.RECORD_WRITE_FAILED: ErrorCopy(
         "Verbatus could not save the result of this step.",
         "The step is not claimed complete, and a paid or destructive action may already have reached its fixture boundary.",
-        "Do not repeat a paid or destructive action. Preserve this message, then run `verbatus status` if it can read the earlier records; this is safe.",
+        "Do not repeat a paid or destructive action. Preserve this message and its saved receipt path, then run `verbatus status`; if status cannot show it, ask for help.",
     ),
     ErrorCode.PRICE_CHANGED: ErrorCopy(
         "The fixture price changed after the screen you confirmed.",
@@ -220,6 +221,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "A saved operator record could not be read safely.",
         "Status did not guess what the record meant or contact a provider.",
         "Preserve that record for review and repair or replace it before continuing; this is safe.",
+    ),
+    ErrorCode.INTERRUPTED: ErrorCopy(
+        "The Verbatus command was interrupted before it reported an end state.",
+        "It is not called complete, and a provider or transfer action may already have started.",
+        "Do not repeat a paid or destructive step blindly. Run `verbatus status`, preserve its records, and follow the named recovery step.",
     ),
     ErrorCode.UNEXPECTED: ErrorCopy(
         "Verbatus met a problem it could not classify.",

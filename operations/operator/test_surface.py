@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -21,7 +22,16 @@ from operations.submit.submit import build_manifest, walk_folder
 from . import cli, entry
 from .dry_run import make_transcript
 from .errors import ErrorCode, OperatorError
-from .surface import OPERATOR_CLOSE_PREFIX, Faults, OperatorSurface
+from .records import DescriptorStore, RecordError
+from .surface import (
+    OPERATOR_CLOSE_PREFIX,
+    Faults,
+    OperatorSurface,
+    _pod_from_record,
+    _pod_record,
+    _request_from_record,
+    _request_record,
+)
 
 UTC = timezone.utc
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
@@ -235,6 +245,74 @@ def test_active_fixture_cannot_be_adopted_again_or_hidden_by_a_new_paid_path(
 
     assert first.close(f"{OPERATOR_CLOSE_PREFIX} {launched.record.pod_id}").verified
     assert first.prepare_launch(_request(name="next-fixture"), policy_path=spend).result.preview
+
+
+def test_saved_request_and_pod_reconstruction_refuse_type_coercion(tmp_path: Path) -> None:
+    """The receipt reader must construct the same identities as the live path."""
+
+    request_record = _request_record(_request())
+    request_record["name"] = 7
+    with pytest.raises(OperatorError):
+        _request_from_record(request_record)
+
+    surface = _surface(tmp_path)
+    launched = _launch(surface, _spend_policy(tmp_path))
+    assert launched.record is not None
+    pod_record = _pod_record(launched.record)
+    pod_record["runtime_contract"]["interruptible"] = 0
+    with pytest.raises(OperatorError):
+        _pod_from_record(pod_record)
+
+
+def test_receipt_reader_binds_the_kind_into_the_filename(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    receipt = surface.receipts.write("run", {"summary": "saved"})
+    renamed = receipt.with_name("close-" + receipt.name.rsplit("-", 1)[-1])
+    receipt.rename(renamed)
+
+    with pytest.raises(RecordError, match="kind or digest"):
+        surface.receipts.read(renamed)
+
+
+def test_a_saved_receipt_is_named_when_its_descriptor_update_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+
+    def refuse_index(self, action, receipt):  # type: ignore[no-untyped-def]
+        del self, action, receipt
+        raise RecordError("injected descriptor failure")
+
+    monkeypatch.setattr(DescriptorStore, "record", refuse_index)
+    with pytest.raises(OperatorError) as failure:
+        surface._write_action(
+            "run",
+            {"summary": "the fact was saved before indexing failed"},
+            descriptor_action="run",
+        )
+
+    assert failure.value.code is ErrorCode.RECORD_WRITE_FAILED
+    assert failure.value.detail is not None and "Receipt saved at" in failure.value.detail
+    assert len(surface.receipts.records_of_kind("run")) == 1
+
+
+def test_a_secondary_failure_record_error_is_printed_not_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    messages: list[str] = []
+    surface = _surface(tmp_path, faults=Faults(provider_timeout=True), output=messages)
+
+    def refuse_index(self, action, receipt):  # type: ignore[no-untyped-def]
+        del self, action, receipt
+        raise RecordError("injected descriptor failure")
+
+    monkeypatch.setattr(DescriptorStore, "record", refuse_index)
+    with pytest.raises(OperatorError) as operational_failure:
+        surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+
+    assert operational_failure.value.code is ErrorCode.PROVIDER_TIMEOUT
+    assert any("Verbatus could not save the result" in line for line in messages)
+    assert any("Receipt saved at" in line for line in messages)
 
 
 def test_later_refused_launch_receipt_does_not_hide_the_active_pod_from_close(
@@ -509,6 +587,22 @@ def test_console_parser_never_prints_a_raw_traceback(capsys: pytest.CaptureFixtu
     assert "Traceback" not in captured
 
 
+def test_console_interrupt_never_prints_a_raw_traceback(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupt(_value):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_network_volume", interrupt)
+
+    assert cli.main(["status"]) == 2
+    captured = capsys.readouterr().out
+    assert "What happened:" in captured
+    assert "What it means:" in captured
+    assert "Next step:" in captured
+    assert "Traceback" not in captured
+
+
 def test_console_close_with_no_saved_pod_refuses_before_prompting(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -577,6 +671,7 @@ def test_interactive_launch_can_name_an_exact_recorded_fixture_pod(
 
 def test_mac_wrapper_starts_the_same_console_flow() -> None:
     wrapper = ROOT / "operations" / "operator" / "Verbatus.command"
+    assert '.venv/bin/python' in wrapper.read_text(encoding="utf-8")
     completed = subprocess.run(
         [str(wrapper), "--help"],
         cwd=ROOT,
@@ -651,6 +746,49 @@ def test_status_repeats_the_recorded_values_exactly_and_never_recomputes_them(
     for action in ("boot", "upload", "run", "export", "close"):
         payload = surface.receipts.read(surface._descriptor_receipt(action))["payload"]
         assert payload["summary"] in joined
+
+
+def test_status_refuses_a_different_valid_manifest_at_the_recorded_path(tmp_path: Path) -> None:
+    """A path is not identity: status must stay bound to the manifest uploaded."""
+
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    surface.upload(source, sealed_manifest=manifest)
+    receipt = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+
+    (source / "later-page.bin").write_bytes(b"not in the uploaded manifest\n")
+    replacement = build_manifest(
+        walk_folder(source),
+        authorized_by={
+            "relative_path": "receipts/sha256/" + "b" * 64 + ".json",
+            "sha256": "b" * 64,
+        },
+    )
+    manifest.write_bytes(canonical_bytes(replacement))
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.status()
+
+    assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
+    assert receipt["submission_manifest_sha256"] != hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+
+def test_one_unreadable_status_record_does_not_hide_the_intact_ledgers(tmp_path: Path) -> None:
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    source, manifest = _manifest(tmp_path)
+    surface.boot()
+    surface.upload(source, sealed_manifest=manifest)
+    upload_receipt = surface._descriptor_receipt("upload")
+    assert upload_receipt is not None
+    upload_receipt.write_text("not a receipt\n", encoding="utf-8")
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.status()
+
+    assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
+    assert any("Saved boot report: GREEN" in line for line in messages)
+    assert any("upload record 1: UNREADABLE" in line for line in messages)
 
 
 def test_close_timing_comes_from_the_reviewed_policy_not_from_a_constant(tmp_path: Path) -> None:

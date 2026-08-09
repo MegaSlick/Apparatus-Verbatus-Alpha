@@ -33,13 +33,12 @@ quoted rather than paraphrased where the detail is load-bearing:
 
 **Stated as unconfirmed rather than asserted:**
 
-1. *Whether user metadata round-trips.* `inspect` writes each file's SHA-256 as S3
+1. *Whether user metadata round-trips.* `put_file` writes each file's SHA-256 as S3
    user metadata on upload and reads it back with `HeadObject`. Both operations
    are documented as supported; the page says nothing either way about user
    metadata surviving. If RunPod drops it, `HeadObject` returns no digest and this
-   class reports the object as absent — a needless re-upload, never a file counted
-   as verified that nothing verified. `ChecksummedTransfer` then refuses to call
-   the transfer complete on the second look, which is the correct direction.
+   class refuses the transfer. It must not report a present object as absent:
+   `ChecksummedTransfer` would then overwrite bytes it had no evidence it owned.
 2. *ETag is deliberately not used for that check.* A multipart ETag is not a
    whole-file MD5 even on AWS, the sealed manifest carries SHA-256 rather than
    MD5, and an integrity check built on a value whose definition is unclear is not
@@ -47,8 +46,8 @@ quoted rather than paraphrased where the detail is load-bearing:
 3. **Nothing in this file has ever run against a real endpoint**, authenticated or
    otherwise, from this chamber or any other. Its logic is tested against an
    injected fake client; its network behaviour is untested. boto3 is imported
-   lazily and is not a dependency of this project, so `upload` without
-   `--network-volume` neither needs it nor touches it.
+   lazily, so `upload` without `--network-volume` does not construct a client or
+   read storage credentials.
 """
 
 from __future__ import annotations
@@ -64,7 +63,7 @@ from operations.pod.transfer import RemoteObject
 SHA256_METADATA_KEY: Final = "verbatus-sha256"
 
 # 64 MiB parts: comfortably inside the documented 500MB-per-part ceiling, and at
-# S3's 10,000-part limit still enough for a single file of roughly 640 GiB. The
+# S3's 10,000-part limit still enough for a single file of roughly 625 GiB. The
 # multipart threshold matches, so anything smaller goes as one `PutObject` and
 # stays inside the documented "<500MB" single-shot limit.
 PART_BYTES: Final = 64 * 1024 * 1024
@@ -122,9 +121,8 @@ class VolumeSpec:
 def build_client(spec: VolumeSpec, environ: Mapping[str, str] | None = None) -> Any:
     """The documented boto3 client for one network volume, and nothing more.
 
-    boto3 is imported here rather than at module scope: it is not a dependency of
-    this project, and an operator who never asks for a network volume must never
-    need it installed.
+    boto3 is imported here rather than at module scope so an operator who never
+    asks for a network volume never constructs its client or reads credentials.
     """
 
     # Credentials before the import, deliberately: a missing key is the far more
@@ -137,8 +135,8 @@ def build_client(spec: VolumeSpec, environ: Mapping[str, str] | None = None) -> 
         import boto3
     except ImportError as error:
         raise VolumeTransferRefusal(
-            "sending to a network volume needs the boto3 package, which this project "
-            "does not install; install it in this environment first"
+            "sending to a network volume needs the project's boto3 dependency, but it "
+            "is missing from this installation; reinstall Verbatus before retrying"
         ) from error
     return boto3.client(
         "s3",
@@ -200,10 +198,12 @@ class S3VolumeTarget:
         recorded = metadata.get(SHA256_METADATA_KEY)
         size = head.get("ContentLength")
         if not isinstance(recorded, str) or not isinstance(size, int):
-            # No digest of ours on the object: report it absent rather than
-            # inventing evidence. A repeat upload is cheap; a file counted as
-            # verified that nothing verified is what GOVERNANCE 2 forbids.
-            return None
+            # The object is present, so `None` would authorize the transfer layer
+            # to overwrite it. Missing metadata is unknown ownership, not absence.
+            raise VolumeTransferRefusal(
+                f"network-volume object {key!r} exists without the digest and size "
+                "evidence Verbatus needs; it was not overwritten"
+            )
         return RemoteObject(sha256=recorded, size=size)
 
     def put_file(self, key: str, source: Path) -> None:
@@ -250,8 +250,7 @@ def default_transfer_config() -> Any | None:
 
     `None` means "let boto3 choose", which is a weaker setting and never a wrong
     one — and it cannot be reached at all without boto3, since the client could
-    not have been built. This path has never executed in this repository: boto3
-    is not a dependency here and is not installed.
+    not have been built.
     """
 
     try:
@@ -278,7 +277,10 @@ def _means_absent(error: BaseException) -> bool:
         return False
     code = str((response.get("Error") or {}).get("Code", ""))
     status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
-    return code in _ABSENT_CODES or status == 404
+    # A bare 404 is the shape botocore uses for HeadObject. If a server supplies
+    # a contradictory named error (for example AccessDenied with a 404 status),
+    # preserve the failure instead of treating it as permission to overwrite.
+    return code in _ABSENT_CODES or (not code and status == 404)
 
 
 def _sha256_of(path: Path) -> str:

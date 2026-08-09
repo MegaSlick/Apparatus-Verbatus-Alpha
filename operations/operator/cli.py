@@ -182,6 +182,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except OperatorError as error:
         print(error.render())
         return 2
+    except KeyboardInterrupt:
+        print(OperatorError(ErrorCode.INTERRUPTED).render())
+        return 2
     except Exception as error:  # the only route raw implementation failures take to the operator
         wrapped = OperatorError(ErrorCode.UNEXPECTED, detail=_safe_detail(str(error)))
         print(wrapped.render())

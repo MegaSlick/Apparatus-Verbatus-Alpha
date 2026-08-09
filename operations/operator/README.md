@@ -25,14 +25,14 @@ a real thing. The first real run is a separate, separately approved step.
 Six things this tool can do, in the order a normal run uses them, plus one you can run
 any time to check on things.
 
-| Word | What it does | Does it cost money? |
+| Word | What the real run does | Real-run cost |
 |---|---|---|
-| `launch` | Rents a machine with a GPU to run the pipeline on. | **Yes** — shows the price per hour and every limit, and makes you type a confirmation back before it rents anything. |
-| `boot` | Gets the rented machine ready and checks it over. | No new cost — the machine is already rented. |
+| `launch` | Rents a machine with a GPU to run the pipeline on. This build rehearses that gate with a fixture. | **Yes in a real run; no in this rehearsal.** It shows the price per hour and every limit, and makes you type a confirmation back first. |
+| `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
 | `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
-| `run` | Processes the images through the pipeline. | No new cost beyond the machine already running. |
-| `export` | Brings the finished results back to this computer. | No. |
-| `close` | Shuts the rented machine down. | This is what **stops** the cost. Always safe to run. |
+| `run` | Processes the images through the pipeline. This build runs the declared synthetic fixture. | No new cost beyond the machine already running. |
+| `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
+| `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
 
 **`upload` needs no rented machine**, so a normal order is: `upload` your images first
@@ -62,11 +62,12 @@ Run `close` for that one first.
 
 ## Shutting down, and what "closed" actually means
 
-`close` asks for its own separate confirmation, and then always does three things, whether
-or not the shutdown could be confirmed:
+In a live-capable build, `close` asks for its own separate confirmation and then does
+three things, whether or not the shutdown could be confirmed. This rehearsal exercises
+the same report shape with fixture provider and billing evidence:
 
 1. It tells you whether the machine is **confirmed gone** — proved by the provider saying
-   so twice, independently, *and* by real billing records covering the whole window — and
+   so twice, independently, *and* by provider billing records covering the whole window — and
    what it cost through that point. If it could not prove all of that, it says
    **UNVERIFIED CLOSE** and tells you exactly what to go and check yourself.
 2. It reminds you that **the storage volume keeps costing money on its own**. Closing the
@@ -120,9 +121,9 @@ cannot travel in a commit.
 2. **`boot` measures no real machine.** The cache check, the proof-page read and the GPU
    profile are fixtures. A green boot means the local wiring is sound, not that a GPU
    exists.
-3. **`upload` writes to a local folder** through the same checksum-verified, resumable
-   transfer a network volume would use. The S3-compatible network-volume target exists
-   (`volume_s3.py`) but is off by default and has never been run against a real endpoint.
+3. **`upload` writes to a local folder by default** through the same checksum-verified,
+   resumable transfer a network volume uses. `--network-volume DATACENTER:VOLUME_ID`
+   selects the S3-compatible target; it has never been run against a real endpoint.
 4. **`run` processes the declared synthetic fixture**, not the files you uploaded. The two
    are not joined yet.
 5. **`export` produces a base Armarium evidence bundle**, not Spec 11's product export,

@@ -469,6 +469,13 @@ class OperatorSurface:
         manifest_path = Path(sealed_manifest)
         if not manifest_path.is_file():
             raise OperatorError(ErrorCode.UPLOAD_MANIFEST_MISSING)
+        try:
+            manifest_sha256 = _sha256_file(manifest_path)
+        except OSError as error:
+            raise OperatorError(
+                ErrorCode.UPLOAD_MANIFEST_MISSING,
+                detail="the sealed submission record could not be read",
+            ) from error
         fixture_only = volume is None and target is None
         if fixture_only:
             self.present("Upload uses the sealed submission record and the fixture volume.")
@@ -501,6 +508,8 @@ class OperatorSurface:
                 prefix=prefix,
                 journal_path=self.state_root / "transfer" / f"{_sha256_file(manifest_path)}.json",
             ).resume()
+            if _sha256_file(manifest_path) != manifest_sha256:
+                raise TransferFailure("sealed submission record changed during transfer")
         except (TransferFailure, OSError, ValueError) as error:
             receipt = self._write_action(
                 "upload",
@@ -509,6 +518,7 @@ class OperatorSurface:
                     "state": "partial-transfer",
                     "source": str(source_path.resolve()),
                     "submission_manifest": str(manifest_path.resolve()),
+                    "submission_manifest_sha256": manifest_sha256,
                     "detail": str(error),
                     "zero_gpu_hours": True,
                 },
@@ -528,6 +538,7 @@ class OperatorSurface:
                 "state": "complete",
                 "source": str(source_path.resolve()),
                 "submission_manifest": str(manifest_path.resolve()),
+                "submission_manifest_sha256": manifest_sha256,
                 "transfer": report.to_record(),
                 "zero_gpu_hours": True,
             },
@@ -897,11 +908,12 @@ class OperatorSurface:
         if descriptor is None or not descriptor["actions"]:
             raise OperatorError(ErrorCode.STATUS_EMPTY)
         lines = ["Saved operator records (read-only; no new provider check was made):"]
-        try:
-            for action, path_texts in sorted(descriptor["history"].items()):
-                if action == "active-launch":
-                    continue
-                for number, path_text in enumerate(path_texts, start=1):
+        unreadable: list[str] = []
+        for action, path_texts in sorted(descriptor["history"].items()):
+            if action == "active-launch":
+                continue
+            for number, path_text in enumerate(path_texts, start=1):
+                try:
                     record = self.receipts.read(Path(path_text))
                     payload = record["payload"]
                     summary = payload.get("summary")
@@ -912,10 +924,17 @@ class OperatorSurface:
                     lines.extend(_status_projection(action, payload))
                     if action == "upload":
                         lines.extend(_status_manifest_projection(payload))
-        except RecordError as error:
-            raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=_detail(str(error))) from error
+                except RecordError as error:
+                    label = f"{action} record {number}"
+                    unreadable.append(f"{label}: {_detail(str(error))}")
+                    lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
         for line in lines:
             self.present(line)
+        if unreadable:
+            raise OperatorError(
+                ErrorCode.STATUS_UNREADABLE,
+                detail="; ".join(unreadable),
+            )
         return lines
 
     # -- internal -------------------------------------------------------------
@@ -1109,13 +1128,17 @@ class OperatorSurface:
         additional_descriptor_actions: tuple[str, ...] = (),
         failure_code: ErrorCode = ErrorCode.RECORD_WRITE_FAILED,
     ) -> Path:
+        receipt: Path | None = None
         try:
             receipt = self.receipts.write(kind, payload)
             for action in (descriptor_action, *additional_descriptor_actions):
                 self.descriptor.record(action, receipt)
             return receipt
         except RecordError as error:
-            raise OperatorError(failure_code, detail=_detail(str(error))) from error
+            detail = _detail(str(error))
+            if receipt is not None:
+                detail = f"Receipt saved at {receipt}, but its operator index was not updated: {detail}"
+            raise OperatorError(failure_code, detail=detail) from error
 
     def _record_failure(self, action: str, state: str, detail: str) -> None:
         try:
@@ -1128,8 +1151,11 @@ class OperatorSurface:
                 },
                 descriptor_action=action,
             )
-        except OperatorError:
-            pass
+        except OperatorError as record_error:
+            # Keep the original operational failure as the command's result,
+            # but never hide that its supporting receipt/index also failed.
+            for line in record_error.render().splitlines():
+                self.present(line)
 
     def _run_one_stage(self, run_root: Path, run_id: str, scenario: str, program: str) -> None:
         command = [
@@ -1344,13 +1370,19 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
 
 
 def _status_manifest_projection(payload: dict[str, Any]) -> list[str]:
-    """Read the sealed manifest itself and repeat only its already-recorded file count."""
+    """Read only the exact sealed manifest bound into the upload receipt."""
 
     path_text = payload.get("submission_manifest")
-    if not isinstance(path_text, str):
+    recorded_sha256 = payload.get("submission_manifest_sha256")
+    if path_text is None and recorded_sha256 is None:
         return []
+    if not isinstance(path_text, str) or not isinstance(recorded_sha256, str):
+        raise RecordError("saved upload record does not bind its submission record digest")
     try:
-        manifest = submission_door.load_manifest(Path(path_text))
+        path = Path(path_text)
+        if _sha256_file(path) != recorded_sha256:
+            raise ValueError("saved submission record no longer matches the upload receipt")
+        manifest = submission_door.load_manifest(path)
         files = manifest.get("files")
         if not isinstance(files, list):
             raise ValueError("saved submission record has no file list")
@@ -1385,11 +1417,30 @@ def _request_record(request: PodCreateRequest) -> dict[str, Any]:
 
 def _request_from_record(value: dict[str, Any]) -> PodCreateRequest:
     try:
-        deadline = datetime.fromisoformat(str(value["hard_deadline"]).replace("Z", "+00:00"))
+        required = {
+            "name",
+            "gpu_type",
+            "image",
+            "volume_id",
+            "volume_mount_path",
+            "docker_start_cmd",
+            "hard_deadline",
+            "repository_commit",
+            "template",
+            "metadata",
+            "interruptible",
+            "recovery_only",
+        }
+        if set(value) != required:
+            raise ValueError("request has missing or unknown fields")
+        deadline_text = value["hard_deadline"]
+        if not isinstance(deadline_text, str):
+            raise ValueError("deadline is invalid")
+        deadline = datetime.fromisoformat(deadline_text.replace("Z", "+00:00"))
         command = value["docker_start_cmd"]
-        metadata = value.get("metadata", {})
-        interruptible = value.get("interruptible", False)
-        recovery_only = value.get("recovery_only", False)
+        metadata = value["metadata"]
+        interruptible = value["interruptible"]
+        recovery_only = value["recovery_only"]
         if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
             raise ValueError("command is invalid")
         if not isinstance(metadata, dict) or not all(
@@ -1399,15 +1450,15 @@ def _request_from_record(value: dict[str, Any]) -> PodCreateRequest:
         if not isinstance(interruptible, bool) or not isinstance(recovery_only, bool):
             raise ValueError("request booleans are invalid")
         return PodCreateRequest(
-            name=str(value["name"]),
-            gpu_type=str(value["gpu_type"]),
-            image=str(value["image"]),
-            volume_id=str(value["volume_id"]),
-            volume_mount_path=str(value["volume_mount_path"]),
+            name=value["name"],
+            gpu_type=value["gpu_type"],
+            image=value["image"],
+            volume_id=value["volume_id"],
+            volume_mount_path=value["volume_mount_path"],
             docker_start_cmd=tuple(command),
             hard_deadline=require_utc(deadline, "recorded hard deadline"),
-            repository_commit=str(value["repository_commit"]),
-            template=value.get("template"),
+            repository_commit=value["repository_commit"],
+            template=value["template"],
             metadata=metadata,
             interruptible=interruptible,
             recovery_only=recovery_only,
@@ -1448,35 +1499,87 @@ def _pod_record(record: PodRecord) -> dict[str, Any]:
 
 def _pod_from_record(value: dict[str, Any]) -> PodRecord:
     try:
+        required = {
+            "pod_id",
+            "name",
+            "volume_id",
+            "created_at",
+            "state",
+            "estimate",
+            "runtime_contract",
+        }
+        if set(value) != required:
+            raise ValueError("pod record has missing or unknown fields")
         estimate_raw = value["estimate"]
-        contract_raw = value.get("runtime_contract")
+        contract_raw = value["runtime_contract"]
         if not isinstance(estimate_raw, dict) or not isinstance(contract_raw, dict):
             raise ValueError("pod record is missing immutable observations")
-        created = datetime.fromisoformat(str(value["created_at"]).replace("Z", "+00:00"))
-        observed = datetime.fromisoformat(str(estimate_raw["observed_at"]).replace("Z", "+00:00"))
+        if set(estimate_raw) != {
+            "pod_hourly_usd",
+            "volume_hourly_usd",
+            "source",
+            "observed_at",
+        }:
+            raise ValueError("pod estimate has missing or unknown fields")
+        if set(contract_raw) != {
+            "interruptible",
+            "gpu_type",
+            "image",
+            "volume_id",
+            "volume_mount_path",
+            "docker_start_cmd",
+            "template",
+        }:
+            raise ValueError("pod runtime contract has missing or unknown fields")
+        created_text = value["created_at"]
+        observed_text = estimate_raw["observed_at"]
+        if not isinstance(created_text, str) or not isinstance(observed_text, str):
+            raise ValueError("pod observation times are invalid")
+        if not all(
+            isinstance(value[field], str) for field in ("pod_id", "name", "volume_id", "state")
+        ):
+            raise ValueError("pod identity fields are invalid")
+        if not all(
+            isinstance(estimate_raw[field], str)
+            for field in ("pod_hourly_usd", "volume_hourly_usd", "source")
+        ):
+            raise ValueError("pod estimate fields are invalid")
+        interruptible = contract_raw["interruptible"]
+        if not isinstance(interruptible, bool):
+            raise ValueError("pod interruptible observation is invalid")
+        if not all(
+            isinstance(contract_raw[field], str)
+            for field in ("gpu_type", "image", "volume_id", "volume_mount_path")
+        ):
+            raise ValueError("pod runtime identity fields are invalid")
+        template = contract_raw["template"]
+        if template is not None and not isinstance(template, str):
+            raise ValueError("pod template is invalid")
+        created = datetime.fromisoformat(created_text.replace("Z", "+00:00"))
+        observed = datetime.fromisoformat(observed_text.replace("Z", "+00:00"))
         command = contract_raw["docker_start_cmd"]
         if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
             raise ValueError("pod command is invalid")
         return PodRecord(
-            pod_id=str(value["pod_id"]),
-            name=str(value["name"]),
+            pod_id=value["pod_id"],
+            name=value["name"],
             estimate=PodEstimate(
-                pod_hourly_usd=Decimal(str(estimate_raw["pod_hourly_usd"])),
-                volume_hourly_usd=Decimal(str(estimate_raw["volume_hourly_usd"])),
-                source=str(estimate_raw["source"]),
+                pod_hourly_usd=Decimal(estimate_raw["pod_hourly_usd"]),
+                volume_hourly_usd=Decimal(estimate_raw["volume_hourly_usd"]),
+                source=estimate_raw["source"],
                 observed_at=require_utc(observed, "recorded estimate time"),
             ),
-            volume_id=str(value["volume_id"]),
+            volume_id=value["volume_id"],
             created_at=require_utc(created, "recorded pod creation time"),
-            state=str(value.get("state", "running")),
+            state=value["state"],
             runtime_contract=PodRuntimeContract(
-                interruptible=bool(contract_raw["interruptible"]),
-                gpu_type=str(contract_raw["gpu_type"]),
-                image=str(contract_raw["image"]),
-                volume_id=str(contract_raw["volume_id"]),
-                volume_mount_path=str(contract_raw["volume_mount_path"]),
+                interruptible=interruptible,
+                gpu_type=contract_raw["gpu_type"],
+                image=contract_raw["image"],
+                volume_id=contract_raw["volume_id"],
+                volume_mount_path=contract_raw["volume_mount_path"],
                 docker_start_cmd=tuple(command),
-                template=contract_raw.get("template"),
+                template=template,
             ),
         )
     except (KeyError, TypeError, ValueError) as error:

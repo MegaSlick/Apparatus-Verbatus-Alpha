@@ -130,8 +130,8 @@ def test_an_uploaded_file_reads_back_with_the_digest_it_was_tagged_with(tmp_path
     assert client.objects["volume/page.bin"][1][SHA256_METADATA_KEY] == observed.sha256
 
 
-def test_an_object_without_our_digest_is_reported_absent_not_verified(tmp_path: Path) -> None:
-    """See the module note: a needless re-upload, never a file counted unverified."""
+def test_an_object_without_our_digest_is_refused_and_not_overwritten(tmp_path: Path) -> None:
+    """Unknown ownership cannot be converted into permission to overwrite."""
 
     client = FakeS3Client()
     target = S3VolumeTarget(_spec(), client=client)
@@ -140,7 +140,10 @@ def test_an_object_without_our_digest_is_reported_absent_not_verified(tmp_path: 
     target.put_file("volume/page.bin", source)
     client.drop_metadata = True
 
-    assert target.inspect("volume/page.bin") is None
+    with pytest.raises(VolumeTransferRefusal, match="was not overwritten"):
+        target.inspect("volume/page.bin")
+
+    assert client.uploads == ["volume/page.bin"]
 
 
 def test_a_target_that_never_returns_our_digest_cannot_be_called_complete(
@@ -150,7 +153,7 @@ def test_a_target_that_never_returns_our_digest_cannot_be_called_complete(
     client.drop_metadata = True
     source, manifest = _manifest(tmp_path)
 
-    with pytest.raises(TransferFailure, match="did not verify after transfer"):
+    with pytest.raises(TransferFailure, match="exists without the digest"):
         ChecksummedTransfer(
             source_root=source,
             submission_manifest=manifest,
@@ -158,6 +161,33 @@ def test_a_target_that_never_returns_our_digest_cannot_be_called_complete(
             prefix="volume",
             journal_path=tmp_path / "journal.json",
         ).resume()
+
+    assert client.uploads == ["volume/page-one.bin"]
+
+
+def test_a_target_check_failure_reaches_the_three_part_upload_error(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    client = FakeS3Client()
+    client.objects["volume/page-one.bin"] = (b"unknown prior bytes", {})
+
+    with pytest.raises(OperatorError) as failure:
+        surface.upload(
+            source,
+            sealed_manifest=manifest,
+            target=S3VolumeTarget(_spec(), client=client),
+        )
+
+    assert failure.value.code is ErrorCode.UPLOAD_PARTIAL
+    assert client.uploads == []
+
+
+def test_a_contradictory_access_denied_404_is_not_absence() -> None:
+    client = FakeS3Client()
+    client.head_error = _client_error("AccessDenied", 404)
+
+    with pytest.raises(VolumeTransferRefusal):
+        S3VolumeTarget(_spec(), client=client).inspect("volume/page.bin")
 
 
 def test_a_directory_or_symlink_named_by_the_record_is_refused(tmp_path: Path) -> None:

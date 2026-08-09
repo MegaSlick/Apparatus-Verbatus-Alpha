@@ -59,8 +59,9 @@ The current tree also has base Armarium evidence but not Spec 11's product expor
 `export` labels that distinction instead of presenting a substitute as the final product.
 
 Every problem is shown in three short parts: what happened, what it means, and what to
-do next. Save the receipt path Verbatus prints. `status` can read that saved record later
-without making a new provider check.
+do next. Save the receipt path Verbatus prints. Indexed receipts appear in `status`
+without a new provider check; if indexing itself fails, the error names the exact saved
+receipt rather than pretending nothing was written.
 
 Governance 8 governs any future live operation in `pod/`: it needs Tyrel's explicit
 permission in that session, and close must be verified against provider state and billing,

@@ -25,6 +25,9 @@ dependencies = [
     # UAX #29 extended grapheme clusters for Spec 05 CER after explicit NFC text
     # normalization; see operations/spike_perlector/README.md (MIT licence).
     "uniseg==0.10.1",
+    # Maintained Apache-2.0 AWS SDK used only for RunPod's documented
+    # S3-compatible network-volume upload path.
+    "boto3==1.43.53",
 ]
 
 [project.scripts]

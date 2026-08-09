@@ -107,13 +107,20 @@ class ReceiptStore:
         if (
             record["schema"] != SCHEMA
             or not isinstance(record["kind"], str)
+            or not isinstance(record["recorded_at"], str)
             or not isinstance(record["payload"], dict)
         ):
             raise RecordError(f"operator receipt has invalid fields: {resolved.name}")
-        expected_digest = resolved.stem.rsplit("-", 1)[-1]
-        if hashlib.sha256(data).hexdigest() != expected_digest:
+        try:
+            recorded_at = datetime.fromisoformat(record["recorded_at"].replace("Z", "+00:00"))
+            if utc_stamp(recorded_at) != record["recorded_at"]:
+                raise RecordError("operator receipt time is not canonical UTC")
+        except (ValueError, RecordError) as error:
+            raise RecordError(f"operator receipt has an invalid time: {resolved.name}") from error
+        digest = hashlib.sha256(data).hexdigest()
+        if resolved.name != f"{record['kind']}-{digest}.json":
             raise RecordError(
-                f"operator receipt digest does not match its filename: {resolved.name}"
+                f"operator receipt kind or digest does not match its filename: {resolved.name}"
             )
         return record
 
