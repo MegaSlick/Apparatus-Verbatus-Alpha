@@ -1,0 +1,102 @@
+# Planning estimates only.  This file selects no GPU class and does not authorize
+# a pod.  Its fractions and caps must be benchmarked on the card actually rented.
+#
+# Serving is SEQUENTIAL — one model at a time, as much of the card as stays
+# stable, next model after (Tyrel's ruling, 2026-08-05).  Every tier below is
+# `residency = "single"`; what a tier changes is how much of the card that one
+# model gets, never how many models run at once.  A retired three-tier
+# co-residency table (strictly_sequential / two_coresident_one_swapped /
+# all_coresident) once lived here and must not be reintroduced.
+#
+# `card_profile` rows are the prebuilt profiles spec 04 asks for, for the cards
+# actually rented.  An unknown card falls back to computed placement from the
+# generic tiers.  The hourly_usd figures are the spec's own verified Secure
+# on-demand prices (2026-07-30, re-checked by the lane-A build on 2026-08-05);
+# the gpu_type_id strings come from RunPod's published documentation and have
+# never been sent to the API, so confirm the exact accepted string in the console
+# before the first live launch.  Nothing here chooses a card: that is Tyrel's
+# call at this gate, and `config/spend.toml` refuses every paid path until he
+# has configured it.
+schema = "pod-placement.v1"
+
+[dtype_floor]
+# Compute capability floors are configuration, never a bf16 assumption in code.
+# These are the widely documented architecture floors (Volta 7.0, Ampere 8.0,
+# Ada/Hopper 8.9), not measurements taken on real silicon here.
+float16 = "7.0"
+bfloat16 = "8.0"
+fp8 = "8.9"
+
+[[tiers]]
+id = "generic-24gb"
+min_vram_gib = 22
+max_vram_gib_exclusive = 40
+residency = "single"
+detector_device = "cpu"
+
+[tiers.recipe]
+engine_memory_fraction = "0.58"
+context_cap = 2048
+pixel_cap = 1344
+batch_size = 1
+
+[[tiers]]
+id = "generic-48gb"
+min_vram_gib = 40
+max_vram_gib_exclusive = 64
+residency = "single"
+detector_device = "cpu"
+
+[tiers.recipe]
+engine_memory_fraction = "0.78"
+context_cap = 4096
+pixel_cap = 1792
+batch_size = 2
+
+[[tiers]]
+id = "generic-80gb-plus"
+min_vram_gib = 64
+residency = "single"
+detector_device = "cpu"
+
+[tiers.recipe]
+engine_memory_fraction = "0.88"
+context_cap = 8192
+pixel_cap = 2304
+batch_size = 4
+
+# The cards spec 04 names by name.  `tier` must be one of the ids above; a
+# profile whose vram_gib does not fall inside its own tier's band is refused at
+# load, so a drifted row cannot quietly plan for the wrong card.
+
+[[card_profile]]
+name = "RTX 6000 Ada"
+gpu_type_id = "NVIDIA RTX 6000 Ada Generation"
+vram_gib = 48
+hourly_usd = "0.77"
+tier = "generic-48gb"
+note = "spec 04 default — Ada silicon unlocks the FP8 lever Ampere never will"
+
+[[card_profile]]
+name = "RTX PRO 6000 Blackwell"
+gpu_type_id = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+vram_gib = 96
+hourly_usd = "1.99"
+tier = "generic-80gb-plus"
+note = "spec 04 scale tier — the biggest single-model serving profile"
+
+[[card_profile]]
+name = "A40"
+gpu_type_id = "NVIDIA A40"
+vram_gib = 48
+hourly_usd = "0.44"
+tier = "generic-48gb"
+note = "spec 04 fallback where budget rules the day; Ampere, so no fp8"
+
+[[card_profile]]
+name = "RTX A5000"
+gpu_type_id = "NVIDIA RTX A5000"
+vram_gib = 24
+hourly_usd = "0.27"
+tier = "generic-24gb"
+note = "spec 04 smoke-run fallback"

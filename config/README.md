@@ -8,7 +8,8 @@ The knobs. One question per planned file, each answerable without reading code.
 | `recovery.toml` | present — how many times rework may be asked for before review |
 | `pdf_render.toml` | present — what whole-page PDF resolution the next run targets |
 | `data_handling_policy.json` | present — how real material is stored, logged, retained and disposed of |
-| `spend.toml` | planned — money caps |
+| `spend.toml` | present, deliberately unconfigured — Tyrel's pod-plus-attached-volume money caps; both paid paths refuse it until configured |
+| `pod_placement.toml` | present — planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
 | `formats.toml` | planned — which formats the Armarium writes |
 
 Decoder routing is deliberately not configuration. Tyrel ruled that an uncorrupted
@@ -59,6 +60,24 @@ change. It also owns the three things a run is bound to that follow from the
 roster: the witness floor, the adapter recipes, and — with the fixture and the
 scenario — the run's configuration digest. `common/chairs/README.md` describes how
 it is read and what a malformed pin earns.
+
+`spend.toml` is intentionally a refusal, not a placeholder default. A configured version
+must name `max_hourly_usd` and `max_estimated_metered_cost_usd` USD ceilings for the
+combined metered pod and attached-volume hourly price and cost through the hard lifetime,
+plus laptop heartbeat and shutdown polling/deadline.
+It does not authorize retaining or deleting a volume after close: that is a separately
+named decision, and every close report states the volume's own ongoing price. The file
+itself carries the full key list as comments, so filling it in needs no code reading.
+
+`pod_placement.toml` is planning, not permission. Serving is **sequential** — one model
+at a time, as much of the card as stays stable, next model after — so every tier is
+single-resident, and what a tier changes is the engine memory fraction, context cap,
+pixel cap and batch size that one model gets. Its `card_profile` rows are prebuilt plans
+for the cards this project actually rents; an unknown card falls back to computed
+placement from the generic tiers. Those rows also carry the reviewed hourly price the
+launch gate estimates against, because RunPod publishes no endpoint that quotes a GPU's
+price without creating a pod. Naming a card here does not choose one, and no number here
+has been benchmarked on real silicon.
 
 Two directories sit beside it because they are resolved relative to it, and could
 not be pinned by it from anywhere else:

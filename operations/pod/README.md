@@ -34,23 +34,110 @@ notices. That is the one failure here that costs money rather than time.
 **An acknowledgement is not a shutdown.** Nor is a command that returned zero, nor a log
 line saying "terminated".
 
-A pod is off when **provider state says it is gone and billing has stopped** — two
-separate observations, both made after the fact. Until both are true, the session reports
-it as *possibly still running* and says so plainly, on his phone if he is away, because
-this is exactly the "decision" class of notification.
+A close is green only when **provider state says the same pod is gone** (both exact-pod GET
+and the pod list) and the provider returns non-empty, exact-pod billing records whose named
+window begins no later than pod creation and reaches the provider-resolved cutoff requested
+by close. Billing can lag; this instrument never claims “no future charges.” An empty,
+unreachable, misattributed, narrowed, or stale billing response is *unverified*, not zero.
 
 A shutdown that cannot be verified is not a tidy-up for next session. Say it now.
 
 ## What exists here
 
-Nothing yet — no launcher, no shutdown client, no billing verifier. When they are built:
+The fake-first runtime is now present. It has not started, inspected, or billed a live
+pod. This build's no-live-call boundary applies even to the otherwise read-only provider
+operations above: every adapter check used an in-memory fake transport. RunPod's public
+*documentation* was fetched to settle which API version and which response shapes the
+adapter targets — that is reading a web page, not calling the provider — and every page
+is named with its date in `provider_runpod.py`. So the field names here are documented,
+not observed, and the first authorised live run is what confirms the provider answers
+the way its documentation says.
 
-- Shutdown is written and proven **before** launch is, and the launcher's first act is to
-  prove the shutdown path works.
-- Every launch records what was started, when, at what rate, and on whose permission.
-- A verifier that cannot reach the provider reports failure, never success: a check that
-  cannot run is a failure, not a pass (GOVERNANCE 10).
-- Nothing here reads a credential from a tracked file.
+- `provider.py` is the seven-verb provider seam; `provider_runpod.py` is the sole
+  RunPod adapter and speaks **REST v1** (`rest.runpod.io/v1`), the route spec 04
+  names and the only one whose published pod-create schema proves the two facts
+  this runtime must have before it can spend: an explicit `interruptible=false`
+  and a primary `dockerStartCmd`. REST v2 (`api.runpod.io/v2`) is not used: its
+  own overview still says it is in beta and may change before general
+  availability. Every endpoint shape the adapter reads is named, with its
+  documentation URL and the date it was checked, in that file's module
+  docstring. `fake_provider.py` has a fixed local price sheet, exact-token crash
+  recovery, and injected failures only.
+- `shutdown.py` is written before launch. Its only green close result requires a
+  termination request, exact-pod GET-404, independent pod-list absence, and a
+  non-empty provider billing capture through its named window and cutoff. The
+  generic verifier binds all three returned observations to the requested pod,
+  and requires billing coverage from creation through the requested cutoff.
+  Empty/unreachable or mismatched billing is **UNVERIFIED**, never zero. Billing
+  lags termination, so the capture is retried a bounded, configured number of
+  times before that verdict; an adapter that can distinguish "not posted yet"
+  from "nothing to post" reports `pending-reconciliation` instead. Neither state
+  claims no future charge is possible.
+- `lease.py`, `controllers.py`, `arming.py`, and `pod_timer.py` implement a pre-create
+  atomic lease, restart recovery by exact token, laptop heartbeat/lifetime supervisor,
+  mandatory bootstrap, and an independent pod-side hard-lifetime dead-man. A launch or
+  adoption is green only after a supplied controller harness starts the laptop supervisor,
+  observes a pod-timer acknowledgement, and that receipt is durably recorded and bound to
+  the exact lease, pod, and hard deadline. The default is fail-closed; an active lease without
+  the receipt is immediately closed. A volume is
+  retained by ordinary close; its ongoing price is in the close report. This runtime has no
+  volume-delete operation.
+- `spend.py` applies the same price display, ceiling calculation, and typed phrase to
+  create and adopt. The phrase is **derived from the preview**: it names the action, the
+  subject and both hourly rates just displayed, so it cannot be typed from memory or
+  pasted from a script by someone who has not read what is about to bill. The hourly and
+  lifetime ceiling checks include both pod and attached volume while the hard lifetime is
+  running, and the ceiling is applied a second time to the price the provider *actually*
+  returned — a created pod that bills above it is closed immediately rather than left
+  running. `config/spend.toml` is deliberately unconfigured, so both paid paths refuse
+  until Tyrel supplies a reviewed policy.
+- `transfer.py` carries Spec 03's sealed submission-manifest rows through a generic
+  storage seam. It streams and verifies SHA-256/size before and after upload, persists
+  verified rows, and refuses conflicting target bytes rather than overwriting them.
+  `bootstrap.py` journals idempotent exact-commit, locked-`uv`, transfer, chair-cache,
+  and preflight steps. A cache digest mismatch receives at most one same-pin re-fetch;
+  another mismatch is red and names the chair.
+- `preflight.py` measures or receives CUDA/driver/capability/VRAM/disk facts, selects a
+  single-resident plan only from `config/pod_placement.toml`, verifies every configured
+  chair, and validates a stochastic proof-page read by shape, non-emptiness, and format.
+  **Serving is sequential** — one model at a time, as much of the card as stays stable,
+  next model after — so every tier is single-resident and what a tier changes is the
+  engine memory fraction, context cap, pixel cap and batch size that one model gets. The
+  table ships prebuilt profiles for the cards this project actually rents and falls back
+  to computed placement for anything else; the report names which plan it chose and why.
+  Its utilization fields are measurements, not a claim that a card is "saturated". It
+  always labels this stage fixture/planning-only; Spec 05 owns a real-assembly claim.
+
+The local command surface is `python -m operations.pod.cli`. It requires explicit
+untracked provider and controller-armer factories plus a request file, so this repository
+contains neither a credential, a personal provider default, nor an implicit controller
+process. It prints the previewed current price and ceilings before prompting for the exact
+typed confirmation; EOF is a refusal. A request must make the provider-neutral timer the
+primary command and include a
+provider-owned timer factory, a structured mandatory bootstrap command, and a durable
+report path under the attached volume. If bootstrap exits (successfully or not), or its
+report cannot be retained, the timer attempts immediate verified close rather than leave
+an idle meter running. A typed phrase is an operational guard; it is **not** Tyrel's
+live-pod gate. Do not invoke a factory that could contact a provider without his
+current-session authorization.
+
+The provider-owned pod-timer factory requires ephemeral runtime facts and an untracked
+termination capability. Its behavior is fake-proven, including both death drills after a
+green fake launch handshake. Delivery of that capability, a real pod identity at boot,
+the acknowledgement channel, and the provider's post-delete/billing behavior remain part
+of Tyrel's gated live demonstration; this repository makes no claim that they have
+occurred.
+
+Run the fake checks with:
+
+```sh
+python3 -m pytest operations/pod
+```
+
+They include deliberately broken confirmation, ceiling, status, billing, transfer,
+cache, smoke-read, laptop-controller, and pod-timer paths. A full real-chair preflight
+is not demonstrated: the committed roster is still fixture-only and has no real GPU or
+model-service measurement.
 
 ## If your task seems to need one
 
