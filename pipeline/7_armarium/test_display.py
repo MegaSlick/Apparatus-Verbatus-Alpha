@@ -51,6 +51,31 @@ def test_render_then_strip_returns_the_established_text_and_its_hash(spans):
     assert _hash(strip_display(rendered)) == _hash(TEXT)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        r"literal \\ path",
+        "literal ⟨not markup⟩ and ⟦not a gap⟧",
+        'literal ⟨{"text":"plausible markup","alternatives":[]}⟩',
+    ],
+)
+def test_literal_marker_glyphs_and_backslashes_survive_the_round_trip(text):
+    rendered = render_display(text)
+    assert strip_display(rendered) == text
+
+
+def test_marker_glyphs_inside_metadata_cannot_end_a_marker_or_leak_witness_text():
+    text = "Marie"
+    rendered = render_display(
+        text,
+        uncertain=[UncertainSpan(0, len(text), ("⟩false close",))],
+        gaps=[GapAnchor("trailing", len(text), "⟧false close", ("⟧witness",))],
+    )
+    assert strip_display(rendered) == text
+    assert "witness" in rendered
+    assert "witness" not in strip_display(rendered)
+
+
 def test_a_rendering_carries_witness_variants_beside_the_text_never_inside_it():
     """Tyrel, 2026-08-05: a witness variant attaches to a gap as evidence beside the
     text, never as characters inside it. Stripping the rendering must not leave the
@@ -91,4 +116,4 @@ def test_an_unknown_gap_kind_is_refused():
 def test_the_convention_name_says_it_is_a_proposal():
     """The name travels into EXPORT_MANIFEST.json, so a reader of the product can
     tell that nobody has ruled on it yet without reading this repository."""
-    assert DISPLAY_CONVENTION.endswith(".proposed.v1")
+    assert DISPLAY_CONVENTION.endswith(".proposed.v2")

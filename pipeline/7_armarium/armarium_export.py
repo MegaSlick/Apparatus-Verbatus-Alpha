@@ -190,6 +190,8 @@ def build_armarium_bundle(
             "act_citations": _act_citations(projection.acts),
             "act_outcomes": _act_outcomes(projection.acts),
             "aggregate_basis": projection.aggregate_basis,
+            "witness_chairs": list(projection.witness_chairs),
+            "witness_floor": projection.witness_floor,
             "salvage_regions": _salvage_regions(projection.salvage_items),
         }
     )
@@ -351,6 +353,12 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         raise SchemaRefusal(
             "an Armarium projection does not contain one record for every expected act"
         )
+    _validate_witness_accounting(
+        projection.witness_chairs,
+        projection.witness_floor,
+        projection.aggregate_basis,
+        projection.acts,
+    )
     for source in projection.source_manifest:
         if not isinstance(source, dict):
             raise SchemaRefusal("an Armarium projection source-manifest row is not an object")
@@ -401,6 +409,58 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     )
     if canonical_text(projection.aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("an Armarium projection aggregate does not match its measured basis")
+
+
+def _validate_witness_accounting(
+    witness_chairs: Any,
+    witness_floor: Any,
+    aggregate_basis: Any,
+    acts: tuple[dict[str, Any], ...] | None = None,
+) -> None:
+    """Keep the exported roster, coverage counts, and per-act witnesses one fact."""
+    if (
+        not isinstance(witness_chairs, (list, tuple))
+        or any(not isinstance(chair, str) or not chair for chair in witness_chairs)
+        or len(set(witness_chairs)) != len(witness_chairs)
+    ):
+        raise SchemaRefusal("Armarium witness chairs are not a unique named roster")
+    if (
+        not isinstance(witness_floor, int)
+        or isinstance(witness_floor, bool)
+        or witness_floor < 0
+        or witness_floor > len(witness_chairs)
+    ):
+        raise SchemaRefusal("Armarium witness floor does not fit its named roster")
+    coverage = (
+        aggregate_basis.get("coverage_records") if isinstance(aggregate_basis, dict) else None
+    )
+    if not isinstance(coverage, dict):
+        raise SchemaRefusal("Armarium witness accounting has no coverage records")
+    for act_key, record in coverage.items():
+        if (
+            not isinstance(record, dict)
+            or record.get("configured") != len(witness_chairs)
+            or record.get("floor") != witness_floor
+        ):
+            raise SchemaRefusal(
+                f"Armarium witness coverage for {act_key!r} disagrees with the exported roster"
+            )
+    if acts is None:
+        return
+    expected = set(witness_chairs)
+    for act in acts:
+        if act.get("category") != ArmariumCategory.DELIVERED.value:
+            continue
+        witnesses = act.get("witnesses")
+        if not isinstance(witnesses, list):
+            raise SchemaRefusal("a delivered act has no witness provenance list")
+        chairs = [item.get("chair") for item in witnesses if isinstance(item, dict)]
+        if (
+            len(chairs) != len(witnesses)
+            or set(chairs) != expected
+            or len(set(chairs)) != len(chairs)
+        ):
+            raise SchemaRefusal("a delivered act's witness provenance disagrees with the roster")
 
 
 def _aggregate_from_basis(
@@ -1609,7 +1669,7 @@ def _zip_bytes(members: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def _load_sources(root) -> dict[str, list[dict[str, Any]]]:
+def _load_sources(root) -> dict[str, Any]:
     try:
         record = json.loads((root / "sources.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -1623,15 +1683,28 @@ def _load_sources(root) -> dict[str, list[dict[str, Any]]]:
         "act_citations",
         "act_outcomes",
         "aggregate_basis",
+        "witness_chairs",
+        "witness_floor",
         "salvage_regions",
     }:
         raise SchemaRefusal("the package sources citation has an unrecognized field set")
-    pages, regions, act_citations, act_outcomes, aggregate_basis, salvage_regions = (
+    (
+        pages,
+        regions,
+        act_citations,
+        act_outcomes,
+        aggregate_basis,
+        witness_chairs,
+        witness_floor,
+        salvage_regions,
+    ) = (
         record.get("pages"),
         record.get("regions"),
         record.get("act_citations"),
         record.get("act_outcomes"),
         record.get("aggregate_basis"),
+        record.get("witness_chairs"),
+        record.get("witness_floor"),
         record.get("salvage_regions"),
     )
     if (
@@ -1649,6 +1722,8 @@ def _load_sources(root) -> dict[str, list[dict[str, Any]]]:
         "act_citations": act_citations,
         "act_outcomes": act_outcomes,
         "aggregate_basis": aggregate_basis,
+        "witness_chairs": witness_chairs,
+        "witness_floor": witness_floor,
         "salvage_regions": salvage_regions,
     }
 
@@ -1818,6 +1893,15 @@ def _verify_honest_status_claims(
     claims = manifest.get("claims")
     if not isinstance(claims, dict):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no export claims")
+    if manifest.get("witness_chairs") != sources.get("witness_chairs") or manifest.get(
+        "witness_floor"
+    ) != sources.get("witness_floor"):
+        raise SchemaRefusal("the exported witness roster disagrees with its source accounting")
+    _validate_witness_accounting(
+        sources.get("witness_chairs"),
+        sources.get("witness_floor"),
+        sources.get("aggregate_basis"),
+    )
     submission = claims.get("submission_inventory")
     if (
         not isinstance(submission, dict)
@@ -1954,6 +2038,7 @@ def _act_citation_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str,
         if not isinstance(record, dict) or set(record) != {
             "act_id",
             "act_key",
+            "evidence",
             "provenance",
             "source_regions",
         }:
@@ -1973,6 +2058,9 @@ def _act_citation_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str,
             sources["regions"],
             subject="source act-citation",
         )
+        if not isinstance(record.get("evidence"), dict):
+            raise SchemaRefusal("a source act-citation has no witness evidence")
+        _verify_retained_references(record["evidence"])
         records[act_id] = record
     return records
 
@@ -2029,6 +2117,7 @@ def _jsonl_act_records(
         records[act_id] = {
             "act_key": act_key,
             "category": category,
+            "evidence": _act_evidence(record),
             "provenance": record.get("provenance"),
             "source_regions": record.get("source_regions"),
             "reason": reason,
@@ -2101,6 +2190,7 @@ def _database_act_records(
         records[act_id] = {
             "act_key": act_key,
             "category": category,
+            "evidence": decoded[2],
             "provenance": decoded[0],
             "source_regions": decoded[1],
             "reason": reason,
@@ -2262,6 +2352,7 @@ def _verify_exact_delivered_citations(
             or canonical_text(record["provenance"]) != canonical_text(citation["provenance"])
             or canonical_text(record["source_regions"])
             != canonical_text(citation["source_regions"])
+            or canonical_text(record["evidence"]) != canonical_text(citation["evidence"])
         ):
             raise SchemaRefusal(f"the {subject} does not retain exact delivered provenance")
 
@@ -2511,6 +2602,7 @@ def _act_citations(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
         {
             "act_id": act["act_id"],
             "act_key": act["act_key"],
+            "evidence": _act_evidence(act),
             "provenance": act["provenance"],
             "source_regions": act["source_regions"],
         }

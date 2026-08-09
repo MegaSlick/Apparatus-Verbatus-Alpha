@@ -79,6 +79,7 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "source_regions": [region],
                 "reason": None,
                 "evidence_refs": [],
+                "witnesses": [{"chair": "attestator_1"}],
             },
             {
                 "act_id": "act-2",
@@ -115,8 +116,18 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
         witness_floor=1,
         aggregate_basis={
             "coverage_records": {
-                "one": {"under_witnessed": False, "unresolved_chairs": 0},
-                "two": {"under_witnessed": False, "unresolved_chairs": 0},
+                "one": {
+                    "configured": 1,
+                    "floor": 1,
+                    "under_witnessed": False,
+                    "unresolved_chairs": 0,
+                },
+                "two": {
+                    "configured": 1,
+                    "floor": 1,
+                    "under_witnessed": False,
+                    "unresolved_chairs": 0,
+                },
             },
             "unaddressed_chairs": [],
             "act_pages": {"one": [1], "two": [1]},
@@ -170,8 +181,8 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
         text = archive.read(TEXT_REGISTER).decode("utf-8")
         assert "Cǣsar d’Amours" in text
         # The rendering is labelled as a proposal and, with no uncertainty layer in
-        # the Archetypus record, is the established text unchanged. It sits beside
-        # the canonical field, never instead of it.
+        # the Archetypus record, strips to the established text unchanged. It sits
+        # beside the canonical field, never instead of it.
         assert f"display_convention: {DISPLAY_CONVENTION}" in text
         assert text.count(json.dumps("Cǣsar d’Amours", ensure_ascii=False)) == 2
 
@@ -182,6 +193,19 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
     assert verify_projection_identity(bundle.data, tmp_path / "identity") == {
         "act-1": "Cǣsar d’Amours"
     }
+
+
+def test_literal_display_markers_do_not_refuse_or_change_an_established_text(tmp_path):
+    projection = _projection()
+    literal = r"Act ⟨literal⟩, gap glyphs ⟦not markup⟧, and a \\ path"
+    delivered = {**projection.acts[0], "canonical_clean_text": literal}
+    bundle = build_armarium_bundle(
+        replace(projection, acts=(delivered, projection.acts[1])),
+        _formats(embed_pixels=False),
+        _source_bytes,
+    )
+
+    assert verify_projection_identity(bundle.data, tmp_path) == {"act-1": literal}
 
 
 def test_projection_identity_refuses_a_self_consistent_package_with_one_drifted_format(tmp_path):
@@ -315,6 +339,25 @@ def test_self_hashed_bundle_cannot_claim_unmeasured_completeness(mutate, tmp_pat
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda manifest: manifest.update(witness_chairs=["invented-witness"]),
+        lambda manifest: manifest.update(witness_floor=0),
+    ],
+)
+def test_manifest_witness_claims_cannot_drift_from_the_accounting_source(mutate, tmp_path):
+    members = _members(
+        build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes).data
+    )
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    mutate(manifest)
+    _refresh_manifest(members, manifest)
+
+    with pytest.raises(SchemaRefusal, match="witness roster disagrees"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
 def test_text_bundle_cannot_lose_its_page_and_hash_citation(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
@@ -347,6 +390,18 @@ def test_jsonl_cannot_silently_drop_delivered_provenance(field, value, message, 
     _refresh_manifest_member(members, "acts.jsonl")
 
     with pytest.raises(SchemaRefusal, match=message):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_jsonl_cannot_silently_drop_delivered_witness_evidence(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    records = [json.loads(line) for line in members["acts.jsonl"].decode().splitlines()]
+    records[0]["witnesses"] = []
+    members["acts.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in records)
+    _refresh_manifest_member(members, "acts.jsonl")
+
+    with pytest.raises(SchemaRefusal, match="exact delivered provenance"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 

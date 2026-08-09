@@ -17,12 +17,12 @@ and attribute names are identifiers, not another reading of the act.
 ``persons`` (literal name spans, roles), ``kinship`` edges and flags. Those are
 here as a closed kind vocabulary with per-kind attributes rather than as free
 text, which is what keeps the two requirements from fighting each other: the
-spec needs a *normalized* date and a person's *role*, and this boundary needs no
-unbounded string that a second transcription could ride in on. So every string an
-annotation may carry is drawn from a closed set fixed in this file, except the
-normalized date, which must match a strict ISO-8601 prefix form and can therefore
-carry digits and hyphens and nothing else. A person is a span of the established
-text plus a role from the closed set -- never a name this layer wrote down.
+spec needs a *normalized* date and a person's *role*, while no annotation value may
+become a second reading. Semantic labels are drawn from closed sets and the normalized
+date has a strict ISO-8601 prefix form. Record identifiers and producer identities are
+necessarily strings, but no writer maps any of them into established text. A person is
+a span of the established text plus a role from the closed set -- never a name this
+layer wrote down.
 
 **The anchoring refusal is spec 11's test 7.** "A hallucinated person (not a span
 of the text) is refused at the schema and recorded (annotations must anchor to
@@ -36,8 +36,10 @@ to account for. That is named here rather than half-built.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
+from datetime import date
 from typing import Final, Protocol, TypeAlias, runtime_checkable
 
 AnnotationValue: TypeAlias = bool | int | None
@@ -97,6 +99,19 @@ class TextSpan:
 
 
 @dataclass(frozen=True)
+class GapAnchor:
+    """A zero-width position where unread ink belongs beside the clean text."""
+
+    position: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.position, bool) or not isinstance(self.position, int):
+            raise TypeError("an annotation gap position must be an integer")
+        if self.position < 0:
+            raise ValueError("an annotation gap position must be non-negative")
+
+
+@dataclass(frozen=True)
 class LayoutAnchor:
     """The already-established image region corresponding to one text range."""
 
@@ -123,7 +138,7 @@ class AnnotationInput:
     canonical_text_sha256: str
     canonical_clean_text: str
     uncertainty_spans: tuple[TextSpan, ...]
-    gap_spans: tuple[TextSpan, ...]
+    gap_spans: tuple[GapAnchor, ...]
     layout_anchors: tuple[LayoutAnchor, ...]
 
     def __post_init__(self) -> None:
@@ -133,10 +148,13 @@ class AnnotationInput:
             raise ValueError("an annotation input needs a lowercase canonical text sha256")
         if not isinstance(self.canonical_clean_text, str):
             raise TypeError("an annotation input needs the established clean text")
-        _check_spans_within_text(
-            self.canonical_clean_text,
-            (*self.uncertainty_spans, *self.gap_spans),
-        )
+        expected_hash = hashlib.sha256(self.canonical_clean_text.encode("utf-8")).hexdigest()
+        if self.canonical_text_sha256 != expected_hash:
+            raise ValueError("an annotation input text hash does not match its established text")
+        _check_spans_within_text(self.canonical_clean_text, self.uncertainty_spans)
+        for gap in self.gap_spans:
+            if gap.position > len(self.canonical_clean_text):
+                raise ValueError("an annotation gap exceeds the established clean text")
         for anchor in self.layout_anchors:
             _check_spans_within_text(self.canonical_clean_text, (anchor.span,))
 
@@ -206,7 +224,7 @@ class Annotation:
         if self.normalized_date is not None:
             if self.kind != "date":
                 raise ValueError("only a date annotation may carry a normalized date")
-            if not isinstance(self.normalized_date, str) or not _ISO_DATE.match(
+            if not isinstance(self.normalized_date, str) or not _is_normalized_date(
                 self.normalized_date
             ):
                 raise ValueError(
@@ -346,6 +364,14 @@ def verify_annotations_anchor_to_text(
                     f"names [{span.start}, {span.end}) in a text of length {text_length}; "
                     "an annotation may not point outside the text it was produced from"
                 )
+        inherited = any(
+            mark_uncertainty_overlap(span, annotation_input.uncertainty_spans)
+            for span in annotation.spans
+        )
+        if annotation.overlaps_uncertainty is not inherited:
+            raise ValueError(
+                f"annotation {annotation.annotation_id!r} misstates its uncertainty overlap"
+            )
         for related in annotation.related_annotation_ids:
             if related not in person_ids:
                 raise ValueError(
@@ -358,6 +384,21 @@ def _check_spans_within_text(text: str, spans: tuple[TextSpan, ...]) -> None:
     for span in spans:
         if span.end > len(text):
             raise ValueError("an annotation span exceeds the established clean text")
+
+
+def _is_normalized_date(value: str) -> bool:
+    if not _ISO_DATE.fullmatch(value):
+        return False
+    if len(value) == 4:
+        return int(value) != 0
+    if len(value) == 7:
+        year, month = (int(part) for part in value.split("-"))
+        return year != 0 and 1 <= month <= 12
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _is_sha256(value: object) -> bool:

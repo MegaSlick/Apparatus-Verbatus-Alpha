@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import hashlib
 import inspect
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from annotation_boundary import (
     AnnotationPort,
     AnnotationProvenance,
     AnnotationResult,
+    GapAnchor,
     TextSpan,
     mark_uncertainty_overlap,
     verify_annotation_binding,
@@ -130,21 +132,29 @@ def _assert_read_only_annotation_boundary(source: str) -> None:
         assert not unsafe_fields, f"{output_class.name} carries literal text: {unsafe_fields}"
 
 
+INPUT_TEXT = "L'an mil sept cent"
+TEXT = "L'an mil sept cent trente, Pierre fils de Jean Boucher"
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _input() -> AnnotationInput:
     return AnnotationInput(
         act_id="act-17",
-        canonical_text_sha256="a" * 64,
-        canonical_clean_text="L'an mil sept cent",
+        canonical_text_sha256=_text_hash(INPUT_TEXT),
+        canonical_clean_text=INPUT_TEXT,
         uncertainty_spans=(TextSpan(0, 1),),
         gap_spans=(),
         layout_anchors=(),
     )
 
 
-def _result(*, act_id: str = "act-17", text_hash: str = "a" * 64) -> AnnotationResult:
+def _result(*, act_id: str = "act-17", text_hash: str | None = None) -> AnnotationResult:
     return AnnotationResult(
         act_id=act_id,
-        canonical_text_sha256=text_hash,
+        canonical_text_sha256=text_hash or _text_hash(INPUT_TEXT),
         annotations=(
             Annotation("annotation-1", "act-type", (TextSpan(0, 1),), act_type="baptism"),
         ),
@@ -192,7 +202,7 @@ def test_annotation_result_has_no_literal_text_field():
         result_fields = {field.name for field in dataclasses.fields(output_type)}
         assert not (result_fields & _FORBIDDEN_TEXT_RESULT_FIELDS)
     assert "canonical_clean_text" in AnnotationInput.__dataclass_fields__
-    assert _result().canonical_text_sha256 == "a" * 64
+    assert _result().canonical_text_sha256 == _text_hash(INPUT_TEXT)
 
 
 def test_annotations_are_bound_to_the_exact_act_and_established_text_hash():
@@ -205,7 +215,36 @@ def test_annotations_are_bound_to_the_exact_act_and_established_text_hash():
         verify_annotation_binding(annotation_input, _result(text_hash="c" * 64))
 
 
-TEXT = "L'an mil sept cent trente, Pierre fils de Jean Boucher"
+def test_annotation_input_hashes_the_text_it_actually_carries():
+    with pytest.raises(ValueError, match="hash does not match"):
+        AnnotationInput(
+            act_id="act-17",
+            canonical_text_sha256="a" * 64,
+            canonical_clean_text=INPUT_TEXT,
+            uncertainty_spans=(),
+            gap_spans=(),
+            layout_anchors=(),
+        )
+
+
+def test_annotation_gaps_are_zero_width_positions_not_text_ranges():
+    AnnotationInput(
+        act_id="act-17",
+        canonical_text_sha256=_text_hash(INPUT_TEXT),
+        canonical_clean_text=INPUT_TEXT,
+        uncertainty_spans=(),
+        gap_spans=(GapAnchor(len(INPUT_TEXT)),),
+        layout_anchors=(),
+    )
+    with pytest.raises(ValueError, match="gap exceeds"):
+        AnnotationInput(
+            act_id="act-17",
+            canonical_text_sha256=_text_hash(INPUT_TEXT),
+            canonical_clean_text=INPUT_TEXT,
+            uncertainty_spans=(),
+            gap_spans=(GapAnchor(len(INPUT_TEXT) + 1),),
+            layout_anchors=(),
+        )
 
 
 def _person(annotation_id: str, start: int, end: int, role: str = "principal") -> Annotation:
@@ -215,7 +254,7 @@ def _person(annotation_id: str, start: int, end: int, role: str = "principal") -
 def _anchored_result(*annotations: Annotation) -> AnnotationResult:
     return AnnotationResult(
         act_id="act-17",
-        canonical_text_sha256="a" * 64,
+        canonical_text_sha256=_text_hash(TEXT),
         annotations=annotations,
         provenance=AnnotationProvenance("future-annotator", "unapproved", "b" * 64),
     )
@@ -224,7 +263,7 @@ def _anchored_result(*annotations: Annotation) -> AnnotationResult:
 def _anchored_input(text: str = TEXT, uncertainty=()) -> AnnotationInput:
     return AnnotationInput(
         act_id="act-17",
-        canonical_text_sha256="a" * 64,
+        canonical_text_sha256=_text_hash(text),
         canonical_clean_text=text,
         uncertainty_spans=tuple(uncertainty),
         gap_spans=(),
@@ -264,6 +303,8 @@ def test_the_boundary_carries_the_five_fields_spec_11_names():
         ({"kind": "person", "role": "notary"}, "is not one of"),
         ({"kind": "date", "normalized_date": ""}, "YYYY"),
         ({"kind": "date", "normalized_date": "le 3 janvier"}, "YYYY"),
+        ({"kind": "date", "normalized_date": "1730-99-99"}, "YYYY"),
+        ({"kind": "date", "normalized_date": "1730-02-30"}, "YYYY"),
         ({"kind": "flag", "flag_kind": "looks-wrong"}, "is not one of"),
         (
             {"kind": "person", "role": "principal", "act_type": "baptism"},
@@ -326,6 +367,25 @@ def test_uncertainty_inheritance_is_an_overlap_of_ranges_and_nothing_else():
     assert mark_uncertainty_overlap(TextSpan(0, 11), uncertain)
     assert not mark_uncertainty_overlap(TextSpan(0, 10), uncertain)
     assert not mark_uncertainty_overlap(TextSpan(20, 30), uncertain)
+
+
+def test_uncertainty_inheritance_is_recomputed_not_trusted_from_the_result():
+    uncertain = (TextSpan(10, 20),)
+    overlapping = Annotation(
+        "p1", "person", (TextSpan(15, 25),), role="principal", overlaps_uncertainty=True
+    )
+    verify_annotations_anchor_to_text(
+        _anchored_input(uncertainty=uncertain), _anchored_result(overlapping)
+    )
+
+    for annotation in (
+        Annotation("p1", "person", (TextSpan(15, 25),), role="principal"),
+        Annotation("p1", "person", (TextSpan(0, 5),), role="principal", overlaps_uncertainty=True),
+    ):
+        with pytest.raises(ValueError, match="misstates its uncertainty overlap"):
+            verify_annotations_anchor_to_text(
+                _anchored_input(uncertainty=uncertain), _anchored_result(annotation)
+            )
 
 
 def _imports_in_source(source: str) -> set[str]:

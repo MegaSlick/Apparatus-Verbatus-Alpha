@@ -30,6 +30,21 @@ class ArmariumFormats:
     formats: tuple[str, ...]
     embed_pixels: bool
 
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.formats, tuple)
+            or not self.formats
+            or any(not isinstance(item, str) for item in self.formats)
+        ):
+            raise SchemaRefusal("Armarium formats must be a non-empty tuple of names")
+        if len(set(self.formats)) != len(self.formats):
+            raise SchemaRefusal("Armarium formats names a format more than once")
+        unknown = sorted(set(self.formats) - KNOWN_FORMATS)
+        if unknown:
+            raise SchemaRefusal(f"Armarium formats names unknown format(s) {unknown}")
+        if not isinstance(self.embed_pixels, bool):
+            raise SchemaRefusal("Armarium embed_pixels must be a boolean")
+
     def to_record(self) -> dict[str, object]:
         return {
             "schema": FORMAT_SCHEMA,

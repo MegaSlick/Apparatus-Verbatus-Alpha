@@ -9,6 +9,7 @@ import pytest
 from common.armarium_formats import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     KNOWN_FORMATS,
+    ArmariumFormats,
     load_armarium_formats,
 )
 from common.chairs.registry import ChairRegistry
@@ -34,6 +35,13 @@ def test_unknown_format_is_refused_instead_of_becoming_an_implicit_product(tmp_p
     )
     with pytest.raises(SchemaRefusal, match="unknown"):
         load_armarium_formats(path)
+
+
+def test_direct_format_construction_cannot_bypass_the_closed_parser():
+    with pytest.raises(SchemaRefusal, match="unknown"):
+        ArmariumFormats(("text-bundle", "witness-picker"), False)
+    with pytest.raises(SchemaRefusal, match="more than once"):
+        ArmariumFormats(("jsonl", "jsonl"), False)
 
 
 def test_format_configuration_changes_the_sealed_run_binding(tmp_path):
