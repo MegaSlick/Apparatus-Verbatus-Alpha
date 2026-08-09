@@ -1474,6 +1474,35 @@ def test_bare_timer_command_is_rejected_before_a_paid_create() -> None:
         )
 
 
+@pytest.mark.parametrize("field", ["HF_TOKEN", "hf-token", "APIKEY", "MY_TOKEN", "SERVICE_KEY"])
+def test_credential_shaped_metadata_is_refused_by_bare_key_and_token_markers(field: str) -> None:
+    """A credential-like field cannot ride in pod metadata under any common naming style."""
+
+    clock = Clock()
+    with pytest.raises(ValueError, match="credential-like field"):
+        PodCreateRequest(
+            name="credential-leak-test",
+            gpu_type="fake-48gb",
+            image="registry.example/verbatus@sha256:" + "a" * 64,
+            volume_id="test-volume",
+            volume_mount_path="/workspace/private",
+            docker_start_cmd=(
+                "python",
+                "-m",
+                "operations.pod.pod_timer",
+                "--timer-factory",
+                "operations.pod.provider_runpod:timer_context_from_environment",
+                "--bootstrap-command-json",
+                '["python","-m","operations.pod.bootstrap"]',
+                "--report-path",
+                "/workspace/private/pod-runtime-report.json",
+            ),
+            hard_deadline=clock.now() + timedelta(seconds=5),
+            repository_commit="b" * 40,
+            metadata={field: "should-never-be-accepted"},
+        )
+
+
 @pytest.mark.parametrize(
     "image",
     [

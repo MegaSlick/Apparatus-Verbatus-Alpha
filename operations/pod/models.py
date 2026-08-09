@@ -216,7 +216,7 @@ def _looks_like_credential_field(value: str) -> bool:
     normalized = value.lower().replace("-", "_")
     return any(
         marker in normalized
-        for marker in ("api_key", "secret", "password", "credential", "bearer", "access_token")
+        for marker in ("key", "secret", "password", "credential", "bearer", "token")
     )
 
 
