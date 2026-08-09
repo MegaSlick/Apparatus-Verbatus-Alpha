@@ -146,7 +146,8 @@ class CallbackControllerArmer:
         *,
         preflight_callback: Callable[[str, PodCreateRequest, SpendPolicy], ControllerReadiness],
         arm_callback: Callable[
-            [str, PodCreateRequest, PodRecord, PodLease, LeaseStore, str, SpendPolicy], ControllerArming
+            [str, PodCreateRequest, PodRecord, PodLease, LeaseStore, str, SpendPolicy],
+            ControllerArming,
         ],
     ) -> None:
         self.preflight_callback = preflight_callback

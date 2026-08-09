@@ -91,7 +91,9 @@ class HttpResponse:
 class HttpTransport(Protocol):
     """Only the adapter below supplies provider paths and bearer authentication."""
 
-    def request(self, method: str, path: str, body: dict[str, object] | None = None) -> HttpResponse:
+    def request(
+        self, method: str, path: str, body: dict[str, object] | None = None
+    ) -> HttpResponse:
         """Return a provider HTTP response, including non-2xx response bodies."""
 
 
@@ -113,7 +115,9 @@ class UrllibRunPodTransport:
         self.timeout_seconds = timeout_seconds
         self.root = root.rstrip("/")
 
-    def request(self, method: str, path: str, body: dict[str, object] | None = None) -> HttpResponse:
+    def request(
+        self, method: str, path: str, body: dict[str, object] | None = None
+    ) -> HttpResponse:
         if not path.startswith("/") or "//" in path[1:]:
             raise ProviderFailure("RunPod request path must be an absolute single-slash API path")
         encoded = None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8")
@@ -207,7 +211,9 @@ class RunPodProvider:
     def adopt(self, pod_id: str) -> PodRecord:
         response = self.transport.request("GET", f"/pods/{_path_id(pod_id)}")
         if response.status == 404:
-            raise ProviderFailure(f"RunPod cannot adopt pod {pod_id!r}: the provider reports it absent")
+            raise ProviderFailure(
+                f"RunPod cannot adopt pod {pod_id!r}: the provider reports it absent"
+            )
         if response.status != 200:
             raise ProviderFailure(
                 f"RunPod adopt returned HTTP {response.status}: {_body_summary(response.body)}"
@@ -221,7 +227,9 @@ class RunPodProvider:
         response = self.transport.request("GET", f"/pods/{_path_id(pod_id)}")
         observed = self.now()
         if response.status == 404:
-            return ProviderStatus(pod_id, Presence.ABSENT, observed, "RunPod exact-pod GET returned 404", 404)
+            return ProviderStatus(
+                pod_id, Presence.ABSENT, observed, "RunPod exact-pod GET returned 404", 404
+            )
         if response.status != 200:
             raise ProviderFailure(
                 f"RunPod status GET returned HTTP {response.status}: {_body_summary(response.body)}"
@@ -229,7 +237,9 @@ class RunPodProvider:
         row = _object(response.body, "RunPod status")
         if _text(row.get("id"), "RunPod status id") != pod_id:
             raise ProviderFailure("RunPod status response id does not equal the requested pod id")
-        return ProviderStatus(pod_id, Presence.PRESENT, observed, "RunPod exact-pod GET returned 200", 200)
+        return ProviderStatus(
+            pod_id, Presence.PRESENT, observed, "RunPod exact-pod GET returned 200", 200
+        )
 
     def terminate(self, pod_id: str) -> None:
         """Terminate, never stop: a stopped pod bills volume disk at double rate.
@@ -299,7 +309,9 @@ class RunPodProvider:
         lines: list[CostLine] = []
         for row in rows:
             if not isinstance(row, dict):
-                return _unavailable(pod_id, started, cutoff, "RunPod billing returned a non-object record")
+                return _unavailable(
+                    pod_id, started, cutoff, "RunPod billing returned a non-object record"
+                )
             row_pod = row.get("podId")
             if not isinstance(row_pod, str) or row_pod != pod_id:
                 return _unavailable(
@@ -314,7 +326,10 @@ class RunPodProvider:
                 amount = as_decimal(row.get("amount"), "RunPod billing amount")
             except (ProviderFailure, ValueError) as error:
                 return _unavailable(
-                    pod_id, started, cutoff, f"RunPod billing record is structurally unverifiable: {error}"
+                    pod_id,
+                    started,
+                    cutoff,
+                    f"RunPod billing record is structurally unverifiable: {error}",
                 )
             billed_ms = row.get("timeBilledMs")
             if not isinstance(billed_ms, int) or isinstance(billed_ms, bool) or billed_ms < 0:
@@ -335,7 +350,11 @@ class RunPodProvider:
                     "bucket; cost attribution is unverifiable",
                 )
             lines.append(
-                CostLine(amount, f"RunPod pod billing bucket {_rfc3339(bucket)} ({billed_ms}ms billed)", bucket)
+                CostLine(
+                    amount,
+                    f"RunPod pod billing bucket {_rfc3339(bucket)} ({billed_ms}ms billed)",
+                    bucket,
+                )
             )
         if not lines:
             return _unavailable(
@@ -404,7 +423,9 @@ class RunPodProvider:
         pod_id = _text(payload.get("id"), "RunPod pod id")
         state = payload.get("desiredStatus")
         if state not in _POD_STATES:
-            raise ProviderFailure(f"RunPod pod {pod_id} reports an unrecognised desiredStatus: {state!r}")
+            raise ProviderFailure(
+                f"RunPod pod {pod_id} reports an unrecognised desiredStatus: {state!r}"
+            )
         hourly = as_decimal(payload.get("costPerHr"), f"RunPod pod {pod_id} costPerHr")
         if hourly <= 0:
             raise ProviderFailure(f"RunPod pod {pod_id} reports a non-positive costPerHr")
@@ -440,7 +461,9 @@ class RunPodProvider:
         )
 
 
-def _runtime_contract(pod_id: str, payload: Mapping[str, object], volume_id: str) -> PodRuntimeContract:
+def _runtime_contract(
+    pod_id: str, payload: Mapping[str, object], volume_id: str
+) -> PodRuntimeContract:
     """The *effective* shape the provider says it created, not what we asked for.
 
     `launch.py` compares this against the request and closes the pod
@@ -472,7 +495,9 @@ def _runtime_contract(pod_id: str, payload: Mapping[str, object], volume_id: str
         gpu_type=gpu_type,
         image=_text(payload.get("image"), f"RunPod pod {pod_id} image"),
         volume_id=volume_id,
-        volume_mount_path=_text(payload.get("volumeMountPath"), f"RunPod pod {pod_id} volumeMountPath"),
+        volume_mount_path=_text(
+            payload.get("volumeMountPath"), f"RunPod pod {pod_id} volumeMountPath"
+        ),
         docker_start_cmd=tuple(command),
         template=template if isinstance(template, str) and template else None,
     )
@@ -522,7 +547,9 @@ def timer_context_from_environment(environment: Mapping[str, str] | None = None)
     started = _environment_timestamp(
         _required_environment(env, "VERBATUS_REQUESTED_AT"), "VERBATUS_REQUESTED_AT"
     )
-    pod_rate = as_decimal(_required_environment(env, "VERBATUS_POD_HOURLY_USD"), "pod timer pod rate")
+    pod_rate = as_decimal(
+        _required_environment(env, "VERBATUS_POD_HOURLY_USD"), "pod timer pod rate"
+    )
     volume_rate = as_decimal(
         _required_environment(env, "VERBATUS_VOLUME_ONGOING_HOURLY_USD"), "pod timer volume rate"
     )

@@ -119,9 +119,7 @@ class SpendAssessment:
             if not self.policy.configured
             else {
                 "max_hourly_usd": str(self.policy.max_hourly_usd),
-                "max_estimated_metered_cost_usd": str(
-                    self.policy.max_estimated_metered_cost_usd
-                ),
+                "max_estimated_metered_cost_usd": str(self.policy.max_estimated_metered_cost_usd),
                 "hard_lifetime_seconds": self.policy.hard_lifetime_seconds,
             },
         }
@@ -215,9 +213,13 @@ def assess_spend(
         if requested_seconds > policy.hard_lifetime_seconds:
             reasons.append("requested hard lifetime exceeds configured ceiling")
         if metered_hourly > policy.max_hourly_usd:
-            reasons.append("combined pod and attached-volume hourly price exceeds configured ceiling")
+            reasons.append(
+                "combined pod and attached-volume hourly price exceeds configured ceiling"
+            )
         if total_cost > policy.max_estimated_metered_cost_usd:
-            reasons.append("estimated combined pod and attached-volume cost exceeds configured ceiling")
+            reasons.append(
+                "estimated combined pod and attached-volume cost exceeds configured ceiling"
+            )
     return SpendAssessment(
         allowed=not reasons,
         reasons=tuple(reasons),

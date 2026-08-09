@@ -24,7 +24,9 @@ from .spend import load_spend_policy
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verbatus gated pod launcher")
-    parser.add_argument("--provider-factory", required=True, help="untracked module:callable returning PodProvider")
+    parser.add_argument(
+        "--provider-factory", required=True, help="untracked module:callable returning PodProvider"
+    )
     parser.add_argument(
         "--controller-armer-factory",
         required=True,
@@ -176,7 +178,9 @@ def _record(result: LaunchResult) -> dict[str, object]:
         "lease_path": str(result.lease_path) if result.lease_path else None,
         "owner_token": "recorded locally" if result.owner_token else None,
         "close": result.close_report.to_record() if result.close_report else None,
-        "controller_arming": result.controller_arming.to_record() if result.controller_arming else None,
+        "controller_arming": result.controller_arming.to_record()
+        if result.controller_arming
+        else None,
         "controller_readiness": (
             result.controller_readiness.to_record() if result.controller_readiness else None
         ),

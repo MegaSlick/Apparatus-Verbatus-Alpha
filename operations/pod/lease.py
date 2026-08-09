@@ -92,9 +92,13 @@ class PodLease:
             raise ValueError("lease_id must be 32 lowercase random hexadecimal characters")
         if not re.fullmatch(r"[0-9a-f]{32}", self.launch_token):
             raise ValueError("launch_token must be 32 lowercase random hexadecimal characters")
-        if self.pod_id is not None and (not isinstance(self.pod_id, str) or not self.pod_id.strip()):
+        if self.pod_id is not None and (
+            not isinstance(self.pod_id, str) or not self.pod_id.strip()
+        ):
             raise ValueError("lease pod_id must be non-blank when present")
-        object.__setattr__(self, "pod_hourly_usd", as_decimal(self.pod_hourly_usd, "lease pod rate"))
+        object.__setattr__(
+            self, "pod_hourly_usd", as_decimal(self.pod_hourly_usd, "lease pod rate")
+        )
         object.__setattr__(
             self, "volume_hourly_usd", as_decimal(self.volume_hourly_usd, "lease volume rate")
         )
@@ -118,10 +122,15 @@ class PodLease:
             raise ValueError("pending recovery attempts must be a non-negative integer")
         if self.phase == "pending-create" and self.pending_create is None:
             raise ValueError("pending-create lease must retain its non-secret recovery intent")
-        if self.phase != "pending-create" and self.pod_id is None and self.phase not in {
-            "close-unverified",
-            "closed-verified",
-        }:
+        if (
+            self.phase != "pending-create"
+            and self.pod_id is None
+            and self.phase
+            not in {
+                "close-unverified",
+                "closed-verified",
+            }
+        ):
             raise ValueError("non-pending active lease must name an exact pod id")
         if self.controller_record is not None:
             _validate_controller_record(
@@ -162,7 +171,9 @@ class PodLease:
             "generation": self.generation,
             "phase": self.phase,
             "close_record": dict(self.close_record) if self.close_record is not None else None,
-            "pending_create": self.pending_create.to_record() if self.pending_create is not None else None,
+            "pending_create": self.pending_create.to_record()
+            if self.pending_create is not None
+            else None,
             "controller_record": (
                 dict(self.controller_record) if self.controller_record is not None else None
             ),
@@ -246,7 +257,9 @@ class PodLease:
                 generation=value["generation"],
                 phase=str(value["phase"]),
                 close_record=close,
-                pending_create=PendingCreateIntent.from_record(pending) if pending is not None else None,
+                pending_create=PendingCreateIntent.from_record(pending)
+                if pending is not None
+                else None,
                 controller_record=controller,
                 pending_recovery_attempts=value["pending_recovery_attempts"],
             )
@@ -308,7 +321,9 @@ class LeaseStore:
         with self._lock():
             return self._read_unlocked()
 
-    def bind_pod(self, *, owner_token: str, record: PodRecord, now: datetime | None = None) -> PodLease:
+    def bind_pod(
+        self, *, owner_token: str, record: PodRecord, now: datetime | None = None
+    ) -> PodLease:
         """Bind a returned provider id only to the owner who armed the intent."""
 
         observed = now or utc_now()
@@ -358,7 +373,9 @@ class LeaseStore:
         with self._lock():
             lease = self._require_owner_unlocked(owner_token)
             if lease.phase != "pending-create" or lease.pending_create is None:
-                raise LeaseOwnershipError("only a pending-create lease can record recovery attempts")
+                raise LeaseOwnershipError(
+                    "only a pending-create lease can record recovery attempts"
+                )
             attempted = replace(
                 lease,
                 heartbeat_at=require_utc(now or utc_now(), "pending recovery time"),
@@ -371,7 +388,9 @@ class LeaseStore:
         with self._lock():
             lease = self._require_owner_unlocked(owner_token)
             if not lease.active:
-                raise LeaseOwnershipError(f"cannot heartbeat non-active lease phase {lease.phase!r}")
+                raise LeaseOwnershipError(
+                    f"cannot heartbeat non-active lease phase {lease.phase!r}"
+                )
             refreshed = replace(lease, heartbeat_at=require_utc(now or utc_now(), "heartbeat time"))
             self._write_unlocked(refreshed)
             return refreshed
@@ -449,7 +468,9 @@ class LeaseStore:
 
 
 def _canonical_json(value: Mapping[str, object]) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
+    ).encode()
 
 
 def _validate_controller_record(
@@ -471,7 +492,10 @@ def _validate_controller_record(
     }
     if set(value) != required:
         raise ValueError("controller receipt has missing or unknown fields")
-    if value["laptop_supervisor_started"] is not True or value["pod_timer_acknowledged"] is not True:
+    if (
+        value["laptop_supervisor_started"] is not True
+        or value["pod_timer_acknowledged"] is not True
+    ):
         raise ValueError("controller receipt must prove both laptop supervisor and pod timer")
     observed_at = _parse_stamp(value["observed_at"], "controller receipt observed_at")
     if not isinstance(value["detail"], str) or not value["detail"].strip():
@@ -490,7 +514,9 @@ def _validate_controller_record(
         "pod_timer",
     }
     if set(receipt) != required_receipt:
-        raise ValueError("controller receipt must contain only complete lease/pod/deadline bindings")
+        raise ValueError(
+            "controller receipt must contain only complete lease/pod/deadline bindings"
+        )
     if receipt["lease_id"] != lease_id or receipt["pod_id"] != pod_id:
         raise ValueError("controller receipt is not bound to this exact lease and pod")
     if receipt["hard_deadline"] != _stamp(hard_deadline):
@@ -506,7 +532,10 @@ def _validate_controller_record(
     supervisor_started = _parse_stamp(
         supervisor["started_at"], "controller receipt laptop supervisor start"
     )
-    if not isinstance(timer["report_path"], str) or not PurePosixPath(timer["report_path"]).is_absolute():
+    if (
+        not isinstance(timer["report_path"], str)
+        or not PurePosixPath(timer["report_path"]).is_absolute()
+    ):
         raise ValueError("controller receipt pod timer report path must be absolute")
     timer_acknowledged = _parse_stamp(
         timer["acknowledged_at"], "controller receipt pod timer acknowledgement"

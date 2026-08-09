@@ -38,7 +38,11 @@ def manifest(source: Path, destination: Path) -> None:
     for path in sorted(source.iterdir()):
         payload = path.read_bytes()
         entries.append(
-            {"relative_path": path.name, "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}
+            {
+                "relative_path": path.name,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "bytes": len(payload),
+            }
         )
     record = build_manifest(
         entries,

@@ -92,9 +92,13 @@ class ChecksummedTransfer:
             if not source.is_file() or source.is_symlink():
                 raise TransferFailure(f"source {relative!r} is absent or not a regular file")
             if source.stat().st_size != expected_size or _sha256(source) != expected_sha:
-                raise TransferFailure(f"source {relative!r} no longer matches the sealed submission manifest")
+                raise TransferFailure(
+                    f"source {relative!r} no longer matches the sealed submission manifest"
+                )
             remote = self.target.inspect(key)
-            if remote is not None and (remote.sha256 != expected_sha or remote.size != expected_size):
+            if remote is not None and (
+                remote.sha256 != expected_sha or remote.size != expected_size
+            ):
                 raise TransferFailure(
                     f"target {key!r} exists but differs from the sealed manifest; it was not overwritten"
                 )
@@ -118,25 +122,37 @@ class ChecksummedTransfer:
     def _load_or_create(self, manifest: dict[str, object]) -> dict[str, object]:
         manifest_hash = str(manifest["self_hash"])
         if not self.journal_path.exists():
-            record = {"schema": TRANSFER_SCHEMA, "manifest_self_hash": manifest_hash, "completed": []}
+            record = {
+                "schema": TRANSFER_SCHEMA,
+                "manifest_self_hash": manifest_hash,
+                "completed": [],
+            }
             self._write(record)
             return record
         try:
             record = json.loads(self.journal_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise TransferFailure(f"transfer journal cannot be read: {error}") from error
-        if not isinstance(record, dict) or set(record) != {"schema", "manifest_self_hash", "completed"}:
+        if not isinstance(record, dict) or set(record) != {
+            "schema",
+            "manifest_self_hash",
+            "completed",
+        }:
             raise TransferFailure("transfer journal has missing or unknown fields")
         if record["schema"] != TRANSFER_SCHEMA or record["manifest_self_hash"] != manifest_hash:
             raise TransferFailure("transfer journal names another submission manifest")
-        if not isinstance(record["completed"], list) or not all(isinstance(key, str) for key in record["completed"]):
+        if not isinstance(record["completed"], list) or not all(
+            isinstance(key, str) for key in record["completed"]
+        ):
             raise TransferFailure("transfer journal completion list is invalid")
         return record
 
     def _write(self, record: dict[str, object]) -> None:
         payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(prefix=f".{self.journal_path.name}.", dir=self.journal_path.parent)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{self.journal_path.name}.", dir=self.journal_path.parent
+        )
         try:
             with os.fdopen(descriptor, "wb") as handle:
                 os.fchmod(handle.fileno(), 0o600)
@@ -159,7 +175,12 @@ def _prefix(value: str) -> str:
 
 
 def _under(root: Path, relative: object) -> Path:
-    if not isinstance(relative, str) or not relative or relative.startswith("/") or ".." in relative.split("/"):
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or relative.startswith("/")
+        or ".." in relative.split("/")
+    ):
         raise TransferFailure("submission manifest contains an unsafe relative path")
     candidate = (root / relative).resolve()
     if not candidate.is_relative_to(root):

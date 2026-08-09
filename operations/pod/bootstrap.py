@@ -108,7 +108,9 @@ class BootstrapActions(Protocol):
 class BootstrapJournal:
     """Durable bootstrap progress.  A crash leaves the current step incomplete."""
 
-    def __init__(self, path: str | Path, plan: BootstrapPlan, *, now: Callable[[], datetime] = utc_now) -> None:
+    def __init__(
+        self, path: str | Path, plan: BootstrapPlan, *, now: Callable[[], datetime] = utc_now
+    ) -> None:
         self.path = Path(path)
         self.plan = plan
         self.now = now
@@ -136,7 +138,9 @@ class BootstrapJournal:
                 "Preserve the broken journal for review, then start a new explicit bootstrap.",
             ) from error
         self._validate(raw)
-        if raw["repository_commit"] != self.plan.repository_commit or raw["lockfile"] != str(self.plan.lockfile):
+        if raw["repository_commit"] != self.plan.repository_commit or raw["lockfile"] != str(
+            self.plan.lockfile
+        ):
             raise BootstrapStepFailure(
                 BootstrapStep.REPOSITORY,
                 "existing bootstrap journal names different pinned inputs",
@@ -144,7 +148,9 @@ class BootstrapJournal:
             )
         return raw
 
-    def mark_complete(self, record: dict[str, object], step: BootstrapStep, receipt: dict[str, object]) -> None:
+    def mark_complete(
+        self, record: dict[str, object], step: BootstrapStep, receipt: dict[str, object]
+    ) -> None:
         completed = list(record["completed"])
         if step.value not in completed:
             completed.append(step.value)
@@ -202,7 +208,11 @@ class BootstrapJournal:
                 "bootstrap journal completion list is invalid",
                 "Preserve it for review and create a new explicit bootstrap journal.",
             )
-        if not isinstance(raw["receipts"], dict) or raw["status"] not in {"running", "green", "red"}:
+        if not isinstance(raw["receipts"], dict) or raw["status"] not in {
+            "running",
+            "green",
+            "red",
+        }:
             raise BootstrapStepFailure(
                 BootstrapStep.REPOSITORY,
                 "bootstrap journal state is invalid",
@@ -415,7 +425,9 @@ def _report_from_record(record: dict[str, object]) -> BootstrapReport:
             failure["detail"],
             failure["remediation"],
         )
-    return BootstrapReport("red", completed, dict(record["receipts"]), detail="bootstrap journal is incomplete")
+    return BootstrapReport(
+        "red", completed, dict(record["receipts"]), detail="bootstrap journal is incomplete"
+    )
 
 
 def _stamp(value: datetime) -> str:
@@ -423,7 +435,9 @@ def _stamp(value: datetime) -> str:
 
 
 def _json(value: dict[str, object]) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
+    ).encode()
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:

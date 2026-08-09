@@ -66,7 +66,9 @@ class FakeProvider:
 
         self._post_create_failures.append(error)
 
-    def set_disappearance_lag(self, pod_id: str, *, get_polls: int = 0, list_polls: int = 0) -> None:
+    def set_disappearance_lag(
+        self, pod_id: str, *, get_polls: int = 0, list_polls: int = 0
+    ) -> None:
         """Keep independent GET/list observations present after termination."""
 
         self._get_lag[pod_id] = get_polls
@@ -166,7 +168,9 @@ class FakeProvider:
         lag = self._get_lag[pod_id]
         if lag > 0:
             self._get_lag[pod_id] = lag - 1
-            return ProviderStatus(pod_id, Presence.PRESENT, self.now(), "termination propagating", 200)
+            return ProviderStatus(
+                pod_id, Presence.PRESENT, self.now(), "termination propagating", 200
+            )
         return ProviderStatus(pod_id, Presence.ABSENT, self.now(), http_status=404)
 
     def terminate(self, pod_id: str) -> None:
@@ -183,7 +187,9 @@ class FakeProvider:
         lag = self._list_lag[pod_id]
         if lag > 0:
             self._list_lag[pod_id] = lag - 1
-            return AbsenceObservation(pod_id, Presence.PRESENT, self.now(), "list propagation pending")
+            return AbsenceObservation(
+                pod_id, Presence.PRESENT, self.now(), "list propagation pending"
+            )
         return AbsenceObservation(pod_id, Presence.ABSENT, self.now(), "pod absent from list")
 
     def capture_cost(self, pod_id: str, started_at: datetime, cutoff_at: datetime) -> CostCapture:
@@ -206,7 +212,9 @@ class FakeProvider:
             reason="fake billing deliberately has no records; zero is not inferred",
         )
 
-    def bill(self, pod_id: str, amount_usd: Decimal | str, *, description: str = "pod runtime") -> None:
+    def bill(
+        self, pod_id: str, amount_usd: Decimal | str, *, description: str = "pod runtime"
+    ) -> None:
         """Install a provider-computed billing result for a successful close test."""
 
         record = self.pods.get(pod_id)

@@ -29,7 +29,9 @@ class ScriptedTransport:
         self.responses = responses
         self.calls: list[tuple[str, str, dict[str, object] | None]] = []
 
-    def request(self, method: str, path: str, body: dict[str, object] | None = None) -> HttpResponse:
+    def request(
+        self, method: str, path: str, body: dict[str, object] | None = None
+    ) -> HttpResponse:
         self.calls.append((method, path, body))
         return self.responses.pop(0)
 
@@ -171,9 +173,7 @@ def test_a_name_match_whose_env_is_absent_refuses_rather_than_matching_on_name()
 
 
 def test_two_pods_carrying_one_launch_token_refuse_rather_than_choose() -> None:
-    transport = ScriptedTransport(
-        [json_response([pod_payload(), pod_payload(id="pod-2")])]
-    )
+    transport = ScriptedTransport([json_response([pod_payload(), pod_payload(id="pod-2")])])
 
     with pytest.raises(ProviderFailure, match="more than one pod carrying this exact launch token"):
         provider(transport).create(request())
@@ -339,7 +339,10 @@ def test_an_empty_billing_response_is_unavailable_never_zero() -> None:
 @pytest.mark.parametrize(
     ("row", "reason"),
     [
-        ({"amount": "5.00", "time": "2026-08-08T12:00:00Z", "timeBilledMs": 1}, "does not name the requested pod"),
+        (
+            {"amount": "5.00", "time": "2026-08-08T12:00:00Z", "timeBilledMs": 1},
+            "does not name the requested pod",
+        ),
         (billing_row(podId="other-pod"), "does not name the requested pod"),
         (billing_row(amount="not-money"), "structurally unverifiable"),
         (billing_row(timeBilledMs="lots"), "invalid timeBilledMs"),
@@ -394,7 +397,5 @@ def test_provider_endpoint_vocabulary_is_isolated_to_the_runpod_adapter() -> Non
     sources = [source for source in pod_root.glob("*.py") if not source.name.startswith("test_")]
 
     for marker in ("rest.runpod.io", "api.runpod.io", "RUNPOD_"):
-        occurrences = [
-            source for source in sources if marker in source.read_text(encoding="utf-8")
-        ]
+        occurrences = [source for source in sources if marker in source.read_text(encoding="utf-8")]
         assert occurrences == [pod_root / "provider_runpod.py"], marker

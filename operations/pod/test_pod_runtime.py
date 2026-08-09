@@ -64,9 +64,7 @@ START = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
 # out from the same inputs the preview would rather than reuse a constant.
 POD_HOURLY = Decimal("0.77")
 VOLUME_HOURLY = Decimal("0.05")
-CREATE_CONFIRMATION = confirmation_phrase(
-    "create", "pod-runtime-test", POD_HOURLY, VOLUME_HOURLY
-)
+CREATE_CONFIRMATION = confirmation_phrase("create", "pod-runtime-test", POD_HOURLY, VOLUME_HOURLY)
 
 
 def adopt_confirmation(pod_id: str) -> str:
@@ -289,9 +287,7 @@ class WrongBillingEvidenceFake(FakeProvider):
             raise ValueError("billing defect must be pod, cutoff, or window")
         self.defect = defect
 
-    def capture_cost(
-        self, pod_id: str, started_at: datetime, cutoff_at: datetime
-    ) -> CostCapture:
+    def capture_cost(self, pod_id: str, started_at: datetime, cutoff_at: datetime) -> CostCapture:
         self._call("capture_cost", pod_id)
         capture_pod_id = "another-pod" if self.defect == "pod" else pod_id
         capture_cutoff = (
@@ -462,7 +458,9 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
     assert not any(verb == "create" for verb, _ in provider.calls)
 
 
-def test_successful_fake_adoption_uses_the_same_guarded_controller_handshake(tmp_path: Path) -> None:
+def test_successful_fake_adoption_uses_the_same_guarded_controller_handshake(
+    tmp_path: Path,
+) -> None:
     clock = Clock()
     provider = fake(clock)
     expected = request(clock)
@@ -502,12 +500,17 @@ def test_both_paid_paths_refuse_a_price_outside_spend_ceiling(tmp_path: Path) ->
 def test_spend_ceiling_counts_attached_volume_during_the_hard_lifetime(tmp_path: Path) -> None:
     clock = Clock()
     provider = fake(clock)
-    result = runtime(provider, clock, tmp_path, spend=policy(hourly="0.80")).preview_create(request(clock))
+    result = runtime(provider, clock, tmp_path, spend=policy(hourly="0.80")).preview_create(
+        request(clock)
+    )
 
     assert result.state is LaunchState.PREVIEW
     assert result.preview is not None
     assert not result.preview.assessment.allowed
-    assert result.preview.assessment.estimated_total_cost_usd > result.preview.assessment.estimated_pod_cost_usd
+    assert (
+        result.preview.assessment.estimated_total_cost_usd
+        > result.preview.assessment.estimated_pod_cost_usd
+    )
     assert any("attached-volume" in reason for reason in result.preview.assessment.reasons)
 
 
@@ -517,7 +520,8 @@ def test_spend_guard_rounds_fractional_lifetime_up_not_down(tmp_path: Path) -> N
     exact = policy()
     request_over_limit = replace(
         request(clock, lifetime=exact.hard_lifetime_seconds or 3600),
-        hard_deadline=clock.now() + timedelta(seconds=exact.hard_lifetime_seconds or 3600, microseconds=1),
+        hard_deadline=clock.now()
+        + timedelta(seconds=exact.hard_lifetime_seconds or 3600, microseconds=1),
     )
 
     preview = runtime(provider, clock, tmp_path, spend=exact).preview_create(request_over_limit)
@@ -653,7 +657,9 @@ def test_green_launch_requires_and_persists_two_controller_acknowledgements(tmp_
     assert lease.controller_record["pod_timer_acknowledged"] is True
 
 
-def test_unbound_controller_receipt_closes_the_pod_and_cannot_make_launch_green(tmp_path: Path) -> None:
+def test_unbound_controller_receipt_closes_the_pod_and_cannot_make_launch_green(
+    tmp_path: Path,
+) -> None:
     class UnboundArmer(FakeControllerArmer):
         def arm(self, **kwargs):  # type: ignore[no-untyped-def]
             observed = super().arm(**kwargs)
@@ -1071,7 +1077,9 @@ def test_pending_billing_reconciliation_stays_non_green_and_names_recheck() -> N
 
     assert report.state is CloseState.PENDING_RECONCILIATION
     assert not report.verified
-    assert report.manual_action is not None and "Re-run billing reconciliation" in report.manual_action
+    assert (
+        report.manual_action is not None and "Re-run billing reconciliation" in report.manual_action
+    )
 
 
 def test_close_report_names_the_provider_resolved_billing_cutoff() -> None:
@@ -1355,7 +1363,9 @@ def test_bare_timer_command_is_rejected_before_a_paid_create() -> None:
         )
 
 
-def test_pod_timer_report_write_failure_immediately_closes_and_never_returns_green(tmp_path: Path) -> None:
+def test_pod_timer_report_write_failure_immediately_closes_and_never_returns_green(
+    tmp_path: Path,
+) -> None:
     clock = Clock()
     provider = fake(clock)
     record = provider.create(request(clock))
@@ -1562,9 +1572,7 @@ def test_the_shipped_table_carries_a_prebuilt_profile_for_every_card_spec_04_nam
     assert {"RTX 6000 Ada", "RTX PRO 6000 Blackwell", "A40", "RTX A5000"} <= names
 
 
-@pytest.mark.parametrize(
-    "card_name", ["RTX 6000 Ada", "NVIDIA RTX 6000 Ada Generation"]
-)
+@pytest.mark.parametrize("card_name", ["RTX 6000 Ada", "NVIDIA RTX 6000 Ada Generation"])
 def test_a_prebuilt_profile_matches_by_either_its_name_or_its_gpu_type_id(card_name: str) -> None:
     matched = _table().profile_for(card_name)
 
@@ -1632,7 +1640,7 @@ def test_the_price_sheet_refuses_a_card_nobody_reviewed() -> None:
     [
         ('tier = "generic-48gb"', "does not cover"),
         ('tier = "no-such-tier"', "undefined placement tier"),
-        ('hourly_usd = 0.77', "decimal string"),
+        ("hourly_usd = 0.77", "decimal string"),
     ],
 )
 def test_a_drifted_card_profile_row_refuses_at_load(
@@ -1684,15 +1692,21 @@ def test_smoke_read_failure_is_red_and_names_the_chair() -> None:
     ("profile", "expected_issue"),
     [
         (
-            GpuProfile("pre-ampere", "12.4", "550", (7, 5), Decimal("48"), Decimal("100"), "bfloat16"),
+            GpuProfile(
+                "pre-ampere", "12.4", "550", (7, 5), Decimal("48"), Decimal("100"), "bfloat16"
+            ),
             "dtype-floor-failed",
         ),
         (
-            GpuProfile("missing-cuda", None, None, (8, 0), Decimal("48"), Decimal("100"), "bfloat16"),
+            GpuProfile(
+                "missing-cuda", None, None, (8, 0), Decimal("48"), Decimal("100"), "bfloat16"
+            ),
             "cuda-driver-missing",
         ),
         (
-            GpuProfile("missing-resources", "12.4", "550", (8, 0), Decimal("0"), Decimal("0"), "bfloat16"),
+            GpuProfile(
+                "missing-resources", "12.4", "550", (8, 0), Decimal("0"), Decimal("0"), "bfloat16"
+            ),
             "vram-missing",
         ),
     ],

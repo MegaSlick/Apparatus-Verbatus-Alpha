@@ -530,9 +530,7 @@ class PodRuntime:
             )
         except Exception as error:
             close = None
-            detail = (
-                f"created pod bills outside the configured ceiling and immediate close raised: {error}"
-            )
+            detail = f"created pod bills outside the configured ceiling and immediate close raised: {error}"
         else:
             detail = (
                 "created pod bills outside the configured ceiling ("

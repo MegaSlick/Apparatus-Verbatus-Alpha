@@ -94,7 +94,9 @@ class SystemGpuProbe:
                 raise RuntimeError(query.stderr.strip() or "nvidia-smi query failed")
             fields = [field.strip() for field in query.stdout.splitlines()[0].split(",")]
             if len(fields) != 4:
-                raise RuntimeError("nvidia-smi did not return name, driver, VRAM, compute capability")
+                raise RuntimeError(
+                    "nvidia-smi did not return name, driver, VRAM, compute capability"
+                )
             name, driver, vram, capability = fields
             major_text, minor_text = capability.split(".", 1)
             basic = self.runner(["nvidia-smi"])
@@ -207,8 +209,14 @@ class CardProfile:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "vram_gib", as_decimal(self.vram_gib, "card profile VRAM"))
-        object.__setattr__(self, "hourly_usd", as_decimal(self.hourly_usd, "card profile hourly price"))
-        for label, value in (("name", self.name), ("gpu_type_id", self.gpu_type_id), ("tier", self.tier)):
+        object.__setattr__(
+            self, "hourly_usd", as_decimal(self.hourly_usd, "card profile hourly price")
+        )
+        for label, value in (
+            ("name", self.name),
+            ("gpu_type_id", self.gpu_type_id),
+            ("tier", self.tier),
+        ):
             if not isinstance(value, str) or not value.strip():
                 raise PlacementRefusal(f"card profile {label} must be non-blank")
         if self.vram_gib <= 0 or self.hourly_usd <= 0:
@@ -235,7 +243,9 @@ class PlacementTable:
         try:
             return self.dtype_floors[dtype]
         except KeyError as error:
-            raise PlacementRefusal(f"dtype {dtype!r} has no configured compute-capability floor") from error
+            raise PlacementRefusal(
+                f"dtype {dtype!r} has no configured compute-capability floor"
+            ) from error
 
     def profile_for(self, card_name: str | None) -> CardProfile | None:
         """The prebuilt profile whose `name` or `gpu_type_id` the card reported.
@@ -282,7 +292,11 @@ def load_placement_table(path: str | Path) -> PlacementTable:
             raw = tomllib.load(handle)
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise PlacementRefusal(f"cannot read placement table {source}: {error}") from error
-    if not isinstance(raw, dict) or set(raw) - {"card_profile"} != {"schema", "dtype_floor", "tiers"}:
+    if not isinstance(raw, dict) or set(raw) - {"card_profile"} != {
+        "schema",
+        "dtype_floor",
+        "tiers",
+    }:
         raise PlacementRefusal(
             "placement table must contain only schema, dtype_floor, tiers and optional card_profile"
         )
@@ -380,7 +394,9 @@ def _load_card_profiles(raw: object) -> tuple[CardProfile, ...]:
         if missing:
             raise PlacementRefusal(f"card_profile is missing field(s) {missing}")
         if not isinstance(entry["hourly_usd"], str):
-            raise PlacementRefusal("card_profile hourly_usd must be a decimal string, not a TOML number")
+            raise PlacementRefusal(
+                "card_profile hourly_usd must be a decimal string, not a TOML number"
+            )
         try:
             profiles.append(
                 CardProfile(
@@ -433,11 +449,16 @@ class UtilizationSample:
     cpu_percent: Decimal
 
     def __post_init__(self) -> None:
-        for label, value in (("GPU utilization", self.gpu_percent), ("CPU utilization", self.cpu_percent)):
+        for label, value in (
+            ("GPU utilization", self.gpu_percent),
+            ("CPU utilization", self.cpu_percent),
+        ):
             parsed = as_decimal(value, label)
             if parsed > 100:
                 raise ValueError(f"{label} cannot exceed 100 percent")
-            object.__setattr__(self, "gpu_percent" if label.startswith("GPU") else "cpu_percent", parsed)
+            object.__setattr__(
+                self, "gpu_percent" if label.startswith("GPU") else "cpu_percent", parsed
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,7 +553,9 @@ class PreflightReport:
                     "tier": item.tier,
                     "residency": item.residency,
                     "engine_memory_fraction": (
-                        str(item.engine_memory_fraction) if item.engine_memory_fraction is not None else None
+                        str(item.engine_memory_fraction)
+                        if item.engine_memory_fraction is not None
+                        else None
                     ),
                     "context_cap": item.context_cap,
                     "pixel_cap": item.pixel_cap,
@@ -612,11 +635,23 @@ class PreflightRunner:
             )
         for role, configured in sorted(self.models.chairs.items()):
             if isinstance(configured, AbsentChair):
-                placements.append(ChairPlacement(role, None, None, None, None, None, None, None, "absent"))
+                placements.append(
+                    ChairPlacement(role, None, None, None, None, None, None, None, "absent")
+                )
                 continue
             if tier is None:
                 placements.append(
-                    ChairPlacement(role, configured.serving_recipe, None, None, None, None, None, None, "unplanned")
+                    ChairPlacement(
+                        role,
+                        configured.serving_recipe,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        "unplanned",
+                    )
                 )
                 continue
             placements.append(
@@ -654,7 +689,9 @@ class PreflightRunner:
             plan_source=plan_source,
         )
 
-    def _environment(self, profile: GpuProfile, issues: list[PreflightIssue]) -> PlacementTier | None:
+    def _environment(
+        self, profile: GpuProfile, issues: list[PreflightIssue]
+    ) -> PlacementTier | None:
         if not profile.cuda_version or not profile.driver_version:
             issues.append(
                 PreflightIssue(
@@ -667,7 +704,12 @@ class PreflightRunner:
             floor = self.placement.dtype_floor(profile.dtype)
         except PlacementRefusal as error:
             issues.append(
-                PreflightIssue("dtype-unconfigured", str(error), "Add a reviewed dtype floor to pod_placement.toml."))
+                PreflightIssue(
+                    "dtype-unconfigured",
+                    str(error),
+                    "Add a reviewed dtype floor to pod_placement.toml.",
+                )
+            )
             floor = None
         if profile.compute_capability is None:
             issues.append(
@@ -687,15 +729,30 @@ class PreflightRunner:
             )
         if profile.vram_gib <= 0:
             issues.append(
-                PreflightIssue("vram-missing", "VRAM was not measured as positive.", "Repair GPU discovery and retry."))
+                PreflightIssue(
+                    "vram-missing",
+                    "VRAM was not measured as positive.",
+                    "Repair GPU discovery and retry.",
+                )
+            )
         if profile.disk_gib <= 0:
             issues.append(
-                PreflightIssue("disk-missing", "Disk capacity was not measured as positive.", "Attach or provision usable disk and retry."))
+                PreflightIssue(
+                    "disk-missing",
+                    "Disk capacity was not measured as positive.",
+                    "Attach or provision usable disk and retry.",
+                )
+            )
         try:
             return self.placement.choose(profile.vram_gib)
         except PlacementRefusal as error:
             issues.append(
-                PreflightIssue("placement-refused", str(error), "Use a covered GPU profile or extend the reviewed placement table."))
+                PreflightIssue(
+                    "placement-refused",
+                    str(error),
+                    "Use a covered GPU profile or extend the reviewed placement table.",
+                )
+            )
             return None
 
     def _verify_cache(

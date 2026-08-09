@@ -128,7 +128,9 @@ class PodCreateRequest:
         ):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{label} must be a non-blank string")
-        if self.template is not None and (not isinstance(self.template, str) or not self.template.strip()):
+        if self.template is not None and (
+            not isinstance(self.template, str) or not self.template.strip()
+        ):
             raise ValueError("template must be a non-blank string when supplied")
         if not self.docker_start_cmd or not all(
             isinstance(part, str) and part for part in self.docker_start_cmd
@@ -151,10 +153,7 @@ class PodCreateRequest:
         ):
             raise ValueError("repository_commit must be a full lowercase Git SHA-1")
         if not isinstance(self.metadata, Mapping) or not all(
-            isinstance(key, str)
-            and key
-            and isinstance(value, str)
-            and value
+            isinstance(key, str) and key and isinstance(value, str) and value
             for key, value in self.metadata.items()
         ):
             raise ValueError("metadata must contain non-blank string keys and values")
@@ -193,8 +192,10 @@ def _required_timer_arguments(command: tuple[str, ...], volume_mount_path: str) 
         bootstrap = json.loads(values["--bootstrap-command-json"])
     except json.JSONDecodeError as error:
         raise ValueError("pod bootstrap command must be JSON argv") from error
-    if not isinstance(bootstrap, list) or not bootstrap or not all(
-        isinstance(item, str) and item for item in bootstrap
+    if (
+        not isinstance(bootstrap, list)
+        or not bootstrap
+        or not all(isinstance(item, str) and item for item in bootstrap)
     ):
         raise ValueError("pod bootstrap command must be a non-empty string argv")
     report_path = PurePosixPath(values["--report-path"])
@@ -257,7 +258,9 @@ class PendingCreateIntent:
     def __post_init__(self) -> None:
         # Reuse the request's closed validation surface rather than maintaining
         # a second, looser serialization format for recovery.
-        object.__setattr__(self, "pod_hourly_usd", as_decimal(self.pod_hourly_usd, "pending create pod rate"))
+        object.__setattr__(
+            self, "pod_hourly_usd", as_decimal(self.pod_hourly_usd, "pending create pod rate")
+        )
         object.__setattr__(
             self,
             "volume_hourly_usd",
@@ -373,7 +376,9 @@ class PodRuntimeContract:
                 raise ValueError(f"{label} must be non-blank")
         if self.template is not None and (not isinstance(self.template, str) or not self.template):
             raise ValueError("observed template must be non-blank when supplied")
-        if not self.docker_start_cmd or not all(isinstance(item, str) and item for item in self.docker_start_cmd):
+        if not self.docker_start_cmd or not all(
+            isinstance(item, str) and item for item in self.docker_start_cmd
+        ):
             raise ValueError("observed docker_start_cmd must be non-empty string argv")
 
     def matches(self, request: PodCreateRequest) -> bool:
@@ -426,7 +431,11 @@ class PodRecord:
     runtime_contract: PodRuntimeContract | None = None
 
     def __post_init__(self) -> None:
-        for label, value in (("pod_id", self.pod_id), ("name", self.name), ("volume_id", self.volume_id)):
+        for label, value in (
+            ("pod_id", self.pod_id),
+            ("name", self.name),
+            ("volume_id", self.volume_id),
+        ):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{label} must be a non-blank string")
         require_utc(self.created_at, "pod created_at")

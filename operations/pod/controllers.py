@@ -101,7 +101,9 @@ class LaptopSupervisor:
         if not lease.active:
             return _terminal_result(lease)
         if lease.owner_token != self.owner_token:
-            return ControllerResult(ControllerState.BUSY, "another controller heartbeat is fresh", lease=lease)
+            return ControllerResult(
+                ControllerState.BUSY, "another controller heartbeat is fresh", lease=lease
+            )
         try:
             refreshed = self.store.heartbeat(owner_token=self.owner_token, now=self.now())
         except Exception as error:
@@ -128,7 +130,9 @@ class LaptopSupervisor:
         stale = observed - lease.heartbeat_at >= self.heartbeat_timeout
         if lease.owner_token != self.owner_token:
             if not stale:
-                return ControllerResult(ControllerState.BUSY, "another controller heartbeat is fresh", lease=lease)
+                return ControllerResult(
+                    ControllerState.BUSY, "another controller heartbeat is fresh", lease=lease
+                )
             try:
                 lease = self.store.claim_if_orphan(
                     owner_token=self.owner_token,
@@ -136,8 +140,12 @@ class LaptopSupervisor:
                     stale_after=self.heartbeat_timeout,
                 )
             except Exception as error:
-                return ControllerResult(ControllerState.LEASE_RECORD_FAILURE, str(error), lease=lease)
-            return self._close(lease, ControllerState.ORPHAN_RECONCILED, "orphan lease heartbeat lost")
+                return ControllerResult(
+                    ControllerState.LEASE_RECORD_FAILURE, str(error), lease=lease
+                )
+            return self._close(
+                lease, ControllerState.ORPHAN_RECONCILED, "orphan lease heartbeat lost"
+            )
         if observed >= lease.hard_deadline:
             return self._close(lease, ControllerState.LIFETIME_EXPIRED, "hard lifetime expired")
         if stale:
@@ -171,7 +179,9 @@ class LaptopSupervisor:
             )
         stale = observed - lease.heartbeat_at >= self.heartbeat_timeout
         if lease.owner_token != self.owner_token and not stale:
-            return ControllerResult(ControllerState.BUSY, "another controller heartbeat is fresh", lease=lease)
+            return ControllerResult(
+                ControllerState.BUSY, "another controller heartbeat is fresh", lease=lease
+            )
         try:
             claimed = self.store.claim_if_orphan(
                 owner_token=self.owner_token,
@@ -276,7 +286,9 @@ class PodDeadmanTimer:
                 lease=self.lease,
             )
         if self.now() < self.lease.hard_deadline:
-            return ControllerResult(ControllerState.TIMER_WAITING, "hard lifetime has not expired", lease=self.lease)
+            return ControllerResult(
+                ControllerState.TIMER_WAITING, "hard lifetime has not expired", lease=self.lease
+            )
         return self.close_now("pod dead-man hard lifetime expired")
 
     def close_now(self, reason: str) -> ControllerResult:
@@ -291,7 +303,11 @@ class PodDeadmanTimer:
         try:
             report = self.shutdown.close(record_from_lease(self.lease), reason=reason)
         except Exception as error:
-            return ControllerResult(ControllerState.TIMER_EXPIRED, f"shutdown controller raised: {error}", lease=self.lease)
+            return ControllerResult(
+                ControllerState.TIMER_EXPIRED,
+                f"shutdown controller raised: {error}",
+                lease=self.lease,
+            )
         return ControllerResult(
             ControllerState.TIMER_EXPIRED,
             "pod-side dead-man attempted verified shutdown",
@@ -304,7 +320,9 @@ def _terminal_result(lease: PodLease) -> ControllerResult:
     """Never re-label an unverified close as an active or green controller state."""
 
     if lease.phase == "closed-verified":
-        return ControllerResult(ControllerState.CLOSED_VERIFIED, "lease was already verified closed", lease=lease)
+        return ControllerResult(
+            ControllerState.CLOSED_VERIFIED, "lease was already verified closed", lease=lease
+        )
     return ControllerResult(
         ControllerState.CLOSE_UNVERIFIED,
         f"lease close remains non-green in phase {lease.phase}; human reconciliation is required",

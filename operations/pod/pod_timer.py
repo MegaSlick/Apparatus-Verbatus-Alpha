@@ -84,7 +84,9 @@ def run_with_bootstrap(
         _durable_failure_close(
             context, report, bootstrap_record, error, "mandatory bootstrap process failed to start"
         )
-    _persist_or_close(context, report, {"bootstrap": bootstrap_record, "close": None, "green": False})
+    _persist_or_close(
+        context, report, {"bootstrap": bootstrap_record, "close": None, "green": False}
+    )
     while context.timer.now() < context.timer.lease.hard_deadline:
         exit_code = child.poll()
         if exit_code is not None:
@@ -115,7 +117,9 @@ def run_with_bootstrap(
                         "Use a long-running bootstrap/service entrypoint; the pod was closed to avoid idle spend."
                     ),
                 }
-                result = context.timer.close_now("mandatory bootstrap child exited before hard deadline")
+                result = context.timer.close_now(
+                    "mandatory bootstrap child exited before hard deadline"
+                )
                 _persist_or_close(
                     context,
                     report,
@@ -142,11 +146,19 @@ def run_with_bootstrap(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verbatus provider-neutral pod hard-lifetime dead-man")
+    parser = argparse.ArgumentParser(
+        description="Verbatus provider-neutral pod hard-lifetime dead-man"
+    )
     parser.add_argument("--interval-seconds", type=float, default=15.0)
-    parser.add_argument("--timer-factory", required=True, help="provider module:callable yielding TimerContext")
-    parser.add_argument("--bootstrap-command-json", required=True, help="mandatory bootstrap JSON argv")
-    parser.add_argument("--report-path", required=True, help="durable report path on the attached volume")
+    parser.add_argument(
+        "--timer-factory", required=True, help="provider module:callable yielding TimerContext"
+    )
+    parser.add_argument(
+        "--bootstrap-command-json", required=True, help="mandatory bootstrap JSON argv"
+    )
+    parser.add_argument(
+        "--report-path", required=True, help="durable report path on the attached volume"
+    )
     args = parser.parse_args(argv)
     result = run_with_bootstrap(
         load_timer_context(args.timer_factory),
@@ -165,7 +177,11 @@ def _bootstrap_argv(value: str) -> list[str]:
         argv = json.loads(value)
     except json.JSONDecodeError as error:
         raise RuntimeError("pod dead-man bootstrap command is not JSON argv") from error
-    if not isinstance(argv, list) or not argv or not all(isinstance(part, str) and part for part in argv):
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or not all(isinstance(part, str) and part for part in argv)
+    ):
         raise RuntimeError("pod dead-man bootstrap command must be a non-empty string argv")
     return argv
 

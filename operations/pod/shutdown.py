@@ -137,7 +137,9 @@ class VerifiedShutdown:
     def prove_ready(self) -> ShutdownReadiness:
         """Check the local closure wiring before a launch asks a provider to bill."""
 
-        missing = tuple(name for name in self._VERBS if not callable(getattr(self.provider, name, None)))
+        missing = tuple(
+            name for name in self._VERBS if not callable(getattr(self.provider, name, None))
+        )
         if missing:
             return ShutdownReadiness(False, missing, "provider seam lacks shutdown verbs")
         return ShutdownReadiness(True, (), "local terminate/absence/billing path is wired")
@@ -204,7 +206,9 @@ class VerifiedShutdown:
         try:
             observation = self.provider.status(pod_id)
         except Exception as error:
-            return ProviderStatus(pod_id, Presence.UNKNOWN, require_utc(self.now(), "status error time"), str(error))
+            return ProviderStatus(
+                pod_id, Presence.UNKNOWN, require_utc(self.now(), "status error time"), str(error)
+            )
         if not isinstance(observation, ProviderStatus):
             return ProviderStatus(
                 pod_id,
