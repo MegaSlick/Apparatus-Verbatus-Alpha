@@ -280,3 +280,14 @@ def test_a_witness_basis_reference_the_reading_never_input_cannot_establish(tmp_
     result = _archetypus_after(tmp_path, detach)
     assert result.returncode == 2, result.stderr
     assert "not a digest-checked direct input" in result.stderr
+
+
+def test_one_testimonium_cannot_be_repeated_to_make_the_basis_look_larger(tmp_path):
+    def repeat(payload):
+        testimonia = [dict(item) for item in payload["basis"]["testimonia"]]
+        testimonia.append(dict(testimonia[0]))
+        payload["basis"] = dict(payload["basis"], testimonia=testimonia)
+
+    result = _archetypus_after(tmp_path, repeat)
+    assert result.returncode == 2, result.stderr
+    assert "repeats Testimonium basis" in result.stderr

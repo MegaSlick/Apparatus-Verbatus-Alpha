@@ -1159,14 +1159,12 @@ def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
     assert "newer Perlectio" in result.stderr
 
 
-def test_archetypus_establishes_no_readable_text_for_an_accepted_empty_reading(tmp_path):
-    """Tyrel, 2026-08-05: "It is not a fatal error there might be blank pages."
+def test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proof(tmp_path):
+    """An accepted reading is not itself evidence that the page was blank.
 
-    An accepted review pointing at an empty-text completed reading used to crash
-    the Archetypus with a FatalAccounting. He ruled that wrong: a blank page is
-    ordinary material, and `no_readable_text` is the ordinary terminal status for
-    one — a positive finding carrying its evidence reference, never an unlabeled
-    empty string (4c), and never a rescued error path.
+    Tyrel ruled blank pages ordinary, and also distinguished them from unread ink.
+    The outcome algebra therefore leaves silence unresolved until the Recensor
+    retains a blank proof.  Acceptance alone must not manufacture that proof.
     """
     root = tmp_path / "runs"
     run_through_recensor(root, "r")
@@ -1197,18 +1195,11 @@ def test_archetypus_establishes_no_readable_text_for_an_accepted_empty_reading(t
     act_id = review["subject_id"]
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 0, result.stderr
-    established = tree.read_artifact(
+    assert result.returncode == 2
+    assert "requires its evidence reference" in result.stderr
+    assert not tree.has_artifact(
         ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
     )
-    payload = established["payload"]
-    assert payload["text"] == ""
-    # The record-level literal the Armarium checks, and the richer claim about
-    # what this record's text actually holds. Deliberately different fields.
-    assert payload["status"] == "established"
-    assert payload["text_status"] == "no_readable_text"
-    assert payload["evidence_ref"] == payload["recensor_ref"]
-    assert payload["annotations"] == []
 
 
 def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):

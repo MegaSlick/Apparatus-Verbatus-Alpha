@@ -11,6 +11,7 @@ constructor.
 """
 
 import importlib.util
+import inspect
 from pathlib import Path
 
 import pytest
@@ -35,20 +36,39 @@ REVIEW_REF = {"relative_path": "5_recensor/artifacts/review/art_c.json", "sha256
 
 
 def make_record(**overrides) -> dict:
-    values = {
-        "act": ACT,
+    record = {
+        **ACT,
         "text": "Maria",
         "text_hash": digest_of("Maria"),
+        "status": "established",
         "text_status": "established",
         "regions": [{"image_path": "2_designator/blobs/sha256/deadbeef"}],
         "provenance": {"chair": "perlector"},
         "annotations": [],
         "evidence_ref": None,
-        "reading_ref": READING_REF,
-        "review_ref": REVIEW_REF,
+        "dissent_ref": READING_REF,
+        "perlectio_ref": READING_REF,
+        "recensor_ref": REVIEW_REF,
     }
-    values.update(overrides)
-    return archetypus.build_record(**values)
+    record.update(overrides)
+    record["self_hash"] = self_hash(record)
+    archetypus.validate_record(record)
+    return record
+
+
+def test_the_only_public_constructor_resolves_the_accepted_evidence_itself():
+    assert not hasattr(archetypus, "build_record")
+    assert not hasattr(archetypus, "_build_record")
+    assert "establish_from_accepted_primed_perlectio" in {
+        name
+        for name, function in inspect.getmembers(archetypus, inspect.isfunction)
+        if not name.startswith("_")
+    }
+    assert tuple(inspect.signature(archetypus.establish_from_accepted_primed_perlectio).parameters) == (
+        "context",
+        "act",
+        "review_ref",
+    )
 
 
 def test_the_record_carries_exactly_the_closed_field_set():
@@ -119,3 +139,26 @@ def test_dissent_travels_by_reference_and_never_by_value():
 def test_the_text_hash_is_the_digest_of_the_text_alone():
     record = make_record()
     assert record["text_hash"] == digest_of("Maria")
+
+
+def test_record_validation_refuses_a_resealed_wrong_text_hash():
+    record = make_record()
+    record["text_hash"] = digest_of("Marta")
+    record["self_hash"] = self_hash(record)
+    with pytest.raises(SchemaRefusal, match="text_hash disagrees"):
+        archetypus.validate_record(record)
+
+
+def test_record_validation_refuses_a_resealed_dishonest_text_status():
+    record = make_record()
+    record["text_status"] = "partial"
+    record["self_hash"] = self_hash(record)
+    with pytest.raises(SchemaRefusal, match="disagrees with its text"):
+        archetypus.validate_record(record)
+
+
+def test_record_validation_refuses_a_bad_nested_self_hash():
+    record = make_record()
+    record["act_key"] = "edited-after-construction"
+    with pytest.raises(SchemaRefusal, match="nested self-hash"):
+        archetypus.validate_record(record)

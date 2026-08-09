@@ -59,6 +59,7 @@ from common.contracts.canonical import (  # noqa: E402
     self_hash,
     verify_self_hash,
 )
+from common.contracts.envelope import validate_input_refs  # noqa: E402
 from common.contracts.errors import FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
@@ -139,14 +140,13 @@ _INDEX_FIELDS = frozenset({"schema", "run_id", "stage", "accepted_count", "rows"
 
 
 def _is_ref_shaped(value) -> bool:
-    return (
-        isinstance(value, dict)
-        and set(value) == {"relative_path", "sha256"}
-        and isinstance(value.get("relative_path"), str)
-        and bool(value.get("relative_path"))
-        and isinstance(value.get("sha256"), str)
-        and bool(value.get("sha256"))
-    )
+    if not isinstance(value, dict) or set(value) != {"relative_path", "sha256"}:
+        return False
+    try:
+        validate_input_refs([value])
+    except SchemaRefusal:
+        return False
+    return True
 
 
 def _reference_key(reference: dict) -> tuple[str, str]:
@@ -527,64 +527,20 @@ def accepted_primed_perlectio(
             kind="testimonium",
             subject_id=act_id,
         )
-        reported = testimonium.get("payload", {}).get("reported")
-        witnesses[_reference_key(reference)] = (
+        reference_key = _reference_key(reference)
+        if reference_key in witnesses:
+            raise SchemaRefusal(
+                f"act {act_id} repeats Testimonium basis {index}; one retained witness "
+                "reference may not count twice as evidence that this reading was primed"
+            )
+        testimonium_payload = testimonium.get("payload")
+        if not isinstance(testimonium_payload, dict):
+            raise SchemaRefusal(f"act {act_id} Testimonium basis {index} has no object payload")
+        reported = testimonium_payload.get("reported")
+        witnesses[reference_key] = (
             reported if testimonium["outcome"] in WITNESS_READING_OUTCOMES else None
         )
     return payload, witnesses, regions
-
-
-def build_record(
-    *,
-    act,
-    text: str,
-    text_hash: str,
-    text_status: str,
-    regions: list[dict],
-    provenance,
-    annotations: list[dict],
-    evidence_ref,
-    reading_ref: dict[str, str],
-    review_ref: dict[str, str],
-) -> dict:
-    """Assemble the one record, then refuse it if its field set is not the closed one."""
-    record = {
-        "act_id": act["act_id"],
-        "act_key": act["act_key"],
-        "page_id": act["page_id"],
-        # The one text. Written once, never rewritten, never accompanied by
-        # an alternative.
-        "text": text,
-        "text_hash": text_hash,
-        # Fixed literal, required by the Armarium's own frozen contract
-        # (`verify_established_record`): this act has exactly one Archetypus
-        # record. `text_status` below is the separate, richer claim about
-        # what that record's text actually contains — spec 10's enum. The two
-        # are deliberately not mirrors of one another: mirroring them would make
-        # every `partial` act fail the Armarium's literal check, and would put a
-        # second status decision where there is meant to be one.
-        "status": "established",
-        "text_status": text_status,
-        "regions": regions,
-        "provenance": provenance,
-        "annotations": annotations,
-        "evidence_ref": evidence_ref,
-        # `dissent_ref` and `perlectio_ref` name two different questions that
-        # resolve to the same artifact by design, not by accident: `perlectio_ref`
-        # is the parent evidence this record establishes from; `dissent_ref` is
-        # where a reader finds this act's dissent (Tyrel's 4d — by reference,
-        # never copied). The dissent is recorded inside the Perlectio itself, so
-        # the two references are the same pointer here — and the Armarium's own
-        # frozen verification requires them equal
-        # (`payload.get("dissent_ref") != reading_ref`), so carrying only one
-        # under two names is not available without breaking that consumer.
-        "dissent_ref": reading_ref,
-        "perlectio_ref": reading_ref,
-        "recensor_ref": review_ref,
-    }
-    record["self_hash"] = self_hash(record)
-    validate_record_fields(record)
-    return record
 
 
 def validate_record_fields(record: dict) -> None:
@@ -603,6 +559,196 @@ def validate_record_fields(record: dict) -> None:
             f"(missing {missing}, unexpected {unexpected}); a second text-bearing field is "
             "the named dead shape this refuses"
         )
+
+
+def validate_record(record: dict) -> dict:
+    """Refuse a malformed record before an index can repeat its claims.
+
+    The constructor checks the upstream evidence.  This validator checks the
+    sealed record itself on every later stage-local read: its one-text schema,
+    nested self-hash, text hash, status derivation, references, and the scalar
+    identities needed to return to the act.  A derived index must not turn a
+    resealed but internally contradictory payload into a trusted summary.
+    """
+    if not isinstance(record, dict):
+        raise SchemaRefusal("the Archetypus record is not an object")
+    validate_record_fields(record)
+    if not verify_self_hash(record):
+        raise SchemaRefusal("the Archetypus record fails its nested self-hash")
+    for field in ("act_id", "act_key", "page_id"):
+        if not isinstance(record[field], str) or not record[field]:
+            raise SchemaRefusal(f"the Archetypus record has no {field}")
+    text = record["text"]
+    if not isinstance(text, str):
+        raise SchemaRefusal("the Archetypus text is not a string")
+    if record["text_hash"] != digest_of(text):
+        raise SchemaRefusal("the Archetypus text_hash disagrees with its one text")
+    if record["status"] != "established":
+        raise SchemaRefusal("the Archetypus record status is not the fixed 'established' literal")
+    annotations = record["annotations"]
+    if not isinstance(annotations, list) or any(not isinstance(note, dict) for note in annotations):
+        raise SchemaRefusal("the Archetypus annotations are not a list of objects")
+    for index, note in enumerate(annotations):
+        label = f"Archetypus annotation {index}"
+        kind = note.get("kind")
+        expected_fields = _ILLEGIBLE_FIELDS if kind == "illegible" else _UNCERTAIN_FIELDS
+        if kind not in ANNOTATION_KINDS or set(note) != expected_fields:
+            raise SchemaRefusal(f"{label} is outside the closed annotation schema")
+        start, end = note.get("start"), note.get("end")
+        if (
+            not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or start < 0
+            or end > len(text)
+            or start > end
+        ):
+            raise SchemaRefusal(f"{label} is outside the text bounds")
+        if kind == "illegible":
+            if start != end or not isinstance(note["witness_evidence"], list):
+                raise SchemaRefusal(f"{label} is not a zero-width gap with an evidence list")
+            for evidence in note["witness_evidence"]:
+                if (
+                    not isinstance(evidence, dict)
+                    or set(evidence) != _WITNESS_EVIDENCE_FIELDS
+                    or not _is_ref_shaped(evidence.get("witness_ref"))
+                    or not isinstance(evidence.get("variant"), str)
+                    or not evidence["variant"]
+                ):
+                    raise SchemaRefusal(f"{label} carries malformed witness evidence")
+        elif (
+            start == end
+            or note.get("certainty") not in CERTAINTIES
+            or not isinstance(note.get("alternatives"), list)
+            or not note["alternatives"]
+            or any(not isinstance(value, str) or not value for value in note["alternatives"])
+            or len(set(note["alternatives"])) != len(note["alternatives"])
+        ):
+            raise SchemaRefusal(f"{label} carries a malformed uncertain span")
+    try:
+        derived_status = derive_text_status(text, annotations)
+    except (KeyError, TypeError):
+        raise SchemaRefusal("the Archetypus annotations cannot derive an honest text_status") from None
+    if record["text_status"] != derived_status:
+        raise SchemaRefusal(
+            f"the Archetypus text_status {record['text_status']!r} disagrees with its text "
+            f"and gaps (expected {derived_status!r})"
+        )
+    validate_text_status(text, record["text_status"], record["evidence_ref"])
+    if not isinstance(record["regions"], list) or not record["regions"]:
+        raise SchemaRefusal("the Archetypus record retains no source region")
+    if not isinstance(record["provenance"], dict):
+        raise SchemaRefusal("the Archetypus provenance is not an object")
+    for field in ("dissent_ref", "perlectio_ref", "recensor_ref"):
+        if not _is_ref_shaped(record[field]):
+            raise SchemaRefusal(f"the Archetypus {field} is not a digest-checked reference")
+    if record["dissent_ref"] != record["perlectio_ref"]:
+        raise SchemaRefusal("dissent must travel by reference to this record's one Perlectio")
+    return record
+
+
+def _no_readable_text_evidence(review: dict) -> dict[str, str] | None:
+    """Return the Recensor's retained blank proof; never manufacture one here."""
+    payload = review.get("payload")
+    if not isinstance(payload, dict):
+        raise SchemaRefusal("accepted Recensor review has no object payload")
+    reference = payload.get("no_readable_text_evidence_ref")
+    if reference is None:
+        return None
+    if not _is_ref_shaped(reference) or reference not in review.get("inputs", []):
+        raise SchemaRefusal(
+            "no_readable_text evidence is not a digest-checked direct input of the Recensor review"
+        )
+    return reference
+
+
+def _direct_inputs(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Combine required evidence once, refusing one path with two digests."""
+    by_path: dict[str, dict[str, str]] = {}
+    for group in groups:
+        for reference in group:
+            if not _is_ref_shaped(reference):
+                raise SchemaRefusal("an Archetypus direct input is not a digest-checked reference")
+            existing = by_path.get(reference["relative_path"])
+            if existing is not None and existing != reference:
+                raise FatalAccounting(
+                    "one Archetypus evidence path carries contradictory digests"
+                )
+            by_path[reference["relative_path"]] = reference
+    return list(by_path.values())
+
+
+def establish_from_accepted_primed_perlectio(
+    context, *, act: dict, review_ref: dict[str, str]
+) -> tuple[dict, list[dict[str, str]]]:
+    """The one public constructor, resolving all canonical characters from evidence.
+
+    A caller supplies only an act and a sealed Recensor-review reference.  It
+    cannot pass an in-memory reading or text around the acceptance boundary.
+    """
+    if not _is_ref_shaped(review_ref):
+        raise SchemaRefusal("accepted Recensor review reference is malformed")
+    review = context.tree.read_artifact_reference(
+        review_ref, stage=RECENSOR, kind="review", subject_id=act["act_id"]
+    )
+    reading, reading_ref = reviewed_reading(context, review, act["act_id"])
+    payload, witnesses, regions = accepted_primed_perlectio(
+        context, review, reading, reading_ref, act["act_id"]
+    )
+    if "text" not in payload:
+        raise SchemaRefusal(
+            "the accepted Perlectio has no text field; missing evidence cannot mean blank"
+        )
+    text = payload["text"]
+    if not isinstance(text, str):
+        raise SchemaRefusal("the accepted Perlectio text is not a string")
+    annotations = validate_annotations(
+        payload.get("annotations", []),
+        text,
+        witnesses,
+        f"accepted reading of {act['act_id']} annotations",
+    )
+    text_status = derive_text_status(text, annotations)
+    evidence_ref = _no_readable_text_evidence(review) if text_status == "no_readable_text" else None
+    validate_text_status(text, text_status, evidence_ref)
+    validate_serving_provenance(
+        context,
+        payload.get("provenance"),
+        producer_stage=PERLECTOR,
+        require_receipt=True,
+    )
+    # The one construction site.  There is no helper accepting free-standing
+    # canonical text: these characters are in scope only because this function
+    # resolved them from the exact accepted Perlectio above.
+    record = {
+        "act_id": act["act_id"],
+        "act_key": act["act_key"],
+        "page_id": act["page_id"],
+        "text": text,
+        "text_hash": digest_of(text),
+        # The Armarium's frozen record-level literal; text_status separately
+        # describes whether the one reading is full, partial, or blank-proved.
+        "status": "established",
+        "text_status": text_status,
+        "regions": regions,
+        "provenance": payload.get("provenance"),
+        "annotations": annotations,
+        "evidence_ref": evidence_ref,
+        # Dissent lives inside the one Perlectio and therefore travels by the
+        # same reference, never as a copied value beside the established text.
+        "dissent_ref": reading_ref,
+        "perlectio_ref": reading_ref,
+        "recensor_ref": review_ref,
+    }
+    record["self_hash"] = self_hash(record)
+    validate_record(record)
+    inputs = _direct_inputs(
+        [review_ref, reading_ref],
+        [context.input_ref(region["image_path"]) for region in regions],
+        [evidence_ref] if evidence_ref is not None else [],
+    )
+    return record, inputs
 
 
 # --- index.json: a rebuildable manifest, reconciled against the accepted acts ---
@@ -639,8 +785,11 @@ def _archetypus_rows(context) -> list[dict]:
             )
         seen.add(subject)
         record = context.tree.read_artifact(ARCHETYPUS, "archetypus", entry["artifact_id"])
-        payload = record["payload"]
-        validate_record_fields(payload)
+        payload = validate_record(record["payload"])
+        if payload["act_id"] != subject:
+            raise FatalAccounting(
+                f"Archetypus artifact for {subject} carries payload identity {payload['act_id']!r}"
+            )
         rows.append(
             {
                 "act_id": subject,
@@ -691,12 +840,25 @@ def validate_index(context, index) -> dict:
     rows = index["rows"]
     if not isinstance(rows, list):
         raise FatalAccounting("the Archetypus index rows are not a list")
+    if (
+        not isinstance(index["accepted_count"], int)
+        or isinstance(index["accepted_count"], bool)
+        or index["accepted_count"] < 0
+    ):
+        raise FatalAccounting("the Archetypus index accepted_count is not a non-negative integer")
 
     on_disk = {row["act_id"]: row for row in _archetypus_rows(context)}
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict) or set(row) != _INDEX_ROW_FIELDS:
             raise FatalAccounting("the Archetypus index carries a malformed row")
+        if any(
+            not isinstance(row[field], str) or not row[field]
+            for field in ("act_id", "act_key", "artifact_id", "text_status", "text_hash")
+        ) or not _is_ref_shaped(
+            {"relative_path": row.get("relative_path"), "sha256": row.get("sha256")}
+        ):
+            raise FatalAccounting("the Archetypus index carries a row with malformed values")
         act_id = row["act_id"]
         if act_id in seen:
             raise FatalAccounting(f"the Archetypus index carries a duplicate row for act {act_id}")
@@ -749,63 +911,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # reconciles against.
             continue
 
-        reading, reading_ref = reviewed_reading(context, review, act_id)
         review_ref = context.artifact_ref(RECENSOR, "review", review["artifact_id"])
-        payload, witnesses, regions = accepted_primed_perlectio(
-            context, review, reading, reading_ref, act_id
-        )
-        text = payload.get("text")
-        if not isinstance(text, str):
-            raise FatalAccounting(
-                f"accepted reading of {act_id} has no text field at all; that is a "
-                "malformed reading, not an unread page"
-            )
-
-        # The Perlectio's uncertainty layer, carried whole (Tyrel, 2026-07-30).
-        # Optional on the wire today — nothing upstream of this stage populates
-        # it yet — and defaults to no annotations, which is exactly today's
-        # behaviour.
-        annotations = validate_annotations(
-            payload.get("annotations", []),
-            text,
-            witnesses,
-            f"accepted reading of {act_id} annotations",
-        )
-        text_status = derive_text_status(text, annotations)
-
-        # The Recensor's own accepted review is the only completeness evidence
-        # this build has for "no_readable_text": there is no dedicated blank-proof
-        # artifact upstream (the Recensor's `confirmed-blank` diagnosis is a
-        # separate, not-yet-wired path that already bypasses this stage entirely
-        # — see HANDOFF.md). Named here rather than invented as a richer contract.
-        evidence_ref = review_ref if text_status == "no_readable_text" else None
-        validate_text_status(text, text_status, evidence_ref)
-
-        validate_serving_provenance(
-            context,
-            payload.get("provenance"),
-            producer_stage=PERLECTOR,
-            require_receipt=True,
-        )
-        record = build_record(
-            act=act,
-            text=text,
-            text_hash=digest_of(text),
-            text_status=text_status,
-            regions=regions,
-            provenance=payload.get("provenance"),
-            annotations=annotations,
-            evidence_ref=evidence_ref,
-            reading_ref=reading_ref,
-            review_ref=review_ref,
+        record, inputs = establish_from_accepted_primed_perlectio(
+            context, act=act, review_ref=review_ref
         )
 
         context.publish(
             kind="archetypus",
             subject_id=act_id,
             outcome="established",
-            inputs=[review_ref, reading_ref]
-            + [context.input_ref(region["image_path"]) for region in regions],
+            inputs=inputs,
             payload=record,
         )
 

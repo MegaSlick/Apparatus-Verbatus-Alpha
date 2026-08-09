@@ -79,22 +79,15 @@ error (Tyrel, 2026-08-05: "It is not a fatal error there might be blank pages");
 refused is the opposite collapse, ink that is merely unread reported as ink that was
 never there.
 
-**`evidence_ref` — a named assumption.** There is no dedicated Recensor blank-proof
-artifact in this build. The Recensor's `confirmed-blank` outcome (already in the closed
-outcome vocabulary, `common/contracts/outcomes.py`) is reserved for the genuinely-blank
-diagnosis and is terminal *at the Recensor*, bypassing this stage entirely — an act with
-that outcome never reaches `main()`'s per-act loop at all, the same way `held-for-review`
-and `recovery-requested` do not. `no_readable_text` can therefore only be produced here
-from an **`accepted`** review whose reviewed Perlectio has empty text — a path the landed
-Recensor's own logic already refuses to produce, so in the real skeleton pipeline this
-status is reachable only by direct tamper of the run tree (proven in
-`pipeline/orchestrator/test_orchestrator_acceptance.py::
-test_archetypus_establishes_no_readable_text_for_an_accepted_empty_reading`). Given that,
-`evidence_ref` is set to the accepted review's own reference (`recensor_ref`'s value) —
-the only completeness evidence this build actually has. **When the Recensor lane adds a
-real blank proof, this should carry that reference specifically** rather than the review
-that merely accepted the act; the field exists so that change is a substitution rather
-than a schema migration.
+**`evidence_ref` — an intentionally unfilled upstream contract.** An accepted review is
+evidence that the Recensor accepted a reading; it is not evidence that the page was
+blank. The constructor therefore accepts `no_readable_text` only when the review carries
+a digest-checked `no_readable_text_evidence_ref` as one of its own direct inputs. The
+current Recensor publishes no such proof, and its `confirmed-blank` outcome is terminal
+at that stage, bypassing this record. Consequently the current end-to-end pipeline cannot
+yet publish a `no_readable_text` Archetypus. This is a named cross-stage gap, preferable
+to manufacturing a blank finding from empty text; the shared outcome algebra likewise
+keeps Perlector silence unresolved until a blank-proof contract exists.
 
 **`annotations` — carried whole, never in `text`.** A list of:
 
@@ -135,8 +128,10 @@ with the exact crop blobs named by the reading. `text_hash` is the canonical dig
 clean text without re-hashing the whole record.
 
 There is no alternate text, no witness text field, and no branch that chooses among
-readings. A later run cannot write a second different record under the same once-only
-identity.
+readings. `establish_from_accepted_primed_perlectio` is the only public constructor: its
+caller supplies an act and the sealed Recensor-review reference, never free-standing
+text or a reading payload. A later run cannot write a second different record under the
+same once-only identity.
 
 ## `6_archetypus/index.json`
 
