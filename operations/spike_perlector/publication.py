@@ -1,9 +1,10 @@
 """The framework's single supported writer for public Spec 05 findings.
 
-It accepts only a sealed, non-synthetic :class:`MeasurementRun`, projects the
-closed aggregate shape, validates it immediately before writing, and uses a
-date-only filename.  It cannot make a manually authored history file safe; the
-repository-wide history policy remains a separate governance boundary.
+It accepts only a sealed, non-synthetic :class:`MeasurementRun` and projects the
+closed aggregate shape, which `redaction.project_public_finding` validates before
+it returns; the filename is date-only.  It cannot make a manually authored history
+file safe; the repository-wide history policy remains a separate governance
+boundary.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .errors import PublicSafetyRefusal
-from .redaction import project_public_finding, validate_public_finding
+from .redaction import project_public_finding
 from .runner import MeasurementRun
 
 
@@ -31,7 +32,6 @@ def write_public_finding(
     if not isinstance(finding_date, date) or isinstance(finding_date, datetime):
         raise PublicSafetyRefusal("finding_date must be a date, not a datetime")
     finding = project_public_finding(run)
-    validate_public_finding(finding)
     payload = (
         json.dumps(finding, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         + b"\n"

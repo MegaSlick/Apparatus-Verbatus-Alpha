@@ -497,12 +497,16 @@ class HeldOutUseGuard:
         proposed = frozenset(material_digests)
         if any(not is_sha256(value) for value in proposed):
             raise HoldoutRefusal("material-use declaration contains a non-SHA-256 digest")
-        overlap = proposed & self._manifest.material_digests
-        if use in PROHIBITED_EVALUATION_OVERLAP and overlap:
-            raise HoldoutRefusal(
-                f"{use.value} overlaps the held-out evaluation material ({len(overlap)} digest(s))"
-            )
         if use in PROHIBITED_EVALUATION_OVERLAP:
+            # Both spellings refuse. Naming the overlap when there is one is what
+            # tells a caller it held evaluation material rather than merely
+            # unlineaged bytes.
+            overlap = proposed & self._manifest.material_digests
+            if overlap:
+                raise HoldoutRefusal(
+                    f"{use.value} overlaps the held-out evaluation material "
+                    f"({len(overlap)} digest(s))"
+                )
             raise HoldoutRefusal(
                 f"{use.value} rejects unlineaged material digests; a later stage needs its own "
                 "separately approved material provenance"

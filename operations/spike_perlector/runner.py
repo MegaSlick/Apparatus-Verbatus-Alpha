@@ -29,6 +29,7 @@ from .models import (
     ReferenceStatus,
     ResolvedIdentity,
     WitnessConfiguration,
+    anonymous_testimonia,
     dossier_for,
 )
 from .normalization import NormalizationProfile, normalize_text, require_canonical_profile
@@ -293,14 +294,6 @@ class MeasurementRun:
                 # would always pass -- checking raw_response_text itself is what
                 # actually catches a non-reading cell that retains stray text.
                 raise MatrixRefusal("a non-reading cell retains stray raw response text")
-            comparison_testimonia = tuple(
-                DossierTestimonium(
-                    public_source_index=item.public_source_index,
-                    text=item.text,
-                    status=item.status,
-                )
-                for item in act.testimonia
-            )
             response = CandidateResponse(
                 status=cell.perlectio.status,
                 text=cell.raw_response_text,
@@ -311,7 +304,7 @@ class MeasurementRun:
                 observed_delivery_sha256=cell.perlectio.delivery_sha256,
             )
             if cell.perlectio.dissent != _dissent_for(
-                response, comparison_testimonia, self.profile
+                response, anonymous_testimonia(act), self.profile
             ):
                 raise MatrixRefusal("Perlectio dissent differs from the retained witness evidence")
             expected_score = score_response(
@@ -410,9 +403,10 @@ class MeasurementRun:
         )
 
     def condition_deltas(self) -> tuple[CandidateConditionDeltas, ...]:
-        grouped = _condition_index(self.condition_aggregates())
+        aggregates = self.condition_aggregates()
+        grouped = _condition_index(aggregates)
         values: list[CandidateConditionDeltas] = []
-        for slot in sorted({aggregate.public_slot for aggregate in self.condition_aggregates()}):
+        for slot in sorted({aggregate.public_slot for aggregate in aggregates}):
             nuda = grouped[(slot, Condition.LECTIO_NUDA)].metrics
             primed = grouped[(slot, Condition.WITNESS_PRIMED)].metrics
             image_absent = grouped[(slot, Condition.IMAGE_ABSENT_CONTROL)].metrics
@@ -469,31 +463,23 @@ def _condition_index(
 
 
 def _aggregate_candidates(cells: Iterable[CandidateCell]) -> AggregateMetrics:
-    rows = tuple(cells)
-    if not rows:
-        raise MatrixRefusal("cannot aggregate no candidate rows")
     return _aggregate_rows(
         (
-            (
-                cell.perlectio.status,
-                cell.score,
-                cell.perlectio.dissent,
-                cell.perlectio.elapsed_ms,
-                cell.perlectio.cost_usd,
-            )
-            for cell in rows
+            cell.perlectio.status,
+            cell.score,
+            cell.perlectio.dissent,
+            cell.perlectio.elapsed_ms,
+            cell.perlectio.cost_usd,
         )
+        for cell in cells
     )
 
 
 def _aggregate_witnesses(rows: Iterable[WitnessBaseline]) -> AggregateMetrics:
-    values = tuple(rows)
-    if not values:
-        raise MatrixRefusal("cannot aggregate no Testimonium baselines")
     # Testimonia do not have a dissent comparison or cost/elapsed observation in this
     # instrument.  They remain direct accuracy baselines only.
     return _aggregate_rows(
-        ((row.status, row.score, DissentSummary(0, 0, 0), None, None) for row in values)
+        (row.status, row.score, DissentSummary(0, 0, 0), None, None) for row in rows
     )
 
 
@@ -726,14 +712,7 @@ def _execute_matrix(
 
     cells: list[CandidateCell] = []
     for act in act_values:
-        comparison_testimonia = tuple(
-            DossierTestimonium(
-                public_source_index=item.public_source_index,
-                text=item.text,
-                status=item.status,
-            )
-            for item in act.testimonia
-        )
+        comparison_testimonia = anonymous_testimonia(act)
         for condition in ALL_CONDITIONS:
             for candidate, identity in participant_values:
                 dossier, request = prepared[(act.opaque_act_id, condition, identity.candidate_key)]

@@ -72,14 +72,12 @@ def _require_nonempty(value: str, field: str) -> None:
         raise MeasurementRefusal(f"{field} must be a non-empty string")
 
 
-# One act's diplomatic transcription -- an entry, or at most a short letter or
-# essay (GLOSSARY's "act") -- is never near this length; text this long is a
-# mis-pasted file, not a transcription. Kept equal to, but not imported from,
-# adjudication.TranscriptionDraft.MAX_TEXT_LENGTH (adjudication.py imports
-# from this module, so the reverse import would be circular): scoring.py's
-# Levenshtein.editops call is worse-than-linear in the product of its two
-# input lengths, and every one of these fields can reach it as either the
-# reference or the hypothesis.
+# The one text bound in this instrument, for every field that can reach a
+# quadratic comparison: scoring.py's Levenshtein.editops is worse-than-linear in
+# the product of its two input lengths, and adjudication.py's SequenceMatcher is
+# quadratic outright on repetitive input. One act's diplomatic transcription --
+# an entry, or at most a short letter or essay (GLOSSARY's "act") -- is never
+# near this length; text this long is a mis-pasted file, not a reading.
 MAX_TEXT_LENGTH = 20_000
 
 
@@ -636,39 +634,33 @@ class Dossier:
         return sha256_bytes(self.wire_bytes)
 
 
+def anonymous_testimonia(act: EvaluationAct) -> tuple[DossierTestimonium, ...]:
+    """One act's Testimonia in sealed order, stripped of their Attestator identities.
+
+    The same view is what a primed candidate is shown and what a Lectio nuda
+    reading is later compared against, so it is built here once rather than
+    spelled out at each of those boundaries.
+    """
+
+    return tuple(
+        DossierTestimonium(
+            public_source_index=item.public_source_index,
+            text=item.text,
+            status=item.status,
+        )
+        for item in act.testimonia
+    )
+
+
 def dossier_for(act: EvaluationAct, condition: Condition) -> Dossier:
     """Build a condition solely by presence/absence of the same act evidence."""
 
     if condition is Condition.LECTIO_NUDA:
         return Dossier(act.opaque_act_id, condition, act.image, ())
     if condition is Condition.WITNESS_PRIMED:
-        return Dossier(
-            act.opaque_act_id,
-            condition,
-            act.image,
-            tuple(
-                DossierTestimonium(
-                    public_source_index=item.public_source_index,
-                    text=item.text,
-                    status=item.status,
-                )
-                for item in act.testimonia
-            ),
-        )
+        return Dossier(act.opaque_act_id, condition, act.image, anonymous_testimonia(act))
     if condition is Condition.IMAGE_ABSENT_CONTROL:
-        return Dossier(
-            act.opaque_act_id,
-            condition,
-            None,
-            tuple(
-                DossierTestimonium(
-                    public_source_index=item.public_source_index,
-                    text=item.text,
-                    status=item.status,
-                )
-                for item in act.testimonia
-            ),
-        )
+        return Dossier(act.opaque_act_id, condition, None, anonymous_testimonia(act))
     raise MatrixRefusal(f"unknown condition {condition!r}")
 
 

@@ -15,7 +15,13 @@ from operations.spike_perlector.adjudication import (
     reconcile,
 )
 from operations.spike_perlector.errors import MeasurementRefusal
-from operations.spike_perlector.models import GapSpan, GroundTruth, ReferenceStatus, excise_gaps
+from operations.spike_perlector.models import (
+    MAX_TEXT_LENGTH,
+    GapSpan,
+    GroundTruth,
+    ReferenceStatus,
+    excise_gaps,
+)
 from operations.spike_perlector.normalization import GRAPHEMIC_V1
 from operations.spike_perlector.scoring import score_text
 
@@ -71,7 +77,7 @@ def test_an_oversized_draft_is_refused_rather_than_hung_on():
     it here keeps reconcile()/disagreement_spans() from ever being handed one.
     """
 
-    oversized = "x" * (TranscriptionDraft.MAX_TEXT_LENGTH + 1)
+    oversized = "x" * (MAX_TEXT_LENGTH + 1)
     with pytest.raises(AdjudicationRefusal, match="exceeds"):
         TranscriptionDraft("transcriber-a", oversized)
 
@@ -84,7 +90,7 @@ def test_disagreement_spans_refuses_an_oversized_bare_string_directly():
     TranscriptionDraft must still be protected from the same quadratic blowup.
     """
 
-    oversized = "x" * (TranscriptionDraft.MAX_TEXT_LENGTH + 1)
+    oversized = "x" * (MAX_TEXT_LENGTH + 1)
     with pytest.raises(AdjudicationRefusal, match="exceeds"):
         disagreement_spans(oversized, "short")
 

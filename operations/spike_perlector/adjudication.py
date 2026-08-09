@@ -34,7 +34,7 @@ from typing import Iterable, Mapping
 
 from .encoding import canonical_json_bytes, sha256_bytes
 from .errors import AdjudicationRefusal
-from .models import GapSpan, GroundTruth, ReferenceStatus
+from .models import MAX_TEXT_LENGTH, GapSpan, GroundTruth, ReferenceStatus
 
 ILLEGIBLE = "ILLEGIBLE"
 """The one resolution that produces a gap instead of characters.
@@ -60,27 +60,15 @@ class TranscriptionDraft:
     transcriber_id: str
     text: str
 
-    # disagreement_spans/_derive_adjudication run difflib.SequenceMatcher with
-    # autojunk=False (deliberately: autojunk's heuristic would let it silently
-    # ignore a heavily-repeated character run, exactly the kind of scribal
-    # abbreviation or damage pattern this instrument must not treat as noise).
-    # That is also what removes SequenceMatcher's own defence against its
-    # quadratic worst case: two 40,000-character drafts built from a repetitive
-    # pattern measured at over 100 seconds in one comparison. A single act's
-    # diplomatic transcription -- an entry, or at most a short letter or essay
-    # (GLOSSARY's "act") -- is never near this length; a draft this long is a
-    # mis-pasted file, not a transcription, and is refused rather than hung on.
-    MAX_TEXT_LENGTH = 20_000
-
     def __post_init__(self) -> None:
         if not isinstance(self.transcriber_id, str) or not self.transcriber_id.strip():
             raise AdjudicationRefusal("a transcription draft must name its transcriber")
         if not isinstance(self.text, str):
             raise AdjudicationRefusal("a transcription draft must carry Unicode text")
-        if len(self.text) > self.MAX_TEXT_LENGTH:
+        if len(self.text) > MAX_TEXT_LENGTH:
             raise AdjudicationRefusal(
                 f"a transcription draft of {len(self.text)} characters exceeds the "
-                f"{self.MAX_TEXT_LENGTH}-character bound for one act; this is not a "
+                f"{MAX_TEXT_LENGTH}-character bound for one act; this is not a "
                 "single act's diplomatic transcription"
             )
 
@@ -101,19 +89,18 @@ def _opcodes(first: str, second: str) -> list[tuple[str, int, int, int, int]]:
 
     ``autojunk=False`` is deliberate: its heuristic would silently treat a
     heavily-repeated character run as noise, exactly the kind of scribal
-    abbreviation or damage pattern this instrument must not discount -- and is
+    abbreviation or damage pattern this instrument must not discount -- and it is
     also what removes ``SequenceMatcher``'s own defence against its quadratic
-    worst case (see ``TranscriptionDraft.MAX_TEXT_LENGTH``).  The bound is
-    enforced here, not only at ``TranscriptionDraft`` construction, so every
-    caller of this function is covered, including ``disagreement_spans``
-    called directly on bare strings.
+    worst case.  ``MAX_TEXT_LENGTH`` is enforced here rather than only at
+    ``TranscriptionDraft`` construction, because ``disagreement_spans`` is what
+    the protocol tells an adjudicator to call, on bare strings.
     """
 
     for text in (first, second):
-        if len(text) > TranscriptionDraft.MAX_TEXT_LENGTH:
+        if len(text) > MAX_TEXT_LENGTH:
             raise AdjudicationRefusal(
                 f"a text of {len(text)} characters exceeds the "
-                f"{TranscriptionDraft.MAX_TEXT_LENGTH}-character bound for one act's "
+                f"{MAX_TEXT_LENGTH}-character bound for one act's "
                 "diplomatic transcription"
             )
     return SequenceMatcher(None, first, second, autojunk=False).get_opcodes()
