@@ -1802,7 +1802,10 @@ def test_the_preflight_report_says_which_plan_it_chose_and_why() -> None:
 
     assert matched.card_profile == "RTX 6000 Ada"
     assert "prebuilt card profile" in matched.plan_source
+    assert matched.card_profile_note
+    assert matched.to_record()["placement_card_profile_note"] == matched.card_profile_note
     assert unknown.card_profile is None
+    assert unknown.card_profile_note is None
     assert unknown.plan_source == "computed from measured VRAM"
 
 

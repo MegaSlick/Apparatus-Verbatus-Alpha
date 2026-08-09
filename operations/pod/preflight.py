@@ -545,6 +545,7 @@ class PreflightReport:
     issues: tuple[PreflightIssue, ...]
     assembly_proven: bool
     card_profile: str | None = None
+    card_profile_note: str | None = None
     plan_source: str = "computed from measured VRAM"
 
     def to_record(self) -> dict[str, object]:
@@ -562,6 +563,7 @@ class PreflightReport:
             "placement_tier": self.tier,
             # Spec 04: "the preflight report says which plan it chose and why."
             "placement_card_profile": self.card_profile,
+            "placement_card_profile_note": self.card_profile_note,
             "placement_plan_source": self.plan_source,
             "placements": [
                 {
@@ -703,6 +705,7 @@ class PreflightRunner:
             issues=tuple(issues),
             assembly_proven=assembly_proven,
             card_profile=matched.name if matched is not None else None,
+            card_profile_note=matched.note if matched is not None and matched.note else None,
             plan_source=plan_source,
         )
 
