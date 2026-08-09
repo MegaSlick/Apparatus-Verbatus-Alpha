@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -25,12 +26,12 @@ class FakeTarget:
             return None
         return RemoteObject(hashlib.sha256(value).hexdigest(), len(value))
 
-    def put_file(self, key: str, source: Path) -> None:
+    def put_file(self, key: str, source: BinaryIO) -> None:
         self.puts.append(key)
         if key == self.fail_key:
             self.fail_key = None
             raise RuntimeError("injected partial transfer")
-        self.objects[key] = source.read_bytes()
+        self.objects[key] = source.read()
 
 
 def manifest(source: Path, destination: Path) -> None:
@@ -115,6 +116,25 @@ def test_resume_with_no_submission_manifest_yet_is_a_vacuous_success(tmp_path: P
     assert report.completed_keys == ()
     assert report.skipped_keys == ()
     assert target.puts == []
+
+
+def test_open_verified_regular_file_refuses_a_symlink_leaf_directly(tmp_path: Path) -> None:
+    """The final O_NOFOLLOW open, not only `_under`'s pre-check, refuses a symlink.
+
+    `_under` only sees the path as it is at the moment it walks it; this is
+    the guard that still holds if the leaf is swapped for a symlink in the
+    window between that check and the read that follows it.
+    """
+
+    from .transfer import _open_verified_regular_file
+
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"should never be read as the source")
+    leaf = tmp_path / "page.bin"
+    leaf.symlink_to(outside)
+
+    with pytest.raises(TransferFailure, match="not a regular file"):
+        _open_verified_regular_file(leaf, relative="page.bin")
 
 
 def test_submission_path_cannot_traverse_a_source_symlink(tmp_path: Path) -> None:
