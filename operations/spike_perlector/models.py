@@ -232,10 +232,8 @@ class ResolvedIdentity:
             raise MeasurementRefusal("artifact_digest must be a lowercase SHA-256")
         if not isinstance(self.delivery, DeliveryMode):
             raise MeasurementRefusal("delivery must be a DeliveryMode")
-        if self.delivery is DeliveryMode.EXTERNAL:
-            _require_nonempty(self.provider or "", "provider for an external candidate")
-        if self.delivery is DeliveryMode.LOCAL and self.provider is not None:
-            _require_nonempty(self.provider, "provider")
+        if self.delivery is DeliveryMode.EXTERNAL or self.provider is not None:
+            _require_nonempty(self.provider or "", "provider")
 
     def private_record(self) -> dict[str, object]:
         return {
@@ -605,6 +603,8 @@ class Dossier:
 
     def __post_init__(self) -> None:
         _require_nonempty(self.opaque_act_id, "dossier opaque_act_id")
+        if not isinstance(self.condition, Condition):
+            raise MatrixRefusal("dossier condition must be a Condition")
         if self.condition in (Condition.LECTIO_NUDA, Condition.WITNESS_PRIMED):
             if self.image is None:
                 raise MatrixRefusal(f"{self.condition.value} requires an image")
@@ -794,9 +794,19 @@ class Perlectio:
             raise MeasurementRefusal(
                 "Perlectio must retain dossier, prompt, and delivery SHA-256 values"
             )
-        if self.condition is Condition.IMAGE_ABSENT_CONTROL and self.image_present:
+        if self.condition in (Condition.LECTIO_NUDA, Condition.WITNESS_PRIMED):
+            if not self.image_present:
+                raise MeasurementRefusal(
+                    f"{self.condition.value} Perlectio claims no image was present"
+                )
+        elif self.image_present:
             raise MeasurementRefusal("image-absent Perlectio claims an image was present")
-        if self.condition is Condition.LECTIO_NUDA and self.testimonia_count:
-            raise MeasurementRefusal("Lectio nuda Perlectio claims it saw Testimonia")
+        if self.condition is Condition.LECTIO_NUDA:
+            if self.testimonia_count:
+                raise MeasurementRefusal("Lectio nuda Perlectio claims it saw Testimonia")
+        elif not self.testimonia_count:
+            raise MeasurementRefusal(
+                f"{self.condition.value} Perlectio claims it saw no Testimonia"
+            )
         for field, value in (("elapsed_ms", self.elapsed_ms), ("cost_usd", self.cost_usd)):
             _require_finite_nonnegative_or_none(value, field, "Perlectio")

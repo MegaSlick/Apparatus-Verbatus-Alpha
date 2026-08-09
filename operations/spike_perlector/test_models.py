@@ -1,7 +1,7 @@
 import pytest
 
 import operations.spike_perlector.models as models
-from operations.spike_perlector.errors import MeasurementRefusal
+from operations.spike_perlector.errors import MatrixRefusal, MeasurementRefusal
 from operations.spike_perlector.models import (
     CandidateResponse,
     Condition,
@@ -12,7 +12,7 @@ from operations.spike_perlector.models import (
     Perlectio,
     ResolvedIdentity,
 )
-from operations.spike_perlector.testkit import digest, identity
+from operations.spike_perlector.testkit import digest, evaluation_act, identity
 
 # Referenced as models.Testimonium at each call site rather than imported by its
 # bare name: pytest's default collection treats any module-level name starting
@@ -105,6 +105,58 @@ def test_ground_truth_refuses_text_over_the_one_act_bound():
             text=oversized,
             adjudication_digest=digest("adjudication"),
             reference_revision="rev-1",
+        )
+
+
+def test_dossier_refuses_a_condition_that_is_not_a_condition():
+    """Condition is a StrEnum, so a plain matching string passes an `in` check
+
+    silently; only isinstance catches it.
+    """
+
+    act = evaluation_act()
+    with pytest.raises(MatrixRefusal, match="Condition"):
+        models.Dossier("lectio_nuda", "lectio_nuda", act.image, ())
+
+
+@pytest.mark.parametrize("condition", [Condition.LECTIO_NUDA, Condition.WITNESS_PRIMED])
+def test_perlectio_refuses_a_reading_condition_that_claims_no_image(condition):
+    resolved = identity("candidate", 1)
+    with pytest.raises(MeasurementRefusal, match="claims no image was present"):
+        Perlectio(
+            identity=resolved,
+            opaque_act_id="act-1",
+            condition=condition,
+            status=OutputStatus.COMPLETE,
+            text="a reading",
+            dossier_sha256=digest("dossier"),
+            prompt_format_sha256=digest("prompt"),
+            delivery_sha256=digest("delivery"),
+            image_present=False,
+            testimonia_count=1,
+            dissent=DissentSummary(0, 0, 0),
+            elapsed_ms=None,
+            cost_usd=None,
+        )
+
+
+def test_perlectio_refuses_a_witness_primed_cell_that_claims_no_testimonia():
+    resolved = identity("candidate", 1)
+    with pytest.raises(MeasurementRefusal, match="claims it saw no Testimonia"):
+        Perlectio(
+            identity=resolved,
+            opaque_act_id="act-1",
+            condition=Condition.WITNESS_PRIMED,
+            status=OutputStatus.COMPLETE,
+            text="a reading",
+            dossier_sha256=digest("dossier"),
+            prompt_format_sha256=digest("prompt"),
+            delivery_sha256=digest("delivery"),
+            image_present=True,
+            testimonia_count=0,
+            dissent=DissentSummary(0, 0, 0),
+            elapsed_ms=None,
+            cost_usd=None,
         )
 
 
