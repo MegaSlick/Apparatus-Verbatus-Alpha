@@ -61,9 +61,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         preview = runtime.preview_create(request)
     else:
         preview = runtime.preview_adopt(args.pod_id, expected=request)
-    # The operator sees the precise current estimate and all checked ceilings
-    # before the terminal asks for the exact phrase. A non-green preview never
-    # reaches the confirmation prompt or a paid provider verb.
+    # The order is the gate: nobody can type the phrase without having been
+    # shown the price and ceilings it names.
     print(json.dumps(_record(preview), sort_keys=True, indent=2), flush=True)
     if (
         preview.state is not LaunchState.PREVIEW

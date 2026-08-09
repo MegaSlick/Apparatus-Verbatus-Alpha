@@ -249,11 +249,6 @@ class PodRuntime:
                 owner_token=owner_token,
                 preview=preview_result.preview,
             )
-        # The estimate authorised the launch; the pod that arrived is what bills.
-        # A stale or wrong price sheet must not be able to put a pod above the
-        # ceiling past this point, so the provider-observed undiscounted rate is
-        # re-assessed here and a pod that fails is closed immediately rather
-        # than left running.
         actual = self._reassess_actual_price(
             action="create",
             record=record,
@@ -313,7 +308,7 @@ class PodRuntime:
         expected: PodCreateRequest,
         confirmation: str | None,
     ) -> LaunchResult:
-        """Adopt no billing pod around the gate: it shares every create check."""
+        """No pod bills its way around the gate: adoption shares every create check."""
 
         preview_result = self.preview_adopt(pod_id, expected=expected)
         if preview_result.state is not LaunchState.PREVIEW:

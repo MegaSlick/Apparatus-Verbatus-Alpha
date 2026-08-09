@@ -148,14 +148,12 @@ class LaptopSupervisor:
         if observed >= lease.hard_deadline:
             return self._close(lease, ControllerState.LIFETIME_EXPIRED, "hard lifetime expired")
         if lease.controller_record is None:
-            # A launch binds the pod, arms both controllers, and only then writes
-            # the receipt, so a lease whose owner is still heartbeating may
-            # legitimately be part-way through that sequence — and the supervisor
-            # doing the looking is often the one the launch just started. Closing
-            # on the absent receipt alone kills the pod it was started to guard.
-            # Nothing keeps an unarmed pod alive by waiting: this branch never
-            # refreshes the heartbeat, so an abandoned launch goes stale and is
-            # closed below, and the pod-side dead-man still holds the outer bound.
+            # A launch binds the pod, arms both controllers, then writes the
+            # receipt — and the supervisor reading this is usually the one that
+            # launch just started, so closing on the absent receipt alone kills
+            # the pod it was started to guard. Waiting cannot leave an unarmed
+            # pod running: this branch never refreshes the heartbeat, so an
+            # abandoned launch goes stale and is closed below.
             if not stale:
                 return ControllerResult(
                     ControllerState.CONTROLLER_UNARMED,

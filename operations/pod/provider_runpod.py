@@ -406,8 +406,6 @@ class RunPodProvider:
             window_start_at=started,
         )
 
-    # -- internals ---------------------------------------------------------
-
     def _pod_rows(self) -> list[dict[str, object]]:
         # Recovery needs the same effective runtime facts as a create/adopt
         # response.  RunPod omits machine and network-volume objects from list
@@ -602,10 +600,10 @@ def timer_context_from_environment(environment: Mapping[str, str] | None = None)
         volume_price=lambda volume: volume_rate,
     )
     lease = PodLease(
-        # The launch token is also the durable local lease identity.  Rebuilding
-        # that identity from the provider pod id creates a second PodLease for
-        # one paid pod, so controller receipts no longer name the lease that was
-        # armed before create.
+        # The launch token is also the durable local lease identity. Deriving a
+        # lease id from the provider pod id instead would make a second PodLease
+        # for one paid pod, and the controller receipts armed before create name
+        # the first one.
         lease_id=launch_identity,
         launch_token=launch_identity,
         provider_name="runpod",

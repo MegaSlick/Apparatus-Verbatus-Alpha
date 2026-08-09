@@ -61,10 +61,9 @@ class TransferReport:
         return {
             "schema": TRANSFER_SCHEMA,
             "state": "complete",
-            # An empty receipt has two very different causes — a manifest with
-            # nothing left to send, and a manifest this pod never found. The
-            # second is a misconfigured path, and without this field a green
-            # bootstrap journal cannot tell an operator which one happened.
+            # An empty receipt has two causes and only one of them is fine: a
+            # manifest with nothing left to send, and a manifest path this pod
+            # never found. A green bootstrap journal has to say which.
             "submission_manifest": "present" if self.submission_manifest_present else "absent",
             "completed_keys": list(self.completed_keys),
             "skipped_keys": list(self.skipped_keys),
@@ -112,9 +111,6 @@ class ChecksummedTransfer:
             source = _under(self.source_root, relative)
             key = f"{self.prefix}/{relative}"
             sent = False
-            # Open once, by name, with the leaf pinned to a regular file; every
-            # later read (hash, upload) happens against this one descriptor so
-            # nothing between the check and the use can swap what gets read.
             with _open_verified_regular_file(source, relative=relative) as handle:
                 size = os.fstat(handle.fileno()).st_size
                 if size != expected_size or _sha256(handle) != expected_sha:
@@ -145,9 +141,8 @@ class ChecksummedTransfer:
                 completed.add(key)
                 journal["completed"] = sorted(completed)
                 self._write(journal)
-            # What this run actually put on the wire, not what the journal says:
-            # a row the journal already held but the target no longer had is
-            # re-sent, and reporting that as skipped would hide the re-send.
+            # What this run put on the wire, not what the journal remembers: a
+            # row the journal holds but the target has lost is sent again.
             (uploaded if sent else skipped).append(key)
         return TransferReport(tuple(uploaded), tuple(skipped))
 
@@ -190,12 +185,11 @@ def _prefix(value: str) -> str:
 
 
 def _under(root: Path, relative: object) -> Path:
-    # Spec 03's own manifest check is non-empty, not absolute, no "..", and it
-    # stops there — so "a\x00b" reaches here (and made `os.lstat` raise a bare
-    # ValueError, the one unsafe path that did not become a named refusal), and
-    # so do "./x" and "a//b", which resolve to a file whose object key would
-    # still carry the un-normalized spelling. Every component is checked here
-    # because this is the last look before the open.
+    # Spec 03's manifest check is non-empty, not absolute, no dot-dot, and it
+    # stops there: an embedded NUL reaches os.lstat as a bare ValueError rather
+    # than a named refusal, and "./x" and "a//b" resolve to a real file whose
+    # object key keeps the un-normalized spelling. This is the last look before
+    # the open, so every component is checked.
     if (
         not isinstance(relative, str)
         or not relative

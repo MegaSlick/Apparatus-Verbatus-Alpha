@@ -39,9 +39,9 @@ class GpuProfile:
     disk_gib: Decimal
     dtype: str
     discovery_detail: str = ""
-    """Why measurement failed, when it did.  A red report owes an operator "what
-    happened" as well as "what to do next" (spec 04, preflight 5), and the probe
-    is the only place that ever sees the driver's own error text."""
+    """Why measurement failed, when it did.  The probe is the only place that
+    sees the driver's own error text, and spec 04 asks a red report for "what
+    happened" as well as "what to do next"."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "vram_gib", as_decimal(self.vram_gib, "VRAM GiB"))

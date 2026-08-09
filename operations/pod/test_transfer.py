@@ -189,9 +189,9 @@ def test_submission_path_cannot_traverse_a_source_symlink(tmp_path: Path) -> Non
 def test_every_unsafe_declared_path_becomes_a_named_refusal(declared: str) -> None:
     """Spec 03 stops at non-empty, not-absolute, no dot-dot, so these all arrive here.
 
-    An embedded NUL used to reach `os.lstat` and raise a bare ValueError, and
-    the un-normalized spellings resolved to a file whose object key would still
-    have carried the spelling rather than the path that was opened.
+    Left to `os.lstat`, the NUL is a bare ValueError rather than a named
+    refusal, and the un-normalized spellings resolve to a real file whose object
+    key still carries the spelling rather than the path that was opened.
     """
 
     from .transfer import _under

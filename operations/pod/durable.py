@@ -1,11 +1,10 @@
 """One durable write for every record this package keeps on disk.
 
 The lease, the bootstrap journal, the transfer journal and the pod-side report
-are all evidence a restarting controller reads back before it decides what is
-still billing, so all four need the same three properties: the reader never sees
-a half-written file, the bytes survive a power cut rather than only a process
-exit, and the file is not world-readable. They had four copies of the code that
-provides them.
+are each read back by a restarting controller deciding what is still billing, so
+each needs the same three properties: no reader sees a half-written file, the
+bytes survive a power cut and not merely a process exit, and the file is not
+world-readable.
 
 This is not `common/contracts/canonical.py`'s serialization and does not claim to
 be: these are local operational records, not pipeline artifacts.
