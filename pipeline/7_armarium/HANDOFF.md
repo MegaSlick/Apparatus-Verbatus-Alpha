@@ -7,6 +7,13 @@ output file. The `export` record's `bundle.reference` is a digest-checked input
 reference to the content-addressed Armarium ZIP blob. That ZIP is the product
 which leaves the pipeline; the internal artifact is only its accounting record.
 
+`bundle.py` is how it leaves. It reads the sealed blob, checks it against the digest
+the `export` artifact recorded, verifies it from the outside exactly as a recipient
+with no run tree would, and publishes `armarium-export.zip` plus its verified
+extraction to an operator-chosen destination — all of it or none of it. An existing
+destination is refused rather than merged into. It writes no text and projects
+nothing: every byte it publishes came out of the run tree already sealed.
+
 ## Export contract
 
 The export payload contains the aggregate result, the expected-act count, delivered

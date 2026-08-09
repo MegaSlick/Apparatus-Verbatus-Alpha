@@ -15,6 +15,10 @@ text bundle, SQLite/FTS database, JSONL hand-off, review items, and the separate
 salvage tier. The annotation layer remains only a boundary contract pending
 Tyrel's ARCHITECTURE approval.
 
+`run.py` seals the bundle into the run tree; `bundle.py` publishes it to a
+destination outside, verifying it again on the way out. Nothing else takes a
+product out of this stage.
+
 Read [HANDOFF.md](HANDOFF.md) for what this stage writes and where. That document
 is the interface — no other stage reads this one's code.
 
