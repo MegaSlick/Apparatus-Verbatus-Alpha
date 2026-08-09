@@ -50,9 +50,8 @@ class DeliveryMode(StrEnum):
 class MaterialClass(StrEnum):
     """The provenance class of image bytes at the execution boundary.
 
-    ``SYNTHETIC`` is deliberately an explicit fake-only class.  It replaces the
-    former caller-controlled ``material_is_real`` boolean, which could label a
-    register image as a fake and silently bypass the disclosure gate.
+    A class rather than a real/fake boolean, because the sealed manifest binds a
+    class and cannot bind a caller's opinion of its own bytes.
     """
 
     SYNTHETIC = "synthetic"
@@ -82,13 +81,12 @@ MAX_COMBINING_RUN = 30
 def require_measurable_text(value: str, field: str) -> None:
     """Refuse text this instrument can hold but cannot hash or segment.
 
-    Both failure modes arrive from an ordinary vendor JSON body, because
-    ``json.loads`` decodes ``"\\ud800"`` into a perfectly valid ``str`` and a
-    model may emit any number of combining marks. Refused here, at the boundary
-    where a response or a Testimonium is built, so an adapter can record the
-    predeclared ``malformed`` state for that cell; discovered later, inside a
-    digest or a score, it takes the whole matrix down with an error naming
-    neither the act nor the reason.
+    Both arrive from an ordinary vendor JSON body: ``json.loads`` decodes
+    ``"\\ud800"`` into a perfectly valid ``str``, and a model may emit any number
+    of combining marks.  Refused at the boundary where a response is built, so an
+    adapter can record the predeclared ``malformed`` state for that cell;
+    discovered later, inside a digest or a score, either one takes the whole
+    matrix down with an error naming neither the act nor the reason.
     """
 
     try:
@@ -129,11 +127,9 @@ MAX_TEXT_LENGTH = 20_000
 def _require_status_conditioned_text(status: OutputStatus, text: str | None, label: str) -> None:
     """Text is present and non-blank exactly when status is complete or truncated.
 
-    Every other status -- no_readable_text, refused, missing, unavailable, and
-    malformed alike -- is a non-answer under the response-state table (README
-    section 7) and must carry no text at all. Without this, a status the scorer
-    treats as an empty hypothesis could still carry stray text into a dossier
-    shown to a live candidate, or into a private record.
+    Every other status is a non-answer under the response-state table (README
+    section 7).  Without this, a status the scorer treats as an empty hypothesis
+    could still carry stray text into a dossier shown to a live candidate.
     """
 
     if status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
@@ -162,9 +158,8 @@ def _require_finite_nonnegative_or_none(value: float | None, field: str, label: 
 def _text_lineage_sha256s(text: str) -> frozenset[str]:
     """Hash raw text and every closed evaluation-comparison representation.
 
-    Later code must carry a provenance/act binding for arbitrary transformations.
-    This closes the concrete raw and predeclared-normalization paths this framework
-    itself provides, including a caller that tries to tune on comparison text.
+    Binding the raw form alone would leave a caller free to tune on the
+    normalized text this framework itself hands them.
     """
 
     return frozenset(
@@ -187,12 +182,10 @@ class GapSpan:
     would make a stored offset drift silently.
 
     ``start == end`` is a legitimate zero-width gap: unread ink at a single point
-    with no characters of its own.  That is the structure
-    ``TYREL_RULINGS_2026-08-05.md`` ruling 3 asks for -- "a gap whose start equals
-    its end cannot carry characters whatever evidence hangs off it" -- and it is
-    what keeps "we could not read it" from decaying into "there was nothing to
-    read."  A whole crop of unread ink is not a gap: it is
-    ``ReferenceStatus.UNRESOLVED_GAP``, and it never becomes a checked reference.
+    with no characters of its own, which is what keeps "we could not read it"
+    from decaying into "there was nothing to read".  A whole crop of unread ink
+    is not a gap: it is ``ReferenceStatus.UNRESOLVED_GAP``, and it never becomes
+    a checked reference.
     """
 
     start: int
@@ -230,11 +223,11 @@ def _validated_gaps(text: str, gaps: tuple[GapSpan, ...]) -> None:
 def excise_gaps(text: str, gaps: tuple[GapSpan, ...]) -> str:
     """The reference text CER/WER actually compares against, with unread ink removed.
 
-    Unread reference characters do not enter the denominator. Named limitation,
-    carried over from lane A, which found it: this is a text-only exclusion, not a
-    spatial alignment. Candidate characters cannot be located at the gap and may
-    align as edits elsewhere, so the scorer cannot determine whether they were
-    produced *inside* it. That is a harder problem this instrument does not solve.
+    Unread reference characters do not enter the denominator.  Named limitation:
+    this is a text-only exclusion, not a spatial alignment.  Candidate characters
+    cannot be located at the gap and may align as edits elsewhere, so the scorer
+    cannot determine whether they were produced *inside* it.  That is a harder
+    problem this instrument does not solve.
     """
 
     if not gaps:
@@ -293,11 +286,10 @@ class ResolvedIdentity:
 
 @dataclass(frozen=True, slots=True)
 class ImageEvidence:
-    """The exact image payload shown to a fake candidate, retained only in memory.
+    """The exact image payload shown to a candidate, retained only in memory.
 
-    The payload may hold a synthetic byte string in tests.  A real adapter would receive
-    the approved private image bytes through this field; neither the runner nor its
-    public projector writes those bytes to disk.
+    Neither the runner nor its public projector writes these bytes to disk; only
+    the digests travel into a dossier or a record.
     """
 
     opaque_page_id: str
@@ -330,13 +322,12 @@ class ImageEvidence:
 class GroundTruth:
     """An independently adjudicated reference, with raw text kept private.
 
-    A checked reference may carry gaps.  ``TYREL_RULINGS_2026-08-05.md`` ruling 3:
-    "many of our records are damaged", so an act of three readable words and fifty
-    unread spans is "a successful partial reading of three words plus honest gaps
-    -- not a failure".  Without ``gaps`` the only way to record that act is
-    ``UNRESOLVED_GAP`` for the whole crop, which throws away the three words and
-    the fifty positions alike.  The gap machinery is grafted from lane A, which
-    built it; lane B modelled only whole-act unread ink.
+    A checked reference may carry gaps, and that is the common case rather than
+    the edge one.  ``TYREL_RULINGS_2026-08-05.md`` ruling 3: "many of our records
+    are damaged", so an act of three readable words and fifty unread spans is "a
+    successful partial reading of three words plus honest gaps -- not a failure".
+    Without ``gaps`` the only way to record that act is ``UNRESOLVED_GAP`` for the
+    whole crop, which throws away the three words and the fifty positions alike.
     """
 
     text: str | None
@@ -382,12 +373,10 @@ class GroundTruth:
             raise MeasurementRefusal(
                 "ground truth carries either no fixture drafts or exactly two independent draft digests"
             )
-        # These digests are of one transcriber's *draft record* -- their identity
-        # plus their text -- never of the bare text.  `adjudication.py` builds them
-        # that way, and the difference matters: two people transcribing an easy act
-        # will produce byte-identical text, which is the good case and must not be
-        # refused here, while the same draft counted twice must be.  Hashing bare
-        # text cannot tell those two apart; hashing the record can.
+        # Sound only because these are digests of a draft *record* -- transcriber
+        # plus text -- as `adjudication.py` builds them. Two people transcribing an
+        # easy act produce byte-identical text, which is the good case; hashing
+        # bare text could not tell it from one draft counted twice.
         if len(set(self.independent_draft_sha256s)) != len(self.independent_draft_sha256s):
             raise MeasurementRefusal(
                 "ground-truth independent draft digests must differ; two identical draft "
@@ -819,9 +808,8 @@ class Perlectio:
 
     def __post_init__(self) -> None:
         _require_nonempty(self.opaque_act_id, "Perlectio opaque_act_id")
-        # public_slot travels from here into the public aggregation, so the object
-        # it comes from has to be a checked identity rather than anything that
-        # answers to the name.
+        # public_slot travels from here into the public aggregation, so this has
+        # to be a checked identity rather than anything that answers to the name.
         if not isinstance(self.identity, ResolvedIdentity):
             raise MeasurementRefusal("Perlectio must carry a checked ResolvedIdentity")
         if not isinstance(self.condition, Condition):

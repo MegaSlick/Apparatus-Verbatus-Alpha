@@ -25,10 +25,8 @@ def write_public_finding(
 
     if not isinstance(history_directory, Path):
         raise PublicSafetyRefusal("history_directory must be a Path")
-    # datetime is a subclass of date; accepting one would embed a time-of-day into
-    # the "date-only filename" this docstring promises and let two calls on the
-    # same real day each pick a distinct microsecond-precision name, defeating the
-    # write-once duplicate guard below.
+    # datetime subclasses date, so two calls on the same real day would pick
+    # distinct microsecond-precision names and slip past the write-once guard.
     if not isinstance(finding_date, date) or isinstance(finding_date, datetime):
         raise PublicSafetyRefusal("finding_date must be a date, not a datetime")
     finding = project_public_finding(run)
@@ -36,9 +34,8 @@ def write_public_finding(
         json.dumps(finding, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         + b"\n"
     )
-    # Built from the integer fields rather than finding_date.isoformat(): a date
-    # subclass could override isoformat() to return an arbitrary string (e.g. one
-    # containing "/" or "..") and write outside history_directory.
+    # Integer fields rather than isoformat(): a date subclass can override that
+    # to return "../.." and steer the write outside history_directory.
     target = history_directory / (
         f"{finding_date.year:04d}-{finding_date.month:02d}-{finding_date.day:02d}"
         "_reading_claim_metrics.json"

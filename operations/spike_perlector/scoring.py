@@ -80,11 +80,10 @@ def _edit_counts(reference: Sequence[str], hypothesis: Sequence[str]) -> EditCou
     distance = Levenshtein.distance(reference, hypothesis, weights=(1, 1, 1), processor=None)
     if errors != distance:
         raise MeasurementRefusal("RapidFuzz edit script and distance disagree")
-    # matches is derived from which reference positions the edit script actually
-    # touches, not from the substitution/deletion tag counts above: if editops
-    # ever named the same reference position twice, those counts would overcount
-    # it, and this is what would catch that -- not UnitScore.__post_init__'s own
-    # arithmetic check, which holds by construction however matches is computed.
+    # From the reference positions the edit script touches, not from the tag
+    # counts above: if editops ever named one position twice the counts would
+    # overcount it, and this is the only check that would notice --
+    # UnitScore's arithmetic holds by construction however matches is computed.
     touched_reference_positions = {
         operation.src_pos for operation in operations if operation.tag in ("replace", "delete")
     }

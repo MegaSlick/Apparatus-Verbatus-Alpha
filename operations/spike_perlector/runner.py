@@ -289,10 +289,9 @@ class MeasurementRun:
                 if cell.perlectio.text != cell.raw_response_text:
                     raise MatrixRefusal("Perlectio text differs from its retained raw response")
             elif cell.raw_response_text is not None:
-                # Perlectio.text is already None here by its own __post_init__, so
-                # comparing it to raw_response_text (gated on this same status)
-                # would always pass -- checking raw_response_text itself is what
-                # actually catches a non-reading cell that retains stray text.
+                # Checked on raw_response_text, not against Perlectio.text: that is
+                # already None for a non-reading status, so comparing the two here
+                # would pass whatever stray text the cell retained.
                 raise MatrixRefusal("a non-reading cell retains stray raw response text")
             response = CandidateResponse(
                 status=cell.perlectio.status,
@@ -552,16 +551,12 @@ def _dissent_for(
 ) -> DissentSummary:
     """Compare after a candidate text is fixed; no witness can influence that text.
 
-    A cell with no reading in it has no dissent. `pipeline/4_perlector/run.py`
-    already settles this shape for the real stage: an act the Perlector could not
-    read publishes `"dissent": []`, and only a published reading -- complete or
-    truncated, whatever text it managed -- is compared against the witnesses.
-
-    Recording a refused cell as having departed from every witness would be
-    literally true as a string comparison and exactly backwards as a measure.
-    Dissent is the parroting instrument; a candidate that refused every act would
-    otherwise score as maximally independent of its witnesses. The refusal is not
-    lost -- it is already counted in this cell's response state.
+    A cell with no reading in it has no dissent, which is the shape
+    `pipeline/4_perlector/run.py` already settles for the real stage. Recording a
+    refusal as departure from every witness would be true as a string comparison
+    and backwards as a measure: dissent is the parroting instrument, so a
+    candidate that refused every act would score as maximally independent. The
+    refusal is not lost -- it is counted in this cell's response state.
     """
 
     if not testimonia:
@@ -591,10 +586,9 @@ def _perlectio_for(
     delivery_sha256: str,
     profile: NormalizationProfile,
 ) -> Perlectio:
-    # Comparison happens only after the response is fixed. Lectio nuda still sees
-    # no Testimonia in its dossier, but its independent reading must remain
-    # comparable with the same witnesses or the nuda/primed dissent instrument is
-    # missing its baseline.
+    # Lectio nuda sees no Testimonia in its dossier, but its reading is still
+    # compared against them afterwards: without that, the nuda/primed dissent
+    # instrument has no baseline.
     dissent = _dissent_for(response, comparison_testimonia, profile)
     return Perlectio(
         identity=identity,
@@ -852,14 +846,9 @@ def run_declared_roster_matrix(
     )
     candidate_values = tuple(candidates)
     participants = tuple((candidate, candidate.identity) for candidate in candidate_values)
-    # dict equality below calls the *left* operand's __eq__ first -- comparing
-    # ``actual != expected`` would hand a caller-supplied identity's own __eq__
-    # first refusal on whether it "is" the sealed roster identity, which a
-    # forged object (never required to be a real ResolvedIdentity at all) could
-    # answer however it likes. Checked the same way gates.py checks an approval:
-    # every declared identity must actually be one before it is trusted to
-    # compare itself against the roster that gates the external-vendor delivery
-    # decision.
+    # Typed before it is compared, because the dict equality below calls the
+    # *left* operand's __eq__ first: a caller-supplied object gets first say on
+    # whether it "is" the sealed roster identity that gates external delivery.
     if any(not isinstance(identity, ResolvedIdentity) for _, identity in participants):
         raise MatrixRefusal(
             "every matrix participant must declare a checked ResolvedIdentity, not a stand-in"

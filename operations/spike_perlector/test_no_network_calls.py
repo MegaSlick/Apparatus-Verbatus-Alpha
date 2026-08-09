@@ -7,12 +7,9 @@ this directory refuses the named transport modules, and refuses
 `subprocess` too, because an import scan that stops at `httpx` is trivially
 defeated by shelling out to `curl`.
 
-Grafted from lane A (`origin/agent/roughin-05-measurement`), which built this
-proof and which lane B had no equivalent of. Two changes from lane A's version:
-`subprocess` is refused for the reason above, and the scan fails closed if it
-finds no files to scan -- a check that silently examined nothing would pass
-forever while proving nothing, which is the failure mode
-`pipeline/test_stage_import_boundaries.py::repository_python_files` already
+The scan fails closed if it finds no files to scan: a check that silently
+examined nothing would pass forever while proving nothing, which is the failure
+mode `pipeline/test_stage_import_boundaries.py::repository_python_files` already
 guards against for its own population.
 
 To see it work, add `import requests` to any file here: this test goes red.

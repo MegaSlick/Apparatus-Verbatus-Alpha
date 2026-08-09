@@ -118,12 +118,8 @@ def test_missing_but_proved_response_remains_a_scored_matrix_cell():
 
 
 def test_a_refused_cell_retaining_stray_raw_text_is_refused_on_replay():
-    """A non-reading cell's raw_response_text must actually be re-checked, not
-
-    just its already-self-consistent Perlectio.text (which is always None for
-    a non-reading status by Perlectio's own __post_init__, so comparing it to
-    itself could never catch anything).
-    """
+    """The replay must re-check raw_response_text, not the self-consistent
+    Perlectio.text, which is None for a non-reading status either way."""
 
     base = identity("base-private", 1)
     act = evaluation_act()

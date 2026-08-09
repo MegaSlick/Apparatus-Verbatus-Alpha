@@ -510,11 +510,10 @@ class RunAuthorization:
             raise DisclosureRefusal("run authorization must name a MaterialClass")
         approvals = MappingProxyType(dict(self.external_approvals or {}))
         object.__setattr__(self, "external_approvals", approvals)
-        # A caller-supplied stand-in object (an in-memory approver field, in README
-        # section 1's own words) must not be able to sit where a checked approval
-        # belongs. Every field here was already loaded and verified through its own
-        # content-addressed .load() classmethod before it reaches this constructor;
-        # this isinstance check is what actually enforces that rather than trusting it.
+        # Each field is supposed to have come through its own content-addressed
+        # .load(); these checks are what enforce that rather than trusting it. A
+        # duck-typed stand-in is "an in-memory approver field", in README section
+        # 1's own words, and is not authority.
         if self.data_gate_authority is not None and not isinstance(
             self.data_gate_authority, DataGateAuthority
         ):

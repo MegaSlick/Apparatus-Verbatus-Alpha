@@ -1,29 +1,18 @@
 """Turning two independent transcriptions into one checked reference.
 
-The protocol document's section 5 states the human procedure: two qualified
-people transcribe the Exemplar crop independently, a third adjudicates every
-disagreement against the crop, and unread ink is marked as a gap rather than
-guessed.  Lane B declared that procedure in prose and modelled only its digests;
-lane A built it.  This module is lane A's implementation, grafted and adapted to
-lane B's ``GroundTruth`` shape, because a procedure nothing executes is a
-promise, and the whole point of the double-keying method is that no disagreement
-is quietly dropped.
+The protocol document's section 5 states the human procedure; this module
+executes it, because a procedure nothing executes is a promise, and the point of
+double keying is that no disagreement is quietly dropped.  What makes it
+mechanical: ``disagreement_spans`` computes the disputed spans, and ``reconcile``
+demands exactly that set as the adjudicator's resolution keys.  Both drafts and
+every resolution stay on the record unedited beside the reconciled reading
+(GOVERNANCE 4).
 
-What makes it mechanical rather than a promise: ``disagreement_spans`` computes
-the disputed spans from the two drafts, and ``reconcile`` uses that same
-computation as the *required key set* for the adjudicator's resolutions.  A span
-left unresolved, or a resolution for a span that does not exist, refuses.  Both
-drafts are retained on the record unedited beside the reconciled reading --
-GOVERNANCE 4, evidence is never overwritten -- and so are the resolutions, so the
-adjudicator's decision at every disputed span survives alongside its outcome.
-
-The method itself is standard rather than invented here: pairing two independent
-annotators and resolving differences through a third, more experienced
-adjudicator is the consistently recommended shape across digital-humanities and
-OCR ground-truth work, and documents whose disagreement cannot be reconciled are
-excluded from the gold standard rather than guessed into it.  Lane A recorded
-that reading (2026-08-05) and this module keeps its conclusion:
-``reconcile`` refuses rather than producing a blank checked reference.
+The method is standard rather than invented here -- two independent annotators,
+differences resolved by a third and more experienced one, and material whose
+disagreement cannot be reconciled excluded from the gold standard rather than
+guessed into it, which is the consistently recommended shape across
+digital-humanities and OCR ground-truth work (read 2026-08-05).
 """
 
 from __future__ import annotations
@@ -56,11 +45,8 @@ empty span that looks like agreement on nothing --
 class TranscriptionDraft:
     """One person's independent diplomatic transcription of one crop.
 
-    The digest is of the *record* -- transcriber and text together -- not of the
-    bare text.  Two people transcribing an easy act will produce byte-identical
-    text, which is the good case; hashing bare text would make that
-    indistinguishable from one draft counted twice, and ``GroundTruth`` refuses
-    two equal draft digests.
+    The digest covers transcriber and text together, for the reason
+    ``GroundTruth`` refuses two equal draft digests.
     """
 
     transcriber_id: str
@@ -127,17 +113,14 @@ def _spans_from_opcodes(
 def disagreement_spans(first: str, second: str) -> tuple[tuple[int, int], ...]:
     """Every span where two drafts disagree, in the first draft's own offsets.
 
-    One ``(start, end)`` per non-"equal" opcode from ``_opcodes``, in order.
     Text present in the second draft but not the first is a zero-width span at
     the point in the first where it would have gone.
 
     ``SequenceMatcher`` is deterministic for a given pair of strings, which is
     what lets this double as the required key set for ``reconcile``: an
-    adjudicator can recompute exactly the keys that will be demanded of them
-    without running anything else -- ``_derive_adjudication`` calls this same
-    ``_opcodes``/``_spans_from_opcodes`` pair rather than reimplementing the
-    comparison, so that guarantee is enforced by sharing the one computation,
-    not by keeping two in step by hand.
+    adjudicator can recompute exactly the keys that will be demanded of them.
+    ``_derive_adjudication`` shares the one ``_opcodes`` computation rather than
+    reimplementing it, so the two cannot drift.
     """
 
     return _spans_from_opcodes(_opcodes(first, second))
@@ -292,13 +275,6 @@ def reconcile(
     reference_revision: str,
 ) -> AdjudicationRecord:
     """Reconcile two drafts into one adjudicated record, or refuse and say why.
-
-    Walks the first draft left to right using the same opcodes computation
-    ``disagreement_spans`` uses (the shared ``_opcodes`` helper, so the two can
-    never silently diverge).  An "equal" block is copied verbatim -- both
-    transcribers agree, so either source is correct.  A disputed block becomes
-    its resolution's literal text, or, for ``ILLEGIBLE``, a zero-width
-    ``GapSpan`` at that point and no characters at all.
 
     Refuses when a computed span has no resolution, when a resolution names a
     span that was not computed (most likely a stale input from a different pair
