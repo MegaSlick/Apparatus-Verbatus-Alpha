@@ -1,0 +1,768 @@
+"""Run the complete fake candidate matrix and derive evidence without a picker.
+
+There is intentionally no adapter implementation here.  Tests inject small fakes
+behind ``Candidate``.  A later real adapter must pass the same preflight and cannot
+make an external call before prompt, held-out, and disclosure checks have succeeded.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass
+from math import fsum
+from typing import Iterable
+
+from .errors import MatrixRefusal, PromptFidelityRefusal
+from .gates import RunAuthorization, require_authorized_delivery
+from .holdout import EvaluationManifest, PrivateSampleAccounting
+from .models import (
+    ALL_CONDITIONS,
+    Candidate,
+    CandidateResponse,
+    Condition,
+    DissentSummary,
+    DossierTestimonium,
+    EvaluationAct,
+    MaterialClass,
+    OutputStatus,
+    Perlectio,
+    ReferenceStatus,
+    ResolvedIdentity,
+    WitnessConfiguration,
+    dossier_for,
+)
+from .normalization import NormalizationProfile, normalize_text, require_canonical_profile
+from .prompting import PromptRegistry
+from .protocol import require_predeclared_protocol
+from .roster import CandidateRoster, validate_perlector_candidate
+from .scoring import ActScore, hypothesis_for_status, score_response
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateCell:
+    """One private, accounted-for candidate × act × condition observation."""
+
+    opaque_act_id: str
+    perlectio: Perlectio
+    raw_response_text: str | None
+    score: ActScore
+
+
+@dataclass(frozen=True, slots=True)
+class WitnessBaseline:
+    """A Testimonium scored directly against checked ink, never emitted as text."""
+
+    opaque_act_id: str
+    public_source_index: int
+    status: OutputStatus
+    score: ActScore
+
+
+@dataclass(frozen=True, slots=True)
+class AggregateMetrics:
+    """Micro-aggregate metrics: align per act, then sum operations/denominators."""
+
+    cell_count: int
+    cer_errors: int
+    cer_reference_units: int
+    cer_matches: int
+    wer_errors: int
+    wer_reference_units: int
+    wer_matches: int
+    complete_count: int
+    truncated_count: int
+    refused_count: int
+    missing_count: int
+    unavailable_count: int
+    malformed_count: int
+    dissent_compared: int
+    dissent_departed: int
+    dissent_unavailable: int
+    elapsed_observed_count: int
+    elapsed_total_ms: float
+    cost_observed_count: int
+    cost_total_usd: float
+
+    def __post_init__(self) -> None:
+        counts = (
+            self.cell_count,
+            self.cer_errors,
+            self.cer_reference_units,
+            self.cer_matches,
+            self.wer_errors,
+            self.wer_reference_units,
+            self.wer_matches,
+            self.complete_count,
+            self.truncated_count,
+            self.refused_count,
+            self.missing_count,
+            self.unavailable_count,
+            self.malformed_count,
+            self.dissent_compared,
+            self.dissent_departed,
+            self.dissent_unavailable,
+            self.elapsed_observed_count,
+            self.cost_observed_count,
+        )
+        if min(counts) < 0:
+            raise MatrixRefusal("aggregate counts may not be negative")
+        if self.cer_reference_units <= 0 or self.wer_reference_units <= 0:
+            raise MatrixRefusal("a metric aggregate has no checked denominator")
+        if self.dissent_departed > self.dissent_compared:
+            raise MatrixRefusal("aggregate dissent departures exceed comparisons")
+        if (
+            self.complete_count
+            + self.truncated_count
+            + self.refused_count
+            + self.missing_count
+            + self.unavailable_count
+            + self.malformed_count
+            != self.cell_count
+        ):
+            raise MatrixRefusal("response states do not account for all planned cells")
+
+    @property
+    def cer(self) -> float:
+        return self.cer_errors / self.cer_reference_units
+
+    @property
+    def wer(self) -> float:
+        return self.wer_errors / self.wer_reference_units
+
+    @property
+    def completeness(self) -> float:
+        return self.cer_matches / self.cer_reference_units
+
+    @property
+    def dissent_rate(self) -> float | None:
+        return self.dissent_departed / self.dissent_compared if self.dissent_compared else None
+
+    @property
+    def mean_elapsed_ms(self) -> float | None:
+        if not self.elapsed_observed_count:
+            return None
+        return self.elapsed_total_ms / self.elapsed_observed_count
+
+    @property
+    def mean_cost_usd(self) -> float | None:
+        if not self.cost_observed_count:
+            return None
+        return self.cost_total_usd / self.cost_observed_count
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionAggregate:
+    """Aggregate evidence for one non-identifying candidate slot and condition."""
+
+    public_slot: int
+    condition: Condition
+    metrics: AggregateMetrics
+
+
+@dataclass(frozen=True, slots=True)
+class WitnessAggregate:
+    """Aggregate direct baseline evidence for one non-identifying witness index."""
+
+    public_source_index: int
+    metrics: AggregateMetrics
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateConditionDeltas:
+    """Fixed within-candidate condition deltas; interpretation remains Tyrel's."""
+
+    public_slot: int
+    priming_cer_delta: float
+    priming_wer_delta: float
+    image_cer_delta: float
+    image_wer_delta: float
+
+
+@dataclass(frozen=True, slots=True)
+class PairwiseConditionDeltas:
+    """Fixed comparative values, not a ranking or automatic chair decision."""
+
+    compared_public_slot: int
+    base_public_slot: int
+    nuda_cer_advantage: float
+    primed_cer_advantage: float
+    image_absent_cer_advantage: float
+    witness_only_cer_advantage: float
+
+
+@dataclass(frozen=True, slots=True)
+class MeasurementRun:
+    """A complete private evidence matrix plus independently scored witness baselines."""
+
+    profile: NormalizationProfile
+    candidates: tuple[ResolvedIdentity, ...]
+    acts: tuple[EvaluationAct, ...]
+    cells: tuple[CandidateCell, ...]
+    witness_baselines: tuple[WitnessBaseline, ...]
+    material_class: MaterialClass
+    roster: CandidateRoster | None = None
+    witness_configuration: WitnessConfiguration | None = None
+    manifest: EvaluationManifest | None = None
+    sample_accounting: PrivateSampleAccounting | None = None
+
+    def __post_init__(self) -> None:
+        if not self.candidates or not self.acts:
+            raise MatrixRefusal("a measurement run requires candidates and acts")
+        if not isinstance(self.material_class, MaterialClass):
+            raise MatrixRefusal("measurement run needs an explicit material class")
+        if self.roster is not None:
+            self.roster.validate()
+            if self.candidates != self.roster.identities():
+                raise MatrixRefusal(
+                    "declared run identities differ from its sealed candidate roster"
+                )
+            if self.witness_configuration is None or self.manifest is None:
+                raise MatrixRefusal(
+                    "a declared roster run requires sealed witness configuration and manifest"
+                )
+            if self.sample_accounting is None:
+                raise MatrixRefusal("a declared roster run requires private sample accounting")
+        candidate_keys = [identity.candidate_key for identity in self.candidates]
+        slots = [identity.public_slot for identity in self.candidates]
+        act_ids = [act.opaque_act_id for act in self.acts]
+        if len(set(candidate_keys)) != len(candidate_keys) or len(set(slots)) != len(slots):
+            raise MatrixRefusal("a measurement run has duplicate candidate identities or slots")
+        if len(set(act_ids)) != len(act_ids):
+            raise MatrixRefusal("a measurement run has duplicate opaque act IDs")
+        witness_signature = tuple(
+            (item.private_source_id, item.public_source_index) for item in self.acts[0].testimonia
+        )
+        for act in self.acts:
+            actual_signature = tuple(
+                (item.private_source_id, item.public_source_index) for item in act.testimonia
+            )
+            if actual_signature != witness_signature:
+                raise MatrixRefusal(
+                    "every act must carry the same sealed Testimonium sources in the same order"
+                )
+            if self.witness_configuration is not None:
+                self.witness_configuration.require_act(act)
+        if self.manifest is not None:
+            if self.sample_accounting is None:
+                raise MatrixRefusal("a manifest-bound run requires private sample accounting")
+            self.sample_accounting.require_complete_for(self.manifest)
+            self.manifest.require_scoreable_acts(
+                (act.manifest_binding() for act in self.acts),
+                excluded_opaque_act_ids=self.sample_accounting.excluded_opaque_act_ids,
+            )
+        if self.witness_configuration is not None:
+            self.witness_configuration.require_distinct_from_candidates(self.candidates)
+        expected = {
+            (identity.candidate_key, act.opaque_act_id, condition)
+            for identity in self.candidates
+            for act in self.acts
+            for condition in ALL_CONDITIONS
+        }
+        actual = {
+            (
+                cell.perlectio.identity.candidate_key,
+                cell.opaque_act_id,
+                cell.perlectio.condition,
+            )
+            for cell in self.cells
+        }
+        if actual != expected or len(self.cells) != len(expected):
+            raise MatrixRefusal(
+                "candidate matrix does not account for every planned cell exactly once"
+            )
+        expected_baselines = {
+            (act.opaque_act_id, item.public_source_index)
+            for act in self.acts
+            for item in act.testimonia
+        }
+        actual_baselines = {
+            (baseline.opaque_act_id, baseline.public_source_index)
+            for baseline in self.witness_baselines
+        }
+        if actual_baselines != expected_baselines or len(self.witness_baselines) != len(
+            expected_baselines
+        ):
+            raise MatrixRefusal("every Testimonium baseline must be accounted for exactly once")
+
+    def require_publishable(self) -> None:
+        """Refuse fixture/partial evidence before the public redaction boundary."""
+
+        if self.material_class is MaterialClass.SYNTHETIC:
+            raise MatrixRefusal("a synthetic fixture run cannot become a public finding")
+        if self.roster is None or self.witness_configuration is None or self.manifest is None:
+            raise MatrixRefusal("only a sealed declared-roster run can become a public finding")
+        if self.sample_accounting is None:
+            raise MatrixRefusal("only a declared run with private sample accounting can publish")
+        self.roster.validate()
+
+    def condition_aggregates(self) -> tuple[ConditionAggregate, ...]:
+        groups: dict[tuple[int, Condition], list[CandidateCell]] = defaultdict(list)
+        for cell in self.cells:
+            groups[(cell.perlectio.identity.public_slot, cell.perlectio.condition)].append(cell)
+        return tuple(
+            ConditionAggregate(slot, condition, _aggregate_candidates(cells))
+            for (slot, condition), cells in sorted(
+                groups.items(), key=lambda item: (item[0][0], item[0][1])
+            )
+        )
+
+    def witness_aggregates(self) -> tuple[WitnessAggregate, ...]:
+        groups: dict[int, list[WitnessBaseline]] = defaultdict(list)
+        for baseline in self.witness_baselines:
+            groups[baseline.public_source_index].append(baseline)
+        return tuple(
+            WitnessAggregate(index, _aggregate_witnesses(rows))
+            for index, rows in sorted(groups.items())
+        )
+
+    def condition_deltas(self) -> tuple[CandidateConditionDeltas, ...]:
+        grouped = _condition_index(self.condition_aggregates())
+        values: list[CandidateConditionDeltas] = []
+        for slot in sorted({aggregate.public_slot for aggregate in self.condition_aggregates()}):
+            nuda = grouped[(slot, Condition.LECTIO_NUDA)].metrics
+            primed = grouped[(slot, Condition.WITNESS_PRIMED)].metrics
+            image_absent = grouped[(slot, Condition.IMAGE_ABSENT_CONTROL)].metrics
+            values.append(
+                CandidateConditionDeltas(
+                    public_slot=slot,
+                    priming_cer_delta=nuda.cer - primed.cer,
+                    priming_wer_delta=nuda.wer - primed.wer,
+                    image_cer_delta=image_absent.cer - primed.cer,
+                    image_wer_delta=image_absent.wer - primed.wer,
+                )
+            )
+        return tuple(values)
+
+    def compare_to_base(
+        self, *, compared_public_slot: int, base_public_slot: int
+    ) -> PairwiseConditionDeltas:
+        """Expose the predeclared checkpoint-vs-base evidence without making a decision."""
+
+        if compared_public_slot == base_public_slot:
+            raise MatrixRefusal("a comparative delta requires two different candidate slots")
+        grouped = _condition_index(self.condition_aggregates())
+        try:
+            nuda = (
+                grouped[(base_public_slot, Condition.LECTIO_NUDA)].metrics.cer
+                - grouped[(compared_public_slot, Condition.LECTIO_NUDA)].metrics.cer
+            )
+            primed = (
+                grouped[(base_public_slot, Condition.WITNESS_PRIMED)].metrics.cer
+                - grouped[(compared_public_slot, Condition.WITNESS_PRIMED)].metrics.cer
+            )
+            image_absent = (
+                grouped[(base_public_slot, Condition.IMAGE_ABSENT_CONTROL)].metrics.cer
+                - grouped[(compared_public_slot, Condition.IMAGE_ABSENT_CONTROL)].metrics.cer
+            )
+        except KeyError as error:
+            raise MatrixRefusal(
+                "comparison names a candidate slot not present in this full matrix"
+            ) from error
+        return PairwiseConditionDeltas(
+            compared_public_slot=compared_public_slot,
+            base_public_slot=base_public_slot,
+            nuda_cer_advantage=nuda,
+            primed_cer_advantage=primed,
+            image_absent_cer_advantage=image_absent,
+            witness_only_cer_advantage=primed - nuda,
+        )
+
+
+def _condition_index(
+    aggregates: Iterable[ConditionAggregate],
+) -> dict[tuple[int, Condition], ConditionAggregate]:
+    return {(aggregate.public_slot, aggregate.condition): aggregate for aggregate in aggregates}
+
+
+def _aggregate_candidates(cells: Iterable[CandidateCell]) -> AggregateMetrics:
+    rows = tuple(cells)
+    if not rows:
+        raise MatrixRefusal("cannot aggregate no candidate rows")
+    return _aggregate_rows(
+        (
+            (
+                cell.perlectio.status,
+                cell.score,
+                cell.perlectio.dissent,
+                cell.perlectio.elapsed_ms,
+                cell.perlectio.cost_usd,
+            )
+            for cell in rows
+        )
+    )
+
+
+def _aggregate_witnesses(rows: Iterable[WitnessBaseline]) -> AggregateMetrics:
+    values = tuple(rows)
+    if not values:
+        raise MatrixRefusal("cannot aggregate no Testimonium baselines")
+    # Testimonia do not have a dissent comparison or cost/elapsed observation in this
+    # instrument.  They remain direct accuracy baselines only.
+    return _aggregate_rows(
+        ((row.status, row.score, DissentSummary(0, 0, 0), None, None) for row in values)
+    )
+
+
+def _aggregate_rows(
+    rows: Iterable[tuple[OutputStatus, ActScore, DissentSummary, float | None, float | None]],
+) -> AggregateMetrics:
+    values = tuple(rows)
+    if not values:
+        raise MatrixRefusal("cannot aggregate no rows")
+    statuses = [value[0] for value in values]
+    scores = [value[1] for value in values]
+    dissents = [value[2] for value in values]
+    elapsed = [value[3] for value in values if value[3] is not None]
+    costs = [value[4] for value in values if value[4] is not None]
+    return AggregateMetrics(
+        cell_count=len(values),
+        cer_errors=sum(score.cer.edits.errors for score in scores),
+        cer_reference_units=sum(score.cer.reference_units for score in scores),
+        cer_matches=sum(score.cer.edits.matches for score in scores),
+        wer_errors=sum(score.wer.edits.errors for score in scores),
+        wer_reference_units=sum(score.wer.reference_units for score in scores),
+        wer_matches=sum(score.wer.edits.matches for score in scores),
+        complete_count=sum(status is OutputStatus.COMPLETE for status in statuses),
+        truncated_count=sum(status is OutputStatus.TRUNCATED for status in statuses),
+        refused_count=sum(status is OutputStatus.REFUSED for status in statuses),
+        missing_count=sum(status is OutputStatus.MISSING for status in statuses),
+        unavailable_count=sum(status is OutputStatus.UNAVAILABLE for status in statuses),
+        malformed_count=sum(status is OutputStatus.MALFORMED for status in statuses),
+        dissent_compared=sum(item.compared for item in dissents),
+        dissent_departed=sum(item.departed for item in dissents),
+        dissent_unavailable=sum(item.unavailable for item in dissents),
+        elapsed_observed_count=len(elapsed),
+        elapsed_total_ms=fsum(elapsed),
+        cost_observed_count=len(costs),
+        cost_total_usd=fsum(costs),
+    )
+
+
+def _preflight_act(
+    act: EvaluationAct, profile: NormalizationProfile, *, require_human_adjudication: bool
+) -> None:
+    """Refuse an unscoreable act before any candidate has seen any act material."""
+
+    if act.ground_truth.status is not ReferenceStatus.CHECKED:
+        raise MatrixRefusal(
+            "evaluation act has no adjudicated checked reference; blank and unresolved ink stay "
+            "in private sample accounting rather than receiving a CER/WER row"
+        )
+    if not isinstance(act.ground_truth.text, str) or not normalize_text(
+        act.ground_truth.text, profile
+    ):
+        raise MatrixRefusal("evaluation act has no scoreable checked text after normalization")
+    if require_human_adjudication and len(act.ground_truth.independent_draft_sha256s) != 2:
+        raise MatrixRefusal(
+            "declared run reference lacks two independent transcription drafts before adjudication"
+        )
+    if not act.image.payload:
+        raise MatrixRefusal("evaluation act has no image payload")
+    if not act.testimonia:
+        raise MatrixRefusal("evaluation act has no Testimonia")
+
+
+def _dissent_for(
+    response: CandidateResponse,
+    testimonia: tuple[DossierTestimonium, ...],
+    profile: NormalizationProfile,
+) -> DissentSummary:
+    """Compare after a candidate text is fixed; no witness can influence that text."""
+
+    if not testimonia:
+        return DissentSummary(compared=0, departed=0, unavailable=0)
+    hypothesis = normalize_text(hypothesis_for_status(response.status, response.text), profile)
+    compared = 0
+    departed = 0
+    unavailable = 0
+    for testimonium in testimonia:
+        if testimonium.status not in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
+            unavailable += 1
+            continue
+        compared += 1
+        if normalize_text(testimonium.text or "", profile) != hypothesis:
+            departed += 1
+    return DissentSummary(compared=compared, departed=departed, unavailable=unavailable)
+
+
+def _perlectio_for(
+    identity: ResolvedIdentity,
+    response: CandidateResponse,
+    *,
+    dossier,
+    delivery_sha256: str,
+    profile: NormalizationProfile,
+) -> Perlectio:
+    dissent = _dissent_for(response, dossier.testimonia, profile)
+    return Perlectio(
+        identity=identity,
+        opaque_act_id=dossier.opaque_act_id,
+        condition=dossier.condition,
+        status=response.status,
+        text=hypothesis_for_status(response.status, response.text),
+        dossier_sha256=dossier.wire_sha256,
+        prompt_format_sha256=response.observed_prompt_sha256,
+        delivery_sha256=delivery_sha256,
+        image_present=dossier.image is not None,
+        testimonia_count=len(dossier.testimonia),
+        dissent=dissent,
+        elapsed_ms=float(response.elapsed_ms) if response.elapsed_ms is not None else None,
+        cost_usd=float(response.cost_usd) if response.cost_usd is not None else None,
+    )
+
+
+def _preflight_witness_configuration(
+    acts: tuple[EvaluationAct, ...], configuration: WitnessConfiguration | None
+) -> None:
+    """Require equal witness denominators before any candidate receives a dossier."""
+
+    first = tuple((item.private_source_id, item.public_source_index) for item in acts[0].testimonia)
+    for act in acts:
+        actual = tuple(
+            (item.private_source_id, item.public_source_index) for item in act.testimonia
+        )
+        if actual != first:
+            raise MatrixRefusal(
+                "every act must retain the same Testimonium sources in sealed order; "
+                "a missing witness needs an unavailable stub"
+            )
+        if configuration is not None:
+            configuration.require_act(act)
+
+
+def _execute_matrix(
+    participants: Iterable[tuple[Candidate, ResolvedIdentity]],
+    acts: Iterable[EvaluationAct],
+    *,
+    prompt_registry: PromptRegistry,
+    profile: NormalizationProfile,
+    authorization: RunAuthorization,
+    roster: CandidateRoster | None,
+    witness_configuration: WitnessConfiguration | None,
+    manifest: EvaluationManifest | None,
+    sample_accounting: PrivateSampleAccounting | None,
+) -> MeasurementRun:
+    """Preflight the entire matrix, then call each already-frozen participant."""
+
+    participant_values = tuple(participants)
+    act_values = tuple(acts)
+    if not participant_values or not act_values:
+        raise MatrixRefusal("matrix requires at least one candidate and one act")
+    if any(not isinstance(candidate, Candidate) for candidate, _ in participant_values):
+        raise MatrixRefusal("every matrix participant must implement the Candidate protocol")
+    identities = tuple(identity for _, identity in participant_values)
+    for identity in identities:
+        validate_perlector_candidate(identity)
+    candidate_keys = [identity.candidate_key for identity in identities]
+    candidate_slots = [identity.public_slot for identity in identities]
+    if len(set(candidate_keys)) != len(candidate_keys) or len(set(candidate_slots)) != len(
+        candidate_slots
+    ):
+        raise MatrixRefusal("matrix candidates must have distinct resolved identities and slots")
+    act_ids = [act.opaque_act_id for act in act_values]
+    if len(set(act_ids)) != len(act_ids):
+        raise MatrixRefusal("matrix acts must have distinct opaque IDs")
+    for act in act_values:
+        _preflight_act(
+            act,
+            profile,
+            require_human_adjudication=(
+                roster is not None and authorization.material_class is not MaterialClass.SYNTHETIC
+            ),
+        )
+    _preflight_witness_configuration(act_values, witness_configuration)
+    if witness_configuration is not None:
+        witness_configuration.require_distinct_from_candidates(identities)
+    if manifest is not None:
+        if sample_accounting is None:
+            raise MatrixRefusal("a manifest-bound matrix requires private sample accounting")
+        sample_accounting.require_complete_for(manifest)
+        manifest.require_scoreable_acts(
+            (act.manifest_binding() for act in act_values),
+            excluded_opaque_act_ids=sample_accounting.excluded_opaque_act_ids,
+        )
+    require_authorized_delivery(
+        identities,
+        act_values,
+        authorization,
+        profile=profile,
+        manifest=manifest,
+        excluded_opaque_act_ids=(
+            sample_accounting.excluded_opaque_act_ids if sample_accounting is not None else ()
+        ),
+    )
+
+    prepared: dict[tuple[str, Condition, str], tuple[object, object]] = {}
+    for act in act_values:
+        for condition in ALL_CONDITIONS:
+            dossier = dossier_for(act, condition)
+            for identity in identities:
+                # The closed prompt registry resolves before a single read call.
+                request = prompt_registry.request_for(identity, dossier)
+                prepared[(act.opaque_act_id, condition, identity.candidate_key)] = (
+                    dossier,
+                    request,
+                )
+
+    cells: list[CandidateCell] = []
+    for act in act_values:
+        for condition in ALL_CONDITIONS:
+            for candidate, identity in participant_values:
+                dossier, request = prepared[(act.opaque_act_id, condition, identity.candidate_key)]
+                try:
+                    response = candidate.read(request)
+                except Exception as error:
+                    raise MatrixRefusal(
+                        "candidate adapter failed before the harness could prove delivery; "
+                        "the matrix is invalid rather than a model score"
+                    ) from error
+                if not isinstance(response, CandidateResponse):
+                    raise MatrixRefusal("candidate adapter did not return CandidateResponse")
+                if response.observed_prompt_sha256 != request.prompt_format_sha256:
+                    raise PromptFidelityRefusal(
+                        "adapter did not observe the declared prompt-format bytes it was given"
+                    )
+                if response.observed_dossier_sha256 != dossier.wire_sha256:
+                    raise PromptFidelityRefusal(
+                        "adapter did not observe the exact common dossier bytes it was given"
+                    )
+                if response.observed_delivery_sha256 != request.delivery_sha256:
+                    raise PromptFidelityRefusal(
+                        "adapter did not observe the sealed prompt-and-dossier delivery envelope"
+                    )
+                perlectio = _perlectio_for(
+                    identity,
+                    response,
+                    dossier=dossier,
+                    delivery_sha256=request.delivery_sha256,
+                    profile=profile,
+                )
+                cells.append(
+                    CandidateCell(
+                        opaque_act_id=act.opaque_act_id,
+                        perlectio=perlectio,
+                        raw_response_text=response.text,
+                        score=score_response(
+                            act.ground_truth.text or "",
+                            status=response.status,
+                            text=response.text,
+                            profile=profile,
+                        ),
+                    )
+                )
+
+    witness_baselines = tuple(
+        WitnessBaseline(
+            opaque_act_id=act.opaque_act_id,
+            public_source_index=testimonium.public_source_index,
+            status=testimonium.status,
+            score=score_response(
+                act.ground_truth.text or "",
+                status=testimonium.status,
+                text=testimonium.text,
+                profile=profile,
+            ),
+        )
+        for act in act_values
+        for testimonium in act.testimonia
+    )
+    return MeasurementRun(
+        profile=profile,
+        candidates=identities,
+        acts=act_values,
+        cells=tuple(cells),
+        witness_baselines=witness_baselines,
+        material_class=authorization.material_class,
+        roster=roster,
+        witness_configuration=witness_configuration,
+        manifest=manifest,
+        sample_accounting=sample_accounting,
+    )
+
+
+def run_matrix(
+    candidates: Iterable[Candidate],
+    acts: Iterable[EvaluationAct],
+    *,
+    prompt_registry: PromptRegistry,
+    profile: NormalizationProfile,
+    authorization: RunAuthorization,
+) -> MeasurementRun:
+    """Synthetic-only exercise entry point for the fake candidate interface.
+
+    A real claim may only enter through :func:`run_declared_roster_matrix`.
+    Keeping this lightweight path is useful for scoring and interface tests, but
+    its resulting run is explicitly non-publishable.
+    """
+
+    if authorization.material_class is not MaterialClass.SYNTHETIC:
+        raise MatrixRefusal("real material must use the sealed declared-roster run entry point")
+    return _execute_matrix(
+        tuple((candidate, candidate.identity) for candidate in candidates),
+        acts,
+        prompt_registry=prompt_registry,
+        profile=profile,
+        authorization=authorization,
+        roster=None,
+        witness_configuration=None,
+        manifest=None,
+        sample_accounting=None,
+    )
+
+
+def run_declared_roster_matrix(
+    candidates: Iterable[Candidate],
+    acts: Iterable[EvaluationAct],
+    *,
+    roster: CandidateRoster,
+    witness_configuration: WitnessConfiguration,
+    manifest: EvaluationManifest,
+    prompt_registry: PromptRegistry,
+    profile: NormalizationProfile,
+    authorization: RunAuthorization,
+    sample_accounting: PrivateSampleAccounting | None = None,
+) -> MeasurementRun:
+    """The only sealed entry point for a declared Spec 05 candidate matrix."""
+
+    roster.validate()
+    protocol_sha256 = require_predeclared_protocol()
+    if manifest.protocol_sha256 != protocol_sha256:
+        raise MatrixRefusal(
+            "declared run manifest does not bind the exact predeclared Spec 05 protocol"
+        )
+    canonical_profile = require_canonical_profile(profile)
+    accounting = sample_accounting or PrivateSampleAccounting.all_scoreable(manifest)
+    accounting.require_complete_for(manifest)
+    authorization.require_declared_run_plan(
+        protocol_sha256=manifest.protocol_sha256,
+        manifest_sha256=manifest.manifest_sha256,
+        candidate_roster_sha256=roster.digest,
+        witness_configuration_sha256=witness_configuration.digest,
+        prompt_registry_sha256=prompt_registry.snapshot_sha256(roster.identities()),
+        profile=canonical_profile,
+        private_sample_accounting_sha256=accounting.digest,
+    )
+    candidate_values = tuple(candidates)
+    participants = tuple((candidate, candidate.identity) for candidate in candidate_values)
+    expected = {identity.candidate_key: identity for identity in roster.identities()}
+    actual = {identity.candidate_key: identity for _, identity in participants}
+    if actual != expected or len(candidate_values) != 3:
+        raise MatrixRefusal(
+            "real Spec 05 run must supply exactly the sealed three-candidate roster"
+        )
+    act_values = tuple(acts)
+    manifest.require_scoreable_acts(
+        (act.manifest_binding() for act in act_values),
+        excluded_opaque_act_ids=accounting.excluded_opaque_act_ids,
+    )
+    return _execute_matrix(
+        participants,
+        act_values,
+        prompt_registry=prompt_registry,
+        profile=canonical_profile,
+        authorization=authorization,
+        roster=roster,
+        witness_configuration=witness_configuration,
+        manifest=manifest,
+        sample_accounting=accounting,
+    )

@@ -1,0 +1,638 @@
+"""The single candidate/dossier/Perlectio shape used by the fake harness.
+
+Names and literal text in these values are private evidence.  They never belong in a
+public history finding; ``redaction.py`` is the only public projection boundary.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Protocol, runtime_checkable
+
+from .encoding import canonical_json_bytes, is_sha256, sha256_bytes
+from .errors import MatrixRefusal, MeasurementRefusal
+from .normalization import PROFILES, normalize_text
+
+
+class Condition(StrEnum):
+    """The three predeclared experimental conditions."""
+
+    LECTIO_NUDA = "lectio_nuda"
+    WITNESS_PRIMED = "witness_primed"
+    IMAGE_ABSENT_CONTROL = "image_absent_control"
+
+
+ALL_CONDITIONS: tuple[Condition, ...] = tuple(Condition)
+
+
+class OutputStatus(StrEnum):
+    """A response state is evidence, never an excuse to drop a planned cell."""
+
+    COMPLETE = "complete"
+    TRUNCATED = "truncated"
+    REFUSED = "refused"
+    MISSING = "missing"
+    UNAVAILABLE = "unavailable"
+    MALFORMED = "malformed"
+
+
+class DeliveryMode(StrEnum):
+    """Where an adapter would receive a dossier; no transport is implemented here."""
+
+    LOCAL = "local"
+    EXTERNAL = "external"
+
+
+class MaterialClass(StrEnum):
+    """The provenance class of image bytes at the execution boundary.
+
+    ``SYNTHETIC`` is deliberately an explicit fake-only class.  It replaces the
+    former caller-controlled ``material_is_real`` boolean, which could label a
+    register image as a fake and silently bypass the disclosure gate.
+    """
+
+    SYNTHETIC = "synthetic"
+    CLEARED_PUBLIC = "cleared_public"
+    PRIVATE_REGISTER = "private_register"
+
+
+class ReferenceStatus(StrEnum):
+    """Keep checked ink, a true blank, and unread ink structurally distinct."""
+
+    CHECKED = "checked"
+    NO_READABLE_TEXT = "no_readable_text"
+    UNRESOLVED_GAP = "unresolved_gap"
+
+
+def _require_nonempty(value: str, field: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise MeasurementRefusal(f"{field} must be a non-empty string")
+
+
+def _text_lineage_sha256s(text: str) -> frozenset[str]:
+    """Hash raw text and every closed evaluation-comparison representation.
+
+    Later code must carry a provenance/act binding for arbitrary transformations.
+    This closes the concrete raw and predeclared-normalization paths this framework
+    itself provides, including a caller that tries to tune on comparison text.
+    """
+
+    return frozenset(
+        {
+            sha256_bytes(text.encode("utf-8")),
+            *(
+                sha256_bytes(normalize_text(text, profile).encode("utf-8"))
+                for profile in PROFILES.values()
+            ),
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedIdentity:
+    """The resolved candidate identity retained in private run evidence.
+
+    ``public_slot`` is a non-identifying integer whose private mapping to this identity
+    can be used to aggregate a public-safe finding.  It is not a ranking or a choice.
+    """
+
+    candidate_key: str
+    public_slot: int
+    source_ref: str
+    revision: str
+    artifact_digest: str
+    delivery: DeliveryMode
+    provider: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.candidate_key, "candidate_key")
+        _require_nonempty(self.source_ref, "source_ref")
+        _require_nonempty(self.revision, "revision")
+        if not isinstance(self.public_slot, int) or isinstance(self.public_slot, bool):
+            raise MeasurementRefusal("public_slot must be an integer")
+        if self.public_slot < 1:
+            raise MeasurementRefusal("public_slot must be positive")
+        if not is_sha256(self.artifact_digest):
+            raise MeasurementRefusal("artifact_digest must be a lowercase SHA-256")
+        if self.delivery is DeliveryMode.EXTERNAL:
+            _require_nonempty(self.provider or "", "provider for an external candidate")
+        if self.delivery is DeliveryMode.LOCAL and self.provider is not None:
+            _require_nonempty(self.provider, "provider")
+
+    def private_record(self) -> dict[str, object]:
+        return {
+            "candidate_key": self.candidate_key,
+            "public_slot": self.public_slot,
+            "source_ref": self.source_ref,
+            "revision": self.revision,
+            "artifact_digest": self.artifact_digest,
+            "delivery": self.delivery.value,
+            "provider": self.provider,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ImageEvidence:
+    """The exact image payload shown to a fake candidate, retained only in memory.
+
+    The payload may hold a synthetic byte string in tests.  A real adapter would receive
+    the approved private image bytes through this field; neither the runner nor its
+    public projector writes those bytes to disk.
+    """
+
+    opaque_page_id: str
+    sha256: str
+    source_page_sha256: str
+    material_class: MaterialClass
+    payload: bytes
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.opaque_page_id, "opaque_page_id")
+        if not is_sha256(self.source_page_sha256):
+            raise MeasurementRefusal("image source_page_sha256 must be a lowercase SHA-256")
+        if not isinstance(self.material_class, MaterialClass):
+            raise MeasurementRefusal("image material_class must be a MaterialClass")
+        if not isinstance(self.payload, bytes):
+            raise MeasurementRefusal("image payload must be bytes")
+        if sha256_bytes(self.payload) != self.sha256:
+            raise MeasurementRefusal("image payload does not match its declared SHA-256")
+
+    def private_reference(self) -> dict[str, str]:
+        return {
+            "opaque_page_id": self.opaque_page_id,
+            "sha256": self.sha256,
+            "source_page_sha256": self.source_page_sha256,
+            "material_class": self.material_class.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class GroundTruth:
+    """An independently adjudicated reference, with raw text kept private."""
+
+    text: str | None
+    adjudication_digest: str
+    reference_revision: str
+    status: ReferenceStatus = ReferenceStatus.CHECKED
+    independent_draft_sha256s: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, ReferenceStatus):
+            raise MeasurementRefusal("ground-truth status must be a ReferenceStatus")
+        if self.status is ReferenceStatus.CHECKED:
+            _require_nonempty(self.text or "", "ground-truth text")
+        elif self.text is not None:
+            raise MeasurementRefusal(
+                "no_readable_text and unresolved_gap carry no surrogate CER/WER text"
+            )
+        if not is_sha256(self.adjudication_digest):
+            raise MeasurementRefusal("ground-truth adjudication_digest must be a SHA-256")
+        _require_nonempty(self.reference_revision, "ground-truth reference_revision")
+        if len(self.independent_draft_sha256s) not in (0, 2) or any(
+            not is_sha256(value) for value in self.independent_draft_sha256s
+        ):
+            raise MeasurementRefusal(
+                "ground truth carries either no fixture drafts or exactly two independent draft digests"
+            )
+        if len(set(self.independent_draft_sha256s)) != len(self.independent_draft_sha256s):
+            raise MeasurementRefusal("ground-truth independent draft digests must differ")
+
+    def private_record(self) -> dict[str, object]:
+        """Return the private reference record used to bind held-out evidence."""
+
+        return {
+            "text": self.text,
+            "adjudication_digest": self.adjudication_digest,
+            "reference_revision": self.reference_revision,
+            "status": self.status.value,
+            "independent_draft_sha256s": list(self.independent_draft_sha256s),
+        }
+
+    @property
+    def held_out_evidence_sha256s(self) -> frozenset[str]:
+        """Every private reference representation that must stay out of later uses."""
+
+        values = {
+            self.adjudication_digest,
+            *self.independent_draft_sha256s,
+            sha256_bytes(canonical_json_bytes(self.private_record())),
+        }
+        if self.text is not None:
+            values.update(_text_lineage_sha256s(self.text))
+        return frozenset(values)
+
+
+@dataclass(frozen=True, slots=True)
+class Testimonium:
+    """One unverified witness report supplied only as evidence to a candidate."""
+
+    private_source_id: str
+    public_source_index: int
+    text: str | None
+    status: OutputStatus = OutputStatus.COMPLETE
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.private_source_id, "private_source_id")
+        if not isinstance(self.public_source_index, int) or isinstance(
+            self.public_source_index, bool
+        ):
+            raise MeasurementRefusal("public_source_index must be an integer")
+        if self.public_source_index < 1:
+            raise MeasurementRefusal("public_source_index must be positive")
+        if self.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
+            if not isinstance(self.text, str):
+                raise MeasurementRefusal("a complete or truncated Testimonium must carry text")
+        elif self.text is not None and not isinstance(self.text, str):
+            raise MeasurementRefusal("Testimonium text must be a string or None")
+
+    def private_record(self) -> dict[str, object]:
+        return {
+            "private_source_id": self.private_source_id,
+            "public_source_index": self.public_source_index,
+            "text": self.text,
+            "status": self.status.value,
+        }
+
+    @property
+    def held_out_evidence_sha256s(self) -> frozenset[str]:
+        """Bind both the exact witness record and its raw text if present."""
+
+        values = {sha256_bytes(canonical_json_bytes(self.private_record()))}
+        if self.text is not None:
+            values.update(_text_lineage_sha256s(self.text))
+        return frozenset(values)
+
+
+@dataclass(frozen=True, slots=True)
+class DossierTestimonium:
+    """Anonymous Testimonium view that is safe to hand to a candidate.
+
+    A candidate may see a stable anonymous slot, literal testimony, and its response
+    state.  It must not receive the private Attestator identity: source names in a
+    prompt would invite a learned trust preference and recreate a picker at the input
+    boundary.
+    """
+
+    public_source_index: int
+    text: str | None
+    status: OutputStatus
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.public_source_index, int) or isinstance(
+            self.public_source_index, bool
+        ):
+            raise MeasurementRefusal("dossier witness index must be an integer")
+        if self.public_source_index < 1:
+            raise MeasurementRefusal("dossier witness index must be positive")
+        if self.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
+            if not isinstance(self.text, str):
+                raise MeasurementRefusal("complete or truncated dossier testimony needs text")
+        elif self.text is not None and not isinstance(self.text, str):
+            raise MeasurementRefusal("dossier testimony text must be a string or None")
+
+    def wire_record(self) -> dict[str, object]:
+        """Return the anonymous testimony record delivered in a common dossier."""
+
+        return {
+            "public_source_index": self.public_source_index,
+            "text": self.text,
+            "status": self.status.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class WitnessSource:
+    """One sealed Attestator source identity, retained only in private evidence."""
+
+    private_source_id: str
+    public_source_index: int
+    source_ref: str
+    revision: str
+    artifact_digest: str
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.private_source_id, "private witness source ID")
+        if not isinstance(self.public_source_index, int) or isinstance(
+            self.public_source_index, bool
+        ):
+            raise MeasurementRefusal("public witness source index must be an integer")
+        if self.public_source_index < 1:
+            raise MeasurementRefusal("public witness source index must be positive")
+        _require_nonempty(self.source_ref, "witness source_ref")
+        _require_nonempty(self.revision, "witness revision")
+        if not is_sha256(self.artifact_digest):
+            raise MeasurementRefusal("witness artifact_digest must be a lowercase SHA-256")
+
+    def private_record(self) -> dict[str, object]:
+        return {
+            "private_source_id": self.private_source_id,
+            "public_source_index": self.public_source_index,
+            "source_ref": self.source_ref,
+            "revision": self.revision,
+            "artifact_digest": self.artifact_digest,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class WitnessConfiguration:
+    """The approved interim witness configuration, fixed across every act."""
+
+    sources: tuple[WitnessSource, ...]
+    approval_evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        if not self.sources:
+            raise MeasurementRefusal("witness configuration may not be empty")
+        indices = [source.public_source_index for source in self.sources]
+        source_ids = [source.private_source_id for source in self.sources]
+        if len(set(indices)) != len(indices) or len(set(source_ids)) != len(source_ids):
+            raise MeasurementRefusal("witness configuration repeats a source identity or index")
+        if not is_sha256(self.approval_evidence_sha256):
+            raise MeasurementRefusal("witness configuration needs an approval evidence SHA-256")
+
+    def require_act(self, act: "EvaluationAct") -> None:
+        actual = tuple(
+            (item.private_source_id, item.public_source_index) for item in act.testimonia
+        )
+        expected = tuple(
+            (source.private_source_id, source.public_source_index) for source in self.sources
+        )
+        if actual != expected:
+            raise MatrixRefusal(
+                "act Testimonia differ from the sealed witness configuration or order"
+            )
+
+    def require_distinct_from_candidates(self, identities: tuple[ResolvedIdentity, ...]) -> None:
+        """Refuse self-witness overlap by source or exact model artifact."""
+
+        witness_artifacts = {source.artifact_digest for source in self.sources}
+        witness_sources = {source.source_ref for source in self.sources}
+        for identity in identities:
+            if (
+                identity.artifact_digest in witness_artifacts
+                or identity.source_ref in witness_sources
+            ):
+                raise MatrixRefusal(
+                    "a Perlector candidate shares an Attestator source or artifact; "
+                    "self-witness agreement is not evidence"
+                )
+
+    def private_record(self) -> dict[str, object]:
+        return {
+            "schema": "spec05-witness-configuration.v1",
+            "sources": [source.private_record() for source in self.sources],
+            "approval_evidence_sha256": self.approval_evidence_sha256,
+        }
+
+    @property
+    def digest(self) -> str:
+        return sha256_bytes(canonical_json_bytes(self.private_record()))
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationAct:
+    """One already-selected act, not a selector over a wider population."""
+
+    opaque_act_id: str
+    image: ImageEvidence
+    ground_truth: GroundTruth
+    testimonia: tuple[Testimonium, ...]
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.opaque_act_id, "opaque_act_id")
+        if not self.testimonia:
+            raise MatrixRefusal("an evaluation act has no Testimonia for primed/control cells")
+        source_indices = [item.public_source_index for item in self.testimonia]
+        if len(set(source_indices)) != len(source_indices):
+            raise MatrixRefusal("an evaluation act repeats a public Testimonium source index")
+
+    @property
+    def private_evidence_sha256s(self) -> frozenset[str]:
+        """Hashes of all non-image evaluation evidence, retained only privately."""
+
+        values = set(self.ground_truth.held_out_evidence_sha256s)
+        for testimonium in self.testimonia:
+            values.update(testimonium.held_out_evidence_sha256s)
+        return frozenset(values)
+
+    def manifest_binding(
+        self,
+    ) -> tuple[str, str, str, MaterialClass, ReferenceStatus, tuple[str, ...]]:
+        """Return the complete non-literal binding a sealed manifest must match."""
+
+        return (
+            self.opaque_act_id,
+            self.image.source_page_sha256,
+            self.image.sha256,
+            self.image.material_class,
+            self.ground_truth.status,
+            tuple(sorted(self.private_evidence_sha256s)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Dossier:
+    """The identical semantic input given to every candidate for one planned cell."""
+
+    opaque_act_id: str
+    condition: Condition
+    image: ImageEvidence | None
+    testimonia: tuple[DossierTestimonium, ...]
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.opaque_act_id, "dossier opaque_act_id")
+        if self.condition in (Condition.LECTIO_NUDA, Condition.WITNESS_PRIMED):
+            if self.image is None:
+                raise MatrixRefusal(f"{self.condition.value} requires an image")
+        elif self.image is not None:
+            raise MatrixRefusal("image-absent control may not carry an image")
+        if self.condition is Condition.LECTIO_NUDA:
+            if self.testimonia:
+                raise MatrixRefusal("Lectio nuda may not carry Testimonia")
+        elif not self.testimonia:
+            raise MatrixRefusal(f"{self.condition.value} requires Testimonia")
+
+    def private_wire_record(self) -> dict[str, object]:
+        """Return the byte-stable semantic message, never a public record."""
+
+        return {
+            "schema": "perlector-dossier.v1",
+            "opaque_act_id": self.opaque_act_id,
+            "condition": self.condition.value,
+            "image": self.image.private_reference() if self.image else None,
+            "testimonia": [item.wire_record() for item in self.testimonia],
+        }
+
+    @property
+    def wire_bytes(self) -> bytes:
+        return canonical_json_bytes(self.private_wire_record())
+
+    @property
+    def wire_sha256(self) -> str:
+        return sha256_bytes(self.wire_bytes)
+
+
+def dossier_for(act: EvaluationAct, condition: Condition) -> Dossier:
+    """Build a condition solely by presence/absence of the same act evidence."""
+
+    if condition is Condition.LECTIO_NUDA:
+        return Dossier(act.opaque_act_id, condition, act.image, ())
+    if condition is Condition.WITNESS_PRIMED:
+        return Dossier(
+            act.opaque_act_id,
+            condition,
+            act.image,
+            tuple(
+                DossierTestimonium(
+                    public_source_index=item.public_source_index,
+                    text=item.text,
+                    status=item.status,
+                )
+                for item in act.testimonia
+            ),
+        )
+    if condition is Condition.IMAGE_ABSENT_CONTROL:
+        return Dossier(
+            act.opaque_act_id,
+            condition,
+            None,
+            tuple(
+                DossierTestimonium(
+                    public_source_index=item.public_source_index,
+                    text=item.text,
+                    status=item.status,
+                )
+                for item in act.testimonia
+            ),
+        )
+    raise MatrixRefusal(f"unknown condition {condition!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRequest:
+    """What a generic adapter receives; exact prompt bytes travel independently."""
+
+    dossier: Dossier
+    prompt_format_bytes: bytes
+    prompt_format_sha256: str
+
+    def __post_init__(self) -> None:
+        if sha256_bytes(self.prompt_format_bytes) != self.prompt_format_sha256:
+            raise MeasurementRefusal("CandidateRequest prompt bytes do not match their digest")
+
+    @property
+    def delivery_bytes(self) -> bytes:
+        """The exact binary envelope the adapter is handed for this cell.
+
+        A length-prefixed encoding preserves the declared prompt-format bytes
+        byte-for-byte while binding them to the exact common dossier bytes.  It
+        deliberately does not invent a candidate-specific chat renderer: that
+        renderer is part of the candidate-owned declared format evidence.
+        """
+
+        dossier_bytes = self.dossier.wire_bytes
+        return (
+            len(self.prompt_format_bytes).to_bytes(8, "big")
+            + self.prompt_format_bytes
+            + len(dossier_bytes).to_bytes(8, "big")
+            + dossier_bytes
+        )
+
+    @property
+    def delivery_sha256(self) -> str:
+        return sha256_bytes(self.delivery_bytes)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateResponse:
+    """An adapter observation, not a claim that a model read correctly."""
+
+    status: OutputStatus
+    text: str | None
+    elapsed_ms: float | None
+    cost_usd: float | None
+    observed_prompt_sha256: str
+    observed_dossier_sha256: str
+    observed_delivery_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.text is not None and not isinstance(self.text, str):
+            raise MeasurementRefusal("candidate response text must be a string or None")
+        for field, value in (("elapsed_ms", self.elapsed_ms), ("cost_usd", self.cost_usd)):
+            if value is not None and (not isinstance(value, (int, float)) or value < 0):
+                raise MeasurementRefusal(f"candidate response {field} must be non-negative or None")
+        for name, value in (
+            ("prompt", self.observed_prompt_sha256),
+            ("dossier", self.observed_dossier_sha256),
+            ("delivery", self.observed_delivery_sha256),
+        ):
+            if not is_sha256(value):
+                raise MeasurementRefusal(f"candidate response has no valid observed {name} digest")
+
+
+@runtime_checkable
+class Candidate(Protocol):
+    """One interface for the stock model, vendor model, and checkpoint alike."""
+
+    @property
+    def identity(self) -> ResolvedIdentity:
+        """Return the already-resolved identity that will be retained per run."""
+
+    def read(self, request: CandidateRequest) -> CandidateResponse:
+        """Return one response to one dossier without selecting witness content."""
+
+
+@dataclass(frozen=True, slots=True)
+class DissentSummary:
+    """Structural comparison facts; they are never a quality score or preference."""
+
+    compared: int
+    departed: int
+    unavailable: int
+
+    def __post_init__(self) -> None:
+        if min(self.compared, self.departed, self.unavailable) < 0:
+            raise MeasurementRefusal("dissent counts may not be negative")
+        if self.departed > self.compared:
+            raise MeasurementRefusal("dissent departures may not exceed comparisons")
+
+    @property
+    def departure_rate(self) -> float | None:
+        return self.departed / self.compared if self.compared else None
+
+
+@dataclass(frozen=True, slots=True)
+class Perlectio:
+    """The one private output shape produced for every candidate and condition."""
+
+    identity: ResolvedIdentity
+    opaque_act_id: str
+    condition: Condition
+    status: OutputStatus
+    text: str | None
+    dossier_sha256: str
+    prompt_format_sha256: str
+    delivery_sha256: str
+    image_present: bool
+    testimonia_count: int
+    dissent: DissentSummary
+    elapsed_ms: float | None
+    cost_usd: float | None
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.opaque_act_id, "Perlectio opaque_act_id")
+        if self.text is not None and not isinstance(self.text, str):
+            raise MeasurementRefusal("Perlectio text must be a string or None")
+        if not (
+            is_sha256(self.dossier_sha256)
+            and is_sha256(self.prompt_format_sha256)
+            and is_sha256(self.delivery_sha256)
+        ):
+            raise MeasurementRefusal(
+                "Perlectio must retain dossier, prompt, and delivery SHA-256 values"
+            )
+        if self.condition is Condition.IMAGE_ABSENT_CONTROL and self.image_present:
+            raise MeasurementRefusal("image-absent Perlectio claims an image was present")
+        if self.condition is Condition.LECTIO_NUDA and self.testimonia_count:
+            raise MeasurementRefusal("Lectio nuda Perlectio claims it saw Testimonia")

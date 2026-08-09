@@ -15,6 +15,12 @@ dependencies = [
     "pillow-heif==1.5.0",
     # PDFium binding used to rasterise complete PDF pages once at the submit door.
     "pypdfium2==5.12.1",
+    # Spec 05's audited unit-cost edit-distance primitive.  The framework owns all
+    # normalization and calls it with processor=None; see operations/spike_perlector.
+    "rapidfuzz==3.14.5",
+    # UAX #29 extended grapheme clusters for Spec 05 CER after explicit NFC text
+    # normalization; see operations/spike_perlector/README.md (MIT licence).
+    "uniseg==0.10.1",
 ]
 
 # Dependencies are pinned from the first line rather than retrofitted.
