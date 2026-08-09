@@ -144,7 +144,7 @@ def _refuse_text_fields(value, path: str = "$") -> None:
     """Walk a payload and refuse any forbidden content-bearing key, at any depth."""
     if isinstance(value, dict):
         for key, item in value.items():
-            if key in _FORBIDDEN_TEXT_KEYS:
+            if isinstance(key, str) and key.lower() in _FORBIDDEN_TEXT_KEYS:
                 raise ContractError(
                     f"payload at {path}.{key} carries a forbidden content field; a "
                     "Designator act-group artifact carries no text at the schema boundary"
@@ -153,6 +153,42 @@ def _refuse_text_fields(value, path: str = "$") -> None:
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _refuse_text_fields(item, f"{path}[{index}]")
+
+
+def _validate_act_group_payload(payload: object) -> None:
+    """Validate the closed, geometry-only act-group contract before publication."""
+    required = {
+        "act_key",
+        "declared_bounds",
+        "detected_bounds",
+        "body_member_count",
+        "anchor_count",
+        "rationale",
+        "continuation",
+    }
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise ContractError("a Designator act-group payload has fields outside its closed contract")
+    for field in ("declared_bounds", "detected_bounds"):
+        bounds = payload[field]
+        if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
+            raise ContractError(f"a Designator act-group payload has invalid {field}")
+    continuation = payload["continuation"]
+    if continuation is not None:
+        continuation_fields = {
+            "declared_bounds",
+            "detected_bounds",
+            "rationale",
+            "geometric_corroboration",
+        }
+        if not isinstance(continuation, dict) or set(continuation) != continuation_fields:
+            raise ContractError(
+                "a Designator act-group continuation has fields outside its closed contract"
+            )
+        for field in ("declared_bounds", "detected_bounds"):
+            bounds = continuation[field]
+            if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
+                raise ContractError(f"a Designator act-group continuation has invalid {field}")
+    _refuse_text_fields(payload)
 
 
 def structure_provenance(context) -> dict:
@@ -248,7 +284,7 @@ def _bounds_of(row: dict) -> dict:
     and three call sites once each rebuilt the same four-key comprehension by
     hand: the act-group evidence, the continuation crop, and the recovery crop.
     Three independent copies of one projection is the same risk class as two
-    independent copies of a transform (`_proposal_transform`) -- a fourth field
+    independent copies of a transform (`_crop_transform`) -- a fourth field
     added to a fixture row and read by only some of the copies would silently
     change what one call site cuts or compares without the others noticing.
     `common.stage.act_bounds` is the sibling of this for a declared act row;
@@ -369,7 +405,7 @@ def sealed_pages(records: dict[int, dict]) -> dict[int, dict]:
     }
 
 
-def _proposal_transform(page_ordinal: int, page_id: str, bounds: dict) -> dict:
+def _crop_transform(page_ordinal: int, page_id: str, bounds: dict) -> dict:
     """The one construction of a crop transform: `verify_exemplar_crop_lineage`'s
     exact four fields, and every caller that must know a region's identity uses
     this rather than hand-building the shape again.
@@ -418,7 +454,10 @@ def cut_region(
 
     `bounds` is always the *structural* rectangle — the one act identity is
     bound to (`common/contracts/identities.py::act_bindings`) — never the
-    padded one. `padding`, supplied only for a proposal cut, expands it into
+    padded one. In the synthetic walking skeleton it comes from the sealed
+    fixture and is separately reconciled against the detected group; the
+    unbuilt real-model path would receive the structure pass's own rectangle.
+    `padding`, supplied only for a proposal cut, expands it into
     the *capture* rectangle actually cut; a recovery crop passes none, because
     a Recensor recovery request already names the exact rectangle it wants
     (structural pad and capture pad "must never be conflated" — see
@@ -456,7 +495,7 @@ def cut_region(
         final_bounds = bounds
         padding_record = None
 
-    transform = _proposal_transform(page_ordinal, page_record["subject_id"], final_bounds)
+    transform = _crop_transform(page_ordinal, page_record["subject_id"], final_bounds)
     crop_bytes = crop_png(page_bytes, final_bounds)
     digest, stored = context.tree.put_blob(DESIGNATOR, crop_bytes)
 
@@ -671,7 +710,7 @@ def _publish_act_group(
             "geometric_corroboration": corroborated,
         }
         inputs.append(context.input_ref(continuation_page_record["payload"]["image_path"]))
-    _refuse_text_fields(payload)
+    _validate_act_group_payload(payload)
     return context.publish(
         kind="act-group", subject_id=act_id, outcome="proposed", inputs=inputs, payload=payload
     )
@@ -699,7 +738,8 @@ def _secondary_rescue_candidates(
     """Every secondary-scan candidate that genuinely adds coverage, none that refine one.
 
     A candidate touching zero already-claimed acts is real rescue material. One
-    touching exactly one is already inside ordinary coverage and is not a find.
+    wholly contained by exactly one claim is already inside ordinary coverage
+    and is not a find; merely touching one does not erase the part outside it.
     One touching two or more is refused outright — the P0-incident-shaped rule,
     as a hard error rather than a silent decision: a detector box that would
     reach two already-established acts at once may not decide which one it
@@ -718,7 +758,16 @@ def _secondary_rescue_candidates(
                 f"overlaps {len(overlapping_acts)} already-claimed acts; a secondary "
                 "proposer may add recall, never refine or split an established act"
             )
-        if overlapping_acts:
+        if overlapping_acts and any(
+            entry["act_id"] in overlapping_acts
+            and entry["bounds"]["x"] <= candidate["bounds"]["x"]
+            and entry["bounds"]["y"] <= candidate["bounds"]["y"]
+            and entry["bounds"]["x"] + entry["bounds"]["w"]
+            >= candidate["bounds"]["x"] + candidate["bounds"]["w"]
+            and entry["bounds"]["y"] + entry["bounds"]["h"]
+            >= candidate["bounds"]["y"] + candidate["bounds"]["h"]
+            for entry in claimed
+        ):
             continue
         rescues.append(candidate)
     return rescues
@@ -726,8 +775,8 @@ def _secondary_rescue_candidates(
 
 def _publish_secondary_proposals(
     context, ordinal: int, page_record: dict, analysis: dict, claimed: list[dict], secondary: dict
-) -> None:
-    """Publish every rescue candidate the secondary proposer's own scan adds.
+) -> bool:
+    """Cut and hold every non-authoritative rescue candidate for review.
 
     Split from `_publish_conservation_and_secondary` so it can be exercised
     against a hand-fed page analysis without needing to also be the first
@@ -738,26 +787,57 @@ def _publish_secondary_proposals(
         # Nothing to add: the secondary proposer is explicitly absent, and its
         # absence changes no authority decision here either -- there is simply
         # no additive recall pass to run.
-        return
+        return False
     candidates = structure.secondary_scan(
         analysis["width"], analysis["height"], analysis["rows"], background=analysis["background"]
     )
-    for index, candidate in enumerate(_secondary_rescue_candidates(claimed, candidates, ordinal)):
+    rescues = _secondary_rescue_candidates(claimed, candidates, ordinal)
+    image_path = page_record["payload"]["image_path"]
+    page_bytes = context.tree.read_bytes(image_path)
+    for index, candidate in enumerate(rescues):
+        subject = f"{page_identity(context.fixture, ordinal)}-secondary-{index}"
+        transform = _crop_transform(ordinal, page_record["subject_id"], candidate["bounds"])
+        crop_bytes = crop_png(page_bytes, candidate["bounds"])
+        digest, stored = context.tree.put_blob(DESIGNATOR, crop_bytes)
+        rescue_payload = {
+            "page_ordinal": ordinal,
+            "pixel_count": candidate["pixel_count"],
+            "origin": "secondary-proposer",
+            "padding": None,
+            "authoritative": False,
+            "authority_effect": "review-only",
+            "transform": transform,
+            "transform_digest": geometry.transform_digest(transform),
+            "image_path": stored.relative_path,
+            "image_sha256": digest,
+            "provenance": secondary,
+        }
+        _refuse_text_fields(rescue_payload)
+        rescue = context.publish(
+            kind="rescue-crop",
+            subject_id=subject,
+            outcome="held",
+            inputs=[context.input_ref(image_path)],
+            payload=rescue_payload,
+        )
         proposal_payload = {
             "page_ordinal": ordinal,
             "bounds": candidate["bounds"],
             "pixel_count": candidate["pixel_count"],
             "authoritative": False,
+            "terminal_disposition": "held-for-review",
+            "rescue_ref": context.input_ref(rescue.relative_path),
             "provenance": secondary,
         }
         _refuse_text_fields(proposal_payload)
         context.publish(
             kind="secondary-proposal",
-            subject_id=f"{page_identity(context.fixture, ordinal)}-secondary-{index}",
-            outcome="proposed",
-            inputs=[context.input_ref(page_record["payload"]["image_path"])],
+            subject_id=subject,
+            outcome="held",
+            inputs=[context.input_ref(image_path), context.input_ref(rescue.relative_path)],
             payload=proposal_payload,
         )
+    return bool(rescues)
 
 
 def residual_act_key(page_ordinal: int, index: int) -> str:
@@ -865,7 +945,7 @@ def _publish_residual_holds(
 
 def _publish_conservation_and_secondary(
     context, ordinal: int, page_record: dict, analysis: dict, secondary: dict
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
     """Independent ink-vs-crop reconciliation, plus non-authoritative rescue crops.
 
     Conservation rescans this page's own pixels rather than trusting what
@@ -904,13 +984,18 @@ def _publish_conservation_and_secondary(
         inputs=[context.input_ref(page_record["payload"]["image_path"])],
         payload=conservation_payload,
     )
-    _publish_secondary_proposals(context, ordinal, page_record, analysis, claimed, secondary)
-    return _publish_residual_holds(
-        context,
-        page_identity(context.fixture, ordinal),
-        ordinal,
-        result["residual_components"],
-        context.input_ref(published.relative_path),
+    secondary_held = _publish_secondary_proposals(
+        context, ordinal, page_record, analysis, claimed, secondary
+    )
+    return (
+        _publish_residual_holds(
+            context,
+            page_identity(context.fixture, ordinal),
+            ordinal,
+            result["residual_components"],
+            context.input_ref(published.relative_path),
+        ),
+        secondary_held,
     )
 
 
@@ -939,9 +1024,15 @@ def initial_pass(context) -> bool:
     # before any crop is cut, so a page's structural outcome is a fact the act
     # loop reads rather than one it discovers halfway through.
     failures = structure_failures(context, pages)
+    page_cache: dict[int, dict] = {}
+    # Do not publish a successful status before the page analysis it describes
+    # has actually succeeded. A fatal decode or grouping error must not leave a
+    # durable `marked-out` claim behind it.
+    for ordinal, page_record in pages.items():
+        if ordinal not in failures:
+            _analyze_page(page_cache, context, ordinal, page_record)
     publish_structure_status(context, records, pages, structure_provenance(context), failures)
 
-    page_cache: dict[int, dict] = {}
     expected = []
     seal_inputs = []
     for act in context.fixture["act"]:
@@ -1089,11 +1180,13 @@ def initial_pass(context) -> bool:
     # residual it finds extends the seal's own denominator, held from the
     # start, so it reaches expected_acts()/the seal exactly like every other
     # act rather than sitting inert inside the conservation artifact alone.
+    secondary_held = False
     for ordinal, page_record in pages.items():
         analysis = _analyze_page(page_cache, context, ordinal, page_record)
-        residual_rows = _publish_conservation_and_secondary(
+        residual_rows, page_secondary_held = _publish_conservation_and_secondary(
             context, ordinal, page_record, analysis, secondary
         )
+        secondary_held = secondary_held or page_secondary_held
         expected.extend(residual_rows)
         for row in residual_rows:
             seal_inputs.extend(row["evidence"])
@@ -1118,9 +1211,14 @@ def initial_pass(context) -> bool:
     # not completed — and said so only inside its artifacts until now. The exit
     # code is the one signal an operator reads without opening the tree, and a 0
     # over a hold is a partial result wearing "complete" (GOVERNANCE 2). The
-    # holds are counted from the seal itself, so this cannot drift from the
-    # record it describes.
-    return any(row["outcome"] == "held" for row in expected) or bool(failures)
+    # Act holds are counted from the seal itself. Secondary holds deliberately
+    # sit outside that authority and are carried by `secondary_held`, derived
+    # from the same list of rescue records this pass just published.
+    return (
+        any(row["outcome"] == "held" for row in expected)
+        or bool(failures)
+        or secondary_held
+    )
 
 
 def recovery_pass(context, act_id: str, request_id: str) -> int:
@@ -1188,9 +1286,9 @@ def recovery_pass(context, act_id: str, request_id: str) -> int:
     page_record = pages[act["page_ordinal"]]
     # The same builder `cut_region` uses, so this duplicate check is computed
     # against the exact shape that would actually be published -- see
-    # `_proposal_transform`'s docstring for why two independent copies of this
+    # `_crop_transform`'s docstring for why two independent copies of this
     # shape was a real defect class rather than a style preference.
-    transform = _proposal_transform(act["page_ordinal"], page_record["subject_id"], bounds)
+    transform = _crop_transform(act["page_ordinal"], page_record["subject_id"], bounds)
     duplicate = region_id(act_id, transform)
     existing_regions = _regions_of(context, act_id)
     already_recovered = [

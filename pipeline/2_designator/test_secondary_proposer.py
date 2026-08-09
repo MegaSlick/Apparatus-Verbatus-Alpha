@@ -44,6 +44,13 @@ def test_a_candidate_already_inside_one_claim_is_not_a_rescue():
     assert designator._secondary_rescue_candidates(claimed, candidates, 1) == []
 
 
+def test_a_candidate_that_only_overlaps_one_claim_keeps_its_additional_coverage():
+    designator = _load_designator()
+    claimed = [{"act_id": "act_a", "bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}]
+    candidate = {"bounds": {"x": 8, "y": 2, "w": 6, "h": 3}, "pixel_count": 18}
+    assert designator._secondary_rescue_candidates(claimed, [candidate], 1) == [candidate]
+
+
 def test_a_candidate_spanning_two_claims_is_a_hard_error():
     """The P0-incident-shaped rule: a detector may never decide between two acts."""
     designator = _load_designator()
@@ -146,7 +153,9 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
     before_kinds = {
         entry["kind"] for entry in context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
     }
-    designator._publish_secondary_proposals(context, 1, page_record, analysis, claimed, secondary)
+    assert designator._publish_secondary_proposals(
+        context, 1, page_record, analysis, claimed, secondary
+    ) is True
     context.finish()
 
     manifest = context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
@@ -158,15 +167,29 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
         if entry["kind"] == "secondary-proposal"
     ]
     assert len(proposals) == 1
+    rescue_entries = [entry for entry in manifest if entry["kind"] == "rescue-crop"]
+    rescues = [
+        context.tree.read_artifact(designator.DESIGNATOR, "rescue-crop", entry["artifact_id"])
+        for entry in rescue_entries
+    ]
+    assert len(rescues) == 1
     payload = proposals[0]["payload"]
     assert payload["authoritative"] is False
+    assert proposals[0]["outcome"] == "held"
+    assert payload["terminal_disposition"] == "held-for-review"
+    assert payload["rescue_ref"]["relative_path"] == rescue_entries[0]["relative_path"]
+    assert rescues[0]["outcome"] == "held"
+    assert rescues[0]["payload"]["authoritative"] is False
+    assert rescues[0]["payload"]["authority_effect"] == "review-only"
+    assert rescues[0]["payload"]["origin"] == "secondary-proposer"
+    assert rescues[0]["payload"]["padding"] is None
     assert payload["bounds"]["x"] <= stray_x < payload["bounds"]["x"] + payload["bounds"]["w"]
     assert payload["bounds"]["y"] <= stray_y < payload["bounds"]["y"] + payload["bounds"]["h"]
 
     # Nothing that decides authority appeared: no new region, act-group, or
     # proposal-seal -- only the flagged rescue.
     after_kinds = {entry["kind"] for entry in manifest}
-    assert after_kinds - before_kinds == {"secondary-proposal"}
+    assert after_kinds - before_kinds == {"secondary-proposal", "rescue-crop"}
 
 
 # --- level 3: configuring the real roster changes no authoritative outcome -----
@@ -202,6 +225,65 @@ def _configured_models_config(tmp_path: Path) -> Path:
         live.replace(_ABSENT_BLOCK, _CONFIGURED_BLOCK), encoding="utf-8"
     )
     return config_root / "models.toml"
+
+
+def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_authority(
+    tmp_path, monkeypatch
+):
+    from common.stage import open_context, stage_parser
+
+    designator = _load_designator()
+    root = tmp_path / "runs"
+    models_config = _configured_models_config(tmp_path)
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / program),
+                "--run-root",
+                str(root),
+                "--run-id",
+                "r",
+                "--scenario",
+                "happy",
+                "--models-config",
+                str(models_config),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    args = stage_parser("secondary held-exit test").parse_args(
+        [
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+            "--models-config",
+            str(models_config),
+        ]
+    )
+    context = open_context(args, designator.DESIGNATOR)
+
+    def one_stray_candidate(width, height, rows, *, background):
+        return [{"bounds": {"x": width - 2, "y": height - 2, "w": 1, "h": 1}, "pixel_count": 1}]
+
+    monkeypatch.setattr(designator.structure, "secondary_scan", one_stray_candidate)
+    assert designator.initial_pass(context) is True
+    context.finish()
+
+    manifest = context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
+    assert any(entry["kind"] == "secondary-proposal" for entry in manifest)
+    seal = context.tree.read_artifact(
+        designator.DESIGNATOR,
+        "proposal-seal",
+        designator._seal_artifact_id(context),
+    )
+    assert {row["outcome"] for row in seal["payload"]["expected_acts"]} == {"proposed"}
 
 
 def _orchestrate(root: Path, models_config: Path | None) -> subprocess.CompletedProcess:

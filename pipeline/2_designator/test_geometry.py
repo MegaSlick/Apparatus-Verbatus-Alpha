@@ -177,9 +177,49 @@ def test_from_model_space_refuses_a_scale_that_does_not_belong_to_this_page():
         from_model_space(projected["bounds"], projected["scale"], 50, 50)
 
 
+def test_from_model_space_refuses_another_pages_scale_even_when_the_rectangle_would_fit():
+    projected = to_model_space({"x": 10, "y": 10, "w": 20, "h": 20}, 200, 260, 100, 130)
+    with pytest.raises(ContractError, match="recorded for"):
+        from_model_space(projected["bounds"], projected["scale"], 100, 130)
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [
+        {"x": -1, "y": 0, "w": 2, "h": 2},
+        {"x": 0, "y": 0, "w": 0, "h": 2},
+        {"x": 99, "y": 0, "w": 2, "h": 2},
+        {"x": 0, "y": 0, "w": True, "h": 2},
+    ],
+)
+def test_to_model_space_refuses_invalid_source_rectangles(bounds):
+    with pytest.raises(ContractError):
+        to_model_space(bounds, 100, 100, 50, 50)
+
+
+def test_from_model_space_refuses_a_rectangle_outside_the_recorded_model_space():
+    scale = {
+        "x": {"numerator": 50, "denominator": 100},
+        "y": {"numerator": 50, "denominator": 100},
+    }
+    with pytest.raises(ContractError, match="model-space bounds"):
+        from_model_space({"x": 49, "y": 0, "w": 2, "h": 2}, scale, 100, 100)
+
+
 def test_from_model_space_refuses_a_malformed_scale():
     with pytest.raises(ContractError):
         from_model_space({"x": 0, "y": 0, "w": 10, "h": 10}, {"x": {}, "y": {}}, 100, 100)
+
+
+@pytest.mark.parametrize("page", [(True, 100), (100, 1.5), ("100", 100)])
+def test_model_space_conversion_refuses_non_integer_dimensions(page):
+    with pytest.raises(ContractError):
+        to_model_space({"x": 0, "y": 0, "w": 1, "h": 1}, page[0], page[1], 50, 50)
+
+
+def test_from_model_space_refuses_a_non_object_scale():
+    with pytest.raises(ContractError, match="ratio object"):
+        from_model_space({"x": 0, "y": 0, "w": 1, "h": 1}, None, 100, 100)
 
 
 # --- verify_isotropic --------------------------------------------------------

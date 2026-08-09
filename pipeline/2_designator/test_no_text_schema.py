@@ -39,6 +39,29 @@ def test_a_forbidden_content_key_is_refused_at_the_top_level(forbidden_key):
         designator._refuse_text_fields({forbidden_key: "SYNTHETIC ACT ONE alpha beta gamma"})
 
 
+@pytest.mark.parametrize("forbidden_key", ["Text", "TRANSCRIPTION", "Chosen", "PIVOT"])
+def test_forbidden_keys_cannot_bypass_the_boundary_by_changing_case(forbidden_key):
+    designator = _load_designator()
+    with pytest.raises(ContractError, match="carries no text"):
+        designator._refuse_text_fields({forbidden_key: "leaked"})
+
+
+def test_an_unknown_text_synonym_cannot_enter_the_closed_act_group_contract():
+    designator = _load_designator()
+    payload = {
+        "act_key": "a1",
+        "declared_bounds": {"x": 1, "y": 2, "w": 3, "h": 4},
+        "detected_bounds": {"x": 1, "y": 2, "w": 3, "h": 4},
+        "body_member_count": 1,
+        "anchor_count": 0,
+        "rationale": "single margin anchor seeds one body run",
+        "continuation": None,
+        "ocr_text": "leaked",
+    }
+    with pytest.raises(ContractError, match="closed contract"):
+        designator._validate_act_group_payload(payload)
+
+
 @pytest.mark.parametrize(
     "forbidden_key", ["text", "reported", "transcription", "content", "reading"]
 )
@@ -121,7 +144,7 @@ def test_a_real_act_group_artifact_carries_no_forbidden_field(tmp_path):
     ]
     assert len(act_groups) == 2  # a1 and a2, both proposed in the happy scenario
     for record in act_groups:
-        designator._refuse_text_fields(record["payload"])  # must not raise: nothing leaked in
+        designator._validate_act_group_payload(record["payload"])  # closed schema; must not raise
 
 
 def test_deleting_the_check_lets_a_forged_text_field_publish_uninspected(tmp_path):

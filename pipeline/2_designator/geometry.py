@@ -86,6 +86,32 @@ class Bounds(TypedDict):
     h: int
 
 
+def _validate_bounds(bounds: Any, width: int, height: int, what: str) -> None:
+    """Refuse a rectangle that does not belong to its declared pixel space."""
+    if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
+        raise ContractError(f"{what} is not a closed x/y/w/h rectangle")
+    if any(
+        not isinstance(bounds[field], int) or isinstance(bounds[field], bool)
+        for field in ("x", "y", "w", "h")
+    ):
+        raise ContractError(f"{what} has a non-integer coordinate")
+    x, y, w, h = (bounds[field] for field in ("x", "y", "w", "h"))
+    if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > width or y + h > height:
+        raise ContractError(f"{what} {bounds} falls outside its {width}x{height} pixel space")
+
+
+def _validate_dimensions(width: Any, height: Any, what: str) -> None:
+    if (
+        not isinstance(width, int)
+        or isinstance(width, bool)
+        or not isinstance(height, int)
+        or isinstance(height, bool)
+        or width <= 0
+        or height <= 0
+    ):
+        raise ContractError(f"{what} {width}x{height} does not have positive integer dimensions")
+
+
 def load_padding_config(path: str | Path = DEFAULT_PADDING_CONFIG_PATH) -> dict[str, Any]:
     """Read the padding policy, with the digest that binds it to a run.
 
@@ -252,10 +278,9 @@ def to_model_space(bounds: Bounds, page_w: int, page_h: int, model_w: int, model
     the two roundings compound into a rectangle that is genuinely short of the
     ink it was supposed to enclose.
     """
-    if page_w <= 0 or page_h <= 0:
-        raise ContractError(f"a {page_w}x{page_h} page has no positive dimensions to rescale")
-    if model_w <= 0 or model_h <= 0:
-        raise ContractError(f"a {model_w}x{model_h} model-space target is not positive")
+    _validate_dimensions(page_w, page_h, "page")
+    _validate_dimensions(model_w, model_h, "model-space target")
+    _validate_bounds(bounds, page_w, page_h, "source bounds")
     scale = {
         "x": {"numerator": model_w, "denominator": page_w},
         "y": {"numerator": model_h, "denominator": page_h},
@@ -293,6 +318,9 @@ def from_model_space(
     different page is still refused while a single pixel of outward rounding at
     the true page edge is merely clamped.
     """
+    _validate_dimensions(page_w, page_h, "page")
+    if not isinstance(scale, dict):
+        raise ContractError("scale is not an x/y ratio object")
     axes = {}
     for axis in ("x", "y"):
         ratio = scale.get(axis)
@@ -312,6 +340,12 @@ def from_model_space(
 
     x_num, x_den = axes["x"]
     y_num, y_den = axes["y"]
+    if x_den != page_w or y_den != page_h:
+        raise ContractError(
+            f"scale {scale} was recorded for a {x_den}x{y_den} page, not "
+            f"the declared {page_w}x{page_h} page"
+        )
+    _validate_bounds(model_bounds, x_num, y_num, "model-space bounds")
     x0 = (model_bounds["x"] * x_den) // x_num
     y0 = (model_bounds["y"] * y_den) // y_num
     far_x = (model_bounds["x"] + model_bounds["w"]) * x_den

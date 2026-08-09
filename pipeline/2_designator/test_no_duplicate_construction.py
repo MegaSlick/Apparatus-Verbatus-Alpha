@@ -2,14 +2,14 @@
 
 `recovery_pass` once hand-built its own copy of `cut_region`'s `transform` dict,
 purely to predict a would-be duplicate's `region_id` before ever cutting a crop
-(`_proposal_transform`'s docstring tells the story). A reconnaissance sweep for
+(`_crop_transform`'s docstring tells the story). A reconnaissance sweep for
 other instances of the same class -- two independently hand-written
 constructions of a structure that then feeds an identity or a comparison --
 found a second one inside this stage's own file: three call sites once each
 rebuilt a continuation or recovery rectangle from a fixture row's `x, y, w, h`
 fields by hand (`_bounds_of`'s docstring tells that story).
 
-Both are now single-construction: `_proposal_transform` and `_bounds_of` are
+Both are now single-construction: `_crop_transform` and `_bounds_of` are
 the only places these shapes are built. These tests are the mechanical proof
 that stays true, over the file's actual source rather than over today's belief
 about it -- a future edit that reintroduces a second hand-built copy fails one
@@ -73,9 +73,9 @@ def _count_xywh_dict_comprehensions(tree: ast.AST) -> int:
 
 
 def test_exactly_one_crop_transform_literal_exists():
-    """`_proposal_transform` is the only place this shape may be built.
+    """`_crop_transform` is the only place this shape may be built.
 
-    Deleting `_proposal_transform` and inlining its body at both of its two
+    Deleting `_crop_transform` and inlining its body at its call sites
     call sites (as the file used to do) makes this count 2 and fails here --
     checked directly below rather than only asserted in prose.
     """
@@ -92,7 +92,7 @@ def test_deleting_the_shared_transform_builder_is_caught():
     """
     source = RUN_PY.read_text()
     reintroduced = source.replace(
-        'transform = _proposal_transform(act["page_ordinal"], page_record["subject_id"], bounds)',
+        'transform = _crop_transform(act["page_ordinal"], page_record["subject_id"], bounds)',
         (
             'transform = {"operation": "crop", '
             '"source_page_ordinal": act["page_ordinal"], '

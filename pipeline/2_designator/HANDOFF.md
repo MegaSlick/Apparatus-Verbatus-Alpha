@@ -47,8 +47,12 @@ provenance (resolved Designator chair identity, revision, and serving receipt)
 `transform.bounds` is always the *final* rectangle actually cut — the one
 `common/exemplar_boundary.py::verify_exemplar_crop_lineage` reproduces the crop
 from, and the sole reason `transform` keeps exactly its historical four fields.
-`raw_bounds` is the *structural* rectangle grouping proposed, the one act
-identity is bound to (`common/contracts/identities.py::act_bindings`); a
+`raw_bounds` is the *structural* rectangle the sealed synthetic fixture
+declared and act identity is bound to (`common/contracts/identities.py::act_bindings`).
+The real structure-model path is not built; there, this would instead be the
+structure pass's own authoritative rectangle. The current visual grouping is
+recorded separately as `act-group.detected_bounds` and must reconcile against
+the fixture rectangle rather than silently replacing it. A
 proposal crop's `raw_bounds` differs from `transform.bounds` by the configured
 capture padding (`config/designator_padding.toml`), asymmetric and clamped to
 the page edge, with `padding.applied_px` recording the exact pixels actually
@@ -75,15 +79,18 @@ One record per act reaching `outcome="proposed"`, subject-keyed to the act
 identity, no attempt binding. This is the `acts/` contract: how geometry and
 structural cues grouped the raw candidate regions into this act, reconciled
 against (never the source of) the act's identity-bound bounds. **It carries no
-text, enforced at the schema boundary** by `_refuse_text_fields` — every payload
-this stage publishes is walked for a closed set of forbidden content-bearing
+text, enforced at the schema boundary** by `_refuse_text_fields` — each
+`act-group` payload is walked for a closed set of forbidden content-bearing
 keys (`text`, `reported`, `transcription`, `transcript`, `content`, `reading`,
-`literal`, `token`, `tokens`) before it is sent to `context.publish`, and this
-is the one kind the spec names the rule for by name. The same closed set also
+`literal`, `token`, `tokens`), case-insensitively, before it is sent to
+`context.publish`; this is the kind the spec names the rule for. The same set also
 refuses `chosen` and `pivot`: neither is text, but both are the retired
 picker's own words for the witness it elected (GLOSSARY, "Retired terms"), and
 a Designator payload growing either field would be a picker announcing itself
-at the one boundary already positioned to refuse it.
+at the one boundary already positioned to refuse it. The enclosing
+`_validate_act_group_payload` also requires the exact top-level and continuation
+field sets, so an unanticipated synonym such as `ocr_text` is refused as an
+unknown field rather than passing because a denylist did not predict its name.
 
 ```text
 act_key, declared_bounds, detected_bounds
@@ -157,7 +164,7 @@ construction: `residual_act_ordinal(index) = -(index + 1)`, and a structure
 pass's own proposal ordinal is always non-negative, so the two act-identity
 spaces can never collide, present fixture or real one.
 
-## `kind="secondary-provenance"` and `kind="secondary-proposal"`
+## `kind="secondary-provenance"`, `kind="secondary-proposal"`, and `kind="rescue-crop"`
 
 `secondary-provenance` is published exactly once per run, subject
 `"secondary-provenance"`: the resolved `secondary_proposer` chair, absent or
@@ -185,15 +192,25 @@ to mean "the resolution call may be skipped when nothing is configured" is
 reading a word choice as an implementation instruction it was never meant to
 carry.
 
-`secondary-proposal` exists only when the chair is configured, one record per
-rescue candidate the secondary scan finds that no already-claimed proposal
-region touches at all — `authoritative: false`, always, at the schema level and
-in fact. A candidate touching exactly one claimed act is ordinary coverage, not
-a find, and is not published. A candidate touching two or more claimed acts at
-once is refused outright rather than published (`_secondary_rescue_candidates`)
+`secondary-proposal` exists only when the chair is configured, one held record
+per rescue candidate the secondary scan finds outside authoritative coverage —
+`authoritative: false`, always, at the schema level and in fact. A candidate
+wholly contained by exactly one claimed act is ordinary coverage and is not
+published; merely overlapping one does not discard the additional area outside
+that claim. A candidate touching two or more claimed acts at once is refused
+outright rather than published (`_secondary_rescue_candidates`)
 — the P0-incident-shaped rule: a detector may add recall, never decide between
-two acts or refine either. Removing the proposer changes no `region`,
-`act-group`, or `proposal-seal` outcome; only these two kinds disappear.
+two acts or refine either.
+
+Each proposal directly references a `rescue-crop`: the exact unpadded source
+pixels inside the secondary box, with its origin, null padding, transform, and
+image digests. Both
+records have `outcome="held"`; the crop says `authority_effect="review-only"`,
+and neither enters an act, a structure region, or the proposal seal. This is the
+terminal review disposition that prevents an additive proposal from existing
+only as inert metadata while the stage exits complete. Removing the proposer
+changes no `region`, `act-group`, or `proposal-seal` outcome; only the secondary
+evidence and held exit disappear.
 
 ## `kind="structure-status"`
 
@@ -261,13 +278,15 @@ evidence.
 
 ## Exit code
 
-`EXIT_COMPLETE` (0) only when the seal holds nothing and no page was held.
-Anything held — an act, a page, or ink no crop claimed — exits `EXIT_HELD` (3).
+`EXIT_COMPLETE` (0) only when the seal holds nothing, no page was held, and no
+secondary rescue awaits review. Anything held — an act, a page, ink no
+authoritative crop claimed, or a non-authoritative rescue — exits `EXIT_HELD` (3).
 The exit code is the one signal an operator reads without opening the tree, and
-a 0 over a hold is a partial result wearing "complete" (GOVERNANCE 2). It is
-computed from the seal's own rows, so it cannot drift from the record it
-describes. A recovery invocation cuts one requested crop and exits 0 or fails;
-it publishes no holds.
+a 0 over a hold is a partial result wearing "complete" (GOVERNANCE 2). Act
+holds are computed from the seal's own rows; secondary holds are computed from
+the rescue records published in the same pass because that evidence deliberately
+does not enter the authority. A recovery invocation cuts one requested crop and
+exits 0 or fails; it publishes no holds.
 
 ## Run binding
 
@@ -300,9 +319,11 @@ a Testimonium actually names them. Recensor, Archetypus, and Armarium use the
 proposal seal as the conserved act denominator; none may manufacture a new act
 or choose among competing crops.
 
-`act-group`, `secondary-provenance`, `secondary-proposal` and `structure-status`
-have no consumer downstream of this stage today. They are evidence, filed the same way a `hold`
-is filed — nothing is lost silently — but no other stage reads them, and every
+`act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop` and
+`structure-status` have no consumer downstream of this stage today. The two
+secondary kinds are explicitly held for review and make the Designator exit
+held rather than being mistaken for accepted authority. No other stage reads
+them, and every
 other stage's own reader of this stage's manifest already filters to the one or
 two kinds it actually wants (`entry["kind"] == "region"`, `== "hold"`), so a new
 kind appearing here changes nothing for them by construction.
