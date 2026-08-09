@@ -20,6 +20,7 @@ import image_formats
 import pytest
 from image_formats import (
     MAX_DIMENSION,
+    MIN_BYTES_PER_DECLARED_TIFF_PAGE,
     DecodedRaster,
     FormatRefusal,
     ImageGeometry,
@@ -478,6 +479,51 @@ def test_a_classic_tiff_naming_no_image_directory_is_corrupt_not_silently_empty(
         count_raster_pages(data)
 
 
+def test_a_chain_of_empty_directories_cannot_declare_more_pages_than_bytes_allow():
+    """Six bytes may not buy a page ordinal, however many times it is repeated.
+
+    A directory the chain walk accepts costs two bytes of entry count and four of
+    next-offset, and nothing in that shape requires an actual image. Chaining empty
+    directories six bytes apart therefore declared one page per six submitted bytes:
+    measured before the floor existed, 1.2 MB fanned out to 200,000 ordinals through
+    the real `expand_sources` in 0.25 seconds, and the 64 MiB source ceiling put the
+    worst case near eleven million. Each ordinal is a decode attempt and an artifact.
+
+    This is the TIFF half of the page-tree amplification already refused in
+    `pdf_render`, and it is deliberately not the page cap ruling 17 retired: a real
+    reel's page count is the document's to declare, and the test below proves a
+    genuine thousand-page TIFF still passes with room to spare.
+    """
+    pages = 10_000
+    stride = 6
+    body = bytearray(stride * pages)
+    for index in range(pages):
+        at = stride * index
+        struct.pack_into("<H", body, at, 0)
+        struct.pack_into("<I", body, at + 2, 0 if index == pages - 1 else 8 + stride * (index + 1))
+    data = b"II*\x00" + struct.pack("<I", 8) + bytes(body)
+
+    with pytest.raises(FormatRefusal, match="below the .* bytes any real page needs"):
+        count_raster_pages(data)
+
+
+def test_a_real_thousand_page_tiff_is_counted_and_never_reaches_the_page_floor():
+    """The floor above must never be what refuses a genuine multi-page scan.
+
+    Pages this small are the closest a legitimate document can get to it: 1x1
+    pixels is the least page Pillow will write, and it still costs ~128 bytes,
+    four times the floor. A real scanned register page is orders larger again.
+    """
+    output = BytesIO()
+    first = Image.new("L", (1, 1), 17)
+    rest = [Image.new("L", (1, 1), 200) for _ in range(999)]
+    first.save(output, format="TIFF", save_all=True, append_images=rest)
+    data = output.getvalue()
+
+    assert count_raster_pages(data) == 1000
+    assert len(data) / 1000 > MIN_BYTES_PER_DECLARED_TIFF_PAGE
+
+
 def test_a_bad_later_tiff_page_keeps_a_good_earlier_page_counted_and_decodable():
     """A per-page tag defect must not erase a good earlier TIFF page.
 
@@ -752,14 +798,30 @@ def _tiff_tag_value_offset(data: bytes, tag: int) -> int:
 
 
 def test_a_classic_tiff_past_the_retired_5000_page_cap_keeps_its_denominator():
-    """The document declares the page count; a project policy number does not."""
+    """The document declares the page count; a project policy number does not.
+
+    The directories are spaced rather than packed, and the spacing is the point.
+    This test used to chain them six bytes apart, which is the least the walk will
+    accept — and that is byte-for-byte the amplification shape
+    `test_a_chain_of_empty_directories_cannot_declare_more_pages_than_bytes_allow`
+    now refuses, so the two tests asserted opposite things about identical bytes.
+    Ruling 17 retired the 5,000-page *cap*, which is what this test exists to hold:
+    a document says how many pages it has. It never said six bytes buy a page. A
+    real page of this era costs ~128 bytes at Pillow's absolute smallest, so a
+    document declaring 5,001 pages weighs at least this much, and the count still
+    passes with no policy number anywhere near it.
+    """
     pages = 5_001
+    stride = 40
     data = bytearray(b"II*\x00" + struct.pack("<I", 8))
     for index in range(pages):
-        next_offset = 8 + (index + 1) * 6 if index + 1 < pages else 0
+        next_offset = 8 + (index + 1) * stride if index + 1 < pages else 0
         data.extend(struct.pack("<HI", 0, next_offset))
+        data.extend(b"\x00" * (stride - 6))
 
     assert count_raster_pages(bytes(data)) == pages
+    assert pages > 5_000
+    assert len(data) / pages > MIN_BYTES_PER_DECLARED_TIFF_PAGE
 
 
 def test_bigtiff_leaves_its_page_count_to_the_decoder():

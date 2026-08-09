@@ -49,6 +49,21 @@ MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
 MAX_TIFF_DATA_SEGMENTS: Final = 100_000
+# A classic-TIFF image directory the chain walk accepts costs six bytes: two of
+# entry count and four of next-offset. Nothing in that shape requires an actual
+# image, so a chain of empty directories six bytes apart declares one page per six
+# submitted bytes — measured, not theorised: 1.2 MB of them fanned out to 200,000
+# ordinals through the real `expand_sources` in 0.25 seconds, and the 64 MiB source
+# ceiling puts the worst case near eleven million.
+#
+# This is the same question `pdf_render.MIN_BYTES_PER_DECLARED_PAGE` asks of a PDF
+# page tree, and it is deliberately *not* the page cap ruling 17 retired. A real
+# microfilm reel is honestly enormous and its page count is the document's to
+# declare; what is refused here is a declared count no container of this size could
+# physically hold. The floor sits far below any decodable page — a real TIFF page
+# needs the tags for geometry, strip offsets and bit depth before a single pixel,
+# well past a hundred bytes — so no genuine document can reach it.
+MIN_BYTES_PER_DECLARED_TIFF_PAGE: Final = 32
 
 
 class ImageGeometry(NamedTuple):
@@ -1516,5 +1531,15 @@ def _validate_classic_tiff_page_chain(data: bytes) -> int | None:
         if next_offset_at + 4 > len(data):
             raise corrupt("TIFF: image-directory entries run past the file")
         pages += 1
+        # Checked inside the walk rather than after it, so a hostile chain is
+        # refused at the byte that makes it impossible instead of after eleven
+        # million iterations. A real document trips this on no page.
+        if pages * MIN_BYTES_PER_DECLARED_TIFF_PAGE > len(data):
+            raise corrupt(
+                f"TIFF: the directory chain declares more than {pages - 1} pages in "
+                f"{len(data)} bytes, below the {MIN_BYTES_PER_DECLARED_TIFF_PAGE} bytes "
+                "any real page needs; this is a malformed or hostile directory chain, "
+                "not a large document"
+            )
         (offset,) = struct.unpack_from(endian + "I", data, next_offset_at)
     return pages
