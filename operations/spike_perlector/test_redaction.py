@@ -213,6 +213,27 @@ def test_history_writer_refuses_a_datetime_because_it_is_not_date_only(tmp_path)
         )
 
 
+def test_history_writer_ignores_a_hostile_isoformat_override(tmp_path):
+    """The filename is built from year/month/day, not isoformat().
+
+    A date subclass overriding isoformat() to return a path-traversal string
+    (or anything else) must not be able to steer the write outside
+    history_directory or otherwise change the target name.
+    """
+
+    class _HostileDate(date):
+        def isoformat(self):
+            return "../../escaped"
+
+    target = write_public_finding(
+        declared_fixture_run(),
+        history_directory=tmp_path,
+        finding_date=_HostileDate(2026, 8, 8),
+    )
+    assert target.parent == tmp_path
+    assert target.name == "2026-08-08_reading_claim_metrics.json"
+
+
 def test_public_schema_is_present_parseable_and_declares_no_free_text_field():
     # Resolved from this file, not from the working directory: a relative
     # `Path("history/...")` passes or fails on where pytest was invoked from,

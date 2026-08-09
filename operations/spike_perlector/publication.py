@@ -36,7 +36,13 @@ def write_public_finding(
         json.dumps(finding, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         + b"\n"
     )
-    target = history_directory / f"{finding_date.isoformat()}_reading_claim_metrics.json"
+    # Built from the integer fields rather than finding_date.isoformat(): a date
+    # subclass could override isoformat() to return an arbitrary string (e.g. one
+    # containing "/" or "..") and write outside history_directory.
+    target = history_directory / (
+        f"{finding_date.year:04d}-{finding_date.month:02d}-{finding_date.day:02d}"
+        "_reading_claim_metrics.json"
+    )
     try:
         history_directory.mkdir(parents=True, exist_ok=True)
         with target.open("xb") as handle:
