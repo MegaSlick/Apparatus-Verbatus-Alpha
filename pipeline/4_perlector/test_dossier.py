@@ -1,0 +1,224 @@
+"""The dossier: deterministic, order-invariant, and leaking nothing under the
+blinded regime that a named dossier would show.
+"""
+
+import copy
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from common.chairs.registry import ChairRegistry
+from common.contracts.canonical import canonical_text, digest_bytes
+from common.contracts.errors import ContractError
+from common.contracts.stages import ATTESTATORES, DESIGNATOR
+from common.runtree.store import RunTree
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_perlector():
+    path = Path(__file__).resolve().parent / "run.py"
+    spec = importlib.util.spec_from_file_location("perlector_dossier_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+perlector = _load_perlector()
+dossier = perlector.dossier_module
+
+
+class _Context:
+    def __init__(self, tree, witness_context="named"):
+        self.tree = tree
+        self.run = tree.read_run()
+        self.registry = ChairRegistry.from_toml(ROOT / "config/models.toml")
+        self.witness_context = witness_context
+
+    @property
+    def config_digest(self):
+        return self.run["config_digest"]
+
+    def input_ref(self, relative_path):
+        return {
+            "relative_path": relative_path,
+            "sha256": digest_bytes(self.tree.read_bytes(relative_path)),
+        }
+
+
+@pytest.fixture(scope="module")
+def evidence(tmp_path_factory):
+    """A real run through the Attestatores, so the dossier is built over real
+    regions and real testimonia rather than hand-built stand-ins."""
+    root = tmp_path_factory.mktemp("dossier") / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+    ):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / program),
+                "--run-root",
+                str(root),
+                "--run-id",
+                "dossier-evidence",
+                "--scenario",
+                "happy",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "dossier-evidence")
+    context = _Context(tree)
+    first_region = next(
+        tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == "region"
+    )
+    act_id = first_region["subject_id"]
+    act_key = first_region["payload"]["act_key"]
+    regions = [
+        tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])["payload"]
+        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == "region" and entry["subject_id"] == act_id
+    ]
+    testimonia = [
+        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium" and entry["subject_id"] == act_id
+    ]
+    return context, act_id, act_key, regions, testimonia
+
+
+def _build(context, act_id, act_key, regions, testimonia, *, regime="named", witness_context=None):
+    return dossier.build_dossier(
+        context,
+        act_id=act_id,
+        act_key=act_key,
+        regions=regions,
+        testimonia=testimonia,
+        witnessed_region_ids={region["region_id"] for region in regions},
+        regime=regime,
+        page_renders=[],
+        witness_context=witness_context,
+    )
+
+
+def test_dossier_is_deterministic_and_shuffle_invariant(evidence):
+    context, act_id, act_key, regions, testimonia = evidence
+    forward = _build(context, act_id, act_key, regions, testimonia)
+    shuffled = _build(context, act_id, act_key, list(reversed(regions)), list(reversed(testimonia)))
+    assert forward == shuffled
+    assert forward["dossier_digest"] == shuffled["dossier_digest"]
+
+
+def test_dossier_carries_no_order_bearing_field(evidence):
+    context, act_id, act_key, regions, testimonia = evidence
+    built = _build(context, act_id, act_key, regions, testimonia)
+    dossier.assert_no_order_bearing_field(built)
+
+
+def test_the_no_order_bearing_sweep_is_not_vacuous(evidence):
+    """Prove the guard can go red: a dossier carrying a trust/preference field
+    must be caught."""
+    context, act_id, act_key, regions, testimonia = evidence
+    built = _build(context, act_id, act_key, regions, testimonia)
+    tampered = copy.deepcopy(built)
+    tampered["testimonia"][0]["trust_score"] = 100
+    with pytest.raises(ContractError, match="names a preference"):
+        dossier.assert_no_order_bearing_field(tampered)
+
+
+def test_blinded_regime_carries_no_chair_name_or_training_domain(evidence):
+    context, act_id, act_key, regions, testimonia = evidence
+    named = _build(context, act_id, act_key, regions, testimonia, regime="named")
+    blinded = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
+
+    chairs = {record["payload"]["chair"] for record in testimonia}
+    domains = {
+        entry["training_domain"] for entry in named["testimonia"] if entry["training_domain"]
+    }
+    blinded_text = canonical_text(blinded)
+
+    for chair in chairs:
+        assert chair not in blinded_text, f"blinded dossier leaks the real chair name {chair!r}"
+    for domain in domains:
+        assert domain not in blinded_text, (
+            f"blinded dossier leaks a training-domain fact {domain!r}"
+        )
+    assert all(entry["training_domain"] is None for entry in blinded["testimonia"])
+    assert all(entry["witness_label"].startswith("witness-") for entry in blinded["testimonia"])
+
+
+def test_blinded_pseudonyms_are_stable_and_reversible_without_a_stored_map(evidence):
+    """Reversal is recomputing the same deterministic function over the public
+    roster in `run.json`, never a second stored copy of it."""
+    from regime import pseudonym_for
+
+    context, act_id, act_key, regions, testimonia = evidence
+    blinded = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
+    labels = {entry["witness_label"] for entry in blinded["testimonia"]}
+    chairs = {record["payload"]["chair"] for record in testimonia}
+    recomputed = {
+        pseudonym_for(chair, run_id=context.tree.run_id, config_digest=context.config_digest)
+        for chair in chairs
+    }
+    assert labels == recomputed
+
+
+def test_named_and_blinded_sort_orders_can_differ(evidence):
+    """Sorting by displayed label, not the true chair name: under blinding the
+    order is a function of the pseudonym, not a fixed slot per chair."""
+    context, act_id, act_key, regions, testimonia = evidence
+    named = _build(context, act_id, act_key, regions, testimonia, regime="named")
+    blinded = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
+    named_order = [entry["witness_label"] for entry in named["testimonia"]]
+    assert named_order == sorted(named_order)
+    blinded_order = [entry["witness_label"] for entry in blinded["testimonia"]]
+    assert blinded_order == sorted(blinded_order)
+
+
+def test_load_witness_context_refuses_a_chair_with_no_declared_entry(tmp_path, evidence):
+    context, act_id, act_key, regions, testimonia = evidence
+    incomplete = tmp_path / "witness_context.toml"
+    incomplete.write_text('[attestator_1]\ntraining_domain = "x"\n', encoding="utf-8")
+    table = dossier.load_witness_context(incomplete)
+    with pytest.raises(ContractError, match="no declared entry"):
+        _build(context, act_id, act_key, regions, testimonia, witness_context=table)
+
+
+def test_build_page_render_is_a_genuine_downscale(evidence):
+    context, act_id, act_key, regions, testimonia = evidence
+    render = dossier.build_page_render(
+        context,
+        source_page_id=regions[0]["transform"]["source_page_id"],
+        source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
+    )
+    assert render["transform"] == {"operation": "downscale", "factor": 2}
+    assert render["width"] == 200 // 2
+    assert render["height"] == 260 // 2
+    assert context.tree.read_bytes(render["image_path"])
+
+
+def test_build_page_render_is_reused_byte_identically_on_a_repeat_call(evidence):
+    context, act_id, act_key, regions, testimonia = evidence
+    first = dossier.build_page_render(
+        context,
+        source_page_id=regions[0]["transform"]["source_page_id"],
+        source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
+    )
+    second = dossier.build_page_render(
+        context,
+        source_page_id=regions[0]["transform"]["source_page_id"],
+        source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
+    )
+    assert first == second

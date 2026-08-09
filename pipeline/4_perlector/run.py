@@ -29,6 +29,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import annotations  # noqa: E402
+import dossier as dossier_module  # noqa: E402
+import nuda  # noqa: E402
+import truncation  # noqa: E402
+from dissent import dissent_against  # noqa: E402
+from reader import FixtureReader  # noqa: E402
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -186,28 +194,6 @@ def verify_region(context, region: dict) -> dict:
         raise SchemaRefusal("a Designator region does not trace to its Exemplar page") from error
 
 
-def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
-    """Where the reading departed from each witness that actually reported.
-
-    Computed after the reading is fixed. A chair that failed or never ran has no
-    opinion to depart from, and is recorded as having none rather than as agreeing
-    — silence is not assent.
-    """
-    rows = []
-    for record in testimonia:
-        chair = record["payload"]["chair"]
-        if record["outcome"] not in WITNESS_READING_OUTCOMES:
-            rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
-            continue
-        reported = record["payload"].get("reported")
-        if not isinstance(reported, str):
-            raise SchemaRefusal(
-                f"completed Testimonium from chair {chair!r} carries no text to compare"
-            )
-        rows.append({"chair": chair, "compared": True, "departed": reported != reading})
-    return rows
-
-
 def witnessed_region_ids(testimonia: list[dict]) -> set[str]:
     """The original regions actually read by at least one completed witness."""
     return {
@@ -278,8 +264,11 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
     regime = {
         # Tyrel's 2026-07-30 ruling: witness identity travels under a run-level
         # toggle, and every Perlectio records the regime it ran under so a later
-        # reader knows what it was shown.
-        "witness_regime": "named",
+        # reader knows what it was shown. Read straight off this run's own
+        # sealed CLI flag (`common.stage.StageContext.witness_context`) rather
+        # than a constant, now that spec_08's own work -- binding the toggle to
+        # something real -- is this build's job.
+        "witness_regime": context.witness_context,
         "adapter_revision": context.adapter_revision,
     }
     if isinstance(resolved, AbsentChair):
@@ -309,6 +298,121 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
     }
 
 
+def _page_renders_for(context, bases: list[dict]) -> list[dict]:
+    """One downscaled page render per distinct page an act's regions touch.
+
+    A continuation act spans two pages; nuda and the primed pass see both,
+    because sight is never what nuda withholds.
+    """
+    by_page: dict[str, dict] = {}
+    for basis in bases:
+        page_id = basis["source_page_id"]
+        if page_id not in by_page:
+            by_page[page_id] = dossier_module.build_page_render(
+                context,
+                source_page_id=page_id,
+                source_page_ordinal=basis["source_page_ordinal"],
+            )
+    return list(by_page.values())
+
+
+def _whole_act_gap(testimonia: list[dict]) -> list[dict]:
+    """The one gap an unreadable act carries: zero-width, evidence attached,
+    never a character inside `text` (the establishment firewall,
+    `annotations.py`)."""
+    evidence = [
+        {"chair": record["payload"]["chair"], "variant": record["payload"]["reported"]}
+        for record in testimonia
+        if record["outcome"] in WITNESS_READING_OUTCOMES and record["payload"].get("reported")
+    ]
+    return [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": evidence}]
+
+
+def _region_pixels(bases: list[dict]) -> int:
+    return sum(
+        basis["transform"]["bounds"]["w"] * basis["transform"]["bounds"]["h"] for basis in bases
+    )
+
+
+def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, text: str) -> str:
+    """One place the outcome is decided, so the precedence is stated once:
+    a scenario's declared engine behaviour outranks the computed detector
+    (it stands in for a real engine's own report), the detector outranks a
+    default `read`, and an empty reading is never silently `read`."""
+    if declared_failure is not None:
+        return declared_failure
+    if truncation.holds_as_failure(truncation_record["classification"]):
+        return "truncated"
+    if text == "":
+        return "no-readable-text"
+    return "read"
+
+
+def _publish_lectio_nuda(
+    context,
+    *,
+    act: dict,
+    act_id: str,
+    ordinal: int,
+    chair: ChairIdentity,
+    bases: list[dict],
+    witnessed: set[str],
+    page_renders: list[dict],
+    reader: FixtureReader,
+    region_pixels: int,
+    witness_context_table: dict,
+) -> None:
+    """Publish the unprimed instrument reading.
+
+    Carries no testimonia at all (spec 08). Written under its own artifact
+    `kind` (`lectio-nuda`, never `perlectio`) and its own attempt operation
+    (`lectio-nuda`, never `perlegere`) -- structurally outside every consumer
+    that queries `kind == "perlectio"`, and outside the identity space
+    `latest_attempt`'s `attempt_id` derivation binds to `perlegere` readings,
+    so nothing can ever conflate a nuda attempt with an establishing one.
+    """
+    nuda_dossier = dossier_module.build_dossier(
+        context,
+        act_id=act_id,
+        act_key=act["act_key"],
+        regions=bases,
+        testimonia=[],
+        witnessed_region_ids=witnessed,
+        regime=context.witness_context,
+        page_renders=page_renders,
+        witness_context=witness_context_table,
+    )
+    result = reader.read(nuda_dossier, primed=False)
+    truncation_record = truncation.classify(
+        result["text"], region_pixels=region_pixels, stop_reason=result["stop_reason"]
+    )
+    outcome = _resolve_outcome(
+        declared_failure=None, truncation_record=truncation_record, text=result["text"]
+    )
+    payload = {
+        "act_key": act["act_key"],
+        "attempt_ordinal": ordinal,
+        "text": result["text"],
+        "dossier": nuda_dossier,
+        # Nothing to dissent against: nuda's dossier carries no testimonia, so
+        # there is no witness opinion for this reading to have departed from.
+        "dissent": [],
+        "truncation": truncation_record,
+        "uncertain_spans": [],
+        "gaps": _whole_act_gap([]) if outcome == "no-readable-text" else [],
+        "provenance": provenance_for(context, chair, attempted=True),
+    }
+    annotations.validate_annotations(payload, outcome=outcome)
+    context.publish(
+        kind=nuda.LECTIO_NUDA_KIND,
+        subject_id=act_id,
+        outcome=outcome,
+        attempt=attempt_id(act_id, "lectio-nuda", ordinal),
+        inputs=[context.input_ref(basis["image_path"]) for basis in bases],
+        payload=payload,
+    )
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run through the explicitly supplied chair implementation.
 
@@ -317,7 +421,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     """
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, PERLECTOR, registry_factory=registry_factory)
-    texts = {act["key"]: act["text"] for act in context.fixture["act"]}
+    reader = FixtureReader(context.fixture, context.scenario)
+    witness_context_table = dossier_module.load_witness_context(
+        Path(context.witness_context_config_path)
+    )
 
     # A recovery re-reads only the acts that were recovered. Re-reading the rest
     # would add an attempt nobody requested to an act nothing happened to, and an
@@ -397,7 +504,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # up to the fold would be truncated, which is a failure and not an output.
         bases = [verify_region(context, region) for region in regions]
         testimonia = testimonia_of(context, act_id, proposal_regions)
-        reading = texts[act["act_key"]]
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
         # recrop was never shown to a witness, and saying so is the difference
@@ -406,6 +512,58 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         witnessed = witnessed_region_ids(testimonia)
         for basis in bases:
             basis["witness_covered"] = basis["region_id"] in witnessed
+
+        region_pixels = _region_pixels(bases)
+        page_renders = _page_renders_for(context, bases)
+
+        # The unprimed instrument, sampled by the run's own predeclared design
+        # (`nuda_per_mille`, fixed before the run). Ahead of the establishing
+        # pass in this loop, but the two are independent artifacts; nothing
+        # about the nuda reading feeds the primed one or vice versa.
+        if nuda.is_nuda_sampled(
+            act_id, run_id=context.tree.run_id, nuda_per_mille=context.nuda_per_mille
+        ):
+            _publish_lectio_nuda(
+                context,
+                act=act,
+                act_id=act_id,
+                ordinal=ordinal,
+                chair=chair,
+                bases=bases,
+                witnessed=witnessed,
+                page_renders=page_renders,
+                reader=reader,
+                region_pixels=region_pixels,
+                witness_context_table=witness_context_table,
+            )
+
+        # The establishing read: every testimonium in the dossier, verbatim.
+        primed_dossier = dossier_module.build_dossier(
+            context,
+            act_id=act_id,
+            act_key=act["act_key"],
+            regions=bases,
+            testimonia=testimonia,
+            witnessed_region_ids=witnessed,
+            regime=context.witness_context,
+            page_renders=page_renders,
+            witness_context=witness_context_table,
+        )
+        result = reader.read(primed_dossier, primed=True)
+
+        # The scenario's declared engine behaviour stands in for a real
+        # engine's own report and, when present, decides `reading` and
+        # `outcome` together: a declared `no-readable-text` means nothing was
+        # read, not that the fixture's normal act text happens to still apply.
+        declared_failure = declared_reading_failure(context, act["act_key"])
+        reading = "" if declared_failure == "no-readable-text" else result["text"]
+        truncation_record = truncation.classify(
+            reading, region_pixels=region_pixels, stop_reason=result["stop_reason"]
+        )
+        outcome = _resolve_outcome(
+            declared_failure=declared_failure, truncation_record=truncation_record, text=reading
+        )
+        gaps = _whole_act_gap(testimonia) if outcome == "no-readable-text" else []
 
         # A real reading attempt, so the pinned snapshot is re-verified here, at
         # the moment this reading is produced, and its receipt written.
@@ -416,32 +574,38 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
             for record in testimonia
         }
+        payload = {
+            "act_key": act["act_key"],
+            "attempt_ordinal": ordinal,
+            "text": reading,
+            "basis": {
+                "regions": bases,
+                "testimonia": [
+                    {
+                        "chair": record["payload"]["chair"],
+                        "artifact_id": record["artifact_id"],
+                        "outcome": record["outcome"],
+                        "reference": testimonium_references[record["artifact_id"]],
+                    }
+                    for record in testimonia
+                ],
+            },
+            "dossier": primed_dossier,
+            "dissent": dissent_against(reading, testimonia),
+            "truncation": truncation_record,
+            "uncertain_spans": [],
+            "gaps": gaps,
+            "provenance": provenance,
+        }
+        annotations.validate_annotations(payload, outcome=outcome)
         context.publish(
             kind="perlectio",
             subject_id=act_id,
-            outcome=declared_reading_failure(context, act["act_key"]) or "read",
+            outcome=outcome,
             attempt=attempt_id(act_id, "perlegere", ordinal),
             inputs=[context.input_ref(basis["image_path"]) for basis in bases]
             + list(testimonium_references.values()),
-            payload={
-                "act_key": act["act_key"],
-                "attempt_ordinal": ordinal,
-                "text": reading,
-                "basis": {
-                    "regions": bases,
-                    "testimonia": [
-                        {
-                            "chair": record["payload"]["chair"],
-                            "artifact_id": record["artifact_id"],
-                            "outcome": record["outcome"],
-                            "reference": testimonium_references[record["artifact_id"]],
-                        }
-                        for record in testimonia
-                    ],
-                },
-                "dissent": dissent_against(reading, testimonia),
-                "provenance": provenance,
-            },
+            payload=payload,
         )
         read += 1
 

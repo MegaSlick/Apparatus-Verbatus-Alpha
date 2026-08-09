@@ -334,4 +334,12 @@ def test_dissent_compares_a_genuinely_empty_witness():
         ],
     )
 
-    assert rows == [{"chair": "attestator_3", "compared": True, "departed": True}]
+    assert rows == [
+        {
+            "chair": "attestator_3",
+            "compared": True,
+            "departed": True,
+            "departed_raw": True,
+            "comparison_loss": {"reading_dropped_characters": 0, "witness_dropped_characters": 0},
+        }
+    ]

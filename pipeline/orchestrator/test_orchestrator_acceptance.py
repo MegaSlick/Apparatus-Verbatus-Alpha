@@ -125,8 +125,37 @@ FIXTURE = "synthetic-two-page-v0"
 # `config/hard_failure.toml`'s comments (a stable reference stays; a line range
 # that drifts as the file is edited does not). File counts and scenario
 # behaviour are unchanged; only the sealed config digest moved.
-HAPPY_RUN_TREE_DIGEST = "2b9924f8e5fa39f1d7b352f96a0343033ed6bd78272bd7cc5e83f2f1e668c5c7"
-REVIEW_RUN_TREE_DIGEST = "584145ebdddc0561f3cd1beb17d9bbffeb87bd9e7a672b78d11c1028e6557133"
+#
+# Re-pinned for System 08 (the Perlector build): `run_config_bindings` now folds spec
+# 08's run-level witness-context regime, its Lectio-nuda sampling rate, and the digest
+# of the new `config/witness_context.toml` declaration into `config_digest` -- the same
+# pattern `pdf_target_dpi_override` already used, extended to the two new sealed facts a
+# Perlector run carries. That changes every artifact's `config_digest` under both
+# scenarios even at the unchanged defaults (`named`, `0`), which is the deliberate
+# record change this comment's own rule anticipates. The Perlector also now writes one
+# downscaled page-render blob per distinct page an act's regions touch (the dossier's
+# page-render reference, spec 08) -- two additional files under both scenarios, since
+# both `happy` and `review` touch the same two synthetic pages. File counts move from
+# 42 to 44 (happy) and 46 to 48 (review); nothing else about either scenario's shape
+# changed.
+#
+# Re-pinned again in the same build for `proof/build_fixture.py`: two new declared
+# scenarios (`engine-truncated-reading`, `no-readable-text-reading`), a second
+# `reading_failure` row, and the new `stop_reason` table the truncation detector reads.
+# `config_digest` seals the entire parsed fixture dict, not only the scenario a run
+# actually chose (`common/stage.py::run_config_bindings`'s `"fixture": fixture`
+# binding), so declaring data for scenarios neither `happy` nor `review` uses still
+# moves both pins. File counts are unchanged again; only the sealed configuration text
+# is bigger.
+#
+# Re-pinned for the rebase of the System 08 build onto the merged System 09 tree:
+# both movements above are now in one tree, so the counts are 45 (happy) and 49
+# (review) -- main's Recensor partition receipt plus this branch's two page-render
+# blobs per scenario -- and both digests were recomputed from real orchestrator
+# runs on the merged tree under `semantic_snapshot_digest` (decoded pixels for
+# PNG entries, bytes for everything else).
+HAPPY_RUN_TREE_DIGEST = "REPIN_AT_TIP_HAPPY"
+REVIEW_RUN_TREE_DIGEST = "REPIN_AT_TIP_REVIEW"
 
 
 def orchestrate(
@@ -1149,7 +1178,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    assert len(before) == 43
+    assert len(before) == 45
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -1166,7 +1195,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    assert len(before) == 47
+    assert len(before) == 49
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before

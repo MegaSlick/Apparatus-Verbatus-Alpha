@@ -16,7 +16,7 @@ import argparse
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Final, Protocol
 
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails
 from common.chairs.protocol import ChairProtocol
@@ -53,6 +53,15 @@ EXIT_HELD = 3
 EXIT_RUN_HALTED = 4
 
 DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "pdf_render.toml"
+DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "witness_context.toml"
+)
+
+# Spec 08's run-level blind/named toggle. Named here, once, so the CLI flag,
+# the config-digest binding, and every stage's shared parser agree on the
+# closed set rather than each re-declaring it.
+WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
+MAX_NUDA_PER_MILLE: Final = 1000
 
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
@@ -149,6 +158,27 @@ class StageContext:
     def witness_floor(self) -> int:
         return self.registry.config.witness_floor
 
+    @property
+    def witness_context(self) -> str:
+        """The sealed named/blinded regime this run's Perlector reads under.
+
+        Read straight off this process's own parsed CLI flag rather than off
+        `run.json`: the flag is what `run_config_bindings` folded into
+        `config_digest`, and `open_context`'s existing IncompatibleReuse check
+        already refuses a resumed run supplied a different value, so there is
+        no separate run-authority copy for this property to disagree with.
+        """
+        return self.args.witness_context
+
+    @property
+    def witness_context_config_path(self) -> str:
+        return self.args.witness_context_config
+
+    @property
+    def nuda_per_mille(self) -> int:
+        """The sealed Lectio nuda sampling rate, in thousandths. See `witness_context`."""
+        return self.args.nuda_per_mille
+
     def publish(
         self,
         *,
@@ -236,6 +266,23 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
     parser.add_argument("--hard-failure-config", default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH))
     parser.add_argument("--pdf-target-dpi", type=int, default=None)
+    parser.add_argument(
+        "--witness-context",
+        default="named",
+        choices=WITNESS_CONTEXT_REGIMES,
+        help="the run-level named/blinded toggle a Perlectio's dossier is built under (spec 08)",
+    )
+    parser.add_argument(
+        "--witness-context-config",
+        default=str(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH),
+        help="the Perlector-owned factual witness-context declaration this run seals",
+    )
+    parser.add_argument(
+        "--nuda-per-mille",
+        type=int,
+        default=0,
+        help="the sealed Lectio nuda sampling rate, in thousandths (0 disables it)",
+    )
     parser.add_argument("--operation", default="initial")
     parser.add_argument("--act", default=None, help="one act id, for a recovery operation")
     parser.add_argument(
@@ -275,6 +322,9 @@ def run_config_bindings(
     pdf_target_dpi: int | None = None,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
     hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
+    witness_context: str = "named",
+    witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
+    nuda_per_mille: int = 0,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -303,6 +353,24 @@ def run_config_bindings(
         ) from error
     recovery_policy = load_recovery_policy(recovery_config_path)
     hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
+    if witness_context not in WITNESS_CONTEXT_REGIMES:
+        raise ContractError(
+            f"witness_context {witness_context!r} is not one of {WITNESS_CONTEXT_REGIMES}"
+        )
+    if (
+        not isinstance(nuda_per_mille, int)
+        or isinstance(nuda_per_mille, bool)
+        or not (0 <= nuda_per_mille <= MAX_NUDA_PER_MILLE)
+    ):
+        raise ContractError(
+            f"nuda_per_mille must be an integer in [0, {MAX_NUDA_PER_MILLE}], got {nuda_per_mille!r}"
+        )
+    try:
+        witness_context_config_digest = digest_bytes(Path(witness_context_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            f"the witness-context declaration at {witness_context_config_path} could not be read"
+        ) from error
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
@@ -314,6 +382,16 @@ def run_config_bindings(
                 "pdf_target_dpi_override": pdf_target_dpi,
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
+                # Spec 08's run-level toggle and its sampling design. Sealed
+                # here exactly like `pdf_target_dpi_override` above: a stage
+                # never stores its own copy of "what regime did this run use",
+                # it re-derives the same config_digest from its own CLI flags
+                # and `open_context`'s existing IncompatibleReuse check refuses
+                # a resumed run that supplies a different value than the one
+                # the tree was sealed under.
+                "witness_context_regime": witness_context,
+                "witness_context_declaration_sha256": witness_context_config_digest,
+                "nuda_per_mille": nuda_per_mille,
             }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
@@ -782,6 +860,9 @@ def open_context(
         pdf_target_dpi=args.pdf_target_dpi,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
+        witness_context=args.witness_context,
+        witness_context_config_path=args.witness_context_config,
+        nuda_per_mille=args.nuda_per_mille,
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()

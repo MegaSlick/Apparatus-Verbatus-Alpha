@@ -102,6 +102,25 @@ WITNESS_EMPTY = (
 )
 _UNMATCHABLE_SHA256 = "0" * 64
 
+# A reading that did not succeed but still carries text -- the hazard
+# `truncated-reading` exercises: a `truncated` Perlectio must be held rather
+# than established. `no-readable-text-reading` exercises the sibling hazard,
+# an act the Perlector could not read at all: unresolved, not failed, and the
+# Perlector forces its own reading text to the empty string rather than
+# leaving the fixture's normal act text sitting underneath a declared silence.
+READING_FAILURES = (
+    {"scenario": "truncated-reading", "act_key": "a1", "outcome": "truncated"},
+    {"scenario": "no-readable-text-reading", "act_key": "a1", "outcome": "no-readable-text"},
+)
+
+# The one declared, fixture-only truncation signal (`pipeline/4_perlector/
+# truncation.py`): a real serving engine's own stop-reason, which this offline
+# skeleton has none of to observe honestly. `engine-truncated-reading`
+# exercises the detector's own authority -- unlike `truncated-reading` above,
+# nothing here declares the outcome directly; the Perlector must derive
+# `truncated` from the engine signal alone.
+STOP_REASONS = ({"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"},)
+
 
 def page_descriptor(ordinal):
     for page in PAGES:
@@ -288,17 +307,48 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "recover_acts = []",
         "hold_acts = []",
         "",
+        "# engine-truncated-reading exercises the truncation detector's own",
+        "# authority over a declared engine stop-reason, rather than a directly",
+        "# declared reading_failure outcome (see STOP_REASONS below).",
+        "",
+        "[[scenario]]",
+        'name = "engine-truncated-reading"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# no-readable-text-reading exercises the sibling hazard to a truncated",
+        "# reading: an act the Perlector could not read at all, rather than one",
+        "# it read part of.",
+        "",
+        "[[scenario]]",
+        'name = "no-readable-text-reading"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
         "# A reading that did not succeed. `truncated` is a failed-class Perlector",
         "# outcome that still carries text, which is the combination that matters: the",
         "# Recensor used to ask only whether a reading existed, and the Archetypus",
         "# copied the text out of whichever reading was latest. Stale text from a",
         "# reading nobody completed could therefore be established as the one text.",
         "# This scenario drives that exact path, and asserts the act is held instead.",
+        "# no-readable-text-reading drives the sibling hazard: an unresolved, not",
+        "# failed, outcome for an act nothing could be read from at all.",
         "",
-        "[[reading_failure]]",
-        'scenario = "truncated-reading"',
-        'act_key = "a1"',
-        'outcome = "truncated"',
+    ]
+    for failure in READING_FAILURES:
+        lines += [
+            "[[reading_failure]]",
+            f"scenario = {toml_string(failure['scenario'])}",
+            f"act_key = {toml_string(failure['act_key'])}",
+            f"outcome = {toml_string(failure['outcome'])}",
+            "",
+        ]
+    lines += [
+        "# The one declared, fixture-only truncation signal: a stand-in for a real",
+        "# serving engine's own stop-reason, read by",
+        "# `pipeline/4_perlector/truncation.py` and authoritative for `truncated`",
+        "# when it declares `length` -- named explicitly as a fixture stand-in",
+        "# rather than a computed signal.",
         "",
         "# The Perlector's own direct finding of no readable text. Under",
         "# `confirmed-blank` every configured chair also independently reports",
@@ -319,6 +369,16 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         'act_key = "a1"',
         'outcome = "no-readable-text"',
         "",
+    ]
+    for row in STOP_REASONS:
+        lines += [
+            "[[stop_reason]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"act_key = {toml_string(row['act_key'])}",
+            f"stop_reason = {toml_string(row['stop_reason'])}",
+            "",
+        ]
+    lines += [
         "# A chair whose attempt failed, exercising the witness `failed` state that Sol's",
         "# finding B-2 added to the closed vocabulary. It makes act a2 under-witnessed",
         "# without changing which acts are held.",

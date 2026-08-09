@@ -1030,6 +1030,9 @@ def fixture_submission(args, registry) -> int:
         pdf_target_dpi=args.pdf_target_dpi,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
+        witness_context=args.witness_context,
+        witness_context_config_path=args.witness_context_config,
+        nuda_per_mille=args.nuda_per_mille,
     )
 
     # The door creates the run: it is the first thing that knows what arrived, so

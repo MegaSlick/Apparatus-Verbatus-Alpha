@@ -1,0 +1,22 @@
+# Factual context for the Perlector's dossier -- spec_08: "witness identity and
+# factual context only: model name, resolved provenance, and its training domain
+# stated as fact... Never pipeline-asserted worth." No trust weight, no ranking,
+# no preferred order, no field here may express which witness is better.
+#
+# Owned by pipeline/4_perlector/ alone. Deliberately separate from
+# config/models.toml and common/chairs/ChairIdentity: the resolved identity,
+# revision, and license are chair concerns already carried on every reading's
+# provenance; a training-domain fact is dossier-only context handed to the
+# Perlector, and adding it here costs no change to the shared chair schema.
+#
+# Every configured witness chair must have an entry, or the dossier builder
+# refuses by name rather than describing a witness with no context at all.
+
+[attestator_1]
+training_domain = "a synthetic fixture witness; no real training domain applies"
+
+[attestator_2]
+training_domain = "a synthetic fixture witness; no real training domain applies"
+
+[attestator_3]
+training_domain = "a synthetic fixture witness; no real training domain applies"
