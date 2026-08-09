@@ -43,8 +43,11 @@ projection configuration. The bundle may contain these plainly specified formats
 
 - `text/_source_folder/<source-folder>/readings.txt` (or
   `text/_source_root/readings.txt` for the source root) — readable sections with a source page and
-  source digest, retaining the literal `canonical_clean_text` value. It makes no
-  uncertainty/gap display choice pending Tyrel's decision.
+  source digest, retaining the literal `canonical_clean_text` value, and beside it a
+  `display:` rendering under the **proposed** convention named on the line above it.
+  The rendering never replaces the canonical field: the clean verifier strips it and
+  requires the canonical value back exactly. Tyrel has not chosen a convention, and
+  `claims.display.status` says so on the face of every bundle.
 - `acts.sqlite` — an `acts` table with the literal Archetypus field, and a
   separate `act_search` / FTS5 layer whose search fold is visibly derived and
   revision-marked.

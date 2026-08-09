@@ -18,6 +18,7 @@ from armarium_export import (
     verify_export_bundle,
     verify_projection_identity,
 )
+from display import DISPLAY_CONVENTION
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats
@@ -168,7 +169,11 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
         assert not [name for name in archive.namelist() if name.startswith("pixels/")]
         text = archive.read(TEXT_REGISTER).decode("utf-8")
         assert "Cǣsar d’Amours" in text
-        assert "[" not in text, "no unapproved uncertainty/gap display convention is emitted"
+        # The rendering is labelled as a proposal and, with no uncertainty layer in
+        # the Archetypus record, is the established text unchanged. It sits beside
+        # the canonical field, never instead of it.
+        assert f"display_convention: {DISPLAY_CONVENTION}" in text
+        assert text.count(json.dumps("Cǣsar d’Amours", ensure_ascii=False)) == 2
 
     manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
     assert manifest["claims"]["status"] == "partial"
@@ -911,6 +916,61 @@ def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
     assert "blank page is proved" in units["page:3"]["reason"]
     assert ledger["by_unit_type"] == {"source": 3, "page": 2, "act": 2}
     assert sum(ledger["by_category"].values()) == ledger["unit_count"] == 7
+
+
+def test_a_display_that_does_not_strip_back_to_the_canonical_field_is_refused(tmp_path):
+    """Spec 11 test 2's rendered half, on the written product.
+
+    A display convention that changed the reading -- rather than annotating it --
+    would be a second text leaving the pipeline under GOVERNANCE 5's nose. The
+    verifier strips the rendering and requires the canonical field back exactly.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").splitlines()
+    display_at = lines.index("display:") + 1
+    lines[display_at] = json.dumps("Caesar d'Amours", ensure_ascii=False)
+    members[TEXT_REGISTER] = ("\n".join(lines) + "\n").encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="does not strip back"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_bundle_that_drops_its_rendering_is_refused(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").splitlines()
+    convention_at = next(
+        index for index, line in enumerate(lines) if line.startswith("display_convention: ")
+    )
+    del lines[convention_at : convention_at + 3]
+    members[TEXT_REGISTER] = ("\n".join(lines) + "\n").encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="no completed literal record"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_the_manifest_says_the_display_convention_is_only_proposed(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
+
+    assert manifest["claims"]["display"] == {
+        "convention": DISPLAY_CONVENTION,
+        "status": "proposed-pending-tyrels-choice",
+        "alters_stored_text": False,
+        "exercised_against_real_spans": False,
+        "reason": (
+            "the Archetypus record carries no uncertainty or gap layer yet, so "
+            "every rendering in this build is the established text unchanged"
+        ),
+    }
+    members = _members(bundle.data)
+    manifest["claims"]["display"]["status"] = "chosen"
+    _refresh_manifest(members, manifest)
+    with pytest.raises(SchemaRefusal, match="display claim is not the verified claim"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
 def _members(data: bytes) -> dict[str, bytes]:

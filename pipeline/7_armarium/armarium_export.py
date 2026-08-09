@@ -24,6 +24,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
+from display import DISPLAY_CONVENTION, render_display, strip_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats, armarium_formats_from_record
@@ -294,6 +295,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_retained_references(sources)
     _verify_manifest_source_counts(manifest, sources)
     _verify_pixel_claims(manifest, formats, sources)
+    _verify_display_claim(manifest)
     _verify_retained_run_claim(manifest)
     _verify_exact_product_members(formats, sources, actual_names)
     _verify_product_accounting(root, manifest, formats, sources)
@@ -658,6 +660,18 @@ def _text_bundle_members(
                     f"canonical_text_sha256: {canonical_text_sha256(act[CANONICAL_TEXT_FIELD])}",
                     "canonical_clean_text:",
                     json.dumps(act[CANONICAL_TEXT_FIELD], ensure_ascii=False),
+                    # The proposed rendering, beside the canonical field and never
+                    # instead of it. `strip_display` must return the line above
+                    # exactly; the clean verifier checks that rather than trusting
+                    # it. With no uncertainty layer in the Archetypus record yet the
+                    # two lines are identical today, and the round trip is what
+                    # keeps a display convention from ever leaking into the hashed
+                    # field once that layer lands.
+                    f"display_convention: {DISPLAY_CONVENTION}",
+                    "display:",
+                    json.dumps(
+                        render_display(act[CANONICAL_TEXT_FIELD]), ensure_ascii=False
+                    ),
                     "",
                 ]
             )
@@ -1116,6 +1130,7 @@ def _text_bundle_records(
     for path in sorted((root / "text").rglob("readings.txt")) if (root / "text").exists() else []:
         lines = path.read_text(encoding="utf-8").splitlines()
         current_id: str | None = None
+        pending: tuple[str, str, tuple[tuple[str, str], ...]] | None = None
         citations: list[tuple[str, str]] = []
         for index, line in enumerate(lines):
             if line.startswith("act-id: "):
@@ -1125,6 +1140,7 @@ def _text_bundle_records(
                 if not current_id:
                     raise SchemaRefusal("a text-bundle section has an empty act identity")
                 citations = []
+                pending = None
             elif line.startswith("source-page: "):
                 if current_id is None or index + 1 >= len(lines):
                     raise SchemaRefusal("a text-bundle source citation has no act identity or digest")
@@ -1160,8 +1176,27 @@ def _text_bundle_records(
                     or current_id in records
                 ):
                     raise SchemaRefusal("a text-bundle literal identity or hash is invalid")
-                records[current_id] = (literal, digest, tuple(citations))
-                current_id = None
+                pending = (literal, digest, tuple(citations))
+            elif line == "display:":
+                # Spec 11 test 2's second half, checked on the written product:
+                # render -> strip -> hash. The rendered display is a reading aid and
+                # stripping it must return the canonical field exactly, so a display
+                # convention can never become characters in the hashed text.
+                if current_id is None or pending is None or index + 1 >= len(lines):
+                    raise SchemaRefusal("a text-bundle display has no literal to render")
+                convention_line = lines[index - 1] if index else ""
+                if convention_line != f"display_convention: {DISPLAY_CONVENTION}":
+                    raise SchemaRefusal("a text-bundle display names no known convention")
+                try:
+                    rendered = json.loads(lines[index + 1])
+                except json.JSONDecodeError as error:
+                    raise SchemaRefusal("a text-bundle display is not JSON") from error
+                if not isinstance(rendered, str) or strip_display(rendered) != pending[0]:
+                    raise SchemaRefusal(
+                        "a text-bundle display does not strip back to its canonical clean text"
+                    )
+                records[current_id] = pending
+                current_id, pending = None, None
         if current_id is not None:
             raise SchemaRefusal("a text-bundle section has no completed literal record")
     return records
@@ -1489,6 +1524,20 @@ def _export_manifest(
             "annotations": {
                 "status": "not-produced-pending-architecture-approval",
                 "text_writable": False,
+            },
+            # A proposal, and labelled one: spec 11 leaves the uncertainty/gap
+            # display convention to Tyrel at this gate. The rendering sits beside
+            # the canonical field in the text bundle and strips back to it exactly;
+            # nothing hashed depends on the choice.
+            "display": {
+                "convention": DISPLAY_CONVENTION,
+                "status": "proposed-pending-tyrels-choice",
+                "alters_stored_text": False,
+                "exercised_against_real_spans": False,
+                "reason": (
+                    "the Archetypus record carries no uncertainty or gap layer yet, so "
+                    "every rendering in this build is the established text unchanged"
+                ),
             },
             "salvage": salvage_claim,
         },
@@ -2244,6 +2293,20 @@ def _verify_pixel_claims(
             raise SchemaRefusal(
                 "a package source citation disagrees with its selected pixel-embedding setting"
             )
+
+
+def _verify_display_claim(manifest: dict[str, Any]) -> None:
+    """A rendering may be proposed; it may not be presented as settled or as text."""
+    claims = manifest.get("claims")
+    display = claims.get("display") if isinstance(claims, dict) else None
+    if (
+        not isinstance(display, dict)
+        or display.get("convention") != DISPLAY_CONVENTION
+        or display.get("status") != "proposed-pending-tyrels-choice"
+        or display.get("alters_stored_text") is not False
+        or display.get("exercised_against_real_spans") is not False
+    ):
+        raise SchemaRefusal("the package display claim is not the verified claim")
 
 
 def _verify_retained_run_claim(manifest: dict[str, Any]) -> None:
