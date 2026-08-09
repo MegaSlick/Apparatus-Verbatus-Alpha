@@ -92,16 +92,52 @@ def test_a_perlectio_missing_any_field_of_its_record_is_refused(published_payloa
         _validate(payload)
 
 
-def test_an_empty_dissent_record_is_accepted_but_a_missing_one_is_not(published_payload):
-    """The distinction the closed set exists for. Every witness agreeing is a
-    real answer and an ordinary one; nobody having computed dissent at all is a
-    blinded instrument, and the two must never look the same in the record."""
+def test_an_empty_dissent_record_cannot_hide_the_whole_witness_denominator(published_payload):
+    """Agreement is a row with no departure spans, never an omitted row."""
     payload = copy.deepcopy(published_payload)
     payload["dissent"] = []
-    _validate(payload)
+    with pytest.raises(SchemaRefusal, match="exactly every witness"):
+        _validate(payload)
 
     payload["dissent"] = None
     with pytest.raises(SchemaRefusal, match="no dissent record"):
+        _validate(payload)
+
+
+def test_a_dissent_record_cannot_duplicate_one_witness_over_another(published_payload):
+    payload = copy.deepcopy(published_payload)
+    payload["dissent"][1]["chair"] = payload["dissent"][0]["chair"]
+    with pytest.raises(SchemaRefusal, match="repeats a witness"):
+        _validate(payload)
+
+
+def test_a_dissent_reading_span_must_index_the_perlectio_text(published_payload):
+    payload = copy.deepcopy(published_payload)
+    row = next(row for row in payload["dissent"] if row["compared"] is True)
+    row["departures"] = [
+        {
+            "reading_span": {"start": 0, "end": len(payload["text"]) + 1},
+            "testimonium_span": {"start": 0, "end": 1},
+        }
+    ]
+    row["departed"] = True
+    row["departed_raw"] = True
+    with pytest.raises(SchemaRefusal, match="invalid bounds"):
+        _validate(payload)
+
+
+def test_dissent_cannot_call_a_failed_witness_compared(published_payload):
+    payload = copy.deepcopy(published_payload)
+    payload["basis"]["testimonia"][0]["outcome"] = "failed"
+    with pytest.raises(SchemaRefusal, match="did not report"):
+        _validate(payload)
+
+
+def test_dissent_booleans_must_reconcile_with_their_spans(published_payload):
+    payload = copy.deepcopy(published_payload)
+    row = next(row for row in payload["dissent"] if row["compared"] is True)
+    row["departed_raw"] = not bool(row["departures"])
+    with pytest.raises(SchemaRefusal, match="contradicts its own"):
         _validate(payload)
 
 
@@ -121,6 +157,39 @@ def test_a_perlectio_claiming_an_impossible_regime_is_refused(published_payload)
         _validate(payload)
 
 
+def test_a_perlectio_regime_must_match_the_dossier_it_was_shown(published_payload):
+    payload = copy.deepcopy(published_payload)
+    payload["dossier"]["witness_regime"] = "blinded"
+    with pytest.raises(SchemaRefusal, match="dossier's witness regime"):
+        _validate(payload)
+
+
+def test_a_perlectio_refuses_a_stale_dossier_digest(published_payload):
+    payload = copy.deepcopy(published_payload)
+    payload["dossier"]["act_key"] = "another-act"
+    payload["act_key"] = "another-act"
+    with pytest.raises(SchemaRefusal, match="dossier digest"):
+        _validate(payload)
+
+
+def test_a_perlectio_prompt_must_reproduce_from_its_dossier(published_payload):
+    payload = copy.deepcopy(published_payload)
+    payload["prompt"]["rendered_sha256"] = "0" * 64
+    with pytest.raises(SchemaRefusal, match="does not reproduce"):
+        _validate(payload)
+
+
+def test_a_perlectio_dossier_cannot_drop_one_basis_witness(published_payload):
+    payload = copy.deepcopy(published_payload)
+    payload["dossier"]["testimonia"].pop()
+    dossier_body = {
+        key: value for key, value in payload["dossier"].items() if key != "dossier_digest"
+    }
+    payload["dossier"]["dossier_digest"] = perlector.digest_of(dossier_body)
+    with pytest.raises(SchemaRefusal, match="exactly its Testimonium basis"):
+        _validate(payload)
+
+
 def test_a_configured_chair_with_no_resolved_identity_is_refused(published_payload):
     payload = copy.deepcopy(published_payload)
     assert payload["provenance"]["chair_state"] == "configured"
@@ -133,6 +202,20 @@ def test_a_perlectio_with_no_truncation_classification_is_refused(published_payl
     payload = copy.deepcopy(published_payload)
     payload["truncation"] = {"signals": {}}
     with pytest.raises(SchemaRefusal, match="no truncation classification"):
+        _validate(payload)
+
+
+def test_a_truncated_classification_cannot_publish_as_a_completed_read(published_payload):
+    payload = copy.deepcopy(published_payload)
+    payload["truncation"]["classification"] = "truncated"
+    with pytest.raises(SchemaRefusal, match="cannot carry the completed outcome"):
+        _validate(payload)
+
+
+def test_an_empty_text_cannot_publish_as_a_completed_read(published_payload):
+    payload = copy.deepcopy(published_payload)
+    payload["text"] = ""
+    with pytest.raises(SchemaRefusal, match="cannot establish an empty text"):
         _validate(payload)
 
 

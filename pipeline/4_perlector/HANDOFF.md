@@ -57,13 +57,18 @@ provenance
 consumers actually read (`common/stage.py::reading_basis_regions` walks
 `basis.regions`). Nothing here may ever remove or repurpose it.
 
+The envelope's direct inputs bind every full-resolution crop, every downscaled
+page-context render and its sealed source page, and every Testimonium reference.
+The dossier is therefore not the sole claim that the reader saw its page context.
+
 **The field set above is closed and checked before publication**
 (`run.py::validate_reading_payload`). Three of the four failures spec 08's
 schema test names — missing identity, missing dissent, missing regime record —
 are *absent* fields rather than wrong ones, which is the failure a per-field
-type check never sees. An empty `dissent` list is a real and ordinary answer;
-an absent one means nobody computed it, and the two may never look the same in
-the record.
+type check never sees. Agreement is one row per witness with no departure spans;
+an empty `dissent` list is valid only for Lectio nuda, which was shown no
+testimony. Omitting primed rows would make agreement indistinguishable from an
+instrument that never ran.
 
 ### `dossier` — the input contract, persisted as evidence (spec 08)
 
@@ -72,7 +77,8 @@ act_id, act_key, witness_regime
 regions       = [{region_id, image_path, image_sha256, witness_covered}, ...]
 page_renders  = [{source_page_id, source_page_ordinal, source, image_path,
                    image_sha256, transform}, ...]
-testimonia    = [{witness_label, training_domain, outcome, reported}, ...]
+testimonia    = [{witness_label, model_name, resolved_provenance,
+                   training_domain, outcome, reported}, ...]
 dossier_digest
 ```
 
@@ -85,12 +91,13 @@ meaningless.
 
 **Witness regime.** `witness_regime` is `named` or `blinded`, sealed as a real
 run-level flag (`--witness-context`, `common/stage.py`) rather than a constant.
-Under `blinded`, `witness_label` is a stable per-run pseudonym
+Under `named`, each row carries the witness's resolved model name and the exact
+validated provenance from its Testimonium, so factual context shown in the
+prompt is recorded rather than inferred. Under `blinded`, `witness_label` is a
+stable per-run pseudonym
 (`pipeline/4_perlector/regime.py::pseudonym_for`) and `training_domain` is
 withheld entirely — a training-domain sentence can identify a witness as surely
-as its name, so both leave together. No resolved model identity (repo, revision)
-ever appears in the dossier under either regime; that already travels on the
-Testimonium's own provenance, one step downstream. The pseudonym has no stored
+as its name, so model name, provenance, and domain all leave together. The pseudonym has no stored
 reversible map: reversal is recomputing the same deterministic digest over the
 public roster in `run.json["witness_chairs"]`.
 
@@ -148,7 +155,7 @@ thing to refuse if it ever appears here.
 Built by `prompts.py` from the resolved chair's own declared serving recipe,
 *before* the reader is called, from the dossier the reader is then shown. A
 recipe with no registered builder refuses outright rather than falling back to
-some other seat's template — the silent fallback is the exact harness failure
+some other chair's template — the silent fallback is the exact harness failure
 invariant #49 exists to prevent. The identity digest travels beside the recipe
 because a chair is a role and a role can be occupied by a stock model, a vendor
 model, a local checkpoint or an unmerged adapter in turn; two Perlectiones can
@@ -196,7 +203,8 @@ Each evidence row is `{chair, testimonium_id, reference, variant}` — the
 digest-checked reference to the witness's own sealed record, not just a chair
 name a reader would then have to go looking for (GOALS 5).
 `position` is one of `leading | internal | trailing | whole-act`, each with its
-own bound (leading starts at 0, trailing ends at `len(text)`, whole-act requires
+own bound (leading starts at 0, internal is strictly inside the text, trailing
+ends at `len(text)`, whole-act requires
 `text == ""` and is the gap's only entry). **Bidirectional**: an outcome of
 `no-readable-text` requires exactly this whole-act gap, and a whole-act gap
 forces the outcome to be `no-readable-text` — an outcome of `read` may never

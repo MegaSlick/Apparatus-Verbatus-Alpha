@@ -1,5 +1,5 @@
-"""The establishment firewall: no code path writes testimony characters into
-`text`, and the schema refuses any record that tries.
+"""The declared-gap firewall: a gap cannot claim testimony characters inside
+`text`, and the schema refuses any record shaped that way.
 
 Spec_08's sharpest requirement: "the established text never contains
 testimony-supplied characters. No count of agreeing witnesses changes this."
@@ -101,7 +101,7 @@ def test_the_firewall_refuses_a_fake_seat_that_fills_a_gap_from_testimony():
         {
             "position": "internal",
             # The gap claims the exact span the witness's variant occupies in
-            # `text` -- exactly the shape a fake seat would produce if it
+            # `text` -- exactly the shape a fake chair would produce if it
             # "helpfully" filled an illegible name from testimony.
             "start": text.index(witness_variant),
             "end": text.index(witness_variant) + len(witness_variant),
@@ -156,6 +156,22 @@ def test_a_trailing_gap_must_end_at_text_length():
         )
 
 
+@pytest.mark.parametrize("position", [0, 6])
+def test_an_internal_gap_must_be_strictly_inside_the_text(position):
+    with pytest.raises(SchemaRefusal, match="strictly inside"):
+        annotations.validate_gaps(
+            [
+                {
+                    "position": "internal",
+                    "start": position,
+                    "end": position,
+                    "witness_evidence": [],
+                }
+            ],
+            "abcdef",
+        )
+
+
 def test_a_whole_act_gap_requires_empty_text():
     with pytest.raises(SchemaRefusal, match="whole-act"):
         annotations.validate_gaps(
@@ -166,7 +182,7 @@ def test_a_whole_act_gap_requires_empty_text():
 def test_a_whole_act_gap_must_be_the_only_gap():
     gaps = [
         {"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []},
-        {"position": "internal", "start": 0, "end": 0, "witness_evidence": []},
+        {"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []},
     ]
     with pytest.raises(SchemaRefusal, match="only gap"):
         annotations.validate_gaps(gaps, "")
@@ -178,8 +194,8 @@ def test_witness_evidence_entries_are_a_closed_record():
             [
                 {
                     "position": "internal",
-                    "start": 0,
-                    "end": 0,
+                    "start": 1,
+                    "end": 1,
                     "witness_evidence": [EVIDENCE | {"trust": "high"}],
                 }
             ],
@@ -196,8 +212,8 @@ def test_witness_evidence_must_name_the_testimonium_it_came_from():
             [
                 {
                     "position": "internal",
-                    "start": 0,
-                    "end": 0,
+                    "start": 1,
+                    "end": 1,
                     "witness_evidence": [without_reference],
                 }
             ],

@@ -12,24 +12,23 @@ reproducible bytes) but carries no meaning, and `test_dossier_shuffle_invariance
 asserts building the same dossier from a shuffled testimonia list produces
 identical bytes.
 
-**Under the blinded regime, the dossier shows a pseudonym and nothing that
-would unblind it.** A resolved model repo/revision is exactly what blinding
-exists to hide, so it never appears here regardless of regime -- it already
-travels on the Testimonium's own provenance, one step away, for whoever is
-allowed to look. Training domain is kept under both regimes: it is a fact about
-what the witness was trained on, not an identifying credential, and spec_08
-asks for it explicitly.
+**Under the named regime, model name and resolved provenance travel beside the
+verbatim report**, as spec 08 requires. Under the blinded regime, the dossier
+shows a pseudonym and nothing that would unblind it: model identity, provenance,
+and training domain are all withheld together because any one can identify a
+witness as surely as its chair name.
 """
 
 from __future__ import annotations
 
+import copy
 import tomllib
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Final
 
 from PIL import Image
-from regime import NAMED, witness_label
+from regime import NAMED, REGIMES, witness_label
 
 from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
@@ -86,9 +85,17 @@ def load_witness_context(path: Path = DEFAULT_WITNESS_CONTEXT_PATH) -> dict[str,
             f"witness context declaration at {path} could not be read: {error}"
         ) from error
     for chair, entry in raw.items():
-        if not isinstance(entry, dict) or not isinstance(entry.get("training_domain"), str):
+        if (
+            not isinstance(chair, str)
+            or not chair
+            or not isinstance(entry, dict)
+            or set(entry) != {"training_domain"}
+            or not isinstance(entry.get("training_domain"), str)
+            or not entry["training_domain"].strip()
+        ):
             raise ContractError(
-                f"witness context entry for {chair!r} has no training_domain string"
+                f"witness context entry for {chair!r} is not the closed, non-blank "
+                "training_domain record"
             )
     return raw
 
@@ -182,6 +189,18 @@ def _testimonium_entry(
     reported = (
         record["payload"].get("reported") if record["outcome"] in WITNESS_READING_OUTCOMES else None
     )
+    provenance = record["payload"].get("provenance")
+    if not isinstance(provenance, dict):
+        raise SchemaRefusal(f"Testimonium from {chair!r} has no resolved provenance")
+    identity = provenance.get("resolved_identity")
+    if identity is not None and not isinstance(identity, dict):
+        raise SchemaRefusal(f"Testimonium from {chair!r} has malformed resolved identity")
+    model_name = None
+    if identity is not None:
+        source = identity.get("source")
+        model_name = identity.get("repo") if source == "huggingface" else identity.get("path")
+        if not isinstance(model_name, str) or not model_name:
+            raise SchemaRefusal(f"Testimonium from {chair!r} has no resolved model name")
     # Under `blinded`, the training-domain fact is withheld along with the
     # chair's real name. A domain description ("a reader fine-tuned on French
     # parish records") can identify a witness as surely as its name would --
@@ -195,6 +214,11 @@ def _testimonium_entry(
         "witness_label": witness_label(
             chair, regime=regime, run_id=run_id, config_digest=config_digest
         ),
+        # Named dossiers carry the model fact and the exact provenance that was
+        # validated at the input boundary.  Both are withheld together when
+        # blinded: either one would reverse the pseudonym inside the dossier.
+        "model_name": model_name if regime == NAMED else None,
+        "resolved_provenance": copy.deepcopy(provenance) if regime == NAMED else None,
         "training_domain": training_domain,
         "outcome": record["outcome"],
         "reported": reported,
@@ -221,6 +245,8 @@ def build_dossier(
     testimony, never sight. The Perlector sees the same crops and the same
     page context whether or not it is shown any witness.
     """
+    if regime not in REGIMES:
+        raise SchemaRefusal(f"witness regime {regime!r} is not one of {sorted(REGIMES)}")
     declared_context = witness_context if witness_context is not None else load_witness_context()
     region_rows = sorted(
         (

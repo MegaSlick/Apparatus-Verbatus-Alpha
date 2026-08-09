@@ -4,12 +4,12 @@ The fake here proves wiring and nothing else — its text comes from the fixture
 it demonstrates exactly zero about reading. What it *does* prove is the shape of
 the record, and the shape is where GOVERNANCE 3 either holds or quietly fails:
 
-  It verifies the region it was handed.   The bytes are read, their digest checked
-                                          against the sealed reference, and decoded
-                                          to confirm the image is the size the
-                                          transform claims. A reader that never
-                                          looked at the image cannot be said to
-                                          have read the ink.
+  It verifies the region evidence.        The stage reads the bytes, checks their
+                                          digest against the sealed reference, and
+                                          decodes them to confirm the image is the
+                                          size the transform claims. The fixture
+                                          reader still does not inspect pixels; a
+                                          real reader transport must receive them.
   It records its basis.                   The region it read, and every testimonium
                                           it saw, by reference.
   It never counts witnesses.              No branch anywhere in this file reads how
@@ -37,11 +37,12 @@ import dossier as dossier_module  # noqa: E402
 import nuda  # noqa: E402
 import prompts  # noqa: E402
 import truncation  # noqa: E402
-from dissent import dissent_against  # noqa: E402
+from dissent import dissent_against, validate_dissent  # noqa: E402
 from reader import FixtureReader  # noqa: E402
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.canonical import digest_of  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
@@ -347,6 +348,24 @@ def _region_pixels(bases: list[dict]) -> int:
     )
 
 
+def _reading_image_inputs(context, bases: list[dict], page_renders: list[dict]) -> list[dict]:
+    """Every image blob the reading actually saw, including page context.
+
+    The dossier records these references as payload facts; the envelope input
+    list independently binds them as direct evidence.  Omitting page context
+    there would let a Perlectio claim it saw a render that its own provenance
+    never retained as an input.
+    """
+    inputs = [context.input_ref(basis["image_path"]) for basis in bases]
+    for render in page_renders:
+        source = render.get("source")
+        if not isinstance(source, dict) or not isinstance(source.get("relative_path"), str):
+            raise SchemaRefusal("a Perlector page render carries no sealed source-page reference")
+        inputs.append(context.input_ref(source["relative_path"]))
+        inputs.append(context.input_ref(render["image_path"]))
+    return inputs
+
+
 # Every field an established-reading Perlectio payload carries. Closed, and
 # checked before publication rather than described in the handoff and hoped
 # for: spec 08's schema test asks that a Perlectio "missing identity, missing
@@ -398,11 +417,11 @@ def validate_reading_payload(payload: dict, *, outcome: str, fields: frozenset) 
     *consumed*, and this is the matching check at the moment one is written, so
     a defect surfaces where it was introduced rather than one stage later.
 
-    The dissent record is required even when it is empty. An empty list is a
-    real answer -- every witness agreed, or none reported -- and the absent
-    field is a different fact entirely: nobody computed it. Collapsing the two
-    would blind the one instrument ARCHITECTURE names for catching a reader
-    that has learned to echo witnesses rather than read ink.
+    The dissent record is required even when it is empty. It is empty only for
+    Lectio nuda, which was shown no testimony; witness agreement is represented
+    by one row per witness with no departure spans. Omitting those rows would
+    blind the one instrument ARCHITECTURE names for catching a reader that has
+    learned to echo witnesses rather than read ink.
     """
     missing = sorted(fields - set(payload))
     unexpected = sorted(set(payload) - fields)
@@ -411,8 +430,18 @@ def validate_reading_payload(payload: dict, *, outcome: str, fields: frozenset) 
             f"a Perlector reading payload is not its closed schema: missing {missing}, "
             f"unexpected {unexpected}"
         )
-    if not isinstance(payload["dissent"], list):
-        raise SchemaRefusal("a Perlector reading carries no dissent record")
+    if outcome == "read" and (not isinstance(payload["text"], str) or not payload["text"].strip()):
+        raise SchemaRefusal("a completed reading cannot establish an empty text")
+    basis = payload.get("basis")
+    if basis is None:
+        if payload["dissent"] != []:
+            raise SchemaRefusal("a Lectio nuda cannot dissent from testimony it was not shown")
+    elif not isinstance(basis, dict) or not isinstance(basis.get("testimonia"), list):
+        raise SchemaRefusal("a Perlectio carries no Testimonium basis for its dissent record")
+    else:
+        validate_dissent(
+            payload["dissent"], text=payload["text"], basis_testimonia=basis["testimonia"]
+        )
     provenance = payload["provenance"]
     if not isinstance(provenance, dict) or provenance.get("witness_regime") not in (
         "named",
@@ -426,12 +455,57 @@ def validate_reading_payload(payload: dict, *, outcome: str, fields: frozenset) 
         raise SchemaRefusal(
             "a Perlector reading by a configured chair records no resolved identity"
         )
+    reading_dossier = payload["dossier"]
+    if not isinstance(reading_dossier, dict) or set(reading_dossier) != {
+        "act_id",
+        "act_key",
+        "witness_regime",
+        "regions",
+        "page_renders",
+        "testimonia",
+        "dossier_digest",
+    }:
+        raise SchemaRefusal("a Perlector reading carries no closed dossier record")
+    if reading_dossier["act_key"] != payload["act_key"]:
+        raise SchemaRefusal("a Perlector reading disagrees with its dossier's act key")
+    if reading_dossier["witness_regime"] != provenance["witness_regime"]:
+        raise SchemaRefusal("a Perlector reading disagrees with its dossier's witness regime")
+    dossier_body = {key: value for key, value in reading_dossier.items() if key != "dossier_digest"}
+    if reading_dossier["dossier_digest"] != digest_of(dossier_body):
+        raise SchemaRefusal("a Perlector dossier digest does not match the dossier it seals")
+    dossier_module.assert_no_order_bearing_field(dossier_body)
+    dossier_testimonia = reading_dossier["testimonia"]
+    if not isinstance(dossier_testimonia, list):
+        raise SchemaRefusal("a Perlector dossier has no Testimonium list")
+    if basis is None:
+        if dossier_testimonia:
+            raise SchemaRefusal("a Lectio nuda dossier cannot carry Testimonia")
+    elif len(dossier_testimonia) != len(basis["testimonia"]):
+        raise SchemaRefusal(
+            "a Perlector dossier does not account for exactly its Testimonium basis"
+        )
+    prompt_record = payload["prompt"]
+    identity_record = provenance.get("resolved_identity")
+    if not isinstance(identity_record, dict):
+        raise SchemaRefusal("a Perlector prompt has no resolved chair identity")
+    try:
+        identity = ChairIdentity(**identity_record)
+    except TypeError as error:
+        raise SchemaRefusal("a Perlector prompt carries a malformed chair identity") from error
+    if prompt_record != prompts.prompt_evidence(identity, reading_dossier):
+        raise SchemaRefusal(
+            "a Perlector prompt record does not reproduce from its resolved chair and dossier"
+        )
     if not isinstance(payload["truncation"], dict) or payload["truncation"].get(
         "classification"
     ) not in (truncation.COMPLETE, truncation.TRUNCATED, truncation.UNKNOWN):
         raise SchemaRefusal(
             "a Perlector reading carries no truncation classification; truncation is detected "
             "by an instrument, never assumed"
+        )
+    if outcome == "read" and payload["truncation"]["classification"] != truncation.COMPLETE:
+        raise SchemaRefusal(
+            "a truncated or unknown attempt cannot carry the completed outcome 'read'"
         )
     annotations.validate_annotations(payload, outcome=outcome)
 
@@ -518,7 +592,7 @@ def _publish_lectio_nuda(
         subject_id=act_id,
         outcome=outcome,
         attempt=attempt_id(act_id, "lectio-nuda", ordinal),
-        inputs=[context.input_ref(basis["image_path"]) for basis in bases],
+        inputs=_reading_image_inputs(context, bases, page_renders),
         payload=payload,
     )
 
@@ -722,7 +796,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             subject_id=act_id,
             outcome=outcome,
             attempt=attempt_id(act_id, "perlegere", ordinal),
-            inputs=[context.input_ref(basis["image_path"]) for basis in bases]
+            inputs=_reading_image_inputs(context, bases, page_renders)
             + list(testimonium_references.values()),
             payload=payload,
         )

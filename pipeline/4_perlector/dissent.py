@@ -171,3 +171,102 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
             }
         )
     return rows
+
+
+def validate_dissent(rows: Any, *, text: str, basis_testimonia: list[dict]) -> None:
+    """Refuse a dissent record that loses or duplicates a witness.
+
+    Agreement is represented by one row with an empty ``departures`` list, not
+    by omitting the row.  Otherwise an empty dissent list makes "all witnesses
+    agreed" indistinguishable from "the instrument did not run" -- exactly the
+    silent loss this record exists to prevent.
+    """
+    if not isinstance(rows, list):
+        raise SchemaRefusal("a Perlector reading carries no dissent record")
+    expected = [row.get("chair") for row in basis_testimonia]
+    if any(not isinstance(chair, str) or not chair for chair in expected):
+        raise SchemaRefusal("a Perlector reading has a Testimonium basis with no chair")
+    actual = [row.get("chair") if isinstance(row, dict) else None for row in rows]
+    if len(expected) != len(set(expected)) or len(actual) != len(set(actual)):
+        raise SchemaRefusal("a Perlector dissent record repeats a witness chair")
+    if set(actual) != set(expected):
+        raise SchemaRefusal(
+            "a Perlector dissent record does not account for exactly every witness in its basis"
+        )
+    outcomes = {row["chair"]: row.get("outcome") for row in basis_testimonia}
+
+    for index, row in enumerate(rows):
+        compared = row.get("compared")
+        reported = outcomes[row["chair"]] in WITNESS_READING_OUTCOMES
+        if reported and compared not in (True, "unknown"):
+            raise SchemaRefusal(f"dissent[{index}] drops a witness that produced a reading")
+        if not reported and (compared is not False or row.get("reason") != outcomes[row["chair"]]):
+            raise SchemaRefusal(
+                f"dissent[{index}] invents a comparison for a witness that did not report"
+            )
+        if compared is True:
+            if set(row) != {
+                "chair",
+                "compared",
+                "departed",
+                "departed_raw",
+                "departures",
+                "comparison_loss",
+            }:
+                raise SchemaRefusal(f"dissent[{index}] is not the closed compared-row schema")
+            if not isinstance(row["departed"], bool) or not isinstance(row["departed_raw"], bool):
+                raise SchemaRefusal(f"dissent[{index}] has no boolean departure findings")
+            loss = row["comparison_loss"]
+            if (
+                not isinstance(loss, dict)
+                or set(loss) != {"reading_dropped_characters", "witness_dropped_characters"}
+                or any(
+                    not isinstance(value, int) or isinstance(value, bool) or value < 0
+                    for value in loss.values()
+                )
+            ):
+                raise SchemaRefusal(f"dissent[{index}] has no loss-accounted comparison view")
+            spans = row["departures"]
+            if not isinstance(spans, list):
+                raise SchemaRefusal(f"dissent[{index}] has no departure span list")
+            if bool(spans) is not row["departed_raw"] or (
+                row["departed"] and not row["departed_raw"]
+            ):
+                raise SchemaRefusal(f"dissent[{index}] contradicts its own departure spans")
+            expected_reading_loss = len(text) - len(comparison_view(text)["normalized"])
+            if loss["reading_dropped_characters"] != expected_reading_loss:
+                raise SchemaRefusal(
+                    f"dissent[{index}] misstates the Perlectio comparison view's loss"
+                )
+            for span_index, span in enumerate(spans):
+                if not isinstance(span, dict) or set(span) != {
+                    "reading_span",
+                    "testimonium_span",
+                }:
+                    raise SchemaRefusal(
+                        f"dissent[{index}].departures[{span_index}] is not the closed span schema"
+                    )
+                for name, bounds in span.items():
+                    if (
+                        not isinstance(bounds, dict)
+                        or set(bounds) != {"start", "end"}
+                        or any(
+                            not isinstance(value, int) or isinstance(value, bool)
+                            for value in bounds.values()
+                        )
+                        or bounds["start"] < 0
+                        or bounds["end"] < bounds["start"]
+                        or (name == "reading_span" and bounds["end"] > len(text))
+                    ):
+                        raise SchemaRefusal(
+                            f"dissent[{index}].departures[{span_index}].{name} has invalid bounds"
+                        )
+        elif compared is False or compared == "unknown":
+            if (
+                set(row) != {"chair", "compared", "reason"}
+                or not isinstance(row.get("reason"), str)
+                or not row["reason"]
+            ):
+                raise SchemaRefusal(f"dissent[{index}] is not the closed uncomputed-row schema")
+        else:
+            raise SchemaRefusal(f"dissent[{index}] has an invalid comparison state")

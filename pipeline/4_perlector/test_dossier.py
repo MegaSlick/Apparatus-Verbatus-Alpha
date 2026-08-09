@@ -14,8 +14,8 @@ from PIL import Image
 
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_text, digest_bytes
-from common.contracts.errors import ContractError
-from common.contracts.stages import ATTESTATORES, DESIGNATOR
+from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
 from common.imaging import dimensions
 from common.runtree.store import RunTree
 
@@ -188,7 +188,30 @@ def test_blinded_regime_carries_no_chair_name_or_training_domain(evidence):
             f"blinded dossier leaks a training-domain fact {domain!r}"
         )
     assert all(entry["training_domain"] is None for entry in blinded["testimonia"])
+    assert all(entry["model_name"] is None for entry in blinded["testimonia"])
+    assert all(entry["resolved_provenance"] is None for entry in blinded["testimonia"])
     assert all(entry["witness_label"].startswith("witness-") for entry in blinded["testimonia"])
+
+
+def test_named_dossier_carries_each_witness_model_and_resolved_provenance(evidence):
+    context, act_id, act_key, regions, testimonia = evidence
+    named = _build(context, act_id, act_key, regions, testimonia, regime="named")
+    by_chair = {record["payload"]["chair"]: record for record in testimonia}
+    assert set(by_chair) == {row["witness_label"] for row in named["testimonia"]}
+    for row in named["testimonia"]:
+        provenance = by_chair[row["witness_label"]]["payload"]["provenance"]
+        identity = provenance["resolved_identity"]
+        expected_name = (
+            identity["repo"] if identity["source"] == "huggingface" else identity["path"]
+        )
+        assert row["model_name"] == expected_name
+        assert row["resolved_provenance"] == provenance
+
+
+def test_dossier_refuses_an_undeclared_witness_regime_even_without_testimonia(evidence):
+    context, act_id, act_key, regions, _ = evidence
+    with pytest.raises(SchemaRefusal, match="witness regime"):
+        _build(context, act_id, act_key, regions, [], regime="half-blinded")
 
 
 def test_blinded_pseudonyms_are_stable_and_reversible_without_a_stored_map(evidence):
@@ -226,6 +249,20 @@ def test_load_witness_context_refuses_a_chair_with_no_declared_entry(tmp_path, e
     table = dossier.load_witness_context(incomplete)
     with pytest.raises(ContractError, match="no declared entry"):
         _build(context, act_id, act_key, regions, testimonia, witness_context=table)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        'training_domain = ""',
+        'training_domain = "fixture"\ntrust_score = 1',
+    ],
+)
+def test_witness_context_refuses_missing_facts_and_picker_metadata(tmp_path, entry):
+    declaration = tmp_path / "witness_context.toml"
+    declaration.write_text(f"[attestator_1]\n{entry}\n", encoding="utf-8")
+    with pytest.raises(ContractError, match="closed, non-blank"):
+        dossier.load_witness_context(declaration)
 
 
 def test_build_page_render_records_its_whole_transform_not_only_a_factor(evidence):
@@ -279,3 +316,40 @@ def test_build_page_render_is_reused_byte_identically_on_a_repeat_call(evidence)
         source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
     )
     assert first == second
+
+
+def test_published_perlectio_binds_page_context_and_its_source_as_direct_inputs(tmp_path):
+    root = tmp_path / "runs"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/orchestrator/run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--run-root",
+            str(root),
+            "--run-id",
+            "page-context-inputs",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "page-context-inputs")
+    readings = [
+        entry
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio"
+    ]
+    assert readings, "the fixture must publish a Perlectio before input lineage can be tested"
+    for entry in readings:
+        reading = tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        for page_render in reading["payload"]["dossier"]["page_renders"]:
+            assert page_render["source"] in reading["inputs"]
+            assert {
+                "relative_path": page_render["image_path"],
+                "sha256": page_render["image_sha256"],
+            } in reading["inputs"]

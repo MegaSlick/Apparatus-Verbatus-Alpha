@@ -1,13 +1,13 @@
-"""Prompt fidelity (invariant #49): the serving path builds each seat's declared
+"""Prompt fidelity (invariant #49): the serving path builds each chair's declared
 prompt format byte-for-byte. A fine-tuned candidate misread through the wrong
 prompt would be measured as a failure of the model rather than of the harness
 -- so this is a registry keyed by `ChairIdentity.serving_recipe`, and an
 unrecognized recipe refuses outright rather than falling back to some default
 template. That refusal is the load-bearing behaviour: a silent fallback is
 exactly the failure mode invariant #49 exists to prevent, and it is cheaper to
-build the refusal now than to discover the fallback later on a real seat.
+build the refusal now than to discover the fallback later on a real chair.
 
-Real per-seat byte fidelity against an actual chat template needs the real
+Real per-chair byte fidelity against an actual chat template needs the real
 tokenizer/template files for whichever model finally sits in the chair, which
 this offline, no-model chamber does not fetch. What this module proves is the
 mechanism: a declared, tested builder per recipe, and a closed refusal for
@@ -27,7 +27,7 @@ from __future__ import annotations
 from typing import Any, Callable, Final
 
 from common.chairs.models import ChairIdentity
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import canonical_text, digest_bytes, digest_of
 
 
 def _fake_perlector_v0(chair_role: str, dossier: dict[str, Any]) -> str:
@@ -41,7 +41,9 @@ def _fake_perlector_v0(chair_role: str, dossier: dict[str, Any]) -> str:
     for testimonium in dossier["testimonia"]:
         lines.append(
             f"  - {testimonium['witness_label']} "
-            f"({testimonium['training_domain']}): {testimonium['reported']!r}"
+            f"({testimonium['training_domain']}): {testimonium['reported']!r}; "
+            f"model={testimonium['model_name']!r}; "
+            f"provenance={canonical_text(testimonium['resolved_provenance'])}"
         )
     return "\n".join(lines)
 

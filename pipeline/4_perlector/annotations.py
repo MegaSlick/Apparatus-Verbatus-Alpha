@@ -5,11 +5,12 @@ Spec_08: "the established text never contains testimony-supplied characters.
 No count of agreeing witnesses changes this." A gap is where sight failed;
 `witness_evidence` on a gap is linked, displayable evidence -- searchable,
 shown as "(illegible -- witnesses agree: ...)" -- never characters inside
-`text`. **The firewall is structural, not a promise**: a gap's own bounds must
-be zero-width inside `text`, so a gap literally cannot carry text. There is no
-"trust the reader not to copy it in" step for an implementation to skip, and no
-count of agreeing witnesses can widen a gap into text -- the schema does not
-read `witness_evidence` at all when deciding whether a gap's span is legal.
+`text`. **The declared-gap firewall is structural, not a promise**: a gap's own
+bounds must be zero-width inside `text`, so a declared gap cannot carry text.
+No count of agreeing witnesses can widen it -- the schema does not read
+`witness_evidence` at all when deciding whether the gap's span is legal. This
+does not claim to identify an undeclared model echo elsewhere in `text`; Lectio
+nuda and dissent are the instruments for that behaviour (GOVERNANCE 7).
 
 An uncertain span is the opposite case: text the Perlector *did* read, held
 with less confidence, with alternatives noted. It carries real characters on
@@ -117,6 +118,10 @@ def validate_gaps(gaps: Any, text: str) -> list[dict]:
             raise SchemaRefusal(f"gaps[{index}] is declared leading but does not start at 0")
         if position == "trailing" and end != len(text):
             raise SchemaRefusal(f"gaps[{index}] is declared trailing but does not end at len(text)")
+        if position == "internal" and not (0 < start < len(text)):
+            raise SchemaRefusal(
+                f"gaps[{index}] is declared internal but is not strictly inside the text"
+            )
         if position == "whole-act":
             if text != "" or start != 0:
                 raise SchemaRefusal(

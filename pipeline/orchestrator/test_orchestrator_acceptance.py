@@ -157,6 +157,11 @@ FIXTURE = "synthetic-two-page-v0"
 # stay at 44 and 48 -- the same two page-context blobs, different bytes inside the
 # records that reference them.
 #
+# Re-pinned by the merge audit after restoring the named dossier's model identity
+# and resolved provenance, and after binding each page-context render plus its
+# sealed source page into the Perlectio's direct inputs. File counts remain 44 and
+# 48; the changed bytes are the evidence the reading now honestly retains.
+#
 # Re-pinned for the rebase of the System 08 build onto the merged System 09 tree:
 # both movements above are now in one tree, so the counts are 45 (happy) and 49
 # (review) -- main's Recensor partition receipt plus this branch's two page-render
