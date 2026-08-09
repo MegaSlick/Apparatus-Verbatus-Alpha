@@ -72,6 +72,33 @@ def _require_nonempty(value: str, field: str) -> None:
         raise MeasurementRefusal(f"{field} must be a non-empty string")
 
 
+def _require_status_conditioned_text(status: OutputStatus, text: str | None, label: str) -> None:
+    """Text is present and non-blank exactly when status is complete or truncated.
+
+    Every other status -- no_readable_text, refused, missing, unavailable, and
+    malformed alike -- is a non-answer under the response-state table (README
+    section 7) and must carry no text at all. Without this, a status the scorer
+    treats as an empty hypothesis could still carry stray text into a dossier
+    shown to a live candidate, or into a private record.
+    """
+
+    if status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
+        if not isinstance(text, str) or not text.strip():
+            raise MeasurementRefusal(f"a complete or truncated {label} must carry non-blank text")
+    elif text is not None:
+        raise MeasurementRefusal(f"a non-reading {label} carries status, not text")
+
+
+def _require_finite_nonnegative_or_none(value: float | None, field: str, label: str) -> None:
+    if value is not None and (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise MeasurementRefusal(f"{label} {field} must be finite, non-negative, or None")
+
+
 def _text_lineage_sha256s(text: str) -> frozenset[str]:
     """Hash raw text and every closed evaluation-comparison representation.
 
@@ -187,6 +214,8 @@ class ResolvedIdentity:
             raise MeasurementRefusal("public_slot must be positive")
         if not is_sha256(self.artifact_digest):
             raise MeasurementRefusal("artifact_digest must be a lowercase SHA-256")
+        if not isinstance(self.delivery, DeliveryMode):
+            raise MeasurementRefusal("delivery must be a DeliveryMode")
         if self.delivery is DeliveryMode.EXTERNAL:
             _require_nonempty(self.provider or "", "provider for an external candidate")
         if self.delivery is DeliveryMode.LOCAL and self.provider is not None:
@@ -359,17 +388,7 @@ class Testimonium:
             raise MeasurementRefusal("public_source_index must be positive")
         if not isinstance(self.status, OutputStatus):
             raise MeasurementRefusal("Testimonium status must be an OutputStatus")
-        if self.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
-            if not isinstance(self.text, str) or not self.text.strip():
-                raise MeasurementRefusal(
-                    "a complete or truncated Testimonium must carry non-blank text"
-                )
-        elif self.status is OutputStatus.NO_READABLE_TEXT and self.text is not None:
-            raise MeasurementRefusal(
-                "a no_readable_text Testimonium is an explicit status, never empty text"
-            )
-        elif self.text is not None and not isinstance(self.text, str):
-            raise MeasurementRefusal("Testimonium text must be a string or None")
+        _require_status_conditioned_text(self.status, self.text, "Testimonium")
 
     def private_record(self) -> dict[str, object]:
         return {
@@ -412,17 +431,7 @@ class DossierTestimonium:
             raise MeasurementRefusal("dossier witness index must be positive")
         if not isinstance(self.status, OutputStatus):
             raise MeasurementRefusal("dossier testimony status must be an OutputStatus")
-        if self.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
-            if not isinstance(self.text, str) or not self.text.strip():
-                raise MeasurementRefusal(
-                    "complete or truncated dossier testimony needs non-blank text"
-                )
-        elif self.status is OutputStatus.NO_READABLE_TEXT and self.text is not None:
-            raise MeasurementRefusal(
-                "no_readable_text dossier testimony is an explicit status, never empty text"
-            )
-        elif self.text is not None and not isinstance(self.text, str):
-            raise MeasurementRefusal("dossier testimony text must be a string or None")
+        _require_status_conditioned_text(self.status, self.text, "dossier testimony")
 
     def wire_record(self) -> dict[str, object]:
         """Return the anonymous testimony record delivered in a common dossier."""
@@ -692,27 +701,9 @@ class CandidateResponse:
     def __post_init__(self) -> None:
         if not isinstance(self.status, OutputStatus):
             raise MeasurementRefusal("candidate response status must be an OutputStatus")
-        if self.text is not None and not isinstance(self.text, str):
-            raise MeasurementRefusal("candidate response text must be a string or None")
-        if self.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
-            if not isinstance(self.text, str) or not self.text.strip():
-                raise MeasurementRefusal(
-                    "a complete or truncated response must carry non-blank text"
-                )
-        elif self.status is OutputStatus.NO_READABLE_TEXT and self.text is not None:
-            raise MeasurementRefusal(
-                "no_readable_text is an explicit response status, never empty text"
-            )
+        _require_status_conditioned_text(self.status, self.text, "candidate response")
         for field, value in (("elapsed_ms", self.elapsed_ms), ("cost_usd", self.cost_usd)):
-            if value is not None and (
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not math.isfinite(value)
-                or value < 0
-            ):
-                raise MeasurementRefusal(
-                    f"candidate response {field} must be finite, non-negative, or None"
-                )
+            _require_finite_nonnegative_or_none(value, field, "candidate response")
         for name, value in (
             ("prompt", self.observed_prompt_sha256),
             ("dossier", self.observed_dossier_sha256),
@@ -748,10 +739,6 @@ class DissentSummary:
         if self.departed > self.compared:
             raise MeasurementRefusal("dissent departures may not exceed comparisons")
 
-    @property
-    def departure_rate(self) -> float | None:
-        return self.departed / self.compared if self.compared else None
-
 
 @dataclass(frozen=True, slots=True)
 class Perlectio:
@@ -777,15 +764,7 @@ class Perlectio:
             raise MeasurementRefusal("Perlectio condition must be a Condition")
         if not isinstance(self.status, OutputStatus):
             raise MeasurementRefusal("Perlectio status must be an OutputStatus")
-        if self.text is not None and not isinstance(self.text, str):
-            raise MeasurementRefusal("Perlectio text must be a string or None")
-        if self.status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
-            if not isinstance(self.text, str) or not self.text.strip():
-                raise MeasurementRefusal(
-                    "a complete or truncated Perlectio must carry non-blank text"
-                )
-        elif self.text is not None:
-            raise MeasurementRefusal("a non-reading Perlectio carries status, not text")
+        _require_status_conditioned_text(self.status, self.text, "Perlectio")
         if not (
             is_sha256(self.dossier_sha256)
             and is_sha256(self.prompt_format_sha256)
@@ -799,12 +778,4 @@ class Perlectio:
         if self.condition is Condition.LECTIO_NUDA and self.testimonia_count:
             raise MeasurementRefusal("Lectio nuda Perlectio claims it saw Testimonia")
         for field, value in (("elapsed_ms", self.elapsed_ms), ("cost_usd", self.cost_usd)):
-            if value is not None and (
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not math.isfinite(value)
-                or value < 0
-            ):
-                raise MeasurementRefusal(
-                    f"Perlectio {field} must be finite, non-negative, or None"
-                )
+            _require_finite_nonnegative_or_none(value, field, "Perlectio")
