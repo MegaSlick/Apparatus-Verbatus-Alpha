@@ -30,6 +30,7 @@ from typing import Any, Final
 from PIL import Image
 from regime import NAMED, REGIMES, witness_label
 
+from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -197,9 +198,21 @@ def _testimonium_entry(
         raise SchemaRefusal(f"Testimonium from {chair!r} has malformed resolved identity")
     model_name = None
     if identity is not None:
-        source = identity.get("source")
-        model_name = identity.get("repo") if source == "huggingface" else identity.get("path")
-        if not isinstance(model_name, str) or not model_name:
+        # `ChairIdentity.source_reference` is the one declared rule for which
+        # field a chair's source prefers; reconstructing it here rather than
+        # re-deriving the huggingface/local split by hand keeps this dossier-only
+        # display name from silently drifting behind that rule if it ever
+        # changes. Safe to reconstruct: `validate_serving_provenance`
+        # (`testimonia_of`, before any record reaches this module) already
+        # required a configured chair's `resolved_identity` to satisfy
+        # `ChairIdentity(**record)`.
+        try:
+            model_name = ChairIdentity(**identity).source_reference
+        except TypeError as error:
+            raise SchemaRefusal(
+                f"Testimonium from {chair!r} has malformed resolved identity"
+            ) from error
+        if not model_name:
             raise SchemaRefusal(f"Testimonium from {chair!r} has no resolved model name")
     # Under `blinded`, the training-domain fact is withheld along with the
     # chair's real name. A domain description ("a reader fine-tuned on French
