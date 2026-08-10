@@ -9,6 +9,7 @@ afterward does not.
 
 from __future__ import annotations
 
+import fcntl
 from pathlib import Path
 
 import pytest
@@ -70,3 +71,102 @@ def test_release_clears_held_state_even_when_closing_the_descriptor_fails(
     # Close the real descriptor through the original method, bypassing the
     # monkeypatch, so nothing is left open at the end of the test.
     original_close()
+
+
+def test_release_reports_the_unlock_itself_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed ``LOCK_UN`` must raise, and must not clear the held state.
+
+    Unlike a close failure *after* a successful unlock, the OS-level lock is
+    not known to be gone here, so the conservative behaviour is to leave
+    ``_handle`` set: a caller retrying ``release()`` will try to unlock again
+    rather than silently treating the lease as already free.
+    """
+
+    handle = FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(identity=None)  # type: ignore[arg-type]
+    real_flock = fcntl.flock
+
+    def _flock(fd: int, operation: int) -> None:
+        if operation == fcntl.LOCK_UN:
+            raise OSError("simulated unlock failure")
+        real_flock(fd, operation)
+
+    monkeypatch.setattr(fcntl, "flock", _flock)
+
+    with pytest.raises(ServiceStopError, match="could not release serving residency lease"):
+        handle.release()
+
+    assert handle._handle is not None  # type: ignore[union-attr]
+
+    monkeypatch.undo()
+    handle.release()
+
+
+def test_acquire_closes_the_handle_and_refuses_on_a_plain_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-contention OS failure during acquire is a named refusal too, not just contention.
+
+    The handle opened before the failing ``flock`` call must be closed as part
+    of that same failure, not leaked.
+    """
+
+    closed: list[bool] = []
+    real_open = Path.open
+
+    class TrackingHandle:
+        def __init__(self, real: object) -> None:
+            self._real = real
+
+        def fileno(self) -> int:
+            return self._real.fileno()  # type: ignore[attr-defined]
+
+        def close(self) -> None:
+            closed.append(True)
+            self._real.close()  # type: ignore[attr-defined]
+
+    def _open(self: Path, *args: object, **kwargs: object) -> object:
+        return TrackingHandle(real_open(self, *args, **kwargs))
+
+    def _flock(fd: int, operation: int) -> None:
+        raise OSError("simulated non-contention flock failure")
+
+    monkeypatch.setattr(Path, "open", _open)
+    monkeypatch.setattr(fcntl, "flock", _flock)
+
+    path = tmp_path / "pod-gpu.lock"
+    with pytest.raises(ResidencyError, match="could not acquire serving residency lease"):
+        FileResidencyLease(path).acquire(identity=None)  # type: ignore[arg-type]
+
+    assert closed == [True]
+
+
+def test_acquire_swallows_a_close_failure_during_its_own_failure_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close() that itself raises during acquire's cleanup must not replace the real refusal."""
+
+    class ExplodingCloseHandle:
+        def __init__(self, real: object) -> None:
+            self._real = real
+
+        def fileno(self) -> int:
+            return self._real.fileno()  # type: ignore[attr-defined]
+
+        def close(self) -> None:
+            raise OSError("simulated close failure during acquire cleanup")
+
+    real_open = Path.open
+
+    def _open(self: Path, *args: object, **kwargs: object) -> object:
+        return ExplodingCloseHandle(real_open(self, *args, **kwargs))
+
+    def _flock(fd: int, operation: int) -> None:
+        raise BlockingIOError("simulated contention")
+
+    monkeypatch.setattr(Path, "open", _open)
+    monkeypatch.setattr(fcntl, "flock", _flock)
+
+    with pytest.raises(ResidencyError, match="another serving manager holds"):
+        FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(identity=None)  # type: ignore[arg-type]

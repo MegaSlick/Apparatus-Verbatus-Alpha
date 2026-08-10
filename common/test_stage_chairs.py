@@ -177,6 +177,50 @@ def test_serving_launch_audit_is_a_content_addressed_stage_blob(tmp_path):
         )
 
 
+def test_a_stage_context_with_no_run_sealed_serving_inputs_refuses_a_launch_audit(tmp_path):
+    """A hand-built StageContext, not constructed through open_context, cannot publish one."""
+    context, _ = _context(tmp_path)
+    bare = StageContext(
+        tree=context.tree,
+        run=context.run,
+        fixture=context.fixture,
+        scenario=context.scenario,
+        stage=context.stage,
+        adapter_revision=context.adapter_revision,
+        args=context.args,
+        registry=context.registry,
+        serving_config_inputs=None,
+    )
+    assert bare.serving_config_inputs is None
+    with pytest.raises(SchemaRefusal, match="no run-sealed serving configuration inputs"):
+        bare.write_serving_launch_audit(
+            {
+                "schema": "serving-launch-audit.v1",
+                "chair": "attestator_1",
+                "started_at": "2026-08-09T12:00:00Z",
+                "configuration_inputs": {
+                    "schema": "serving-config-inputs.v1",
+                    "serving_recipes_sha256": "0" * 64,
+                    "pod_placement_sha256": "0" * 64,
+                },
+            }
+        )
+
+
+def test_a_non_canonical_serving_blob_is_a_named_schema_refusal(tmp_path):
+    """A float anywhere in the payload must not escape as a bare TypeError."""
+    context, _ = _context(tmp_path)
+    audit = {
+        "schema": "serving-launch-audit.v1",
+        "chair": "attestator_1",
+        "started_at": "2026-08-09T12:00:00Z",
+        "configuration_inputs": dict(context.serving_config_inputs),
+        "gpu_memory_utilization": 0.85,
+    }
+    with pytest.raises(SchemaRefusal, match="is not canonical JSON data"):
+        context.write_serving_launch_audit(audit)
+
+
 def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_path):
     context, identity = _context(tmp_path)
     receipt_reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
