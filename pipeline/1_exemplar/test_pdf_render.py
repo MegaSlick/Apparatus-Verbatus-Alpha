@@ -23,6 +23,7 @@ from synthetic_sources import (
     content_page_pdf,
     form_text_pdf,
     gray_image,
+    page_tree_bomb_pdf,
     single_gray_page_pdf,
     two_page_pdf,
 )
@@ -257,8 +258,51 @@ def test_a_pdf_page_count_past_the_retired_policy_cap_remains_the_fan_out_denomi
     assert count_pages(blank_pages_pdf(pages)) == pages
 
 
-def test_a_path_backed_pdf_is_handed_to_pdfium_as_a_path(tmp_path, monkeypatch):
-    """The real Door path must never build a reel-sized bytes object for PDFium."""
+def test_a_page_tree_that_shares_one_leaf_declares_no_more_pages_than_its_bytes_allow():
+    """Ruling 17 retired the absolute page cap for a genuine reel; it did not clear a
+    few-KB file to declare hundreds of thousands of pages via shared page-tree
+    nodes. PDFium itself trusts the declared, compounding ``/Count`` -- confirmed
+    directly: a 19-level, 2-way fan-out tree (22 objects, ~2KB) opens and reports
+    524,288 pages -- so nothing stops `door.expand_sources` from fanning out and
+    rendering that many pages from an attacker-sized file unless something checks
+    plausibility before the fan-out denominator is trusted.
+
+    The refusal is `UNSUPPORTED_VARIANT`, not `CORRUPT`, and that is not a detail.
+    A blind audit built a *valid* PDF 1.5 at 9.4 bytes per page -- 10,000 distinct
+    page objects, true `/Count`, packed into a Flate object stream -- which PDFium
+    opens and renders. So this ratio cannot establish damage, and `CORRUPT` is the
+    code that tells Tyrel his original is broken. What the ratio does establish is
+    that this reader cannot yet tell the two apart, which is a gap in this pipeline.
+    """
+    data, declared = page_tree_bomb_pdf(19, fanout=2)
+    assert declared == 524_288
+    with pytest.raises(PdfRefusal) as caught:
+        open_document(data)
+    assert caught.value.reason is RefusalReason.UNSUPPORTED_VARIANT
+    assert "cannot yet tell" in str(caught.value)
+
+
+def test_an_open_binary_pdf_stream_is_handed_to_pdfium_without_a_path_reopen(tmp_path, monkeypatch):
+    """The real Door keeps one anchored stream for its hash and PDFium document."""
+    path = tmp_path / "reel.pdf"
+    path.write_bytes(single_gray_page_pdf())
+    calls = []
+    original = pdf_render.pdfium.PdfDocument
+
+    def record_source(source, *args, **kwargs):
+        calls.append(source)
+        return original(source, *args, **kwargs)
+
+    monkeypatch.setattr(pdf_render.pdfium, "PdfDocument", record_source)
+    with path.open("rb") as source:
+        assert count_pages(source) == 1
+        assert calls == [source]
+
+
+def test_a_local_path_is_still_accepted_for_a_caller_that_owns_no_stream(tmp_path, monkeypatch):
+    """A path is still a supported input; it is only the *real* Door that may not
+    use one. Unit callers with no submission folder behind them keep it, so the
+    branch stays covered rather than becoming an untested leftover."""
     path = tmp_path / "reel.pdf"
     path.write_bytes(single_gray_page_pdf())
     calls = []
@@ -271,6 +315,57 @@ def test_a_path_backed_pdf_is_handed_to_pdfium_as_a_path(tmp_path, monkeypatch):
     monkeypatch.setattr(pdf_render.pdfium, "PdfDocument", record_source)
     assert count_pages(path) == 1
     assert calls == [path]
+
+
+def test_the_stream_pdfium_read_is_left_open_for_its_owner_to_close(tmp_path):
+    """`pypdfium2` does not close a custom-buffer input unless asked to, and the
+    Door depends on that: the descriptor it hashed must survive the document it
+    rendered, so the stability recheck afterwards still has something to stat."""
+    path = tmp_path / "reel.pdf"
+    path.write_bytes(two_page_pdf())
+    with path.open("rb") as stream:
+        opened = open_document(stream)
+        try:
+            assert opened.page_count == 2
+        finally:
+            close_document(opened)
+        assert not stream.closed
+    assert stream.closed
+
+
+def test_a_normal_document_close_failure_is_a_named_alarm():
+    """Best-effort cleanup belongs only on a path already reporting a failure."""
+
+    class BrokenClose:
+        def close(self):
+            raise RuntimeError("synthetic native close failure")
+
+    with pytest.raises(PdfRefusal) as caught:
+        close_document(pdf_render.OpenPdf(BrokenClose(), 1))
+
+    assert caught.value.reason is RefusalReason.UNREADABLE
+    assert "could not release" in str(caught.value)
+
+
+def test_a_source_that_is_neither_bytes_a_path_nor_a_stream_is_a_named_refusal():
+    """Matching `pypdfium2.internal.is_stream` exactly is what keeps this a named
+    refusal: a near-stream missing `readinto` would otherwise pass this module's
+    own check and die inside PDFium as a bare TypeError nothing here catches."""
+
+    class NearlyAStream:
+        def read(self, size=-1):  # pragma: no cover - never reached
+            return b""
+
+        def seek(self, offset, whence=0):  # pragma: no cover - never reached
+            return 0
+
+        def tell(self):  # pragma: no cover - never reached
+            return 0
+
+    with pytest.raises(PdfRefusal) as caught:
+        count_pages(NearlyAStream())
+    assert caught.value.reason is RefusalReason.CORRUPT
+    assert "neither bytes, a path, nor a stream" in str(caught.value)
 
 
 def test_a_zero_page_document_is_a_corrupt_alarm():

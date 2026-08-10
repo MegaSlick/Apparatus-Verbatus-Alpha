@@ -16,7 +16,7 @@ import warnings
 from io import BytesIO
 from math import ceil
 from pathlib import Path
-from typing import Any, Final, NamedTuple
+from typing import Any, BinaryIO, Final, NamedTuple
 
 import admission
 import pypdfium2 as pdfium
@@ -59,7 +59,7 @@ class RenderedPage(NamedTuple):
 
 
 class OpenPdf(NamedTuple):
-    """A native document handle and its bounded page count, owned by the door."""
+    """A native document handle and its declared page count, owned by the door."""
 
     document: Any
     page_count: int
@@ -88,13 +88,18 @@ def renderer_recipe(settings: PdfRenderSettings) -> dict[str, Any]:
     }
 
 
-def open_document(source: bytes | str | Path) -> OpenPdf:
+def open_document(source: bytes | str | Path | BinaryIO) -> OpenPdf:
     """Open a PDF source, counting pages without rasterising it.
 
-    The Door gives a real-submission PDF to PDFium by filesystem path.  PDFium then
-    reads the document itself instead of the Door allocating one bytes object the
-    size of a complete reel.  Synthetic callers can still supply their in-memory
-    bytes directly; both paths use the same renderer and page contract.
+    The real Door gives PDFium an already-open, descriptor-anchored binary stream.
+    PDFium then reads the document itself instead of the Door allocating one bytes
+    object the size of a complete reel, and the source that was hashed is the same
+    source PDFium renders.  A bare path would not do: `pypdfium2` resolves and
+    reopens a path itself (`PdfDocument.__init__` calls `Path.resolve()`, confirmed
+    in the installed source), which is exactly the second, symlink-following open
+    the anchored stream exists to avoid.  Synthetic callers can still supply
+    in-memory bytes or a local path directly; all forms use the same renderer and
+    page contract.
     """
     header = _pdf_header(source)
     if PDF_SIGNATURE not in header:
@@ -127,24 +132,103 @@ def open_document(source: bytes | str | Path) -> OpenPdf:
             RefusalReason.CORRUPT, f"PDFium could not prepare the document: {error}"
         ) from error
     if pages <= 0:
-        close_document(OpenPdf(document, pages))
+        # Preserve the primary corrupt-document alarm if cleanup also fails.
+        _close_native_document(document)
         raise PdfRefusal(RefusalReason.CORRUPT, "the PDF contains no pages")
+    try:
+        _refuse_implausible_page_count(pages, _source_size(source))
+    except PdfRefusal:
+        _close_native_document(document)
+        raise
     return OpenPdf(document, pages)
 
 
-def _pdf_header(source: bytes | str | Path) -> bytes:
-    """Read only a bounded PDF prefix, never a complete path-backed source."""
+# `/Pages` nodes may share one child across several `/Kids`, so PDFium's page count
+# trusts a compounding `/Count` rather than the distinct page objects on disk: a ~2KB
+# file of self-sharing nodes opens cleanly and reports 500,000+ pages. This floor is
+# not the page cap ruling 17 retired — a reel's count stays the document's to declare.
+# It is also not a corruption test; see `_refuse_implausible_page_count`.
+MIN_BYTES_PER_DECLARED_PAGE: Final = 32
+
+
+def _source_size(source: bytes | str | Path | BinaryIO) -> int:
+    """Byte length of a PDF source, however it is represented.
+
+    For the page-count plausibility check only — never for reading a single byte of
+    page content. A stream's position is restored to the start, matching the
+    invariant `_pdf_header` already established before PDFium opens it.
+    """
+    if isinstance(source, bytes):
+        return len(source)
+    if isinstance(source, (str, Path)):
+        return Path(source).stat().st_size
+    source.seek(0, 2)
+    size = source.tell()
+    source.seek(0)
+    return size
+
+
+def _refuse_implausible_page_count(pages: int, container_size: int) -> None:
+    """Hold a declared page count this reader cannot tell from a shared page tree.
+
+    `UNSUPPORTED_VARIANT`, not `CORRUPT`, and the distinction is the whole point.
+    A blind audit built a *valid* PDF 1.5 — 10,000 distinct page objects, true
+    `/Count`, no shared kids, packed into a Flate object stream — at 9.4 bytes per
+    page, and PDFium opens and renders it. So this ratio does not establish damage,
+    and `CORRUPT` would tell Tyrel his original is broken when it is not: the one
+    thing ruling 2 says a refusal must never do. What it does establish is that this
+    reader cannot yet distinguish that file from the page-tree bomb it is here to
+    stop, which is a gap in this pipeline and is recorded as one.
+    """
+    if container_size < pages * MIN_BYTES_PER_DECLARED_PAGE:
+        raise PdfRefusal(
+            RefusalReason.UNSUPPORTED_VARIANT,
+            f"the document declares {pages} pages in {container_size} bytes, under the "
+            f"{MIN_BYTES_PER_DECLARED_PAGE} bytes a page normally needs; this reader "
+            "cannot yet tell a densely packed document from a shared page tree, so it "
+            "is held rather than read",
+        )
+
+
+# Exactly what `pypdfium2.internal.is_stream` requires of a custom-buffer source,
+# read from the installed package rather than guessed. Matching its set precisely,
+# rather than a convenient subset, is what keeps a near-stream from passing this
+# module's own check and then failing inside `_open_pdf` as a bare `TypeError`
+# nothing here catches — a refusal with no name is a refusal that is lost.
+_STREAM_METHODS: Final = ("read", "seek", "tell", "readinto")
+
+
+def _is_stream(source: object) -> bool:
+    return all(callable(getattr(source, name, None)) for name in _STREAM_METHODS)
+
+
+def _pdf_header(source: bytes | str | Path | BinaryIO) -> bytes:
+    """Read only a bounded PDF prefix, never a complete streamed source."""
     if isinstance(source, bytes):
         return source[:PDF_HEADER_PREFIX_BYTES]
-    if not isinstance(source, (str, Path)):
-        raise PdfRefusal(RefusalReason.CORRUPT, "the PDF source is neither bytes nor a path")
-    try:
-        with Path(source).open("rb") as handle:
-            return handle.read(PDF_HEADER_PREFIX_BYTES)
-    except OSError as error:
+    if isinstance(source, (str, Path)):
+        try:
+            with Path(source).open("rb") as handle:
+                return handle.read(PDF_HEADER_PREFIX_BYTES)
+        except OSError as error:
+            raise PdfRefusal(
+                RefusalReason.UNREADABLE, f"the PDF source could not be read: {error}"
+            ) from error
+    if not _is_stream(source):
         raise PdfRefusal(
-            RefusalReason.UNREADABLE, f"the PDF source could not be read: {error}"
+            RefusalReason.CORRUPT, "the PDF source is neither bytes, a path, nor a stream"
+        )
+    try:
+        source.seek(0)
+        header = source.read(PDF_HEADER_PREFIX_BYTES)
+        source.seek(0)
+    except (OSError, ValueError) as error:
+        raise PdfRefusal(
+            RefusalReason.UNREADABLE, f"the PDF source stream could not be read: {error}"
         ) from error
+    if not isinstance(header, bytes):
+        raise PdfRefusal(RefusalReason.CORRUPT, "the PDF source stream did not yield bytes")
+    return header
 
 
 # PDFium's own load-error codes for the two cases that mean "locked", not "broken":
@@ -179,8 +263,14 @@ def _open_failure_code(error: Exception) -> RefusalReason:
     return RefusalReason.CORRUPT
 
 
-def count_pages(source: bytes | str | Path) -> int:
-    """Count PDF pages without rasterising them, closing the temporary handle."""
+def count_pages(source: bytes | str | Path | BinaryIO) -> int:
+    """Count PDF pages without rasterising them, closing the temporary handle.
+
+    Only the PDFium document this call opened is closed. A caller-owned stream
+    (`operations.submit.inventory.open_submission_source`) stays open, because the
+    caller still needs it: `pypdfium2` never closes a custom-buffer input unless
+    asked to (`autoclose=False` is its default, confirmed in the installed source).
+    """
     opened = open_document(source)
     try:
         return opened.page_count
@@ -268,15 +358,21 @@ def render_page(opened: OpenPdf, page_index: int, settings: PdfRenderSettings) -
 
 
 def close_document(opened: OpenPdf) -> None:
-    """Close an owned native handle without hiding the original failure."""
-    _close_native_document(opened.document)
+    """Close an owned native handle, making a normal-path failure visible."""
+    try:
+        opened.document.close()
+    except Exception as error:
+        raise PdfRefusal(
+            RefusalReason.UNREADABLE,
+            f"PDFium could not release the document after reading: {error}",
+        ) from error
 
 
 def _close_native_document(document: Any) -> None:
-    """Best-effort cleanup for a handle that may have failed before opening fully."""
+    """Best-effort cleanup while preserving an open failure already in flight."""
     try:
         document.close()
-    except (AttributeError, pdfium.PdfiumError):
+    except Exception:
         pass
 
 

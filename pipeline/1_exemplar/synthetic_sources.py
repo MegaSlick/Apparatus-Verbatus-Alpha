@@ -386,6 +386,39 @@ def blank_pages_pdf(count: int, *, width: int = 1, height: int = 1) -> bytes:
     return builder.build(catalog)
 
 
+def page_tree_bomb_pdf(levels: int, *, fanout: int = 2) -> tuple[bytes, int]:
+    """A tiny, hostile page tree: ``fanout ** levels`` declared pages from one leaf.
+
+    Unlike ``blank_pages_pdf``, every ``/Kids`` entry at every level repeats the
+    *same* child object reference ``fanout`` times, so the declared page count
+    compounds multiplicatively while the object count stays linear in ``levels``.
+    This is the shape a real scanned reel can never take -- its declared page
+    count grows only with real, distinct page bytes. Returns the bytes and the
+    declared page count. ``levels`` must be at least 1.
+    """
+    builder = PdfBuilder()
+    leaf = builder.add()
+    level_numbers = [builder.add() for _ in range(levels)]
+    catalog = builder.add()
+
+    builder.objects[leaf] = (
+        f"<< /Type /Page /Parent {level_numbers[0]} 0 R /MediaBox [0 0 72 72] >>".encode()
+    )
+    count = 1
+    child = leaf
+    for index, number in enumerate(level_numbers):
+        count *= fanout
+        parent = level_numbers[index + 1] if index + 1 < len(level_numbers) else catalog
+        kids = " ".join(f"{child} 0 R" for _ in range(fanout))
+        builder.objects[number] = (
+            f"<< /Type /Pages /Parent {parent} 0 R /Kids [{kids}] /Count {count} >>".encode()
+        )
+        child = number
+
+    builder.objects[catalog] = f"<< /Type /Catalog /Pages {level_numbers[-1]} 0 R >>".encode()
+    return builder.build(catalog), count
+
+
 def image_page_pdf(
     images: list[dict],
     *,

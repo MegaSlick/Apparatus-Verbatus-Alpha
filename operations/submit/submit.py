@@ -11,10 +11,16 @@ there is nothing to transfer to.
 **This is the first real boundary in the chain.** The pipeline door's fixture CLI
 only ever sees declared synthetic pages; a folder handed to *this* tool is never a
 fixture, by construction, because it never goes near `load_fixture`. So the
-data-handling gate is enforced here before a single byte is hashed — and again at
-the door, on the door's own admission loop, because "the door refuses real input
-without a current approval" has to be true of the door and not only of whatever ran
-before it.
+storage-root check is enforced here before a single byte is hashed — and again at
+the door, on the door's own admission loop, because "material lives only where the
+policy names" has to be true of the door and not only of whatever ran before it.
+
+**Cut 2026-08-09, per Tyrel's ruling that session.** A submission used to also
+require a current data-gate approval-record artifact, verified here before a byte
+was hashed and named in the sealed manifest's `authorized_by` field. His ruling:
+none of this material ever reaches git regardless of any such sign-off, so the
+requirement bought nothing and is gone; the manifest no longer carries an
+authorization reference.
 
 **Upload completion is explicit and sealed.** The manifest is built entirely in
 memory, then written once, atomically. A crash at any point before that final
@@ -34,8 +40,7 @@ authority for either condition, so `purge()` refuses rather than pretending a
 manifest cleanup is a retention decision. `cleanup.py` remains the synthetic-drill
 verifier; it makes observable claims only.
 
-    python operations/submit/submit.py --source <folder> --manifest-out <path> \
-        --approval-record <path>
+    python operations/submit/submit.py --source <folder> --manifest-out <path>
 """
 
 import argparse
@@ -58,7 +63,7 @@ from common.contracts.canonical import (  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from operations.submit import gate, inventory  # noqa: E402
 
-SCHEMA: Final = "submission-manifest.v0"
+SCHEMA: Final = "submission-manifest.v1"
 REFUSAL_REPORT_SCHEMA: Final = "submission-refusal-report.v0"
 
 # The manifest names every submitted file, whatever its size — a source too large
@@ -154,24 +159,21 @@ def walk_folder(source: Path) -> list[dict[str, Any]]:
     ]
 
 
-def build_manifest(
-    entries: list[dict[str, Any]], *, authorized_by: dict[str, str]
-) -> dict[str, Any]:
+def build_manifest(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """The sealed, self-hashed submission manifest.
 
     Not yet a run's `source_manifest`: ordinals and any PDF page fan-out are the
     door's decision, made when it actually opens these files — this manifest only
     ever names what arrived.
 
-    `authorized_by` is the digest-checked reference to the approval record that let
-    this corpus in, sealed into the manifest itself and self-hashed alongside
-    everything else, so a run tree built from this manifest can always answer
-    "which approval admitted this?" without trusting anything outside the manifest.
+    **Cut 2026-08-09.** This used to also carry `authorized_by`, a digest-checked
+    reference to the data-gate approval record that admitted the corpus. That
+    requirement is gone (schema bumped to v1 accordingly); the manifest is purely
+    the filename-to-digest ledger.
     """
     manifest: dict[str, Any] = {
         "schema": SCHEMA,
         "files": sorted(entries, key=lambda entry: entry["relative_path"]),
-        "authorized_by": authorized_by,
     }
     manifest["self_hash"] = self_hash(manifest)
     return validate_manifest(manifest)
@@ -182,11 +184,11 @@ def validate_manifest(record: Any) -> dict[str, Any]:
 
     The submit door and a later ingress may both need this exact check.  It keeps
     the filename-to-digest ledger one closed shape: a non-empty, path-sorted set of
-    submitted files plus the content-addressed approval that admitted the set.
+    submitted files.
     """
     if not isinstance(record, dict):
         raise SubmitRefusal("submission manifest is not an object")
-    if set(record) != {"schema", "files", "authorized_by", "self_hash"}:
+    if set(record) != {"schema", "files", "self_hash"}:
         raise SubmitRefusal("submission manifest has an unexpected shape")
     if record["schema"] != SCHEMA:
         raise SubmitRefusal("submission manifest has an unsupported schema")
@@ -211,12 +213,6 @@ def validate_manifest(record: Any) -> dict[str, Any]:
         paths.append(path)
     if paths != sorted(paths) or len(paths) != len(set(paths)):
         raise SubmitRefusal("submission manifest file rows are not sorted unique declared paths")
-    authorization = record["authorized_by"]
-    if not isinstance(authorization, dict) or set(authorization) != {"relative_path", "sha256"}:
-        raise SubmitRefusal("submission manifest has an invalid approval reference")
-    digest = authorization["sha256"]
-    if not _is_sha256(digest) or authorization["relative_path"] != f"receipts/sha256/{digest}.json":
-        raise SubmitRefusal("submission manifest approval reference is not content-addressed")
     return record
 
 
@@ -361,24 +357,18 @@ def submit(
     source: Path,
     manifest_out: Path,
     *,
-    approval_record: Path | None,
     policy_path: Path = gate.DEFAULT_POLICY_PATH,
     refusal_report_out: Path | None = None,
 ) -> dict[str, Any]:
-    """Walk `source`, enforce the gate, and seal a manifest at `manifest_out`.
+    """Walk `source` and seal a manifest at `manifest_out`.
 
-    The gate is checked *before* a single file is read: a refused submission
-    touches no bytes and writes nothing, so a refusal can never leave a partial
-    trace that a later run might mistake for progress. The storage-root check is
-    part of that — the approved policy decides where real material and its manifest
-    may live, and either location outside every approved root is refused before the
-    folder is opened.
+    The storage-root check happens *before* a single file is read: a refused
+    submission touches no bytes and writes nothing, so a refusal can never leave a
+    partial trace that a later run might mistake for progress. The approved policy
+    decides where real material and its manifest may live, and either location
+    outside every approved root is refused before the folder is opened.
     """
     policy = gate.load_policy(policy_path)
-    if approval_record is None:
-        gate.enforce(approval=None, policy=policy)
-    _approval, reference = gate.read_external_approval(Path(approval_record), policy)
-
     roots = gate.approved_storage_roots(policy)
     resolved_source = gate.require_approved_storage_location(source, roots, "submitted folder")
     resolved_manifest = gate.require_approved_storage_location(
@@ -421,7 +411,7 @@ def submit(
             report_path=written_report,
             refusal_count=len(records),
         ) from error
-    manifest = build_manifest(entries, authorized_by=reference.to_record())
+    manifest = build_manifest(entries)
     data = canonical_bytes(manifest)
     _atomic_create(resolved_manifest, data)
     log("submission sealed", files=len(entries), digest=digest_bytes(data))
@@ -447,10 +437,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", required=True)
     parser.add_argument("--manifest-out", required=True)
-    parser.add_argument(
-        "--approval-record",
-        help="path to Tyrel's sealed data-gate approval record for the current policy",
-    )
     parser.add_argument("--policy", default=str(gate.DEFAULT_POLICY_PATH))
     parser.add_argument(
         "--refusal-report-out",
@@ -462,7 +448,6 @@ def main() -> int:
         submit(
             Path(args.source),
             Path(args.manifest_out),
-            approval_record=Path(args.approval_record) if args.approval_record else None,
             policy_path=Path(args.policy),
             refusal_report_out=(
                 Path(args.refusal_report_out) if args.refusal_report_out is not None else None

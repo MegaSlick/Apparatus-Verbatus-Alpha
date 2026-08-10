@@ -1,11 +1,17 @@
-"""The submit door: gated first, sealed once, and silent about what it saw.
+"""The submit door: sealed once, and silent about what it saw.
 
 Spec 03 asks three things of this tool that are testable here. Upload completion is
-explicit and sealed — a partial transfer can never look admitted. The gate is
-enforced before a byte is hashed, because this is the first place a real folder is
-ever touched. And the logging rule is mechanical rather than a promise: a log line
-may carry counts, digests and status words, and it may never carry a name, a path,
-or image bytes.
+explicit and sealed — a partial transfer can never look admitted. The storage-root
+check is enforced before a byte is hashed, because this is the first place a real
+folder is ever touched. And the logging rule is mechanical rather than a promise: a
+log line may carry counts, digests and status words, and it may never carry a name,
+a path, or image bytes.
+
+**Cut 2026-08-09, per Tyrel's ruling that session.** A submission used to also need
+a current data-gate approval-record artifact, verified before a byte was hashed and
+named in the sealed manifest's `authorized_by` field. His ruling: none of this
+material ever reaches git regardless of any such sign-off, so the requirement bought
+nothing and is gone; the manifest no longer carries an authorization reference.
 
 Spec 03's test 6 — the cleanup drill on synthetic material, with declared bounds —
 runs against `purge` here and against `cleanup.verify_synthetic_cleanup` beside it.
@@ -19,9 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.approval import build_approval_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
-from common.contracts.errors import ApprovalRefusal
 from operations.submit import cleanup, gate, inventory, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,23 +37,6 @@ def approved_policy(tmp_path, roots):
     path = tmp_path / "policy.json"
     path.write_text(json.dumps(policy), encoding="utf-8")
     return policy, path
-
-
-def approval_file(tmp_path, policy, *, target=None):
-    path = tmp_path / "approval.json"
-    path.write_text(
-        json.dumps(
-            build_approval_record(
-                subject_ids=["data-handling-policy"],
-                action="data-gate",
-                reason="synthetic proving record; approves nothing",
-                target_version_hash=target or gate.policy_hash(policy),
-                timestamp="2026-08-04T12:00:00Z",
-            )
-        ),
-        encoding="utf-8",
-    )
-    return path
 
 
 @pytest.fixture
@@ -67,7 +54,6 @@ def submission(tmp_path):
         "folder": folder,
         "policy": policy,
         "policy_path": policy_path,
-        "approval": approval_file(tmp_path, policy),
         "manifest_out": approved / "submission.json",
     }
 
@@ -79,7 +65,6 @@ def test_a_submission_seals_one_self_hashed_manifest_naming_every_file(submissio
     manifest = submit.submit(
         submission["folder"],
         submission["manifest_out"],
-        approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
 
@@ -92,22 +77,10 @@ def test_a_submission_seals_one_self_hashed_manifest_naming_every_file(submissio
     assert json.loads(submission["manifest_out"].read_text(encoding="utf-8")) == manifest
 
 
-def test_the_manifest_names_the_approval_that_admitted_the_corpus(submission):
-    manifest = submit.submit(
-        submission["folder"],
-        submission["manifest_out"],
-        approval_record=submission["approval"],
-        policy_path=submission["policy_path"],
-    )
-    _record, reference = gate.read_external_approval(submission["approval"], submission["policy"])
-    assert manifest["authorized_by"] == reference.to_record()
-
-
 def test_the_manifest_digests_are_the_real_digests_of_the_real_bytes(submission):
     manifest = submit.submit(
         submission["folder"],
         submission["manifest_out"],
-        approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
     for entry in manifest["files"]:
@@ -122,7 +95,6 @@ def test_a_manifest_loads_only_when_its_canonical_self_hashed_filename_ledger_is
     submit.submit(
         submission["folder"],
         submission["manifest_out"],
-        approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
 
@@ -138,7 +110,6 @@ def test_a_manifest_with_unsorted_or_duplicate_filename_rows_is_refused_before_i
     manifest = submit.submit(
         submission["folder"],
         submission["manifest_out"],
-        approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
     manifest["files"] = [manifest["files"][1], manifest["files"][0]]
@@ -148,31 +119,15 @@ def test_a_manifest_with_unsorted_or_duplicate_filename_rows_is_refused_before_i
         submit.validate_manifest(manifest)
 
 
-def test_a_manifest_with_a_non_receipt_approval_reference_is_refused_before_ingress(submission):
-    manifest = submit.submit(
-        submission["folder"],
-        submission["manifest_out"],
-        approval_record=submission["approval"],
-        policy_path=submission["policy_path"],
-    )
-    manifest["authorized_by"]["relative_path"] = "approvals/current.json"
-    manifest["self_hash"] = self_hash(manifest)
-
-    with pytest.raises(submit.SubmitRefusal, match="content-addressed"):
-        submit.validate_manifest(manifest)
-
-
 def test_submitting_the_same_folder_twice_seals_identical_bytes(submission):
     first = submit.submit(
         submission["folder"],
         submission["manifest_out"],
-        approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
     second = submit.submit(
         submission["folder"],
         submission["manifest_out"],
-        approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
     assert canonical_bytes(first) == canonical_bytes(second)
@@ -185,38 +140,12 @@ def test_an_empty_folder_is_a_loud_failure_rather_than_an_empty_submission(submi
         submit.submit(
             empty,
             submission["manifest_out"],
-            approval_record=submission["approval"],
             policy_path=submission["policy_path"],
         )
     assert not submission["manifest_out"].exists()
 
 
-# --- The gate is checked before a byte is read -----------------------------------
-
-
-def test_a_submission_with_no_approval_touches_nothing_and_writes_nothing(submission):
-    with pytest.raises(gate.GateRefusal, match="none was supplied"):
-        submit.submit(
-            submission["folder"],
-            submission["manifest_out"],
-            approval_record=None,
-            policy_path=submission["policy_path"],
-        )
-    assert not submission["manifest_out"].exists()
-
-
-def test_a_submission_with_a_stale_approval_is_refused_and_writes_nothing(submission, tmp_path):
-    stale_root = tmp_path / "stale"
-    stale_root.mkdir()
-    stale_path = approval_file(stale_root, submission["policy"], target="b" * 64)
-    with pytest.raises(ApprovalRefusal, match="stale"):
-        submit.submit(
-            submission["folder"],
-            submission["manifest_out"],
-            approval_record=stale_path,
-            policy_path=submission["policy_path"],
-        )
-    assert not submission["manifest_out"].exists()
+# --- The storage-root gate is checked before a byte is read ----------------------
 
 
 def test_a_folder_outside_the_approved_storage_roots_is_refused(submission, tmp_path):
@@ -227,7 +156,6 @@ def test_a_folder_outside_the_approved_storage_roots_is_refused(submission, tmp_
         submit.submit(
             elsewhere,
             submission["manifest_out"],
-            approval_record=submission["approval"],
             policy_path=submission["policy_path"],
         )
     assert not submission["manifest_out"].exists()
@@ -239,7 +167,6 @@ def test_a_manifest_outside_the_approved_storage_roots_is_refused(submission, tm
         submit.submit(
             submission["folder"],
             outside,
-            approval_record=submission["approval"],
             policy_path=submission["policy_path"],
         )
     assert not outside.exists()
@@ -251,7 +178,6 @@ def test_the_manifest_cannot_be_written_inside_the_folder_it_inventories(submiss
         submit.submit(
             submission["folder"],
             inside,
-            approval_record=submission["approval"],
             policy_path=submission["policy_path"],
         )
     assert not inside.exists()
@@ -265,7 +191,6 @@ def test_a_private_refusal_report_cannot_be_written_inside_the_folder_it_invento
         submit.submit(
             submission["folder"],
             submission["manifest_out"],
-            approval_record=submission["approval"],
             policy_path=submission["policy_path"],
             refusal_report_out=report_inside,
         )
@@ -299,7 +224,6 @@ def test_no_log_line_the_tool_actually_emits_names_a_submitted_file(submission, 
     submit.submit(
         submission["folder"],
         submission["manifest_out"],
-        approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
     printed = capsys.readouterr().out
@@ -315,7 +239,6 @@ def test_purge_refuses_to_delete_a_submission_before_a_sealed_run_terminal_condi
     submit.submit(
         submission["folder"],
         submission["manifest_out"],
-        approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
     with pytest.raises(submit.SubmitRefusal, match="sealed dead/broken or complete/exported"):
@@ -328,7 +251,6 @@ def test_the_cleanup_drill_fails_when_the_target_is_still_there(submission, tmp_
     submit.submit(
         submission["folder"],
         submission["manifest_out"],
-        approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
     log_path = tmp_path / "run.log"
@@ -356,8 +278,6 @@ def run_cli(submission, source, *, manifest_out=None) -> subprocess.CompletedPro
             str(source),
             "--manifest-out",
             str(manifest_out or submission["manifest_out"]),
-            "--approval-record",
-            str(submission["approval"]),
             "--policy",
             str(submission["policy_path"]),
         ],
@@ -432,14 +352,12 @@ def test_distinct_refusals_at_one_manifest_location_keep_both_named_reports(subm
         submit.submit(
             first_source,
             submission["manifest_out"],
-            approval_record=submission["approval"],
             policy_path=submission["policy_path"],
         )
     with pytest.raises(submit.SubmissionRefusal) as second:
         submit.submit(
             second_source,
             submission["manifest_out"],
-            approval_record=submission["approval"],
             policy_path=submission["policy_path"],
         )
 
@@ -467,7 +385,6 @@ def test_a_submit_budget_alarm_writes_the_source_name_to_its_private_report(
         submit.submit(
             source,
             submission["manifest_out"],
-            approval_record=submission["approval"],
             policy_path=submission["policy_path"],
         )
 
@@ -488,7 +405,6 @@ def test_resubmitting_changed_content_to_one_path_refuses_rather_than_replacing(
     first = submit.submit(
         submission["folder"],
         submission["manifest_out"],
-        approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
     sealed = submission["manifest_out"].read_bytes()
@@ -498,7 +414,6 @@ def test_resubmitting_changed_content_to_one_path_refuses_rather_than_replacing(
         submit.submit(
             submission["folder"],
             submission["manifest_out"],
-            approval_record=submission["approval"],
             policy_path=submission["policy_path"],
         )
     assert submission["manifest_out"].read_bytes() == sealed, "the existing record was not touched"
@@ -512,7 +427,6 @@ def test_resubmitting_identical_content_to_one_path_is_still_a_true_no_op(submis
         submit.submit(
             submission["folder"],
             submission["manifest_out"],
-            approval_record=submission["approval"],
             policy_path=submission["policy_path"],
         )
     assert submission["manifest_out"].exists()
@@ -591,7 +505,6 @@ def test_the_manifest_temp_name_is_unpredictable_and_never_reused(submission):
     assert submit.submit(
         submission["folder"],
         target,
-        approval_record=submission["approval"],
         policy_path=submission["policy_path"],
     )
     assert target.exists(), "a stale temporary must not block a fresh submission"
@@ -629,7 +542,6 @@ def test_the_manifest_is_not_written_through_a_symlink_planted_at_its_temp_path(
         submit.submit(
             submission["folder"],
             target,
-            approval_record=submission["approval"],
             policy_path=submission["policy_path"],
         )
     assert not victim.exists(), "nothing was written through the link"

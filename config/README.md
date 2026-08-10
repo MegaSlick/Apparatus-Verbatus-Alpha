@@ -34,17 +34,18 @@ the configured target and the code-bounded target, and every rendered PDF page r
 those beside its `effective_dpi`. The 72-DPI floor, pixel ceiling, and decoded-byte
 ceiling remain in code; configuration cannot weaken them. The default is **unmeasured**:
 making it adjustable does not prove it suitable, and it should be checked against a
-real sample only after the data-handling gate is approved (GOVERNANCE 9).
+real sample of real material (GOVERNANCE 9).
 
-`data_handling_policy.json` is the version an approval record names. Its hash is the
-canonical digest of its own content, so editing one character of it invalidates
-every approval that named the old version — which is the honest behaviour, not a
-bug. The **data-handling gate package** is the tracked
-`operations/submit/README.md`, and `operations/submit/gate.py` is the machinery
-that enforces it. Note that both entry points expose the policy's path as a flag, so
-"the current policy" is whichever file the invoker names — a documented limit of a
-mechanism `common/contracts/approval.py` already describes as tamper-evidence rather
-than access control.
+`data_handling_policy.json` names the storage roots real material may occupy, and
+`operations/submit/gate.py` refuses a submission folder, run root or ledger outside
+them before a byte is read. **It no longer names an approval**: Tyrel's ruling of
+2026-08-09 cut the per-run approval record, and with it the policy-version hash that
+made an approval stale when the policy changed. Nothing now binds a run to the policy
+version that governed it.
+
+Both entry points expose the policy's path as a flag, so "the current policy" is
+whichever file the invoker names — a documented limit, and the reason this is
+tamper-evidence rather than access control.
 
 For real submissions, the local submit door writes a self-hashed filename ledger
 before any transfer. The Exemplar door requires that ledger and binds its filename,

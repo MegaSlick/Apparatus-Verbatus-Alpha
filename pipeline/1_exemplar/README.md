@@ -11,7 +11,7 @@ images together—never an embedded-image extraction. A decoder gap is a named a
 about the pipeline, not a format-policy rejection.
 
 Real submissions require the self-hashed local filename ledger created by
-`operations/submit/submit.py`, plus the current data-handling approval. The ledger
+`operations/submit/submit.py`, and must sit inside an approved storage root. The ledger
 is bound into `run.json`'s self-hash, checked again at the Exemplar/Designator
 boundary, and carried to the Armarium export. No transfer, pod, or real source data
 is part of this stage.

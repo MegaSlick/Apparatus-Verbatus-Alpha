@@ -20,6 +20,8 @@ import image_formats
 import pytest
 from image_formats import (
     MAX_DIMENSION,
+    MIN_BYTES_PER_DECLARED_FRAME,
+    MIN_BYTES_PER_DECLARED_TIFF_PAGE,
     DecodedRaster,
     FormatRefusal,
     ImageGeometry,
@@ -463,6 +465,117 @@ def test_a_cyclic_ifd_chain_is_still_a_named_decoder_failure():
         count_raster_pages(bytes(data))
 
 
+def test_a_classic_tiff_naming_no_image_directory_is_corrupt_not_silently_empty():
+    """A first-IFD offset of 0 is damage, not an empty container of zero pages.
+
+    `validate_tiff` already refuses this exact header shape as CORRUPT. Before this
+    test, `_validate_classic_tiff_page_chain`'s `while offset:` loop disagreed: it
+    returned a page count of 0 for the identical bytes, which routed the source to
+    zero fanned ordinals -- admitted nowhere, refused nowhere, and absent from the
+    run's own source manifest. A page count of zero must never be how a real file
+    goes unaccounted for.
+    """
+    data = b"II*\x00" + struct.pack("<I", 0) + b"\x00" * 4
+    with pytest.raises(FormatRefusal, match="the header names no image directory"):
+        count_raster_pages(data)
+
+
+def test_a_chain_of_empty_directories_cannot_declare_more_pages_than_bytes_allow():
+    """Six bytes may not buy a page ordinal, however many times it is repeated.
+
+    A directory the chain walk accepts costs two bytes of entry count and four of
+    next-offset, and nothing in that shape requires an actual image. Chaining empty
+    directories six bytes apart therefore declared one page per six submitted bytes:
+    measured before the floor existed, 1.2 MB fanned out to 200,000 ordinals through
+    the real `expand_sources` in 0.25 seconds, and the 64 MiB source ceiling put the
+    worst case near eleven million. Each ordinal is a decode attempt and an artifact.
+
+    This is the TIFF half of the page-tree amplification already refused in
+    `pdf_render`, and it is deliberately not the page cap ruling 17 retired: a real
+    reel's page count is the document's to declare, and the test below proves a
+    genuine thousand-page TIFF still passes with room to spare.
+    """
+    pages = 10_000
+    stride = 6
+    body = bytearray(stride * pages)
+    for index in range(pages):
+        at = stride * index
+        struct.pack_into("<H", body, at, 0)
+        struct.pack_into("<I", body, at + 2, 0 if index == pages - 1 else 8 + stride * (index + 1))
+    data = b"II*\x00" + struct.pack("<I", 8) + bytes(body)
+
+    with pytest.raises(FormatRefusal, match="below the .* bytes any real page needs"):
+        count_raster_pages(data)
+
+
+def test_an_apng_cannot_declare_more_frames_than_its_bytes_could_hold():
+    """A frame count read out of a header is a loop bound somebody else wrote.
+
+    APNG takes its count straight from the `acTL` chunk, so unlike the TIFF chain it
+    does not scale with file size at all: measured before this floor existed, a
+    125-byte APNG declaring a million frames was counted as a million pages and
+    `expand_sources` fanned it out. The classic-TIFF walk returns before this check,
+    so this is the bound for every container that walk never sees.
+    """
+
+    def chunk(kind, payload):
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    data = (
+        PNG_MAGIC
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+        + chunk(b"acTL", struct.pack(">II", 1_000_000, 0))
+        + chunk(b"fcTL", struct.pack(">IIIIIHHBB", 0, 1, 1, 0, 0, 1, 1, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00\x00", 9))
+        + chunk(b"IEND", b"")
+    )
+
+    assert len(data) < 32 * 1_000_000
+    with pytest.raises(FormatRefusal, match="declared frames in"):
+        count_raster_pages(data)
+
+
+def test_a_real_animation_is_counted_and_never_reaches_the_frame_floor():
+    """The floor above must never refuse a genuine multi-frame raster."""
+    frames = []
+    for index in range(60):
+        image = Image.new("P", (16, 16), 0)
+        pixels = image.load()
+        for x in range(16):
+            for y in range(16):
+                pixels[x, y] = (x * y + index * 7) % 256
+        frames.append(image)
+    output = BytesIO()
+    frames[0].save(output, format="GIF", save_all=True, append_images=frames[1:])
+    data = output.getvalue()
+
+    counted = count_raster_pages(data)
+    assert counted > 1
+    assert len(data) / counted > MIN_BYTES_PER_DECLARED_FRAME
+
+
+def test_a_real_thousand_page_tiff_is_counted_and_never_reaches_the_page_floor():
+    """The floor above must never be what refuses a genuine multi-page scan.
+
+    Pages this small are the closest a legitimate document can get to it: 1x1
+    pixels is the least page Pillow will write, and it still costs ~128 bytes,
+    four times the floor. A real scanned register page is orders larger again.
+    """
+    output = BytesIO()
+    first = Image.new("L", (1, 1), 17)
+    rest = [Image.new("L", (1, 1), 200) for _ in range(999)]
+    first.save(output, format="TIFF", save_all=True, append_images=rest)
+    data = output.getvalue()
+
+    assert count_raster_pages(data) == 1000
+    assert len(data) / 1000 > MIN_BYTES_PER_DECLARED_TIFF_PAGE
+
+
 def test_a_bad_later_tiff_page_keeps_a_good_earlier_page_counted_and_decodable():
     """A per-page tag defect must not erase a good earlier TIFF page.
 
@@ -736,30 +849,35 @@ def _tiff_tag_value_offset(data: bytes, tag: int) -> int:
     raise AssertionError(f"the synthetic TIFF carries no tag {tag}")
 
 
-def test_a_frame_count_past_the_fan_out_limit_is_refused_by_a_named_bound(monkeypatch):
-    """A page count read out of an untrusted file is a loop bound somebody else wrote.
+def test_a_classic_tiff_past_the_retired_5000_page_cap_keeps_its_denominator():
+    """The document declares the page count; a project policy number does not.
 
-    The limit is monkeypatched down rather than building five thousand pages: the
-    property is that the bound is applied to whatever the decoder reports, and
-    building the real thing would test the machine's patience instead.
-
-    It is checked on the decoder's own frame count, not only on a classic TIFF's
-    directory chain, because BigTIFF, animated GIF and animated WebP all reach the
-    fan-out without ever passing that chain walker.
+    The directories are spaced rather than packed, and the spacing is the point.
+    This test used to chain them six bytes apart, which is the least the walk will
+    accept — and that is byte-for-byte the amplification shape
+    `test_a_chain_of_empty_directories_cannot_declare_more_pages_than_bytes_allow`
+    now refuses, so the two tests asserted opposite things about identical bytes.
+    Ruling 17 retired the 5,000-page *cap*, which is what this test exists to hold:
+    a document says how many pages it has. It never said six bytes buy a page. A
+    real page of this era costs ~128 bytes at Pillow's absolute smallest, so a
+    document declaring 5,001 pages weighs at least this much, and the count still
+    passes with no policy number anywhere near it.
     """
-    monkeypatch.setattr(image_formats, "MAX_RASTER_FRAMES", 1)
+    pages = 5_001
+    stride = 40
+    data = bytearray(b"II*\x00" + struct.pack("<I", 8))
+    for index in range(pages):
+        next_offset = 8 + (index + 1) * stride if index + 1 < pages else 0
+        data.extend(struct.pack("<HI", 0, next_offset))
+        data.extend(b"\x00" * (stride - 6))
 
-    with pytest.raises(FormatRefusal, match="frames exceed the 1-frame fan-out limit"):
-        decode_raster(_two_page_tiff())
+    assert count_raster_pages(bytes(data)) == pages
+    assert pages > 5_000
+    assert len(data) / pages > MIN_BYTES_PER_DECLARED_TIFF_PAGE
 
 
-def test_the_frame_bound_reaches_a_container_the_directory_walker_never_sees():
-    """BigTIFF's chain is 64-bit, so the classic walker returns without counting it.
-
-    Without the decoder-side bound this file's page count would be unbounded — the
-    exact hole the classic-only check left. One page here, and the limit is proved
-    to be the thing that would stop a large one.
-    """
+def test_bigtiff_leaves_its_page_count_to_the_decoder():
+    """BigTIFF's 64-bit chain leaves its declared count to the real decoder."""
     output = BytesIO()
     first = Image.new("L", (4, 3), 19)
     second = Image.new("L", (2, 5), 231)

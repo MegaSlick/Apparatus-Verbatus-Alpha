@@ -1,33 +1,54 @@
-"""The data-handling gate's digest-checked approval-record boundary."""
+"""The approval-record contract: schema, self-hash, and the closed ingress record.
+
+**Cut 2026-08-09, per Tyrel's ruling that session.** This file used to be almost
+entirely about `require_current_data_gate_approval`, the `data-gate` action, and the
+policy-hash currency check that backed a per-run approval requirement for real
+input. All three are gone: real material never reaches git regardless of any
+per-run sign-off, so the requirement bought nothing. What remains — and what this
+file now covers — is the approval-record contract itself (`exclusion` and
+`salvage-promotion` still need Tyrel's approval under GOVERNANCE 1) and the closed
+fixture-or-real ingress record every run authority carries.
+"""
 
 import pytest
 
 from common.contracts.approval import (
-    ApprovalRecordReference,
-    approval_record_reference_from_record,
+    ACTIONS,
+    REAL_INGRESS,
+    SYNTHETIC_FIXTURE_INGRESS,
     build_approval_record,
-    data_gate_policy_hash,
-    require_current_data_gate_approval,
+    parse_ingress_record,
+    real_ingress_record,
+    synthetic_fixture_ingress_record,
+    validate_approval_record,
 )
-from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ApprovalRefusal
 
-POLICY = {
-    "storage_roots": ["private/"],
-    "logs": {"names": False, "image_bytes": False},
-    "version": 1,
-}
 
-
-def approval_bytes(*, target_hash: str | None = None, action: str = "data-gate") -> bytes:
-    record = build_approval_record(
-        subject_ids=["data-handling-policy"],
+def approval(*, action="exclusion", target=None, timestamp="2026-08-04T12:00:00Z"):
+    return build_approval_record(
+        subject_ids=["some-subject"],
         action=action,
-        reason="approved for real input under this exact policy",
-        target_version_hash=target_hash or data_gate_policy_hash(POLICY),
-        timestamp="2026-08-04T12:00:00Z",
+        reason="a reviewable reason a reader six weeks out can use",
+        target_version_hash=target or "a" * 64,
+        timestamp=timestamp,
     )
-    return canonical_bytes(record)
+
+
+# --- data-gate is gone as an action, not merely disused ---------------------------
+
+
+def test_data_gate_is_not_an_approvable_action():
+    """Real input no longer needs a per-run approval, and this action no longer
+    exists to claim one against. `exclusion` and `salvage-promotion` remain —
+    GOVERNANCE 1 still requires Tyrel's approval for an exclusion."""
+    assert "data-gate" not in ACTIONS
+    assert set(ACTIONS) == {"exclusion", "salvage-promotion", "other"}
+    with pytest.raises(ApprovalRefusal, match="not one of"):
+        approval(action="data-gate")
+
+
+# --- The record's shape: builder and validator agree exactly ---------------------
 
 
 @pytest.mark.parametrize("timestamp", ["", "   ", None, 20260804])
@@ -39,177 +60,100 @@ def test_the_builder_refuses_a_timestamp_the_validator_would_reject(timestamp):
     rather than whether they meant anything."""
     with pytest.raises(ApprovalRefusal, match="no timestamp"):
         build_approval_record(
-            subject_ids=["data-handling-policy"],
-            action="data-gate",
-            reason="approved for real input under this exact policy",
-            target_version_hash=data_gate_policy_hash(POLICY),
+            subject_ids=["exclusion-subject"],
+            action="exclusion",
+            reason="a reviewable reason a reader six weeks out can use",
+            target_version_hash="a" * 64,
             timestamp=timestamp,
         )
 
 
-def approval_path(data: bytes) -> str:
-    return f"receipts/sha256/{digest_bytes(data)}.json"
+def test_a_well_formed_record_validates_unchanged():
+    record = approval()
+    assert validate_approval_record(record) == record
 
 
-def reference_for(data: bytes) -> ApprovalRecordReference:
-    return ApprovalRecordReference(approval_path(data), digest_bytes(data))
+def test_an_unknown_action_is_refused():
+    with pytest.raises(ApprovalRefusal, match="not one of"):
+        approval(action="not-a-real-action")
 
 
-def reader_holding(data: bytes):
-    def read(relative_path: str) -> bytes:
-        assert relative_path == approval_path(data)
-        return data
-
-    return read
-
-
-def test_current_data_gate_approval_is_returned_only_through_its_checked_reference():
-    data = approval_bytes()
-    reference = reference_for(data)
-
-    record = require_current_data_gate_approval(POLICY, reference, reader_holding(data))
-
-    assert record["action"] == "data-gate"
-    assert record["target_version_hash"] == data_gate_policy_hash(POLICY)
-    assert reference.to_record() == {
-        "relative_path": approval_path(data),
-        "sha256": digest_bytes(data),
-    }
+def test_an_approval_naming_someone_other_than_tyrel_is_refused():
+    record = approval()
+    record["approver"] = "an agent"
+    with pytest.raises(ApprovalRefusal, match="only Tyrel approves"):
+        validate_approval_record(record)
 
 
-def test_a_serialized_reference_is_not_accepted_as_the_gate_authority():
-    """The door receives a typed reference, never a caller-supplied dict."""
-    data = approval_bytes()
-
-    with pytest.raises(ApprovalRefusal, match="ApprovalRecordReference"):
-        require_current_data_gate_approval(
-            POLICY,
-            {"relative_path": approval_path(data), "sha256": digest_bytes(data)},
-            reader_holding(data),
-        )
-
-
-def test_a_persisted_reference_is_decoded_once_before_a_consumer_reads_it():
-    data = approval_bytes()
-
-    parsed = approval_record_reference_from_record(reference_for(data).to_record())
-
-    assert isinstance(parsed, ApprovalRecordReference)
-    assert parsed.to_record() == reference_for(data).to_record()
-
-
-def test_missing_data_gate_approval_is_a_named_refusal():
-    with pytest.raises(ApprovalRefusal, match="data-gate approval is missing"):
-        require_current_data_gate_approval(POLICY, None, reader_holding(b""))
-
-
-def test_data_gate_approval_bound_to_an_old_policy_is_a_named_stale_refusal():
-    data = approval_bytes(target_hash="a" * 64)
-
-    with pytest.raises(ApprovalRefusal, match="data-gate approval is stale"):
-        require_current_data_gate_approval(POLICY, reference_for(data), reader_holding(data))
-
-
-def test_reference_digest_mismatch_is_refused_before_the_record_is_trusted():
-    data = approval_bytes()
-    wrong_reference = ApprovalRecordReference(f"receipts/sha256/{'b' * 64}.json", "b" * 64)
-
-    with pytest.raises(ApprovalRefusal, match="approval reference digest mismatch"):
-        require_current_data_gate_approval(POLICY, wrong_reference, lambda _path: data)
-
-
-# Split deliberately. All four cases used to be raw dictionaries on one parametrize,
-# and `_approval_record_reference` refuses anything that is not an
-# `ApprovalRecordReference` before it inspects the path or the digest at all — so
-# every case tripped that first guard, whose message also contains "data-gate
-# approval reference" and so satisfied the shared `match`. The traversal branch and
-# the bad-digest branch never executed, and deleting either would have left this
-# green. The well-shaped cases now arrive typed, so they reach the branch they name.
-@pytest.mark.parametrize(
-    "bad_record",
-    [
-        {},
-        {"relative_path": "receipts/sha256/missing.json"},
-    ],
-)
-def test_a_reference_record_with_the_wrong_keys_is_refused(bad_record):
-    with pytest.raises(ApprovalRefusal, match="exactly relative_path and sha256"):
-        approval_record_reference_from_record(bad_record)
-
-
-@pytest.mark.parametrize(
-    ("bad_reference", "expected"),
-    [
-        (
-            ApprovalRecordReference("../approval.json", "a" * 64),
-            "is not a safe relative path",
-        ),
-        (
-            ApprovalRecordReference(f"receipts/sha256/{'a' * 64}.json", "NOT-A-DIGEST"),
-            "has no lowercase sha256",
-        ),
-    ],
-)
-def test_malformed_data_gate_approval_reference_is_refused(bad_reference, expected):
-    # One expected message per case, not one shared pattern: a case that drifts to a
-    # different branch has to fail here rather than pass under a looser match.
-    with pytest.raises(ApprovalRefusal, match=expected):
-        require_current_data_gate_approval(POLICY, bad_reference, reader_holding(b""))
-
-
-def test_a_raw_dictionary_never_reaches_the_approval_reference_checks():
-    with pytest.raises(ApprovalRefusal, match="not a raw dictionary"):
-        require_current_data_gate_approval(
-            POLICY,
-            {"relative_path": f"receipts/sha256/{'a' * 64}.json", "sha256": "a" * 64},
-            reader_holding(b""),
-        )
-
-
-def test_otherwise_safe_path_that_is_not_the_digest_named_receipt_path_is_refused():
-    data = approval_bytes()
-    reference = ApprovalRecordReference("approvals/current.json", digest_bytes(data))
-
-    with pytest.raises(ApprovalRefusal, match="content-addressed path"):
-        require_current_data_gate_approval(POLICY, reference, reader_holding(data))
-
-
-def test_missing_referenced_approval_bytes_are_a_named_refusal():
-    reference = ApprovalRecordReference(f"receipts/sha256/{'a' * 64}.json", "a" * 64)
-
-    def missing(_relative_path: str) -> bytes:
-        raise FileNotFoundError("approval record")
-
-    with pytest.raises(ApprovalRefusal, match="could not be read"):
-        require_current_data_gate_approval(POLICY, reference, missing)
-
-
-def test_a_digest_checked_record_for_a_different_action_does_not_open_the_gate():
-    data = approval_bytes(action="other")
-
-    with pytest.raises(ApprovalRefusal, match="action 'other', not 'data-gate'"):
-        require_current_data_gate_approval(POLICY, reference_for(data), reader_holding(data))
-
-
-def test_an_invalid_self_hash_does_not_open_the_gate_even_when_the_reference_matches():
-    record = build_approval_record(
-        subject_ids=["data-handling-policy"],
-        action="data-gate",
-        reason="approved for real input under this exact policy",
-        target_version_hash=data_gate_policy_hash(POLICY),
-        timestamp="2026-08-04T12:00:00Z",
-    )
-    record["reason"] = "edited after approval"
-    data = canonical_bytes(record)
-
+def test_an_edited_record_fails_its_own_self_hash():
+    record = approval()
+    record["reason"] = "quietly widened after the fact"
     with pytest.raises(ApprovalRefusal, match="self-hash"):
-        require_current_data_gate_approval(POLICY, reference_for(data), reader_holding(data))
+        validate_approval_record(record)
 
 
-def test_policy_content_that_cannot_be_canonicalized_fails_closed():
-    data = approval_bytes()
+def test_a_non_sha256_target_version_is_refused():
+    with pytest.raises(ApprovalRefusal, match="lowercase sha256"):
+        approval(target="not-a-digest")
 
-    with pytest.raises(ApprovalRefusal, match="canonical policy hash could not be computed"):
-        require_current_data_gate_approval(
-            {"retention_days": 1.5}, reference_for(data), reader_holding(data)
+
+def test_an_approval_that_names_no_subject_approves_nothing():
+    with pytest.raises(ApprovalRefusal, match="names no subject"):
+        build_approval_record(
+            subject_ids=[],
+            action="exclusion",
+            reason="a reviewable reason a reader six weeks out can use",
+            target_version_hash="a" * 64,
+            timestamp="2026-08-04T12:00:00Z",
         )
+
+
+def test_an_empty_reason_is_refused():
+    with pytest.raises(ApprovalRefusal, match="unreviewable"):
+        build_approval_record(
+            subject_ids=["x"],
+            action="exclusion",
+            reason="   ",
+            target_version_hash="a" * 64,
+            timestamp="2026-08-04T12:00:00Z",
+        )
+
+
+def test_a_record_missing_a_required_field_is_refused():
+    record = approval()
+    del record["reason"]
+    with pytest.raises(ApprovalRefusal, match="missing"):
+        validate_approval_record(record)
+
+
+# --- The closed ingress record: fixture or real, and nothing else ----------------
+
+
+def test_synthetic_fixture_ingress_round_trips():
+    assert parse_ingress_record(synthetic_fixture_ingress_record()) == SYNTHETIC_FIXTURE_INGRESS
+
+
+def test_real_ingress_round_trips():
+    assert parse_ingress_record(real_ingress_record()) == REAL_INGRESS
+
+
+def test_real_ingress_carries_no_approval_evidence():
+    """A real run's ingress used to also carry a data-gate policy hash and an
+    approval reference. Neither exists any more: it is just which route created
+    the run."""
+    assert real_ingress_record() == {"mode": "real"}
+
+
+def test_an_unknown_ingress_mode_is_refused():
+    with pytest.raises(ApprovalRefusal, match="closed fixture-or-real record"):
+        parse_ingress_record({"mode": "something-else"})
+
+
+def test_an_ingress_record_with_extra_fields_is_refused():
+    with pytest.raises(ApprovalRefusal, match="closed fixture-or-real record"):
+        parse_ingress_record({"mode": "real", "extra": "field"})
+
+
+def test_a_non_dict_ingress_record_is_refused():
+    with pytest.raises(ApprovalRefusal, match="closed fixture-or-real record"):
+        parse_ingress_record("real")

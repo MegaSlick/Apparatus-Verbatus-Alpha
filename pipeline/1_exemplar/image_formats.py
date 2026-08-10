@@ -49,11 +49,12 @@ MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
 MAX_TIFF_DATA_SEGMENTS: Final = 100_000
-# One scanned register volume is hundreds of pages, not hundreds of thousands.
-# `MAX_TIFF_PAGES` bounds the classic-TIFF directory chain walk; `MAX_RASTER_FRAMES`
-# bounds whatever any decoder reports, for the containers that never reach that walk.
-MAX_TIFF_PAGES: Final = 5_000
-MAX_RASTER_FRAMES: Final = 5_000
+# A declared page count has to fit in the bytes that arrived. This is not the page
+# cap ruling 17 retired — a reel's page count stays the document's to declare — it
+# refuses a count no container of that size could physically hold. Pillow's smallest
+# real page costs ~128 bytes, so no genuine document reaches either floor.
+MIN_BYTES_PER_DECLARED_TIFF_PAGE: Final = 32
+MIN_BYTES_PER_DECLARED_FRAME: Final = 32
 
 
 class ImageGeometry(NamedTuple):
@@ -109,8 +110,8 @@ JPEG_SIGNATURE: Final = b"\xff\xd8"
 TIFF_SIGNATURES: Final = (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")
 PDF_SIGNATURE: Final = b"%PDF-"
 # PDFium accepts a PDF header after a bounded transport preamble. The Door reads
-# this much for a path-backed source, so the route stays byte-based while a
-# preamble cannot make an otherwise readable document look unrecognized.
+# this much from the head of a streamed source, so the route stays byte-based while
+# a preamble cannot make an otherwise readable document look unrecognized.
 PDF_HEADER_PREFIX_BYTES: Final = 1024
 GIF_SIGNATURES: Final = (b"GIF87a", b"GIF89a")
 BMP_SIGNATURES: Final = (b"BM", b"BA", b"CI", b"CP", b"IC", b"PT")
@@ -1217,10 +1218,11 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
         _validate_iso_bmff_image_header(data, detected_by_signature)
     classic_tiff_pages: int | None = None
     if detected_by_signature == "tiff":
-        # A resource bound, not a verdict about the layout: it propagates whatever
-        # the structural walker below decides, because a decoder that happily
-        # enumerates fifty thousand directories is not a reason to fan out fifty
-        # thousand ordinals.
+        # The structural walker proves that the document's declared chain is
+        # finite and inside the file. Its page count is the fan-out denominator;
+        # there is deliberately no policy cap, because microfilm can exceed 5,000
+        # pages and the submitted document — not a project preference — says how
+        # many pages arrived.
         classic_tiff_pages = _validate_classic_tiff_page_chain(data)
     _structural_corruption_check(detected_by_signature, data)
     try:
@@ -1250,16 +1252,14 @@ def decode_raster(data: bytes, *, page_index: int = 0) -> DecodedRaster:
                 detected = _pillow_format_name(reported_format)
                 if not isinstance(frames, int) or frames < 1:
                     raise corrupt("image: decoder returned no frames")
-                # The fan-out bound, checked on whatever the decoder reports rather
-                # than only on a classic TIFF's directory chain. A BigTIFF, an
-                # animated GIF or a WebP reaches this line without ever passing the
-                # chain walker, and a frame count read out of an untrusted file is
-                # a loop bound somebody else wrote.
-                if frames > MAX_RASTER_FRAMES:
-                    raise unsupported(
-                        f"{detected}: {frames} frames exceed the "
-                        f"{MAX_RASTER_FRAMES}-frame fan-out limit"
-                    )
+                # Whatever the decoder reports still has to fit in the bytes that
+                # arrived. APNG reads its frame count straight out of the acTL chunk,
+                # so it does not scale with file size at all: a measured 125-byte APNG
+                # declared a million frames, and an animated GIF reached the same fan-out
+                # at 15 bytes a frame. The classic-TIFF walk is bounded by its own chain
+                # and has already returned above; this is the bound for every container
+                # that never reaches that walk.
+                _refuse_implausible_frame_count(detected, frames, len(data))
                 if not isinstance(page_index, int) or isinstance(page_index, bool):
                     raise corrupt("image: page index is not an integer")
                 if not 0 <= page_index < frames:
@@ -1364,10 +1364,6 @@ def count_raster_pages(data: bytes) -> int:
     if sniff(data) == "tiff":
         classic_pages = _validate_classic_tiff_page_chain(data)
         if classic_pages is not None:
-            if classic_pages > MAX_RASTER_FRAMES:
-                raise unsupported(
-                    f"TIFF: {classic_pages} frames exceed the {MAX_RASTER_FRAMES}-frame fan-out limit"
-                )
             return classic_pages
     return decode_raster(data).frame_count
 
@@ -1494,8 +1490,17 @@ def _pillow_format_name(format_name: str | None) -> str:
     return aliases.get(format_name, format_name.lower())
 
 
+def _refuse_implausible_frame_count(detected: str, frames: int, container_size: int) -> None:
+    """Refuse a decoder-reported frame count the submitted bytes could not hold."""
+    if frames * MIN_BYTES_PER_DECLARED_FRAME > container_size:
+        raise corrupt(
+            f"{detected}: {frames} declared frames in {container_size} bytes, below the "
+            f"{MIN_BYTES_PER_DECLARED_FRAME} bytes any real frame needs"
+        )
+
+
 def _validate_classic_tiff_page_chain(data: bytes) -> int | None:
-    """Return a bounded classic-TIFF page count without decoding later pages.
+    """Return a finite classic-TIFF page count without decoding later pages.
 
     Pillow owns actual pixel decoding and accepts several valid TIFF layouts this
     project's narrow first-page structural walker deliberately does not interpret.
@@ -1512,6 +1517,15 @@ def _validate_classic_tiff_page_chain(data: bytes) -> int | None:
     if magic != 42:
         return None
     (offset,) = struct.unpack_from(endian + "I", data, 4)
+    if offset == 0:
+        # `validate_tiff` refuses this identical shape as CORRUPT (no image
+        # directory at all). Returning 0 here instead let it read as "an empty
+        # container", not "damaged" -- `count_raster_pages` took that 0 as a page
+        # count rather than an alarm, and the source was fanned out to zero
+        # ordinals: admitted nowhere, refused nowhere, absent from the run's own
+        # source_manifest. Raising here is what makes the two TIFF entry points
+        # agree on the one fact that matters: a directory-less header is damage.
+        raise corrupt("TIFF: the header names no image directory")
     seen: set[int] = set()
     pages = 0
     while offset:
@@ -1525,7 +1539,15 @@ def _validate_classic_tiff_page_chain(data: bytes) -> int | None:
         if next_offset_at + 4 > len(data):
             raise corrupt("TIFF: image-directory entries run past the file")
         pages += 1
-        if pages > MAX_TIFF_PAGES:
-            raise unsupported(f"TIFF: more than {MAX_TIFF_PAGES} pages exceed the fan-out limit")
+        # Checked inside the walk rather than after it, so a hostile chain is
+        # refused at the byte that makes it impossible instead of after eleven
+        # million iterations. A real document trips this on no page.
+        if pages * MIN_BYTES_PER_DECLARED_TIFF_PAGE > len(data):
+            raise corrupt(
+                f"TIFF: the directory chain declares more than {pages - 1} pages in "
+                f"{len(data)} bytes, below the {MIN_BYTES_PER_DECLARED_TIFF_PAGE} bytes "
+                "any real page needs; this is a malformed or hostile directory chain, "
+                "not a large document"
+            )
         (offset,) = struct.unpack_from(endian + "I", data, next_offset_at)
     return pages
