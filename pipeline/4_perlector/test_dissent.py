@@ -3,6 +3,7 @@ metric; a raw-string cross-check beside the normalized one; an honest
 `"unknown"` for a witness format the comparator cannot yet reduce.
 """
 
+import time
 import unicodedata
 
 import dissent
@@ -179,6 +180,38 @@ def test_a_witness_whose_format_can_express_uncertainty_is_unknown_not_guessed()
             ),
         }
     ]
+
+
+def test_a_runaway_witness_report_is_unknown_rather_than_aligned_for_twenty_minutes():
+    """A witness's `reported` is a model's own output and nothing upstream bounds
+    it. `SequenceMatcher` costs the product of the two lengths, so a model stuck
+    in a repetition loop until its token cap would hold this stage for tens of
+    minutes on every act it touched. The bound is on the comparison, not the
+    text: neither string is clipped, and the chair keeps a visible row."""
+    reading = "alpha beta gamma" * 700  # a ~11k-character act, already unrealistic
+    runaway = "ab" * 60_000  # ~120k characters, a plausible 32k-token repetition loop
+    assert len(reading) * len(runaway) > dissent.MAX_COMPARISON_CHARACTER_PAIRS
+
+    started = time.monotonic()
+    rows = dissent.dissent_against(
+        reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": runaway}}]
+    )
+    assert time.monotonic() - started < 5, "the bound must stop the alignment, not merely note it"
+    assert rows[0]["chair"] == "attestator_1", "the witness must not vanish from the record"
+    assert rows[0]["compared"] == "unknown"
+    assert "did not run" in rows[0]["reason"]
+
+
+def test_a_long_but_affordable_comparison_is_still_genuinely_aligned():
+    """Prove the bound is not swallowing ordinary work: an act far longer than a
+    real register entry still gets its real spans."""
+    reading = "alpha beta gamma " * 200
+    reported = reading[:-6] + "gamna "
+    rows = dissent.dissent_against(
+        reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
+    )
+    assert rows[0]["compared"] is True
+    assert rows[0]["departures"], "an affordable comparison must still locate its departures"
 
 
 def test_is_comparable_defaults_true_when_a_testimonium_declares_no_capabilities():

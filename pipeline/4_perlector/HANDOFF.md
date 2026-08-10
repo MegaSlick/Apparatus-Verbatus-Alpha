@@ -139,7 +139,14 @@ raw-string comparison, kept alongside because a normalization that dropped
 characters on either side can otherwise hide whether the raw strings actually
 agreed. A witness whose declared format cannot yet be reduced to a comparison
 view (`format_capabilities.can_express_uncertainty`) is recorded `"unknown"` —
-never guessed, and never dropped from the list.
+never guessed, and never dropped from the list. So is one whose report is too
+long to align against this reading at all: the alignment costs the product of
+the two lengths, a witness's report is a model's own output that nothing
+upstream bounds, and a repetition loop running to a 32k-token cap would hold the
+stage for tens of minutes per act. `dissent.MAX_COMPARISON_CHARACTER_PAIRS`
+bounds the **comparison**, never the text — nothing is clipped, no reading
+changes, and the row says in words how large the comparison was and that it did
+not run.
 
 `departures` says *where*: `[{reading_span: {start, end}, testimonium_span:
 {start, end}}, ...]`, an alignment from `difflib.SequenceMatcher.get_opcodes`

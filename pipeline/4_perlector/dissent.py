@@ -47,10 +47,33 @@ from __future__ import annotations
 
 import unicodedata
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Final
 
 from common.contracts.errors import SchemaRefusal
 from common.stage import WITNESS_READING_OUTCOMES
+
+# `SequenceMatcher`'s alignment costs the product of the two lengths. Measured
+# in this chamber at roughly 12 million character-pairs per second: 5,000 by
+# 5,000 is two seconds, 16,000 by 16,000 is twenty, and it keeps squaring.
+#
+# A witness's `reported` is a model's own output and nothing upstream bounds it
+# -- `pipeline/3_attestatores/run.py` records a character count and enforces no
+# ceiling on it. A model in a repetition loop emits until its token cap, which
+# is the ordinary failure `truncation.py` exists because of, not an exotic one;
+# at a 32k-token cap that is well over a hundred thousand characters, and one
+# such report would hold the stage for tens of minutes on every act it touched.
+#
+# **The bound is on the comparison, never on the text.** Nothing is clipped,
+# no reading is touched, and the witness keeps its row -- saying honestly that
+# the alignment did not run. Spec 08 already declares that shape: "where a
+# witness format cannot be compared, dissent for that witness is recorded
+# `unknown`, never guessed", and a comparison too large to run is one that
+# cannot be run. Set far above any plausible act (a hundred million pairs is a
+# 10,000-character reading against a 10,000-character report, where a register
+# entry runs to hundreds), so only a runaway reaches it -- a cost ceiling, not
+# a calibrated constant, and alpha testing over real reports is what would tune
+# it.
+MAX_COMPARISON_CHARACTER_PAIRS: Final = 100_000_000
 
 
 def comparison_view(text: str) -> dict[str, object]:
@@ -140,8 +163,9 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     Computed after the reading is fixed. A chair that failed or never ran has
     no opinion to depart from, and is recorded as having none rather than as
     agreeing -- silence is not assent. A chair whose format cannot be reduced to
-    a comparison view is recorded `compared: "unknown"`: not guessed at, and not
-    silently dropped from the record either.
+    a comparison view, or whose report is too long to align against this reading
+    at all (`MAX_COMPARISON_CHARACTER_PAIRS`), is recorded `compared: "unknown"`:
+    not guessed at, and not silently dropped from the record either.
     """
     reading_view = comparison_view(reading)
     rows = []
@@ -163,6 +187,21 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                     "reason": (
                         "this witness's declared format cannot be reduced to a plain "
                         "comparison view"
+                    ),
+                }
+            )
+            continue
+        pairs = len(reading) * len(reported)
+        if pairs > MAX_COMPARISON_CHARACTER_PAIRS:
+            rows.append(
+                {
+                    "chair": chair,
+                    "compared": "unknown",
+                    "reason": (
+                        f"a {len(reading)}-character reading against a {len(reported)}-"
+                        f"character report is {pairs} character pairs to align, past this "
+                        f"module's {MAX_COMPARISON_CHARACTER_PAIRS} bound; neither text is "
+                        "clipped and neither is changed, the alignment simply did not run"
                     ),
                 }
             )
