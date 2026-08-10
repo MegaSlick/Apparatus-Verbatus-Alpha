@@ -1187,12 +1187,18 @@ def _act_evidence(act: dict[str, Any]) -> dict[str, Any]:
 
 
 def _export_reason(act: dict[str, Any]) -> str | None:
-    """Make a held/refused review reason explicit without inventing one for other outcomes."""
+    """Make a held/refused review reason explicit without inventing one for other outcomes.
+
+    The fallback names the gap itself ("upstream recorded no reason") rather than
+    describing the outcome ("no usable reading was exported"): the two are
+    distinguishable only by this sentence, and a reader should be able to tell an
+    upstream stage that recorded nothing meaningful from one that never ran.
+    """
     if act["category"] in {
         ArmariumCategory.HELD_FOR_REVIEW.value,
         ArmariumCategory.REFUSED_WITH_REASON.value,
     }:
-        return act.get("reason") or "no usable reading was exported"
+        return act.get("reason") or "upstream recorded no reason"
     return act.get("reason")
 
 
