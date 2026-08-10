@@ -196,7 +196,25 @@ def page_census(context) -> dict[int, dict]:
     return census
 
 
-def pages_marked_out(context) -> dict[str, list[int]]:
+def _cached_manifest(context, stage: str, manifest_cache: dict[str, dict]) -> dict:
+    """``context.tree.build_manifest(stage)``, read and revalidated once per run.
+
+    ``build_manifest`` walks a stage's entire artifact directory and revalidates
+    every envelope, run binding, path binding and input on every call, by design.
+    Armarium never writes into DESIGNATOR/RECENSOR/PERLECTOR/ARCHETYPUS during its
+    own run -- it only ever reads them -- so those stages' artifact sets are static
+    for the whole invocation and a first read is not stale by the time a later
+    call in the same run reuses it. Measured on the two-act synthetic fixture:
+    without this cache, one Armarium run rebuilt and revalidated an upstream
+    stage's manifest fifteen separate times; the spec's own stated scale is tens
+    of thousands of acts.
+    """
+    if stage not in manifest_cache:
+        manifest_cache[stage] = context.tree.build_manifest(stage)
+    return manifest_cache[stage]
+
+
+def pages_marked_out(context, manifest_cache: dict[str, dict]) -> dict[str, list[int]]:
     """Every page ordinal the Designator actually cut a region on, per act.
 
     The proposal seal names one primary `page_ordinal` per act, and that is not the
@@ -212,7 +230,7 @@ def pages_marked_out(context) -> dict[str, list[int]]:
     and named there.
     """
     marked: dict[str, list[int]] = {act["act_id"]: [] for act in expected_acts(context)}
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+    for entry in _cached_manifest(context, DESIGNATOR, manifest_cache)["artifacts"]:
         if entry["kind"] != "region":
             continue
         region = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
@@ -235,9 +253,11 @@ def pages_marked_out(context) -> dict[str, list[int]]:
     return {act_id: sorted(ordinals) for act_id, ordinals in marked.items()}
 
 
-def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
+def artifacts_for(
+    context, stage: str, kind: str, subject: str, manifest_cache: dict[str, dict]
+) -> list[dict]:
     records = []
-    for entry in context.tree.build_manifest(stage)["artifacts"]:
+    for entry in _cached_manifest(context, stage, manifest_cache)["artifacts"]:
         if entry["kind"] == kind and entry["subject_id"] == subject:
             records.append(context.tree.read_artifact(stage, kind, entry["artifact_id"]))
     return records
@@ -359,14 +379,16 @@ def export_source_regions(tree, regions: list[dict], census: dict[int, dict]) ->
     return linked
 
 
-def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | None]:
+def categorize(
+    context, act_id: str, manifest_cache: dict[str, dict]
+) -> tuple[ArmariumCategory, dict, dict | None]:
     """One category per act, derived from the stages rather than decided here.
 
     The transition table is the authority: the Recensor's outcome either
     terminates the act or hands it to the Archetypus, whose outcome terminates it.
     This function routes; it does not judge.
     """
-    reviews = artifacts_for(context, RECENSOR, "review", act_id)
+    reviews = artifacts_for(context, RECENSOR, "review", act_id, manifest_cache)
     if not reviews:
         raise FatalAccounting(f"act {act_id} reached the Armarium with no Recensor outcome")
     review = latest_attempt(reviews, f"review of {act_id}", operation="recense")
@@ -380,7 +402,7 @@ def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | Non
         # nothing published through that guard -- exactly the class of imbalance
         # invariant #10 exists to catch, checked here rather than trusted absent,
         # the same way an accepted act with no Archetypus is checked below.
-        orphaned = artifacts_for(context, ARCHETYPUS, "archetypus", act_id)
+        orphaned = artifacts_for(context, ARCHETYPUS, "archetypus", act_id, manifest_cache)
         if orphaned:
             raise FatalAccounting(
                 f"act {act_id} is {review['outcome']!r} at the Recensor but carries an "
@@ -394,7 +416,7 @@ def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | Non
             "before an Archetypus can exist"
         )
 
-    established = artifacts_for(context, ARCHETYPUS, "archetypus", act_id)
+    established = artifacts_for(context, ARCHETYPUS, "archetypus", act_id, manifest_cache)
     if not established:
         raise FatalAccounting(
             f"act {act_id} was accepted by the Recensor but has no Archetypus. It "
@@ -409,7 +431,9 @@ def categorize(context, act_id: str) -> tuple[ArmariumCategory, dict, dict | Non
     return terminal_category(ARCHETYPUS, record["outcome"]), review, record
 
 
-def verify_established_record(context, act: dict, review: dict, established: dict) -> dict:
+def verify_established_record(
+    context, act: dict, review: dict, established: dict, manifest_cache: dict[str, dict]
+) -> dict:
     """Reconcile an exportable Archetypus against its exact reviewed Perlectio.
 
     The Archetypus is the first record to call one reading established.  It must
@@ -468,7 +492,7 @@ def verify_established_record(context, act: dict, review: dict, established: dic
         subject_id=act["act_id"],
     )
     current = latest_attempt(
-        artifacts_for(context, PERLECTOR, "perlectio", act["act_id"]),
+        artifacts_for(context, PERLECTOR, "perlectio", act["act_id"], manifest_cache),
         f"reading of {act['act_id']}",
         operation="perlegere",
     )
@@ -478,9 +502,9 @@ def verify_established_record(context, act: dict, review: dict, established: dic
             "Recensor review bind; export may not hide unreconciled evidence"
         )
     recovery_regions = recovery_region_count(
-        act["act_id"], artifacts_for(context, DESIGNATOR, "region", act["act_id"])
+        act["act_id"], artifacts_for(context, DESIGNATOR, "region", act["act_id"], manifest_cache)
     )
-    readings = artifacts_for(context, PERLECTOR, "perlectio", act["act_id"])
+    readings = artifacts_for(context, PERLECTOR, "perlectio", act["act_id"], manifest_cache)
     if len(readings) != recovery_regions + 1:
         raise FatalAccounting(
             f"act {act['act_id']} has {recovery_regions} recovery crop(s) but {len(readings)} "
@@ -584,7 +608,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # aggregate can tell a sealed page that produced nothing from one that produced
     # acts. Without it a silent page reconciles behind its busy neighbours.
     act_pages: dict[str, list[int]] = {}
-    marked_out_pages = pages_marked_out(context)
+    # Shared across the whole run: DESIGNATOR/RECENSOR/PERLECTOR/ARCHETYPUS are all
+    # read-only from here, so their manifests are static for this invocation and
+    # rebuilding one from disk on every per-act lookup is pure repeated work.
+    manifest_cache: dict[str, dict] = {}
+    marked_out_pages = pages_marked_out(context, manifest_cache)
     delivered: list[dict] = []
     review_items: list[dict] = []
     projected_acts: list[dict] = []
@@ -592,7 +620,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
     for act in expected:
         act_id = act["act_key"]
-        category, review, established = categorize(context, act["act_id"])
+        category, review, established = categorize(context, act["act_id"], manifest_cache)
 
         # The seal's own word is binding: an act the Designator held terminates
         # as held, and an export that categorized it any other way would have
@@ -621,7 +649,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         if established is not None and category is ArmariumCategory.DELIVERED:
             refusal = missing_export_provenance(established.get("payload"))
             if refusal is None:
-                payload = verify_established_record(context, act, review, established)
+                payload = verify_established_record(
+                    context, act, review, established, manifest_cache
+                )
                 try:
                     validate_serving_provenance(
                         context,

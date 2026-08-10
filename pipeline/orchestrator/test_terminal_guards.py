@@ -222,12 +222,12 @@ def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(mo
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
-    monkeypatch.setattr(armarium, "pages_marked_out", lambda _context: {"act_held": [1]})
+    monkeypatch.setattr(armarium, "pages_marked_out", lambda _context, _cache: {"act_held": [1]})
     monkeypatch.setattr(armarium, "expected_acts", lambda _context: [held])
     monkeypatch.setattr(
         armarium,
         "categorize",
-        lambda _context, _act_id: (ArmariumCategory.DELIVERED, accepted_review, None),
+        lambda _context, _act_id, _cache: (ArmariumCategory.DELIVERED, accepted_review, None),
     )
     monkeypatch.setattr(
         armarium,
@@ -265,12 +265,14 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
-    monkeypatch.setattr(armarium, "pages_marked_out", lambda _context: {"act_proposed": [1]})
+    monkeypatch.setattr(
+        armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
+    )
     monkeypatch.setattr(armarium, "expected_acts", lambda _context: [proposed])
     monkeypatch.setattr(
         armarium,
         "categorize",
-        lambda _context, _act_id: (ArmariumCategory.HELD_FOR_REVIEW, accepted_review, None),
+        lambda _context, _act_id, _cache: (ArmariumCategory.HELD_FOR_REVIEW, accepted_review, None),
     )
     monkeypatch.setattr(
         armarium,
@@ -320,12 +322,14 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
-    monkeypatch.setattr(armarium, "pages_marked_out", lambda _context: {"act_proposed": [1]})
+    monkeypatch.setattr(
+        armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
+    )
     monkeypatch.setattr(armarium, "expected_acts", lambda _context: [proposed])
     monkeypatch.setattr(
         armarium,
         "categorize",
-        lambda _context, _act_id: (ArmariumCategory.DELIVERED, accepted_review, None),
+        lambda _context, _act_id, _cache: (ArmariumCategory.DELIVERED, accepted_review, None),
     )
     monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
 
