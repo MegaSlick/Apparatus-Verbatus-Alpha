@@ -23,9 +23,15 @@ from __future__ import annotations
 from typing import Final
 
 from common.contracts.canonical import digest_of
+from common.stage import MAX_NUDA_PER_MILLE
 
 LECTIO_NUDA_KIND: Final = "lectio-nuda"
-MAX_PER_MILLE: Final = 1000
+# `common.stage.run_config_bindings` seals a run's own copy of this same bound
+# before this module ever runs; one literal here and a second one there is the
+# exact "closed set re-declared as a fresh literal" drift already found and
+# fixed once for the witness regime (commit 900654f) -- so this reuses that
+# constant rather than repeating the number.
+MAX_PER_MILLE: Final = MAX_NUDA_PER_MILLE
 
 # The selection rule, named so the record says which design produced the
 # sample rather than leaving it implicit in whichever revision of this file

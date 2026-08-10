@@ -51,6 +51,7 @@ from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     PERLECTOR_CHAIR,
+    WITNESS_CONTEXT_REGIMES,
     WITNESS_READING_OUTCOMES,
     expected_acts,
     fixture_serving_details,
@@ -443,9 +444,9 @@ def validate_reading_payload(payload: dict, *, outcome: str, fields: frozenset) 
             payload["dissent"], text=payload["text"], basis_testimonia=basis["testimonia"]
         )
     provenance = payload["provenance"]
-    if not isinstance(provenance, dict) or provenance.get("witness_regime") not in (
-        "named",
-        "blinded",
+    if (
+        not isinstance(provenance, dict)
+        or provenance.get("witness_regime") not in WITNESS_CONTEXT_REGIMES
     ):
         raise SchemaRefusal(
             "a Perlector reading records no witness regime; a reading's provenance includes "

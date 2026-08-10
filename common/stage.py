@@ -106,8 +106,9 @@ _PROVENANCE_FIELDS = frozenset(
 # Perlectio claiming an impossible regime — or a typo — travelled sealed. Binding
 # it to an actual run-level toggle is Spec 08's work; refusing a value that
 # cannot be true is this system's, because it is provenance and #42 governs
-# provenance.
-_WITNESS_REGIMES = frozenset({"named", "blinded"})
+# provenance. The closed set itself is `WITNESS_CONTEXT_REGIMES` above, not a
+# second literal here: a value added there and missed here would let a run start
+# under a regime every Perlectio it produced would then be refused for.
 
 
 class StageChairProtocol(ChairProtocol, Protocol):
@@ -569,10 +570,10 @@ def validate_serving_provenance(
     # schema, not a separate question.
     regime = provenance.get("witness_regime")
     if producer_stage == PERLECTOR:
-        if regime not in _WITNESS_REGIMES:
+        if regime not in WITNESS_CONTEXT_REGIMES:
             raise SchemaRefusal(
                 f"a Perlectio records the witness regime it ran under; this one carries "
-                f"{regime!r}, which is not one of {sorted(_WITNESS_REGIMES)}"
+                f"{regime!r}, which is not one of {sorted(WITNESS_CONTEXT_REGIMES)}"
             )
     elif "witness_regime" in provenance:
         raise SchemaRefusal(
