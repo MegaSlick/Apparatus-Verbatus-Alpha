@@ -671,7 +671,7 @@ def test_interactive_launch_can_name_an_exact_recorded_fixture_pod(
 
 def test_mac_wrapper_starts_the_same_console_flow() -> None:
     wrapper = ROOT / "operations" / "operator" / "Verbatus.command"
-    assert '.venv/bin/python' in wrapper.read_text(encoding="utf-8")
+    assert ".venv/bin/python" in wrapper.read_text(encoding="utf-8")
     completed = subprocess.run(
         [str(wrapper), "--help"],
         cwd=ROOT,
@@ -770,7 +770,9 @@ def test_status_refuses_a_different_valid_manifest_at_the_recorded_path(tmp_path
         surface.status()
 
     assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
-    assert receipt["submission_manifest_sha256"] != hashlib.sha256(manifest.read_bytes()).hexdigest()
+    assert (
+        receipt["submission_manifest_sha256"] != hashlib.sha256(manifest.read_bytes()).hexdigest()
+    )
 
 
 def test_one_unreadable_status_record_does_not_hide_the_intact_ledgers(tmp_path: Path) -> None:
