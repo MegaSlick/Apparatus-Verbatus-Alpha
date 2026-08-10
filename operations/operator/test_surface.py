@@ -1150,6 +1150,34 @@ def test_a_run_whose_recorded_aggregate_has_no_status_fails_as_run_failed_not_un
     assert "status" in failure.value.render()
 
 
+def test_a_held_run_raises_run_held_not_run_failed(
+    tmp_path: Path,
+) -> None:
+    """A hold is the pipeline asking a person to decide, not a failure.
+
+    Before this fix a legitimately held run raised `RUN_FAILED`, whose copy
+    says the run "could not reach its recorded end state" - untrue of a hold,
+    whose whole point is that a person decides what happens next, not that the
+    run failed to reach one.
+    """
+
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "held", "reasons": ["one act needs review"]},
+        "pages": [],
+        "expected_acts": 0,
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="held-run")
+
+    assert failure.value.code is ErrorCode.RUN_HELD
+    assert "could not reach" not in failure.value.render()
+
+
 def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_not_unexpected(
     tmp_path: Path,
 ) -> None:

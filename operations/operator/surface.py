@@ -729,7 +729,7 @@ class OperatorSurface:
             f"Verbatus run {run_id} is held and needs a decision: "
             f"{'; '.join(str(reason) for reason in reasons) or 'no reason recorded'}",
         )
-        raise OperatorError(ErrorCode.RUN_FAILED, detail=f"Saved run receipt: {receipt}")
+        raise OperatorError(ErrorCode.RUN_HELD, detail=f"Saved run receipt: {receipt}")
 
     # -- export ---------------------------------------------------------------
 

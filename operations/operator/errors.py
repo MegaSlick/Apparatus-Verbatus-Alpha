@@ -39,6 +39,7 @@ class ErrorCode(StrEnum):
     BOOT_RED = "boot-red"
     RUN_INTERRUPTED = "run-interrupted"
     RUN_FAILED = "run-failed"
+    RUN_HELD = "run-held"
     EXPORT_MISSING = "export-missing"
     EXPORT_FAILED = "export-failed"
     CLOSE_NOTHING = "close-nothing"
@@ -176,6 +177,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The run could not reach its recorded end state.",
         "The run remains visible as a named incomplete result, not a success.",
         "Run `verbatus status` to read the saved run record, then repair the named problem before resuming.",
+    ),
+    ErrorCode.RUN_HELD: ErrorCopy(
+        "The run is held for review. This is a decision to make, not a failure.",
+        "Every named act and hold reason was recorded, and a decision notification was sent.",
+        "Run `verbatus status` to read the hold reasons, resolve them, then run `verbatus run` again with the same run name; this is safe.",
     ),
     ErrorCode.EXPORT_MISSING: ErrorCopy(
         "There is no completed Armarium export record for that run.",
