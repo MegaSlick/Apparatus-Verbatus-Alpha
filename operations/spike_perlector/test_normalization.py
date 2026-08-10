@@ -1,3 +1,5 @@
+from importlib.metadata import version
+
 from operations.spike_perlector.normalization import (
     ALLOGRAPHIC_V1,
     GRAPHEMIC_V1,
@@ -30,3 +32,27 @@ def test_long_s_is_a_sealed_profile_difference():
 def test_character_units_are_extended_graphemes_and_words_are_space_delimited():
     assert character_units("e\u0301", GRAPHEMIC_V1) == ("é",)
     assert word_units("alpha, beta", GRAPHEMIC_V1) == ("alpha,", "beta")
+
+
+def test_the_long_s_t_ligature_preserves_long_s_under_the_preserving_profile():
+    """The precomposed long-s+t ligature must normalize the same as a scribe's
+    decomposed long-s-then-t under whichever profile is selected -- the same
+    ink should not score differently depending on which of the two encodings
+    a candidate happens to emit (audit-c finding 2)."""
+
+    ligature = "ﬅ"
+    decomposed = "ſt"
+    assert normalize_text(ligature, GRAPHEMIC_V1) == normalize_text("st", GRAPHEMIC_V1) == "st"
+    assert (
+        normalize_text(ligature, ALLOGRAPHIC_V1)
+        == normalize_text(decomposed, ALLOGRAPHIC_V1)
+        == decomposed
+    )
+
+
+def test_the_normalization_profile_records_the_actually_installed_uniseg_version():
+    """A profile digest naming a uniseg version nobody checks could seal a
+    version that segments under different rules than the one recorded
+    (audit-d finding F8)."""
+
+    assert version("uniseg") in GRAPHEMIC_V1.record()["character_units"]

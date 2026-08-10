@@ -11,11 +11,17 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from importlib.metadata import version as _installed_version
 
 from uniseg.graphemecluster import grapheme_clusters
 
 from .encoding import canonical_json_bytes, sha256_bytes
 from .errors import MeasurementRefusal
+
+# Read once, from the environment actually running, not asserted as a literal:
+# a profile digest naming a uniseg version nobody checks could seal a version
+# that segments under different rules than the one recorded.
+_UNISEG_VERSION = _installed_version("uniseg")
 
 _WHITESPACE = re.compile(r"\s+", flags=re.UNICODE)
 _PRESENTATION_TRANSLATION = str.maketrans(
@@ -30,7 +36,10 @@ _PRESENTATION_TRANSLATION = str.maketrans(
         "\ufb02": "fl",
         "\ufb03": "ffi",
         "\ufb04": "ffl",
-        "\ufb05": "st",
+        # \ufb06 (plain "st" ligature) never involved a long s; \ufb05 (the
+        # long-s+t ligature) is handled below, after map_long_s is known, so
+        # the same ink normalizes the same way whether a scribe's long-s+t
+        # arrives as one precomposed character or as two: "\u017ft".
         "\ufb06": "st",
     }
 )
@@ -57,7 +66,7 @@ class NormalizationProfile:
             "profile_id": self.profile_id,
             "unicode_normalization": "NFC",
             "whitespace": "unicode-to-single-ascii-space-then-trim",
-            "presentation_map": "apostrophe-hyphen-and-listed-compatibility-ligatures-v1",
+            "presentation_map": "apostrophe-hyphen-and-listed-compatibility-ligatures-v2",
             "map_long_s": self.map_long_s,
             "preserve": [
                 "case",
@@ -70,7 +79,7 @@ class NormalizationProfile:
                 "u-v",
                 "oe-ae",
             ],
-            "character_units": "UAX29-extended-grapheme-clusters-uniseg-0.10.1",
+            "character_units": f"UAX29-extended-grapheme-clusters-uniseg-{_UNISEG_VERSION}",
             "word_units": "nonempty-runs-between-canonical-U+0020-spaces",
         }
 
@@ -121,6 +130,7 @@ def normalize_text(text: str, profile: NormalizationProfile) -> str:
         raise MeasurementRefusal("normalization requires a named NormalizationProfile")
     normalized = unicodedata.normalize("NFC", text)
     normalized = _WHITESPACE.sub(" ", normalized).strip()
+    normalized = normalized.replace("ﬅ", "st" if profile.map_long_s else "ſt")
     normalized = normalized.translate(_PRESENTATION_TRANSLATION)
     if profile.map_long_s:
         normalized = normalized.replace("ſ", "s")
