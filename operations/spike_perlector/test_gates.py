@@ -23,6 +23,7 @@ from operations.spike_perlector.normalization import GRAPHEMIC_V1
 from operations.spike_perlector.roster import STOCK_BASE_SOURCE, CandidateRoster
 from operations.spike_perlector.runner import run_declared_roster_matrix, run_matrix
 from operations.spike_perlector.testkit import (
+    cleared_public_authorization_for,
     digest,
     evaluation_act,
     identity,
@@ -258,6 +259,49 @@ def test_shaped_private_approval_exercises_gate_without_a_network_call():
     run, candidates, *_ = declared_private_run(approval=approval)
     assert len(run.cells) == 9
     assert len(candidates[1].requests) == 3
+
+
+def test_cleared_public_external_candidate_delivers_without_vendor_transmission_approval():
+    """Spec 03/05's named carve-out: cleared-public material needs a run-plan and
+    normalization approval but never a ThirdPartyTransmissionApproval, even for
+    an external candidate -- unlike private-register material, which always
+    does (asserted here alongside it, not left to an incidentally-passing test,
+    per audit-d finding F7)."""
+
+    roster = private_roster()
+    act = evaluation_act(material_class=MaterialClass.CLEARED_PUBLIC)
+    manifest = manifest_for(act)
+    candidates = tuple(FakeCandidate(item) for item in roster.identities())
+    witnesses = witness_configuration_for(act)
+    prompts = registry(*roster.identities())
+    authorization = cleared_public_authorization_for(
+        manifest=manifest,
+        roster=roster,
+        witness_configuration=witnesses,
+        prompt_registry=prompts,
+        profile=GRAPHEMIC_V1,
+    )
+    assert not authorization.external_approvals
+    run = run_declared_roster_matrix(
+        candidates,
+        (act,),
+        roster=roster,
+        witness_configuration=witnesses,
+        manifest=manifest,
+        prompt_registry=prompts,
+        profile=GRAPHEMIC_V1,
+        authorization=authorization,
+    )
+    assert len(run.cells) == 9
+    vendor_candidate = next(
+        candidate
+        for candidate in candidates
+        if candidate.identity.delivery is DeliveryMode.EXTERNAL
+    )
+    assert vendor_candidate.requests
+
+    with pytest.raises(DisclosureRefusal, match="no vendor-and-pages"):
+        declared_private_run()
 
 
 def test_synthetic_fixture_cannot_deliver_to_an_external_looking_adapter():
