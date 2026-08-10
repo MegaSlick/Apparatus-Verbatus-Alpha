@@ -105,12 +105,11 @@ class UrllibHttpTransport:
         except urllib.error.HTTPError as error:
             return HttpResponse(int(error.code), _bounded_read(error, timeout_seconds))
         except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
-            # An `HTTPException` — a truncated chunked body is the realistic one
-            # — arrives while reading a response that already had a status line,
-            # so it is not an OSError and is not wrapped in a URLError.  Left
-            # out, it escapes this transport's stated "one response or one
-            # EndpointUnavailable" contract, and the readiness poll aborts a
-            # start instead of retrying a server that is still coming up.
+            # An `HTTPException` — a truncated chunked body — arrives while
+            # reading a response that already had a status line, so it is
+            # neither an OSError nor wrapped in a URLError.  Left out it escapes
+            # this transport's one-response-or-one-refusal contract, and the
+            # readiness poll aborts a start it should have retried.
             raise EndpointUnavailable(
                 f"{method} {url}: {type(error).__name__}: {error}",
                 definitively_absent=_connection_refused(error),
@@ -257,11 +256,9 @@ def _json_object(response: HttpResponse, code: str) -> dict[str, Any]:
         value = json.loads(response.body)
     except (UnicodeDecodeError, ValueError, RecursionError) as error:
         # `RecursionError` because nesting, not length, is what breaks the JSON
-        # parser: a few thousand opening brackets fit easily inside the size
-        # bound and raise it. Left uncaught it escapes this module's named
-        # refusals entirely, so the readiness poll aborts a start instead of
-        # recording that the endpoint answered with something unusable.
-        # `json.JSONDecodeError` is a `ValueError` and is covered by it.
+        # parser, and a few thousand brackets fit easily inside the size bound.
+        # Uncaught it escapes this module's named refusals entirely.
+        # `json.JSONDecodeError` is a `ValueError`, already covered.
         raise ReadinessError(code, f"response is not JSON: {error}") from error
     if not isinstance(value, dict):
         raise ReadinessError(code, "response is not a JSON object")

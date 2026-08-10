@@ -1007,7 +1007,10 @@ class ServingManager:
         )
 
     def _next_log_path(self, identity: ChairIdentity) -> Path:
-        # A fresh log eliminates the old append-log/stale-signature workaround.
+        # One log per launch, never a per-chair log reopened: a previous
+        # launch's fatal signature still in the tail would abort this one's
+        # readiness poll, which is the trap the old pipeline worked around
+        # instead of removing.
         return self.log_root / f"vllm-{identity.role}-{uuid.uuid4().hex}.log"
 
     def _residency_fd(self) -> int:
@@ -1155,9 +1158,12 @@ def _launchable(
 
     The walking skeleton's chairs are answered by
     ``common.stage.fixture_serving_details`` — declared values that say
-    ``fixture://`` out loud.  Nothing in this package substitutes for that, and
-    an operator who reaches this refusal needs to be told which of those two
-    things happened, not handed a runtime-version complaint to chase.
+    ``fixture://`` out loud — and nothing in this package substitutes for that.
+    Refusing here rather than letting an unsatisfiable package pin do it keeps
+    the operator from chasing a runtime-version complaint that is true about the
+    wrong thing, and keeps the refusal from being an accident of one field's
+    value: edit that pin to match and the manager would try to serve a directory
+    of fixture bytes to a real engine.
     """
 
     if isinstance(profile, FixtureProfile):
@@ -1182,12 +1188,9 @@ def render_vllm_argv(
     """Render the exact argv from verified identities and one typed profile.
 
     The model and tokenizer arguments point at the locally verified snapshot.
-    For a Hugging Face identity the exact commit is still passed in *both*
-    revision flags so a vLLM invocation cannot silently resolve a mutable
-    model/tokenizer ref.  A local-repository identity has no Git revision by
-    contract and gets neither flag: its pin is the digest manifest
-    ``ChairRegistry.ensure`` already verified the snapshot root against, and
-    naming a revision it does not have would be inventing provenance.
+    Whether the two revision flags accompany them is
+    ``model_and_tokenizer_pins``' decision, and its docstring holds the reason
+    a local-repository chair correctly gets neither.
     """
 
     pins = model_and_tokenizer_pins(base_identity)

@@ -147,10 +147,8 @@ def test_transport_reports_a_truncated_chunked_body_as_an_unavailable_endpoint()
     """A body that stops mid-chunk must not escape as a bare `http.client` error.
 
     This is what a vLLM child killed mid-response looks like from the readiness
-    poll, and the poll only retries `EndpointUnavailable`. Before the repair the
-    stdlib's `IncompleteRead` came straight out of the transport, aborted the
-    poll, and was reported as an "unexpected serving start failure" — a launch
-    thrown away, on the real path with the GPU meter running.
+    poll, and the poll retries only `EndpointUnavailable`: anything else aborts
+    a launch that was one interval from succeeding.
     """
 
     def truncated(connection: socket.socket) -> None:
@@ -175,13 +173,10 @@ def test_transport_reports_a_truncated_chunked_body_as_an_unavailable_endpoint()
 def test_transport_refuses_a_body_that_trickles_past_its_request_budget() -> None:
     """A responder cannot hold a request open by staying under the socket timeout.
 
-    `timeout_seconds` bounds one blocking receive, and both loops that drive this
-    transport check their own deadline only between requests. Before the repair
-    a server sending one byte every 0.2s under a 1.0s timeout kept a single call
-    alive for as long as it cared to — measured at 6.01s against a server that
-    stopped after six, and unbounded against one that does not. That defeats the
-    readiness watchdog and the shutdown absence poll alike, with the card
-    billing.
+    `timeout_seconds` bounds one blocking receive, and both loops that drive
+    this transport check their own deadline only between requests — so one call
+    that never returns defeats the readiness watchdog and the shutdown absence
+    poll alike, with the card billing.
     """
 
     stop = threading.Event()
@@ -202,8 +197,7 @@ def test_transport_refuses_a_body_that_trickles_past_its_request_budget() -> Non
         finally:
             stop.set()
 
-    # The declared budget, plus the slack of one in-flight receive. This server
-    # never stops on its own, so before the repair there was no value to assert.
+    # The declared budget, plus the slack of one in-flight receive.
     assert elapsed < 3.0, f"the request ran {elapsed:.1f}s against a 0.5s budget"
 
 

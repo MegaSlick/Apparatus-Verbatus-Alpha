@@ -11,15 +11,9 @@ deliberately per profile because an engine version alone cannot establish
 whether a model-support package changed under the same launch command.
 
 A profile declares its ``kind``.  ``vllm`` is a complete flag profile for a
-chair that really is launched.  ``fixture`` is the offline walking skeleton's
-stand-in: it carries no flags at all, and :class:`ServingManager` refuses to
-start one *by that name*.  The distinction is load-bearing rather than
-cosmetic.  A fixture chair blocked only by an unsatisfiable package pin fails
-with "runtime package pin mismatch", which reads as "your vLLM is the wrong
-version" — a true statement about the wrong thing, and one an operator would
-try to fix by installing a version.  It also makes the refusal an accident of
-one field's value: edit the pin to the installed version and the manager would
-try to serve a directory of walking-skeleton fixture bytes to a real engine.
+chair that really is launched; ``fixture`` is the offline walking skeleton's
+stand-in and carries no flags at all.  ``manager._launchable`` refuses a
+fixture row by that name, and says there why that matters.
 """
 
 from __future__ import annotations
@@ -100,11 +94,9 @@ class ProbeSpec:
 class FixtureProfile:
     """A named place in the catalogue for a chair that is never served.
 
-    The offline walking skeleton answers its readings from
-    ``common.stage.fixture_serving_details`` — declared values, not observed
-    ones — so its chairs have no flags to carry and no engine to start.  This
-    row exists so the catalogue still covers every configured chair at every
-    configured tier, and so the refusal an operator sees names the real reason.
+    It exists so coverage stays complete: a chair the walking skeleton answers
+    from declared details is still a row at every tier rather than a hole
+    ``verify_recipes_cover_chairs`` would have to be taught to forgive.
     """
 
     recipe: str

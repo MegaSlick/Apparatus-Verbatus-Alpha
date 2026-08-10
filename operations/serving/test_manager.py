@@ -578,16 +578,13 @@ def test_start_proves_exact_model_answer_then_publishes_and_stops(tmp_path: Path
 def test_the_argv_carries_every_typed_profile_flag_and_the_audit_digests_that_argv(
     tmp_path: Path, switches_on: bool
 ) -> None:
-    """The launch audit records the profile; only the argv makes it true.
+    """The launch audit records the profile; only the argv makes that true.
 
-    Every other test here reads two or three flags out of the rendered command.
-    That leaves the module's actual job — turning one typed profile into the
-    exact vLLM invocation — resting on the audit's own copy of the profile,
-    which is read from the same object the argv was rendered from. Drop
-    `--max-model-len` from the renderer and the audit still reports the context
-    cap as though it had bound the launch: a claim about something nobody
+    Its `profile` block is read from the same object the argv was rendered
+    from, so dropping `--max-model-len` from the renderer leaves the audit still
+    reporting a context cap that bound nothing — a claim about something nobody
     measured (GOVERNANCE 10). The three boolean flags are parametrized because
-    each has two arms and a swapped pair reads identically in a spot check.
+    a swapped pair reads identically in a spot check.
     """
 
     chair = identity("reader", "reader-v1")
@@ -718,10 +715,8 @@ def test_readiness_refuses_exact_id_that_never_completes_a_valid_answer(tmp_path
 def test_a_health_endpoint_answering_non_200_never_becomes_ready(tmp_path: Path) -> None:
     """`/health` is the first of the three readiness conditions and had no test.
 
-    `FakeHttp` has carried a `health_status` knob since the lane merged and no
-    test ever moved it off 200, so `VLLM_HEALTH_UNAVAILABLE` was unreachable
-    from the suite: an endpoint that answers `/health` with a 503 is exactly the
-    routing stub the package's README says cannot publish a receipt.
+    An endpoint answering 503 there is the routing stub the package's README
+    says cannot publish a receipt.
     """
 
     chair = identity("reader", "reader-v1")
@@ -749,11 +744,9 @@ def test_a_health_endpoint_answering_non_200_never_becomes_ready(tmp_path: Path)
 def test_an_endpoint_answering_as_a_different_model_never_becomes_ready(tmp_path: Path) -> None:
     """The response's own `model` field is checked, not just the advertised list.
 
-    `/v1/models` can advertise the exact id while the process actually answering
-    is a different one; `parse_openai_answer` has a direct parser test for that
-    mismatch, but nothing drove it through the manager, so the `FakeHttp`
-    `response_model` knob was dead too. A receipt naming a model that did not
-    produce the answer is the provenance defect GOVERNANCE 6 exists for.
+    `/v1/models` can advertise the exact id while a different process answers.
+    A receipt naming a model that did not produce the answer is the provenance
+    defect GOVERNANCE 6 exists for.
     """
 
     chair = identity("reader", "reader-v1")
@@ -821,12 +814,11 @@ def test_named_fatal_log_signatures_refuse_and_clean_up(
 def test_bare_runtimeerror_or_valueerror_in_the_log_does_not_abort_a_start_that_would_succeed(
     tmp_path: Path,
 ) -> None:
-    """The exact false positive the old pipeline's grep produced, deliberately not carried.
+    """The exact false positive the old pipeline's grep produced, not carried here.
 
-    ``_fatal_log_signature`` docstring: a missed signature costs a bounded
-    watchdog wait; a false one costs a relaunch, and on the real path that is
-    GPU-hours. A launch log naming ``RuntimeError``/``ValueError`` without one
-    of the five named fatal substrings must reach a normal successful start.
+    A launch log naming ``RuntimeError``/``ValueError`` without one of the five
+    named fatal substrings must reach a normal successful start;
+    ``_fatal_log_signature``'s docstring holds the reasoning.
     """
 
     chair = identity("reader", "reader-v1")
@@ -1569,9 +1561,7 @@ def test_a_fixture_profile_is_refused_by_its_own_reason_before_anything_starts(
 ) -> None:
     """The refusal must say "this is a fixture", not "your vLLM is the wrong version".
 
-    Blocking a walking-skeleton chair with an unsatisfiable package pin makes
-    the refusal an accident of one field's value and reports the wrong cause;
-    an operator would go and install a version to fix it.
+    ``_launchable``'s docstring holds why that difference is load-bearing.
     """
 
     chair = identity("reader", "fake-reader-v0")
@@ -1680,10 +1670,9 @@ def test_a_local_repository_chair_serves_its_verified_snapshot_without_revision_
 ) -> None:
     """A locally trained checkpoint is called like any other model.
 
-    ARCHITECTURE requires exactly that of the Perlector chair. `--revision`
-    exists to stop vLLM resolving a *mutable* Hub ref; a verified snapshot
-    directory has no ref to resolve, and a local-repository identity has no Git
-    revision by contract — so naming one would be inventing provenance.
+    ARCHITECTURE requires exactly that of the Perlector chair, and the absent
+    revision flags are the answer rather than a gap: see
+    ``model_and_tokenizer_pins``.
     """
 
     chair = ChairIdentity(
@@ -2077,11 +2066,8 @@ def test_a_deeply_nested_response_is_a_named_refusal_not_a_recursion_error() -> 
     """Nesting, not length, is what breaks the JSON parser — and it is cheap.
 
     A few thousand opening brackets sit far inside the transport's 8 MiB size
-    bound and raise `RecursionError`, which is not a `JSONDecodeError` and was
-    not caught. It escaped the readiness poll's retry set, escaped the manager's
-    `ServingError` handling, and was reported as an unexpected launch failure.
-    Reproduced end to end through a real socket before the repair; pinned here
-    at the parser, where the condition actually lives.
+    bound and raise `RecursionError`, which is not a `JSONDecodeError`. Left
+    uncaught it escapes every named refusal between here and the operator.
     """
 
     nested = b'{"data":' + b"[" * 20_000 + b"]" * 20_000 + b"}"
@@ -2627,11 +2613,9 @@ def test_the_placement_pixel_cap_is_a_longest_edge_and_max_pixels_is_a_count(
 ) -> None:
     """The two fields are not in the same unit, and the check must know that.
 
-    `config/pod_placement.toml` caps the longest edge (its committed values are
-    1344/1792/2304). `--mm-processor-kwargs` takes total pixel counts; the old
-    pipeline's own proven values are 3136 = 56x56 and 2359296 = 1536x1536,
-    read at the window. Compared directly, every realistic profile is refused
-    for busting a plan it comfortably fits: 2359296 > 1792.
+    Compared directly, every realistic profile is refused for busting a plan it
+    comfortably fits: 2359296 > 1792. `_assert_profile_within_placement`'s
+    docstring holds the units and where their values were read.
     """
 
     chair = identity("reader", "reader-v1")

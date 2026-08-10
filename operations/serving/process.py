@@ -1,8 +1,8 @@
 """Owned subprocess lifecycle for one vLLM server.
 
-This module deliberately starts no process at import time.  The real launcher
-uses an argv vector and a fresh log; test launchers can implement the small
-protocol without a GPU or vLLM installation.
+The protocol is small on purpose: a test launcher can implement it without a
+GPU or a vLLM installation, which is what keeps the manager's whole lifecycle
+drillable offline.
 """
 
 from __future__ import annotations
