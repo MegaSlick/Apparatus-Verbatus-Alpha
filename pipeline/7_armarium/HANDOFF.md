@@ -93,6 +93,20 @@ every act on it was, and `held-for-review` otherwise — including when no act w
 marked out on it at all, because silence cannot tell a blank page from a detection
 failure and nothing here can prove one blank.
 
+**Two of the five categories cannot be produced by any run today, said rather than
+left for a reader to discover.** `excluded-with-approval` arises only from a
+Designator `excluded` outcome, which no stage emits — the Recensor refuses an
+unhandled Designator terminal before the Armarium is ever reached, so `run.py`'s own
+`exclusion_approval_ref` guard, whose docstring says plainly "this refuses every
+exclusion today, approved or not," is unreachable rather than merely strict.
+`confirmed-blank` arises only from a Recensor `confirmed-blank` outcome, which no
+stage emits either. Both categories are exercised correctly and adversarially at this
+projection layer (`test_excluded_act_requires_and_carries_its_approval_reference`,
+`test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_act_agrees`),
+so spec 11 test 1's five-category accounting is proven at the export boundary; it is
+not yet proven end to end through a real run, because the two upstream outcomes do
+not exist yet.
+
 **What the denominator does not cover, said rather than implied.** `run.json` binds one
 ordinal per submitted source *page or frame*, so a multi-page PDF or TIFF container is
 represented by one unit per page and not by one unit for the file. Every submitted file
@@ -108,9 +122,11 @@ proves the manifest was not edited afterwards, never that what it says was true.
 Non-pixel references to receipts, Testimonia, and intermediate artifacts are
 labelled `requires-retained-run-access`; the product carries their paths and
 digests, not an invented claim that it contains the separate evidence package.
-If no sealed salvage inventory reaches this boundary, the salvage format is present
-but the manifest says `not-produced-no-sealed-salvage-inventory`, rather than
-claiming a measured zero.
+No stage in this repository produces a sealed salvage inventory today — the whole
+salvage path is contract-only, exercised end to end only by synthetic projections in
+this stage's own tests. So every real run's salvage format is present but the
+manifest says `not-produced-no-sealed-salvage-inventory`, rather than claiming a
+measured zero.
 
 The annotation boundary in `annotation_boundary.py` is not wired into this
 stage, configuration, or orchestrator, and is built only as the contract a future
