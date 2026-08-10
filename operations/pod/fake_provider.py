@@ -44,7 +44,6 @@ class FakeProvider:
         self._present: dict[str, bool] = {}
         self._get_lag: dict[str, int] = defaultdict(int)
         self._list_lag: dict[str, int] = defaultdict(int)
-        self._status_sequences: dict[str, deque[ProviderStatus]] = {}
         self._billing: dict[str, CostCapture] = {}
         self._failures: dict[str, deque[BaseException]] = defaultdict(deque)
         self._post_create_failures: deque[BaseException] = deque()
@@ -73,9 +72,6 @@ class FakeProvider:
 
         self._get_lag[pod_id] = get_polls
         self._list_lag[pod_id] = list_polls
-
-    def set_status_sequence(self, pod_id: str, observations: list[ProviderStatus]) -> None:
-        self._status_sequences[pod_id] = deque(observations)
 
     def set_billing(self, capture: CostCapture) -> None:
         self._billing[capture.pod_id] = capture
@@ -157,12 +153,6 @@ class FakeProvider:
 
     def status(self, pod_id: str) -> ProviderStatus:
         self._call("status", pod_id)
-        scripted = self._status_sequences.get(pod_id)
-        if scripted:
-            result = scripted.popleft()
-            if not scripted:
-                self._status_sequences.pop(pod_id, None)
-            return result
         if self._present.get(pod_id, False):
             return ProviderStatus(pod_id, Presence.PRESENT, self.now(), http_status=200)
         lag = self._get_lag[pod_id]

@@ -10,7 +10,6 @@ from typing import Callable
 from .lease import LeaseStore, PodLease
 from .models import PodEstimate, PodRecord, utc_now
 from .shutdown import CloseReport, VerifiedShutdown
-from .spend import SpendPolicy
 
 
 class ControllerState(StrEnum):
@@ -257,27 +256,6 @@ class LaptopSupervisor:
                 lease=lease,
             )
         return ControllerResult(state, reason, close_report=report, lease=persisted)
-
-
-def laptop_supervisor_from_policy(
-    store: LeaseStore,
-    shutdown: VerifiedShutdown,
-    *,
-    owner_token: str,
-    policy: SpendPolicy,
-    now: Callable[[], datetime] = utc_now,
-) -> LaptopSupervisor:
-    """Construct the laptop controller from the reviewed spend timing policy."""
-
-    if not policy.configured or policy.laptop_heartbeat_timeout_seconds is None:
-        raise ValueError("a configured spend policy is required to arm a laptop supervisor")
-    return LaptopSupervisor(
-        store,
-        shutdown,
-        owner_token=owner_token,
-        heartbeat_timeout=timedelta(seconds=policy.laptop_heartbeat_timeout_seconds),
-        now=now,
-    )
 
 
 class PodDeadmanTimer:
