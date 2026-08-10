@@ -730,20 +730,9 @@ class ServingManager:
             raise ServiceStopError("active service must be stopped through its ServiceHandle")
         if self._residency_handle is None:
             return
-        process = self._unready_process
-        endpoint = self._unready_endpoint
-        try:
-            if process is not None:
-                self._stop_process(process)
-                if endpoint:
-                    self._assert_endpoint_absent(endpoint)
-            self._release_residency()
-        except BaseException as error:
-            if isinstance(error, ServiceStopError):
-                raise
-            raise ServiceStopError(f"failed-start cleanup remains unverified: {error}") from error
-        self._unready_process = None
-        self._unready_endpoint = ""
+        error = self._attempt_cleanup(self._unready_process, self._unready_endpoint)
+        if error is not None:
+            raise error
 
     def _base_material(
         self,
@@ -1065,6 +1054,22 @@ class ServingManager:
         unknown still-live child is not secondary to the readiness/publisher
         problem that exposed it.  Its held lease keeps the single-resident rule
         intact until a later exact stop has verified it is gone.
+        """
+
+        return self._attempt_cleanup(process, endpoint)
+
+    def _attempt_cleanup(
+        self, process: ServerProcess | None, endpoint: str
+    ) -> ServiceStopError | None:
+        """The one cleanup sequence shared by a failed start and its later retry.
+
+        Stop the exact owned process, verify its endpoint is absent, then
+        release the residency lease — in that order, because releasing first
+        would let a second start proceed while this process might still be
+        live.  On any failure, the process/endpoint are recorded as unready so
+        :meth:`recover_failed_start` can retry exactly this same cleanup;
+        recording them again with the same values on that retry's own failure
+        is a no-op, not a second distinct effect.
         """
 
         try:
