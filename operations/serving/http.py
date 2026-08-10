@@ -6,6 +6,7 @@ import errno
 import hashlib
 import http.client
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ class HttpTransport(Protocol):
 # local, well-known shape.  A response past this bound is refused rather than
 # buffered whole into memory.
 _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -93,7 +95,7 @@ class UrllibHttpTransport:
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with _NO_REDIRECT_OPENER.open(request, timeout=timeout_seconds) as response:
-                return HttpResponse(int(response.status), _bounded_read(response))
+                return HttpResponse(int(response.status), _bounded_read(response, timeout_seconds))
         except EndpointUnavailable:
             # This module's own refusal, already carrying its classification.
             # `EndpointUnavailable` is an OSError, so without this it would fall
@@ -101,7 +103,7 @@ class UrllibHttpTransport:
             # observed on the wire.
             raise
         except urllib.error.HTTPError as error:
-            return HttpResponse(int(error.code), _bounded_read(error))
+            return HttpResponse(int(error.code), _bounded_read(error, timeout_seconds))
         except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
             # An `HTTPException` — a truncated chunked body is the realistic one
             # — arrives while reading a response that already had a status line,
@@ -253,7 +255,13 @@ def outputs_sha256(result: OpenAIResult) -> str:
 def _json_object(response: HttpResponse, code: str) -> dict[str, Any]:
     try:
         value = json.loads(response.body)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        # `RecursionError` because nesting, not length, is what breaks the JSON
+        # parser: a few thousand opening brackets fit easily inside the size
+        # bound and raise it. Left uncaught it escapes this module's named
+        # refusals entirely, so the readiness poll aborts a start instead of
+        # recording that the endpoint answered with something unusable.
+        # `json.JSONDecodeError` is a `ValueError` and is covered by it.
         raise ReadinessError(code, f"response is not JSON: {error}") from error
     if not isinstance(value, dict):
         raise ReadinessError(code, "response is not a JSON object")
@@ -275,18 +283,44 @@ def _connection_refused(error: BaseException) -> bool:
     return getattr(reason, "errno", None) == errno.ECONNREFUSED
 
 
-def _bounded_read(response: Any) -> bytes:
-    """Read at most ``_MAX_RESPONSE_BYTES``; an oversized body is refused, not buffered.
+def _bounded_read(response: Any, timeout_seconds: float) -> bytes:
+    """Read a body bounded in both size and time.
 
-    The extra byte requested past the bound is what turns "read a lot" into a
-    detectable overage rather than a response that merely happens to be
+    The socket timeout bounds one blocking receive, not the call.  A responder
+    that dribbles a byte just inside it holds this request open for as long as
+    it likes, and both loops that use this transport — the readiness watchdog
+    and the shutdown absence poll — check their own deadline only *between*
+    requests.  One such call therefore defeats a bound the whole design rests
+    on, on a card that bills by the hour.  So the body gets the same budget the
+    caller already declared for the request; a call can still take about twice
+    that in total, since connect and headers are bounded separately by
+    ``urlopen``.
+
+    The extra byte requested past the size bound is what turns "read a lot" into
+    a detectable overage rather than a response that merely happens to be
     exactly at the limit.
+
+    ``read1`` rather than ``read``: the latter blocks until it has the whole
+    amount asked for, so a trickling responder would never return control here
+    and the deadline below would never be consulted.
     """
 
-    data = response.read(_MAX_RESPONSE_BYTES + 1)
+    deadline = time.monotonic() + timeout_seconds
+    remaining = _MAX_RESPONSE_BYTES + 1
+    chunks: list[bytes] = []
+    while remaining > 0:
+        chunk = response.read1(min(remaining, _READ_CHUNK_BYTES))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+        if remaining > 0 and time.monotonic() >= deadline:
+            raise EndpointUnavailable(
+                f"response body did not complete within its {timeout_seconds}s request budget"
+            )
+    data = b"".join(chunks)
     if len(data) > _MAX_RESPONSE_BYTES:
         raise EndpointUnavailable(
-            f"response exceeded the {_MAX_RESPONSE_BYTES}-byte bound for a loopback serving check",
-            definitively_absent=False,
+            f"response exceeded the {_MAX_RESPONSE_BYTES}-byte bound for a loopback serving check"
         )
     return data

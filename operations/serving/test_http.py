@@ -15,6 +15,7 @@ from __future__ import annotations
 import http.server
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -169,6 +170,41 @@ def test_transport_reports_a_truncated_chunked_body_as_an_unavailable_endpoint()
     # A body that stopped short says nothing about whether a listener owns the
     # port, so it may never release the sequential residency lease.
     assert caught.value.definitively_absent is False
+
+
+def test_transport_refuses_a_body_that_trickles_past_its_request_budget() -> None:
+    """A responder cannot hold a request open by staying under the socket timeout.
+
+    `timeout_seconds` bounds one blocking receive, and both loops that drive this
+    transport check their own deadline only between requests. Before the repair
+    a server sending one byte every 0.2s under a 1.0s timeout kept a single call
+    alive for as long as it cared to — measured at 6.01s against a server that
+    stopped after six, and unbounded against one that does not. That defeats the
+    readiness watchdog and the shutdown absence poll alike, with the card
+    billing.
+    """
+
+    stop = threading.Event()
+
+    def trickle(connection: socket.socket) -> None:
+        connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 10000000\r\n\r\n")
+        while not stop.wait(0.05):
+            connection.sendall(b"x")
+
+    with _raw_server(trickle) as base:
+        started = time.monotonic()
+        try:
+            with pytest.raises(EndpointUnavailable, match="did not complete within"):
+                UrllibHttpTransport().request(
+                    "GET", f"{base}/v1/models", body=None, timeout_seconds=0.5
+                )
+            elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+
+    # The declared budget, plus the slack of one in-flight receive. This server
+    # never stops on its own, so before the repair there was no value to assert.
+    assert elapsed < 3.0, f"the request ran {elapsed:.1f}s against a 0.5s budget"
 
 
 def test_transport_classifies_a_refused_connection_as_definitively_absent() -> None:

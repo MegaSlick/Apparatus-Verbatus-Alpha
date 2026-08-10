@@ -55,7 +55,13 @@ from .errors import (
     ServiceStopError,
     ServingConfigurationError,
 )
-from .http import EndpointUnavailable, HttpResponse, parse_openai_answer, require_exact_model_id
+from .http import (
+    EndpointUnavailable,
+    HttpResponse,
+    parse_model_ids,
+    parse_openai_answer,
+    require_exact_model_id,
+)
 from .manager import (
     AdapterCalibration,
     ReceiptPublication,
@@ -2065,6 +2071,26 @@ def test_http_parsers_reject_substrings_wrong_response_models_and_empty_output()
     )
     with pytest.raises(ReadinessError, match="no non-empty text"):
         parse_openai_answer(blank, kind="chat-completions", expected_model_id="reader-api")
+
+
+def test_a_deeply_nested_response_is_a_named_refusal_not_a_recursion_error() -> None:
+    """Nesting, not length, is what breaks the JSON parser — and it is cheap.
+
+    A few thousand opening brackets sit far inside the transport's 8 MiB size
+    bound and raise `RecursionError`, which is not a `JSONDecodeError` and was
+    not caught. It escaped the readiness poll's retry set, escaped the manager's
+    `ServingError` handling, and was reported as an unexpected launch failure.
+    Reproduced end to end through a real socket before the repair; pinned here
+    at the parser, where the condition actually lives.
+    """
+
+    nested = b'{"data":' + b"[" * 20_000 + b"]" * 20_000 + b"}"
+    with pytest.raises(ReadinessError, match="VLLM_MODELS_RESPONSE_INVALID"):
+        parse_model_ids(HttpResponse(200, nested))
+    with pytest.raises(ReadinessError, match="VLLM_PROBE_RESPONSE_INVALID"):
+        parse_openai_answer(
+            HttpResponse(200, nested), kind="chat-completions", expected_model_id="reader-api"
+        )
 
 
 def test_stage_context_publisher_uses_existing_run_receipt_seam() -> None:
