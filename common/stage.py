@@ -1053,6 +1053,49 @@ def _verify_residual_act_rows(context, extra_rows: dict[str, dict[str, Any]]) ->
                 f"act {act_id} does not verify against the residual ordinal and bounds its own "
                 f"hold record names: {error}"
             ) from error
+        _verify_residual_traces_to_conservation(
+            context, act_id, row["page_id"], hold, ordinal, bounds
+        )
+
+
+def _verify_residual_traces_to_conservation(
+    context, act_id: str, page_id: str, hold: dict[str, Any], ordinal: int, bounds: dict[str, Any]
+) -> None:
+    """A residual's declared bounds must exist in the reconciliation that found it.
+
+    The check above only proves the hold is *internally* self-consistent — its
+    own `residual_ordinal` and `residual_bounds` recompute the act id they sit
+    beside. That alone would pass a residual invented from nothing, provided
+    whoever invented it also recomputed the identity correctly: nothing yet
+    opens the `conservation` artifact the hold's own `inputs` already
+    reference and confirms a residual component with those bounds is actually
+    in it. `hold_residual_act` publishes every residual hold with exactly one
+    input, the conservation record it was minted from; reading through that
+    reference — not by address, but through the digest-checked hop
+    `RunTree.read_artifact_reference` provides — is what makes "checked
+    against the conservation record that found it" true rather than aspirational.
+    """
+    inputs = hold.get("inputs")
+    if not isinstance(inputs, list) or len(inputs) != 1:
+        raise FatalAccounting(
+            f"act {act_id}'s hold record does not reference exactly one conservation "
+            "artifact to recompute its residual from"
+        )
+    conservation = context.tree.read_artifact_reference(
+        inputs[0], stage=DESIGNATOR, kind="conservation", subject_id=page_id
+    )
+    components = conservation["payload"].get("residual_components")
+    index = -ordinal - 1
+    if (
+        not isinstance(components, list)
+        or index >= len(components)
+        or components[index].get("bounds") != bounds
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s hold declares a residual the conservation record it references "
+            "does not carry at that ordinal; an extra row must trace to the reconciliation "
+            "pass that actually found it, not merely be self-consistent with its own hold"
+        )
 
 
 def _designator_holds_by_subject(context) -> dict[str, dict[str, Any]]:

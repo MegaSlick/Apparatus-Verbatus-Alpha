@@ -642,15 +642,20 @@ def _mint_test_residual_row(
     bounds: dict,
     *,
     hold_bounds: dict | None = None,
+    conservation_ref: dict[str, str] | None = None,
 ) -> dict:
     """Publish one residual-shaped `hold` and return its expected-act seal row.
 
     Mirrors `pipeline/2_designator/run.py::hold_residual_act` exactly enough to
-    exercise `common.stage`'s verification of it, independent of a real
-    conservation residual — the mechanism under test here is the *denominator
-    check*, not the pixel scan. `hold_bounds`, when different from `bounds`,
-    lets a test forge a hold whose recorded facts do not match the identity
-    the row claims — the one thing `_verify_residual_act_rows` must catch.
+    exercise `common.stage`'s verification of it. `hold_bounds`, when different
+    from `bounds`, lets a test forge a hold whose recorded facts do not match
+    the identity the row claims. `conservation_ref`, when given, is the real
+    on-disk conservation record `_patch_conservation_with_extra_residual`
+    below prepared to actually carry this residual, so the hold references it
+    exactly as the real `hold_residual_act` does — needed only by the test that
+    exercises `_verify_residual_traces_to_conservation`; every other test here
+    is refused before that check ever runs and stays independent of a real
+    conservation residual, the *denominator* check being what they exercise.
     """
     ordinal = residual_act_ordinal(index)
     act_id = derive_act_id(page_id, ordinal, bounds)
@@ -658,7 +663,7 @@ def _mint_test_residual_row(
         kind="hold",
         subject_id=act_id,
         outcome="held",
-        inputs=[],
+        inputs=[conservation_ref] if conservation_ref is not None else [],
         payload={
             "act_key": f"residual:{page_ordinal}:{index}",
             "page_ordinal": page_ordinal,
@@ -678,6 +683,33 @@ def _mint_test_residual_row(
         "outcome": "held",
         "evidence": [context.input_ref(hold.relative_path)],
     }
+
+
+def _patch_conservation_with_extra_residual(
+    tree: RunTree, page_id: str, bounds: dict, pixel_count: int
+) -> dict[str, str]:
+    """Append one residual component to a page's real, on-disk conservation record.
+
+    Conservation is a once-only artifact (`context.publish` may not produce a
+    second one for the same page), so a test that needs a *real* reconciliation
+    pass to have found a given residual edits the sealed bytes directly, the
+    same way `_reseal_with_extra_row` extends the seal — and returns the
+    digest-checked reference a hold can then cite honestly, exactly as
+    `pipeline/2_designator/run.py::hold_residual_act` does for a genuine one.
+    """
+    conservation_id = artifact_id(DESIGNATOR, "conservation", page_id)
+    relative_path = tree.artifact_path(DESIGNATOR, "conservation", conservation_id)
+    path = tree.resolve(relative_path)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"]["residual_components"].append(
+        {"bounds": bounds, "pixel_count": pixel_count, "review_priority": "low"}
+    )
+    record["payload"]["residual_pixel_count"] += pixel_count
+    record["payload"]["total_ink_pixel_count"] += pixel_count
+    record["self_hash"] = self_hash(record)
+    data = canonical_bytes(record)
+    path.write_bytes(data)
+    return {"relative_path": relative_path, "sha256": digest_bytes(data)}
 
 
 def _reseal_with_extra_row(tree: RunTree, row: dict, *, include_hold_evidence: bool = True) -> None:
@@ -719,7 +751,9 @@ def test_a_well_formed_residual_act_extends_the_denominator_and_the_first_consum
     tree = RunTree(root, "r")
     context = _designator_context_for(root, "r", "happy")
     page_id = page_identity(context.fixture, 1)
-    row = _mint_test_residual_row(context, page_id, 1, 0, {"x": 1, "y": 1, "w": 2, "h": 2})
+    bounds = {"x": 1, "y": 1, "w": 2, "h": 2}
+    conservation_ref = _patch_conservation_with_extra_residual(tree, page_id, bounds, 4)
+    row = _mint_test_residual_row(context, page_id, 1, 0, bounds, conservation_ref=conservation_ref)
     _reseal_with_extra_row(tree, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
@@ -734,6 +768,72 @@ def test_a_well_formed_residual_act_extends_the_denominator_and_the_first_consum
     # nothing witnessed this ink and this stage may not manufacture a witness.
     assert len(testimonia) == 3
     assert {record["outcome"] for record in testimonia} == {"not-run"}
+
+
+def test_a_self_consistent_residual_with_no_matching_conservation_component_is_refused(tmp_path):
+    """A residual must trace to the reconciliation pass that found it, not merely
+    be internally self-consistent.
+
+    The hold below recomputes its own identity correctly — `residual_ordinal`
+    and `residual_bounds` agree with the act id the seal row claims, exactly as
+    the well-formed case above. What is missing is any conservation record
+    that actually reconciled this rectangle as residual ink: the hold carries
+    no evidence reference at all. Before `_verify_residual_traces_to_conservation`
+    existed, this was accepted anyway — a residual invented from nothing, so
+    long as whoever invented it also recomputed the identity correctly.
+    """
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+    ):
+        result = invoke_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "r")
+    context = _designator_context_for(root, "r", "happy")
+    page_id = page_identity(context.fixture, 1)
+    row = _mint_test_residual_row(context, page_id, 1, 0, {"x": 1, "y": 1, "w": 2, "h": 2})
+    _reseal_with_extra_row(tree, row)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    assert result.returncode == 2
+    assert "does not reference exactly one conservation" in result.stderr
+
+
+def test_a_residual_whose_bounds_do_not_match_its_own_conservation_record_is_refused(tmp_path):
+    """The conservation record the hold references must actually carry this residual.
+
+    The hold's own ordinal and bounds still recompute the claimed identity
+    correctly, and it references a real conservation record — but at that
+    residual's ordinal, the referenced record's own `residual_components` name
+    a different rectangle. Self-consistency plus a reference is not the same
+    as a reference that actually corroborates the claim.
+    """
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+    ):
+        result = invoke_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "r")
+    context = _designator_context_for(root, "r", "happy")
+    page_id = page_identity(context.fixture, 1)
+    claimed_bounds = {"x": 1, "y": 1, "w": 2, "h": 2}
+    recorded_bounds = {"x": 50, "y": 50, "w": 2, "h": 2}
+    conservation_ref = _patch_conservation_with_extra_residual(tree, page_id, recorded_bounds, 4)
+    row = _mint_test_residual_row(
+        context, page_id, 1, 0, claimed_bounds, conservation_ref=conservation_ref
+    )
+    _reseal_with_extra_row(tree, row)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    assert result.returncode == 2
+    assert "does not carry at that ordinal" in result.stderr
 
 
 def test_a_residual_act_claiming_to_be_proposed_is_refused(tmp_path):
