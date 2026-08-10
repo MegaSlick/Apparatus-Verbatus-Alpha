@@ -274,6 +274,13 @@ class OperatorError(RuntimeError):
         return "\n".join(lines)
 
 
+# C0/C1 control bytes, including ESC (0x1B): a detail string can embed a
+# filename or path an operator did not choose (a submitted folder, a manifest
+# entry), and an ANSI escape sequence in one could clear the screen or spoof a
+# fake confirmation line on the terminal that renders this text.
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
 def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     """Keep implementation wording and tracebacks out of the human message.
 
@@ -288,6 +295,7 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     """
 
     compact = " ".join(value.split())
+    compact = _CONTROL_CHARACTERS.sub("", compact)
     if not compact:
         return "no additional detail was recorded"
     if "traceback" in compact.lower():

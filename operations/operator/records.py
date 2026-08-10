@@ -18,7 +18,6 @@ from typing import Any, Callable
 UTC = timezone.utc
 SCHEMA = "operator-receipt.v1"
 DESCRIPTOR_SCHEMA = "operator-surface.v2"
-LEGACY_DESCRIPTOR_SCHEMA = "operator-surface.v1"
 
 
 class RecordError(RuntimeError):
@@ -76,6 +75,12 @@ class ReceiptStore:
         digest = hashlib.sha256(encoded).hexdigest()
         target = self.receipts / f"{kind}-{digest}.json"
         self.receipts.mkdir(parents=True, exist_ok=True)
+        if not self.receipts.is_dir() or self.receipts.is_symlink():
+            # mkdir(exist_ok=True) treats an existing directory-symlink as
+            # already satisfied and leaves it in place — the same condition
+            # list() already refuses, checked here before anything is written
+            # through it.
+            raise RecordError("operator receipt directory is not a safe directory")
         _atomic_create_or_reuse(target, encoded)
         return target
 
@@ -161,21 +166,6 @@ class DescriptorStore:
             raise RecordError("operator descriptor cannot be read") from error
         if not isinstance(raw, dict):
             raise RecordError("operator descriptor has an invalid shape")
-        if raw.get("schema") == LEGACY_DESCRIPTOR_SCHEMA:
-            if set(raw) != {"schema", "actions", "self_hash"}:
-                raise RecordError("operator descriptor has an invalid shape")
-            actions = raw["actions"]
-            if not _valid_actions(actions):
-                raise RecordError("operator descriptor action list is invalid")
-            expected = dict(raw)
-            expected.pop("self_hash")
-            if raw["self_hash"] != hashlib.sha256(canonical_bytes(expected)).hexdigest():
-                raise RecordError("operator descriptor fails its own integrity check")
-            return {
-                "schema": DESCRIPTOR_SCHEMA,
-                "actions": actions,
-                "history": {action: [receipt] for action, receipt in actions.items()},
-            }
         if set(raw) != {"schema", "actions", "history", "self_hash"}:
             raise RecordError("operator descriptor has an invalid shape")
         expected = dict(raw)

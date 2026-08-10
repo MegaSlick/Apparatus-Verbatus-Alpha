@@ -23,7 +23,7 @@ from operations.submit.submit import build_manifest, walk_folder
 from . import cli, entry
 from .dry_run import make_transcript
 from .errors import ErrorCode, OperatorError
-from .records import DescriptorStore, RecordError
+from .records import DescriptorStore, ReceiptStore, RecordError
 from .surface import (
     OPERATOR_CLOSE_PREFIX,
     Faults,
@@ -301,6 +301,22 @@ def test_receipt_reader_binds_the_kind_into_the_filename(tmp_path: Path) -> None
 
     with pytest.raises(RecordError, match="kind or digest"):
         surface.receipts.read(renamed)
+
+
+def test_write_refuses_a_symlinked_receipts_directory(tmp_path: Path) -> None:
+    """`list()` already refused this; `write()` must too, not write through it."""
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    state = tmp_path / "operator-state"
+    state.mkdir()
+    (state / "receipts").symlink_to(outside)
+    store = ReceiptStore(state)
+
+    with pytest.raises(RecordError, match="not a safe directory"):
+        store.write("upload", {"summary": "hello"})
+
+    assert list(outside.iterdir()) == []
 
 
 def test_a_repeated_receipt_never_corrupts_the_descriptors_own_history_invariant(

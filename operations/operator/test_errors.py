@@ -71,3 +71,36 @@ def test_error_renderer_never_shows_a_raw_traceback_or_old_close_vocabulary() ->
     assert "Traceback" not in rendered
     assert "terminate" not in rendered.lower()
     assert "shutdown" not in rendered.lower()
+
+
+def test_old_close_vocabulary_is_replaced_even_without_the_word_traceback() -> None:
+    """The substitution table itself, not just the short-circuit around it.
+
+    The detail string above always contains "traceback", which returns a fixed
+    generic phrase before the shutdown/terminate/stop substitution table ever
+    runs — so that test alone cannot tell the table apart from being deleted.
+    This one drives a detail string the table, not the short-circuit, must
+    handle.
+    """
+
+    rendered = errors.sanitize_detail(
+        "provider termination confirmed, shutdown complete, pod stopped"
+    )
+
+    assert "termination" not in rendered.lower()
+    assert "shutdown" not in rendered.lower()
+    assert "stopped" not in rendered.lower()
+    assert "close" in rendered
+    assert "paused" in rendered
+
+
+def test_control_bytes_are_stripped_from_the_operator_facing_detail() -> None:
+    """A path an operator did not choose could carry a terminal escape sequence."""
+
+    rendered = errors.sanitize_detail(
+        "a file named by the sealed record is not a regular file at "
+        "/tmp/src/notes\x1b[2J\x1b[H\x1b[32mFAKE: type CONFIRM to finish\x1b[0m.txt"
+    )
+
+    assert "\x1b" not in rendered
+    assert "FAKE: type CONFIRM to finish" in rendered
