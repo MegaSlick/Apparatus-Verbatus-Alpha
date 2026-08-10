@@ -72,6 +72,21 @@ def test_a_decompression_bomb_is_refused_without_materializing_it():
     assert "expands past" in str(caught.value)
 
 
+def test_a_declared_size_past_the_pixel_bound_is_refused_before_any_decompression():
+    """`MAX_PIXELS` bounds the IHDR's own declared width/height, not only what
+    the IDAT expands to relative to them. Before this check, a declared size
+    alone past the ceiling decoded cleanly -- the module's own comment claimed
+    the same bound the Pillow-fallback paths (`dimensions`, `grayscale_rows`)
+    already enforce, but this native path never checked it, so a compact,
+    highly compressible IDAT matching a huge declared size paid full
+    decompression cost with no refusal at all."""
+    width, height = 20_000, 6_000  # 120,000,000 declared pixels, over MAX_PIXELS
+    assert width * height > MAX_PIXELS
+    over_the_limit = repack(width, height, b"never reached")
+    with pytest.raises(ValueError, match="pixel bound"):
+        decode_grayscale_png(over_the_limit)
+
+
 def test_a_truncated_stream_that_reaches_the_expected_length_is_refused():
     """A truncated stream can return exactly the expected byte count without
     raising, so the length check alone would pass it."""
@@ -250,6 +265,18 @@ def test_grayscale_rows_refuses_a_decompression_bomb_without_materializing_it():
             grayscale_rows(data)
     finally:
         Image.MAX_IMAGE_PIXELS = original
+
+
+def test_grayscale_rows_refuses_a_declared_size_past_the_bound_on_its_native_path():
+    """`grayscale_rows` tries the native codec first, and `residual_ink.py` is a
+    new caller of it in this diff -- the same declared-size bomb the native
+    `decode_grayscale_png` path now refuses must not reach `residual_ink`'s own
+    pixel loops either."""
+    width, height = 20_000, 6_000
+    assert width * height > MAX_PIXELS
+    over_the_limit = repack(width, height, b"never reached")
+    with pytest.raises(ValueError, match="pixel bound"):
+        grayscale_rows(over_the_limit)
 
 
 def test_grayscale_rows_refuses_undecodable_input_rather_than_guessing():

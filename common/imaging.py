@@ -159,6 +159,21 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     if not seen_ihdr or width is None or height is None:
         raise ValueError("unsupported PNG: missing IHDR")
 
+    # Bounded before `expected` is even computed, not only before the
+    # decompression that follows it. `stride * height` below is itself an
+    # attacker-declared number: an IHDR naming an enormous width/height turns
+    # it into a multi-gigabyte `max_length` that a small, highly compressible
+    # IDAT can actually fill, which is the same decompression-bomb shape the
+    # length check after decompression exists to catch, just reached by
+    # inflating the bound rather than the output. The Pillow-fallback paths
+    # below (`dimensions`, `grayscale_rows`) already refuse past this same
+    # ceiling before decoding; this native path claimed the identical bound
+    # in its own module comment but never enforced it.
+    if width * height > MAX_PIXELS:
+        raise ValueError(
+            f"a {width}x{height} page is past this pipeline's {MAX_PIXELS}-pixel bound"
+        )
+
     # Bound the decompression before it happens, not after. `zlib.decompress` on
     # attacker-shaped input will materialize whatever the stream expands to, so a
     # few hundred bytes of IDAT can become gigabytes in memory and the length
