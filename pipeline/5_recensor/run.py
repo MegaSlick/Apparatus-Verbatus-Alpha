@@ -984,12 +984,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # evidence a consumer can read. The review queue, the Armarium
                 # and anyone re-deriving this outcome get the same facts as
                 # data: what the reading itself found, which chairs corroborated
-                # it, and which pages the residual-ink check had already cleared.
-                # The `reason` above stays, for a human reading one record.
+                # it, and which pages this check found no ink outside coverage
+                # on. That is narrower than "clear": the check never looks
+                # inside the act's own crop, so the field is named for exactly
+                # what it measured and no more (GOVERNANCE 10). The `reason`
+                # above stays, for a human reading one record.
                 blank_evidence = {
                     "perlector_outcome": latest["outcome"],
                     "corroborating_chairs": corroborating_chairs,
-                    "residual_ink_clear_pages": page_coverage["checked_pages"],
+                    "pages_without_residual_ink_outside_coverage": page_coverage["checked_pages"],
                 }
             else:
                 outcome, reason = (

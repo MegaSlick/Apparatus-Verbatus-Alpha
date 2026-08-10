@@ -106,7 +106,7 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     assert review["payload"]["blank_evidence"] == {
         "perlector_outcome": "no-readable-text",
         "corroborating_chairs": ["attestator_1", "attestator_2", "attestator_3"],
-        "residual_ink_clear_pages": [1],
+        "pages_without_residual_ink_outside_coverage": [1],
     }
 
     # The act this scenario does not touch reads and accepts exactly as ever --
