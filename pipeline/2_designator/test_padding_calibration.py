@@ -43,6 +43,18 @@ def test_shortfall_on_the_bottom_and_right_edges():
     assert _edge_shortfall_bp(detected, true_content, "right") == 500
 
 
+def test_shortfall_bp_is_round_half_up_integer_arithmetic_not_bankers_rounding():
+    # 1px of 32px is exactly 312.5bp -- a tie. `geometry._pad_amount` documents
+    # round-half-up as this project's discipline for every basis-point amount;
+    # Python's own `round()` on a float instead rounds half-to-even (banker's
+    # rounding), which silently drops this tie down to 312 rather than up to
+    # 313. This is also pure integer arithmetic: nothing here should touch a
+    # float, matching `geometry.py`'s own stated rule for basis-point amounts.
+    detected = {"x": 0, "y": 1, "w": 10, "h": 32}
+    true_content = {"x": 0, "y": 0, "w": 10, "h": 32}
+    assert _edge_shortfall_bp(detected, true_content, "top") == 313
+
+
 def test_a_non_positive_detected_dimension_is_refused():
     with pytest.raises(ContractError):
         _edge_shortfall_bp(

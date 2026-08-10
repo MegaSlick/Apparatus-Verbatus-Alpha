@@ -77,7 +77,12 @@ def _edge_shortfall_bp(detected: Bounds, true_content: Bounds, edge: str) -> int
         raise ContractError(f"edge {edge!r} is not one of {_EDGES}")
     if dimension <= 0:
         raise ContractError(f"a detected rectangle {detected} has no positive area to divide by")
-    return round((shortfall_px * BP_DENOMINATOR) / dimension)
+    # Round-half-up, integer-only -- the same discipline `geometry._pad_amount`
+    # states for every basis-point amount in this stage, and for the same
+    # reason: a float division plus Python's banker's rounding would make the
+    # result depend on float rounding rules rather than being deterministic
+    # integer arithmetic.
+    return (shortfall_px * BP_DENOMINATOR + dimension // 2) // dimension
 
 
 def _nearest_rank_percentile(values: list[int], percentile: int) -> int:
