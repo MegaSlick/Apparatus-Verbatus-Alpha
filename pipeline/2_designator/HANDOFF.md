@@ -508,3 +508,21 @@ Closing it means a decision about which margin conservation should reconcile
 at, which changes review volume and is not this build's to make quietly; named
 here rather than left for a reader to discover against a real page. Found in
 review, 2026-08-10.
+
+**Seven grouping and scanning thresholds ship with no recorded derivation.**
+`grouping.DEFAULT_MARGIN_FRACTION`, `DEFAULT_CHAIN_GAP_PX`,
+`DEFAULT_ANCHOR_REACH_PX`, `DEFAULT_BRACE_MIN_HEIGHT_PX`,
+`DEFAULT_PAGE_EDGE_REACH_PX`, and `structure.DEFAULT_GAP_TOLERANCE_PX`,
+`PRIMARY_MARGIN`/`SECONDARY_MARGIN` are tuned by eye against the synthetic
+fixtures' own small pages. Five are absolute pixel counts; on a 300-dpi
+register scan (~2480×3508) a 6-pixel chain gap or a 30-pixel brace threshold
+is not the same approximation it is on a 200×300 synthetic page. The capture
+padding in `config/designator_padding.toml` got a required
+`[padding.provenance]` schema, a calibration harness, and an honest
+"not calibrated for this corpus" flag; these seven constants got a comment.
+Not a blocker while the structure pass is a synthetic ink scan with no real
+page to calibrate against. Before the pod leg: either move them into a
+`config/designator_grouping.toml` with the padding config's own provenance
+schema, or express them as fractions of page dimensions rather than absolute
+pixels — the padding entry is the model for how. Named here rather than left
+uncalibrated and unremarked. Found in review, 2026-08-10.
