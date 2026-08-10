@@ -269,7 +269,11 @@ class OperatorError(RuntimeError):
             f"What it means: {self.copy.what_it_means}",
             f"Next step: {self.copy.next_step}",
         ]
-        if self.detail:
+        if self.detail is not None:
+            # An empty detail still gets its line: a raise site that had a
+            # diagnostic slot and filled it with nothing is a different fact
+            # from one that never had a diagnostic to give, and `sanitize_detail`
+            # says which.
             lines.append(f"Saved detail: {sanitize_detail(self.detail)}")
         return "\n".join(lines)
 
@@ -284,9 +288,13 @@ _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     """Keep implementation wording and tracebacks out of the human message.
 
-    The one place this surface and its callers turn arbitrary implementation
-    text into operator-safe prose, so a receipt path or other load-bearing
-    fact embedded in a detail string is not itself the thing that gets cut.
+    Called in exactly two situations, and applying it anywhere else is a second
+    spelling of one idea: `render` calls it on the way to a person, so a raise
+    site passes its detail through raw; and the two call sites that *persist* a
+    detail into a receipt call it themselves, because a receipt is never
+    rendered. Sanitizing twice is not merely redundant — it would append the
+    truncation marker below to text that already carries one.
+
     `maximum` stays generous rather than terminal-width-sized: a workspace
     nested inside a synced cloud-drive folder can easily produce a receipt
     path several hundred characters long, and truncating that away would

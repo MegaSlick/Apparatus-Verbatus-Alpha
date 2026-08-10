@@ -11,18 +11,14 @@ if ! cd "$ROOT"; then
     exit 1
 fi
 
-PYTHON=""
+# Every route ends in one exit-and-wait tail below, so a double-clicked window
+# cannot close on an error message before it has been read.
 if [ -x "$ROOT/.venv/bin/python" ]; then
-    PYTHON="$ROOT/.venv/bin/python"
+    set -- "$ROOT/.venv/bin/python" -m operations.operator.entry "$@"
 elif command -v verbatus >/dev/null 2>&1; then
-    verbatus "$@"
-    STATUS=$?
-    if [ -t 0 ]; then
-        read -r -p "Press Return to close this window. "
-    fi
-    exit "$STATUS"
+    set -- verbatus "$@"
 elif command -v python3 >/dev/null 2>&1; then
-    PYTHON="$(command -v python3)"
+    set -- "$(command -v python3)" -m operations.operator.entry "$@"
 else
     echo "What happened: Verbatus could not find the Python it needs to open this rehearsal."
     echo "What it means: Nothing was changed or billed."
@@ -31,7 +27,7 @@ else
     exit 1
 fi
 
-"$PYTHON" -m operations.operator.entry "$@"
+"$@"
 STATUS=$?
 if [ -t 0 ]; then
     read -r -p "Press Return to close this window. "

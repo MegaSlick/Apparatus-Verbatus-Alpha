@@ -8,7 +8,6 @@ surface.
 
 from __future__ import annotations
 
-import hashlib
 import subprocess
 import sys
 import time
@@ -62,7 +61,7 @@ from .errors import ErrorCode, OperatorError
 from .errors import sanitize_detail as _detail
 from .fakes import LocalFixtureObjectStore
 from .notify_bridge import Notifier
-from .records import DescriptorStore, ReceiptStore, RecordError
+from .records import DescriptorStore, ReceiptStore, RecordError, sha256_file, utc_stamp
 from .volume_cost import volume_cost_lines
 from .volume_s3 import S3VolumeTarget, VolumeSpec
 
@@ -157,7 +156,7 @@ class FixtureControllerArmer:
     def arm(self, *, action, request, record, lease, store, owner_token, policy):  # type: ignore[no-untyped-def]
         del action, request, store, owner_token, policy
         observed = self.now()
-        stamp = observed.isoformat().replace("+00:00", "Z")
+        stamp = utc_stamp(observed)
         return ControllerArming(
             True,
             True,
@@ -166,7 +165,7 @@ class FixtureControllerArmer:
             {
                 "lease_id": lease.lease_id,
                 "pod_id": record.pod_id,
-                "hard_deadline": lease.hard_deadline.isoformat().replace("+00:00", "Z"),
+                "hard_deadline": utc_stamp(lease.hard_deadline),
                 "laptop_supervisor": {
                     "identity": "fixture-laptop-supervisor",
                     "started_at": stamp,
@@ -227,7 +226,7 @@ class FixtureBootstrapActions:
             )
         return {
             "lockfile": str(lockfile),
-            "sha256": _sha256_file(lockfile),
+            "sha256": sha256_file(lockfile),
             "mode": "fixture-only; no environment was changed",
         }
 
@@ -341,7 +340,7 @@ class OperatorSurface:
         if result.state is not LaunchState.PREVIEW or result.preview is None:
             self._record_failure("launch", result.state.value, result.detail)
             if adopt_pod_id is not None:
-                raise OperatorError(ErrorCode.ADOPTION_REFUSED, detail=_detail(result.detail))
+                raise OperatorError(ErrorCode.ADOPTION_REFUSED, detail=result.detail)
             raise self._launch_error(result)
         if not result.preview.assessment.allowed:
             self._record_failure("launch", "refused-ceiling", result.detail)
@@ -353,7 +352,7 @@ class OperatorSurface:
                     if not policy.configured
                     else ErrorCode.PAID_ACTION_REFUSED
                 )
-            raise OperatorError(code, detail=_detail(result.detail))
+            raise OperatorError(code, detail=result.detail)
         return prepared
 
     def launch(self, prepared: PreparedLaunch, confirmation: str | None) -> LaunchResult:
@@ -367,7 +366,6 @@ class OperatorSurface:
         expected = prepared.confirmation_phrase
         if confirmation != expected:
             raise OperatorError(ErrorCode.CONFIRMATION_REQUIRED)
-        assert prepared.result.preview is not None
         confirmation_receipt = self._write_action(
             "launch-confirmation",
             {
@@ -403,7 +401,7 @@ class OperatorSurface:
             )
             del receipt
             if prepared.action == "adopt":
-                raise OperatorError(ErrorCode.ADOPTION_REFUSED, detail=_detail(result.detail))
+                raise OperatorError(ErrorCode.ADOPTION_REFUSED, detail=result.detail)
             raise self._launch_error(result)
         receipt = self._write_action(
             "launch",
@@ -459,7 +457,7 @@ class OperatorSurface:
             )
         except Exception as error:
             self._record_failure("upload", "submission-refused", str(error))
-            raise OperatorError(ErrorCode.UPLOAD_REFUSED, detail=_detail(str(error))) from error
+            raise OperatorError(ErrorCode.UPLOAD_REFUSED, detail=str(error)) from error
         return self.upload(source, sealed_manifest=manifest_out, volume=volume)
 
     def upload(
@@ -486,7 +484,7 @@ class OperatorSurface:
         if not manifest_path.is_file():
             raise OperatorError(ErrorCode.UPLOAD_MANIFEST_MISSING)
         try:
-            manifest_sha256 = _sha256_file(manifest_path)
+            manifest_sha256 = sha256_file(manifest_path)
         except OSError as error:
             raise OperatorError(
                 ErrorCode.UPLOAD_MANIFEST_MISSING,
@@ -509,7 +507,7 @@ class OperatorSurface:
             except Exception as error:
                 self._record_failure("upload", "volume-unavailable", str(error))
                 raise OperatorError(
-                    ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=_detail(str(error))
+                    ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=str(error)
                 ) from error
         else:
             store = LocalFixtureObjectStore(
@@ -522,9 +520,9 @@ class OperatorSurface:
                 submission_manifest=manifest_path,
                 target=store,
                 prefix=prefix,
-                journal_path=self.state_root / "transfer" / f"{_sha256_file(manifest_path)}.json",
+                journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
             ).resume()
-            if _sha256_file(manifest_path) != manifest_sha256:
+            if sha256_file(manifest_path) != manifest_sha256:
                 raise TransferFailure("sealed submission record changed during transfer")
         except (TransferFailure, OSError, ValueError) as error:
             receipt = self._write_action(
@@ -680,7 +678,7 @@ class OperatorSurface:
             export_payload = self._armarium_export(run_root, run_id)
         except Exception as error:
             self._record_failure("run", "armarium-record-unreadable", str(error))
-            raise OperatorError(ErrorCode.RUN_FAILED, detail=_detail(str(error))) from error
+            raise OperatorError(ErrorCode.RUN_FAILED, detail=str(error)) from error
         aggregate = export_payload["aggregate"]
         state = str(aggregate["status"])
         receipt = self._write_action(
@@ -746,14 +744,14 @@ class OperatorSurface:
         try:
             export_payload = self._armarium_export(run_root, recorded_id)
         except Exception as error:
-            raise OperatorError(ErrorCode.EXPORT_MISSING, detail=_detail(str(error))) from error
+            raise OperatorError(ErrorCode.EXPORT_MISSING, detail=str(error)) from error
         destination = self.state_root / "exports" / f"{recorded_id}-armarium-base.zip"
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
             self._write_base_armarium_bundle(run_root, recorded_id, destination)
         except (OSError, zipfile.BadZipFile) as error:
             self._record_failure("export", "local-copy-failed", str(error))
-            raise OperatorError(ErrorCode.EXPORT_FAILED, detail=_detail(str(error))) from error
+            raise OperatorError(ErrorCode.EXPORT_FAILED, detail=str(error)) from error
         table = reconciliation_table(export_payload)
         for line in table:
             self.present(line)
@@ -764,7 +762,7 @@ class OperatorSurface:
                 "state": "complete",
                 "run_id": recorded_id,
                 "bundle": str(destination),
-                "sha256": _sha256_file(destination),
+                "sha256": sha256_file(destination),
                 "reconciliation": table,
                 "assumption": "Spec 11 is not in this tree; this is a copy of the base Armarium evidence, not a Spec 11 product bundle.",
             },
@@ -934,7 +932,7 @@ class OperatorSurface:
         try:
             descriptor = self.descriptor.load()
         except RecordError as error:
-            raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=_detail(str(error))) from error
+            raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
         if descriptor is None or not descriptor["actions"]:
             raise OperatorError(ErrorCode.STATUS_EMPTY)
         lines = ["Saved operator records (read-only; no new provider check was made):"]
@@ -956,7 +954,7 @@ class OperatorSurface:
                         lines.extend(_status_manifest_projection(payload))
                 except RecordError as error:
                     label = f"{action} record {number}"
-                    unreadable.append(f"{label}: {_detail(str(error))}")
+                    unreadable.append(f"{label}: {error}")
                     lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
         for line in lines:
             self.present(line)
@@ -1009,8 +1007,6 @@ class OperatorSurface:
 
         timings: dict[str, float] = {}
         if policy is not None and policy.configured:
-            assert policy.shutdown_deadline_seconds is not None
-            assert policy.shutdown_poll_interval_seconds is not None
             timings = {
                 "timeout_seconds": policy.shutdown_deadline_seconds,
                 "poll_seconds": policy.shutdown_poll_interval_seconds,
@@ -1055,7 +1051,7 @@ class OperatorSurface:
             )
 
     def _launch_error(self, result: LaunchResult) -> OperatorError:
-        detail = _detail(result.detail)
+        detail = result.detail
         if "timeout" in detail.lower():
             return OperatorError(ErrorCode.PROVIDER_TIMEOUT, detail=detail)
         if result.state is LaunchState.REFUSED_CONFIRMATION:
@@ -1101,32 +1097,39 @@ class OperatorSurface:
             return "__invalid__"
         return f"{prefix}/{first}"
 
-    def _descriptor_receipt(self, action: str) -> Path | None:
+    def _descriptor_receipt(self, *actions: str) -> Path | None:
+        """The receipt for the first named action the descriptor actually carries."""
+
         descriptor = self.descriptor.load()
         if descriptor is None:
             return None
-        value = descriptor["actions"].get(action)
-        return Path(value) if isinstance(value, str) else None
+        for action in actions:
+            value = descriptor["actions"].get(action)
+            if isinstance(value, str):
+                return Path(value)
+        return None
 
     def _active_launch_receipt(self) -> Path | None:
         """The active-launch receipt if one is recorded, else the plain launch receipt."""
 
-        return self._descriptor_receipt("active-launch") or self._descriptor_receipt("launch")
+        return self._descriptor_receipt("active-launch", "launch")
 
     def _refuse_if_active_pod(self) -> None:
         """Keep a recorded open cost path visible until its own verified close."""
 
         try:
-            active_receipt = self._descriptor_receipt("active-launch")
-            launch_receipt = active_receipt or self._descriptor_receipt("launch")
+            launch_receipt = self._active_launch_receipt()
             if launch_receipt is None:
                 return
             launch = self.receipts.read(launch_receipt)["payload"]
             pod_raw = launch.get("pod")
             if not isinstance(pod_raw, dict):
-                if active_receipt is not None:
-                    raise ValueError("active launch has no pod record")
-                return
+                # A plain launch receipt with no pod is a recorded refusal, not an
+                # open cost path. An active-launch pointer without one is a broken
+                # record, and must not read as "nothing is running".
+                if self._descriptor_receipt("active-launch") is None:
+                    return
+                raise ValueError("active launch has no pod record")
             record = _pod_from_record(pod_raw)
             _, lease = self._lease_for_close(launch, record)
         except Exception as error:
@@ -1168,7 +1171,7 @@ class OperatorSurface:
                 self.descriptor.record(action, receipt)
             return receipt
         except RecordError as error:
-            detail = _detail(str(error))
+            detail = str(error)
             if receipt is not None:
                 detail = (
                     f"Receipt saved at {receipt}, but its operator index was not updated: {detail}"
@@ -1207,9 +1210,7 @@ class OperatorSurface:
             command, cwd=self.workspace, capture_output=True, text=True, check=False
         )
         if completed.returncode not in {0, 3}:
-            raise OperatorError(
-                ErrorCode.RUN_FAILED, detail=_detail(completed.stderr or completed.stdout)
-            )
+            raise OperatorError(ErrorCode.RUN_FAILED, detail=completed.stderr or completed.stdout)
 
     def _armarium_export(self, run_root: Path, run_id: str) -> dict[str, Any]:
         tree = RunTree(run_root, run_id)
@@ -1283,9 +1284,7 @@ class OperatorSurface:
             if lease is None or lease.pod_id != record.pod_id:
                 raise ValueError("the launch lease does not bind this exact recorded pod")
         except (OSError, RuntimeError, ValueError) as error:
-            raise OperatorError(
-                ErrorCode.CLOSE_LEASE_UNREADABLE, detail=_detail(str(error))
-            ) from error
+            raise OperatorError(ErrorCode.CLOSE_LEASE_UNREADABLE, detail=str(error)) from error
         return store, lease
 
     def _show_volume_cost(self, *, volume_id: str | None, hourly_usd: str) -> None:
@@ -1297,7 +1296,8 @@ class OperatorSurface:
     def _present_captured_cost(self, report: CloseReport) -> None:
         if report.captured_cost_usd is not None:
             self.present(
-                f"Charges captured through {report.cutoff_at.isoformat().replace('+00:00', 'Z')}: ${report.captured_cost_usd}."
+                f"Charges captured through {utc_stamp(report.cutoff_at)}: "
+                f"${report.captured_cost_usd}."
             )
         else:
             self.present("No captured-cost line was available; this close remains unverified.")
@@ -1418,7 +1418,7 @@ def _status_manifest_projection(payload: dict[str, Any]) -> list[str]:
         raise RecordError("saved upload record does not bind its submission record digest")
     try:
         path = Path(path_text)
-        if _sha256_file(path) != recorded_sha256:
+        if sha256_file(path) != recorded_sha256:
             raise ValueError("saved submission record no longer matches the upload receipt")
         manifest = submission_door.load_manifest(path)
         files = manifest.get("files")
@@ -1433,7 +1433,7 @@ def _load_policy(path: str | Path) -> SpendPolicy:
     try:
         return load_spend_policy(path)
     except Exception as error:
-        raise OperatorError(ErrorCode.SPEND_POLICY_REQUIRED, detail=_detail(str(error))) from error
+        raise OperatorError(ErrorCode.SPEND_POLICY_REQUIRED, detail=str(error)) from error
 
 
 def _request_record(request: PodCreateRequest) -> dict[str, Any]:
@@ -1444,7 +1444,7 @@ def _request_record(request: PodCreateRequest) -> dict[str, Any]:
         "volume_id": request.volume_id,
         "volume_mount_path": request.volume_mount_path,
         "docker_start_cmd": list(request.docker_start_cmd),
-        "hard_deadline": request.hard_deadline.isoformat().replace("+00:00", "Z"),
+        "hard_deadline": utc_stamp(request.hard_deadline),
         "repository_commit": request.repository_commit,
         "template": request.template,
         "metadata": dict(request.metadata),
@@ -1513,13 +1513,13 @@ def _pod_record(record: PodRecord) -> dict[str, Any]:
         "pod_id": record.pod_id,
         "name": record.name,
         "volume_id": record.volume_id,
-        "created_at": record.created_at.isoformat().replace("+00:00", "Z"),
+        "created_at": utc_stamp(record.created_at),
         "state": record.state,
         "estimate": {
             "pod_hourly_usd": str(record.estimate.pod_hourly_usd),
             "volume_hourly_usd": str(record.estimate.volume_hourly_usd),
             "source": record.estimate.source,
-            "observed_at": record.estimate.observed_at.isoformat().replace("+00:00", "Z"),
+            "observed_at": utc_stamp(record.estimate.observed_at),
         },
         "runtime_contract": None
         if contract is None
@@ -1652,14 +1652,6 @@ def _armarium_reference(run_root: Path, run_id: str) -> str:
 
 def _run_program(*args, **kwargs) -> subprocess.CompletedProcess[str]:  # type: ignore[no-untyped-def]
     return subprocess.run(*args, **kwargs)
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _human_duration(seconds: int) -> str:

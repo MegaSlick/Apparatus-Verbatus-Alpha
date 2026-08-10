@@ -42,9 +42,21 @@ def canonical_bytes(value: object) -> bytes:
 
 
 def utc_stamp(value: datetime) -> str:
+    """The one spelling of an instant this surface writes or shows."""
+
     if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
         raise RecordError("operator receipt time must be UTC")
     return value.isoformat().replace("+00:00", "Z")
+
+
+def sha256_file(path: Path) -> str:
+    """The one spelling of a file digest, read in blocks rather than whole."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 class ReceiptStore:
@@ -251,17 +263,26 @@ def _valid_history(value: object, actions: object) -> bool:
     )
 
 
+def _sealed_temporary(target: Path, payload: bytes) -> Path:
+    """Write the payload beside its target, owner-only and already on the disk."""
+
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    with os.fdopen(descriptor, "wb") as handle:
+        os.fchmod(handle.fileno(), 0o600)
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return Path(temporary_name)
+
+
 def _atomic_create_or_reuse(target: Path, payload: bytes) -> None:
     """Create a receipt once; identical bytes are a true no-op, never an overwrite."""
 
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-    temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
+        temporary = _sealed_temporary(target, payload)
+    except OSError as error:
+        raise RecordError("operator receipt could not be written") from error
+    try:
         try:
             os.link(temporary, target)
         except FileExistsError:
@@ -276,25 +297,18 @@ def _atomic_create_or_reuse(target: Path, payload: bytes) -> None:
     except OSError as error:
         raise RecordError("operator receipt could not be written") from error
     finally:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError as error:
-            raise RecordError("operator receipt temporary file could not be removed") from error
+        temporary.unlink(missing_ok=True)
 
 
 def _atomic_replace(target: Path, payload: bytes) -> None:
     """Replace the non-evidentiary descriptor atomically after all facts are stored."""
 
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-    temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        temporary = _sealed_temporary(target, payload)
     except OSError as error:
         raise RecordError("operator descriptor could not be written") from error
-    finally:
+    try:
+        os.replace(temporary, target)
+    except OSError as error:
         temporary.unlink(missing_ok=True)
+        raise RecordError("operator descriptor could not be written") from error

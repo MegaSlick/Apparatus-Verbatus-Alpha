@@ -60,6 +60,8 @@ from typing import Any, Final, Mapping
 
 from operations.pod.transfer import RemoteObject
 
+from .records import sha256_file
+
 SHA256_METADATA_KEY: Final = "verbatus-sha256"
 
 # 64 MiB parts: comfortably inside the documented 500MB-per-part ceiling, and at
@@ -221,7 +223,7 @@ class S3VolumeTarget:
                 f"a file named by the sealed record is not a regular file at {path}; "
                 "nothing was sent for it"
             )
-        extra = {"Metadata": {SHA256_METADATA_KEY: _sha256_of(path)}}
+        extra = {"Metadata": {SHA256_METADATA_KEY: sha256_file(path)}}
         try:
             if self.transfer_config is None:
                 self.client.upload_file(
@@ -281,16 +283,6 @@ def _means_absent(error: BaseException) -> bool:
     # a contradictory named error (for example AccessDenied with a 404 status),
     # preserve the failure instead of treating it as permission to overwrite.
     return code in _ABSENT_CODES or (not code and status == 404)
-
-
-def _sha256_of(path: Path) -> str:
-    import hashlib
-
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 __all__ = [

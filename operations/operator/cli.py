@@ -13,7 +13,6 @@ from operations.pod.models import PodCreateRequest, require_utc
 
 from . import notify_bridge
 from .errors import ErrorCode, OperatorError
-from .errors import sanitize_detail as _safe_detail
 from .surface import DEFAULT_FIXTURE, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
@@ -190,7 +189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(OperatorError(ErrorCode.INTERRUPTED).render())
         return 2
     except Exception as error:  # the only route raw implementation failures take to the operator
-        wrapped = OperatorError(ErrorCode.UNEXPECTED, detail=_safe_detail(str(error)))
+        wrapped = OperatorError(ErrorCode.UNEXPECTED, detail=str(error))
         print(wrapped.render())
         return 2
     return 0
@@ -277,9 +276,7 @@ def _network_volume(value: str | None) -> VolumeSpec | None:
     try:
         return VolumeSpec(datacenter_id=datacenter, volume_id=volume_id)
     except VolumeTransferRefusal as error:
-        raise OperatorError(
-            ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=_safe_detail(str(error))
-        ) from error
+        raise OperatorError(ErrorCode.UPLOAD_VOLUME_UNAVAILABLE, detail=str(error)) from error
 
 
 def _interactive_arguments() -> list[str]:
@@ -321,8 +318,6 @@ def _interactive_arguments() -> list[str]:
         return ["export"]
     if verb == "close":
         return ["close"]
-    if verb in {"boot", "status"}:
-        return [verb]
     return [verb]
 
 
