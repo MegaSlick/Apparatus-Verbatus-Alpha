@@ -59,38 +59,30 @@ def armarium_formats_from_record(record: object, *, source: str = "record") -> A
     The disk configuration and the exported manifest deliberately use the same
     closed record.  Keeping the validator here means a verifier never trusts a
     manifest's claimed format selection just because its self-hash is valid.
+
+    Only the record's own shape -- its key set, its schema string, and that
+    ``formats`` is a list rather than some other iterable ``tuple()`` would
+    silently misread (a bare string would explode into one entry per
+    character) -- is checked here. The format-name and ``embed_pixels`` rules
+    live in exactly one place, ``ArmariumFormats.__post_init__``, which this
+    function calls into rather than re-deriving the same five checks a second
+    time.
     """
     if not isinstance(record, dict):
         raise SchemaRefusal(f"Armarium formats {source} is not an object")
-    raw = record
-    try:
-        keys = set(raw)
-    except TypeError as error:
-        raise SchemaRefusal(f"Armarium formats {source} has invalid keys") from error
     required = {"schema", "formats", "embed_pixels"}
-    if keys != required:
+    if set(record) != required:
         raise SchemaRefusal(
             f"Armarium formats {source} must contain exactly schema, formats, and embed_pixels"
         )
-    if raw["schema"] != FORMAT_SCHEMA:
+    if record["schema"] != FORMAT_SCHEMA:
         raise SchemaRefusal(
-            f"Armarium formats configuration declares {raw['schema']!r}, not {FORMAT_SCHEMA!r}"
+            f"Armarium formats configuration declares {record['schema']!r}, not {FORMAT_SCHEMA!r}"
         )
-    formats = raw["formats"]
-    if (
-        not isinstance(formats, list)
-        or not formats
-        or any(not isinstance(item, str) for item in formats)
-    ):
+    formats = record["formats"]
+    if not isinstance(formats, list):
         raise SchemaRefusal("Armarium formats must be a non-empty list of names")
-    if len(set(formats)) != len(formats):
-        raise SchemaRefusal("Armarium formats names a format more than once")
-    unknown = sorted(set(formats) - KNOWN_FORMATS)
-    if unknown:
-        raise SchemaRefusal(f"Armarium formats names unknown format(s) {unknown}")
-    if not isinstance(raw["embed_pixels"], bool):
-        raise SchemaRefusal("Armarium embed_pixels must be a boolean")
-    return ArmariumFormats(tuple(formats), raw["embed_pixels"])
+    return ArmariumFormats(tuple(formats), record["embed_pixels"])
 
 
 def parse_armarium_formats_bytes(data: bytes, *, source: str | Path = "bytes") -> ArmariumFormats:
