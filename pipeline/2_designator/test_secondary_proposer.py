@@ -153,9 +153,12 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
     before_kinds = {
         entry["kind"] for entry in context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
     }
-    assert designator._publish_secondary_proposals(
-        context, 1, page_record, analysis, claimed, secondary
-    ) is True
+    assert (
+        designator._publish_secondary_proposals(
+            context, 1, page_record, analysis, claimed, secondary
+        )
+        is True
+    )
     context.finish()
 
     manifest = context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]

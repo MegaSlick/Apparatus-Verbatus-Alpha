@@ -1214,11 +1214,7 @@ def initial_pass(context) -> bool:
     # Act holds are counted from the seal itself. Secondary holds deliberately
     # sit outside that authority and are carried by `secondary_held`, derived
     # from the same list of rescue records this pass just published.
-    return (
-        any(row["outcome"] == "held" for row in expected)
-        or bool(failures)
-        or secondary_held
-    )
+    return any(row["outcome"] == "held" for row in expected) or bool(failures) or secondary_held
 
 
 def recovery_pass(context, act_id: str, request_id: str) -> int:
