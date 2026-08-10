@@ -17,14 +17,14 @@
 threshold = 2
 
 # PROPOSED, NOT YET APPROVED. The closed list below is this build's proposal
-# for what counts as a "hard failure" for this cap, argued in /out/report.md.
-# Tyrel's ruling settles the threshold and the existence of the cap; it
+# for what counts as a "hard failure" for this cap, argued in the comment block
+# below. Tyrel's ruling settles the threshold and the existence of the cap; it
 # deliberately does not settle which kinds of stage outcome should trip it --
 # that is left to this build to propose and to him to bless or amend. Treat
 # every entry as a recommendation, not a ruling, until he says so.
 #
 # SHARPENED AGAINST THE OLD PIPELINE'S OWN MEASURED DEFINITION (window pass,
-# 2026-08-05; see /out/report.md). The old repository's `page_health.py`
+# 2026-08-05). The old repository's `page_health.py`
 # recorded Tyrel's 2026-07-25 ruling verbatim: a hard failure is "a corrupt or
 # unrenderable image, or a page so damaged it must be re-run" -- and named two
 # things a hard failure explicitly is NOT: "a blank page is NOT a hard failure,
