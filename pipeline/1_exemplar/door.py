@@ -476,10 +476,23 @@ def process_sources(
         nonlocal active_pdf_document
         nonlocal active_opened_source
         nonlocal active_context
+        # Taken and cleared before anything can raise. These used to be cleared
+        # after the try/finally, so a failing close left them set: the loop's outer
+        # `finally` then called this again, closed the same native handle a second
+        # time, and that second failure replaced the first as the raised exception —
+        # the operator read a duplicate-close message instead of the resource failure
+        # that actually happened. The run failed loudly either way; it named the
+        # wrong cause.
+        document, context_stack = active_pdf_document, active_context
+        active_pdf_key = None
+        active_pdf_digest = None
+        active_pdf_document = None
+        active_opened_source = None
+        active_context = None
         try:
-            if active_pdf_document is not None:
+            if document is not None:
                 try:
-                    pdf_render.close_document(active_pdf_document)
+                    pdf_render.close_document(document)
                 except pdf_render.PdfRefusal as error:
                     # A native document that cannot be released is a pipeline
                     # resource failure, not a property of one page. Stop loudly
@@ -489,13 +502,8 @@ def process_sources(
             # The stream outlives the document by construction, so it is released
             # second — and in a `finally`, because a document that fails to close
             # must not also strand the descriptor it was reading through.
-            if active_context is not None:
-                active_context.close()
-        active_pdf_key = None
-        active_pdf_digest = None
-        active_pdf_document = None
-        active_opened_source = None
-        active_context = None
+            if context_stack is not None:
+                context_stack.close()
 
     try:
         for source in sorted(sources, key=lambda item: item.ordinal):

@@ -33,7 +33,7 @@ the configured target and the code-bounded target, and every rendered PDF page r
 those beside its `effective_dpi`. The 72-DPI floor, pixel ceiling, and decoded-byte
 ceiling remain in code; configuration cannot weaken them. The default is **unmeasured**:
 making it adjustable does not prove it suitable, and it should be checked against a
-real sample against real material (GOVERNANCE 9).
+real sample of real material (GOVERNANCE 9).
 
 `data_handling_policy.json` names the storage roots real material may occupy, and
 `operations/submit/gate.py` refuses a submission folder, run root or ledger outside

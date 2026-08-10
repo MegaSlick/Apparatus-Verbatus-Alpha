@@ -202,6 +202,12 @@ def test_reopening_refuses_a_symlinked_intermediate_directory(tmp_path):
     folder = tmp_path / "batch"
     real_sub = tmp_path / "real-sub"
     real_sub.mkdir()
+    # The leaf has to exist, or this test passes for the wrong reason: with no
+    # `page.png` anywhere, a walk that *did* follow the symlink would fail on the
+    # missing file with "could not be opened without following a redirect", which
+    # matches the same assertion. Creating it makes the refused symlinked directory
+    # the only thing that can raise.
+    (real_sub / "page.png").write_bytes(b"reachable only by following the link")
     folder.mkdir()
     (folder / "sub").symlink_to(real_sub, target_is_directory=True)
 
