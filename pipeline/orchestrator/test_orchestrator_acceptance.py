@@ -1202,6 +1202,98 @@ def test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proo
     )
 
 
+def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_blank_proof(
+    tmp_path,
+):
+    """The success path `_no_readable_text_evidence` exists for, exercised for real.
+
+    No producer in this build writes `no_readable_text_evidence_ref` today
+    (HANDOFF.md's named cross-stage gap), so this forges a standalone
+    blank-proof artifact onto an accepted review's own inputs the same way the
+    sibling refusal test above forges an empty reading -- standing in for
+    whatever real blank-proof artifact a future Recensor contract produces.
+    Deliberately a *distinct* artifact rather than reusing `perlectio_ref` or a
+    region blob already in the review's inputs: those would coincidentally
+    satisfy the Armarium's input reconciliation below even if this stage's own
+    inputs were wrong, which is exactly the gap this test exists to close.
+
+    The point is twofold: prove the constructor's success path actually writes
+    the record spec 10 describes, not only that its refusal paths fire; and
+    prove the record it writes remains exportable through the (frozen,
+    off-limits this round) Armarium -- an Archetypus record that cannot survive
+    its own consumer is not established, whatever its own schema says.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    old_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(old_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    reading["payload"]["text"] = ""
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    new_ref = {
+        "relative_path": old_ref["relative_path"],
+        "sha256": digest_bytes(reading_path.read_bytes()),
+    }
+
+    act_id = review["subject_id"]
+    run = tree.read_run()
+    evidence_payload = {"note": "a hypothetical blank-proof artifact"}
+    evidence_payload["self_hash"] = self_hash(evidence_payload)
+    evidence_envelope = build_envelope(
+        run_id="r",
+        artifact_id=artifact_id(RECENSOR, "blank-proof", act_id),
+        subject_id=act_id,
+        stage=RECENSOR,
+        kind="blank-proof",
+        outcome="accepted",
+        config_digest=run["config_digest"],
+        adapter_revision=run["adapter_recipes"][RECENSOR],
+        inputs=[],
+        payload=evidence_payload,
+    )
+    evidence_path = tree.resolve(
+        tree.artifact_path(RECENSOR, "blank-proof", evidence_envelope["artifact_id"])
+    )
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_bytes(canonical_bytes(evidence_envelope))
+    evidence_ref = {
+        "relative_path": tree.artifact_path(
+            RECENSOR, "blank-proof", evidence_envelope["artifact_id"]
+        ),
+        "sha256": digest_bytes(evidence_path.read_bytes()),
+    }
+
+    review["inputs"] = [
+        new_ref if reference == old_ref else reference for reference in review["inputs"]
+    ] + [evidence_ref]
+    review["payload"]["perlectio_ref"] = new_ref
+    review["payload"]["no_readable_text_evidence_ref"] = evidence_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 0, result.stderr
+    record = tree.read_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+    )["payload"]
+    assert record["text"] == ""
+    assert record["text_status"] == "no_readable_text"
+    assert record["status"] == "established"
+    assert record["evidence_ref"] == evidence_ref
+
+    export_result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
+    assert export_result.returncode == 0, export_result.stderr
+
+
 def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):
     """A completed Archetypus cannot hide a reading appended after its review."""
     root = tmp_path / "runs"

@@ -754,10 +754,19 @@ def establish_from_accepted_primed_perlectio(
     }
     record["self_hash"] = self_hash(record)
     validate_record(record)
+    # Not `evidence_ref`: the Armarium's frozen `verify_established_record`
+    # reconciles an Archetypus's own `inputs` against exactly
+    # `[review_ref, reading_ref, *region refs]` and was not written to expect a
+    # fourth kind (off-limits this round). `evidence_ref` is already proven to
+    # be a digest-checked direct input of the *review* by
+    # `_no_readable_text_evidence` above, and the record's own self-hash makes
+    # the reference itself tamper-evident, so nothing is unchecked by leaving
+    # it out here -- and leaving it in would make every future
+    # `no_readable_text` record unexportable the day a real blank-proof
+    # reference stops coinciding with `reading_ref`.
     inputs = _direct_inputs(
         [review_ref, reading_ref],
         [context.input_ref(region["image_path"]) for region in regions],
-        [evidence_ref] if evidence_ref is not None else [],
     )
     return record, inputs
 

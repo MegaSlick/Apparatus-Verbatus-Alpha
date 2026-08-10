@@ -2,11 +2,15 @@
 
 `no_readable_text` requires its evidence reference; an empty `text` with
 `established` status is refused at the schema — directly, at the pure validation
-function, not only observed as a side effect of a full run. The end-to-end
-version of the empty-reading case (an accepted review really does now establish
-`no_readable_text` rather than crashing) lives in
+function, not only observed as a side effect of a full run. The end-to-end version
+of the empty-reading case lives in
 `pipeline/orchestrator/test_orchestrator_acceptance.py::
-test_archetypus_establishes_no_readable_text_for_an_accepted_empty_reading`.
+test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proof`:
+an accepted review over an empty-text reading is refused, not established, because
+the current Recensor never supplies the blank-proof evidence reference this status
+requires (HANDOFF.md's named cross-stage gap). Establishing `no_readable_text`
+successfully needs a forged review carrying that evidence, which no test in this
+suite constructs yet.
 """
 
 import importlib.util
