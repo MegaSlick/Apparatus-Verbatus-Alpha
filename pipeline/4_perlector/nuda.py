@@ -26,12 +26,6 @@ from common.contracts.canonical import digest_of
 from common.stage import MAX_NUDA_PER_MILLE
 
 LECTIO_NUDA_KIND: Final = "lectio-nuda"
-# `common.stage.run_config_bindings` seals a run's own copy of this same bound
-# before this module ever runs; one literal here and a second one there is the
-# exact "closed set re-declared as a fresh literal" drift already found and
-# fixed once for the witness regime (commit 900654f) -- so this reuses that
-# constant rather than repeating the number.
-MAX_PER_MILLE: Final = MAX_NUDA_PER_MILLE
 
 # The selection rule, named so the record says which design produced the
 # sample rather than leaving it implicit in whichever revision of this file
@@ -41,9 +35,13 @@ SELECTION_RULE: Final = "digest-threshold-over-run-id-and-act-id.v1"
 
 
 def validate_nuda_per_mille(value: int) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or not (0 <= value <= MAX_PER_MILLE):
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not (0 <= value <= MAX_NUDA_PER_MILLE)
+    ):
         raise ValueError(
-            f"nuda_per_mille must be an integer in [0, {MAX_PER_MILLE}], got {value!r}"
+            f"nuda_per_mille must be an integer in [0, {MAX_NUDA_PER_MILLE}], got {value!r}"
         )
     return value
 
@@ -61,7 +59,7 @@ def is_nuda_sampled(act_id: str, *, run_id: str, nuda_per_mille: int) -> bool:
     if nuda_per_mille == 0:
         return False
     digest = digest_of({"purpose": "nuda-sample", "run_id": run_id, "act_id": act_id})
-    threshold = int(digest[:8], 16) % MAX_PER_MILLE
+    threshold = int(digest[:8], 16) % MAX_NUDA_PER_MILLE
     return threshold < nuda_per_mille
 
 

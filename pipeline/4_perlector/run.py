@@ -103,6 +103,21 @@ def _region_ordinal(record: dict) -> int:
     return ordinal
 
 
+def act_regions(context, act_id: str) -> tuple[list[dict], list[dict]]:
+    """Every region for this act, and the original-proposal subset of it.
+
+    One spelling, because the preflight and the reading loop both need the pair
+    and both refuse the same way. A second copy of the filter is how the two
+    come to disagree about what counts as a proposal region, which is the fact
+    the witness-coverage record is built on.
+    """
+    regions = regions_of(context, act_id)
+    proposals = [region for region in regions if region["payload"].get("origin") == "proposal"]
+    if not proposals:
+        raise ContractError(f"act {act_id} reached the Perlector with no original proposal region")
+    return regions, proposals
+
+
 def _region_reference(region: dict) -> dict[str, str]:
     """The exact public region facts a Testimonium may claim it saw."""
     payload = region["payload"]
@@ -242,14 +257,7 @@ def preflight_testimonia_denominator(context, acts: list[dict]) -> None:
     for act in acts:
         if act["outcome"] == "held":
             continue
-        regions = regions_of(context, act["act_id"])
-        proposal_regions = [
-            region for region in regions if region["payload"].get("origin") == "proposal"
-        ]
-        if not proposal_regions:
-            raise ContractError(
-                f"act {act['act_id']} reached the Perlector with no original proposal region"
-            )
+        _, proposal_regions = act_regions(context, act["act_id"])
         testimonia_of(context, act["act_id"], proposal_regions)
 
 
@@ -497,9 +505,10 @@ def validate_reading_payload(payload: dict, *, outcome: str, fields: frozenset) 
         raise SchemaRefusal(
             "a Perlector prompt record does not reproduce from its resolved chair and dossier"
         )
-    if not isinstance(payload["truncation"], dict) or payload["truncation"].get(
-        "classification"
-    ) not in (truncation.COMPLETE, truncation.TRUNCATED, truncation.UNKNOWN):
+    if (
+        not isinstance(payload["truncation"], dict)
+        or payload["truncation"].get("classification") not in truncation.CLASSIFICATIONS
+    ):
         raise SchemaRefusal(
             "a Perlector reading carries no truncation classification; truncation is detected "
             "by an instrument, never assumed"
@@ -703,17 +712,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             acknowledged += 1
             continue
 
-        regions = regions_of(context, act_id)
-        if not regions:
-            raise ContractError(f"act {act_id} reached the Perlector with no region")
-
-        proposal_regions = [
-            region for region in regions if region["payload"].get("origin") == "proposal"
-        ]
-        if not proposal_regions:
-            raise ContractError(
-                f"act {act_id} reached the Perlector with no original proposal region"
-            )
+        regions, proposal_regions = act_regions(context, act_id)
 
         # Every region of the act is verified and read, including a continuation
         # on the next page: an act that ran over the page break and was read only

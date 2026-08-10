@@ -102,7 +102,12 @@ def evidence(tmp_path_factory):
     return context, act_id, act_key, regions, testimonia
 
 
+DECLARATION = ROOT / "config" / "witness_context.toml"
+
+
 def _build(context, act_id, act_key, regions, testimonia, *, regime="named", witness_context=None):
+    if witness_context is None:
+        witness_context = dossier.load_witness_context(DECLARATION)
     return dossier.build_dossier(
         context,
         act_id=act_id,

@@ -38,10 +38,6 @@ from common.contracts.stages import EXEMPLAR, PERLECTOR
 from common.imaging import crop_png, dimensions
 from common.stage import WITNESS_READING_OUTCOMES
 
-DEFAULT_WITNESS_CONTEXT_PATH: Final = (
-    Path(__file__).resolve().parents[2] / "config" / "witness_context.toml"
-)
-
 # A fixed bound, not configuration: the dossier's job is to hand the reader a
 # genuine layout overview, not a second full-resolution copy of the page. A
 # *bound* rather than a divisor because a divisor is not a bound -- halving a
@@ -76,8 +72,14 @@ _FORBIDDEN_KEY_FRAGMENTS: Final = (
 )
 
 
-def load_witness_context(path: Path = DEFAULT_WITNESS_CONTEXT_PATH) -> dict[str, dict[str, str]]:
-    """Read the Perlector-owned factual-context declaration. Data, never code."""
+def load_witness_context(path: Path) -> dict[str, dict[str, str]]:
+    """Read the Perlector-owned factual-context declaration. Data, never code.
+
+    The path is always supplied, never defaulted: the run seals the digest of
+    one declaration file into `config_digest`, and a module-local default would
+    be a second answer to "which file" that could quietly build a dossier from
+    bytes the run was not sealed under.
+    """
     try:
         with open(path, "rb") as handle:
             raw = tomllib.load(handle)
@@ -248,7 +250,7 @@ def build_dossier(
     witnessed_region_ids: set[str],
     regime: str,
     page_renders: list[dict[str, Any]],
-    witness_context: dict[str, dict[str, str]] | None = None,
+    witness_context: dict[str, dict[str, str]],
 ) -> dict[str, Any]:
     """Assemble one act's dossier. Deterministic: the same evidence in any order
     produces identical bytes, and nothing in the result may express a
@@ -260,7 +262,6 @@ def build_dossier(
     """
     if regime not in REGIMES:
         raise SchemaRefusal(f"witness regime {regime!r} is not one of {sorted(REGIMES)}")
-    declared_context = witness_context if witness_context is not None else load_witness_context()
     region_rows = sorted(
         (
             {
@@ -278,7 +279,7 @@ def build_dossier(
         (
             _testimonium_entry(
                 record,
-                witness_context=declared_context,
+                witness_context=witness_context,
                 regime=regime,
                 run_id=context.tree.run_id,
                 config_digest=context.config_digest,

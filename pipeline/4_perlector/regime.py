@@ -22,10 +22,15 @@ from __future__ import annotations
 from typing import Final
 
 from common.contracts.canonical import digest_of
+from common.stage import WITNESS_CONTEXT_REGIMES
 
 NAMED: Final = "named"
 BLINDED: Final = "blinded"
-REGIMES: Final = frozenset({NAMED, BLINDED})
+# Derived, not re-declared: `common.stage.WITNESS_CONTEXT_REGIMES` is the set the
+# CLI flag, the config digest and every stage's parser already agree on, and a
+# third regime added there and missed here would let a run start under a regime
+# this module then refuses to build a dossier for.
+REGIMES: Final = frozenset(WITNESS_CONTEXT_REGIMES)
 
 _PSEUDONYM_DIGITS: Final = 12
 
