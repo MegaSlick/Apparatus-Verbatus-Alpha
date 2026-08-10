@@ -139,6 +139,64 @@ def make_recensor_partition_receipt():
     )
 
 
+# --- The Recensor partition receipt: replace in place, but never a shrinking
+# --- denominator under the same run authority ----------------------------------
+
+
+def test_a_write_that_would_shrink_the_expected_act_count_is_refused(tmp_path):
+    """The proposal-act denominator is sealed once by the Designator; two honest
+    Recensor passes over the same run can never legitimately disagree about how
+    many acts it names. A write that would shrink it is not a fresher partition
+    superseding a stale one -- it is a different, inconsistent claim about the
+    same sealed denominator, and is refused rather than silently accepted as
+    whichever write happened to land last."""
+    tree = make_run(tmp_path)
+    two_items = make_recensor_partition_receipt()
+    second_item = dict(two_items["items"][0], act_id="act-2", act_key="a2")
+    two_items = build_recensor_partition_receipt(
+        run_id=two_items["run_id"],
+        config_digest=two_items["config_digest"],
+        proposal_seal_ref=two_items["proposal_seal_ref"],
+        items=[two_items["items"][0], second_item],
+    )
+    tree.write_recensor_partition_receipt(two_items)
+
+    with pytest.raises(SchemaRefusal, match="expected_act_count"):
+        tree.write_recensor_partition_receipt(make_recensor_partition_receipt())
+
+    # The two-item receipt already on disk survives the refused write untouched.
+    assert tree.read_recensor_partition_receipt()["expected_act_count"] == 2
+
+
+def test_a_write_that_grows_the_expected_act_count_is_also_refused(tmp_path):
+    """Grown or shrunk, either direction disagrees with an already-sealed
+    denominator, so neither is treated as the fresher one."""
+    tree = make_run(tmp_path)
+    tree.write_recensor_partition_receipt(make_recensor_partition_receipt())
+
+    two_items = make_recensor_partition_receipt()
+    second_item = dict(two_items["items"][0], act_id="act-2", act_key="a2")
+    grown = build_recensor_partition_receipt(
+        run_id=two_items["run_id"],
+        config_digest=two_items["config_digest"],
+        proposal_seal_ref=two_items["proposal_seal_ref"],
+        items=[two_items["items"][0], second_item],
+    )
+    with pytest.raises(SchemaRefusal, match="expected_act_count"):
+        tree.write_recensor_partition_receipt(grown)
+
+
+def test_repeating_an_identical_receipt_is_reused_not_refused(tmp_path):
+    """The unchanged-denominator guard must not itself turn an idempotent
+    replay -- the ordinary case of resuming or re-running a finished pass --
+    into a refusal."""
+    tree = make_run(tmp_path)
+    receipt = make_recensor_partition_receipt()
+    tree.write_recensor_partition_receipt(receipt)
+    result = tree.write_recensor_partition_receipt(receipt)
+    assert result.reused is True
+
+
 # --- The run authority ---------------------------------------------------------
 
 

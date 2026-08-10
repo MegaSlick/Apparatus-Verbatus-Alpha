@@ -370,6 +370,29 @@ class RunTree:
         immutable object — and it is still inside `inventory_scope()`, because a
         record a reviewer recomputes denominators from may not be a file nothing
         accounts for.
+
+        This is a replace, not a compare-and-swap: two Recensor passes racing on
+        one shared run tree (the class of hazard #20 closed for the chamber
+        sign-in config) could still write in either order, and whichever lands
+        last wins. That is bounded rather than fixed here — the proposal-act
+        denominator this receipt's `expected_act_count` recomputes is sealed by
+        the Designator before the Recensor ever runs, so it cannot legitimately
+        differ between two honest passes over the same run; a write that would
+        shrink it is not a fresher partition superseding a stale one, it is a
+        different, inconsistent claim about the same sealed denominator, and is
+        refused outright. What a race can still do — replace a receipt reflecting
+        a later, more-resolved pass with one reflecting an earlier pass over the
+        same denominator — cannot manufacture the failure GOVERNANCE 2 and
+        ARCHITECTURE invariant 6 actually forbid: every review this receipt cites
+        is itself immutable and append-only, an act's classification here only
+        ever moves toward resolution (`common/contracts/outcomes.py` has no
+        transition back from a COMPLETED-class review), so an honestly-computed
+        receipt can under-state a run's current completeness but never claim
+        completeness the on-disk reviews do not independently back. A stale
+        write is therefore a confusing audit artifact, not a false "complete".
+        Two Recensor passes must still not run concurrently against one run
+        tree; nothing here makes that safe, only makes one particular
+        inconsistency loud instead of silent.
         """
         from common.recensor_receipt import validate_recensor_partition_receipt
 
@@ -379,8 +402,21 @@ class RunTree:
         relative = self.recensor_partition_receipt_path()
         target = self.resolve(relative)
         data = canonical_bytes(checked)
-        if target.exists() and target.read_bytes() == data:
-            return PublishResult(relative, reused=True)
+        if target.exists():
+            existing = validate_recensor_partition_receipt(_read_json(target))
+            if (
+                existing["run_id"] == checked["run_id"]
+                and existing["config_digest"] == checked["config_digest"]
+                and existing["expected_act_count"] != checked["expected_act_count"]
+            ):
+                raise SchemaRefusal(
+                    "Recensor partition receipt would change its expected_act_count from "
+                    f"{existing['expected_act_count']} to {checked['expected_act_count']} under "
+                    "the same run authority; the proposal-act denominator is sealed once and "
+                    "cannot legitimately differ between two passes over the same run"
+                )
+            if target.read_bytes() == data:
+                return PublishResult(relative, reused=True)
         target.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(target, data)
         return PublishResult(relative, reused=False)
