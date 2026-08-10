@@ -898,9 +898,10 @@ def _positive_ordinal(value: str) -> int:
 class Attempt(NamedTuple):
     """One chair's resolved outcome for one act on one attempt.
 
-    Assembled in exactly one place so the whole-pass write path and the targeted
-    reread cannot drift on what a witness attempt is. It describes one chair and
-    reads no other chair's record: nothing here compares, ranks, or chooses among
+    One shape shared by every constructor — `dead_attempt`, `not_read_attempt`,
+    and `resolve_attempt` — so the whole-pass write path and the targeted reread
+    cannot drift on what a witness attempt is. It describes one chair and reads
+    no other chair's record: nothing here compares, ranks, or chooses among
     witnesses, and there is no argument through which it could.
     """
 
