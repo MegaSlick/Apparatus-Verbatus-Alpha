@@ -58,6 +58,7 @@ from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
     EXIT_RUN_HALTED,
+    WITNESS_CONTEXT_REGIMES,
     current_recovery_request,
     latest_attempt,
     load_fixture,
@@ -199,7 +200,7 @@ def main() -> int:
     parser.add_argument(
         "--witness-context",
         default="named",
-        choices=("named", "blinded"),
+        choices=WITNESS_CONTEXT_REGIMES,
         help="the run-level named/blinded toggle the Perlector's dossier is built under",
     )
     parser.add_argument(
