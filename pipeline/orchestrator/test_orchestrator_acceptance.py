@@ -180,6 +180,8 @@ def orchestrate(
     models_config: Path | None = None,
     recovery_config: Path | None = None,
     hard_failure_config: Path | None = None,
+    nuda_per_mille: int | None = None,
+    nuda_approval_ref: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
     command = [
@@ -200,6 +202,10 @@ def orchestrate(
         command.extend(("--recovery-config", str(recovery_config)))
     if hard_failure_config is not None:
         command.extend(("--hard-failure-config", str(hard_failure_config)))
+    if nuda_per_mille is not None:
+        command.extend(("--nuda-per-mille", str(nuda_per_mille)))
+    if nuda_approval_ref is not None:
+        command.extend(("--nuda-approval-ref", nuda_approval_ref))
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -1199,6 +1205,27 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     assert after == before
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
+
+
+def test_repeating_the_identical_command_with_nuda_enabled_leaves_every_byte_unchanged(tmp_path):
+    """The byte-identical-rerun property above is only ever exercised at the
+    default --nuda-per-mille 0. Lectio nuda's sampling rule is a deterministic
+    hash threshold over (run_id, act_id), never `random` -- this is the test
+    that actually drives two runs of the identical command with nuda turned on
+    and proves the property still holds rather than trusting the docstring's
+    word for it (audit finding: coverage gap, `nuda.py`)."""
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda").returncode == 0
+    before = snapshot(root)
+    assert any("lectio-nuda" in path for path in before), "the run must actually have sampled nuda"
+
+    assert (
+        orchestrate(root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda").returncode
+        == 0
+    )
+    after = snapshot(root)
+
+    assert after == before
 
 
 def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
