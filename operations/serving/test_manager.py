@@ -24,7 +24,9 @@ from common.chairs.config import load_models_toml
 from common.chairs.errors import ReceiptRefusal, ServingRecipeRefusal
 from common.chairs.models import ChairIdentity, ModelsConfig, ServingDetails, VerifiedSnapshot
 from common.chairs.receipts import build_receipt
-from common.stage import run_config_bindings
+from common.chairs.registry import ChairRegistry
+from common.runtree.store import RunTree
+from common.stage import StageContext, run_config_bindings
 from operations.pod.preflight import (
     GpuProfile,
     PlacementRecipe,
@@ -2270,6 +2272,77 @@ def test_stage_context_publisher_uses_existing_run_receipt_seam() -> None:
             {"relative_path": "stages/preflight/blobs/sha256/audit", "sha256": "e" * 64},
         )
     ]
+
+
+def test_a_manager_built_audit_reaches_a_real_stage_context_end_to_end(tmp_path: Path) -> None:
+    """The run-sealed-configuration interlock, joined rather than traced by hand.
+
+    Every other manager test publishes through ``FakePublisher``; every assembly
+    test uses ``FakeStageContext``, a two-field frozen dataclass. Nothing before
+    this test drove a manager-built launch audit into a real
+    ``StageContext``/``StageContextReceiptPublisher`` -- the interlock that stops
+    a launch running under configuration bytes the run did not seal was only
+    ever exercised on its two sides separately.
+    """
+
+    root = Path(__file__).resolve().parents[2]
+    registry = ChairRegistry.from_toml(root / "config/models.toml")
+    bindings = run_config_bindings(registry.config, {"fixture": "none"}, "test")
+    tree = RunTree.create(
+        tmp_path,
+        "sm-fix-f6",
+        source_manifest=[],
+        config_digest=bindings["config_digest"],
+        adapter_recipes=bindings["adapter_recipes"],
+        witness_chairs=bindings["witness_chairs"],
+    )
+    run = tree.read_run()
+    context = StageContext(
+        tree=tree,
+        run=run,
+        fixture={},
+        scenario="test",
+        stage="attestatores",
+        adapter_revision=None,
+        args=object(),
+        registry=registry,
+        serving_config_inputs=bindings["serving_config_inputs"],
+    )
+    chair = registry.resolve("attestator_1")
+    assert isinstance(chair, ChairIdentity)
+
+    http = FakeHttp(model_ids=("reader-api",))
+    launcher = FakeLauncher(http)
+    manager = ServingManager(
+        registry=registry,
+        recipes=recipes(
+            profile_row(
+                recipe=chair.serving_recipe,
+                chair=chair.role,
+                served_model_id="reader-api",
+                port=8000,
+            )
+        ),
+        config_inputs=ServingConfigInputs.from_record(bindings["serving_config_inputs"]),
+        launcher=launcher,
+        http=http,
+        receipt_publisher=StageContextReceiptPublisher(context),
+        log_root=tmp_path / "logs",
+        package_inspector=FakePackages({"vllm": "0.test"}),
+        residency_lease=FileResidencyLease(tmp_path / "pod-gpu.lock"),
+    )
+
+    handle = manager.start(chair, TIER)
+    try:
+        assert handle.receipt_reference["relative_path"]
+        assert handle.audit_reference["relative_path"]
+        assert handle.evidence_reference["relative_path"]
+        stored_audit = tree.read_bytes(handle.audit_reference["relative_path"])
+        assert bindings["serving_config_inputs"]["serving_recipes_sha256"].encode() in stored_audit
+        stored_receipt = tree.read_run_receipt(dict(handle.receipt_reference))
+        assert stored_receipt["chair"] == chair.role
+    finally:
+        handle.stop()
 
 
 def test_serving_smoke_reader_uses_the_owned_service_and_always_stops(tmp_path: Path) -> None:
