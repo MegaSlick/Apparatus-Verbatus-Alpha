@@ -634,8 +634,16 @@ def validate_record(record: dict) -> dict:
     return record
 
 
-def _no_readable_text_evidence(review: dict) -> dict[str, str] | None:
-    """Return the Recensor's retained blank proof; never manufacture one here."""
+def _no_readable_text_evidence(review: dict, reading_ref: dict[str, str]) -> dict[str, str] | None:
+    """Return the Recensor's retained blank proof; never manufacture one here.
+
+    `HANDOFF.md`'s whole argument for this field is that an accepted review is
+    evidence the Recensor accepted a reading, not evidence the page was blank.
+    No `blank-proof` artifact kind exists yet to check this reference's kind
+    against, so the one thing checkable today without inventing that contract is
+    refused here: the reading whose silence is in question is never allowed to
+    stand as its own proof of it.
+    """
     payload = review.get("payload")
     if not isinstance(payload, dict):
         raise SchemaRefusal("accepted Recensor review has no object payload")
@@ -645,6 +653,11 @@ def _no_readable_text_evidence(review: dict) -> dict[str, str] | None:
     if not _is_ref_shaped(reference) or reference not in review.get("inputs", []):
         raise SchemaRefusal(
             "no_readable_text evidence is not a digest-checked direct input of the Recensor review"
+        )
+    if reference == reading_ref:
+        raise SchemaRefusal(
+            "no_readable_text evidence names the accepted Perlectio itself; a reading is "
+            "never evidence of its own silence"
         )
     return reference
 
@@ -786,7 +799,7 @@ def establish_from_accepted_primed_perlectio(
         f"accepted reading of {act['act_id']} annotations",
     )
     text_status = derive_text_status(text, annotations)
-    evidence_ref = _no_readable_text_evidence(review)
+    evidence_ref = _no_readable_text_evidence(review, reading_ref)
     if evidence_ref is not None and text_status != "no_readable_text":
         raise FatalAccounting(
             f"the accepted review of {act['act_id']} retains a proof that this act held no "

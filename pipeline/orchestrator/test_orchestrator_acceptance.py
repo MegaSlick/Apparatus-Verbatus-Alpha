@@ -1295,6 +1295,53 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     assert export_result.returncode == 0, export_result.stderr
 
 
+def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
+    """A reading is never evidence of its own silence.
+
+    Unlike `perlectio_ref` and `recensor_ref`, `evidence_ref` is never read,
+    stage-checked or kind-checked -- no `blank-proof` artifact kind exists yet
+    to check it against (HANDOFF.md's named gap). Without this refusal, naming
+    the accepted (now-emptied) Perlectio itself as `no_readable_text_evidence_ref`
+    passes: the reading whose silence is in question stands in as proof of it,
+    defeating HANDOFF.md's whole argument for the field ("An accepted review is
+    evidence that the Recensor accepted a reading; it is not evidence that the
+    page was blank"). Reproduces audit-d finding F4's measurement.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    old_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(old_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    reading["payload"]["text"] = ""
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    new_ref = {
+        "relative_path": old_ref["relative_path"],
+        "sha256": digest_bytes(reading_path.read_bytes()),
+    }
+
+    review["inputs"] = [
+        new_ref if reference == old_ref else reference for reference in review["inputs"]
+    ]
+    review["payload"]["perlectio_ref"] = new_ref
+    review["payload"]["no_readable_text_evidence_ref"] = new_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "never evidence of its own silence" in result.stderr
+
+
 def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path):
     """Two upstream claims that contradict each other are never quietly one claim.
 
