@@ -1215,12 +1215,19 @@ def test_repeating_the_identical_command_with_nuda_enabled_leaves_every_byte_unc
     and proves the property still holds rather than trusting the docstring's
     word for it (audit finding: coverage gap, `nuda.py`)."""
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda").returncode == 0
+    assert (
+        orchestrate(
+            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda"
+        ).returncode
+        == 0
+    )
     before = snapshot(root)
     assert any("lectio-nuda" in path for path in before), "the run must actually have sampled nuda"
 
     assert (
-        orchestrate(root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda").returncode
+        orchestrate(
+            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda"
+        ).returncode
         == 0
     )
     after = snapshot(root)
@@ -1363,6 +1370,21 @@ def test_recovery_ink_is_recorded_as_witness_uncovered(review_run):
     )
     coverage = [basis["witness_covered"] for basis in latest["payload"]["basis"]["regions"]]
     assert coverage == [True, False]
+
+    # D-15: spec 08 test 1 asks for "a recovery dossier marks witness-uncovered
+    # ink" -- the dossier is what a reader is actually shown, not `basis`, and
+    # nothing asserted this surface before. Both derive from the same
+    # `witnessed_region_ids` set, so they must agree per region.
+    dossier_coverage = {
+        region["region_id"]: region["witness_covered"]
+        for region in latest["payload"]["dossier"]["regions"]
+    }
+    basis_coverage = {
+        region["region_id"]: region["witness_covered"]
+        for region in latest["payload"]["basis"]["regions"]
+    }
+    assert dossier_coverage == basis_coverage
+    assert sorted(dossier_coverage.values()) == [False, True]
 
 
 def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
