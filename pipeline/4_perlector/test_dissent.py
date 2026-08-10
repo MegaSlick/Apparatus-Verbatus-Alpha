@@ -214,6 +214,31 @@ def test_a_long_but_affordable_comparison_is_still_genuinely_aligned():
     assert rows[0]["departures"], "an affordable comparison must still locate its departures"
 
 
+def test_a_scattered_difference_comparison_well_under_the_pair_bound_is_still_stopped():
+    """`SequenceMatcher`'s cost is not the product of the two lengths -- text that
+    differs in many scattered places (exactly what a systematically-mistaken
+    witness produces) runs close to the *cube* of the length instead. Measured
+    in this chamber: a 3,600-character reading against an equally long report
+    that differs on every repeated phrase took upward of twenty seconds
+    unbounded, while its pair count (~13M) is nowhere near
+    `MAX_COMPARISON_CHARACTER_PAIRS` (100M) -- so the pair-count prefilter alone
+    would let this one run. `MAX_COMPARISON_SECONDS` is what actually stops it."""
+    reading = "alpha beta gamma " * 200
+    reported = "alpha beta gamna " * 200
+    pairs = len(reading) * len(reported)
+    assert pairs < dissent.MAX_COMPARISON_CHARACTER_PAIRS, "the pair prefilter must not catch this"
+
+    started = time.monotonic()
+    rows = dissent.dissent_against(
+        reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
+    )
+    elapsed = time.monotonic() - started
+    assert elapsed < dissent.MAX_COMPARISON_SECONDS + 2, "the wall-clock bound must stop the alignment"
+    assert rows[0]["chair"] == "attestator_1", "the witness must not vanish from the record"
+    assert rows[0]["compared"] == "unknown"
+    assert "did not align within" in rows[0]["reason"]
+
+
 def test_is_comparable_defaults_true_when_a_testimonium_declares_no_capabilities():
     assert dissent.is_comparable({"payload": {"format_capabilities": {}}}) is True
     assert dissent.is_comparable({"payload": {}}) is True

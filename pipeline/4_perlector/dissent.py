@@ -32,6 +32,7 @@ from wholesale disagreement.
 
 from __future__ import annotations
 
+import signal
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any, Final
@@ -39,28 +40,58 @@ from typing import Any, Final
 from common.contracts.errors import SchemaRefusal
 from common.stage import WITNESS_READING_OUTCOMES
 
-# `SequenceMatcher`'s alignment costs the product of the two lengths. Measured
-# in this chamber at roughly 12 million character-pairs per second: 5,000 by
-# 5,000 is two seconds, 16,000 by 16,000 is twenty, and it keeps squaring.
+# `SequenceMatcher`'s alignment cost is *not* simply the product of the two
+# lengths -- that was this module's own original claim, measured once on
+# `"ab"*n` vs `"ba"*n` (roughly 12-13M character-pairs/second there) and
+# believed to generalize. It does not: a reading and a report that differ in
+# many scattered places -- which is exactly what a systematically-mistaken
+# witness produces, the case this instrument exists to catch -- cost close to
+# the *cube* of the length, not the square. Measured in this chamber: a
+# 6,800-character reading against an equally long, scattered-difference report
+# is 46.2M pairs, comfortably under the bound below, and took 127 seconds.
 #
-# A witness's `reported` is a model's own output and nothing upstream bounds it
-# -- `pipeline/3_attestatores/run.py` records a character count and enforces no
-# ceiling on it. A model in a repetition loop emits until its token cap, which
-# is the ordinary failure `truncation.py` exists because of, not an exotic one;
-# at a 32k-token cap that is well over a hundred thousand characters, and one
-# such report would hold the stage for tens of minutes on every act it touched.
-#
-# **The bound is on the comparison, never on the text.** Nothing is clipped,
-# no reading is touched, and the witness keeps its row -- saying honestly that
-# the alignment did not run. Spec 08 already declares that shape: "where a
-# witness format cannot be compared, dissent for that witness is recorded
-# `unknown`, never guessed", and a comparison too large to run is one that
-# cannot be run. Set far above any plausible act (a hundred million pairs is a
-# 10,000-character reading against a 10,000-character report, where a register
-# entry runs to hundreds), so only a runaway reaches it -- a cost ceiling, not
-# a calibrated constant, and alpha testing over real reports is what would tune
-# it.
+# So this constant is kept as a cheap prefilter for the case it was first
+# written for -- a witness stuck in a repetition loop until its token cap,
+# `pipeline/3_attestatores/run.py` enforcing no ceiling on report length, a
+# 32k-token cap running well over a hundred thousand characters -- but it is
+# no longer the thing that actually bounds wall-clock time. `MAX_COMPARISON_SECONDS`
+# below is. Alpha testing over real reports is what would tune either number.
 MAX_COMPARISON_CHARACTER_PAIRS: Final = 100_000_000
+
+# The real backstop. `SequenceMatcher.get_opcodes()` is pure Python, so a
+# `SIGALRM` fired while it is running interrupts it cleanly -- verified in this
+# chamber. Where `SIGALRM` does not exist (non-Unix), the comparison runs to
+# completion exactly as it did before this bound existed; there is no silent
+# narrowing, only a platform on which this particular backstop cannot fire.
+MAX_COMPARISON_SECONDS: Final = 5
+
+
+class _ComparisonTimedOut(Exception):
+    """Raised only inside `_aligned_within_deadline`, never let escape it."""
+
+
+def _deadline_handler(signum: int, frame: Any) -> None:
+    raise _ComparisonTimedOut()
+
+
+def _aligned_within_deadline(reading: str, reported: str, *, seconds: int) -> list | None:
+    """`departures(reading, reported)`, abandoned rather than awaited past `seconds`.
+
+    Returns `None` on timeout. Nothing about `reading` or `reported` is
+    touched either way -- the alignment simply does not finish, exactly as
+    the pair-count bound already declares of itself.
+    """
+    if not hasattr(signal, "SIGALRM"):
+        return departures(reading, reported)
+    previous_handler = signal.signal(signal.SIGALRM, _deadline_handler)
+    signal.alarm(seconds)
+    try:
+        return departures(reading, reported)
+    except _ComparisonTimedOut:
+        return None
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def comparison_view(text: str) -> dict[str, object]:
@@ -146,9 +177,10 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     Computed after the reading is fixed. A chair that failed or never ran has
     no opinion to depart from, and is recorded as having none rather than as
     agreeing -- silence is not assent. A chair whose format cannot be reduced to
-    a comparison view, or whose report is too long to align against this reading
-    at all (`MAX_COMPARISON_CHARACTER_PAIRS`), is recorded `compared: "unknown"`:
-    not guessed at, and not silently dropped from the record either.
+    a comparison view, whose report is large enough to refuse outright
+    (`MAX_COMPARISON_CHARACTER_PAIRS`), or whose alignment simply did not finish
+    within `MAX_COMPARISON_SECONDS`, is recorded `compared: "unknown"`: not
+    guessed at, and not silently dropped from the record either.
     """
     reading_view = comparison_view(reading)
     rows = []
@@ -189,6 +221,21 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 }
             )
             continue
+        spans = _aligned_within_deadline(reading, reported, seconds=MAX_COMPARISON_SECONDS)
+        if spans is None:
+            rows.append(
+                {
+                    "chair": chair,
+                    "compared": "unknown",
+                    "reason": (
+                        f"a {len(reading)}-character reading against a {len(reported)}-"
+                        f"character report did not align within this module's "
+                        f"{MAX_COMPARISON_SECONDS}-second bound; neither text is clipped and "
+                        "neither is changed, the alignment simply did not run"
+                    ),
+                }
+            )
+            continue
         witness_view = comparison_view(reported)
         rows.append(
             {
@@ -201,7 +248,7 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 # shows departures here while `departed` above stays False:
                 # those are two honest answers to two different questions, and
                 # collapsing them would lose the one the instrument needs.
-                "departures": departures(reading, reported),
+                "departures": spans,
                 "comparison_loss": {
                     "reading_dropped_characters": reading_view["dropped_characters"],
                     "witness_dropped_characters": witness_view["dropped_characters"],
