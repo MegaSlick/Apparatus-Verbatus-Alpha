@@ -145,7 +145,9 @@ def test_an_overlong_response_scores_malformed_instead_of_discarding_the_matrix(
     assert broken.perlectio.text is None
     assert broken.raw_response_text is None
     assert broken.score.cer.rate == 1.0
-    survivors = [cell for cell in run.cells if cell.perlectio.condition is not Condition.LECTIO_NUDA]
+    survivors = [
+        cell for cell in run.cells if cell.perlectio.condition is not Condition.LECTIO_NUDA
+    ]
     assert all(cell.perlectio.status is OutputStatus.COMPLETE for cell in survivors)
 
 
@@ -178,9 +180,7 @@ def test_aggregate_cer_is_micro_averaged_across_acts_of_different_lengths():
         profile=GRAPHEMIC_V1,
         authorization=RunAuthorization.synthetic_fixture(),
     )
-    nuda = next(
-        row for row in run.condition_aggregates() if row.condition is Condition.LECTIO_NUDA
-    )
+    nuda = next(row for row in run.condition_aggregates() if row.condition is Condition.LECTIO_NUDA)
     assert nuda.metrics.cer_errors == 100
     assert nuda.metrics.cer_reference_units == 102
     micro_cer = 100 / 102
