@@ -86,7 +86,7 @@ class Bounds(TypedDict):
     h: int
 
 
-def _validate_bounds(bounds: Any, width: int, height: int, what: str) -> None:
+def validate_bounds(bounds: Any, width: int, height: int, what: str) -> None:
     """Refuse a rectangle that does not belong to its declared pixel space."""
     if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
         raise ContractError(f"{what} is not a closed x/y/w/h rectangle")
@@ -222,7 +222,7 @@ def apply_padding(
     """
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no positive area to pad within")
-    _validate_bounds(bounds, page_w, page_h, "structural bounds")
+    validate_bounds(bounds, page_w, page_h, "structural bounds")
     x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
 
     top = _pad_amount(h, padding["top_bp"])
@@ -277,7 +277,7 @@ def to_model_space(bounds: Bounds, page_w: int, page_h: int, model_w: int, model
     """
     _validate_dimensions(page_w, page_h, "page")
     _validate_dimensions(model_w, model_h, "model-space target")
-    _validate_bounds(bounds, page_w, page_h, "source bounds")
+    validate_bounds(bounds, page_w, page_h, "source bounds")
     scale = {
         "x": {"numerator": model_w, "denominator": page_w},
         "y": {"numerator": model_h, "denominator": page_h},
@@ -342,7 +342,7 @@ def from_model_space(
             f"scale {scale} was recorded for a {x_den}x{y_den} page, not "
             f"the declared {page_w}x{page_h} page"
         )
-    _validate_bounds(model_bounds, x_num, y_num, "model-space bounds")
+    validate_bounds(model_bounds, x_num, y_num, "model-space bounds")
     x0 = (model_bounds["x"] * x_den) // x_num
     y0 = (model_bounds["y"] * y_den) // y_num
     far_x = (model_bounds["x"] + model_bounds["w"]) * x_den

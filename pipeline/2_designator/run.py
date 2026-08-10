@@ -515,6 +515,15 @@ def cut_region(
             "provenance": padding["provenance"],
         }
     else:
+        # A recovery crop names its own exact final rectangle (see the
+        # docstring above) and so never goes through `apply_padding`, which is
+        # what validates a proposal cut's bounds against the page before
+        # `crop_png` ever sees them. Without an equivalent check here, an
+        # out-of-page or degenerate recovery rectangle reaches `crop_png` and
+        # raises a bare `ValueError` -- which `run_stage` does not catch as a
+        # `ContractError` -- instead of this pipeline's own refusal shape.
+        page_w, page_h = dimensions(page_bytes)
+        geometry.validate_bounds(bounds, page_w, page_h, "recovery bounds")
         final_bounds = bounds
         padding_record = None
 
@@ -1410,8 +1419,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
         recovery_pass(context, args.act, args.recovery_request)
         held = False
-    else:
+    elif args.operation == "initial":
         held = initial_pass(context)
+    else:
+        # A closed set, checked rather than assumed: `--operation` has no
+        # `choices=` at the shared `stage_parser` level (other stages read it
+        # differently), so a typo of "recover" -- or any other value -- would
+        # otherwise fall through to a full `initial_pass` silently instead of
+        # being refused, doing the wrong operation rather than none at all.
+        raise ContractError(f"--operation {args.operation!r} is not one of 'initial' or 'recover'")
 
     context.finish()
     return EXIT_HELD if held else EXIT_COMPLETE

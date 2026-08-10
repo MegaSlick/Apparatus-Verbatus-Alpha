@@ -110,6 +110,19 @@ def test_recovering_the_same_act_twice_refuses_rather_than_cutting_a_duplicate(t
     )
 
 
+def test_an_unrecognized_operation_refuses_rather_than_running_initial_pass(tmp_path):
+    """A typo of "recover" must not silently fall through to a full initial
+    pass -- it must be refused as the unrecognized operation it is."""
+    root = tmp_path / "runs"
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = _run(program, root)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    result = _run("pipeline/2_designator/run.py", root, "--operation", "Recover")
+    assert result.returncode == 2, result.stdout
+    assert "is not one of 'initial' or 'recover'" in result.stderr
+
+
 def _load_designator():
     import importlib.util
 
@@ -209,6 +222,51 @@ def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_p
         if record["subject_id"] == act_id and record["payload"]["origin"] == "recovery"
     ]
     assert recovery_regions == []
+
+
+def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_path):
+    """A recovery crop skips `apply_padding` (it names its own exact final
+    rectangle) and so has no other bounds check before `crop_png` -- which
+    raises a bare `ValueError` `run_stage` does not turn into `EXIT_FATAL`.
+    The recovery path needs its own explicit check to fail the same way every
+    other refusal in this pipeline does."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+        "pipeline/5_recensor/run.py",
+    ):
+        result = _run(program, root)
+        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+
+    from common.contracts.stages import RECENSOR
+    from common.runtree.store import RunTree
+
+    designator = _load_designator()
+    tree = RunTree(root, "r")
+    review = next(
+        record
+        for record in (
+            tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+            for entry in tree.build_manifest(RECENSOR)["artifacts"]
+            if entry["kind"] == "review"
+        )
+        if record["payload"]["act_key"] == "a1"
+    )
+    act_id = review["subject_id"]
+    request_id = review["payload"]["recovery_request_ref"]["relative_path"].rsplit("/", 1)[-1][:-5]
+
+    context = _designator_context(designator, root)
+    for row in context.fixture["recovery"]:
+        if row["act_key"] == "a1":
+            row.update({"x": 0, "y": 0, "w": 10**6, "h": 10**6})
+
+    with pytest.raises(ContractError, match="recovery bounds"):
+        designator.recovery_pass(context, act_id, request_id)
+    context.finish()
 
 
 def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first(tmp_path):
