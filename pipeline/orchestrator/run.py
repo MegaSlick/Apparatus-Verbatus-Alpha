@@ -55,6 +55,7 @@ from common.recovery import (  # noqa: E402
 )
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
+    DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_HELD,
     EXIT_RUN_HALTED,
@@ -205,7 +206,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--witness-context-config",
-        default="config/witness_context.toml",
+        default=str(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH),
         help="the Perlector-owned factual witness-context declaration this run seals",
     )
     parser.add_argument(
