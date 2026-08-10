@@ -334,12 +334,23 @@ def test_a_region_declaring_a_digest_its_crop_does_not_have_cannot_establish(tmp
     assert "naming ink it does not point at" in result.stderr
 
 
-def test_one_crop_named_by_two_regions_is_named_once_among_the_direct_inputs(tmp_path):
-    """Two regions may legitimately resolve to one blob, and the envelope refuses
-    a path listed twice. Blobs are content-addressed, so a recovery crop whose
-    pixels match its proposal crop *is* the same file; combining this record's
-    evidence by path is what keeps such an act establishable rather than refused
-    by its own accounting."""
+def test_one_crop_named_by_two_regions_is_refused_before_the_seal(tmp_path):
+    """Two regions naming one crop path is refused here, not accommodated.
+
+    Blobs are content-addressed, so a recovery crop whose pixels match its
+    proposal crop *is* the same file, and this stage could combine the two
+    regions' evidence by path and seal a record either way. But the Armarium's
+    frozen `verify_established_record` builds its own expected input set as one
+    reference **per region**, undeduplicated, and compares full sorted-list
+    equality — so a record naming fewer distinct paths than it has regions
+    establishes here (`archetypus` exit 0) and is then refused at export
+    (`FatalAccounting: an Archetypus input set does not reconcile to its parent
+    evidence`), after the write-once seal, where it can only be abandoned. The
+    Perlector already refuses this shape at publish
+    (`validate_input_refs`, "input reference ... is listed twice"); refusing it
+    here too closes the gap between the two real refusals instead of sealing an
+    unexportable record in between them.
+    """
 
     def name_the_same_crop_twice(payload):
         regions = payload["basis"]["regions"]
@@ -349,18 +360,12 @@ def test_one_crop_named_by_two_regions_is_named_once_among_the_direct_inputs(tmp
     run_through_recensor(root, "r")
     tree = RunTree(root, "r")
     review = accepted_review(tree)
-    act_id = review["subject_id"]
     _reseal_reading(tree, review, name_the_same_crop_twice)
 
     result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 0, result.stderr
-
-    record = tree.read_artifact(
-        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
-    )
-    crop = record["payload"]["regions"][0]["image_path"]
-    assert [region["image_path"] for region in record["payload"]["regions"]].count(crop) == 2
-    assert [reference["relative_path"] for reference in record["inputs"]].count(crop) == 1
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "already named by region" in result.stderr
 
 
 def test_one_testimonium_cannot_be_repeated_to_make_the_basis_look_larger(tmp_path):

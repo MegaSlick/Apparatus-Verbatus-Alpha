@@ -688,16 +688,35 @@ def _crop_references(context, regions: list[dict], act_id: str) -> list[dict[str
     the record immutable: a record sealed naming a digest its crop does not have
     can only be abandoned with the whole run, never repaired.
 
-    `input_ref` hashes the bytes on disk, so an unreadable crop arrives as
-    `OSError`, outside the `ContractError` family `run_stage` classifies — a bare
-    traceback and exit 1, taking every other act's record with it, for what is as
-    often a pruned blob as a forged reading.
+    `input_ref` hashes the bytes on disk, so an unreadable crop would otherwise
+    arrive as `OSError`, outside the `ContractError` family `run_stage`
+    classifies — a bare traceback and exit 1, taking every other act's record
+    with it, for what is as often a pruned blob as a forged reading. The `except`
+    below converts it, so what actually happens is the `FatalAccounting` message
+    the acceptance test asserts on, not a traceback.
     """
     references = []
+    seen_paths: dict[str, int] = {}
     for index, region in enumerate(regions):
         label = f"accepted reading of {act_id} region {index}"
         _validate_region_fields(region, label)
         image_path = region["image_path"]
+        # The Armarium's frozen `verify_established_record` builds its expected
+        # input set as one reference per region, undeduplicated, and requires
+        # exact equality with what this stage names. Two regions naming one path
+        # would satisfy this stage's own envelope (a content-addressed crop
+        # cannot disagree with itself) but seal a record the Armarium then
+        # refuses at export — after the write-once seal, where it can only be
+        # abandoned, never repaired. Refusing it here matches what the Perlector
+        # already refuses at publish (`validate_input_refs`, one path listed
+        # twice), so the same shape is refused at the same layer end to end.
+        if image_path in seen_paths:
+            raise FatalAccounting(
+                f"{label} names crop {image_path!r}, already named by region "
+                f"{seen_paths[image_path]} of this same reading; one path standing for "
+                "two regions would seal a record its own consumer's accounting cannot reconcile"
+            )
+        seen_paths[image_path] = index
         try:
             reference = context.input_ref(image_path)
         except OSError as error:
@@ -715,13 +734,16 @@ def _crop_references(context, regions: list[dict], act_id: str) -> list[dict[str
 
 
 def _direct_inputs(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Combine the record's required evidence, naming one path only once.
+    """Combine the record's required evidence into one list.
 
-    `validate_input_refs` refuses an envelope that lists a path twice, and a
-    reading may legitimately name the same crop from two regions — or name the
-    review or the Perlectio itself as its crop. Every digest here was read off
-    the same disk moments earlier, so two entries for one path cannot disagree;
-    the only work is the deduplication.
+    `_crop_references` already refuses two regions naming one crop path, so the
+    only remaining way two groups could name one path is the review or the
+    Perlectio itself coinciding with a crop path — which the run tree's own
+    layout (`5_recensor/artifacts/...`, `4_perlector/artifacts/...` and
+    `2_designator/blobs/...` never overlap) makes structurally impossible today.
+    The dedup-by-path stays as the cheap defensive form of that same guarantee:
+    every digest here was read off the same disk moments earlier, so two
+    entries naming one path cannot disagree.
     """
     by_path: dict[str, dict[str, str]] = {}
     for group in groups:
