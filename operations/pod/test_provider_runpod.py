@@ -495,8 +495,37 @@ class _OversizedStream:
 
 
 class _ExactSizedStream:
+    """Exactly the cap, then EOF, serving no more than the bytes it was asked for.
+
+    It used to answer every ``read`` with the full cap regardless of ``amount``,
+    which no stream does and which a reader accumulating short reads correctly
+    reads as an over-cap body.  The case under test is unchanged: a response of
+    exactly ``_MAX_RESPONSE_BYTES`` is allowed through.
+    """
+
+    def __init__(self) -> None:
+        self.remaining = _MAX_RESPONSE_BYTES
+
     def read(self, amount: int) -> bytes:
-        return b"y" * _MAX_RESPONSE_BYTES
+        served = min(amount, self.remaining)
+        self.remaining -= served
+        return b"y" * served
+
+
+class _ShortReadStream:
+    """Serves one small chunk per call, as ``read(amt)`` is documented to be free to."""
+
+    def __init__(self, body: bytes, *, chunk: int) -> None:
+        self.body = body
+        self.chunk = chunk
+        self.offset = 0
+        self.calls = 0
+
+    def read(self, amount: int) -> bytes:
+        self.calls += 1
+        served = self.body[self.offset : self.offset + min(amount, self.chunk)]
+        self.offset += len(served)
+        return served
 
 
 def test_bounded_read_refuses_a_response_over_the_size_cap() -> None:
@@ -507,6 +536,23 @@ def test_bounded_read_refuses_a_response_over_the_size_cap() -> None:
 def test_bounded_read_allows_a_response_exactly_at_the_size_cap() -> None:
     body = _bounded_read(_ExactSizedStream())  # type: ignore[arg-type]
     assert len(body) == _MAX_RESPONSE_BYTES
+
+
+def test_bounded_read_accumulates_a_short_read_instead_of_truncating_it() -> None:
+    """``HTTPResponse.read(amt)`` returns *up to* ``amt`` bytes.
+
+    A single read that stops early would hand `_json` a truncated billing
+    response, which is then refused as malformed -- a money-path answer lost to
+    a transport detail rather than to anything RunPod said.
+    """
+
+    payload = json.dumps([{"id": "pod-1", "amount": "0.42"}]).encode("utf-8")
+    stream = _ShortReadStream(payload, chunk=7)
+
+    body = _bounded_read(stream)  # type: ignore[arg-type]
+
+    assert body == payload
+    assert stream.calls > 1, "the fake never short-read, so the accumulation was not exercised"
 
 
 # -- the live transport's own behaviour ------------------------------------

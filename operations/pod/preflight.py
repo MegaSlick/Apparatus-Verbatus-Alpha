@@ -132,9 +132,22 @@ class SystemGpuProbe:
                 discovery_detail=f"{gpu_detail}; {disk_detail}" if disk_detail else gpu_detail,
             )
 
-    @staticmethod
-    def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(argv, text=True, capture_output=True, check=False)
+    # A hung `nvidia-smi` -- a wedged driver, a card mid-reset -- would otherwise
+    # block preflight forever on a pod that is already billing, and the red
+    # `GpuProfile` path below would never be reached.  `TimeoutExpired` is an
+    # `Exception`, so the handler in `profile` records it in `discovery_detail`
+    # like any other discovery failure.  Found by CodeRabbit on this branch.
+    _RUN_TIMEOUT_SECONDS = 30.0
+
+    @classmethod
+    def _run(cls, argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            argv,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=cls._RUN_TIMEOUT_SECONDS,
+        )
 
 
 def _cuda_version(output: str) -> str | None:

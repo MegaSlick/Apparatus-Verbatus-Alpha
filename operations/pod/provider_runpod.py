@@ -701,14 +701,27 @@ def _unavailable(pod_id: str, window_start: datetime, cutoff: datetime, reason: 
 
 
 def _bounded_read(stream: http.client.HTTPResponse | urllib.error.HTTPError) -> bytes:
-    """Refuse to buffer a response past ``_MAX_RESPONSE_BYTES``, never truncate it silently."""
+    """Refuse to buffer a response past ``_MAX_RESPONSE_BYTES``, never truncate it silently.
 
-    chunk = stream.read(_MAX_RESPONSE_BYTES + 1)
-    if len(chunk) > _MAX_RESPONSE_BYTES:
-        raise ProviderFailure(
-            f"RunPod response exceeded {_MAX_RESPONSE_BYTES} bytes; refusing to buffer it"
-        )
-    return chunk
+    ``HTTPResponse.read(amt)`` is documented as returning *up to* ``amt`` bytes,
+    so one call may return a short read before EOF; a valid billing response
+    under the cap would then reach ``_json`` truncated and be refused as
+    malformed.  CPython's own implementation happens not to short-read here
+    today -- this accumulates against the documented contract rather than
+    against that implementation detail.  Found by CodeRabbit on this branch.
+    """
+
+    parts: list[bytes] = []
+    total = 0
+    while total <= _MAX_RESPONSE_BYTES:
+        chunk = stream.read(_MAX_RESPONSE_BYTES + 1 - total)
+        if not chunk:
+            return b"".join(parts)
+        parts.append(chunk)
+        total += len(chunk)
+    raise ProviderFailure(
+        f"RunPod response exceeded {_MAX_RESPONSE_BYTES} bytes; refusing to buffer it"
+    )
 
 
 def _json(body: bytes, label: str) -> object:

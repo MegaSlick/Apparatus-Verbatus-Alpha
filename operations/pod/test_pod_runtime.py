@@ -29,7 +29,7 @@ from .bootstrap import (
 )
 from .controllers import ControllerResult, ControllerState, LaptopSupervisor, PodDeadmanTimer
 from .fake_provider import FakeProvider
-from .launch import LaunchState, PodRuntime
+from .launch import LaunchState, PodRuntime, _bind_report_path_to_launch
 from .lease import LeaseStore, PodLease
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
@@ -45,7 +45,7 @@ from .models import (
     ProviderStatus,
     SpendRefusal,
 )
-from .pod_timer import TimerContext, run_with_bootstrap
+from .pod_timer import TimerContext, _persist_or_close, run_with_bootstrap
 from .preflight import (
     CacheMismatch,
     GpuProfile,
@@ -1075,6 +1075,105 @@ def test_confirmed_adoption_closes_if_its_lease_cannot_be_recorded(tmp_path: Pat
     assert provider.status(existing.pod_id).presence.value == "absent"
 
 
+def test_an_adoption_lease_that_cannot_be_read_back_closes_the_pod(tmp_path: Path) -> None:
+    """`store.load()` reads a file back off disk, so `None` is a real answer.
+
+    This was an `assert`, which `python -O` removes; a `None` lease then reached
+    controller arming and the durable-store fault surfaced as an arming one.
+    Found by CodeRabbit on this branch.  An adopted pod that cannot be guarded
+    does not keep billing, so this closes it exactly as failed arming does.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    expected = request(clock)
+    existing = provider.create(expected)
+
+    class BlindStore(LeaseStore):
+        def load(self) -> PodLease | None:
+            return None
+
+    class BlindRuntime(PodRuntime):
+        def _store(self, lease_id: str) -> LeaseStore:
+            return BlindStore(self.lease_root / f"{lease_id}.json")
+
+    tokens = iter(("a" * 32, "b" * 32))
+    pod_runtime = BlindRuntime(
+        provider,
+        provider_name="fake",
+        spend_policy=policy(),
+        lease_root=tmp_path,
+        shutdown=shutdown(provider, clock),
+        now=clock.now,
+        token_factory=lambda: next(tokens),
+        controller_armer=FakeControllerArmer(clock, provider),
+    )
+
+    result = pod_runtime.adopt(
+        existing.pod_id,
+        expected=expected,
+        confirmation=adopt_confirmation(existing.pod_id),
+    )
+
+    assert result.state is LaunchState.LEASE_FAILURE
+    assert not result.green
+    assert "could not be read back" in result.detail
+    assert existing.pod_id in provider.terminate_calls
+    assert provider.status(existing.pod_id).presence.value == "absent"
+
+
+def test_a_request_that_cannot_be_sealed_is_named_a_request_refusal_not_a_lease_failure(
+    tmp_path: Path,
+) -> None:
+    """Sealing is request preparation; it never touches the durable store.
+
+    Inside the lease block it reported as LEASE_FAILURE, which names the wrong
+    subsystem on a money path.  Found by CodeRabbit on this branch.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+
+    class UnsealableRuntime(PodRuntime):
+        def _sealed_request(
+            self, request: PodCreateRequest, launch_token: str, estimate: object
+        ) -> PodCreateRequest:
+            raise ValueError("docker_start_cmd carries no --report-path flag")
+
+    tokens = iter(("a" * 32, "b" * 32))
+    pod_runtime = UnsealableRuntime(
+        provider,
+        provider_name="fake",
+        spend_policy=policy(),
+        lease_root=tmp_path,
+        shutdown=shutdown(provider, clock),
+        now=clock.now,
+        token_factory=lambda: next(tokens),
+        controller_armer=FakeControllerArmer(clock, provider),
+    )
+
+    result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_REQUEST
+    assert not result.green
+    assert "--report-path" in result.detail
+    assert list(tmp_path.glob("*.json")) == [], "no lease was armed"
+    assert not any(verb == "create" for verb, _ in provider.calls), "no pod was created"
+
+
+def test_report_path_binding_refuses_a_command_it_cannot_bind(tmp_path: Path) -> None:
+    """`PodCreateRequest` refuses such a command already, so no launch reaches this.
+
+    The helper states its own contract anyway: enforced only at a distance, a
+    bare `tuple.index` failure on a money path names nothing at all.
+    """
+
+    with pytest.raises(ValueError, match="no --report-path flag"):
+        _bind_report_path_to_launch(("python", "-m", "operations.pod.pod_timer"), "a" * 32)
+    with pytest.raises(ValueError, match="carries no value"):
+        _bind_report_path_to_launch(("python", "--report-path"), "a" * 32)
+
+
 def test_an_altered_lease_is_refused_rather_than_acted_on(tmp_path: Path) -> None:
     """A lease says which pod is still billing. An edited one is not evidence."""
 
@@ -1426,6 +1525,52 @@ def test_lease_cannot_construct_verified_phase_from_misbound_close_evidence(
             verified=True,
             now=clock.now(),
         )
+
+
+def test_a_verified_lease_phase_cannot_be_reached_without_naming_a_pod(tmp_path: Path) -> None:
+    """`closed-verified` asserts absence about one exact pod.
+
+    A lease reaching that phase while naming no pod is evidence about nothing,
+    and the binding check skipped itself in exactly that case -- so a close
+    record with no `pod_id` and a lease that never bound one produced a green
+    terminal phase.  Found by CodeRabbit on this branch.  A lease read back off
+    disk runs this same validation, which is what makes it reachable.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.05")
+    close_record = shutdown(provider, clock).close(record, reason="unbound drill").to_record()
+    close_record.pop("pod_id")
+
+    def lease(*, phase: str, close_record: dict[str, object] = close_record) -> PodLease:
+        return PodLease(
+            lease_id="c" * 32,
+            launch_token="c" * 32,
+            provider_name="fake",
+            pod_id=None,
+            volume_id="test-volume",
+            pod_hourly_usd=POD_HOURLY,
+            volume_hourly_usd=VOLUME_HOURLY,
+            created_at=clock.now(),
+            started_at=None,
+            hard_deadline=clock.now() + timedelta(seconds=60),
+            owner_token="laptop",
+            heartbeat_at=clock.now(),
+            phase=phase,
+            close_record=close_record,
+        )
+
+    with pytest.raises(ValueError, match="must name the exact pod"):
+        lease(phase="closed-verified")
+
+    # The unverified path legitimately closes without one: a create that never
+    # bound a pod still has to close, and narrowing that would lose the record.
+    unverified = lease(
+        phase="close-unverified", close_record={**close_record, "state": "unverified"}
+    )
+    assert unverified.phase == "close-unverified" and unverified.pod_id is None
 
 
 def test_status_timeout_reaches_a_named_non_green_shutdown_state() -> None:
@@ -2004,6 +2149,56 @@ def test_pod_timer_report_write_failure_immediately_closes_and_never_returns_gre
     assert provider.status(record.pod_id).presence.value == "absent"
 
 
+def test_a_pod_report_write_that_fails_twice_says_the_receipt_also_failed(
+    tmp_path: Path,
+) -> None:
+    """The fallback receipt is the pod's only durable evidence when the first
+    write fails.  Its own failure used to be swallowed, so an operator finding
+    nothing on the volume could not tell a write that failed twice from one that
+    never ran (GOVERNANCE 2).  Found by CodeRabbit on this branch."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.06")
+    store = LeaseStore(tmp_path / "timer-double-write.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("block report directory", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="fallback receipt also failed"):
+        _persist_or_close(
+            TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
+            blocked_parent / "report.json",
+            {"bootstrap": {"argv": ["true"], "state": "running"}, "close": None, "green": False},
+        )
+    assert provider.status(record.pod_id).presence.value == "absent"
+
+
+def test_a_report_payload_with_no_bootstrap_object_still_closes_the_pod(tmp_path: Path) -> None:
+    """This was an `assert`, which `python -O` removes.  A non-dict then reached
+    `{**bootstrap, ...}` in the close and raised TypeError instead of filing the
+    fallback receipt.  Every caller passes a dict, so the placeholder says the
+    payload was unusable rather than inventing a state nobody observed."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.06")
+    store = LeaseStore(tmp_path / "timer-no-bootstrap.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("block report directory", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="mandatory pod report write failed"):
+        _persist_or_close(
+            TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
+            blocked_parent / "report.json",
+            {"bootstrap": None, "close": None, "green": False},
+        )
+    assert provider.status(record.pod_id).presence.value == "absent"
+
+
 def test_pod_timer_closes_when_bootstrap_exits_early_to_avoid_idle_spend(tmp_path: Path) -> None:
     clock = Clock()
     provider = fake(clock)
@@ -2506,6 +2701,43 @@ def test_system_gpu_probe_returns_red_input_when_nvidia_smi_fails() -> None:
     assert profile.vram_gib == Decimal("0")
     assert profile.disk_gib == Decimal("100")
     assert "nvidia-smi: command not found" in profile.discovery_detail
+
+
+def test_a_hung_nvidia_smi_becomes_a_red_gpu_profile_rather_than_a_wedged_preflight() -> None:
+    """An unbounded `nvidia-smi` never reaches the red `GpuProfile` path below it.
+
+    A wedged driver or a card mid-reset would block preflight forever on a pod
+    that is already billing.  `TimeoutExpired` is an `Exception`, so the same
+    handler records it in `discovery_detail`.  Found by CodeRabbit on this branch.
+    """
+
+    class Disk:
+        free = 100 * 1024**3
+
+    def runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(argv, 30.0)
+
+    profile = SystemGpuProbe(disk_path="/", runner=runner, disk_usage=lambda path: Disk()).profile(
+        "bfloat16"
+    )
+
+    assert profile.name == "GPU discovery unavailable"
+    assert "TimeoutExpired" in profile.discovery_detail
+
+
+def test_the_default_gpu_probe_runner_bounds_the_command_it_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    SystemGpuProbe(disk_path="/")._run(["nvidia-smi"])
+
+    assert seen["timeout"] == SystemGpuProbe._RUN_TIMEOUT_SECONDS
 
 
 def test_system_gpu_probe_preserves_a_disk_measurement_error_when_the_gpu_is_fine() -> None:
