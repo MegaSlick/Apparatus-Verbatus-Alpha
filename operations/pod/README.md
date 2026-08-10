@@ -137,7 +137,11 @@ closes when its child exits. Those integration pieces are therefore blockers bef
 gated demonstration, not capabilities this fake suite proves. A pod-side process may be
 destroyed by its own DELETE before it can observe GET-404, list absence, or lagging billing;
 the real controller design must leave final verification and reconciliation to surviving
-laptop/restart machinery rather than infer it from the pod process.
+laptop/restart machinery rather than infer it from the pod process. If `pod_timer.py`'s
+own startup fails (a missing environment value, a deadline already passed) it has no
+provider object yet and can terminate nothing; the pod goes `EXITED`, which bills volume
+disk at double the running rate, and the laptop supervisor above is the only backstop for
+that case until it exists.
 
 Run the fake checks with:
 
