@@ -1071,8 +1071,14 @@ def test_a_resealed_compatibility_projection_cannot_change_native_testimony(
     assert all(item["payload"]["attempt_ordinal"] == 1 for item in _testimonia(tree))
 
 
-@pytest.mark.parametrize("damage", ("absent", "garbled", "truncated"))
+@pytest.mark.parametrize("damage", ("absent", "garbled", "truncated", "recursion"))
 def test_damaged_attempt_tally_is_unknown_and_refuses_to_add_a_replacement(tmp_path, damage):
+    """`recursion` pins the gap two blind audits both found: `attempt_tally`
+    reads the stored manifest through its own bare `json.loads`, the one JSON
+    reader in this stage that `common/runtree/store.py::_read_json`'s
+    `RecursionError` guard does not cover. A stored manifest replaced with deep
+    enough nesting used to escape as an uncaught traceback (exit 1) instead of
+    the UNKNOWN + hold #23 promises."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     initial = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
     assert initial.returncode == 0, initial.stderr
@@ -1082,6 +1088,11 @@ def test_damaged_attempt_tally_is_unknown_and_refuses_to_add_a_replacement(tmp_p
         manifest_path.unlink()
     elif damage == "garbled":
         manifest_path.write_bytes(b"{")
+    elif damage == "recursion":
+        nesting = 30_000
+        manifest_path.write_bytes(
+            f'{{"deep": {"[" * nesting}"leaf"{"]" * nesting}}}'.encode()
+        )
     else:
         manifest_path.write_bytes(original[:-1])
 

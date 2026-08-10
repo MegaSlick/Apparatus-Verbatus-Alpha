@@ -743,7 +743,13 @@ def attempt_tally(
         stored_path = tree.resolve(tree.manifest_path(ATTESTATORES))
         stored = json.loads(stored_path.read_bytes().decode("utf-8"))
         rebuilt = tree.build_manifest(ATTESTATORES)
-    except (ContractError, OSError, UnicodeDecodeError, ValueError) as error:
+    except (ContractError, OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
+        # RecursionError beside the others for the same reason `_read_json` in
+        # common/runtree/store.py added it: json's scanner recurses per nesting
+        # level, so a stored manifest an attacker or a damaged write replaced with
+        # deeply nested JSON raises it here directly, on this stage's own read,
+        # rather than through the shared reader. Uncaught, that is a traceback
+        # where #23 promises UNKNOWN + hold.
         return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
     if stored != rebuilt:
         return {
