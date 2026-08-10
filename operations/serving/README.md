@@ -26,9 +26,9 @@ one authority behind construction and publication of the identity-bearing
 receipt. Assembly parses each supplied TOML from the hashed bytes and refuses a
 path substitution before any probe, lease, or subprocess action.
 
-Before launch it re-verifies the named snapshot, asserts every exact profile
-package pin, acquires a non-blocking pod/GPU-scoped `flock` lease supplied by
-the caller, and refuses an already-answering loopback endpoint. There is no
+Before launch it asserts every exact profile package pin, re-verifies the
+named snapshot, acquires a non-blocking pod/GPU-scoped `flock` lease supplied
+by the caller, and refuses an already-answering loopback endpoint. There is no
 log-directory default: the pod assembler must give every manager for the same
 card the same stable lock path. The launcher passes that lock descriptor to
 the exact vLLM child, so a controller crash cannot release the lease while its
@@ -146,10 +146,12 @@ names the final successful fixture request, then records manager-owned response
 and output digests alongside the fixture SHA-256 and request counts. It retains
 no page bytes or response text. The image helper canonicalizes one plain JSON
 snapshot before validation and POSTing, so a mutable mapping cannot show the
-guard an image then serialize text-only content. The reader refuses a serving-profile dtype or
-capacity above the measured placement plan before it can launch. The pipeline is intentionally
-untouched and still uses fixture serving details until its owner adopts this
-injected seam.
+guard an image then serialize text-only content. The reader refuses, before it can launch, a
+serving profile whose dtype is not exactly the one preflight measured (no floor exists for any
+other dtype, so this is an exact-match requirement, not a ceiling) or whose capacity —
+memory fraction, context length, pixel budget, batch size — exceeds the measured placement
+plan. The pipeline is intentionally untouched and still uses fixture serving details until its
+owner adopts this injected seam.
 
 A smoke result with no GPU/CPU utilization samples makes preflight red with
 `utilization-missing`; an empty instrument cannot leave as a green measurement.

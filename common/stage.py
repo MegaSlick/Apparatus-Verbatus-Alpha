@@ -390,7 +390,15 @@ class StageContext:
 
 
 def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[str, str]:
-    """Validate a content-addressed reference before sealing it into evidence."""
+    """Validate a content-addressed reference before sealing it into evidence.
+
+    The traversal check below is a shape check on the reference string, not
+    the run tree's own containment guard: nothing here reads a file with this
+    path, and every reader that eventually does must still go through
+    ``RunTree.resolve()`` (``common/runtree/store.py``), which additionally
+    resolves the path and checks it against the tree root — catching, for
+    example, a symlink component this string-only check would miss.
+    """
 
     if not isinstance(value, Mapping) or set(value) != {"relative_path", "sha256"}:
         raise SchemaRefusal(f"serving evidence {label} reference has unknown or missing fields")

@@ -64,6 +64,13 @@ context_cap = 4096
 pixel_cap = 1792
 batch_size = 2
 
+# The id names the card class this tier is planned for, not its literal
+# numeric floor: a measured 64-79 GiB card lands here too, below the "80gb"
+# the name suggests, because 64 GiB is the old pipeline's own next measured
+# boundary and no card in that 64-79 GiB gap is among the rented classes
+# below. Placement itself only ever reads min_vram_gib/max_vram_gib_exclusive
+# (`PlacementTable.choose`, operations/pod/preflight.py) -- the id is a label,
+# read by a human, not a bound checked by code.
 [[tiers]]
 id = "generic-80gb-plus"
 min_vram_gib = 64
