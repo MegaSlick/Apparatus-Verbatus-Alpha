@@ -753,11 +753,25 @@ class OperatorSurface:
             export_payload = self._armarium_export(run_root, recorded_id)
         except Exception as error:
             raise OperatorError(ErrorCode.EXPORT_MISSING, detail=str(error)) from error
-        destination = self.state_root / "exports" / f"{recorded_id}-armarium-base.zip"
+        exports_dir = self.state_root / "exports"
+        staged = exports_dir / f".{recorded_id}-armarium-base.staged"
         try:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            self._write_base_armarium_bundle(run_root, recorded_id, destination)
+            exports_dir.mkdir(parents=True, exist_ok=True)
+            self._write_base_armarium_bundle(run_root, recorded_id, staged)
+            digest = sha256_file(staged)
+            # Named by content, not only by run id: an earlier export's receipt
+            # is immutable and names both this path pattern and its own digest,
+            # so a second export of the same run — after the run tree changed —
+            # must land beside the first rather than overwrite bytes an earlier
+            # receipt still vouches for (GOVERNANCE 4's argument, applied to the
+            # bundle this stage itself produces).
+            destination = exports_dir / f"{recorded_id}-armarium-base-{digest}.zip"
+            if destination.exists():
+                staged.unlink()
+            else:
+                staged.replace(destination)
         except (OSError, zipfile.BadZipFile) as error:
+            staged.unlink(missing_ok=True)
             self._record_failure("export", "local-copy-failed", str(error))
             raise OperatorError(ErrorCode.EXPORT_FAILED, detail=str(error)) from error
         table = reconciliation_table(export_payload)
@@ -770,7 +784,7 @@ class OperatorSurface:
                 "state": "complete",
                 "run_id": recorded_id,
                 "bundle": str(destination),
-                "sha256": sha256_file(destination),
+                "sha256": digest,
                 "reconciliation": table,
                 "assumption": "Spec 11 is not in this tree; this is a copy of the base Armarium evidence, not a Spec 11 product bundle.",
             },

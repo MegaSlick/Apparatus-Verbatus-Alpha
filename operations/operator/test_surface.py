@@ -1345,6 +1345,44 @@ def test_a_held_run_raises_run_held_not_run_failed(
     assert "could not reach" not in failure.value.render()
 
 
+def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An earlier export's receipt names its bundle's path *and* its exact digest.
+
+    Before this fix the bundle path was named by run id alone, so exporting
+    the same run twice — after anything in the run tree changed in between —
+    silently overwrote the first bundle's bytes at the path the first,
+    immutable receipt still vouches for.
+    """
+
+    surface = _surface(tmp_path)
+    launched = _launch(surface, _spend_policy(tmp_path))
+    assert launched.record is not None
+    surface.run(run_id="re-export-run")
+
+    contents = iter([b"first export bytes", b"second export bytes; run tree since changed"])
+
+    def fake_bundle(self, run_root, run_id, destination):  # type: ignore[no-untyped-def]
+        del self, run_root, run_id
+        destination.write_bytes(next(contents))
+
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", fake_bundle)
+
+    first_bundle = surface.export(run_id="re-export-run")
+    first_receipt = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    second_bundle = surface.export(run_id="re-export-run")
+    second_receipt = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+
+    assert first_bundle != second_bundle
+    assert first_bundle.is_file(), "the first bundle must still exist, unmodified"
+    assert first_bundle.read_bytes() == b"first export bytes"
+    assert second_bundle.read_bytes() == b"second export bytes; run tree since changed"
+    assert first_receipt["sha256"] == hashlib.sha256(b"first export bytes").hexdigest()
+    assert first_receipt["sha256"] == sha256_file(first_bundle)
+    assert second_receipt["sha256"] == sha256_file(second_bundle)
+
+
 def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_not_unexpected(
     tmp_path: Path,
 ) -> None:
