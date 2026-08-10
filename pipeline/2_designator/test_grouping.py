@@ -16,6 +16,7 @@ from grouping import (
     find_continuation_candidate,
     group_page,
 )
+from structure import infer_background, primary_scan
 
 from common.contracts.errors import ContractError
 
@@ -127,6 +128,65 @@ def test_a_tall_brace_anchor_links_two_acts_without_merging_their_body_text():
     assert groups[1]["body_members"] == [body_b]
     assert groups[0]["anchors"] == [brace]
     assert groups[1]["anchors"] == [brace]
+    assert "brace-linked" in groups[0]["rationale"]
+    assert "brace-linked" in groups[1]["rationale"]
+
+
+def test_a_real_decoded_brace_page_drives_primary_scan_into_group_page():
+    """The brace fixture above, but through decoded pixels rather than hand-built
+    component dicts.
+
+    Every other test in this file states its geometry directly and never calls
+    `structure.primary_scan` at all -- true of every grouping test in the diff,
+    per spec 06 test 3's own "brace-linked acts fixture" requirement and
+    `run.py::_analyze_page`'s real chain (`primary_scan` -> `group_page`). This
+    is the one place that chain runs over real decoded pixels: a solid margin
+    brace and two solid body blocks, painted onto a page, ink-scanned at
+    `structure`'s own default sensitivity and gap tolerance, and handed to
+    `group_page` with no overrides -- exactly as `run.py::_analyze_page` calls
+    it. If `primary_scan` ever produced components `group_page` did not read as
+    a brace (a scan that over-merges the anchor into a body run, or splits the
+    brace itself into two pieces below `DEFAULT_BRACE_MIN_HEIGHT_PX`), this is
+    the test that would catch it; hand-built component dicts cannot.
+    """
+    width, height = PAGE_W, 100
+    background = 230
+    ink = 40
+    rows = [bytearray([background] * width) for _ in range(height)]
+
+    def paint(x: int, y: int, w: int, h: int) -> None:
+        for row_offset in range(h):
+            row = rows[y + row_offset]
+            for col_offset in range(w):
+                row[x + col_offset] = ink
+
+    # Same geometry as the hand-built brace test above: a margin anchor tall
+    # enough to be a brace, and two body runs it links without merging.
+    brace_bounds = {"x": 2, "y": 20, "w": 15, "h": DEFAULT_BRACE_MIN_HEIGHT_PX + 10}
+    body_a_bounds = {"x": 40, "y": 20, "w": 120, "h": 20}
+    body_b_bounds = {"x": 40, "y": 45, "w": 120, "h": 20}
+    for bounds in (brace_bounds, body_a_bounds, body_b_bounds):
+        paint(bounds["x"], bounds["y"], bounds["w"], bounds["h"])
+
+    background_value = infer_background(width, height, rows)
+    assert background_value == background, "ink must stay the numeric minority for this test"
+    components = primary_scan(width, height, rows, background=background_value)
+    # Three real, independently-scanned ink components -- not the three dicts
+    # a hand-built test would have started from.
+    assert len(components) == 3
+    assert {
+        (c["bounds"]["x"], c["bounds"]["y"], c["bounds"]["w"], c["bounds"]["h"]) for c in components
+    } == {
+        (brace_bounds["x"], brace_bounds["y"], brace_bounds["w"], brace_bounds["h"]),
+        (body_a_bounds["x"], body_a_bounds["y"], body_a_bounds["w"], body_a_bounds["h"]),
+        (body_b_bounds["x"], body_b_bounds["y"], body_b_bounds["w"], body_b_bounds["h"]),
+    }
+
+    groups = group_page(components, width, height)
+    assert len(groups) == 2
+    body_member_bounds = [[m["bounds"] for m in group["body_members"]] for group in groups]
+    assert body_member_bounds == [[body_a_bounds], [body_b_bounds]]
+    assert all(group["anchors"][0]["bounds"] == brace_bounds for group in groups)
     assert "brace-linked" in groups[0]["rationale"]
     assert "brace-linked" in groups[1]["rationale"]
 
