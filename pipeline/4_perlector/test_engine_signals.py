@@ -1,5 +1,7 @@
 """The two new fixture scenarios that exercise the truncation detector and the
-no-readable-text path end to end, over the real orchestrator.
+no-readable-text path end to end, over the real orchestrator; plus the older
+`truncated-reading` scenario's own truncation record, which the detector must
+not contradict.
 """
 
 import subprocess
@@ -128,3 +130,29 @@ def test_the_second_act_is_unaffected_by_the_first_acts_declared_failure(tmp_pat
             if entry["kind"] == "archetypus"
         }
         assert "a2" in established
+
+
+def test_a_declared_truncated_reading_never_carries_a_complete_truncation_record(tmp_path):
+    """`truncated-reading` declares its outcome directly (`declared_reading_failure`,
+    not the engine's stop-reason), over text that looks clean by every computed
+    signal -- nothing about *why* the fixture declares this reading failed is
+    expressed in its shape. The published record must not say the opposite of
+    what it declares: HANDOFF.md is explicit that "outcome == 'truncated'
+    therefore means 'not established complete'", and the truncation field is
+    where a confirmed cut-off and an honest ambiguity are told apart, never
+    where the record contradicts its own outcome."""
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "truncated-reading")
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(root, "r")
+    reading = _perlectio_for(tree, "a1")
+    assert reading["outcome"] == "truncated"
+    assert reading["payload"]["truncation"]["classification"] != "complete"
+    # The computed signals are still recorded exactly as measured -- only the
+    # classification is held back from claiming a completeness nothing confirmed.
+    assert reading["payload"]["truncation"]["signals"] == {
+        "stop_reason_declared": "stop",
+        "unclosed_structure": False,
+        "length_suspicious": False,
+        "ends_abruptly": False,
+    }

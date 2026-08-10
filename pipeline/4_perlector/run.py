@@ -508,6 +508,13 @@ def validate_reading_payload(payload: dict, *, outcome: str, fields: frozenset) 
         raise SchemaRefusal(
             "a truncated or unknown attempt cannot carry the completed outcome 'read'"
         )
+    if outcome == "truncated" and payload["truncation"]["classification"] == truncation.COMPLETE:
+        raise SchemaRefusal(
+            "a Perlectio with outcome 'truncated' cannot carry a 'complete' truncation "
+            "classification; outcome == 'truncated' means 'not established complete', and "
+            "the truncation field is where that is confirmed or held unknown, never "
+            "contradicted"
+        )
     annotations.validate_annotations(payload, outcome=outcome)
 
 
@@ -523,6 +530,30 @@ def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, t
     if text == "":
         return "no-readable-text"
     return "read"
+
+
+def _reconciled_truncation(*, declared_failure: str | None, truncation_record: dict) -> dict:
+    """Keep the published truncation record from contradicting a declared failure.
+
+    `declared_reading_failure` stands in for a real engine's own report that a
+    reading did not complete (its own docstring: "the fixture is the authority
+    on what a scenario does"). When that authority has already forced the
+    outcome to `truncated`, the three computed signals can still land on
+    `complete` -- the text this scenario carries looks clean by every heuristic,
+    because nothing about *why* it failed is expressed in its shape. Publishing
+    that as `complete` would contradict the outcome outright: HANDOFF.md is
+    explicit that "outcome == 'truncated' therefore means 'not established
+    complete'". The computed signals are kept exactly as measured -- they are
+    honest facts about this candidate text and the reader's own stop-reason --
+    only the classification is raised to `unknown`, because the instrument
+    itself did not independently confirm a cutoff; something outside it did.
+    """
+    if (
+        declared_failure == "truncated"
+        and truncation_record["classification"] == truncation.COMPLETE
+    ):
+        return {**truncation_record, "classification": truncation.UNKNOWN}
+    return truncation_record
 
 
 def _publish_lectio_nuda(
@@ -746,8 +777,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # read, not that the fixture's normal act text happens to still apply.
         declared_failure = declared_reading_failure(context, act["act_key"])
         reading = "" if declared_failure == "no-readable-text" else result["text"]
-        truncation_record = truncation.classify(
-            reading, region_pixels=region_pixels, stop_reason=result["stop_reason"]
+        truncation_record = _reconciled_truncation(
+            declared_failure=declared_failure,
+            truncation_record=truncation.classify(
+                reading, region_pixels=region_pixels, stop_reason=result["stop_reason"]
+            ),
         )
         outcome = _resolve_outcome(
             declared_failure=declared_failure, truncation_record=truncation_record, text=reading

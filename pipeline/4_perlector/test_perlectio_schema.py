@@ -212,6 +212,17 @@ def test_a_truncated_classification_cannot_publish_as_a_completed_read(published
         _validate(payload)
 
 
+def test_a_complete_classification_cannot_publish_as_a_truncated_outcome(published_payload):
+    """The reverse direction of the check above. `outcome == 'truncated'` means
+    'not established complete' (HANDOFF.md, verbatim); a published record
+    claiming both at once is the exact self-contradiction the truncation field
+    exists to rule out, whichever direction it is written in."""
+    payload = copy.deepcopy(published_payload)
+    assert payload["truncation"]["classification"] == "complete"
+    with pytest.raises(SchemaRefusal, match="cannot carry a 'complete' truncation"):
+        _validate(payload, outcome="truncated")
+
+
 def test_an_empty_text_cannot_publish_as_a_completed_read(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["text"] = ""
