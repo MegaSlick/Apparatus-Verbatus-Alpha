@@ -128,9 +128,13 @@ refuses by name.
 ```
 
 Computed strictly after the reading is fixed (`dissent.py`), over a
-whitespace-collapsed comparison view of both sides. **Pinned forever: equality
-only, never a distance metric** — no per-chair parameter, no similarity
-threshold. `departed` is the view comparison; `departed_raw` is the untouched
+Unicode-NFC-normalized, whitespace-collapsed comparison view of both sides —
+NFC first, so a precomposed accented character and the same character spelled
+as a base letter plus a combining mark compare equal, which matters for
+diacritic-heavy parish-register text where an OCR engine and a witness model
+are not guaranteed to agree on normalization form for the same ink. **Pinned
+forever: equality only, never a distance metric** — no per-chair parameter, no
+similarity threshold. `departed` is the view comparison; `departed_raw` is the untouched
 raw-string comparison, kept alongside because a normalization that dropped
 characters on either side can otherwise hide whether the raw strings actually
 agreed. A witness whose declared format cannot yet be reduced to a comparison

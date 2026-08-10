@@ -3,6 +3,8 @@ metric; a raw-string cross-check beside the normalized one; an honest
 `"unknown"` for a witness format the comparator cannot yet reduce.
 """
 
+import unicodedata
+
 import dissent
 import pytest
 
@@ -18,6 +20,33 @@ def test_comparison_view_never_folds_case():
     formatting artifact this normalization may erase."""
     view = dissent.comparison_view("Alpha")
     assert view["normalized"] == "Alpha"
+
+
+def test_comparison_view_treats_precomposed_and_decomposed_accents_as_equal():
+    """A precomposed 'e with acute' and a bare 'e' plus a combining acute
+    render identically and are the same ink -- an OCR engine and a witness
+    model are not guaranteed to agree on which Unicode form they emit for the
+    same character, and parish-register French is full of exactly this."""
+    precomposed = unicodedata.normalize("NFC", "baptisé")
+    decomposed = unicodedata.normalize("NFD", precomposed)
+    assert precomposed != decomposed, "the fixture must actually differ at the codepoint level"
+    assert (
+        dissent.comparison_view(precomposed)["normalized"]
+        == dissent.comparison_view(decomposed)["normalized"]
+    )
+
+
+def test_a_normalization_form_difference_alone_produces_no_dissent():
+    reading = unicodedata.normalize("NFC", "baptisé le premier février")
+    reported = unicodedata.normalize("NFD", reading)
+    rows = dissent.dissent_against(
+        reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
+    )
+    assert rows[0]["departed"] is False
+    assert rows[0]["departed_raw"] is True, (
+        "the raw strings really do differ codepoint-for-codepoint; only the "
+        "normalized view is expected to treat them as the same ink"
+    )
 
 
 def test_a_witness_that_agrees_after_whitespace_normalization_departs_only_raw():

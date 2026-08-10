@@ -45,6 +45,7 @@ thing a reviewer should refuse if it appears.
 
 from __future__ import annotations
 
+import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -53,11 +54,21 @@ from common.stage import WITNESS_READING_OUTCOMES
 
 
 def comparison_view(text: str) -> dict[str, object]:
-    """A loss-accounted normalization: whitespace-collapsed text, and what that
-    collapse dropped, so the normalization is honest about what it discarded
-    rather than silently lossy. Case is never folded -- a case difference is a
-    real disagreement about the ink, not a formatting artifact."""
-    normalized = " ".join(text.split())
+    """A loss-accounted normalization: Unicode-canonicalized, whitespace-collapsed
+    text, and what that collapse dropped, so the normalization is honest about
+    what it discarded rather than silently lossy. Case is never folded -- a case
+    difference is a real disagreement about the ink, not a formatting artifact.
+
+    NFC normalization runs first. A precomposed "e with acute" and a bare "e"
+    followed by a combining acute accent render identically and are the same
+    ink, but compare unequal codepoint-by-codepoint -- an OCR engine and a
+    witness model are not guaranteed to emit the same normalization form for
+    the same character, and parish-register French is exactly the kind of text
+    this would otherwise misclassify as dissent. Unlike case-folding, this
+    discards no information about what was read: NFC is a lossless
+    re-encoding of the same character, not a judgement about it.
+    """
+    normalized = " ".join(unicodedata.normalize("NFC", text).split())
     return {"normalized": normalized, "dropped_characters": len(text) - len(normalized)}
 
 
