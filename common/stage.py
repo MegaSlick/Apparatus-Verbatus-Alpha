@@ -45,6 +45,13 @@ EXIT_COMPLETE = 0
 EXIT_FATAL = 2
 EXIT_HELD = 3
 
+# Never a stage's own exit code, only the orchestrator's: only that process
+# decides whether to invoke another stage, so only it can halt a run for the
+# run-level hard-failure cap. Defined beside the three above, not in the
+# orchestrator module, so nothing can silently pick a fourth value that
+# collides with one of these.
+EXIT_RUN_HALTED = 4
+
 DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "pdf_render.toml"
 
 # The witness outcomes that mean a chair actually served, and therefore that a

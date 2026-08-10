@@ -57,6 +57,7 @@ from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    EXIT_RUN_HALTED,
     current_recovery_request,
     latest_attempt,
     load_fixture,
@@ -64,13 +65,6 @@ from common.stage import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-
-# The orchestrator's own exit code, never a stage's: only this process decides
-# whether to invoke another stage, so only it can halt a run for the run-level
-# cap. A distinct code keeps that outcome distinguishable from "a stage crashed"
-# (`EXIT_FATAL`) and from the ordinary "some acts are held" (`EXIT_HELD`) a
-# working pipeline produces every day.
-EXIT_RUN_HALTED = 4
 
 # The pipeline in flow order. The door is a program of the Exemplar's directory
 # because it owns no directory of its own.
