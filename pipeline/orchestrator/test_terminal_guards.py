@@ -283,9 +283,15 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     monkeypatch.setattr(
         armarium,
         "build_armarium_bundle",
+        # Coherent with the `run_aggregate` stub above: the real code folds the
+        # aggregate's reasons into the ledger, so a `run_aggregate` of "complete"
+        # beside a manifest `claims.status` of "partial" is a combination the real
+        # code makes impossible. This control test only checks that the fake
+        # context can complete at all, so nothing was ever proved by the mismatch
+        # -- but an incoherent stub reads as a real case to a later reader.
         lambda *_args: SimpleNamespace(
             data=b"synthetic bundle",
-            manifest={"self_hash": "c" * 64, "claims": {"status": "partial"}},
+            manifest={"self_hash": "c" * 64, "claims": {"status": "complete"}},
         ),
     )
 
