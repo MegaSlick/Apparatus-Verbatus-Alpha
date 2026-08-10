@@ -64,12 +64,17 @@ def comparison_view(text: str) -> dict[str, object]:
     ink, but compare unequal codepoint-by-codepoint -- an OCR engine and a
     witness model are not guaranteed to emit the same normalization form for
     the same character, and parish-register French is exactly the kind of text
-    this would otherwise misclassify as dissent. Unlike case-folding, this
-    discards no information about what was read: NFC is a lossless
-    re-encoding of the same character, not a judgement about it.
+    this would otherwise misclassify as dissent.
+
+    **`dropped_characters` measures the collapse alone, from the composed
+    string.** NFC discards nothing -- it re-encodes a character, it does not
+    remove one -- so composing four combining marks away is not four characters
+    lost, and charging them to the loss account would put a wrong number on
+    every diacritic-heavy act in the corpus this project exists to read.
     """
-    normalized = " ".join(unicodedata.normalize("NFC", text).split())
-    return {"normalized": normalized, "dropped_characters": len(text) - len(normalized)}
+    composed = unicodedata.normalize("NFC", text)
+    normalized = " ".join(composed.split())
+    return {"normalized": normalized, "dropped_characters": len(composed) - len(normalized)}
 
 
 def departures(reading: str, reported: str) -> list[dict[str, dict[str, int]]]:
@@ -244,8 +249,10 @@ def validate_dissent(rows: Any, *, text: str, basis_testimonia: list[dict]) -> N
                 row["departed"] and not row["departed_raw"]
             ):
                 raise SchemaRefusal(f"dissent[{index}] contradicts its own departure spans")
-            expected_reading_loss = len(text) - len(comparison_view(text)["normalized"])
-            if loss["reading_dropped_characters"] != expected_reading_loss:
+            # Asked of `comparison_view`, never re-derived here: a second copy
+            # of the formula agrees with the first only until one of them is
+            # corrected.
+            if loss["reading_dropped_characters"] != comparison_view(text)["dropped_characters"]:
                 raise SchemaRefusal(
                     f"dissent[{index}] misstates the Perlectio comparison view's loss"
                 )

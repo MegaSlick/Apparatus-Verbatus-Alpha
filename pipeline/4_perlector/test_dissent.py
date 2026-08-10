@@ -36,6 +36,22 @@ def test_comparison_view_treats_precomposed_and_decomposed_accents_as_equal():
     )
 
 
+def test_composing_an_accent_is_not_counted_as_a_dropped_character():
+    """`dropped_characters` is the whitespace collapse's account and nothing
+    else. NFC re-encodes a character, it does not remove one, so a decomposed
+    witness report must show zero loss -- otherwise every diacritic-heavy act
+    in a French parish register carries a loss figure that is simply wrong, and
+    a reader weighing `departed` against it is misled on exactly the text this
+    normalization was added for."""
+    decomposed = unicodedata.normalize("NFD", "baptisé le premier février")
+    composed = unicodedata.normalize("NFC", decomposed)
+    assert len(decomposed) > len(composed), "the fixture must actually decompose"
+    assert dissent.comparison_view(decomposed)["dropped_characters"] == 0
+
+    # And a real collapse is still counted, over the composed string.
+    assert dissent.comparison_view(f"{decomposed}  x")["dropped_characters"] == 1
+
+
 def test_a_normalization_form_difference_alone_produces_no_dissent():
     reading = unicodedata.normalize("NFC", "baptisé le premier février")
     reported = unicodedata.normalize("NFD", reading)

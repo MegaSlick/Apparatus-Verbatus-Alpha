@@ -301,3 +301,24 @@ ever have recorded for a real reading.
   stage's `outcome`/`gaps`/`truncation` give Archetypus everything it would need
   to build that enum; wiring it is Archetypus's own file, owned by another lane
   this round.
+- **No producer emits an `uncertain_span`.** `run.py` writes `uncertain_spans: []` on
+  every reading, primed and nuda. Spec 08's output contract asks for "`uncertain` spans —
+  read, with alternatives and confidence noted"; what exists here is the validator and
+  its schema, which a real reader can populate without this stage's shape changing. The
+  `FixtureReader` has nothing to be uncertain *about*, and emitting one anyway would be
+  manufactured evidence.
+- **`gaps` and `uncertain_spans` reach no consumer.** Neither word appears in
+  `pipeline/6_archetypus/run.py` or `pipeline/7_armarium/run.py`. Spec 08's own test 8 —
+  "spans and gaps round-trip; export-layer projection renders them without touching the
+  text" — is therefore not exercisable anywhere yet, and a gap's witness evidence, which
+  spec 08 wants displayable as "⟨illegible — witnesses agree: …⟩", stops at this stage.
+  The projection is the export layer's (spec 11); the carrying is Archetypus's file.
+- **Spec 08's contextual-suggestion flag is not built.** "A contextual suggestion (a year
+  that must be 1805) may ride as a flag while the text stays what the pixels support" —
+  the closed `_PERLECTIO_FIELDS` set has no field that could carry one, and nothing here
+  produces one.
+- **A truncated or unknown reading is held, not retried.** Spec 08 asks that such an
+  attempt be "recorded, retried within the recovery budget, never accepted"; the Recensor
+  routes it to `held-for-review` instead. Nothing is lost and no stale text is
+  established — the safe half of the requirement holds — but the bounded retry the spec
+  names is the Recensor's own file and has not been built.
