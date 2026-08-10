@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.errors import FatalAccounting
-from common.contracts.stages import DESIGNATOR
+from common.contracts.stages import DESIGNATOR, RECENSOR
 from common.imaging import encode_grayscale_png
 from common.runtree.store import RunTree
 
@@ -298,6 +298,51 @@ def test_page_coverage_for_reads_every_page_an_acts_own_regions_touch(tmp_path):
     assert flagged({1: {"flagged": True}, 2: {"flagged": True}}) == [1, 2]
     # A page with no finding at all (never checked) is never treated as flagged.
     assert flagged({}) == []
+
+
+def test_a_flagged_page_holds_every_act_that_touches_it_through_main(tmp_path, monkeypatch):
+    """The one consequence of this whole instrument -- `flagged_pages` routing an
+    act to `held-for-review`, and gating `confirmed-blank` -- that no test reached
+    through `main()` before this one. The skeleton's synthetic Designator can
+    never produce a genuinely short region set (see the module docstring), so
+    `page_coverage_findings` itself is substituted with one that flags every
+    page it finds, on a real run tree built through the real Perlector -- the
+    same technique four other test files in this directory already use to load
+    this module, applied here to drive the wiring rather than the arithmetic.
+    """
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+    ):
+        _invoke(root, "r", "happy", program)
+
+    def flags_every_page(context):
+        return {ordinal: {"flagged": True} for ordinal in RUN.regions_by_source_page(context)}
+
+    monkeypatch.setattr(RUN, "page_coverage_findings", flags_every_page)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run.py", "--run-root", str(root), "--run-id", "r", "--scenario", "happy"],
+    )
+    exit_code = RUN.main()
+    assert exit_code == RUN.EXIT_HELD
+
+    tree = RunTree(root, "r")
+    reviews = [
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review"
+    ]
+    assert {review["payload"]["act_key"] for review in reviews} == {"a1", "a2"}
+    for review in reviews:
+        assert review["outcome"] == "held-for-review"
+        assert review["payload"]["page_coverage"]["flagged_pages"]
+        assert "carry ink outside every region currently cut" in review["payload"]["reason"]
 
 
 if __name__ == "__main__":
