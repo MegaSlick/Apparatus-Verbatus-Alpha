@@ -10,9 +10,10 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import IO, Protocol
 
 from .errors import ProcessLaunchError
 
@@ -123,6 +124,7 @@ class SubprocessLauncher:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         if any(not isinstance(fd, int) or isinstance(fd, bool) or fd < 0 for fd in inheritable_fds):
             raise ProcessLaunchError("inherited file descriptors must be non-negative integers")
+        handle: IO[bytes] | None = None
         try:
             # Request the owner-only mode at creation rather than open-then-chmod:
             # the latter leaves the file briefly at the umask-derived default mode
@@ -139,9 +141,8 @@ class SubprocessLauncher:
                 pass_fds=inheritable_fds,
             )
         except (OSError, ValueError) as error:
-            try:
-                handle.close()  # type: ignore[name-defined]
-            except (NameError, OSError):
-                pass
+            if handle is not None:
+                with suppress(OSError):
+                    handle.close()
             raise ProcessLaunchError(f"could not launch vLLM argv: {error}") from error
         return PopenServerProcess(process, log_path, handle)

@@ -122,6 +122,4 @@ class FileResidencyLease:
             raise ResidencyError(
                 f"could not acquire serving residency lease {self.path}: {error}"
             ) from error
-        if handle is None:  # pragma: no cover - defensive narrowing for static readers
-            raise ResidencyError(f"could not acquire serving residency lease {self.path}")
         return _FileResidencyHandle(self.path, handle)

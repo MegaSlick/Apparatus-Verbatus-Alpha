@@ -84,33 +84,16 @@ class ProbeSpec:
     _canonical_payload: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.payload, Mapping):
-            raise ServingConfigurationError("readiness probe payload must be an object")
-        try:
-            canonical_payload = json.dumps(
-                _json_copy(self.payload),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            )
-            normalized_payload = json.loads(canonical_payload)
-        except (TypeError, ValueError, json.JSONDecodeError) as error:
-            raise ServingConfigurationError(
-                f"readiness probe payload must be JSON-compatible: {error}"
-            ) from error
-        if not isinstance(normalized_payload, dict):  # defensive after Mapping validation
-            raise ServingConfigurationError("readiness probe payload must encode to an object")
+        normalized_payload, canonical_payload = seal_json_object(
+            self.payload, label="readiness probe payload"
+        )
         object.__setattr__(self, "payload", MappingProxyType(normalized_payload))
         object.__setattr__(self, "_canonical_payload", canonical_payload)
 
     def request_payload(self) -> Mapping[str, object]:
         """Return the sealed request, unaffected by mutation of its public projection."""
 
-        payload = json.loads(self._canonical_payload)
-        if not isinstance(payload, dict):  # pragma: no cover - set only above
-            raise ServingConfigurationError("sealed readiness probe is not an object")
-        return payload
+        return json.loads(self._canonical_payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -610,20 +593,44 @@ def _nonnegative_int(value: Any, field: str) -> int:
     return value
 
 
-def _json_copy(value: object) -> object:
-    """Copy and validate the JSON data sealed into a readiness probe."""
+def seal_json_object(value: object, *, label: str) -> tuple[dict[str, object], str]:
+    """Materialize one caller-supplied JSON object, returning both of its forms.
 
+    Every request payload this package accepts — a readiness probe from the
+    catalogue, an adapter calibration, a golden-page request — is frozen here
+    exactly once, and both the validators and the eventual POST read that one
+    snapshot.  A stateful ``Mapping`` can otherwise show an image to a validator
+    and serialize text-only content afterwards.  The canonical string is
+    returned alongside so a sealed payload can be rebuilt later without keeping
+    a mutable object alive.
+    """
+
+    try:
+        canonical = json.dumps(
+            _json_copy(value, label),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        snapshot = json.loads(canonical)
+    except (TypeError, ValueError) as error:
+        raise ServingConfigurationError(f"{label} must be JSON-compatible: {error}") from error
+    if not isinstance(snapshot, dict):
+        raise ServingConfigurationError(f"{label} must encode to a JSON object")
+    return snapshot, canonical
+
+
+def _json_copy(value: object, label: str) -> object:
     if isinstance(value, Mapping):
         result: dict[str, object] = {}
         for key, item in value.items():
             if not isinstance(key, str):
-                raise ServingConfigurationError("readiness probe object keys must be strings")
-            result[key] = _json_copy(item)
+                raise ServingConfigurationError(f"{label} object keys must be strings")
+            result[key] = _json_copy(item, label)
         return result
     if isinstance(value, (list, tuple)):
-        return [_json_copy(item) for item in value]
+        return [_json_copy(item, label) for item in value]
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    raise ServingConfigurationError(
-        f"readiness probe payload has non-JSON value {type(value).__name__}"
-    )
+    raise ServingConfigurationError(f"{label} has non-JSON value {type(value).__name__}")

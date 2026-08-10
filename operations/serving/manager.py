@@ -40,6 +40,7 @@ from .config import (
     ServingProfile,
     ServingRecipes,
     model_and_tokenizer_pins,
+    seal_json_object,
 )
 from .errors import (
     AdapterActivityError,
@@ -165,23 +166,9 @@ class AdapterCalibration:
             raise ServingConfigurationError(
                 "adapter calibration fixture_sha256 must be a lowercase SHA-256"
             )
-        if not isinstance(self.payload, Mapping):
-            raise ServingConfigurationError("adapter calibration payload must be an object")
-        try:
-            canonical_payload = json.dumps(
-                _json_copy(self.payload),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            )
-            normalized_payload = json.loads(canonical_payload)
-        except (TypeError, ValueError, json.JSONDecodeError) as error:
-            raise ServingConfigurationError(
-                f"adapter calibration payload must be JSON-compatible: {error}"
-            ) from error
-        if not isinstance(normalized_payload, dict):  # defensive after Mapping validation
-            raise ServingConfigurationError("adapter calibration payload must encode to an object")
+        normalized_payload, canonical_payload = seal_json_object(
+            self.payload, label="adapter calibration payload"
+        )
         # The public projection is useful for diagnostics/tests, but actual
         # requests are rebuilt from `_canonical_payload` below.  Mutating a
         # nested list/dict on this projection therefore cannot swap in a remote
@@ -207,8 +194,6 @@ class AdapterCalibration:
         """Return a fresh, revalidated request from the sealed calibration bytes."""
 
         payload = json.loads(self._canonical_payload)
-        if not isinstance(payload, dict):  # pragma: no cover - set only above
-            raise ServingConfigurationError("sealed adapter calibration is not an object")
         if self.requires_image:
             image_bytes = _active_chat_image_bytes(payload, label="image adapter calibration")
             if hashlib.sha256(image_bytes).hexdigest() != self.fixture_sha256:
@@ -381,7 +366,10 @@ class ServiceHandle:
             raise ServingConfigurationError(
                 "golden-page fixture requests must use the chat-completions endpoint"
             )
-        sealed_payload = _seal_json_request_payload(payload, label="golden-page request")
+        # Validate and dispatch one ordinary-dict snapshot: a custom or
+        # later-mutated Mapping must not present an image here and then
+        # serialize as a text-only request inside ``request_body``.
+        sealed_payload, _ = seal_json_object(payload, label="golden-page request")
         fixture_digest = _fixture_sha256(fixture)
         image_digest = hashlib.sha256(
             _active_chat_image_bytes(sealed_payload, label="golden-page request")
@@ -390,9 +378,6 @@ class ServiceHandle:
             raise ServingConfigurationError(
                 "golden-page request image bytes do not match its supplied local fixture"
             )
-        # Validate and dispatch the same ordinary-dict snapshot.  A custom or
-        # later-mutated Mapping must not present an image during validation then
-        # serialize as a text-only request in ``request_body``.
         result = self.request(kind, sealed_payload)
         self._fixture_requests_completed += 1
         self._last_fixture_request_sha256 = fixture_digest
@@ -617,18 +602,18 @@ class ServingManager:
                 started_at=started_at,
             )
             sealed_audit = _immutable_json_value(audit)
-            if not isinstance(sealed_audit, Mapping):  # pragma: no cover - audit is an object above
-                raise ReceiptPublicationError("serving launch audit is not an object")
+            publication_audit, _ = seal_json_object(audit, label="serving launch audit")
             try:
-                publication_audit = _json_copy(sealed_audit)
-                if not isinstance(publication_audit, dict):  # pragma: no cover - copied object
-                    raise ReceiptPublicationError("serving launch audit is not an object")
-                reference = self.receipt_publisher.publish(receipt, publication_audit)
+                publication = self.receipt_publisher.publish(receipt, publication_audit)
             except Exception as error:
                 raise ReceiptPublicationError(
                     f"receipt publisher refused ready service: {error}"
                 ) from error
-            publication = _publication_references(reference)
+            if not isinstance(publication, ReceiptPublication):
+                raise ReceiptPublicationError(
+                    "receipt publisher must return receipt, durable launch-audit, "
+                    "and combined evidence references"
+                )
             handle = ServiceHandle(
                 self,
                 identity,
@@ -646,12 +631,12 @@ class ServingManager:
             # The chair boundary has already named this failure. If cleanup is
             # also unverified, both facts must leave through the one refusal
             # the registry raises; a second call would mask the first.
-            cleanup_error = self._cleanup_unready(process, endpoint)
+            cleanup_error = self._attempt_cleanup(process, endpoint)
             if cleanup_error is not None:
                 self._refuse(identity, error, also=cleanup_error)
             raise
         except ServingError as error:
-            self._refuse(identity, error, also=self._cleanup_unready(process, endpoint))
+            self._refuse(identity, error, also=self._attempt_cleanup(process, endpoint))
             raise AssertionError(
                 "registry refusal returned unexpectedly"
             ) from error  # pragma: no cover
@@ -659,7 +644,7 @@ class ServingManager:
             self._refuse(
                 identity,
                 ProcessLaunchError(f"unexpected serving start failure: {error}"),
-                also=self._cleanup_unready(process, endpoint),
+                also=self._attempt_cleanup(process, endpoint),
             )
             raise AssertionError(
                 "registry refusal returned unexpectedly"
@@ -668,7 +653,7 @@ class ServingManager:
             # KeyboardInterrupt/SystemExit must not strand a child between
             # launch and handle publication. Preserve the control-flow signal
             # after exact cleanup; if cleanup is also unverified, report both.
-            cleanup_error = self._cleanup_unready(process, endpoint)
+            cleanup_error = self._attempt_cleanup(process, endpoint)
             if cleanup_error is not None:
                 raise ServiceStopError(
                     "serving start was interrupted and cleanup could not be verified: "
@@ -682,11 +667,7 @@ class ServingManager:
         """Send a regular non-streaming request to the handle's exact served alias."""
 
         self._require_active(handle)
-        if handle.process.poll() is not None:
-            raise ReadinessError(
-                "VLLM_PROCESS_EXITED",
-                f"owned process pid={handle.process.pid} exited with {handle.process.poll()}",
-            )
+        self._assert_process_live(handle.process)
         result = self._post_probe(
             endpoint=handle.endpoint,
             kind=kind,
@@ -1047,19 +1028,6 @@ class ServingManager:
             raise ProcessLaunchError("serving residency lease returned an invalid child descriptor")
         return descriptor
 
-    def _cleanup_unready(
-        self, process: ServerProcess | None, endpoint: str
-    ) -> ServiceStopError | None:
-        """Stop a failed launch and release its lease only when absence is proven.
-
-        Returning a stop failure rather than suppressing it is essential: an
-        unknown still-live child is not secondary to the readiness/publisher
-        problem that exposed it.  Its held lease keeps the single-resident rule
-        intact until a later exact stop has verified it is gone.
-        """
-
-        return self._attempt_cleanup(process, endpoint)
-
     def _attempt_cleanup(
         self, process: ServerProcess | None, endpoint: str
     ) -> ServiceStopError | None:
@@ -1072,6 +1040,11 @@ class ServingManager:
         :meth:`recover_failed_start` can retry exactly this same cleanup;
         recording them again with the same values on that retry's own failure
         is a no-op, not a second distinct effect.
+
+        The stop failure is returned rather than raised or suppressed: an
+        unknown still-live child is not secondary to the readiness or publisher
+        problem that exposed it, and both facts have to reach the one refusal
+        the registry raises (GOVERNANCE 2).
         """
 
         try:
@@ -1237,9 +1210,12 @@ def render_vllm_argv(
             "--tokenizer-revision",
             tokenizer_revision,
         ]
+    # An adapted chair registers its own alias through `--lora-modules` below,
+    # so the API identity of the served weights is the base chair's; an
+    # unadapted chair is itself the API identity.
     argv += [
         "--served-model-name",
-        base_profile.served_model_id,
+        base_profile.served_model_id if adapter_snapshot is not None else profile.served_model_id,
         "--dtype",
         profile.dtype,
         "--seed",
@@ -1297,10 +1273,6 @@ def render_vllm_argv(
             if profile.enable_tower_connector_lora
             else "--no-enable-tower-connector-lora"
         )
-    else:
-        # In the unadapted case the requested chair is the API identity.
-        index = argv.index("--served-model-name")
-        argv[index + 1] = profile.served_model_id
     return tuple(argv)
 
 
@@ -1336,14 +1308,6 @@ def _fatal_log_signature(tail: str) -> str | None:
     return None
 
 
-def _publication_references(value: ReceiptPublication) -> ReceiptPublication:
-    if isinstance(value, ReceiptPublication):
-        return value
-    raise ReceiptPublicationError(
-        "receipt publisher must return receipt, durable launch-audit, and combined evidence references"
-    )
-
-
 def _immutable_reference(value: Mapping[str, str], label: str) -> Mapping[str, str]:
     if not isinstance(value, Mapping) or set(value) != {"relative_path", "sha256"}:
         raise ReceiptPublicationError(f"receipt publisher returned no {label} reference")
@@ -1364,19 +1328,8 @@ def _immutable_reference(value: Mapping[str, str], label: str) -> Mapping[str, s
 def _canonical_object_sha256(value: Mapping[str, object]) -> str:
     """Digest a request shape without placing its potentially private text in audit."""
 
-    try:
-        encoded = json.dumps(
-            _json_copy(value),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError) as error:  # pragma: no cover - recipe parser already closes this
-        raise ServingConfigurationError(
-            f"serving audit request payload is not JSON-compatible: {error}"
-        ) from error
-    return hashlib.sha256(encoded).hexdigest()
+    _, canonical = seal_json_object(value, label="serving audit request payload")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _fixture_sha256(fixture: str | Path) -> str:
@@ -1485,50 +1438,6 @@ def _image_url_candidates(value: object) -> list[object]:
     if isinstance(value, list):
         return [candidate for item in value for candidate in _image_url_candidates(item)]
     return []
-
-
-def _json_copy(value: object) -> object:
-    """Copy mapping/sequence payload data into ordinary JSON-compatible values."""
-
-    if isinstance(value, Mapping):
-        result: dict[str, object] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise ServingConfigurationError("JSON object keys must be strings")
-            result[key] = _json_copy(item)
-        return result
-    if isinstance(value, (list, tuple)):
-        return [_json_copy(item) for item in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    raise ServingConfigurationError(
-        f"adapter calibration payload has non-JSON value {type(value).__name__}"
-    )
-
-
-def _seal_json_request_payload(payload: Mapping[str, object], *, label: str) -> dict[str, object]:
-    """Materialize caller-controlled JSON once before validating and dispatching it.
-
-    ``Mapping`` is intentionally accepted at the public request boundary, but a
-    stateful mapping can otherwise report one value to an image validator and a
-    different value while ``request_body`` constructs the POST.  Canonicalizing
-    into a new ordinary dict creates the one payload both phases observe.
-    """
-
-    try:
-        encoded = json.dumps(
-            _json_copy(payload),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
-        snapshot = json.loads(encoded)
-    except (TypeError, ValueError, json.JSONDecodeError) as error:
-        raise ServingConfigurationError(f"{label} must be JSON-compatible: {error}") from error
-    if not isinstance(snapshot, dict):  # defensive after the Mapping annotation
-        raise ServingConfigurationError(f"{label} must encode to a JSON object")
-    return snapshot
 
 
 def _immutable_json_value(value: object) -> object:
