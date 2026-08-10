@@ -45,17 +45,6 @@ def pseudonym_for(chair: str, *, run_id: str, config_digest: str) -> str:
     return f"witness-{digest[:_PSEUDONYM_DIGITS]}"
 
 
-def blinded_map(chairs: list[str], *, run_id: str, config_digest: str) -> dict[str, str]:
-    """The chair -> pseudonym mapping for every configured chair, computed fresh.
-
-    Not read from storage: recomputed from the same three facts every caller
-    already has, so there is no second copy of the roster to disagree with it.
-    """
-    return {
-        chair: pseudonym_for(chair, run_id=run_id, config_digest=config_digest) for chair in chairs
-    }
-
-
 def witness_label(chair: str, *, regime: str, run_id: str, config_digest: str) -> str:
     """The label a dossier may show for one witness, under the active regime."""
     if regime not in REGIMES:
