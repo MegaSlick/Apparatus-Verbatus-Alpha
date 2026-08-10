@@ -150,20 +150,6 @@ def _declared_pairs(context, ordinal: int, fixture_key: str) -> set[tuple[str, s
     }
 
 
-def declared_failures(context, ordinal: int) -> set[tuple[str, str]]:
-    return _declared_pairs(context, ordinal, "witness_failure")
-
-
-def declared_empty(context, ordinal: int) -> set[tuple[str, str]]:
-    """Completed empty readings, distinct from an absent response."""
-    return _declared_pairs(context, ordinal, "witness_empty")
-
-
-def declared_not_run(context, ordinal: int) -> set[tuple[str, str]]:
-    """Configured chairs deliberately never asked for this attempt."""
-    return _declared_pairs(context, ordinal, "witness_not_run")
-
-
 def _page_fallback_bounds(context) -> dict[str, dict]:
     """Index the Designator rectangles already verified by `expected_acts`."""
     bounds_by_act = {}
@@ -193,8 +179,6 @@ def _is_page_fallback(context, act: dict, bounds_by_act: dict[str, dict] | None 
     return act["act_id"] == derive_act_id(
         act["page_id"], FALLBACK_PAGE_ACT_ORDINAL, page_bounds
     )
-
-
 def declared_malformed(context, ordinal: int) -> dict[tuple[str, str], str]:
     """Fixture stand-in for a provider response the recording channel could not keep."""
     rows: dict[tuple[str, str], str] = {}
@@ -285,18 +269,23 @@ def _native_type(value: Any) -> str:
     return type(value).__name__
 
 
+# Every health field of a chair with no native response except the reason, so the
+# writer below and the reader in `validate_content_health` cannot disagree about
+# what "no response" looks like.
+NO_RESPONSE_HEALTH = {
+    "native_type": None,
+    "encoding": "not-applicable",
+    "recordable": None,
+    "empty": None,
+    "blank": None,
+    "truncated": None,
+    "characters": None,
+}
+
+
 def no_response_health(*, reason: str) -> dict[str, Any]:
     """Health for a chair with no native response, never an empty reading."""
-    return {
-        "native_type": None,
-        "encoding": "not-applicable",
-        "recordable": None,
-        "empty": None,
-        "blank": None,
-        "truncated": None,
-        "characters": None,
-        "truncation_basis": reason,
-    }
+    return {**NO_RESPONSE_HEALTH, "truncation_basis": reason}
 
 
 def content_health(native_payload: Any, *, completed: bool | None = None) -> dict[str, Any]:
@@ -357,16 +346,7 @@ def validate_content_health(native_payload: Any, health: Any) -> None:
     """
     if not isinstance(health, dict):
         raise SchemaRefusal("a Testimonium carries no object content_health record")
-    required = {
-        "native_type",
-        "encoding",
-        "recordable",
-        "empty",
-        "blank",
-        "truncated",
-        "characters",
-        "truncation_basis",
-    }
+    required = set(NO_RESPONSE_HEALTH) | {"truncation_basis"}
     if missing := sorted(required - set(health)):
         raise SchemaRefusal(f"a Testimonium content_health record lacks field(s) {missing}")
 
@@ -397,17 +377,8 @@ def validate_content_health(native_payload: Any, health: Any) -> None:
     if recordable is None:
         if native_payload is not None:
             raise SchemaRefusal("a no-response Testimonium retains a native payload")
-        expected = no_response_health(reason="ignored")
-        for field in (
-            "native_type",
-            "encoding",
-            "recordable",
-            "empty",
-            "blank",
-            "truncated",
-            "characters",
-        ):
-            if health[field] != expected[field]:
+        for field, value in NO_RESPONSE_HEALTH.items():
+            if health[field] != value:
                 raise SchemaRefusal(
                     f"a no-response Testimonium has inconsistent content_health.{field}"
                 )
@@ -505,6 +476,23 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
         "receipt_ref": receipt_ref,
         "adapter_revision": context.adapter_revision,
     }
+
+
+# Every field a Testimonium payload must carry, whatever the outcome. `reason` and
+# the `reported` bridge below are conditional and deliberately outside it.
+TESTIMONIUM_FIELDS = frozenset(
+    {
+        "chair",
+        "act_key",
+        "attempt_ordinal",
+        "regions",
+        "provenance",
+        "format_capabilities",
+        "payload",
+        "witness_reported",
+        "content_health",
+    }
+)
 
 
 def testimonium_payload(
@@ -609,19 +597,7 @@ def validate_tallied_testimonium(context, record: dict[str, Any], act: dict[str,
     payload = record.get("payload")
     if not isinstance(payload, dict):
         raise SchemaRefusal("a Testimonium tally record has no object payload")
-    required = {
-        "chair",
-        "act_key",
-        "attempt_ordinal",
-        "regions",
-        "provenance",
-        "format_capabilities",
-        "payload",
-        "witness_reported",
-        "content_health",
-    }
-    missing = sorted(required - set(payload))
-    if missing:
+    if missing := sorted(TESTIMONIUM_FIELDS - set(payload)):
         raise SchemaRefusal(f"a Testimonium tally record lacks required field(s) {missing}")
     chair = payload["chair"]
     if not isinstance(chair, str) or chair not in context.witness_chairs:
@@ -776,18 +752,7 @@ def attempt_tally(
             payload = record.get("payload")
             if not isinstance(payload, dict):
                 raise SchemaRefusal("a Testimonium carries no object payload")
-            required = {
-                "chair",
-                "act_key",
-                "attempt_ordinal",
-                "regions",
-                "provenance",
-                "format_capabilities",
-                "payload",
-                "witness_reported",
-                "content_health",
-            }
-            if missing := sorted(required - set(payload)):
+            if missing := sorted(TESTIMONIUM_FIELDS - set(payload)):
                 raise SchemaRefusal(f"a Testimonium carries no required field(s) {missing}")
             chair = payload.get("chair")
             if not isinstance(chair, str) or not chair:
@@ -824,37 +789,6 @@ def attempt_tally(
     return {"state": "KNOWN", "count": len(testimonia), "hold": False, "reason": None}
 
 
-def _publish_not_read(
-    context,
-    *,
-    act: dict[str, Any],
-    chair: str,
-    resolved: ChairIdentity | AbsentChair,
-    ordinal: int,
-    reason: str,
-) -> None:
-    """Route a chair that did not read through the one Testimonium writer."""
-    outcome = "dead" if isinstance(resolved, AbsentChair) else "not-run"
-    publish_attempt(
-        context,
-        act=act,
-        chair=chair,
-        resolved=resolved,
-        ordinal=ordinal,
-        regions=[],
-        attempt=Attempt(
-            outcome=outcome,
-            native_payload=None,
-            witness_reported=None,
-            format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
-            health=no_response_health(reason="not-attempted"),
-            reason=(
-                f"chair is explicitly absent: {resolved.reason}" if outcome == "dead" else reason
-            ),
-        ),
-    )
-
-
 def _positive_ordinal(value: str) -> int:
     try:
         ordinal = int(value)
@@ -882,17 +816,51 @@ class Attempt(NamedTuple):
     reason: str | None
 
 
+def dead_attempt(resolved: AbsentChair) -> Attempt:
+    """A chair the roster declares absent: unavailable before any attempt reached it."""
+    return Attempt(
+        outcome="dead",
+        native_payload=None,
+        witness_reported=None,
+        format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+        health=no_response_health(reason="not-attempted"),
+        reason=f"chair is explicitly absent: {resolved.reason}",
+    )
+
+
+def not_read_attempt(resolved: ChairIdentity | AbsentChair, reason: str) -> Attempt:
+    """One chair on an act no witness was shown: unavailable, or not asked.
+
+    An absent chair stays `dead` whatever kept the act from being read, because
+    the two facts are independent — holding the act does not turn an unreachable
+    witness into a merely unasked one.
+    """
+    if isinstance(resolved, AbsentChair):
+        return dead_attempt(resolved)
+    return Attempt(
+        outcome="not-run",
+        native_payload=None,
+        witness_reported=None,
+        format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+        health=no_response_health(reason="not-attempted"),
+        reason=reason,
+    )
+
+
 def declarations_for(context, ordinal: int) -> dict[str, Any]:
     """Every fixture declaration that applies to this exact attempt ordinal.
 
     Read once per pass rather than once per chair, and bound to the ordinal, so a
     declared first-attempt failure cannot silently describe a later reread.
+
+    `empty` is a completed empty reading, distinct from an absent response;
+    `not_run` is a configured chair deliberately never asked for this attempt.
     """
     declarations = {
         "ordinal": ordinal,
-        "failures": declared_failures(context, ordinal),
-        "empty": declared_empty(context, ordinal),
-        "not_run": declared_not_run(context, ordinal),
+        "failures": _declared_pairs(context, ordinal, "witness_failure"),
+        "empty": _declared_pairs(context, ordinal, "witness_empty"),
+        "not_run": _declared_pairs(context, ordinal, "witness_not_run"),
         "malformed": declared_malformed(context, ordinal),
     }
     outcome_sets = {
@@ -934,6 +902,9 @@ def resolve_attempt(
     Testimonium — which spec 07 gives to `failed`, "as against ... `not-run`
     (configured, never attempted)".
     """
+    if isinstance(resolved, AbsentChair):
+        return dead_attempt(resolved)
+
     key = (act["act_key"], chair)
     native_payload: Any = None
     witness_reported: Any = None
@@ -941,10 +912,7 @@ def resolve_attempt(
     health = no_response_health(reason="not-attempted")
     reason: str | None = None
 
-    if isinstance(resolved, AbsentChair):
-        outcome = "dead"
-        reason = f"chair is explicitly absent: {resolved.reason}"
-    elif key in declarations["not_run"]:
+    if key in declarations["not_run"]:
         outcome = "not-run"
         reason = "fixture declares that this configured chair was never attempted"
     elif key in declarations["failures"]:
@@ -1041,44 +1009,25 @@ def attempt_pass(context, acts: list[dict[str, Any]], ordinal: int) -> tuple[int
     recorded = 0
     isolated_crop_failure = False
     for act in acts:
+        regions: list[dict] = []
+        not_read: str | None = None
         if act["outcome"] == "held":
-            for chair in context.witness_chairs:
-                resolved = context.registry.resolve(chair)
-                _publish_not_read(
-                    context,
-                    act=act,
-                    chair=chair,
-                    resolved=resolved,
-                    ordinal=ordinal,
-                    reason=(
-                        "the Designator held this act; its incomplete proposal was not shown "
-                        "to any configured witness"
-                    ),
-                )
-                recorded += 1
-            continue
-
-        try:
-            regions = proposed_regions(context, act["act_id"])
-        except ContractError as error:
-            if isinstance(error, FatalAccounting):
-                raise
-            # A refused crop is isolated to its act. No witness is claimed to
-            # have read pixels whose lineage failed; every chair instead receives
-            # an explicit non-reading record and the remaining acts proceed.
-            for chair in context.witness_chairs:
-                resolved = context.registry.resolve(chair)
-                _publish_not_read(
-                    context,
-                    act=act,
-                    chair=chair,
-                    resolved=resolved,
-                    ordinal=ordinal,
-                    reason=f"the proposed region was refused before this chair ran: {error}",
-                )
-                recorded += 1
-            isolated_crop_failure = True
-            continue
+            not_read = (
+                "the Designator held this act; its incomplete proposal was not shown "
+                "to any configured witness"
+            )
+        else:
+            try:
+                regions = proposed_regions(context, act["act_id"])
+            except ContractError as error:
+                if isinstance(error, FatalAccounting):
+                    raise
+                # A refused crop is isolated to its act. No witness is claimed to
+                # have read pixels whose lineage failed; every chair instead
+                # receives an explicit non-reading record and the other acts
+                # proceed.
+                not_read = f"the proposed region was refused before this chair ran: {error}"
+                isolated_crop_failure = True
 
         for chair in context.witness_chairs:
             resolved = context.registry.resolve(chair)
@@ -1089,7 +1038,11 @@ def attempt_pass(context, acts: list[dict[str, Any]], ordinal: int) -> tuple[int
                 resolved=resolved,
                 ordinal=ordinal,
                 regions=regions,
-                attempt=resolve_attempt(context, act, chair, resolved, declarations),
+                attempt=(
+                    not_read_attempt(resolved, not_read)
+                    if not_read is not None
+                    else resolve_attempt(context, act, chair, resolved, declarations)
+                ),
             )
             recorded += 1
     return recorded, isolated_crop_failure
@@ -1147,8 +1100,9 @@ def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) ->
             "to reread"
         )
 
+    # No `require_appendable_ordinal` here: `next_attempt_ordinal` returns the
+    # current ordinal plus one, off the same history, so the bound cannot fire.
     ordinal = next_attempt_ordinal(context, act_id, chair)
-    require_appendable_ordinal(context, act_id, chair, ordinal)
     publish_attempt(
         context,
         act=act,
