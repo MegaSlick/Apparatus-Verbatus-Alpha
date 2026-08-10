@@ -117,6 +117,17 @@ class PreparedLaunch:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedClose:
+    """The exact close notice the operator saw before typing its confirmation."""
+
+    launch: dict[str, Any]
+    record: PodRecord
+    lease_store: LeaseStore
+    lease: PodLease
+    phrase: str
+
+
+@dataclass(frozen=True, slots=True)
 class RunOutcome:
     """Existing Armarium truth, projected for the operator after the run finishes."""
 
@@ -348,6 +359,11 @@ class OperatorSurface:
     def launch(self, prepared: PreparedLaunch, confirmation: str | None) -> LaunchResult:
         """Record a confirmation first, then cross the fake provider's paid seam."""
 
+        # Re-checked here, not only in prepare_launch(): two overlapping prepare
+        # calls (two double-clicks, two terminal windows) can each pass the earlier
+        # check before either confirms. Without this, the second confirmed launch
+        # would create a second real pod that status/close could never reach again.
+        self._refuse_if_active_pod()
         expected = prepared.confirmation_phrase
         if confirmation != expected:
             raise OperatorError(ErrorCode.CONFIRMATION_REQUIRED)
@@ -553,9 +569,7 @@ class OperatorSurface:
     def boot(self) -> Path:
         """Run the real bootstrap journal with explicit fixture-only effects."""
 
-        launch_receipt = self._descriptor_receipt("active-launch")
-        if launch_receipt is None:
-            launch_receipt = self._descriptor_receipt("launch")
+        launch_receipt = self._active_launch_receipt()
         upload_receipt = self._descriptor_receipt("upload")
         commit = _repository_commit(self.workspace)
         plan = BootstrapPlan(commit, self.workspace / "uv.lock")
@@ -764,12 +778,14 @@ class OperatorSurface:
 
     # -- close ---------------------------------------------------------------
 
-    def close(self, confirmation: str | None, *, pod_id: str | None = None) -> CloseReport:
-        """Confirm and record a manual close before the fake provider sees it."""
+    def prepare_close(self, *, pod_id: str | None = None) -> PreparedClose:
+        """Resolve the recorded pod and show the close notice — before any confirmation.
 
-        launch_receipt = self._descriptor_receipt("active-launch")
-        if launch_receipt is None:
-            launch_receipt = self._descriptor_receipt("launch")
+        Mirrors prepare_launch/launch: the notice a person reads has to be shown
+        before they are asked to type anything back, never after.
+        """
+
+        launch_receipt = self._active_launch_receipt()
         if launch_receipt is None:
             raise OperatorError(ErrorCode.CLOSE_NOTHING)
         launch = self.receipts.read(launch_receipt)["payload"]
@@ -799,7 +815,17 @@ class OperatorSurface:
                 self.present(
                     "A prior close result was unverified. This new check needs its own confirmation."
                 )
-        lease_store, lease = self._lease_for_close(launch, record)
+        try:
+            lease_store, lease = self._lease_for_close(launch, record)
+        except OperatorError:
+            # The pod's own billing note is what _lease_for_close's error carries;
+            # the volume's ongoing price is a fact this surface already has in
+            # hand (record.estimate) and must still say, per volume_cost.py's own
+            # "printed on every close, verified or not" contract.
+            self._show_volume_cost(
+                volume_id=record.volume_id, hourly_usd=str(record.estimate.volume_hourly_usd)
+            )
+            raise
         if lease.phase == "closed-verified":
             raise OperatorError(
                 ErrorCode.CLOSE_NOTHING,
@@ -809,14 +835,25 @@ class OperatorSurface:
         self.present(f"Close will remove fixture pod {record.pod_id}.")
         self.present("The attached volume is retained and keeps its own ongoing price.")
         self.present(f"Type exactly {phrase!r} to continue.")
-        if confirmation != phrase:
+        return PreparedClose(launch, record, lease_store, lease, phrase)
+
+    def close(self, prepared: PreparedClose, confirmation: str | None) -> CloseReport:
+        """Confirm a prepared close, then record it before the fake provider sees it."""
+
+        launch, record, lease_store, lease = (
+            prepared.launch,
+            prepared.record,
+            prepared.lease_store,
+            prepared.lease,
+        )
+        if confirmation != prepared.phrase:
             raise OperatorError(ErrorCode.CLOSE_REFUSED)
         confirmation_receipt = self._write_action(
             "close-confirmation",
             {
                 "summary": "Manual close confirmation recorded before the provider call.",
                 "pod_id": record.pod_id,
-                "confirmation": phrase,
+                "confirmation": prepared.phrase,
             },
             descriptor_action="close-confirmation",
             failure_code=ErrorCode.CONFIRMATION_RECORD_FAILED,
@@ -857,17 +894,10 @@ class OperatorSurface:
             self.present(
                 "Manual check: Review the saved close receipt and the safety lease before any retry."
             )
-            if report.captured_cost_usd is not None:
-                self.present(
-                    "Charges captured through "
-                    + report.cutoff_at.isoformat().replace("+00:00", "Z")
-                    + ": $"
-                    + str(report.captured_cost_usd)
-                    + "."
-                )
-            else:
-                self.present("No captured-cost line was available; this close remains unverified.")
-            self._show_volume_cost(report)
+            self._present_captured_cost(report)
+            self._show_volume_cost(
+                volume_id=report.volume_id, hourly_usd=str(report.volume_ongoing_hourly_usd)
+            )
             self.present("Saved close receipt: " + str(receipt))
             raise OperatorError(
                 ErrorCode.CLOSE_LEASE_RECORD_FAILED,
@@ -895,25 +925,6 @@ class OperatorSurface:
                 ErrorCode.CLOSE_UNVERIFIED, detail=f"Saved close receipt: {receipt}"
             )
         return report
-
-    def recorded_pod_id(self) -> str | None:
-        """The pod id from the most recently recorded launch, or ``None``.
-
-        Read-only, and the one way a caller outside this class learns which pod
-        a close would act on — so a caller never has to reach past this method
-        into the receipt index and the receipt store directly.
-        """
-
-        launch_receipt = self._descriptor_receipt("active-launch")
-        if launch_receipt is None:
-            launch_receipt = self._descriptor_receipt("launch")
-        if launch_receipt is None:
-            return None
-        payload = self.receipts.read(launch_receipt)["payload"]
-        pod = payload.get("pod")
-        if isinstance(pod, dict) and isinstance(pod.get("pod_id"), str):
-            return pod["pod_id"]
-        return None
 
     # -- status ---------------------------------------------------------------
 
@@ -1097,14 +1108,17 @@ class OperatorSurface:
         value = descriptor["actions"].get(action)
         return Path(value) if isinstance(value, str) else None
 
+    def _active_launch_receipt(self) -> Path | None:
+        """The active-launch receipt if one is recorded, else the plain launch receipt."""
+
+        return self._descriptor_receipt("active-launch") or self._descriptor_receipt("launch")
+
     def _refuse_if_active_pod(self) -> None:
         """Keep a recorded open cost path visible until its own verified close."""
 
         try:
             active_receipt = self._descriptor_receipt("active-launch")
-            launch_receipt = active_receipt
-            if launch_receipt is None:
-                launch_receipt = self._descriptor_receipt("launch")
+            launch_receipt = active_receipt or self._descriptor_receipt("launch")
             if launch_receipt is None:
                 return
             launch = self.receipts.read(launch_receipt)["payload"]
@@ -1274,13 +1288,19 @@ class OperatorSurface:
             ) from error
         return store, lease
 
-    def _show_volume_cost(self, report: CloseReport) -> None:
+    def _show_volume_cost(self, *, volume_id: str | None, hourly_usd: str) -> None:
         """Printed on every close, verified or not: the pod stopped, the volume did not."""
 
-        for line in volume_cost_lines(
-            volume_id=report.volume_id, hourly_usd=str(report.volume_ongoing_hourly_usd)
-        ):
+        for line in volume_cost_lines(volume_id=volume_id, hourly_usd=hourly_usd):
             self.present(line)
+
+    def _present_captured_cost(self, report: CloseReport) -> None:
+        if report.captured_cost_usd is not None:
+            self.present(
+                f"Charges captured through {report.cutoff_at.isoformat().replace('+00:00', 'Z')}: ${report.captured_cost_usd}."
+            )
+        else:
+            self.present("No captured-cost line was available; this close remains unverified.")
 
     def _notify(self, event: str, message: str) -> None:
         """One standing moment, reported honestly and never able to fail a verb."""
@@ -1298,12 +1318,7 @@ class OperatorSurface:
         self.present(outcome.line())
 
     def _show_close(self, report: CloseReport, receipt: Path) -> None:
-        if report.captured_cost_usd is not None:
-            self.present(
-                f"Charges captured through {report.cutoff_at.isoformat().replace('+00:00', 'Z')}: ${report.captured_cost_usd}."
-            )
-        else:
-            self.present("No captured-cost line was available; this close remains unverified.")
+        self._present_captured_cost(report)
         if report.verified:
             self.present(
                 "Close verified by the fixture provider's exact-pod and list observations."
@@ -1317,7 +1332,9 @@ class OperatorSurface:
                 "shows it absent in both saved checks, and gives the billed-through time. "
                 "If any part is missing, leave this close unverified and ask for help."
             )
-        self._show_volume_cost(report)
+        self._show_volume_cost(
+            volume_id=report.volume_id, hourly_usd=str(report.volume_ongoing_hourly_usd)
+        )
         self.present(f"Saved close receipt: {receipt}")
 
 

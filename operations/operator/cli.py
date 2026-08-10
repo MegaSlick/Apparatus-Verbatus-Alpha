@@ -14,7 +14,7 @@ from operations.pod.models import PodCreateRequest, require_utc
 from . import notify_bridge
 from .errors import ErrorCode, OperatorError
 from .errors import sanitize_detail as _safe_detail
-from .surface import DEFAULT_FIXTURE, OPERATOR_CLOSE_PREFIX, OperatorSurface
+from .surface import DEFAULT_FIXTURE, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -170,9 +170,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.verb == "export":
             surface.export(run_id=args.run_id)
         elif args.verb == "close":
-            launch_id = args.pod_id or _recorded_pod_id(surface)
-            confirmation = _typed_close_confirmation(launch_id)
-            surface.close(confirmation, pod_id=args.pod_id)
+            prepared_close = surface.prepare_close(pod_id=args.pod_id)
+            confirmation = _typed_close_confirmation(prepared_close.phrase)
+            surface.close(prepared_close, confirmation)
         elif args.verb == "status":
             surface.status()
         else:  # argparse owns this list, but an explicit branch prevents a silent no-op.
@@ -338,26 +338,7 @@ def _typed_paid_confirmation() -> str | None:
         return None
 
 
-def _recorded_pod_id(surface: OperatorSurface) -> str:
-    """Read one explicit launch record before asking a person for a close phrase."""
-
-    try:
-        pod_id = surface.recorded_pod_id()
-    except Exception as error:
-        raise OperatorError(
-            ErrorCode.CLOSE_NOTHING,
-            detail="the saved launch record does not name a fixture pod",
-        ) from error
-    if pod_id is None:
-        raise OperatorError(
-            ErrorCode.CLOSE_NOTHING,
-            detail="the saved launch record does not name a fixture pod",
-        )
-    return pod_id
-
-
-def _typed_close_confirmation(pod_id: str) -> str | None:
-    phrase = f"{OPERATOR_CLOSE_PREFIX} {pod_id}"
+def _typed_close_confirmation(phrase: str) -> str | None:
     try:
         return input(f"Type exactly {phrase!r} to continue with close: ")
     except EOFError:

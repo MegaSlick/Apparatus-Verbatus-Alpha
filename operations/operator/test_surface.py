@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -243,8 +244,36 @@ def test_active_fixture_cannot_be_adopted_again_or_hidden_by_a_new_paid_path(
     assert refusal.value.code is ErrorCode.ACTIVE_POD_REQUIRES_CLOSE
     assert not any(verb == "adopt" for verb, _ in first.provider.calls)
 
-    assert first.close(f"{OPERATOR_CLOSE_PREFIX} {launched.record.pod_id}").verified
+    prepared_close = first.prepare_close()
+    assert first.close(prepared_close, prepared_close.phrase).verified
     assert first.prepare_launch(_request(name="next-fixture"), policy_path=spend).result.preview
+
+
+def test_two_overlapping_prepared_launches_cannot_both_be_confirmed_into_real_pods(
+    tmp_path: Path,
+) -> None:
+    """Two double-clicks, or two terminal windows, before either types a confirmation.
+
+    Both `prepare_launch` calls see no active pod yet and pass; only the *second*
+    `launch` call is where this must be caught, because that is the only point
+    where a second real pod would otherwise be created that `status`/`close` can
+    never reach again (no `--pod-id` recorded for it, and the descriptor's single
+    active-launch pointer only ever names the most recent one).
+    """
+
+    surface = _surface(tmp_path)
+    spend = _spend_policy(tmp_path)
+    first_prepared = surface.prepare_launch(_request(name="window-a"), policy_path=spend)
+    second_prepared = surface.prepare_launch(_request(name="window-b"), policy_path=spend)
+
+    first_result = surface.launch(first_prepared, first_prepared.confirmation_phrase)
+    assert first_result.green
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.launch(second_prepared, second_prepared.confirmation_phrase)
+
+    assert refusal.value.code is ErrorCode.ACTIVE_POD_REQUIRES_CLOSE
+    assert not any(verb == "create" and name == "window-b" for verb, name in surface.provider.calls)
 
 
 def test_saved_request_and_pod_reconstruction_refuse_type_coercion(tmp_path: Path) -> None:
@@ -324,7 +353,8 @@ def test_later_refused_launch_receipt_does_not_hide_the_active_pod_from_close(
 
     surface._record_failure("launch", "refused-ceiling", "injected later refusal")
 
-    report = surface.close(f"{OPERATOR_CLOSE_PREFIX} {launched.record.pod_id}")
+    prepared_close = surface.prepare_close()
+    report = surface.close(prepared_close, prepared_close.phrase)
     assert report.verified
 
 
@@ -370,7 +400,8 @@ def test_six_words_end_to_end_and_status_is_strictly_read_only(tmp_path: Path) -
     upload_receipt = surface.upload(source, sealed_manifest=manifest)
     outcome = surface.run(run_id="six-word-run")
     bundle = surface.export(run_id="six-word-run")
-    close = surface.close(f"{OPERATOR_CLOSE_PREFIX} {launched.record.pod_id}")
+    prepared_close = surface.prepare_close()
+    close = surface.close(prepared_close, prepared_close.phrase)
 
     assert boot_receipt.is_file()
     assert upload_receipt.is_file()
@@ -494,7 +525,7 @@ def test_failed_close_is_loud_then_can_be_rechecked(tmp_path: Path) -> None:
     phrase = f"{OPERATOR_CLOSE_PREFIX} {launched.record.pod_id}"
 
     with pytest.raises(OperatorError) as failure:
-        surface.close(phrase)
+        surface.close(surface.prepare_close(), phrase)
 
     assert failure.value.code is ErrorCode.CLOSE_UNVERIFIED
     assert any("UNVERIFIED CLOSE" in line for line in messages)
@@ -502,7 +533,7 @@ def test_failed_close_is_loud_then_can_be_rechecked(tmp_path: Path) -> None:
     launch_receipt = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
     lease = LeaseStore(Path(str(launch_receipt["lease"]))).load()
     assert lease is not None and lease.phase == "close-unverified"
-    verified = surface.close(phrase)
+    verified = surface.close(surface.prepare_close(), phrase)
 
     assert verified.verified
     reconciled = LeaseStore(Path(str(launch_receipt["lease"]))).load()
@@ -515,7 +546,7 @@ def test_close_does_not_reach_destructive_fake_without_a_saved_confirmation(tmp_
     assert launched.record is not None
 
     with pytest.raises(OperatorError) as refusal:
-        surface.close("not the required close words")
+        surface.close(surface.prepare_close(), "not the required close words")
 
     assert refusal.value.code is ErrorCode.CLOSE_REFUSED
     assert surface.provider.terminate_calls == []
@@ -535,8 +566,9 @@ def test_close_lease_record_failure_shows_captured_cutoff_and_retained_volume_pr
         raise OSError("injected lease write failure")
 
     monkeypatch.setattr(LeaseStore, "record_close", broken_record_close)
+    prepared_close = surface.prepare_close()
     with pytest.raises(OperatorError) as failure:
-        surface.close(f"{OPERATOR_CLOSE_PREFIX} {launched.record.pod_id}")
+        surface.close(prepared_close, prepared_close.phrase)
 
     assert failure.value.code is ErrorCode.CLOSE_LEASE_RECORD_FAILED
     assert any("Charges captured through" in line for line in messages)
@@ -617,6 +649,85 @@ def test_console_close_with_no_saved_pod_refuses_before_prompting(
     captured = capsys.readouterr().out
     assert "What happened:" in captured
     assert "There is no recorded pod" in captured
+
+
+def test_console_close_shows_its_notice_before_asking_for_the_confirmation_phrase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The close notice has to be read before the phrase is typed, not after —
+
+    the same order `launch` already uses (show the price screen, then ask). A
+    prior version of this dispatch collected the typed phrase first and only
+    printed the notice — including "the attached volume keeps its own ongoing
+    price" — once `surface.close()` was already running.
+    """
+
+    state = tmp_path / "operator-state"
+    surface = _surface(tmp_path)
+    launched = _launch(surface, _spend_policy(tmp_path))
+    assert launched.record is not None
+
+    order: list[tuple[str, str]] = []
+
+    def recording_print(*args: object, **kwargs: object) -> None:
+        del kwargs
+        order.append(("PRINT", " ".join(str(arg) for arg in args)))
+
+    def recording_input(prompt: str = "") -> str:
+        order.append(("INPUT", prompt))
+        return f"CLOSE {launched.record.pod_id}"
+
+    monkeypatch.setattr("builtins.print", recording_print)
+    monkeypatch.setattr("builtins.input", recording_input)
+
+    cli.main(["--state-dir", str(state), "close"])
+
+    # Not asserted: the exit code. Closing from a freshly reconstructed process
+    # (a real second `verbatus close` invocation, which is what this drives) can
+    # legitimately end CLOSE_UNVERIFIED rather than verified — a separate,
+    # pre-existing property of that reconstruction path. What this test is for
+    # is the order below.
+    notice_index = next(
+        index
+        for index, (kind, text) in enumerate(order)
+        if kind == "PRINT" and "Close will remove fixture pod" in text
+    )
+    input_index = next(index for index, (kind, _) in enumerate(order) if kind == "INPUT")
+    assert notice_index < input_index
+
+
+def test_a_corrupted_launch_descriptor_never_claims_close_has_nothing_to_do(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A torn/corrupted local index must not read as 'nothing to close, this is
+    safe' — the recorded pod may still exist and still be billing, and the
+    operator must not be told the opposite of that.
+    """
+
+    state = tmp_path / "operator-state"
+    surface = _surface(tmp_path)
+    launched = _launch(surface, _spend_policy(tmp_path))
+    assert launched.record is not None
+
+    descriptor_path = state / "operator-surface.json"
+    corrupted = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    corrupted["self_hash"] = "0" * 64
+    descriptor_path.write_text(json.dumps(corrupted), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt="": pytest.fail("close should not prompt when its own record is unreadable"),
+    )
+
+    exit_code = cli.main(["--state-dir", str(state), "close"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr().out
+    # CLOSE_NOTHING's own copy — "there is nothing to close, this is safe" — is
+    # exactly the false reassurance a corrupted index must never produce, because
+    # the recorded pod may still exist and still be billing.
+    assert "There is no recorded pod" not in captured
+    assert "No close request was sent and nothing changed" not in captured
 
 
 def test_console_entry_renders_an_application_import_failure(
@@ -721,7 +832,8 @@ def test_status_repeats_the_recorded_values_exactly_and_never_recomputes_them(
     surface.upload(source, sealed_manifest=manifest)
     surface.run(run_id="byte-for-byte-run")
     surface.export(run_id="byte-for-byte-run")
-    surface.close(f"{OPERATOR_CLOSE_PREFIX} {launched.record.pod_id}")
+    prepared_close = surface.prepare_close()
+    surface.close(prepared_close, prepared_close.phrase)
 
     lines = surface.status()
     joined = "\n".join(lines)
@@ -825,7 +937,8 @@ def test_an_unreadable_spend_policy_never_stops_a_close(tmp_path: Path) -> None:
     assert launched.record is not None
     assert (surface.workspace / "config" / "spend.toml").exists()  # the shipped one is unconfigured
 
-    report = surface.close(f"{OPERATOR_CLOSE_PREFIX} {launched.record.pod_id}")
+    prepared_close = surface.prepare_close()
+    report = surface.close(prepared_close, prepared_close.phrase)
 
     assert report.verified
 

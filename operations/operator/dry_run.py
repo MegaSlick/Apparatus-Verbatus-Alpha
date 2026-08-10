@@ -20,7 +20,7 @@ from operations.pod.models import PodCreateRequest
 from operations.submit.submit import build_manifest, walk_folder
 
 from .errors import OperatorError
-from .surface import OPERATOR_CLOSE_PREFIX, OperatorSurface
+from .surface import OperatorSurface
 
 UTC = timezone.utc
 ROOT = Path(__file__).resolve().parents[2]
@@ -113,7 +113,8 @@ def make_transcript(output: str | Path) -> Path:
         _heading(lines, "6. close — separate confirmation and captured cost")
         if launched.record is None:  # defensive: the surface would already have refused.
             raise RuntimeError("the dry-run launch did not provide a fixture pod")
-        surface.close(f"{OPERATOR_CLOSE_PREFIX} {launched.record.pod_id}")
+        prepared_close = surface.prepare_close()
+        surface.close(prepared_close, prepared_close.phrase)
 
         _heading(lines, "status — read saved records only")
         surface.status()
