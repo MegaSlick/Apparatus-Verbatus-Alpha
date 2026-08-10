@@ -514,8 +514,14 @@ def _validate_salvage_items(items: tuple[dict[str, Any], ...]) -> None:
             raise SchemaRefusal("a salvage-tier item is not an object")
         _reject_salvage_act_namespace(item, subject="item")
         salvage_id = item.get("salvage_id")
-        if not isinstance(salvage_id, str) or not salvage_id or salvage_id in seen:
-            raise SchemaRefusal("a salvage-tier item has no unique salvage identity")
+        if (
+            not isinstance(salvage_id, str)
+            or not salvage_id
+            or salvage_id in seen
+            or "/" in salvage_id
+            or salvage_id in (".", "..")
+        ):
+            raise SchemaRefusal("a salvage-tier item has no unique, safe salvage identity")
         if not isinstance(item.get("content"), str):
             raise SchemaRefusal("a salvage-tier item has no separately named content")
         regions = item.get("source_regions")
@@ -888,11 +894,38 @@ def _source_folder(act: dict[str, Any]) -> str:
     return _source_folder_for_declared_path(declared_path)
 
 
+_UNSAFE_PATH_CHARACTERS: Final = frozenset({"\\", "\x00"})
+
+
+def _reject_unsafe_relative_path(value: object, *, subject: str) -> PurePosixPath:
+    """The one 'is this a safe POSIX-relative path' check every path-shaped field shares.
+
+    ``PurePosixPath`` only ever splits on ``/``, so a backslash-separated traversal
+    payload (a Windows-style ``..\\..\\``, or a bare drive letter like ``C:\\evil``)
+    is never split into a literal ``..`` component and passes an
+    ``is_absolute()``/``".." in parts`` check completely untouched -- confirmed
+    directly: ``PurePosixPath("a/..\\\\..\\\\evil").parts`` is one opaque component,
+    not three, and ``PurePosixPath("C:\\\\evil").is_absolute()`` is ``False``. This
+    codebase's own zip reader tolerates that (Python's ``zipfile.extractall``
+    sanitizes on the platform separator, and POSIX has none), but the bundle's
+    stated purpose is to be opened by whatever tool a recipient has -- including,
+    plausibly, Windows-native tooling that does treat a backslash as a path
+    separator in a ZIP entry name. Rejecting the raw characters up front closes
+    that regardless of which tool eventually opens the archive.
+    """
+    if not isinstance(value, str) or not value:
+        raise SchemaRefusal(f"{subject} is unsafe")
+    if any(character in value for character in _UNSAFE_PATH_CHARACTERS):
+        raise SchemaRefusal(f"{subject} is unsafe")
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise SchemaRefusal(f"{subject} is unsafe")
+    return path
+
+
 def _source_folder_for_declared_path(declared_path: str) -> str:
     """Return a safe logical source folder, preserving root as an empty key."""
-    path = PurePosixPath(declared_path)
-    if not declared_path or path.is_absolute() or ".." in path.parts:
-        raise SchemaRefusal("a source folder escapes its bundle")
+    path = _reject_unsafe_relative_path(declared_path, subject="a source folder")
     parent = path.parent.as_posix()
     return "" if parent == "." else parent
 
@@ -980,9 +1013,9 @@ def _text_member_path(folder: str) -> str:
     """Map a logical source folder injectively into a product member name."""
     if not folder:
         return "text/_source_root/readings.txt"
-    path = PurePosixPath(folder)
-    if path.is_absolute() or ".." in path.parts or folder == ".":
+    if folder == ".":
         raise SchemaRefusal("a text-bundle source folder is unsafe")
+    _reject_unsafe_relative_path(folder, subject="a text-bundle source folder")
     return f"text/_source_folder/{folder}/readings.txt"
 
 
@@ -2668,12 +2701,11 @@ def _verify_reference(reference: Any, root) -> None:
 
 
 def _validate_member_name(name: str) -> None:
-    path = PurePosixPath(name)
-    if not name or path.is_absolute() or ".." in path.parts or name.endswith("/"):
-        raise SchemaRefusal(f"package member path {name!r} is unsafe")
+    subject = f"package member path {name!r}" if isinstance(name, str) else "a package member path"
+    if isinstance(name, str) and name.endswith("/"):
+        raise SchemaRefusal(f"{subject} is unsafe")
+    _reject_unsafe_relative_path(name, subject=subject)
 
 
 def _validate_run_relative_path(path: str) -> None:
-    candidate = PurePosixPath(path)
-    if not path or candidate.is_absolute() or ".." in candidate.parts:
-        raise SchemaRefusal("a source reference escapes the retained run tree")
+    _reject_unsafe_relative_path(path, subject="a source reference into the retained run tree")
