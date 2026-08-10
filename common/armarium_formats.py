@@ -61,13 +61,11 @@ def armarium_formats_from_record(record: object, *, source: str = "record") -> A
     closed record.  Keeping the validator here means a verifier never trusts a
     manifest's claimed format selection just because its self-hash is valid.
 
-    Only the record's own shape -- its key set, its schema string, and that
-    ``formats`` is a list rather than some other iterable ``tuple()`` would
-    silently misread (a bare string would explode into one entry per
-    character) -- is checked here. The format-name and ``embed_pixels`` rules
-    live in exactly one place, ``ArmariumFormats.__post_init__``, which this
-    function calls into rather than re-deriving the same five checks a second
-    time.
+    Only the record's own shape is this function's question: its key set, its schema
+    string, and that ``formats`` is a list -- a bare string would pass ``tuple()``
+    silently and explode into one entry per character. The format-name and
+    ``embed_pixels`` rules live in ``ArmariumFormats.__post_init__``, which this
+    calls into.
     """
     if not isinstance(record, dict):
         raise SchemaRefusal(f"Armarium formats {source} is not an object")
@@ -101,16 +99,12 @@ def parse_armarium_formats_bytes(data: bytes, *, source: str | Path = "bytes") -
 def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
     """Read, digest and parse one formats configuration for a run binding.
 
-    The digest is over exactly the bytes read here, before parsing -- the same
-    bytes a sealed run's ``config_digest`` must be reproducible from. Two
-    independent call sites (a fixture run's config bindings, and the real
-    Door's) used to each read, digest and parse this file themselves; sharing
-    one function is what keeps a future change to any of those three steps
-    from having to be made twice to stay correct in both places.
+    The digest is over exactly the bytes read here, before parsing -- the same bytes a
+    sealed run's ``config_digest`` must be reproducible from. Reading the file twice,
+    once to digest and once to parse, would let the two disagree.
 
-    This is the only reader. Nothing binds a format selection without also
-    digesting the bytes it came from, so there is deliberately no load-without-
-    digest entry point beside it.
+    This is deliberately the only reader: nothing may bind a format selection without
+    also digesting the bytes it came from.
     """
     try:
         data = Path(path).read_bytes()

@@ -181,10 +181,9 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
         assert not [name for name in archive.namelist() if name.startswith("pixels/")]
         text = archive.read(TEXT_REGISTER).decode("utf-8")
         assert "Cǣsar d’Amours" in text
-        # The rendering is labelled as a proposal and, with no uncertainty layer in
-        # the Archetypus record, strips to the established text unchanged. It sits
-        # beside the canonical field, never instead of it.
         assert f"display_convention: {DISPLAY_CONVENTION}" in text
+        # Twice: the canonical field, and the rendering beside it, which with no
+        # uncertainty layer in the Archetypus record is the same text unchanged.
         assert text.count(json.dumps("Cǣsar d’Amours", ensure_ascii=False)) == 2
 
     manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
@@ -220,11 +219,9 @@ def test_a_unicode_line_separator_in_a_reading_does_not_stop_the_whole_export(
 ):
     """Every line-oriented member must split only where its own writer joined.
 
-    `canonical_bytes` serializes with `ensure_ascii=False` on purpose, so these
-    three characters reach `acts.jsonl` and the text bundle as raw bytes inside a
-    JSON string. `str.splitlines` breaks on all three, so one such character in one
-    act's established reading cut that record in half and refused the entire run's
-    product -- every act, not only the one carrying it.
+    `ensure_ascii=False` puts these three into `acts.jsonl` and the text bundle raw,
+    and `str.splitlines` breaks on all three -- so one of them in one act's reading
+    refused the entire run's product, every act, not only the one carrying it.
     """
     projection = _projection()
     literal = f"Marie{separator}Anne"
@@ -789,10 +786,8 @@ def test_database_keeps_literal_and_derived_search_layers_separate(tmp_path):
 
 
 def test_a_self_consistent_but_falsified_search_fold_column_is_refused(tmp_path):
-    """The digest-checked member and its own self-hash prove the package was not
-    edited after sealing; neither proves `act_search.derived_search_text` was ever
-    a fold of the act's own literal. A build defect or a rebuilt package could
-    otherwise carry a search column disconnected from the one canonical text."""
+    """A digest and a self-hash prove the package was not edited after sealing. Neither
+    proves `act_search.derived_search_text` was ever a fold of its own act's literal."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     scratch = tmp_path / "acts.sqlite"
@@ -947,10 +942,9 @@ def test_bundle_bytes_are_deterministic_for_the_same_sealed_projection():
 def test_the_terminal_ledger_partitions_sources_pages_and_acts_totally(tmp_path):
     """Spec 11 test 1: a total partition, not an act-only one.
 
-    The fixture projection is one submitted source, one sealed page, and two acts, so
-    the ledger is six units and every one of them carries a closed category. The
-    counts are checked to sum, because a partition that misses a unit is exactly what
-    invariant #10 calls an imbalance and the failure mode is silence.
+    One submitted source, one sealed page and two acts is four units, every one of
+    them carrying a closed category. The counts are checked to sum because a partition
+    that misses a unit is invariant #10's imbalance and its failure mode is silence.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     ledger = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])["claims"]["terminal_ledger"]
@@ -979,15 +973,10 @@ def test_the_terminal_ledger_partitions_sources_pages_and_acts_totally(tmp_path)
 def test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_act_agrees():
     """The two page-category branches spec 11 test 1 names besides delivered/held.
 
-    Every fixture in this file attributes its acts to a shared page ordinal, so
-    end-to-end coverage never exercises a page whose acts are *all*
-    confirmed-blank or *all* excluded-with-approval (neither the Designator nor
-    the Recensor emits either outcome yet, so a full-projection fixture for them
-    would be synthetic in exactly the same way this direct call is). Driven
-    directly against the pure function spec 11 test 1 is really about: neither
-    category is *inferred* here -- both are inherited only when every act cut
-    from the page already carries it, the same way `delivered` is inherited
-    from any one delivered act.
+    Driven against the pure function because nothing upstream emits either outcome
+    yet, so a full-projection fixture would be synthetic in exactly the same way this
+    call is. Neither category is ever *inferred*: both are inherited only when every
+    act cut from the page already carries it.
     """
     assert _page_ledger_category(1, ["confirmed-blank"]) == (
         ArmariumCategory.CONFIRMED_BLANK.value,
@@ -1144,20 +1133,15 @@ def test_a_salvage_shaped_record_cannot_enter_the_acts_namespace(field, tmp_path
 def test_bytes_that_are_not_an_archive_are_refused_rather_than_raising_out_of_the_verifier(
     tmp_path,
 ):
-    """`verify_export_bundle` is what a recipient runs on bytes somebody sent them.
-
-    "These bytes are not an archive" is one of the refusals it exists to make, and it
-    was the one malformation that escaped as a raw `BadZipFile` with no contract
-    reason attached.
-    """
+    """ "These bytes are not an archive" is one of the refusals `verify_export_bundle`
+    exists to make, not an exception for its caller to interpret."""
     with pytest.raises(SchemaRefusal, match="not a readable ZIP archive"):
         verify_export_bundle(b"PK\x03\x04 but not really a zip", tmp_path / "clean")
 
 
 def test_a_member_named_as_both_file_and_directory_is_refused_before_extraction(tmp_path):
-    """Extraction discovered this as `NotADirectoryError` after writing part of the
-    package to the clean machine -- the same write-then-refuse order the stored-member
-    check exists to avoid."""
+    """Each name is safe alone; together they are unextractable. Extraction surfaces
+    that only after writing part of the package to the clean machine."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     members["sources.json/child"] = b"x"
@@ -1188,9 +1172,9 @@ def test_a_display_rendering_that_cannot_be_parsed_is_refused_not_raised(tmp_pat
 
 
 def test_a_coverage_record_missing_the_fields_the_aggregate_reads_is_refused(tmp_path):
-    """The exported basis is recomputed, and `run_aggregate` reaches inside a coverage
-    record for `by_class['completed']` when it claims `under_witnessed`. Nothing above
-    proved that field was there, so a tampered basis crashed the verifier outright."""
+    """Recomputing the basis makes `run_aggregate` reach inside a coverage record for
+    `by_class['completed']` whenever it claims `under_witnessed` -- a field nothing
+    above it proves is present."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     sources = json.loads(members["sources.json"])
@@ -1211,13 +1195,11 @@ def test_a_coverage_record_missing_the_fields_the_aggregate_reads_is_refused(tmp
 def test_an_acts_database_whose_acts_are_a_view_is_refused_before_it_is_queried(tmp_path):
     """A few kilobytes of package member, an unbounded result set.
 
-    SQLite is perfectly happy for `acts` to be a view, and a view over a recursive
-    CTE is a program rather than stored rows. Before this refusal, verification of
-    the package below allocated until the kernel killed the process. This is the same
-    amplification the stored-member check refuses in the archive reader, arriving
-    through the database reader instead, and it is closed the same way -- by
-    construction, because a stored table's row count is bounded by the member's own
-    physical bytes and a view's is bounded by nothing.
+    SQLite is happy for `acts` to be a view, and a view over a recursive CTE is a
+    program rather than stored rows: verifying the package below allocated until the
+    kernel killed the process. Refused by construction, because a stored table's row
+    count is bounded by the member's own physical bytes and a view's is bounded by
+    nothing.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
@@ -1253,10 +1235,9 @@ def test_an_acts_database_whose_acts_are_a_view_is_refused_before_it_is_queried(
 
 
 def test_a_clean_root_whose_path_carries_uri_syntax_still_verifies(tmp_path):
-    """The database path was spliced into `file:{path}?mode=ro`, so a directory name
-    containing `?` became a query string. `bundle.py` derives its staging directory
-    from the operator's own `--out` name, so an ordinary destination could make a good
-    package fail with a message blaming the package."""
+    """`bundle.py` derives its staging directory from the operator's own `--out` name,
+    so splicing that path into `file:{path}?mode=ro` let an ordinary destination make a
+    good package fail with a message blaming the package."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     manifest = verify_export_bundle(bundle.data, tmp_path / "deliver?run#7" / "bundle")
     assert manifest["claims"]["status"] == "partial"

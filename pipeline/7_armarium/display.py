@@ -1,14 +1,10 @@
 """The proposed uncertainty/gap display convention. A proposal, not a decision.
 
-Spec 11 asks the text bundle to project "uncertainty spans and gaps ... as display
-conventions (EpiDoc-style rendering *proposed* via the courtroom note's research;
-Tyrel picks the convention at this gate), never altering the stored text", and its
-test 2 asks that "rendered displays [be] tested separately by render -> strip ->
-hash". So a rendering has to exist for him to pick against, and a way back from it
-has to exist for the identity test to mean anything. This module is both, and
-nothing more: **it is a proposal awaiting his choice, and the choice changes only
-this file.** No hash, no stored field, and no format writer depends on which
-brackets are used.
+Spec 11 leaves the uncertainty/gap convention to Tyrel at this gate, so a rendering has
+to exist for him to pick against, and its test 2 asks for render -> strip -> hash, so a
+way back from it has to exist for the identity test to mean anything. This module is
+both and nothing more: **the choice changes only this file.** No hash, no stored field
+and no format writer depends on which brackets are used.
 
 **The split it adopts is EpiDoc's, and it is a semantic one rather than a
 typographic one.** EpiDoc distinguishes `<unclear>` -- ink that is present but

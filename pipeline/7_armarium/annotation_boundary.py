@@ -12,17 +12,13 @@ literal an annotator may inspect, but neither ``Annotation`` nor
 ``AnnotationResult`` has a field that can carry it back out.  Annotation kind
 and attribute names are identifiers, not another reading of the act.
 
-**The fields spec 11 names, in the shape it names them.** The spec asks a future
-``annotator`` chair for ``act_type``, ``date`` (literal plus normalized),
-``persons`` (literal name spans, roles), ``kinship`` edges and flags. Those are
-here as a closed kind vocabulary with per-kind attributes rather than as free
-text, which is what keeps the two requirements from fighting each other: the
-spec needs a *normalized* date and a person's *role*, while no annotation value may
-become a second reading. Semantic labels are drawn from closed sets and the normalized
-date has a strict ISO-8601 prefix form. Record identifiers and producer identities are
-necessarily strings, but no writer maps any of them into established text. A person is
-a span of the established text plus a role from the closed set -- never a name this
-layer wrote down.
+**The fields spec 11 names are a closed vocabulary rather than free text**, because the
+two things it asks for pull against each other: it needs a *normalized* date and a
+person's *role*, while no annotation value may become a second reading. So semantic
+labels come from closed sets fixed here and a normalized date has a strict ISO-8601
+prefix form. Record identifiers and producer identities have to be strings, but no
+writer maps one into established text. A person is a span of the text plus a role --
+never a name this layer wrote down.
 
 **The anchoring refusal is spec 11's test 7.** "A hallucinated person (not a span
 of the text) is refused at the schema and recorded (annotations must anchor to
@@ -291,13 +287,12 @@ def _require_closed_value(
 def mark_uncertainty_overlap(span: TextSpan, uncertainty_spans: tuple[TextSpan, ...]) -> bool:
     """Whether one annotation span overlaps any uncertain range of the same text.
 
-    Pure and generic: it knows two ranges and nothing about what an annotation is, so
-    a future writer can hand it the input's own uncertainty spans without this module
+    Pure and generic: it knows two ranges and nothing about what an annotation is, so a
+    future writer can hand it the input's own uncertainty spans without this module
     learning anything new. It is the only sanctioned way to set
-    `Annotation.overlaps_uncertainty`, and it is called on every
-    `verify_annotations_anchor_to_text` check -- it is the *input data* that is unused
-    in this build, because the Archetypus record carries no uncertainty layer for
-    anything to inherit from yet, so every call today sees an empty span sequence.
+    `Annotation.overlaps_uncertainty`. Called on every anchoring check today, always
+    against an empty span sequence -- the Archetypus record carries no uncertainty
+    layer yet for anything to inherit from.
     """
     return any(
         uncertain.start < span.end and span.start < uncertain.end for uncertain in uncertainty_spans

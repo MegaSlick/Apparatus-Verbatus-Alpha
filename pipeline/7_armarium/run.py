@@ -23,10 +23,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-# This stage's own directory second, so it lands ahead of the repository root and
-# `from armarium_export import ...` below resolves wherever `run.py` is loaded from
-# -- including through `importlib.util.spec_from_file_location` from another
-# directory's tests, which does not otherwise put this directory on `sys.path`.
+# Second, so it lands ahead of the repository root: `spec_from_file_location` does not
+# put a loaded file's own directory on `sys.path`, and
 # `pipeline/orchestrator/test_terminal_guards.py` loads this file exactly that way.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -162,12 +160,10 @@ def page_census(context) -> dict[int, dict]:
                     "written over altered source bytes"
                 ) from error
 
-    # Counted, then compared as a set. `RunTree.create` refuses a manifest that
-    # repeats an ordinal, so this should be unreachable — but the census is the
-    # last boundary in the pipeline and it reads a `run.json` written earlier,
-    # possibly by an older writer. A set comparison alone cannot see the
-    # difference between two pages sharing an ordinal and one page, which is
-    # exactly the arithmetic that lets a lost page reconcile.
+    # Counted before it is compared as a set: a set comparison cannot tell two pages
+    # sharing an ordinal from one page, and that is precisely the arithmetic by which
+    # a lost page reconciles. `RunTree.create` refuses a repeated ordinal, but this is
+    # the last boundary in the pipeline and it reads a `run.json` written earlier.
     declared_ordinals = [page["ordinal"] for page in declared_rows]
     declared = set(declared_ordinals)
     if len(declared) != len(declared_ordinals):
@@ -199,15 +195,13 @@ def page_census(context) -> dict[int, dict]:
 def _cached_manifest(context, stage: str, manifest_cache: dict[str, dict]) -> dict:
     """``context.tree.build_manifest(stage)``, read and revalidated once per run.
 
-    ``build_manifest`` walks a stage's entire artifact directory and revalidates
-    every envelope, run binding, path binding and input on every call, by design.
-    Armarium never writes into DESIGNATOR/RECENSOR/PERLECTOR/ARCHETYPUS during its
-    own run -- it only ever reads them -- so those stages' artifact sets are static
-    for the whole invocation and a first read is not stale by the time a later
-    call in the same run reuses it. Measured on the two-act synthetic fixture:
-    without this cache, one Armarium run rebuilt and revalidated an upstream
-    stage's manifest fifteen separate times; the spec's own stated scale is tens
-    of thousands of acts.
+    Reusing a manifest is only safe because Armarium never writes into
+    DESIGNATOR/RECENSOR/PERLECTOR/ARCHETYPUS during its own run, so their artifact
+    sets are static for the whole invocation. It is worth doing because
+    ``build_manifest`` walks a stage's whole artifact directory and revalidates every
+    envelope, binding and input each time it is called: on the two-act synthetic
+    fixture one run did that fifteen times, against a stated scale of tens of
+    thousands of acts.
     """
     if stage not in manifest_cache:
         manifest_cache[stage] = context.tree.build_manifest(stage)
@@ -579,26 +573,17 @@ def export_evidence_refs(context, review: dict, established: dict | None) -> lis
 def exclusion_approval_ref(act: dict, category: ArmariumCategory) -> str | None:
     """Carry an exclusion's recorded approval, or refuse it before export.
 
-    The current Designator contract does not yet emit exclusions, and this
-    function cannot yet carry a real approval through even once it does:
-    ``act`` is one row of ``expected_acts()``, whose closed schema
-    (``common/stage.py``) is exactly ``act_id``, ``act_key``, ``page_id``,
-    ``page_ordinal``, ``has_continuation``, ``outcome``, ``evidence`` -- there is
-    no ``approval_ref`` field for ``act.get("approval_ref")`` to ever find, so
-    every ``excluded-with-approval`` category reaching this function today is
-    refused by ``require_approval`` regardless of whether Tyrel actually
-    approved it. That is a safe failure mode (loud, not silent -- an export
-    stops rather than admitting an unapproved exclusion) but not a working one.
+    **This refuses every exclusion today, approved or not.** ``act`` is one row of
+    ``expected_acts()``, whose closed schema in ``common/stage.py`` has no
+    ``approval_ref`` field for ``act.get("approval_ref")`` to find. That is a safe
+    failure mode -- an export stops rather than admitting an unapproved exclusion --
+    but not a working one, and the boundary is here so that a bare
+    ``excluded-with-approval`` can never become an apparently complete export with
+    its required citation silently missing.
 
-    This boundary is intentionally present now so that a bare
-    ``excluded-with-approval`` category can never become an apparently complete
-    export with its required approval citation silently missing. Making the
-    citation actually reach here needs a decision this function cannot make on
-    its own: where the Designator's exclusion approval reference will live (a
-    widened ``expected_acts()`` row, or its own Designator-published artifact
-    read via ``artifacts_for`` the way an Archetypus record already is) --
-    that is a Designator-contract question, out of this stage's scope to
-    invent unilaterally.
+    Making a real citation reach here needs a Designator-contract decision -- a
+    widened ``expected_acts()`` row, or its own published artifact read the way an
+    Archetypus record already is -- which is out of this stage's scope to invent.
     """
     if category is not ArmariumCategory.EXCLUDED_WITH_APPROVAL:
         return None
@@ -624,9 +609,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # aggregate can tell a sealed page that produced nothing from one that produced
     # acts. Without it a silent page reconciles behind its busy neighbours.
     act_pages: dict[str, list[int]] = {}
-    # Shared across the whole run: DESIGNATOR/RECENSOR/PERLECTOR/ARCHETYPUS are all
-    # read-only from here, so their manifests are static for this invocation and
-    # rebuilding one from disk on every per-act lookup is pure repeated work.
     manifest_cache: dict[str, dict] = {}
     marked_out_pages = pages_marked_out(context, manifest_cache)
     delivered: list[dict] = []
@@ -689,12 +671,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 else:
                     entry.update(
                         {
-                            # The established reading, and nothing else. No witness text
-                            # reaches this field by any path.
+                            # The Archetypus's own field. Nothing else may reach here.
                             "text": payload["text"],
                             "provenance": provenance,
-                            # The link back to the exact ink: every region, with the
-                            # transform that produced it and the digest of its bytes.
                             "source_regions": source_regions,
                             "perlectio_ref": payload["perlectio_ref"],
                             "recensor_ref": payload["recensor_ref"],

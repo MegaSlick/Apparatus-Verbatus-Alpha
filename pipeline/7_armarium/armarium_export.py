@@ -75,11 +75,9 @@ _SOURCE_GRANULARITY: Final = (
     "one unit per source page or frame ordinal bound into run.json at admission, door "
     "refusals and duplicates included"
 )
-# The one thing the denominator genuinely cannot say, said rather than implied: a
-# multi-page container arrives as one submitted *file* and is bound as one ordinal per
-# page or frame, so the ledger gives the container's pages a category each and the file
-# itself none.  Every submitted file is therefore represented, but not always by exactly
-# one unit, and a reader counting files off this ledger would count pages.
+# Spec 11 asks the denominator to start at "every submitted file". It cannot: run.json
+# binds one ordinal per page, so this is the gap, published on the bundle's own face
+# rather than left for a reader to hit.
 _CONTAINER_GRANULARITY_LIMIT: Final = (
     "a multi-page PDF/TIFF container is represented by one unit per page or frame rather "
     "than one unit for the submitted file; the file's own single terminal category is not "
@@ -247,9 +245,8 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     """
     root = clean_root
     root.mkdir(parents=True, exist_ok=True)
-    # A recipient runs this on bytes somebody sent them, so "these bytes are not an
-    # archive at all" is one of the refusals this function exists to make. It was
-    # the one malformation that escaped as a raw `BadZipFile` instead.
+    # "These bytes are not an archive at all" is one of the refusals this function
+    # exists to make, not an exception for its caller to work out.
     try:
         archive = ZipFile(BytesIO(data))
     except (BadZipFile, LargeZipFile, OSError) as error:
@@ -262,10 +259,9 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
             raise SchemaRefusal("an Armarium package repeats a member name")
         for name in names:
             _validate_member_name(name)
-        # One member cannot be both a file and another member's parent directory.
-        # Extraction discovers that as a `NotADirectoryError` *after* it has already
-        # written part of the package to the clean machine, which is the same
-        # write-then-refuse order the compression check below exists to avoid.
+        # Names are safe one at a time and still unextractable together: `a` beside
+        # `a/b` surfaces only as a `NotADirectoryError`, *after* part of the package
+        # has been written to the clean machine.
         ancestors = {
             parent.as_posix()
             for name in names
@@ -277,14 +273,10 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
             raise SchemaRefusal(
                 f"package member(s) {shadowed} are named as both a file and a directory"
             )
-        # `_zip_bytes` is this module's only writer and it never emits anything but
-        # ZIP_STORED. Refusing any other compression method here -- before a single
-        # byte is decompressed -- is what makes this a check of a package "without
-        # its source run tree" rather than a decompression bomb: a stored member's
-        # decompressed size cannot exceed the archive's own physical size, so a
-        # hand-crafted high-ratio DEFLATE member (kilobytes on disk, gigabytes once
-        # extracted) is refused by name instead of being written to the clean
-        # machine before anything else gets a chance to reject the package.
+        # A stored member's extracted size cannot exceed the archive's own physical
+        # size, so refusing every other compression method -- before a byte is
+        # decompressed -- is what bounds a decompression bomb by construction rather
+        # than by an arbitrary cap. `_zip_bytes` never writes anything but stored.
         for info in archive.infolist():
             if info.compress_type != ZIP_STORED:
                 raise SchemaRefusal(
@@ -551,13 +543,11 @@ def _aggregate_from_basis(
             unaddressed_chairs=chairs,
             act_pages=act_pages,
         )
-    # `KeyError`/`TypeError` as well as the contract refusals: the basis is read back
-    # out of a package a recipient was handed, and `run_aggregate` reads fields
-    # inside a coverage record -- `by_class['completed']`, `floor` -- that nothing
-    # above proves are there. A coverage record claiming `under_witnessed` with no
-    # `by_class` crashed the whole verifier with a bare `KeyError`. Every hole in the
-    # basis is one answer: this basis does not reconcile. The original is chained, so
-    # a genuine defect inside `run_aggregate` is still visible in the traceback.
+    # `KeyError`/`TypeError` as well as the refusals: `run_aggregate` reaches inside a
+    # coverage record for `by_class['completed']` and `floor`, which nothing above
+    # proves are there, and this basis was read back out of a package somebody else
+    # assembled. Every hole in it has the same one answer. The original is chained, so
+    # a genuine defect inside `run_aggregate` stays visible in the traceback.
     except (ContractError, KeyError, TypeError) as error:
         raise SchemaRefusal("an Armarium aggregate basis cannot be reconciled") from error
 
@@ -704,10 +694,8 @@ def _source_rows(
 ) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
     rows: list[dict[str, Any]] = []
     embedded: dict[str, bytes] = {}
-    # `_pages_by_ordinal` has already refused a non-object row and a repeated or
-    # non-integer ordinal -- twice, from `_validate_projection` and from
-    # `_validate_projection_region_bindings` -- before `build_armarium_bundle`
-    # reaches here, so the ordinal is read rather than re-proved.
+    # `_validate_projection_region_bindings` has already put every row through
+    # `_pages_by_ordinal`, so the ordinal is read here rather than re-proved.
     for page in sorted(pages, key=lambda item: item["ordinal"]):
         ordinal = page["ordinal"]
         declared_path, declared_sha256 = page.get("declared_path"), page.get("declared_sha256")
@@ -775,9 +763,8 @@ def _text_bundle_members(
     for act in acts:
         if act["category"] != ArmariumCategory.DELIVERED.value:
             continue
-        # A delivered act reached here with at least one cited region, each already
-        # carrying a validated `declared_path` (`_validate_projection` and
-        # `_validate_cited_region`), so the folder is read rather than re-proved.
+        # A delivered act reached here with at least one region, each already carrying a
+        # validated `declared_path`, so the folder is read rather than re-proved.
         folder = _source_folder_for_declared_path(act["source_regions"][0]["declared_path"])
         folders.add(folder)
         grouped[folder].append(act)
@@ -800,13 +787,8 @@ def _text_bundle_members(
                     f"canonical_text_sha256: {canonical_text_sha256(act[CANONICAL_TEXT_FIELD])}",
                     "canonical_clean_text:",
                     json.dumps(act[CANONICAL_TEXT_FIELD], ensure_ascii=False),
-                    # The proposed rendering, beside the canonical field and never
-                    # instead of it. `strip_display` must return the line above
-                    # exactly; the clean verifier checks that rather than trusting
-                    # it. With no uncertainty layer in the Archetypus record yet the
-                    # two lines are identical today, and the round trip is what
-                    # keeps a display convention from ever leaking into the hashed
-                    # field once that layer lands.
+                    # Beside the canonical field, never instead of it: the clean
+                    # verifier strips this back and requires the line above exactly.
                     f"display_convention: {DISPLAY_CONVENTION}",
                     "display:",
                     json.dumps(render_display(act[CANONICAL_TEXT_FIELD]), ensure_ascii=False),
@@ -829,12 +811,7 @@ def _acts_with_source_references(
         record = dict(act)
         regions: list[dict[str, Any]] = []
         for region in act.get("source_regions", []):
-            # Every field this loop then reads -- the crop path and digest, the
-            # declared source path and digest, the ledger digest, the region
-            # identity -- is checked here and only here. The block that used to
-            # re-derive all six between this call and the branch below was a second
-            # copy of `_validate_cited_region`'s rules, with nothing keeping the two
-            # in step if either changed.
+            # Every field the rest of this loop reads is checked here and nowhere else.
             _validate_cited_region(region, subject="exported act")
             copied = dict(region)
             image_path, image_sha256, region_id = (
@@ -923,13 +900,11 @@ _UNSAFE_PATH_CHARACTERS: Final = frozenset({"\\", "\x00"})
 def _is_safe_path_segment(value: object) -> bool:
     """Whether an identity may be spliced into a member path as one whole component.
 
-    A region identity and a salvage identity both become exactly one path component
-    of an embedded pixel member -- ``pixels/crops/<region_id>.img`` and
-    ``pixels/salvage/<salvage_id>/<region_id>.img``. Each was checked by its own
-    hand-written spelling and the two had already drifted: the salvage one refused
-    ``".."`` and the region one did not. This is the same question
-    ``_reject_unsafe_relative_path`` answers for a whole path, narrowed to a single
-    component, asked once.
+    A region identity and a salvage identity each become exactly one path component of
+    an embedded pixel member -- ``pixels/crops/<region_id>.img``,
+    ``pixels/salvage/<salvage_id>/<region_id>.img``. Same question
+    ``_reject_unsafe_relative_path`` answers for a whole path, narrowed to one
+    component, so that the two identities cannot answer it differently.
     """
     if not isinstance(value, str) or not value or "/" in value or value in (".", ".."):
         return False
@@ -939,18 +914,13 @@ def _is_safe_path_segment(value: object) -> bool:
 def _reject_unsafe_relative_path(value: object, *, subject: str) -> PurePosixPath:
     """The one 'is this a safe POSIX-relative path' check every path-shaped field shares.
 
-    ``PurePosixPath`` only ever splits on ``/``, so a backslash-separated traversal
-    payload (a Windows-style ``..\\..\\``, or a bare drive letter like ``C:\\evil``)
-    is never split into a literal ``..`` component and passes an
-    ``is_absolute()``/``".." in parts`` check completely untouched -- confirmed
-    directly: ``PurePosixPath("a/..\\\\..\\\\evil").parts`` is one opaque component,
-    not three, and ``PurePosixPath("C:\\\\evil").is_absolute()`` is ``False``. This
-    codebase's own zip reader tolerates that (Python's ``zipfile.extractall``
-    sanitizes on the platform separator, and POSIX has none), but the bundle's
-    stated purpose is to be opened by whatever tool a recipient has -- including,
-    plausibly, Windows-native tooling that does treat a backslash as a path
-    separator in a ZIP entry name. Rejecting the raw characters up front closes
-    that regardless of which tool eventually opens the archive.
+    The raw-character rejection is the part that looks removable and is not.
+    ``PurePosixPath`` splits only on ``/``, so ``PurePosixPath("a/..\\..\\evil").parts``
+    is one opaque component rather than three and ``PurePosixPath("C:\\evil")`` is not
+    absolute: a backslash traversal passes an ``is_absolute()``/``".." in parts`` check
+    completely untouched. POSIX tooling shrugs at that, but a bundle exists to be opened
+    by whatever tool its recipient has, including Windows-native tooling that does treat
+    a backslash in a ZIP entry name as a separator.
     """
     if not isinstance(value, str) or not value:
         raise SchemaRefusal(f"{subject} is unsafe")
@@ -1266,15 +1236,13 @@ def _jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
 def _package_lines(path, subject: str) -> list[str]:
     r"""Split one package member on exactly the separator its writer used.
 
-    ``str.splitlines`` also breaks on U+0085, U+2028 and U+2029, and this project
-    serializes with ``ensure_ascii=False`` on purpose -- ``canonical.py``: "the
-    stored bytes should be the text itself -- this is a project about the very
-    words" -- so ``json.dumps`` emits all three of those raw inside a JSON string
-    rather than escaping them. An established reading containing one therefore cut
-    its own record in half in every line-oriented member, and the export refused the
-    whole run over one act's character. ``newline=""`` suppresses universal-newline
-    translation for the same reason: this reader is the exact inverse of writers
-    that only ever join on ``\n``.
+    Not ``str.splitlines``, which also breaks on U+0085, U+2028 and U+2029 -- and this
+    project serializes with ``ensure_ascii=False`` on purpose (``canonical.py``: "the
+    stored bytes should be the text itself"), so ``json.dumps`` emits those three raw
+    inside a JSON string instead of escaping them. An established reading carrying one
+    cut its own record in half in every line-oriented member. ``newline=""`` is the
+    same principle: no universal-newline translation, because the writers join on
+    ``\n`` and nothing else.
     """
     try:
         return path.read_text(encoding="utf-8", newline="").split("\n")
@@ -1365,10 +1333,8 @@ def _text_bundle_records(
                     rendered = json.loads(lines[index + 1])
                 except json.JSONDecodeError as error:
                     raise SchemaRefusal("a text-bundle display is not JSON") from error
-                # `strip_display` raises `ValueError` on markup it cannot parse -- an
-                # unclosed marker, a marker whose payload is not JSON, a dangling
-                # escape. All three are reachable from a package a recipient was
-                # handed, so they are refusals about the package, not crashes.
+                # `strip_display` raises `ValueError` on markup it cannot parse, and
+                # every such rendering is something a package can carry.
                 try:
                     stripped = strip_display(rendered) if isinstance(rendered, str) else None
                 except ValueError as error:
@@ -1399,24 +1365,18 @@ _STORED_ACTS_TABLES: Final = ("acts", "act_search")
 def _open_acts_database(path) -> sqlite3.Connection:
     """Open a package's acts database read-only, as stored rows and not as a program.
 
-    Two things this cannot take on trust, because the file arrived inside a package
-    somebody else assembled.
+    **A table is not a view.**  Every read below names ``acts`` or ``act_search``, and
+    SQLite is perfectly happy for either to be a *view* -- which is a program.  A view
+    over a recursive CTE turns a few kilobytes of package member into an unbounded
+    result set: built one, and watched this function's caller allocate until the kernel
+    killed the process.  Same amplification the ``ZIP_STORED`` check refuses in the
+    archive reader, and closed the same way -- a stored table's row count is bounded by
+    the member's own physical bytes, a view's by nothing.
 
-    **Its path is not a URI.**  ``f"file:{path}?mode=ro"`` splices a filesystem path
-    into URI syntax, so a clean root whose name contains ``?`` or ``#`` -- which
-    ``bundle.py`` derives from the operator's own ``--out`` directory -- silently
-    becomes a query string, and a perfectly good package is refused with a message
-    blaming the package.  ``as_uri`` percent-encodes instead.
-
-    **A table is not a view.**  Every read below names ``acts`` or ``act_search``,
-    and SQLite is perfectly happy for either to be a *view* -- which is a program.
-    A view over a recursive CTE turns a few kilobytes of package member into an
-    unbounded result set: confirmed by building one and watching this function's
-    caller allocate until the kernel killed it.  That is the same amplification the
-    ``ZIP_STORED`` check above refuses, arriving through the database reader instead
-    of the archive reader, and it is closed the same way -- by construction rather
-    than by an arbitrary cap.  A *stored* table's row count is bounded by the
-    member's own physical bytes; a view's is not bounded by anything.
+    **A path is not a URI.**  ``f"file:{path}?mode=ro"`` makes a directory named ``x?y``
+    into a query string, and ``bundle.py`` derives its staging directory from the
+    operator's own ``--out`` name, so a good package gets refused with a message
+    blaming the package.  ``as_uri`` percent-encodes.
     """
     uri = f"{Path(path).resolve().as_uri()}?mode=ro"
     try:
@@ -1530,40 +1490,27 @@ def _terminal_ledger(
 ) -> dict[str, Any]:
     """The honesty ledger: one closed category for every unit the run accounted for.
 
-    Spec 11's first test asks for a *total partition* -- "every submitted file ... and
-    every sealed page and proposed act is accounted as delivered / held-for-review /
-    excluded-with-approval / confirmed-blank / refused-with-reason ... so a unit in no
-    set is FATAL". Neither lane's build closed it: one accounted acts alone and marked
-    the whole export permanently partial for the gap; the other emitted source rows
-    only for refusals and page rows only for silent pages, so a sealed page that
-    produced acts, and a source that sealed, appeared in no set at all.
+    Spec 11 test 1 is a *total partition*: every submitted source, every sealed page and
+    every proposed act lands in exactly one of the five categories, and a unit in no set
+    is invariant #10's imbalance. So all three unit types are enumerated here, and a unit
+    outside the five sets, a repeated unit identity, or a count that does not reconcile
+    stops the export rather than being reported.
 
-    So all three unit types are enumerated here and each lands in exactly one of the
-    five categories. A source unit inherits the category of the page it sealed into --
-    they are two questions with one answer, and giving the source its own vocabulary
-    would have meant inventing a sixth meaning for `delivered`. `by_unit_type` is
-    published beside `by_category` because the three populations overlap by design: an
-    act, the page it was cut from, and the source that sealed that page are three units
-    describing one piece of material, and a reader adding the category counts up is
-    counting units, not acts.
-
-    Refusing rather than reporting is deliberate here: a unit outside the five sets, a
-    repeated unit identity, or a count that does not reconcile is invariant #10's
-    imbalance, and the export stops.
+    A source unit inherits the category of the page it sealed into: they are two
+    questions with one answer, and giving the source its own vocabulary would mean
+    inventing a sixth meaning for `delivered`. `by_unit_type` is published beside
+    `by_category` because the three populations overlap by design -- an act, the page it
+    was cut from, and the source that sealed that page are three units describing one
+    piece of material, so a reader adding the category counts up is counting units, not
+    acts.
     """
     by_act_id: dict[str, dict[str, Any]] = {}
     categories_by_key: dict[str, str] = {}
     for record in act_outcomes:
-        # Collapsing into a dict keyed by act_id, below, is what the rest of this
-        # function needs -- but done silently it would let a duplicate act_id
-        # overwrite its earlier entry and vanish from every count with no error,
-        # which is exactly the "unit in no set at all" imbalance this function's
-        # own docstring says a repeated unit identity must never become. Both of
-        # today's real callers already refuse a duplicate act_id before reaching
-        # this function, so this is defense in depth, not currently reachable --
-        # but this function's docstring makes a total-partition claim on its own,
-        # and it should hold when this function is called directly, not only
-        # when its callers happen to have deduplicated first.
+        # Today's two callers both deduplicate before calling, so this cannot fire from
+        # inside the module. It stays because the total-partition claim above is made by
+        # this function about itself: a duplicate act id collapsing silently into the
+        # dict below is the very "unit in no set at all" the claim forbids.
         if record["act_id"] in by_act_id:
             raise SchemaRefusal(
                 f"terminal ledger act outcomes repeat act identity {record['act_id']!r}"
@@ -1776,10 +1723,8 @@ def _export_manifest(
                 "status": "not-produced-pending-architecture-approval",
                 "text_writable": False,
             },
-            # A proposal, and labelled one: spec 11 leaves the uncertainty/gap
-            # display convention to Tyrel at this gate. The rendering sits beside
-            # the canonical field in the text bundle and strips back to it exactly;
-            # nothing hashed depends on the choice.
+            # Labelled a proposal because it is one: spec 11 leaves the choice of
+            # convention to Tyrel at this gate, and nothing hashed depends on it.
             "display": {
                 "convention": DISPLAY_CONVENTION,
                 "status": "proposed-pending-tyrels-choice",

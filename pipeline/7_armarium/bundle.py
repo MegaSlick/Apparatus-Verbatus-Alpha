@@ -51,9 +51,8 @@ EXTRACTION_NAME = "bundle"
 
 def sealed_bundle(context) -> tuple[bytes, dict]:
     """The exact bytes the `export` artifact references, checked against its digest."""
-    # Absence is asked about separately, before reading. "There is no export here"
-    # and "the export does not verify" are different facts about the run, and a
-    # `try` around the read would report the first for the second -- hiding a
+    # Absence is asked about separately, before reading: a `try` around the read would
+    # report "there is no export here" for "the export does not verify", hiding a
     # tampered blob behind the more reassuring of the two sentences.
     address = artifact_id(ARMARIUM, "export", "export", None)
     relative = context.tree.artifact_path(ARMARIUM, "export", address)
@@ -83,12 +82,11 @@ def sealed_bundle(context) -> tuple[bytes, dict]:
 def publish(context, out_dir: Path) -> dict:
     """Verify the sealed bundle and put it at `out_dir`, atomically or not at all.
 
-    The destination is *reserved* with `mkdir` before any of the read, verify and
-    write work below runs, rather than merely checked and trusted. A plain
-    existence check followed by that work leaves a real window in which a second
-    publish -- or anything else -- can create the destination in between; `mkdir`
-    is atomic at the filesystem level, so there is no such window, and it refuses
-    a symlink (broken or not) at this path exactly as the check it replaces did.
+    The destination is *reserved* with `mkdir` before the read, verify and write work
+    below, not merely checked: an existence check followed by slow work leaves a real
+    window for a second publish to create the destination in between, and `mkdir` is
+    atomic at the filesystem level. It refuses a symlink at this path too, broken or
+    not, exactly as the check it replaces did.
     """
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -112,16 +110,12 @@ def publish(context, out_dir: Path) -> dict:
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)
             raise
-        # `out_dir` was reserved empty above, and `replace` atomically swaps an
-        # empty directory for `staging` -- the same atomic operation the module
-        # docstring already names, now also the one thing that ever populates the
-        # reservation.
+        # The one thing that ever populates the reservation, and it does so atomically.
         os.replace(staging, out_dir)
     except BaseException:
-        # Every failure above re-raises before `os.replace` runs, so `out_dir` is
-        # still exactly the empty reservation created at the top of this
-        # function. Remove it so a failed publish leaves no destination at all,
-        # not an empty one -- the guarantee this function has always documented.
+        # Every failure above re-raises before `os.replace`, so `out_dir` is still the
+        # empty reservation. Removing it is what makes a failed publish leave no
+        # destination at all rather than an empty one.
         with contextlib.suppress(OSError):
             out_dir.rmdir()
         raise
