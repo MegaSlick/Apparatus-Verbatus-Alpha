@@ -225,6 +225,21 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
   report names the network volume's continuing hourly price and that no volume deletion
   occurred.
 
+## Stage 04 deferrals
+
+Six items Tyrel accepted as deferred, on the express condition that the record survives
+to the pull request. These are accepted deferrals carried by his ruling, not oversights —
+each closes on the named condition, not on being noticed again.
+
+| # | What is deferred | Closes when |
+|---|---|---|
+| 04-1 | No durable laptop-supervisor driver in the tracked tree | live-integration pieces are built |
+| 04-2 | No controller armer that observes the real timer report | same |
+| 04-3 | No runnable bootstrap/service entrypoint — `bootstrap.py` is a library module | same |
+| 04-4 | `pod_timer.py` startup failure leaves nothing able to terminate; pod goes `EXITED` and bills volume disk at double rate. The laptop supervisor is the only backstop and does not exist | 04-1 lands |
+| 04-5 | Five untested seams: `cli.main` success path, `pod_timer.main`/`load_timer_context`, `SubprocessBootstrapActions.checkout_commit`, `sync_uv_environment` success path, `UrllibRunPodTransport` ordinary success | the live pieces above exist to test against |
+| 04-6 | Every RunPod field name is documented, not observed — no live call has been made | the first authorised live run |
+
 ## If your task seems to need one
 
 Stop and say so, with: what you would start, the hourly rate, roughly how long, what it
