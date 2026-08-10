@@ -13,6 +13,7 @@ release depends on.
 from __future__ import annotations
 
 import http.server
+import socket
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -109,6 +110,65 @@ def test_transport_refuses_a_response_past_the_size_bound() -> None:
     with _server(Oversized) as base:
         with pytest.raises(EndpointUnavailable, match="exceeded"):
             transport.request("GET", f"{base}/v1/models", body=None, timeout_seconds=5.0)
+
+
+@contextmanager
+def _raw_server(respond) -> Iterator[str]:
+    """One connection, answered by hand, so a malformed response can be sent."""
+
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+
+    def serve() -> None:
+        try:
+            connection, _ = listener.accept()
+        except OSError:  # pragma: no cover - listener closed before a request arrived
+            return
+        with connection:
+            connection.recv(65536)
+            try:
+                respond(connection)
+            except OSError:  # pragma: no cover - the client hung up first
+                pass
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{listener.getsockname()[1]}"
+    finally:
+        listener.close()
+        thread.join(timeout=5.0)
+
+
+def test_transport_reports_a_truncated_chunked_body_as_an_unavailable_endpoint() -> None:
+    """A body that stops mid-chunk must not escape as a bare `http.client` error.
+
+    This is what a vLLM child killed mid-response looks like from the readiness
+    poll, and the poll only retries `EndpointUnavailable`. Before the repair the
+    stdlib's `IncompleteRead` came straight out of the transport, aborted the
+    poll, and was reported as an "unexpected serving start failure" — a launch
+    thrown away, on the real path with the GPU meter running.
+    """
+
+    def truncated(connection: socket.socket) -> None:
+        connection.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n"
+        )
+        connection.sendall(b"10\r\nabc")  # declares 16 bytes, sends 3, then closes
+
+    with _raw_server(truncated) as base:
+        with pytest.raises(EndpointUnavailable) as caught:
+            UrllibHttpTransport().request(
+                "GET", f"{base}/v1/models", body=None, timeout_seconds=3.0
+            )
+
+    assert "IncompleteRead" in str(caught.value)
+    # A body that stopped short says nothing about whether a listener owns the
+    # port, so it may never release the sequential residency lease.
+    assert caught.value.definitively_absent is False
 
 
 def test_transport_classifies_a_refused_connection_as_definitively_absent() -> None:

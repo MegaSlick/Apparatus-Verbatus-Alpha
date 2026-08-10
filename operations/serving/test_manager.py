@@ -568,6 +568,101 @@ def test_start_proves_exact_model_answer_then_publishes_and_stops(tmp_path: Path
         http.request("GET", handle.endpoint.replace("/v1", "/health"), body=None, timeout_seconds=1)
 
 
+@pytest.mark.parametrize("switches_on", [False, True])
+def test_the_argv_carries_every_typed_profile_flag_and_the_audit_digests_that_argv(
+    tmp_path: Path, switches_on: bool
+) -> None:
+    """The launch audit records the profile; only the argv makes it true.
+
+    Every other test here reads two or three flags out of the rendered command.
+    That leaves the module's actual job — turning one typed profile into the
+    exact vLLM invocation — resting on the audit's own copy of the profile,
+    which is read from the same object the argv was rendered from. Drop
+    `--max-model-len` from the renderer and the audit still reports the context
+    cap as though it had bound the launch: a claim about something nobody
+    measured (GOVERNANCE 10). The three boolean flags are parametrized because
+    each has two arms and a swapped pair reads identically in a spot check.
+    """
+
+    chair = identity("reader", "reader-v1")
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["enable_prefix_caching"] = switches_on
+    row["enforce_eager"] = switches_on
+    row["trust_remote_code"] = switches_on
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("reader-api",),
+    )
+
+    handle = manager.start(chair, TIER)
+
+    snapshot_root = str(tmp_path / "reader")
+    assert launcher.calls[0][0] == (
+        sys.executable,
+        "-m",
+        "vllm",
+        "serve",
+        snapshot_root,
+        "--tokenizer",
+        snapshot_root,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--revision",
+        REVISION,
+        "--tokenizer-revision",
+        REVISION,
+        "--served-model-name",
+        "reader-api",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "0",
+        "--max-model-len",
+        "2048",
+        "--max-num-seqs",
+        "1",
+        "--max-num-batched-tokens",
+        "256",
+        "--gpu-memory-utilization",
+        "0.85",
+        "--mm-processor-kwargs",
+        '{"max_pixels":1024,"min_pixels":1}',
+        "--generation-config",
+        "vllm",
+        "--no-enable-log-requests",
+        "--enable-prefix-caching" if switches_on else "--no-enable-prefix-caching",
+        "--enforce-eager" if switches_on else "--no-enforce-eager",
+        "--trust-remote-code" if switches_on else "--no-trust-remote-code",
+    )
+
+    # Recomputed from what the launcher actually received, not from the audit:
+    # the audit's digest is only evidence if it names that exact command.
+    expected_argv_digest = hashlib.sha256(
+        json.dumps(list(launcher.calls[0][0]), ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert handle.launch_audit["command"]["argv_sha256"] == expected_argv_digest  # type: ignore[index]
+
+    # Same for the readiness probe: the audit carries a digest instead of the
+    # request text, so the digest is the only thing a reader can check it by.
+    expected_probe_digest = hashlib.sha256(
+        json.dumps(
+            {"messages": [{"role": "user", "content": "READY"}], "max_tokens": 4},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    assert (
+        handle.launch_audit["profile"]["readiness_probe"]["request_payload_sha256"]  # type: ignore[index]
+        == expected_probe_digest
+    )
+    handle.stop()
+
+
 def test_readiness_refuses_http_200_when_exact_model_id_is_missing(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
     manager, clock, _, launcher, registry, publisher = manager_for(
@@ -612,6 +707,69 @@ def test_readiness_refuses_exact_id_that_never_completes_a_valid_answer(tmp_path
     assert http.inference_calls > 0
     assert launcher.processes[0].terminate_calls == 1
     assert publisher.calls == []
+
+
+def test_a_health_endpoint_answering_non_200_never_becomes_ready(tmp_path: Path) -> None:
+    """`/health` is the first of the three readiness conditions and had no test.
+
+    `FakeHttp` has carried a `health_status` knob since the lane merged and no
+    test ever moved it off 200, so `VLLM_HEALTH_UNAVAILABLE` was unreachable
+    from the suite: an endpoint that answers `/health` with a 503 is exactly the
+    routing stub the package's README says cannot publish a receipt.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        health_status=503,
+    )
+
+    with pytest.raises(
+        ServingRecipeRefusal, match="VLLM_WATCHDOG_TIMEOUT.*VLLM_HEALTH_UNAVAILABLE.*503"
+    ):
+        manager.start(chair, TIER)
+
+    assert publisher.calls == []
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_an_endpoint_answering_as_a_different_model_never_becomes_ready(tmp_path: Path) -> None:
+    """The response's own `model` field is checked, not just the advertised list.
+
+    `/v1/models` can advertise the exact id while the process actually answering
+    is a different one; `parse_openai_answer` has a direct parser test for that
+    mismatch, but nothing drove it through the manager, so the `FakeHttp`
+    `response_model` knob was dead too. A receipt naming a model that did not
+    produce the answer is the provenance defect GOVERNANCE 6 exists for.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        response_model="reader-api-shadow",
+    )
+
+    with pytest.raises(
+        ServingRecipeRefusal, match="VLLM_WATCHDOG_TIMEOUT.*VLLM_PROBE_MODEL_MISMATCH"
+    ):
+        manager.start(chair, TIER)
+
+    assert publisher.calls == []
+    assert launcher.processes[0].terminate_calls == 1
 
 
 @pytest.mark.parametrize(

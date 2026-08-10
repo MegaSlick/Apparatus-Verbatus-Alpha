@@ -1,9 +1,11 @@
 """Start one configured vLLM chair, prove it answers, then publish its receipt.
 
 The manager receives one already-named chair.  It never ranks chairs, retries
-with another recipe, or turns a failed adapter into its bare base.  Every
-start failure is routed through ``ChairRegistry.refuse_recipe_start`` so the
-existing chair boundary reports that requested chair as unavailable.
+with another recipe, or turns a failed adapter into its bare base.  Every start
+failure leaves as a refusal naming that requested chair: one this manager
+observed is routed through ``ChairRegistry.refuse_recipe_start``, and one the
+registry itself raised is re-raised as it stands, because refusing it a second
+time would replace the chair boundary's own reason with this module's.
 """
 
 from __future__ import annotations

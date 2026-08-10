@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -93,9 +94,21 @@ class UrllibHttpTransport:
         try:
             with _NO_REDIRECT_OPENER.open(request, timeout=timeout_seconds) as response:
                 return HttpResponse(int(response.status), _bounded_read(response))
+        except EndpointUnavailable:
+            # This module's own refusal, already carrying its classification.
+            # `EndpointUnavailable` is an OSError, so without this it would fall
+            # into the transport clause below and be reclassified as something
+            # observed on the wire.
+            raise
         except urllib.error.HTTPError as error:
             return HttpResponse(int(error.code), _bounded_read(error))
-        except (OSError, urllib.error.URLError) as error:
+        except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
+            # An `HTTPException` — a truncated chunked body is the realistic one
+            # — arrives while reading a response that already had a status line,
+            # so it is not an OSError and is not wrapped in a URLError.  Left
+            # out, it escapes this transport's stated "one response or one
+            # EndpointUnavailable" contract, and the readiness poll aborts a
+            # start instead of retrying a server that is still coming up.
             raise EndpointUnavailable(
                 f"{method} {url}: {type(error).__name__}: {error}",
                 definitively_absent=_connection_refused(error),
@@ -253,7 +266,7 @@ def _canonical_json(value: object) -> bytes:
     )
 
 
-def _connection_refused(error: OSError) -> bool:
+def _connection_refused(error: BaseException) -> bool:
     """Return true only for the TCP condition that proves no listener exists."""
 
     reason = error.reason if isinstance(error, urllib.error.URLError) else error
