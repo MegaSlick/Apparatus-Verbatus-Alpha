@@ -189,9 +189,7 @@ def _assert_pod_timer_is_primary_process(command: tuple[str, ...]) -> None:
         raise primary_process_error
     for part in command[:module_flag_index]:
         if part.rsplit("/", 1)[-1] in _SHELL_INTERPRETERS:
-            raise ValueError(
-                "docker_start_cmd must not invoke a shell before the pod timer module"
-            )
+            raise ValueError("docker_start_cmd must not invoke a shell before the pod timer module")
 
 
 def _required_timer_arguments(

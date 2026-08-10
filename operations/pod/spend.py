@@ -258,11 +258,7 @@ def require_confirmation(value: str | None, expected: str) -> None:
     if value == expected:
         return
     prefix_end = expected.rfind(" AT $")
-    if (
-        isinstance(value, str)
-        and prefix_end != -1
-        and value[:prefix_end] == expected[:prefix_end]
-    ):
+    if isinstance(value, str) and prefix_end != -1 and value[:prefix_end] == expected[:prefix_end]:
         raise SpendRefusal(
             f"typed confirmation must be exactly {expected!r}; the price may have "
             "changed between preview and confirmation -- re-run the preview and "

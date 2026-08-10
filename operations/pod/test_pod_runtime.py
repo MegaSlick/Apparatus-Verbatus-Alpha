@@ -1280,7 +1280,7 @@ def test_close_report_names_the_provider_resolved_billing_cutoff() -> None:
 
 
 def test_a_billing_cutoff_arbitrarily_far_in_the_future_is_refused_not_verified() -> None:
-    """"Charges captured through a named cutoff" is a claim about measured time
+    """ "Charges captured through a named cutoff" is a claim about measured time
 
     (GOVERNANCE 10); a cutoff nobody has reached yet is not that (audit-d
     Finding 2).
