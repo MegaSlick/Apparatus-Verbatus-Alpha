@@ -236,9 +236,13 @@ def test_blinded_pseudonyms_are_stable_and_reversible_without_a_stored_map(evide
     assert labels == recomputed
 
 
-def test_named_and_blinded_sort_orders_can_differ(evidence):
-    """Sorting by displayed label, not the true chair name: under blinding the
-    order is a function of the pseudonym, not a fixed slot per chair."""
+def test_named_and_blinded_sort_orders_are_each_sorted_by_displayed_label(evidence):
+    """D-9: this test's older name (`…_can_differ`) promised more than the body
+    proved -- both assertions below hold by construction, since `build_dossier`
+    always sorts by displayed label, regardless of what that label is under
+    either regime. See
+    `test_a_blinded_regimes_pseudonym_order_is_not_a_fixed_slot_per_chair`
+    below for the property the old name actually meant to claim."""
     context, act_id, act_key, regions, testimonia = evidence
     named = _build(context, act_id, act_key, regions, testimonia, regime="named")
     blinded = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
@@ -246,6 +250,40 @@ def test_named_and_blinded_sort_orders_can_differ(evidence):
     assert named_order == sorted(named_order)
     blinded_order = [entry["witness_label"] for entry in blinded["testimonia"]]
     assert blinded_order == sorted(blinded_order)
+
+
+def test_a_blinded_regimes_pseudonym_order_is_not_a_fixed_slot_per_chair(evidence, monkeypatch):
+    """Sorting by displayed label, not the true chair name: under blinding the
+    order is a function of the run-scoped pseudonym, not a fixed slot per
+    chair. Proven by rebuilding the identical roster under two different
+    run ids and showing the true chair sequence a reader would see reorders --
+    the property `test_..._are_each_sorted_by_displayed_label` above names but,
+    being sorted-by-construction either way, can never exhibit."""
+    from regime import pseudonym_for
+
+    context, act_id, act_key, regions, testimonia = evidence
+    chairs = [record["payload"]["chair"] for record in testimonia]
+    assert len(set(chairs)) >= 3, "need enough witnesses for a reorder to be provable, not luck"
+    original_run_id = context.tree.run_id
+
+    first = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
+    monkeypatch.setattr(context.tree, "run_id", original_run_id + "-alternate")
+    second = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
+
+    def chair_sequence(built, run_id):
+        pseudonym_to_chair = {
+            pseudonym_for(chair, run_id=run_id, config_digest=context.config_digest): chair
+            for chair in chairs
+        }
+        return [pseudonym_to_chair[entry["witness_label"]] for entry in built["testimonia"]]
+
+    first_sequence = chair_sequence(first, original_run_id)
+    second_sequence = chair_sequence(second, original_run_id + "-alternate")
+    assert set(first_sequence) == set(second_sequence) == set(chairs)
+    assert first_sequence != second_sequence, (
+        "two different run ids produced the same chair order by coincidence; "
+        "the property under test is that order is pseudonym-derived, not fixed"
+    )
 
 
 def test_load_witness_context_refuses_a_chair_with_no_declared_entry(tmp_path, evidence):
