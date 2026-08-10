@@ -681,6 +681,14 @@ def publish_structure_status(context, records, pages, provenance, failures) -> N
     outcome from whether crops happen to exist on it, which is exactly the
     inference GOVERNANCE 2 refuses: a page nothing marked out and a page nothing
     tried to mark out would look identical.
+
+    `state` says "scanned", never "marked-out": GLOSSARY defines Designator as
+    the stage that "marks out" acts, and the Recensor separately reports
+    whether an act was actually marked out on a page. A page can be `scanned`
+    by the structure pass and still have nothing marked out on it (no declared
+    act touches it) -- the two are different facts, and reusing the Designator's
+    own glossary verb for this field's success state would make them read as
+    the same one.
     """
     for ordinal in sorted(pages):
         reason_code = failures.get(ordinal)

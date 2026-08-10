@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -394,6 +396,62 @@ def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_
     assert proposals[0]["outcome"] == "held"
     assert proposals[0]["payload"]["authoritative"] is False
     assert proposals[0]["payload"]["overlapping_claimed_act_count"] == 2
+
+
+def test_an_out_of_page_secondary_candidate_is_refused_as_a_contract_error(tmp_path, monkeypatch):
+    """A secondary-scan candidate landing outside the page must be refused with
+    this pipeline's own `ContractError` shape, never `crop_png`'s bare
+    `ValueError` -- the same defect class `bf6a716` closed for the recovery
+    path. Unreachable today (candidates derive from the page's own pixel scan,
+    always in-page by construction) but the day a real detector proposes boxes,
+    they arrive from outside that guarantee.
+    """
+    from common.contracts.errors import ContractError
+    from common.stage import open_context, stage_parser
+
+    designator = _load_designator()
+    root = tmp_path / "runs"
+    models_config = _configured_models_config(tmp_path)
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / program),
+                "--run-root",
+                str(root),
+                "--run-id",
+                "r",
+                "--scenario",
+                "happy",
+                "--models-config",
+                str(models_config),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    args = stage_parser("out-of-page secondary candidate test").parse_args(
+        [
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+            "--models-config",
+            str(models_config),
+        ]
+    )
+    context = open_context(args, designator.DESIGNATOR)
+
+    def out_of_page_candidate(width, height, rows, *, background):
+        return [{"bounds": {"x": width - 1, "y": height - 1, "w": 5, "h": 5}, "pixel_count": 25}]
+
+    monkeypatch.setattr(designator.structure, "secondary_scan", out_of_page_candidate)
+    with pytest.raises(ContractError):
+        designator.initial_pass(context)
 
 
 def _orchestrate(root: Path, models_config: Path | None) -> subprocess.CompletedProcess:
