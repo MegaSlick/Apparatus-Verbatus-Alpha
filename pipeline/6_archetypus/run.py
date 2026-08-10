@@ -629,7 +629,9 @@ def validate_record(record: dict) -> dict:
     try:
         derived_status = derive_text_status(text, annotations)
     except (KeyError, TypeError):
-        raise SchemaRefusal("the Archetypus annotations cannot derive an honest text_status") from None
+        raise SchemaRefusal(
+            "the Archetypus annotations cannot derive an honest text_status"
+        ) from None
     if record["text_status"] != derived_status:
         raise SchemaRefusal(
             f"the Archetypus text_status {record['text_status']!r} disagrees with its text "
@@ -672,9 +674,7 @@ def _direct_inputs(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
                 raise SchemaRefusal("an Archetypus direct input is not a digest-checked reference")
             existing = by_path.get(reference["relative_path"])
             if existing is not None and existing != reference:
-                raise FatalAccounting(
-                    "one Archetypus evidence path carries contradictory digests"
-                )
+                raise FatalAccounting("one Archetypus evidence path carries contradictory digests")
             by_path[reference["relative_path"]] = reference
     return list(by_path.values())
 

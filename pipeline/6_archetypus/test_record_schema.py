@@ -64,7 +64,9 @@ def test_the_only_public_constructor_resolves_the_accepted_evidence_itself():
         for name, function in inspect.getmembers(archetypus, inspect.isfunction)
         if not name.startswith("_")
     }
-    assert tuple(inspect.signature(archetypus.establish_from_accepted_primed_perlectio).parameters) == (
+    assert tuple(
+        inspect.signature(archetypus.establish_from_accepted_primed_perlectio).parameters
+    ) == (
         "context",
         "act",
         "review_ref",
