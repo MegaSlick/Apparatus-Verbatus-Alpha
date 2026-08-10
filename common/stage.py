@@ -562,8 +562,12 @@ def run_config_bindings(
         # above by name. This is the record of which bytes each digest above was
         # taken over, so a stage that re-reads one of these files for its values
         # can prove it read what was bound (`StageContext.require_sealed_config`).
+        # Only `designator-padding` has such a point-of-use re-read today: the
+        # Door's own second read of the PDF-render policy (`door.py`) neither
+        # takes a sealed digest nor calls `require_sealed_config`, so sealing a
+        # `pdf-render` entry here would read as a closed TOCTOU window that is
+        # not actually wired shut. Not this stage's window to close.
         "sealed_config_digests": {
-            "pdf-render": pdf_render_config_digest,
             "designator-padding": padding_config_digest,
         },
     }
