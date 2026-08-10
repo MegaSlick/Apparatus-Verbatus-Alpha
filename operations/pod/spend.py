@@ -111,6 +111,7 @@ class SpendAssessment:
             "reasons": list(self.reasons),
             "pod_hourly_usd": str(self.estimate.pod_hourly_usd),
             "volume_ongoing_hourly_usd": str(self.estimate.volume_hourly_usd),
+            "price_source": self.estimate.source,
             "estimated_pod_cost_usd": str(self.estimated_pod_cost_usd),
             "estimated_attached_volume_cost_usd": str(self.estimated_volume_cost_usd),
             "estimated_total_metered_cost_usd": str(self.estimated_total_cost_usd),

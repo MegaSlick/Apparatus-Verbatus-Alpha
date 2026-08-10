@@ -361,6 +361,7 @@ def test_create_and_adopt_share_the_price_ceiling_and_typed_confirmation_gate(
     assert preview.preview.assessment.estimate.pod_hourly_usd == Decimal("0.77")
     assert preview.preview.assessment.estimate.volume_hourly_usd == Decimal("0.05")
     assert preview.preview.confirmation_phrase == CREATE_CONFIRMATION
+    assert preview.preview.assessment.to_record()["price_source"] == "fake price sheet"
 
     refused_create = pod_runtime.create(create_request, confirmation=None)
     assert refused_create.state is LaunchState.REFUSED_CONFIRMATION

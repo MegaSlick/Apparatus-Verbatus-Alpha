@@ -152,7 +152,12 @@ class PodRuntime:
         self.controller_armer = controller_armer or FailClosedControllerArmer(now=now)
 
     def preview_create(self, request: PodCreateRequest) -> LaunchResult:
-        """Prove shutdown wiring first, then show the provider estimate and ceilings."""
+        """Prove shutdown wiring first, then show the price estimate and ceilings.
+
+        The estimate's own ``source`` says whether it came from the provider
+        or a reviewed local price sheet -- RunPod has no pre-create quote
+        endpoint, so a create preview is priced from config, not the provider.
+        """
 
         readiness = self.shutdown.prove_ready()
         if not readiness.ready:

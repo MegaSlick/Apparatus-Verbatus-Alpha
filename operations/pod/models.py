@@ -471,7 +471,14 @@ class PodRuntimeContract:
 
 @dataclass(frozen=True, slots=True)
 class PodEstimate:
-    """A provider price observation used by the launch and adopt gate."""
+    """A price observation used by the launch and adopt gate.
+
+    ``source`` names where the price came from -- a live provider quote on
+    adopt, or a reviewed local price sheet on create (RunPod has no public
+    pre-create estimate endpoint).  Callers must not assume it was quoted by
+    the provider; the operator-facing preview reads ``source`` rather than
+    guessing.
+    """
 
     pod_hourly_usd: Decimal
     volume_hourly_usd: Decimal
