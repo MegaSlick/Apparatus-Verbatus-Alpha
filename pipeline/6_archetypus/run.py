@@ -1,48 +1,35 @@
 """Archetypus: exactly one established reading per act, written once.
 
-The authoritative pipeline output — a machine reading, not truth. Four properties
-make that claim honest rather than decorative.
+The authoritative pipeline output — a machine reading, not truth. Five things a
+reader needs that the code below does not say for itself.
 
-**One text.** A single `text` field per act, written once. There is no second
-field holding an alternative, no per-format variant, and no place for a witness's
-words to sit beside the reading as an option. The record's field set is closed
-and checked (`_RECORD_FIELDS`), so the old pipeline's dead shape — a fallback
-chain reaching through `consolidated_literal`, `reader_text`, `literal`, `text`,
-`markdown` for whichever was non-empty — cannot be reintroduced field by field.
-GOVERNANCE 5: one established text, projected identically into every format.
+**The dead shape.** The audit found the old pipeline decided its established text
+twice, and its export then reached through `consolidated_literal`, `reader_text`,
+`literal`, `text`, `markdown` for whichever was non-empty. Every closed field set
+in this file exists to stop that being rebuilt one field at a time — including
+`_REGION_FIELDS`, because a region is embedded whole and travels into the export
+whole (GOVERNANCE 5: one established text, projected identically).
 
-**Status honesty.** `text_status` is a closed enum — `established`, `partial`,
-`no_readable_text` — and never an empty string standing in for one (Tyrel's
-2026-08-05 ruling, 4c). A blank page is ordinary material, not a fatal error: his
-own words, "It is not a fatal error there might be blank pages." What must never
-happen is the opposite collapse — ink that is merely unread quietly reported as
-ink that was never there. The three silences he named stay apart: nothing there
-(`no_readable_text`, a positive finding with its own evidence), ink present but
-unread by a human (a gap, inside `partial`), and ink the machine could not see
-properly (also a gap — indistinguishable from the last from inside the pipeline,
-and that is fine, so long as neither is ever reported as the first).
+**The three silences, which must never collapse** (Tyrel, 2026-08-05). Nothing
+there — `no_readable_text`, a positive finding carrying its own evidence. Ink
+present and unread by a human. Ink the machine could not see. The last two are
+indistinguishable from inside the pipeline and both are gaps, inside `partial`;
+that is fine. Reporting either of them as the first is not. A blank page is
+ordinary material either way — "It is not a fatal error there might be blank
+pages" — so the refusals here are about the confusion, never about blankness.
 
-**Uncertainty carried whole, never as characters.** The Perlectio's `uncertain`
-spans (real characters in `text`, flagged with an explicit certainty, carrying the
-reader's own alternative readings) and `illegible` gaps (zero-width anchors that
-cannot, structurally, carry a character) are validated and carried into this
-record exactly. A witness variant is evidence beside a gap, never a substitute
-inside `text` — Tyrel, 2026-07-30 and 2026-08-05: "we don't want it making shit
-up."
+**A witness variant is evidence beside a gap, never a substitute inside `text`**
+(Tyrel, 2026-07-30: "we don't want it making shit up").
 
-**Write-once.** An Archetypus already on disk is never rewritten. The run tree
-refuses different bytes under the same identity, so this is enforced a layer down
-rather than promised here; what this stage adds is that it never tries. A revised
-reading is a new pipeline run over the same Exemplar (Tyrel, 4b) — runs are cheap,
-silent mutation is not.
+**Write-once is enforced a layer down**, by the run tree refusing different bytes
+under one identity. What this stage adds is that it never tries: a revised
+reading is a new run over the same Exemplar (4b). Human correction lives *above*
+this record (4a) — a corrected text is a different kind of thing.
 
-**Only for acts the Recensor accepted.** A held act reaches no Archetypus at all.
-That is the load-bearing half of "partial cannot look complete" — the absence is
-the evidence, and an export that showed a held act as delivered would have to
-invent a record that does not exist.
-
-Human correction lives *above* this record, never inside it (4a): the output is a
-machine reading, and a corrected text is a different kind of thing.
+**A held act reaches no Archetypus at all**, and that absence is the evidence the
+Armarium reconciles against. It is the load-bearing half of "partial cannot look
+complete": an export showing a held act as delivered would have to invent a
+record that does not exist.
 
     python pipeline/6_archetypus/run.py --run-root <dir> --run-id <id>
 """
@@ -82,46 +69,36 @@ from common.stage import (  # noqa: E402
     validate_serving_provenance,
 )
 
-# text_status: the closed enum, and the rule that keeps it honest ---------------
-#
-# Tyrel's ruling, 2026-08-05: "no_readable_text" is a positive finding that a
-# page held no ink; a gap (inside "partial") is the opposite claim — ink was
-# there and is unread, whether from damage or from a reading limitation. The two
-# must never collapse into each other, and this enum is what keeps them apart.
+# The three silences, kept apart. See the module docstring for the ruling.
 TEXT_STATUSES = frozenset({"established", "partial", "no_readable_text"})
 
-# The two annotation kinds this stage carries whole from the Perlectio. Closed,
-# per spec 10 test 5. "uncertain" covers characters that ARE in `text`, flagged
-# with a certainty — the mature convention's `<unclear cert="">` (TEI P5 ch. 11,
-# "Representation of Primary Sources"; EpiDoc Guidelines, "Unclear characters").
-# "illegible" is a zero-width gap anchor, structurally unable to carry characters
-# into `text` — `<gap>`, whose own content model never admits character data
-# either. Spec 10 asks the shapes to map onto that convention rather than invent
-# markup; the *rendering* of either (brackets, underdots, sigla) is the
-# Armarium's business at export time and is deliberately not stored here.
+# Spec 10 asks these shapes to map onto the mature convention rather than invent
+# markup: `<unclear cert="">` for characters that ARE in `text`, and `<gap>` —
+# whose content model never admits character data — for a zero-width anchor where
+# none were read (TEI P5 ch. 11, "Representation of Primary Sources"; EpiDoc
+# Guidelines, "Unclear characters"). Rendering either one is the Armarium's
+# business at export time and is deliberately not stored.
 ANNOTATION_KINDS = frozenset({"uncertain", "illegible"})
 
-# `<unclear cert="">` in TEI takes a certainty value. Closed here rather than
-# free-text, because an open field is a place for a score nobody defined.
+# Closed rather than free-text, because an open certainty field is a place for a
+# score nobody defined.
 CERTAINTIES = frozenset({"high", "medium", "low", "unknown"})
 
 _WITNESS_EVIDENCE_FIELDS = frozenset({"witness_ref", "variant"})
 _UNCERTAIN_FIELDS = frozenset({"kind", "start", "end", "certainty", "alternatives"})
 _ILLEGIBLE_FIELDS = frozenset({"kind", "start", "end", "witness_evidence"})
 
-# No real text is within light-years of this many characters, so any start/end
-# past it is already refused by the bounds check below. The cap exists to keep
-# a forged, absurdly large offset from ever reaching Python's own int-to-str
-# conversion limit (~4300 digits, CPython's "Integer string conversion length
-# limitation", default since 3.11): formatting a start/end that large into
-# this refusal's own message would raise ValueError and crash the whole run
-# instead of refusing one annotation.
+# The bounds check below already refuses any offset this large. The cap is about
+# the refusal *message*: CPython raises ValueError rather than format an int of
+# more than ~4300 digits ("Integer string conversion length limitation", default
+# since 3.11), so a forged offset would crash the run inside the code written to
+# refuse it.
 _MAX_PLAUSIBLE_OFFSET = 10**15
 
-# The record's whole field set, closed. A reviewer's question — "is there a
-# second text-bearing field?" — is answered mechanically by this rather than by
-# reading the constructor. Every field is required; `evidence_ref` is present
-# and null except under `no_readable_text`, so the set never varies by act.
+# The record's whole field set, closed, so "is there a second text-bearing field?"
+# is answered mechanically rather than by reading the constructor. Every field is
+# required; `evidence_ref` is present and null except under `no_readable_text`,
+# so the set never varies by act.
 _RECORD_FIELDS = frozenset(
     {
         "act_id",
@@ -142,11 +119,11 @@ _RECORD_FIELDS = frozenset(
     }
 )
 
-# One basis region's whole field set, closed. Exactly what the shared crop
-# verification returns to the Perlector (`common/exemplar_boundary.py`), plus the
-# `witness_covered` flag the Perlector adds to each before sealing its basis.
-# Named here rather than derived, so a producer that starts writing a tenth field
-# is refused at this boundary and read by a person, instead of travelling sealed.
+# Exactly what the shared crop verification returns to the Perlector
+# (`common/exemplar_boundary.py`), plus the `witness_covered` flag the Perlector
+# adds before sealing its basis. Spelled out rather than derived, so a producer
+# that starts writing a tenth field is refused here and read by a person instead
+# of travelling sealed into the record and out through the export.
 _REGION_FIELDS = frozenset(
     {
         "region_id",
@@ -184,28 +161,22 @@ def _reference_key(reference: dict) -> tuple[str, str]:
 def validate_annotations(annotations, text: str, witnesses: dict | None, what: str) -> list[dict]:
     """The Perlectio's uncertainty layer, carried whole and refused if malformed.
 
-    Every span is checked against the text it annotates, every gap is refused
-    unless it is a genuine zero-width anchor, and every piece of witness evidence
-    must cite a witness this act was actually read against — one of the exact
-    references already in this reading's own basis, never an arbitrary one. None
-    of this may ever place a character into `text`: there is no field here a
-    character could travel through, and the zero-width requirement on a gap makes
-    that a property of the schema rather than a rule someone has to remember.
+    Nothing here can place a character into `text`, and that is a property of the
+    schema rather than a rule someone has to remember: no field on either kind
+    could carry one, and a gap is required to be zero-width.
 
     `witnesses` maps `(relative_path, sha256)` to the text that witness actually
     reported, or `None` where it reported none. A quoted `variant` must be a
-    substring of what its cited witness reported: a variant that no witness said
-    is neither the ink nor testimony, and there is nothing else it could honestly
-    be. Comparison is exact — normalizing here would be a place for the record to
+    substring of what its cited witness reported: a variant no witness said is
+    neither the ink nor testimony, and there is nothing else it could honestly be.
+    The comparison is exact, because normalizing is where a record starts to
     differ from the testimony it claims to quote.
 
-    **`witnesses=None` is the read-back caller**, `validate_record`, which has a
-    sealed record and no reading beside it: the roster lives in the Perlectio's
-    basis, so attribution and quotation are the two things it cannot re-check.
-    Everything else is checked identically, from this one spelling, because the
-    alternative — a second copy of these rules for the record's own read path —
-    is a pair that drifts. It already had: the two copies disagreed about
-    whether an uncertain span had to cover a readable character.
+    `witnesses=None` is the read-back caller, `validate_record`, which holds a
+    sealed record and no reading: the roster lives in the Perlectio's basis, so
+    attribution and quotation are the two things it cannot re-check. Everything
+    else it checks from this one spelling, because a second copy of these rules
+    for the record's own read path is a pair that drifts.
     """
     if not isinstance(annotations, list):
         raise SchemaRefusal(f"{what} is not a list")
@@ -273,18 +244,16 @@ def _validate_certainty(note: dict, label: str) -> str:
 def _validate_alternatives(note: dict, text: str, start: int, end: int, label: str) -> list[str]:
     """The reader's own candidate readings for characters that ARE in `text`.
 
-    Deliberately the Perlector's own alternatives and not a witness's: the
-    Perlector reads the ink (ARCHITECTURE), so its uncertainty about a span it
-    did read is its own. Witness material attaches to a *gap*, where the reader
-    read nothing — which is the only place spec 10 asks for it.
+    The Perlector's alternatives and not a witness's: it reads the ink
+    (ARCHITECTURE), so its uncertainty about a span it did read is its own.
+    Witness material attaches to a *gap*, which is the only place spec 10 asks
+    for it.
 
-    The span must cover a readable character, not merely a width. An uncertain
-    span over blank text is what lets the two silences collapse: on all-blank
-    text `derive_text_status` sees no gap and returns `no_readable_text`, so the
-    record would positively claim the page held no ink while carrying an
-    annotation asserting the reader read characters there and offering
-    alternatives for them. Where the reader saw nothing to be uncertain about,
-    the honest shape is an illegible gap.
+    The span must cover a readable character rather than merely a width, because
+    a span over blank text is where the silences collapse: `derive_text_status`
+    finds no gap there and returns `no_readable_text`, so one record would claim
+    the act held no ink while carrying an annotation asserting characters were
+    read at that position and offering alternatives for them.
     """
     if not text[start:end].strip():
         raise SchemaRefusal(
@@ -365,12 +334,11 @@ def _validate_witness_evidence(
 def derive_text_status(text: str, annotations: list[dict]) -> str:
     """established | partial | no_readable_text, from the text and its gaps alone.
 
-    A gap anywhere — regardless of whether `text` is otherwise empty or full —
-    means some ink is known and unread: `partial`. Tyrel: "many of our records
-    are damaged," so this is expected to be the common case, not an edge one, and
-    an act may carry many gaps at once. No gap and no text is the one remaining
-    case, and it is the only one this stage may call `no_readable_text`; see
-    `validate_text_status` for the evidence that status requires.
+    A gap anywhere means some ink is known and unread, whether `text` is
+    otherwise empty or full: `partial`, which Tyrel expects to be the common case
+    rather than the edge one — "many of our records are damaged". No gap and no
+    text is the only remaining case, and the only one this stage may call
+    `no_readable_text`; `validate_text_status` holds the evidence it then owes.
     """
     if any(note["kind"] == "illegible" for note in annotations):
         return "partial"
@@ -436,16 +404,14 @@ def final_review(context, act_id: str) -> dict:
 def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str, str]]:
     """Resolve the exact Perlectio the Recensor reviewed, never a newer one.
 
-    `latest_attempt` establishes which review is current.  That review then
-    carries the evidence of the reading it assessed.  Looking up the current
-    Perlectio independently would silently establish a recovery attempt nobody
-    reviewed, which is a reconciliation failure rather than a useful fallback.
+    The current review carries the evidence of the reading it assessed. Looking
+    the current Perlectio up independently would silently establish a recovery
+    attempt nobody reviewed — a reconciliation failure, not a useful fallback.
 
-    The lookup is also the structural half of "single path": `read_artifact_reference`
-    below refuses anything that is not exactly a `(perlector, perlectio)` artifact,
-    so a Testimonium, a hypothetical salvage-tier record, or any other kind cannot
-    reach this stage by being named in `perlectio_ref` — the reference's declared
-    stage and kind are checked against the actual bytes, not merely trusted.
+    This lookup is also the structural half of "single path": the reference's
+    declared stage and kind are checked against the actual bytes, so nothing but
+    a `(perlector, perlectio)` artifact can reach this stage by being named in
+    `perlectio_ref`.
     """
     payload = review.get("payload")
     if not isinstance(payload, dict):
@@ -486,25 +452,20 @@ def accepted_primed_perlectio(
 
     Spec 10 test 1 names four things that must not reach it: a Testimonium, a
     salvage-tier piece, a Lectio nuda, and a raw Perlectio the Recensor never
-    accepted. The stage/kind check inside `read_artifact_reference` already
-    closes the first, structurally, before `review`/`reading` ever reach this
-    function; the rest are closed here, by name, so a producer that later
-    starts labelling its readings cannot slip an unprimed or salvage one
+    accepted. `read_artifact_reference` closes the first structurally, before
+    either argument arrives; the rest are closed here by name, so a producer that
+    later starts labelling its readings cannot slip an unprimed or salvage one
     through on a field this stage does not look at.
 
-    The `stage`/`kind` checks below repeat what `read_artifact_reference`
-    already guaranteed for both arguments at their one call site
-    (`establish_from_accepted_primed_perlectio`, via `reviewed_reading`) —
-    deliberately: this is the single function spec 10 names as the whole of
-    the boundary, and a second, cheap check here means a future caller that
-    resolves `review`/`reading` some other way still cannot slip past it
-    silently.
+    The `stage`/`kind` checks below are redundant at the one current call site,
+    and kept anyway: this is the single function spec 10 names as the whole of
+    the boundary, and a caller that resolves `review`/`reading` some other way
+    must not be able to walk past it in silence.
 
-    This is a boundary, not a ranking mechanism. It compares, counts and scores
-    nothing, and the only witness text it reads is checked against a quotation
-    later claimed of that same witness. It returns the reading's own payload, the
-    witnesses it was read against keyed by digest-checked reference — the roster
-    an annotation may cite, and nothing more — and the regions it read.
+    **A boundary, not a ranking mechanism.** It compares, counts and scores
+    nothing. The only witness text it reads is the roster an annotation may
+    cite, and every entry of that roster is a digest-checked direct input of the
+    reading that claims to have seen it.
     """
     review_payload = review.get("payload")
     if (
@@ -532,12 +493,12 @@ def accepted_primed_perlectio(
     if not isinstance(payload, dict):
         raise SchemaRefusal(f"the accepted Perlectio for {act_id} has no object payload")
 
-    # No Perlectio in this build records primed/unprimed — that field is the
-    # Perlector lane's to add. Until it exists, an unlabeled reading is accepted
-    # and an explicitly unprimed one is refused, so the check is already in place
-    # when the producer starts writing the field. The retained Testimonium basis
-    # below is the transitional indication that a reading was primed at all; it is
-    # a compatibility assumption, not proof, and it is named as one here.
+    # No Perlectio in this build records primed/unprimed; that field is the
+    # Perlector lane's to add. So an unlabeled reading is accepted and an
+    # explicitly unprimed one refused, and the check is already in place when the
+    # producer starts writing it. Until then the retained Testimonium basis below
+    # stands in — a compatibility assumption, not proof, named as one here
+    # because everything else in this function is proof.
     lectio_kind = payload.get("lectio_kind")
     if lectio_kind is not None and lectio_kind != "primed":
         raise SchemaRefusal(
@@ -557,9 +518,9 @@ def accepted_primed_perlectio(
                 "Archetypus (invariant #31's boundary)"
             )
 
-    # Regions first, so a resealed reading with no object basis is refused by the
-    # shared helper that every consumer of a completed Perlectio uses, in the same
-    # words, rather than by this stage's narrower witness check.
+    # Regions first, so a resealed reading with no object basis is refused in the
+    # words every consumer of a completed Perlectio uses, rather than in this
+    # stage's narrower ones.
     regions = reading_basis_regions(reading, f"accepted reading of {act_id}")
     basis = payload.get("basis")
     testimonia = basis.get("testimonia") if isinstance(basis, dict) else None
@@ -621,16 +582,14 @@ def validate_record_fields(record: dict) -> None:
 def validate_record(record: dict) -> dict:
     """Refuse a malformed record before an index can repeat its claims.
 
-    The constructor checks the upstream evidence.  This validator checks the
-    sealed record itself on every later stage-local read: its one-text schema,
-    nested self-hash, text hash, status derivation, references, and the scalar
-    identities needed to return to the act.  A derived index must not turn a
-    resealed but internally contradictory payload into a trusted summary.
+    The constructor checks the upstream evidence; this checks the sealed record
+    itself, on every later stage-local read, so that a derived index cannot turn
+    a resealed but internally contradictory payload into a trusted summary.
 
-    The annotation layer goes back through `validate_annotations`, without a
-    witness roster, and the result must equal what is stored: anything the
-    constructor would not have written is refused, without a second copy of the
-    annotation rules living here to drift from the first.
+    The annotation layer goes back through `validate_annotations` — without a
+    witness roster, which a record read off disk cannot have — and the result
+    must equal what is stored, so no second copy of those rules lives here to
+    drift from the first.
     """
     if not isinstance(record, dict):
         raise SchemaRefusal("the Archetypus record is not an object")
@@ -690,27 +649,23 @@ def _no_readable_text_evidence(review: dict) -> dict[str, str] | None:
 def _crop_references(context, regions: list[dict], act_id: str) -> list[dict[str, str]]:
     """Close the regions this record will carry, and prove each crop by its bytes.
 
-    **The closed field set.** `regions` is embedded from the reading verbatim and
-    self-hashed into the record, so the record's own top-level closed schema —
-    the mechanical answer to "is there a second text-bearing field?" — says
-    nothing about what is inside one. It is an allowlist for the reason
-    `validate_serving_provenance` gives for provenance: a denylist passes
-    whatever a later producer invents, and an unvalidated field inside a sealed
-    record is a field nothing can trust. Extras are refused rather than dropped,
-    because the Armarium compares this list to the reading's own for exact
-    equality; filtering here would refuse a legitimate act at export instead.
+    A region is embedded from the reading verbatim, self-hashed into the record,
+    and copied field-for-field into the export, so the record's own closed field
+    set says nothing about what rides inside one. Hence an allowlist, for the
+    reason `validate_serving_provenance` gives about provenance: a denylist
+    passes whatever a later producer invents. **Extras are refused rather than
+    dropped** — the Armarium compares this list to the reading's own for exact
+    equality, so filtering here would refuse a legitimate act at export instead.
 
-    **The crop digest.** The Recensor checks a region's declared `image_sha256`
-    against the Designator's own record, and the Armarium checks it against the
-    crop bytes before exporting. Between them sits the stage that makes the
-    record immutable, and it checked neither: a record could be sealed naming a
-    digest its own crop does not have, and — being write-once — could then never
-    be repaired, only abandoned with the whole run.
+    The declared `image_sha256` is checked against the bytes because the stage
+    before and the stage after both check it and this one is the stage that makes
+    the record immutable: a record sealed naming a digest its crop does not have
+    can only be abandoned with the whole run, never repaired.
 
-    A crop the tree cannot read is named here too. `input_ref` hashes the bytes
-    on disk, so `OSError` would otherwise escape the `ContractError` family
-    `run_stage` classifies: a bare traceback and exit 1, taking every other act's
-    record with it, for what is as often a pruned blob as a forged reading.
+    `input_ref` hashes the bytes on disk, so an unreadable crop arrives as
+    `OSError`, outside the `ContractError` family `run_stage` classifies — a bare
+    traceback and exit 1, taking every other act's record with it, for what is as
+    often a pruned blob as a forged reading.
     """
     references = []
     for index, region in enumerate(regions):
@@ -805,7 +760,7 @@ def establish_from_accepted_primed_perlectio(
         producer_stage=PERLECTOR,
         require_receipt=True,
     )
-    # The one construction site.  There is no helper accepting free-standing
+    # The one construction site. No helper anywhere accepts free-standing
     # canonical text: these characters are in scope only because this function
     # resolved them from the exact accepted Perlectio above.
     record = {
@@ -830,16 +785,12 @@ def establish_from_accepted_primed_perlectio(
     }
     record["self_hash"] = self_hash(record)
     validate_record(record)
-    # Not `evidence_ref`: the Armarium's frozen `verify_established_record`
-    # reconciles an Archetypus's own `inputs` against exactly
-    # `[review_ref, reading_ref, *region refs]` and was not written to expect a
-    # fourth kind (off-limits this round). `evidence_ref` is already proven to
-    # be a digest-checked direct input of the *review* by
-    # `_no_readable_text_evidence` above, and the record's own self-hash makes
-    # the reference itself tamper-evident, so nothing is unchecked by leaving
-    # it out here -- and leaving it in would make every future
-    # `no_readable_text` record unexportable the day a real blank-proof
-    # reference stops coinciding with `reading_ref`.
+    # Not `evidence_ref`, however natural it looks beside the other two. The
+    # Armarium's frozen `verify_established_record` reconciles these `inputs`
+    # against exactly `[review_ref, reading_ref, *crop refs]`, so a fourth kind
+    # makes every `no_readable_text` record unexportable. Nothing goes unchecked
+    # for its absence: `_no_readable_text_evidence` has already proven it a
+    # digest-checked direct input of the *review*.
     return record, _direct_inputs([review_ref, reading_ref], crop_references)
 
 

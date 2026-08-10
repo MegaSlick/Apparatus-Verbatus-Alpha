@@ -1,16 +1,12 @@
 """Spec 10, test 5: the annotation layer, and the firewall between it and `text`.
 
-Two levels: pure unit tests of `validate_annotations` (bounds, closed kind enum,
-the closed certainty enum, the zero-width gap requirement, witness-evidence
-provenance), and end-to-end CLI tests that tamper a reviewed Perlectio to carry
-`annotations` -- the field no stage upstream of this one populates yet, per
-`run.py`'s own docstring -- and prove the Archetypus carries them whole, derives
-`partial` correctly, and never lets evidence travel into `text`.
+Two levels, because nothing upstream of this stage populates `annotations` yet:
+unit tests against `validate_annotations` directly, and end-to-end tests that
+tamper a reviewed Perlectio into carrying some and drive the real CLI over it.
 
-Tyrel, 2026-08-05: "many of our records are damaged," so a single act may carry
-many gaps at once, and anything that behaves acceptably at one gap and badly at
-fifty is a defect. Several tests below exercise multiple gaps together for
-exactly that reason, including one deliberately large stress case.
+Tyrel, 2026-08-05: "many of our records are damaged," so a single act carrying
+fifty gaps is ordinary material and anything that behaves acceptably at one gap
+and badly at fifty is a defect. Hence the multi-gap cases below.
 """
 
 import importlib.util
@@ -104,11 +100,10 @@ def test_a_non_integer_start_is_refused():
 
 
 def test_an_absurdly_large_end_is_refused_cleanly_rather_than_crashing_on_format():
-    """A forged end far past any real text length used to reach the bounds
-    check's own error-message formatting, where Python's int-to-str
-    conversion limit (~4300 digits) turned one malformed annotation into an
-    uncaught ValueError that would take the whole run down with it, not just
-    refuse this act. The magnitude check must fire before that formatting."""
+    """The magnitude check has to fire before the bounds check formats its
+    message: CPython refuses to render an int of more than ~4300 digits, so an
+    offset this large turns one malformed annotation into an uncaught ValueError
+    that takes the whole run down rather than refusing a single act."""
     huge = 10**10000
     note = {
         "kind": "uncertain",
@@ -192,9 +187,9 @@ def test_gap_evidence_requires_a_non_empty_variant():
 
 
 def test_a_variant_no_witness_ever_reported_is_refused():
-    """The one check neither lane had: a quoted variant that is neither the ink
-    nor something its cited witness actually said is a reconstruction, and Tyrel's
-    2026-08-05 ruling is that the record carries none of those."""
+    """A quoted variant that is neither the ink nor something its cited witness
+    actually said is a reconstruction, and Tyrel ruled on 2026-08-05 that the
+    record carries none of those."""
     note = gap(2, witness=REF_A, variant="INVENTED")
     with pytest.raises(SchemaRefusal, match="never reported"):
         archetypus.validate_annotations([note], "some text", WITNESSES, "annotations")

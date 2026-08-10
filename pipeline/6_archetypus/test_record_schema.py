@@ -179,12 +179,10 @@ def test_record_validation_refuses_a_bad_nested_self_hash():
 
 # --- The rest of the resealed-record refusals, each exercised ------------------
 #
-# `validate_record` is the check every later stage-local read runs, and
-# HANDOFF.md offers it to any consumer that wants to prove a record before
-# relying on it. Mutation showed the refusals below were carried but unproven:
-# deleting any one of them left the whole suite green, so nothing said whether
-# they worked. Each case reseals a record around one defect and names the
-# refusal it must produce.
+# `validate_record` runs on every later stage-local read, and HANDOFF.md offers
+# it to any consumer wanting to prove a record before relying on it. So each of
+# its refusals gets a case that fails without it: a refusal no test can kill is
+# a claim nobody has measured.
 
 
 @pytest.mark.parametrize(

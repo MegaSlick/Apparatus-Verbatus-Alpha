@@ -1,29 +1,23 @@
 """Spec 10, test 1: the only constructor accepts a Recensor-accepted, primed
 Perlectio, and nothing else can reach it.
 
-The mechanism is `common.runtree.store.RunTree.read_artifact_reference`, which
-`reviewed_reading` in `run.py` calls with `stage=PERLECTOR, kind="perlectio"`:
-a reference whose bytes actually name a different stage or kind is refused
-before a single field of it is trusted. That single check is what makes "a
-Testimonium cannot reach it" and "a salvage-tier piece cannot reach it" the same
-proven property rather than two separate ones — no concrete salvage-tier
-artifact kind exists yet in this build (grepped: `ACTIONS` in
-`common/contracts/approval.py` names `salvage-promotion` as a future approval
-action, but nothing publishes a salvage-tier stage artifact today), so the
-second test below forges a plausible one to prove the mechanism generalizes
-rather than happening to special-case Testimonium.
+`RunTree.read_artifact_reference` checks a reference's declared stage and kind
+against its actual bytes, which makes "a Testimonium cannot reach it" and "a
+salvage-tier piece cannot reach it" one proven property rather than two. Nothing
+in this build publishes a salvage-tier artifact (`common/contracts/approval.py`
+names `salvage-promotion` as a future approval action and nothing more), so the
+second test forges a plausible one — otherwise the check could be passing by
+special-casing Testimonium and nobody would know.
 
 **A Lectio nuda, and what can honestly be claimed about it.** ARCHITECTURE and
-GLOSSARY define one as an unprimed Perlectio — no witness shown — and an
-instrument record that must never establish. Today's Perlectio schema records no
-primed/unprimed discriminator at all; adding one is Perlector-lane scope, and
-off-limits this round. So the boundary here refuses an *explicitly* unprimed
-reading (`lectio_kind` naming anything but `primed`, or `primed: false`) and
-treats a retained non-empty Testimonium basis as the transitional indication that
-a reading was primed at all. That is a compatibility assumption, not a proof that
-an unlabeled reading was primed, and it is named as one rather than dressed up:
-the refusals below are real and tested, but the positive claim "this reading was
-primed" rests on the producer eventually writing the field.
+GLOSSARY define one as an unprimed Perlectio, an instrument record that must
+never establish. Today's Perlectio schema records no primed/unprimed
+discriminator at all — adding it is Perlector-lane scope — so the boundary
+refuses an *explicitly* unprimed reading and treats a retained Testimonium basis
+as the transitional indication that a reading was primed. The refusals are real
+and tested; the positive claim "this reading was primed" rests on the producer
+eventually writing the field, and is named as an assumption rather than dressed
+up as a proof.
 """
 
 import json

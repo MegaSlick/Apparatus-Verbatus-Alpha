@@ -1299,12 +1299,11 @@ def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path)
     """Two upstream claims that contradict each other are never quietly one claim.
 
     A review carrying a blank proof says this act held no readable ink; the
-    reading it accepted says otherwise, in characters. The stage used to consult
-    the evidence reference only when its own derivation had already reached
-    `no_readable_text`, so in every other case the Recensor's finding was read
-    past and left no trace in the record — the contradiction resolved silently,
-    in favour of whichever claim the derivation happened to reach first
-    (GOVERNANCE 2).
+    reading it accepted says otherwise, in characters. Consulting the evidence
+    reference only where the stage's own derivation has already reached
+    `no_readable_text` reads past the Recensor's finding everywhere else, so the
+    contradiction resolves in favour of whichever claim the derivation reaches
+    first and leaves no trace of the other (GOVERNANCE 2).
     """
     root = tmp_path / "runs"
     run_through_recensor(root, "r")
@@ -1343,9 +1342,9 @@ def test_archetypus_refuses_a_crop_the_run_tree_cannot_read(tmp_path):
     """A named crop that is not there is an accounting failure, not a traceback.
 
     The reference is built by hashing the bytes on disk, so a reading naming a
-    crop this tree does not hold raised `OSError` — outside the family
-    `run_stage` classifies. Every other act's record went down with it, under
-    exit 1, which the orchestrator does not recognise as a stage outcome at all.
+    crop this tree does not hold arrives as `OSError` — outside the family
+    `run_stage` classifies. Unnamed, it takes every other act's record with it
+    under exit 1, which the orchestrator does not recognise as a stage outcome.
     """
     root = tmp_path / "runs"
     run_through_recensor(root, "r")

@@ -222,11 +222,10 @@ def test_validate_index_refuses_an_index_whose_self_hash_was_not_recomputed(esta
 
 # --- The rest of `validate_index`'s refusals, each exercised ------------------
 #
-# HANDOFF.md offers `validate_index` to any consumer that wants to prove the
-# accounting before relying on it, so its refusals are load-bearing for someone
-# other than this stage. Mutation showed most of them were carried but unproven:
-# deleting the count, type, schema, run, stage-label or row-value check left the
-# whole suite green. These reseal a well-formed index around one defect each.
+# HANDOFF.md offers `validate_index` to any consumer wanting to prove the
+# accounting before relying on it, so these refusals are load-bearing for
+# someone other than this stage. Each case reseals a well-formed index around
+# one defect, because a refusal no test can kill is a claim nobody has measured.
 
 
 @pytest.mark.parametrize(
