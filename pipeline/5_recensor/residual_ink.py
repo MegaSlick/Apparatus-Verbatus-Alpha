@@ -5,10 +5,17 @@ seal **plus a residual-ink check whose input is the page image itself, never the
 proposal set** -- a denominator derived only from proposals cannot see an act
 nobody proposed (GOALS 1)." This is that check.
 
-It reads the sealed page's own pixels and asks whether any of its ink sits
-outside every region actually cut for it -- proposal or recovery, for every act
-that touches that page -- entirely independent of what any stage claimed to
-find. A successful recovery crop that reaches the missed ink clears the finding
+It reads the sealed page's own pixels and asks whether any of the ink found in
+them sits outside every region actually cut for it -- proposal or recovery, for
+every act that touches that page. The ink itself is measured independently of
+what any stage claimed to find; the coverage mask it is measured against is the
+Designator's own declared `transform.bounds`, a stage claim this module trusts
+rather than re-derives. That trust rests on `crop_png` refusing a rectangle that
+reaches outside the page before a region is ever cut (`common/imaging.py`,
+pinned against this module's own bound by
+`test_this_modules_pixel_bound_matches_the_door_that_admits_the_pages`), so an
+honest run cannot hand this check an over-declared rectangle that masks real
+ink. A successful recovery crop that reaches the missed ink clears the finding
 on the very next Recensor pass, with no code here that requests one: there is
 no act to request a recrop for when the ink belongs to nobody's proposal at
 all, and this module never invents one (that would be exactly the "hold at the
