@@ -8,39 +8,26 @@ loss-accounted normalizations built beside the verbatim payloads (which are
 never coerced, per spec 07); where a witness format cannot be compared, dissent
 for that witness is recorded `unknown`, never guessed."
 
-Two things this module must never do, because either would be a picker with
-extra steps: choose which view "wins" (there is no winning; a view is compared
-to the fixed established reading, computed *after* the reading exists, and
-never fed back into it), and coerce an incomparable witness into a fake
-agreement or disagreement rather than naming the comparison itself as unknown.
+Two things here would be a picker with extra steps: choosing which view "wins"
+(there is no winning -- a view is compared to the already-fixed reading and
+never fed back into it), and coercing an incomparable witness into a fake
+agreement rather than naming the comparison itself unknown.
 
 **Pinned forever: equality only, never a distance metric.** `comparison_view`
 takes no per-chair parameter and no similarity threshold, and never will --
-"closest match" needs a metric, and refusing metrics is what keeps a future
-edit from turning a normalization into a fuzzy-match picker one similarity
-score at a time. A reviewer reading a change to this file should refuse
-anything that adds a threshold, a weight, or a "close enough" comparison.
+"closest match" needs a metric, and refusing metrics is what stops a future
+edit turning a normalization into a fuzzy-match picker one similarity score at
+a time. `departures` is not that metric and the distinction is the line an edit
+will cross by accident: an opcode alignment *describes* where two strings
+differ, with no number attached and nothing to threshold, where
+`SequenceMatcher.ratio()` is a number. **A reviewer reading a change to this
+file should refuse anything that adds a threshold, a weight, a ratio, or a
+"close enough" comparison.**
 
-`departed` is computed on the *normalized* view; `departed_raw` is computed on
-the untouched strings. Both are recorded, because when either side's
-normalization drops characters, view-equality alone cannot say whether the raw
-strings actually matched -- and GOVERNANCE 2 does not let that distinction go
-unrecorded merely because it is cheap to recompute.
-
-**`departures` says *where*, and a boolean cannot.** Spec_08's own dissent test
-asks that "dissent matches expected spans", and the reason is the instrument's
-purpose: a checkpoint that has learned to echo witnesses instead of reading ink
-shows up as agreement everywhere *except* a few short spans, which one boolean
-per chair cannot distinguish from wholesale disagreement. The spans are an
-alignment produced by `difflib.SequenceMatcher.get_opcodes`, over the raw
-strings so the offsets are valid in the Perlectio's own `text`.
-
-That is not the distance metric pinned against above, and the difference is
-worth stating because it is exactly the line a later edit will cross by
-accident: an opcode list is a *description* of where two strings differ, with
-no number attached and nothing to compare against a threshold.
-`SequenceMatcher.ratio()` is the metric, it is not called here, and it is the
-thing a reviewer should refuse if it appears.
+Spans rather than a boolean per chair, because the instrument's whole purpose
+needs them: a checkpoint that has learned to echo witnesses instead of reading
+ink agrees everywhere *except* a few short spans, which one boolean cannot tell
+from wholesale disagreement.
 """
 
 from __future__ import annotations
@@ -134,23 +121,19 @@ def is_comparable(record: dict[str, Any]) -> bool:
     (`format_capabilities.can_express_uncertainty`, spec_07) may embed
     alternative-reading markup inline in `reported` -- diffing that raw string
     against clean established text would count markup characters as
-    disagreement, which is not what dissent means. No witness in this fixture
-    declares this today (every configured chair reports plain text), so this
-    branch is presently unreachable from a live producer; it exists so an
-    incomparable format is refused a fake comparison rather than silently
-    treated as one, the day a witness that does declare it exists.
+    disagreement, which is not what dissent means. No configured chair declares
+    it today, so no live producer reaches this branch; it exists so the format
+    is refused a fake comparison the day one does.
 
-    **Known watch item, named rather than hidden:** this is a per-capability
-    exemption, so a witness adapter that self-declares
-    `can_express_uncertainty` goes permanently uncompared on this axis -- it
-    cannot touch the reading (dissent is read-only, computed after the fact),
-    so it is not a picker, but it does blind the one instrument ARCHITECTURE
-    names for catching a checkpoint that "learned to agree with witnesses
-    rather than to read ink." A real markup-aware comparison view for such a
-    format is future work; until it exists, every `compared: "unknown"` row
-    this function produces must stay visible in the record rather than
-    disappear into a coverage count, which is exactly what `dissent_against`
-    below does -- it never drops a chair from the list.
+    **Known watch item, named rather than hidden:** the exemption is
+    per-capability, so a witness adapter that self-declares
+    `can_express_uncertainty` goes permanently uncompared on this axis. It
+    cannot touch the reading -- dissent is read-only and computed after the
+    fact -- so it is not a picker, but it does blind the instrument
+    ARCHITECTURE names for catching a checkpoint that "learned to agree with
+    witnesses rather than to read ink." A markup-aware comparison view is
+    future work; until it exists these rows must stay visible in the record
+    rather than disappear into a coverage count.
     """
     payload = record.get("payload", {})
     capabilities = payload.get("format_capabilities", {})

@@ -2,18 +2,15 @@
 
 A real serving manager (spec 04, behind vLLM, live-pod only) is a future
 implementation of this protocol. This chamber has no pod and no GPU, so the
-only implementation here is `FixtureReader`: it draws its answer from the
-declared fixture exactly as `pipeline/4_perlector/run.py` already did inline
-before this module existed, factored out so a real reader can occupy the same
-seam later without touching `run.py`'s orchestration at all.
+only implementation here is `FixtureReader`, and the protocol is the seam that
+lets a real reader replace it without `run.py`'s orchestration changing at all.
 
 `primed` distinguishes the establishing pass (all testimonia in the dossier)
-from Lectio nuda (none) -- one protocol, one call shape, never two code paths a
-future real reader has to remember to keep in sync. This fixture reader cannot
-produce a genuinely different unprimed reading (there is no model behind it to
-diverge), which is named here rather than glossed over: what this build proves
-is the wiring and the module boundary that keeps nuda out of the Archetypus's
-reach, not the actual witness-dependence signal a real reader would produce.
+from Lectio nuda (none) -- one call shape, so a real reader has no second code
+path to keep in sync. **This fixture reader cannot produce a genuinely
+different unprimed reading**: there is no model behind it to diverge, so what
+this build proves is the wiring and the module boundary keeping nuda out of the
+Archetypus's reach, never the witness-dependence signal itself.
 """
 
 from __future__ import annotations

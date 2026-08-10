@@ -91,11 +91,10 @@ def regions_of(context, act_id: str) -> list[dict]:
 def _region_ordinal(record: dict) -> int:
     """The sort key, refused by name rather than escaping as a raw `KeyError`.
 
-    The ordering happens before `verify_region` validates the region, so a resealed
-    record whose payload lost `attempt_ordinal` produced a traceback here rather
-    than a named refusal — the same class of record `test_region_boundary.py`
-    already exercises, and the boundary the Designator's own tests assert carries
-    no `Traceback` in its stderr.
+    Ordering happens before `verify_region` validates the region, so this is
+    the one place a resealed record whose payload lost `attempt_ordinal` is
+    read — and a stage boundary that answers untrusted input with a traceback
+    is the one thing the Designator's own tests assert never appears in stderr.
     """
     ordinal = record.get("payload", {}).get("attempt_ordinal")
     if not isinstance(ordinal, int) or isinstance(ordinal, bool):
@@ -248,11 +247,11 @@ def perlector_chair(context) -> ChairIdentity | AbsentChair:
 def preflight_testimonia_denominator(context, acts: list[dict]) -> None:
     """Validate every requested act's witness denominator before any Perlectio writes.
 
-    A missing Testimonium used to be discovered only by the Recensor, after an
-    immutable Perlectio over the shorter denominator had already been published.
-    Restoring the missing witness then changed the bytes under the same reading
-    identity and made a normal resume impossible. The complete requested set is
-    checked first so a later malformed act cannot leave an earlier reading behind.
+    A Perlectio is immutable, so one published over a short denominator cannot
+    be corrected: restoring the missing witness changes the bytes under the same
+    reading identity, and the run can no longer resume normally. Checking the
+    whole requested set first is what stops a malformed act discovered late from
+    leaving an unfixable reading behind it.
     """
     for act in acts:
         if act["outcome"] == "held":
@@ -275,11 +274,8 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
     """
     regime = {
         # Tyrel's 2026-07-30 ruling: witness identity travels under a run-level
-        # toggle, and every Perlectio records the regime it ran under so a later
-        # reader knows what it was shown. Read straight off this run's own
-        # sealed CLI flag (`common.stage.StageContext.witness_context`) rather
-        # than a constant, now that spec_08's own work -- binding the toggle to
-        # something real -- is this build's job.
+        # toggle, and every Perlectio records the regime it ran under, because a
+        # reading's provenance includes what its reader was shown.
         "witness_regime": context.witness_context,
         "adapter_revision": context.adapter_revision,
     }
@@ -421,16 +417,10 @@ _LECTIO_NUDA_FIELDS: Final = frozenset(
 def validate_reading_payload(payload: dict, *, outcome: str, fields: frozenset) -> None:
     """Refuse a reading payload that is missing part of the record it claims.
 
-    This is producer-local and deliberately so: `validate_serving_provenance`
-    already refuses a wrong-schema provenance wherever a Perlectio is
-    *consumed*, and this is the matching check at the moment one is written, so
-    a defect surfaces where it was introduced rather than one stage later.
-
-    The dissent record is required even when it is empty. It is empty only for
-    Lectio nuda, which was shown no testimony; witness agreement is represented
-    by one row per witness with no departure spans. Omitting those rows would
-    blind the one instrument ARCHITECTURE names for catching a reader that has
-    learned to echo witnesses rather than read ink.
+    Producer-local and deliberately so: `validate_serving_provenance` already
+    refuses a wrong-schema provenance wherever a Perlectio is *consumed*, and
+    this is the matching check at the moment one is written, so a defect
+    surfaces where it was introduced rather than one stage later.
     """
     missing = sorted(fields - set(payload))
     unexpected = sorted(set(payload) - fields)
@@ -544,18 +534,12 @@ def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, t
 def _reconciled_truncation(*, declared_failure: str | None, truncation_record: dict) -> dict:
     """Keep the published truncation record from contradicting a declared failure.
 
-    `declared_reading_failure` stands in for a real engine's own report that a
-    reading did not complete (its own docstring: "the fixture is the authority
-    on what a scenario does"). When that authority has already forced the
-    outcome to `truncated`, the three computed signals can still land on
-    `complete` -- the text this scenario carries looks clean by every heuristic,
-    because nothing about *why* it failed is expressed in its shape. Publishing
-    that as `complete` would contradict the outcome outright: HANDOFF.md is
-    explicit that "outcome == 'truncated' therefore means 'not established
-    complete'". The computed signals are kept exactly as measured -- they are
-    honest facts about this candidate text and the reader's own stop-reason --
-    only the classification is raised to `unknown`, because the instrument
-    itself did not independently confirm a cutoff; something outside it did.
+    A declared failure stands in for a real engine's own report that a reading
+    did not complete, and nothing about *why* need show in the text's shape --
+    so the three computed signals can land on `complete` under an outcome that
+    means "not established complete" (HANDOFF.md, verbatim). The signals stay
+    exactly as measured; only the classification is raised to `unknown`, because
+    the instrument did not itself confirm a cutoff. Something outside it did.
     """
     if (
         declared_failure == "truncated"
@@ -617,13 +601,9 @@ def _publish_lectio_nuda(
             nuda_per_mille=context.nuda_per_mille,
             approval_ref=context.nuda_approval_ref,
         ),
-        # Nothing to dissent against: nuda's dossier carries no testimonia, so
-        # there is no witness opinion for this reading to have departed from.
         "dissent": [],
         "truncation": truncation_record,
         "uncertain_spans": [],
-        # No testimonia were shown, so there is no witness evidence to attach:
-        # a nuda gap is the bare fact that sight failed here.
         "gaps": _whole_act_gap([], {}) if outcome == "no-readable-text" else [],
         "provenance": provenance_for(context, chair, attempted=True),
     }
@@ -797,8 +777,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             else []
         )
 
-        # A real reading attempt, so the pinned snapshot is re-verified here, at
-        # the moment this reading is produced, and its receipt written.
         provenance = provenance_for(context, chair, attempted=True)
         payload = {
             "act_key": act["act_key"],

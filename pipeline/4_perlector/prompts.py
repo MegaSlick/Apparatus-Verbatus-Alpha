@@ -1,25 +1,15 @@
 """Prompt fidelity (invariant #49): the serving path builds each chair's declared
 prompt format byte-for-byte. A fine-tuned candidate misread through the wrong
-prompt would be measured as a failure of the model rather than of the harness
--- so this is a registry keyed by `ChairIdentity.serving_recipe`, and an
-unrecognized recipe refuses outright rather than falling back to some default
-template. That refusal is the load-bearing behaviour: a silent fallback is
-exactly the failure mode invariant #49 exists to prevent, and it is cheaper to
-build the refusal now than to discover the fallback later on a real chair.
+prompt would be measured as a failure of the model rather than of the harness --
+so this is a registry keyed by `ChairIdentity.serving_recipe`, and a recipe with
+no registered builder refuses outright. The silent fallback to some other
+chair's template is the failure invariant #49 exists to prevent.
 
-Real per-chair byte fidelity against an actual chat template needs the real
-tokenizer/template files for whichever model finally sits in the chair, which
-this offline, no-model chamber does not fetch. What this module proves is the
-mechanism: a declared, tested builder per recipe, and a closed refusal for
-every recipe that has none yet.
-
-**And the prompt that was actually built is recorded on the reading.** A
-builder nothing calls proves only that a builder exists; invariant #49 is
-about the prompt a *reading* was produced through, so `prompt_evidence` binds
-the rendered bytes, the recipe, and the resolved identity that supplied the
-recipe into one record the Perlectio carries. That is what lets a later
-comparison of two checkpoints establish that they were prompted the same way,
-rather than assume it.
+Real byte fidelity against an actual chat template needs the tokenizer and
+template files for whichever model finally sits in the chair, which this
+offline chamber does not fetch. What is proved here is the mechanism: a
+declared, tested builder per recipe, and a closed refusal for every recipe that
+has none yet.
 """
 
 from __future__ import annotations
@@ -67,19 +57,21 @@ def build_prompt(serving_recipe: str, chair_role: str, dossier: dict[str, Any]) 
 def prompt_evidence(chair: ChairIdentity, dossier: dict[str, Any]) -> dict[str, str]:
     """The record of the prompt one reading was actually produced through.
 
-    Keyed on the chair's *resolved* serving recipe rather than on its role: a
-    role is a chair, and a chair can be occupied by a stock model, a vendor
-    model, a local checkpoint or an unmerged adapter in turn. Two occupants of
-    the same role prompted through the same template because nobody noticed
-    they were different models is exactly the harness failure invariant #49
-    exists to make visible, so the identity digest travels beside the recipe
-    and a reader comparing two Perlectiones can see whether they were prompted
-    the same way.
+    A builder nothing calls proves only that a builder exists; invariant #49 is
+    about the prompt a *reading* came out of, which is why this record is
+    carried on the Perlectio rather than merely tested.
+
+    Keyed on the chair's *resolved* recipe, never on its role: a role can be
+    occupied by a stock model, a vendor model, a local checkpoint or an unmerged
+    adapter in turn, and two occupants prompted through one template because
+    nobody noticed they were different models is the harness failure #49 makes
+    visible. The identity digest travels beside the recipe so two Perlectiones
+    can be compared for whether they were prompted alike rather than assumed to
+    have been.
 
     The rendered bytes are recorded by digest, not verbatim: they contain every
     testimonium the reader was shown, which already travels once on the
-    Perlectio's own `dossier`, and a second verbatim copy is a second thing to
-    drift.
+    Perlectio's own `dossier`, and a second copy is a second thing to drift.
     """
     rendered = build_prompt(chair.serving_recipe, chair.role, dossier)
     return {

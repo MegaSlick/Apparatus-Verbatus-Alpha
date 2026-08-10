@@ -7,16 +7,8 @@ identity and factual context only** -- model name, resolved provenance, and its
 training domain stated as fact, "never pipeline-asserted worth... no
 reliability scores, no error rates, no 'usually better,' no ordering by
 quality" (Tyrel's ruling, 2026-07-30). No numeric trust weights, no preferred
-order, no primary flag: presentation order is deterministic (sorted for
-reproducible bytes) but carries no meaning, and `test_dossier_shuffle_invariance`
-asserts building the same dossier from a shuffled testimonia list produces
-identical bytes.
-
-**Under the named regime, model name and resolved provenance travel beside the
-verbatim report**, as spec 08 requires. Under the blinded regime, the dossier
-shows a pseudonym and nothing that would unblind it: model identity, provenance,
-and training domain are all withheld together because any one can identify a
-witness as surely as its chair name.
+order, no primary flag: presentation order is deterministic, because the bytes
+must reproduce, but it carries no meaning and no reader may take one from it.
 """
 
 from __future__ import annotations
@@ -201,13 +193,11 @@ def _testimonium_entry(
     model_name = None
     if identity is not None:
         # `ChairIdentity.source_reference` is the one declared rule for which
-        # field a chair's source prefers; reconstructing it here rather than
-        # re-deriving the huggingface/local split by hand keeps this dossier-only
-        # display name from silently drifting behind that rule if it ever
-        # changes. Safe to reconstruct: `validate_serving_provenance`
-        # (`testimonia_of`, before any record reaches this module) already
-        # required a configured chair's `resolved_identity` to satisfy
-        # `ChairIdentity(**record)`.
+        # field names a chair's source, and this display name follows it rather
+        # than re-deriving the huggingface/local split. Safe to reconstruct:
+        # `validate_serving_provenance` (in `testimonia_of`, before any record
+        # reaches this module) already required a configured chair's
+        # `resolved_identity` to satisfy `ChairIdentity(**record)`.
         try:
             model_name = ChairIdentity(**identity).source_reference
         except TypeError as error:
@@ -296,12 +286,10 @@ def build_dossier(
         "page_renders": page_render_rows,
         "testimonia": testimonia_rows,
     }
-    # Swept before the digest is taken, so nothing that names a preference among
-    # witnesses can be sealed into a dossier at all. This function said it was
-    # "cheap enough to run on every dossier this build produces" and the handoff
-    # said it swept every key -- and nothing outside the tests ever called it.
-    # A guard the production path does not run is a guard in name only, and this
-    # is the one guarding GOVERNANCE 3.
+    # Swept before the digest is taken: a preference-bearing field sealed into
+    # the digest is already in the record by the time anyone could object. This
+    # is the guard standing over GOVERNANCE 3, so it runs on the production path
+    # and not only in the tests.
     assert_no_order_bearing_field(dossier)
     dossier["dossier_digest"] = digest_of(dossier)
     return dossier

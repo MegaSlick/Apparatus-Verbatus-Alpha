@@ -57,9 +57,13 @@ DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "witness_context.toml"
 )
 
-# Spec 08's run-level blind/named toggle. Named here, once, so the CLI flag,
-# the config-digest binding, and every stage's shared parser agree on the
-# closed set rather than each re-declaring it.
+# Spec 08's run-level blind/named toggle, from Tyrel's 2026-07-30 ruling
+# (courtroom_doctrine.md, formalized in spec_08 — not ARCHITECTURE.md, which
+# does not define this regime). Named here once, so the CLI flag, the
+# config-digest binding, every stage's shared parser and the Perlectio schema
+# agree on the closed set: a value added in one place and missed in another
+# would let a run start under a regime every Perlectio it produced is then
+# refused for. It is provenance, so invariant #42 governs it.
 WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
 MAX_NUDA_PER_MILLE: Final = 1000
 
@@ -97,18 +101,6 @@ _PROVENANCE_FIELDS = frozenset(
         "witness_regime",
     }
 )
-
-# Tyrel's 2026-07-30 ruling (courtroom_doctrine.md's "Rulings received" section,
-# formalized in the unbuilt spec_08_perlector.md — not ARCHITECTURE.md, which
-# does not define this regime): witness identity
-# travels under a run-level named/blinded toggle, "every Perlectio recording its
-# regime". The Perlector writes it; until this check, nothing read it back, so a
-# Perlectio claiming an impossible regime — or a typo — travelled sealed. Binding
-# it to an actual run-level toggle is Spec 08's work; refusing a value that
-# cannot be true is this system's, because it is provenance and #42 governs
-# provenance. The closed set itself is `WITNESS_CONTEXT_REGIMES` above, not a
-# second literal here: a value added there and missed here would let a run start
-# under a regime every Perlectio it produced would then be refused for.
 
 
 class StageChairProtocol(ChairProtocol, Protocol):

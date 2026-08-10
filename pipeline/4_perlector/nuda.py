@@ -67,9 +67,8 @@ def sampling_design(*, nuda_per_mille: int, approval_ref: str) -> dict[str, obje
     """The design record every Lectio nuda carries.
 
     GOVERNANCE 10: "cost is recorded but never silently narrows the
-    instrument". A nuda record that did not say what fraction it was drawn
-    under, by which rule, and on whose approval could not later be read as
-    evidence about anything -- a sample of unknown design measures nothing.
+    instrument". A sample of unknown design measures nothing, so the rate, the
+    rule and the approval travel on every record drawn under them.
     """
     validate_nuda_per_mille(nuda_per_mille)
     if not approval_ref:

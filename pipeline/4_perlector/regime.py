@@ -4,9 +4,6 @@ Tyrel's 2026-07-30 ruling (courtroom_doctrine.md, formalized in spec_08):
 `witness_context = named | blinded` is run-level configuration. Named is the
 default; blinded exists so that if training ever shows the named regime
 breeding bias toward a particular witness, the switch flips without a rebuild.
-`common/stage.py::validate_serving_provenance` already refuses a Perlectio whose
-`witness_regime` is not one of these two -- this module is what actually
-produces a blinded dossier rather than only naming the field.
 
 Blinding must be reversible (spec_08) without becoming a second copy of the
 roster that can drift from `run.json["witness_chairs"]`. Rather than store a
