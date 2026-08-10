@@ -1321,6 +1321,20 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
             duplicate_endpoint,
         )
 
+    # The catalogue also refuses two chairs sharing one API alias on distinct
+    # ports -- a client request naming that alias would be ambiguous about
+    # which service actually answered it.
+    duplicate_alias = profile_row(
+        recipe="other-v1", chair="other", served_model_id="reader-api", port=8100
+    )
+    with pytest.raises(ServingConfigurationError, match="served model id"):
+        recipes(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+            duplicate_alias,
+        )
+
     # A local-repository chair has no Git revision by contract, so it has no
     # commit pins to duplicate into `--revision`/`--tokenizer-revision` — and
     # that is an answer, not a refusal. Its pin is the digest manifest the
@@ -2381,10 +2395,26 @@ def test_smoke_reader_refuses_a_profile_dtype_not_assessed_by_preflight(tmp_path
     assert launcher.calls == []
 
 
-def test_smoke_reader_refuses_profile_capacity_above_measured_placement(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("field", "overage_value"),
+    [
+        ("max_model_len", 4096),
+        # `_assert_profile_within_placement` checks four independent capacity
+        # dimensions; max_pixels has its own dedicated test below (the square
+        # relation makes an "overage" value less obvious than a plain `>`).
+        # These two isolate the remaining pair, so a copy-paste/off-by-one
+        # error specific to either comparison (e.g. `>=` vs `>`, or comparing
+        # the wrong field) cannot hide behind the other three passing.
+        ("gpu_memory_utilization", "0.90"),
+        ("max_num_seqs", 2),
+    ],
+)
+def test_smoke_reader_refuses_profile_capacity_above_measured_placement(
+    tmp_path: Path, field: str, overage_value: object
+) -> None:
     chair = identity("reader", "reader-v1")
     row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
-    row["max_model_len"] = 4096
+    row[field] = overage_value
     manager, _, _, launcher, _, _ = manager_for(
         tmp_path,
         identities={chair.role: chair},
