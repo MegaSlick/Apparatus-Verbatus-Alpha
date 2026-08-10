@@ -12,11 +12,23 @@ from typing import Sequence
 from operations.pod.models import PodCreateRequest, require_utc
 
 from . import notify_bridge
-from .errors import ErrorCode, OperatorError
+from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .surface import DEFAULT_FIXTURE, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _print(text: str = "") -> None:
+    """Print through the same control-byte stripping the operator surface uses.
+
+    Applied one line at a time, not to the whole string at once:
+    `strip_control_bytes` treats a newline as a control byte like any other,
+    and `OperatorError.render()`'s three-part message depends on its own
+    newlines to stay three parts on screen.
+    """
+
+    print("\n".join(strip_control_bytes(line) for line in text.split("\n")))
 
 
 class PlainParser(argparse.ArgumentParser):
@@ -135,14 +147,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         volume = _network_volume(getattr(args, "network_volume", None))
         if volume is None:
-            print("Verbatus is in offline rehearsal mode. It will not contact a cloud provider.")
+            _print("Verbatus is in offline rehearsal mode. It will not contact a cloud provider.")
         else:
-            print("Verbatus will not start, adopt or close any pod: that stays offline.")
-            print(f"You asked it to send files to {volume.describe()}.")
+            _print("Verbatus will not start, adopt or close any pod: that stays offline.")
+            _print(f"You asked it to send files to {volume.describe()}.")
         if args.verb == "launch":
             request = load_request(args.request)
             spend = args.spend or workspace / "config" / "spend.toml"
-            print(f"Using reviewed spending policy: {spend}")
+            _print(f"Using reviewed spending policy: {spend}")
             prepared = surface.prepare_launch(
                 request, policy_path=spend, adopt_pod_id=args.adopt_pod
             )
@@ -181,14 +193,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ErrorCode.INVALID_COMMAND, detail="the requested word has no action"
             )
     except OperatorError as error:
-        print(error.render())
+        _print(error.render())
         return 2
     except KeyboardInterrupt:
-        print(OperatorError(ErrorCode.INTERRUPTED).render())
+        _print(OperatorError(ErrorCode.INTERRUPTED).render())
         return 2
     except Exception as error:  # the only route raw implementation failures take to the operator
         wrapped = OperatorError(ErrorCode.UNEXPECTED, detail=str(error))
-        print(wrapped.render())
+        _print(wrapped.render())
         return 2
     return 0
 
@@ -280,21 +292,21 @@ def _network_volume(value: str | None) -> VolumeSpec | None:
 def _interactive_arguments() -> list[str]:
     """The double-click route asks for a word and the smallest needed facts."""
 
-    print("Verbatus")
-    print("Choose one word: launch, boot, upload, run, export, close, or status.")
+    _print("Verbatus")
+    _print("Choose one word: launch, boot, upload, run, export, close, or status.")
     try:
         verb = input("What would you like to do? ").strip().lower()
     except EOFError:
-        print("No action was chosen. Nothing changed.")
+        _print("No action was chosen. Nothing changed.")
         return []
     if not verb:
-        print("No action was chosen. Nothing changed.")
+        _print("No action was chosen. Nothing changed.")
         return []
     if verb == "launch":
         request = _ask("Path to the reviewed pod request file")
         spend = _ask("Path to the reviewed spending-policy file")
         if not request or not spend:
-            print(
+            _print(
                 "No reviewed request and spending policy were both chosen. Nothing changed or billed."
             )
             return []

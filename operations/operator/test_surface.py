@@ -1121,6 +1121,26 @@ def test_console_interrupt_at_the_interactive_prompt_never_prints_a_raw_tracebac
     assert "Traceback" not in captured
 
 
+def test_cli_print_strips_control_bytes_but_keeps_its_lines_separate(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`cli.py`'s own prints must strip control bytes the same way `present()`
+    already does — the argument for stripping (a path or reason an operator
+    did not choose can carry one) does not stop at the boundary between the
+    two output channels. Stripped per line, not over the whole string at
+    once: a multi-part rendered error depends on its own newlines.
+    """
+
+    cli._print("safe\x1b[2Jfirst line\nsecond line\x00 still here")
+
+    captured = capsys.readouterr().out
+    assert "\x1b" not in captured
+    assert "\x00" not in captured
+    assert "first line" in captured
+    assert "second line" in captured
+    assert "\n" in captured.strip()
+
+
 def test_console_close_with_no_saved_pod_refuses_before_prompting(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
