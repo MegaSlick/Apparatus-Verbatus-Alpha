@@ -1494,8 +1494,20 @@ def test_status_repeats_the_recorded_values_exactly_and_never_recomputes_them(
         assert payload["summary"] in joined
 
 
-def test_status_refuses_a_different_valid_manifest_at_the_recorded_path(tmp_path: Path) -> None:
-    """A path is not identity: status must stay bound to the manifest uploaded."""
+def test_status_names_a_manifest_that_no_longer_matches_the_upload_receipt(
+    tmp_path: Path,
+) -> None:
+    """A path is not identity: status must not treat different bytes at the
+    recorded path as the manifest that was actually uploaded.
+
+    But the sealed manifest lives outside `.verbatus/`, at a path this tool
+    does not own — re-sealing a later batch to the same filename is ordinary
+    drift, not a corrupted *operator* record, so it must not swallow the
+    intact, still-correct upload receipt behind `STATUS_UNREADABLE`. Before
+    this fix it did: this exact scenario raised `STATUS_UNREADABLE`
+    permanently and printed the upload record twice, once correctly and once
+    as "UNREADABLE".
+    """
 
     surface = _surface(tmp_path)
     source, manifest = _manifest(tmp_path)
@@ -1512,13 +1524,50 @@ def test_status_refuses_a_different_valid_manifest_at_the_recorded_path(tmp_path
     )
     manifest.write_bytes(canonical_bytes(replacement))
 
-    with pytest.raises(OperatorError) as refusal:
-        surface.status()
+    lines = surface.status()
 
-    assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
     assert (
         receipt["submission_manifest_sha256"] != hashlib.sha256(manifest.read_bytes()).hexdigest()
     )
+    joined = "\n".join(lines)
+    assert "no longer matches what the upload receipt recorded" in joined
+    assert "upload receipt itself still stands" in joined
+    upload_lines = [line for line in lines if line.startswith("- upload record 1:")]
+    assert len(upload_lines) == 1
+    assert "UNREADABLE" not in upload_lines[0]
+
+
+def test_deleting_the_sealed_manifest_after_upload_does_not_permanently_break_status(
+    tmp_path: Path,
+) -> None:
+    """Deleting a temporary sealed manifest, or re-sealing over it, is ordinary
+    housekeeping outside `.verbatus/` — a routine act, not record corruption.
+
+    Before this fix, `status` — the verb the README sells as "the one you can
+    run any time" — raised `STATUS_UNREADABLE` permanently the moment this
+    happened, blamed the intact upload receipt by name, and had no recorded
+    way to clear it.
+    """
+
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    surface.upload(source, sealed_manifest=manifest)
+
+    manifest.unlink()
+
+    lines = surface.status()
+
+    joined = "\n".join(lines)
+    assert "is no longer present" in joined
+    assert "upload receipt itself still stands" in joined
+    upload_lines = [line for line in lines if line.startswith("- upload record 1:")]
+    assert len(upload_lines) == 1
+    assert "UNREADABLE" not in upload_lines[0]
+
+    # Running status again afterward must behave exactly the same way, not
+    # escalate or leave a lingering failure state anywhere.
+    again = surface.status()
+    assert again == lines
 
 
 def test_one_unreadable_status_record_does_not_hide_the_intact_ledgers(tmp_path: Path) -> None:

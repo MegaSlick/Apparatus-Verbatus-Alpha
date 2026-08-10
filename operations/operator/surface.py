@@ -1430,7 +1430,18 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
 
 
 def _status_manifest_projection(payload: dict[str, Any]) -> list[str]:
-    """Read only the exact sealed manifest bound into the upload receipt."""
+    """Read only the exact sealed manifest bound into the upload receipt.
+
+    The sealed manifest lives outside `.verbatus/`, at whatever path the
+    operator chose, and this tool does not own it or promise to keep it:
+    deleting it, or re-sealing a later batch to the same filename, is
+    ordinary housekeeping, not a corrupted operator record. Only a malformed
+    *receipt* — one that fails to bind a string path and digest at all — is
+    this operator's own saved record failing, and that alone is
+    `RecordError`/`STATUS_UNREADABLE`. A missing or since-changed external
+    file is its own named ledger line: the upload receipt still stands
+    either way, and `status` keeps showing every other record.
+    """
 
     path_text = payload.get("submission_manifest")
     recorded_sha256 = payload.get("submission_manifest_sha256")
@@ -1441,13 +1452,22 @@ def _status_manifest_projection(payload: dict[str, Any]) -> list[str]:
     try:
         path = Path(path_text)
         if sha256_file(path) != recorded_sha256:
-            raise ValueError("saved submission record no longer matches the upload receipt")
+            raise ValueError("digest no longer matches the upload receipt")
         manifest = submission_door.load_manifest(path)
         files = manifest.get("files")
         if not isinstance(files, list):
-            raise ValueError("saved submission record has no file list")
-    except Exception as error:
-        raise RecordError("saved submission record cannot be read safely") from error
+            raise ValueError("has no file list")
+    except FileNotFoundError:
+        return [
+            f"  The sealed submission record at {path_text} is no longer present. "
+            "The upload receipt itself still stands."
+        ]
+    except Exception:
+        return [
+            f"  The sealed submission record at {path_text} no longer matches what the "
+            "upload receipt recorded, or could not be read. The upload receipt itself "
+            "still stands."
+        ]
     return [f"  Saved sealed submission record names {len(files)} file(s)."]
 
 
