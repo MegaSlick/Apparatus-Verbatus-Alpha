@@ -14,6 +14,7 @@
 # separately authorised in the session it happens in, and these ceilings are
 # enforced *in addition to* that permission, never instead of it.
 #
+#   schema = "pod-spend.v2"
 #   state = "configured"
 #   currency = "USD"
 #

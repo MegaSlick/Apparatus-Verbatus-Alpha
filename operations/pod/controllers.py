@@ -213,8 +213,18 @@ class LaptopSupervisor:
             )
         except Exception as error:
             return ControllerResult(ControllerState.LEASE_RECORD_FAILURE, str(error), lease=claimed)
+        # Not an assert. `assert` disappears under `python -O`, and this one sat inside
+        # the try below — so a missing recovery intent was reported as the *provider*
+        # having failed to prove a pod, which is a different fact about a money path.
+        # Found by CodeRabbit on this branch.
+        if attempted.pending_create is None:
+            return ControllerResult(
+                ControllerState.PENDING_CREATE_REVIEW,
+                "durable recovery intent disappeared while claiming the lease; "
+                "do not guess a pod id",
+                lease=attempted,
+            )
         try:
-            assert attempted.pending_create is not None
             record = self.shutdown.provider.create(attempted.pending_create.recovery_request())
         except Exception as error:
             return ControllerResult(
