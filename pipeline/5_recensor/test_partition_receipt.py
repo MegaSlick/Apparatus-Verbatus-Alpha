@@ -271,6 +271,99 @@ def test_a_negative_coverage_count_is_refused():
         _build_with_coverage(coverage)
 
 
+def test_duplicate_act_identities_are_refused():
+    """Spec 09 test 1: 'duplicate identities are errors.' Two items naming the
+    same act_id is a fabricated denominator no real Recensor pass can produce --
+    the receipt itself refuses it (via the strictly-sorted check, since a repeat
+    is never `>` the one before it) rather than relying on every future caller
+    to never construct one."""
+    from common.recensor_receipt import build_recensor_partition_receipt
+
+    item = _item_with_coverage(_valid_coverage())
+    with pytest.raises(SchemaRefusal, match="strictly sorted"):
+        build_recensor_partition_receipt(
+            run_id="r",
+            config_digest="a" * 64,
+            proposal_seal_ref={
+                "relative_path": "2_designator/artifacts/proposal-seal.json",
+                "sha256": "b" * 64,
+            },
+            items=[item, dict(item)],
+        )
+
+
+def test_unsorted_items_are_refused_on_direct_validation():
+    """`build_recensor_partition_receipt` always sorts before returning, so it
+    cannot itself produce an unsorted receipt. The strict order is a receipt
+    invariant checked again by `validate_recensor_partition_receipt`, not merely
+    an artifact of the one builder that happens to sort today -- proven here by
+    handing a validly-built receipt back with its items reversed and its
+    self-hash recomputed over the tampered order, the same way a hand-edited
+    file on disk would reach validation."""
+    from common.contracts.canonical import self_hash
+    from common.recensor_receipt import (
+        build_recensor_partition_receipt,
+        validate_recensor_partition_receipt,
+    )
+
+    first = _item_with_coverage(_valid_coverage())
+    second = dict(_item_with_coverage(_valid_coverage()), act_id="a2", act_key="a2")
+    receipt = build_recensor_partition_receipt(
+        run_id="r",
+        config_digest="a" * 64,
+        proposal_seal_ref={
+            "relative_path": "2_designator/artifacts/proposal-seal.json",
+            "sha256": "b" * 64,
+        },
+        items=[first, second],
+    )
+    assert [item["act_id"] for item in receipt["items"]] == ["a1", "a2"]
+
+    reversed_record = dict(receipt, items=list(reversed(receipt["items"])))
+    reversed_record["self_hash"] = self_hash(reversed_record)
+    with pytest.raises(SchemaRefusal, match="strictly sorted"):
+        validate_recensor_partition_receipt(reversed_record)
+
+
+@pytest.mark.parametrize(
+    "review_outcome,expected_class",
+    [
+        ("accepted", "completed"),
+        ("recovery-requested", "unresolved"),
+        ("confirmed-blank", "completed"),
+        ("held-for-review", "unresolved"),
+        ("failed", "failed"),
+    ],
+)
+def test_every_recensor_terminal_set_combination_builds_a_matching_receipt_item(
+    review_outcome, expected_class
+):
+    """Spec 09 test 1: 'table-driven -- every terminal-set combination.' The
+    Recensor's closed outcome vocabulary (`common/contracts/outcomes.py`) has
+    exactly five members; this drives every one of them through the receipt and
+    checks the partition class `classify` actually derives, not one asserted by
+    the caller (`_validate_item` refuses a mismatch, so a wrong table entry here
+    would fail loudly rather than pass silently)."""
+    from common.recensor_receipt import build_recensor_partition_receipt
+
+    item = dict(
+        _item_with_coverage(_valid_coverage()),
+        review_outcome=review_outcome,
+        partition_class=expected_class,
+    )
+    receipt = build_recensor_partition_receipt(
+        run_id="r",
+        config_digest="a" * 64,
+        proposal_seal_ref={
+            "relative_path": "2_designator/artifacts/proposal-seal.json",
+            "sha256": "b" * 64,
+        },
+        items=[item],
+    )
+    assert receipt["items"][0]["partition_class"] == expected_class
+    assert receipt["by_partition_class"][expected_class] == 1
+
+
 def test_a_review_whose_stored_coverage_disagrees_with_disk_is_refused(tmp_path):
     """`write_partition_receipt` (`pipeline/5_recensor/run.py`) recomputes each
     act's witness coverage fresh from the testimonia on disk and refuses a
