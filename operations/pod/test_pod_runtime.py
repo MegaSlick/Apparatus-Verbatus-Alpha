@@ -1014,6 +1014,14 @@ def test_created_pod_is_immediately_closed_when_lease_binding_fails(
     assert result.record is not None
     assert provider.status(result.record.pod_id).presence.value == "absent"
 
+    assert result.lease_path is not None
+    lease = LeaseStore(result.lease_path).load()
+    assert lease is not None
+    assert lease.phase in {"close-unverified", "closed-verified"}
+    assert lease.pod_id == result.record.pod_id
+    assert lease.pending_create is None
+    assert lease.close_record is not None and lease.close_record["pod_id"] == result.record.pod_id
+
 
 def test_restart_recovers_exact_pending_launch_token_and_closes_only_that_orphan(
     tmp_path: Path,

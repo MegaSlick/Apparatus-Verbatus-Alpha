@@ -445,18 +445,29 @@ class LeaseStore:
         verified: bool,
         now: datetime | None = None,
     ) -> PodLease:
-        """Persist a close result; unverified evidence remains present for review."""
+        """Persist a close result; unverified evidence remains present for review.
+
+        A lease that never finished binding its pod (create succeeded at the
+        provider but the local bind then failed) still closes against the
+        exact pod the close record names.  The pod id is bound here, as part
+        of the same terminal write, so the close-record binding check below
+        cannot be skipped for this lease, and the now-stale pending-create
+        intent does not linger on a lease that is actually closed.
+        """
 
         _validate_close_record(close_record, pod_id=None, verified=verified)
         with self._lock():
             lease = self._require_owner_unlocked(owner_token)
-            _validate_close_record(close_record, pod_id=lease.pod_id, verified=verified)
+            pod_id = lease.pod_id or _close_record_pod_id(close_record)
+            _validate_close_record(close_record, pod_id=pod_id, verified=verified)
             next_phase = "closed-verified" if verified else "close-unverified"
             closed = replace(
                 lease,
+                pod_id=pod_id,
                 heartbeat_at=require_utc(now or utc_now(), "close time"),
                 phase=next_phase,
                 close_record=dict(close_record),
+                pending_create=None,
             )
             self._write_unlocked(closed)
             return closed
@@ -558,6 +569,11 @@ def _validate_controller_record(
             raise ValueError(f"{label} lies outside this lease's lifetime")
     if supervisor_started > observed_at or timer_acknowledged > observed_at:
         raise ValueError("controller component observation cannot occur after its receipt")
+
+
+def _close_record_pod_id(close_record: Mapping[str, object]) -> str | None:
+    value = close_record.get("pod_id")
+    return value if isinstance(value, str) and value else None
 
 
 def _validate_close_record(
