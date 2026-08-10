@@ -1399,10 +1399,33 @@ def test_close_timing_comes_from_the_reviewed_policy_not_from_a_constant(tmp_pat
 
 
 def test_an_unreadable_spend_policy_never_stops_a_close(tmp_path: Path) -> None:
-    surface = _surface(tmp_path)
+    """A close must not depend on `config/spend.toml` even being parseable.
+
+    A prior version of this test pointed `workspace` at the real repository
+    root, where the shipped `config/spend.toml` is a perfectly readable
+    `state = "unconfigured"` file — it drove `policy.configured is False`, not
+    `_close_policy`'s `except Exception: return None` branch, so the one line
+    this test is named for was never actually executed by it. Give the
+    surface its own workspace with a genuinely malformed policy file instead.
+    """
+
+    workspace = tmp_path / "workspace"
+    (workspace / "config").mkdir(parents=True)
+    (workspace / "config" / "spend.toml").write_text("this is not valid toml [[[", encoding="utf-8")
+    with pytest.raises(Exception):  # noqa: B017 - proves the file really is unreadable
+        load_spend_policy(workspace / "config" / "spend.toml")
+
+    clock = FastElapsedClock()
+    surface = OperatorSurface(
+        workspace,
+        tmp_path / "operator-state",
+        provider=FakeProvider(now=lambda: START),
+        now=lambda: START,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+    )
     launched = _launch(surface, _spend_policy(tmp_path))
     assert launched.record is not None
-    assert (surface.workspace / "config" / "spend.toml").exists()  # the shipped one is unconfigured
 
     prepared_close = surface.prepare_close()
     report = surface.close(prepared_close, prepared_close.phrase)
