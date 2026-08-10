@@ -6,6 +6,12 @@ each needs the same three properties: no reader sees a half-written file, the
 bytes survive a power cut and not merely a process exit, and the file is not
 world-readable.
 
+The power-cut guarantee covers the file's own bytes, which are always fsynced.
+The directory entry that points at them is fsynced too on every filesystem that
+allows a directory to be opened and synced; where the platform refuses either
+(``sync_directory``'s two documented exceptions), that entry's durability
+degrades to best-effort rather than failing the write outright.
+
 This is not `common/contracts/canonical.py`'s serialization and does not claim to
 be: these are local operational records, not pipeline artifacts.
 """
