@@ -107,11 +107,13 @@ def publish(context, out_dir: Path) -> dict:
             # product to publish and the destination stays absent.
             manifest = verify_export_bundle(data, staging / EXTRACTION_NAME)
             (staging / ARMARIUM_ARCHIVE_NAME).write_bytes(data)
+            # The one thing that ever populates the reservation, and it does so
+            # atomically. Inside this try so a rename failure also cleans the staging
+            # directory rather than orphaning it beside the empty reservation.
+            os.replace(staging, out_dir)
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)
             raise
-        # The one thing that ever populates the reservation, and it does so atomically.
-        os.replace(staging, out_dir)
     except BaseException:
         # Every failure above re-raises before `os.replace`, so `out_dir` is still the
         # empty reservation. Removing it is what makes a failed publish leave no

@@ -17,6 +17,8 @@ import pytest
 from armarium_export import EXPORT_MANIFEST_NAME
 
 from common.contracts.canonical import digest_bytes
+from common.contracts.stages import ARMARIUM
+from common.stage import open_context, stage_parser
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -125,6 +127,36 @@ def test_publication_leaves_nothing_behind_when_the_run_has_no_export(tmp_path):
     assert "no sealed armarium/export artifact" in result.stderr
     assert not out.exists()
     assert not list(out.parent.glob(".delivery.publishing-*"))
+
+
+def test_a_rename_failure_at_publish_does_not_orphan_the_staging_directory(
+    tmp_path, happy_run, monkeypatch
+):
+    """The reservation-and-rename dance must clean up even when the rename itself fails.
+
+    Driven in-process rather than as a subprocess (the file's usual style) because the
+    failure has to be injected inside `os.replace`, which a subprocess boundary cannot
+    reach from the test.
+    """
+    import bundle as bundle_module
+
+    parser = stage_parser("test")
+    args = parser.parse_args(
+        ["--run-root", str(happy_run), "--run-id", "r", "--scenario", "happy"]
+    )
+    context = open_context(args, ARMARIUM)
+
+    def _boom(_src, _dst):
+        raise OSError("simulated ENOSPC at rename")
+
+    monkeypatch.setattr(bundle_module.os, "replace", _boom)
+
+    out = tmp_path / "delivery"
+    with pytest.raises(OSError, match="simulated ENOSPC"):
+        bundle_module.publish(context, out)
+
+    assert not out.exists()
+    assert list(tmp_path.glob(".delivery.publishing-*")) == []
 
 
 def test_a_tampered_sealed_blob_is_refused_before_anything_is_published(tmp_path, happy_run):
