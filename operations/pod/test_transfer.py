@@ -45,10 +45,7 @@ def manifest(source: Path, destination: Path) -> None:
                 "bytes": len(payload),
             }
         )
-    record = build_manifest(
-        entries,
-        authorized_by={"relative_path": f"receipts/sha256/{'a' * 64}.json", "sha256": "a" * 64},
-    )
+    record = build_manifest(entries)
     destination.write_bytes(canonical_bytes(record))
 
 
