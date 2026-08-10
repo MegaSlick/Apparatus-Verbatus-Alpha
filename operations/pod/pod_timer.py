@@ -182,7 +182,14 @@ def _persist_or_close(context: TimerContext, path: Path, value: dict[str, object
         _write_report(path, value)
     except Exception as error:
         bootstrap = value.get("bootstrap")
-        assert isinstance(bootstrap, dict)
+        if not isinstance(bootstrap, dict):
+            # Not an assert: `assert` disappears under `python -O`, and a
+            # non-dict would then reach `{**bootstrap}` in the close below and
+            # raise TypeError instead of filing the fallback receipt.  Every
+            # call site in this module passes a dict, so this is a placeholder
+            # rather than a reconstruction -- it says the payload was unusable,
+            # it does not invent a bootstrap state that was never observed.
+            bootstrap = {"state": "unrecorded", "detail": "report payload carried no bootstrap"}
         _durable_failure_close(context, path, bootstrap, error, "mandatory pod report write failed")
 
 
@@ -200,6 +207,11 @@ def _durable_failure_close(
     close reason and the fallback report's error key, so the record filed on
     the volume says what actually happened rather than always blaming the
     write.
+
+    Whether the fallback receipt itself reached the volume is carried in the
+    raised error too.  It used to be swallowed, so an operator finding no
+    receipt could not tell a write that failed twice from one that never ran --
+    GOVERNANCE 2, on the only durable evidence this pod leaves behind.
     """
 
     result = context.timer.close_now(label)
@@ -208,13 +220,14 @@ def _durable_failure_close(
         "close": result.close_report.to_record() if result.close_report else None,
         "green": False,
     }
+    receipt = "fallback receipt was written"
     try:
         _write_report(path, fallback)
-    except Exception:
-        pass
+    except Exception as write_error:  # reported below, never swallowed
+        receipt = f"fallback receipt also failed: {write_error}"
     state = result.close_report.state.value if result.close_report else "shutdown-exception"
     raise RuntimeError(
-        f"{label} ({error}); immediate close result is {state}, never green"
+        f"{label} ({error}); immediate close result is {state}, never green; {receipt}"
     ) from error
 
 

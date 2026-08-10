@@ -455,7 +455,8 @@ class LeaseStore:
         intent does not linger on a lease that is actually closed.
         """
 
-        _validate_close_record(close_record, pod_id=None, verified=verified)
+        # Shape-only, before the lock: this lease's own pod id is not read yet.
+        _validate_close_record(close_record, pod_id=None, verified=verified, bind_pod=False)
         with self._lock():
             lease = self._require_owner_unlocked(owner_token)
             pod_id = lease.pod_id or _close_record_pod_id(close_record)
@@ -577,13 +578,33 @@ def _close_record_pod_id(close_record: Mapping[str, object]) -> str | None:
 
 
 def _validate_close_record(
-    value: Mapping[str, object] | None, *, pod_id: str | None, verified: bool
+    value: Mapping[str, object] | None,
+    *,
+    pod_id: str | None,
+    verified: bool,
+    bind_pod: bool = True,
 ) -> None:
-    """Bind a terminal lease phase to the close evidence it summarizes."""
+    """Bind a terminal lease phase to the close evidence it summarizes.
+
+    ``bind_pod=False`` is the shape-only pre-check ``record_close`` runs before
+    it takes the lock, when the lease's own pod id is not yet known.  Every
+    other caller binds.
+
+    A verified close asserts ``pod_get_absent`` and ``pod_list_absent`` about
+    one exact pod, so a ``closed-verified`` lease that names no pod is evidence
+    about nothing.  Before this check, the binding check below skipped itself in
+    exactly that case and the phase was accepted.  Found by CodeRabbit on this
+    branch.  The unverified path legitimately closes without a pod id -- a
+    create that never bound one still has to close -- so only the verified
+    phase requires it.
+    """
 
     if not isinstance(value, Mapping):
         raise ValueError("terminal lease must carry a close record")
-    if pod_id is not None and value.get("pod_id") != pod_id:
+    if pod_id is None:
+        if bind_pod and verified:
+            raise ValueError("verified close evidence must name the exact pod it observed absent")
+    elif value.get("pod_id") != pod_id:
         raise ValueError("close record is not bound to this exact pod")
     if verified:
         capture = value.get("cost_capture")

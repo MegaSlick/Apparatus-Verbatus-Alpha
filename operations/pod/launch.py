@@ -44,9 +44,20 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     launch's durable evidence overwrite the first's (GOVERNANCE 4).  Binding
     happens once, here, at sealing time -- the request's own validation then
     refuses a report path that does not carry the sealed token.
+
+    ``PodCreateRequest.__post_init__`` already refuses a command that does not
+    carry exactly one ``--report-path`` with a value, so neither refusal below
+    is reachable through ``create``.  They are stated anyway because this
+    helper's contract would otherwise be enforced only at a distance, and
+    because ``tuple.index`` fails on a money path with a message that names
+    nothing.  ``create`` reports either as a request refusal, not a lease one.
     """
 
+    if "--report-path" not in command:
+        raise ValueError("pod request docker_start_cmd carries no --report-path flag")
     index = command.index("--report-path") + 1
+    if index >= len(command):
+        raise ValueError("pod request --report-path flag carries no value")
     original = PurePosixPath(command[index])
     bound_name = f"{original.stem}-{launch_token}{original.suffix}"
     bound_path = str(original.with_name(bound_name))
@@ -60,6 +71,7 @@ class LaunchState(StrEnum):
     REFUSED_SHUTDOWN_NOT_READY = "refused-shutdown-not-ready"
     REFUSED_CONTROLLER_NOT_READY = "refused-controller-not-ready"
     REFUSED_RUNTIME_CONTRACT = "refused-runtime-contract"
+    REFUSED_REQUEST = "refused-request"
     REFUSED_CEILING = "refused-ceiling"
     REFUSED_CONFIRMATION = "refused-confirmation"
     PROVIDER_FAILURE = "provider-failure"
@@ -208,12 +220,23 @@ class PodRuntime:
             return LaunchResult(
                 LaunchState.LEASE_FAILURE, preview_result.preview, detail=str(error)
             )
-        store = self._store(lease_id)
+        # Sealing is request preparation, not lease arming.  Inside the lease
+        # try below, a malformed request reported as LEASE_FAILURE -- the durable
+        # store named for a fault that never touched it, on a money path.  Found
+        # by CodeRabbit on this branch.
         try:
             sealed = self._sealed_request(
                 request, lease_id, preview_result.preview.assessment.estimate
             )
             pending = PendingCreateIntent.from_request(sealed, launch_token=lease_id)
+        except Exception as error:
+            return LaunchResult(
+                LaunchState.REFUSED_REQUEST,
+                preview_result.preview,
+                detail=f"pod request could not be sealed for launch: {error}",
+            )
+        store = self._store(lease_id)
+        try:
             store.create(
                 PodLease(
                     lease_id=lease_id,
@@ -410,7 +433,30 @@ class PodRuntime:
                 close_report=close,
             )
         bound = store.load()
-        assert bound is not None
+        if bound is None:
+            # Not an assert.  `assert` disappears under `python -O`, and a `None`
+            # lease would then reach controller arming and surface as an arming
+            # fault rather than the durable-store fault it is -- the objection
+            # controllers.py records about the same family, on the same money
+            # path.  This one is reachable: `load()` reads a file back off disk.
+            # An adopted pod that cannot be guarded does not keep billing, so
+            # this closes it exactly as a failed arming would.
+            close, detail = self._close_and_record(
+                record=preview_result.record,
+                reason="adoption lease could not be read back after it was written",
+                store=store,
+                owner_token=owner_token,
+                situation="adoption lease was written but could not be read back",
+            )
+            return LaunchResult(
+                LaunchState.LEASE_FAILURE,
+                preview_result.preview,
+                record=preview_result.record,
+                lease_path=store.path,
+                owner_token=owner_token,
+                detail=detail,
+                close_report=close,
+            )
         return self._arm_or_close(
             action="adopt",
             request=expected,
