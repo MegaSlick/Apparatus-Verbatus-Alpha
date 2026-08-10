@@ -10,7 +10,7 @@ from common.armarium_formats import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     KNOWN_FORMATS,
     ArmariumFormats,
-    load_armarium_formats,
+    bind_armarium_formats,
 )
 from common.chairs.registry import ChairRegistry
 from common.contracts.errors import SchemaRefusal
@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_shipped_formats_choose_only_the_plainly_approved_projections():
-    formats = load_armarium_formats(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH)
+    _digest, formats = bind_armarium_formats(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH)
     assert set(formats.formats) == KNOWN_FORMATS
     assert formats.embed_pixels is False
     assert "obsidian-vault" not in formats.formats
@@ -34,7 +34,7 @@ def test_unknown_format_is_refused_instead_of_becoming_an_implicit_product(tmp_p
         encoding="utf-8",
     )
     with pytest.raises(SchemaRefusal, match="unknown"):
-        load_armarium_formats(path)
+        bind_armarium_formats(path)
 
 
 def test_direct_format_construction_cannot_bypass_the_closed_parser():

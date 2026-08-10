@@ -46,7 +46,6 @@ from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.stages import ARMARIUM  # noqa: E402
 from common.stage import EXIT_COMPLETE, open_context, run_stage, stage_parser  # noqa: E402
 
-ARCHIVE_NAME = ARMARIUM_ARCHIVE_NAME
 EXTRACTION_NAME = "bundle"
 
 
@@ -109,7 +108,7 @@ def publish(context, out_dir: Path) -> dict:
             # recipient with no run tree would: if it does not survive that, it is not a
             # product to publish and the destination stays absent.
             manifest = verify_export_bundle(data, staging / EXTRACTION_NAME)
-            (staging / ARCHIVE_NAME).write_bytes(data)
+            (staging / ARMARIUM_ARCHIVE_NAME).write_bytes(data)
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)
             raise
@@ -127,7 +126,7 @@ def publish(context, out_dir: Path) -> dict:
             out_dir.rmdir()
         raise
     return {
-        "archive": ARCHIVE_NAME,
+        "archive": ARMARIUM_ARCHIVE_NAME,
         "extraction": EXTRACTION_NAME,
         "sha256": digest_bytes(data),
         "status": manifest["claims"]["status"],

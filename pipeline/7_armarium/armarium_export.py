@@ -540,13 +540,7 @@ def _validate_salvage_items(items: tuple[dict[str, Any], ...]) -> None:
             raise SchemaRefusal("a salvage-tier item is not an object")
         _reject_salvage_act_namespace(item, subject="item")
         salvage_id = item.get("salvage_id")
-        if (
-            not isinstance(salvage_id, str)
-            or not salvage_id
-            or salvage_id in seen
-            or "/" in salvage_id
-            or salvage_id in (".", "..")
-        ):
+        if not _is_safe_path_segment(salvage_id) or salvage_id in seen:
             raise SchemaRefusal("a salvage-tier item has no unique, safe salvage identity")
         if not isinstance(item.get("content"), str):
             raise SchemaRefusal("a salvage-tier item has no separately named content")
@@ -600,8 +594,7 @@ def _validate_cited_region(region: object, *, subject: str) -> None:
     """Validate a crop citation before it is attached to any export namespace."""
     if not isinstance(region, dict):
         raise SchemaRefusal(f"a {subject} source region is not an object")
-    region_id = region.get("region_id")
-    if not isinstance(region_id, str) or not region_id or "/" in region_id or region_id == ".":
+    if not _is_safe_path_segment(region.get("region_id")):
         raise SchemaRefusal(f"a {subject} source region has no safe identity")
     image_path, image_sha256 = region.get("image_path"), region.get("image_sha256")
     if not isinstance(image_path, str):
@@ -682,14 +675,12 @@ def _source_rows(
 ) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
     rows: list[dict[str, Any]] = []
     embedded: dict[str, bytes] = {}
-    seen_ordinals: set[int] = set()
-    for page in sorted(pages, key=lambda item: item.get("ordinal", -1)):
-        if not isinstance(page, dict):
-            raise SchemaRefusal("an export page census row is not an object")
-        ordinal = page.get("ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal in seen_ordinals:
-            raise SchemaRefusal("an export page census has no unique integer ordinal")
-        seen_ordinals.add(ordinal)
+    # `_pages_by_ordinal` has already refused a non-object row and a repeated or
+    # non-integer ordinal -- twice, from `_validate_projection` and from
+    # `_validate_projection_region_bindings` -- before `build_armarium_bundle`
+    # reaches here, so the ordinal is read rather than re-proved.
+    for page in sorted(pages, key=lambda item: item["ordinal"]):
+        ordinal = page["ordinal"]
         declared_path, declared_sha256 = page.get("declared_path"), page.get("declared_sha256")
         if not isinstance(declared_path, str) or not isinstance(declared_sha256, str):
             raise SchemaRefusal("an export page census lacks its declared source citation")
@@ -755,7 +746,10 @@ def _text_bundle_members(
     for act in acts:
         if act["category"] != ArmariumCategory.DELIVERED.value:
             continue
-        folder = _source_folder(act)
+        # A delivered act reached here with at least one cited region, each already
+        # carrying a validated `declared_path` (`_validate_projection` and
+        # `_validate_cited_region`), so the folder is read rather than re-proved.
+        folder = _source_folder_for_declared_path(act["source_regions"][0]["declared_path"])
         folders.add(folder)
         grouped[folder].append(act)
     members: dict[str, bytes] = {}
@@ -806,33 +800,19 @@ def _acts_with_source_references(
         record = dict(act)
         regions: list[dict[str, Any]] = []
         for region in act.get("source_regions", []):
+            # Every field this loop then reads -- the crop path and digest, the
+            # declared source path and digest, the ledger digest, the region
+            # identity -- is checked here and only here. The block that used to
+            # re-derive all six between this call and the branch below was a second
+            # copy of `_validate_cited_region`'s rules, with nothing keeping the two
+            # in step if either changed.
             _validate_cited_region(region, subject="exported act")
             copied = dict(region)
             image_path, image_sha256, region_id = (
-                copied.get("image_path"),
-                copied.get("image_sha256"),
-                copied.get("region_id"),
+                copied["image_path"],
+                copied["image_sha256"],
+                copied["region_id"],
             )
-            if not isinstance(image_path, str) or not isinstance(image_sha256, str):
-                raise SchemaRefusal("an exported source region lacks its verified crop reference")
-            _require_sha256(image_sha256, "an exported source region crop digest")
-            declared_path, declared_sha256 = (
-                copied.get("declared_path"),
-                copied.get("declared_sha256"),
-            )
-            if not isinstance(declared_path, str):
-                raise SchemaRefusal("an exported source region has no declared source path")
-            _source_folder_for_declared_path(declared_path)
-            _require_sha256(declared_sha256, "an exported source region declared source digest")
-            if "ledger_sha256" in copied:
-                _require_sha256(copied["ledger_sha256"], "an exported source region ledger digest")
-            if (
-                not isinstance(region_id, str)
-                or not region_id
-                or "/" in region_id
-                or region_id == "."
-            ):
-                raise SchemaRefusal("an exported source region has no safe crop identity")
             if embed_pixels:
                 pixels = read_bytes(image_path)
                 if digest_bytes(pixels) != image_sha256:
@@ -848,7 +828,6 @@ def _acts_with_source_references(
                     "sha256": image_sha256,
                 }
             else:
-                _validate_run_relative_path(image_path)
                 copied["crop_image"] = {
                     "availability": _SOURCE_ACCESS_REQUIRED,
                     "run_relative_path": image_path,
@@ -898,7 +877,6 @@ def _salvage_with_source_references(
                     "sha256": image_sha256,
                 }
             else:
-                _validate_run_relative_path(image_path)
                 copied["crop_image"] = {
                     "availability": _SOURCE_ACCESS_REQUIRED,
                     "run_relative_path": image_path,
@@ -910,17 +888,23 @@ def _salvage_with_source_references(
     return tuple(projected), embedded
 
 
-def _source_folder(act: dict[str, Any]) -> str:
-    regions = act.get("source_regions")
-    if not isinstance(regions, list) or not regions or not isinstance(regions[0], dict):
-        raise SchemaRefusal("a delivered act cannot be assigned to a source folder")
-    declared_path = regions[0].get("declared_path")
-    if not isinstance(declared_path, str):
-        raise SchemaRefusal("a delivered act has no declared source path")
-    return _source_folder_for_declared_path(declared_path)
-
-
 _UNSAFE_PATH_CHARACTERS: Final = frozenset({"\\", "\x00"})
+
+
+def _is_safe_path_segment(value: object) -> bool:
+    """Whether an identity may be spliced into a member path as one whole component.
+
+    A region identity and a salvage identity both become exactly one path component
+    of an embedded pixel member -- ``pixels/crops/<region_id>.img`` and
+    ``pixels/salvage/<salvage_id>/<region_id>.img``. Each was checked by its own
+    hand-written spelling and the two had already drifted: the salvage one refused
+    ``".."`` and the region one did not. This is the same question
+    ``_reject_unsafe_relative_path`` answers for a whole path, narrowed to a single
+    component, asked once.
+    """
+    if not isinstance(value, str) or not value or "/" in value or value in (".", ".."):
+        return False
+    return not any(character in value for character in _UNSAFE_PATH_CHARACTERS)
 
 
 def _reject_unsafe_relative_path(value: object, *, subject: str) -> PurePosixPath:
@@ -1031,8 +1015,6 @@ def _text_member_path(folder: str) -> str:
     """Map a logical source folder injectively into a product member name."""
     if not folder:
         return "text/_source_root/readings.txt"
-    if folder == ".":
-        raise SchemaRefusal("a text-bundle source folder is unsafe")
     _reject_unsafe_relative_path(folder, subject="a text-bundle source folder")
     return f"text/_source_folder/{folder}/readings.txt"
 
@@ -2019,12 +2001,7 @@ def _verify_honest_status_claims(
         or not all(isinstance(reason, str) and reason for reason in reasons)
     ):
         raise SchemaRefusal("the exported aggregate has no valid measured status and reasons")
-    completed_categories = {
-        ArmariumCategory.DELIVERED.value,
-        ArmariumCategory.EXCLUDED_WITH_APPROVAL.value,
-        ArmariumCategory.CONFIRMED_BLANK.value,
-    }
-    must_be_partial = any(category not in completed_categories for category in categories.values())
+    must_be_partial = any(category not in _COMPLETED_CATEGORIES for category in categories.values())
     must_be_partial = must_be_partial or any(
         page.get("outcome") != "sealed" for page in sources["pages"] if isinstance(page, dict)
     )
@@ -2822,10 +2799,9 @@ def _verify_reference(reference: Any, root) -> None:
         except ValueError as error:
             raise SchemaRefusal("an embedded package source pixel does not open") from error
     elif availability == _SOURCE_ACCESS_REQUIRED:
-        run_path = reference.get("run_relative_path")
-        if not isinstance(run_path, str) or not isinstance(sha256, str):
-            raise SchemaRefusal("a source-access-required reference lacks its path or digest")
-        _validate_run_relative_path(run_path)
+        # The digest was already required above, for every availability. Only the
+        # path is this branch's own question.
+        _validate_run_relative_path(reference.get("run_relative_path"))
     else:
         raise SchemaRefusal("a package source reference has no honest availability status")
 
@@ -2837,5 +2813,5 @@ def _validate_member_name(name: str) -> None:
     _reject_unsafe_relative_path(name, subject=subject)
 
 
-def _validate_run_relative_path(path: str) -> None:
+def _validate_run_relative_path(path: object) -> None:
     _reject_unsafe_relative_path(path, subject="a source reference into the retained run tree")

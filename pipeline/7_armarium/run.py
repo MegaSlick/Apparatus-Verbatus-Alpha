@@ -724,13 +724,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         coverages[act_id] = review["payload"]["coverage"]
         act_pages[act_id] = marked_out_pages[act["act_id"]]
         if category is ArmariumCategory.DELIVERED:
-            try:
-                canonical_clean_text = entry["text"]
-            except KeyError as error:
-                raise FatalAccounting(
-                    "a delivered Armarium entry has no literal Archetypus text; an export "
-                    "may not substitute or fall back to another reading"
-                ) from error
+            canonical_clean_text = entry.get("text")
             if not isinstance(canonical_clean_text, str):
                 raise FatalAccounting(
                     "a delivered Armarium entry has no literal Archetypus text; an export "

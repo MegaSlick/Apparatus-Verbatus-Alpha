@@ -98,16 +98,6 @@ def parse_armarium_formats_bytes(data: bytes, *, source: str | Path = "bytes") -
     return armarium_formats_from_record(raw, source=f"configuration {label}")
 
 
-def load_armarium_formats(path: str | Path) -> ArmariumFormats:
-    """Load the one format configuration without guessing missing choices."""
-    source = Path(path)
-    try:
-        data = source.read_bytes()
-    except OSError as error:
-        raise SchemaRefusal(f"Armarium formats configuration {source} could not be read") from error
-    return parse_armarium_formats_bytes(data, source=source)
-
-
 def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
     """Read, digest and parse one formats configuration for a run binding.
 
@@ -117,6 +107,10 @@ def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
     Door's) used to each read, digest and parse this file themselves; sharing
     one function is what keeps a future change to any of those three steps
     from having to be made twice to stay correct in both places.
+
+    This is the only reader. Nothing binds a format selection without also
+    digesting the bytes it came from, so there is deliberately no load-without-
+    digest entry point beside it.
     """
     try:
         data = Path(path).read_bytes()
