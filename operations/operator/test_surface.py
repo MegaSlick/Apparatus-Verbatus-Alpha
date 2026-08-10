@@ -821,7 +821,7 @@ def test_an_unreadable_spend_policy_never_stops_a_close(tmp_path: Path) -> None:
     surface = _surface(tmp_path)
     launched = _launch(surface, _spend_policy(tmp_path))
     assert launched.record is not None
-    (surface.workspace / "config" / "spend.toml").exists()  # the shipped one is unconfigured
+    assert (surface.workspace / "config" / "spend.toml").exists()  # the shipped one is unconfigured
 
     report = surface.close(f"{OPERATOR_CLOSE_PREFIX} {launched.record.pod_id}")
 
