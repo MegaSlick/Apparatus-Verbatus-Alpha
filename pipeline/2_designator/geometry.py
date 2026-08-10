@@ -220,13 +220,10 @@ def apply_padding(
     clamping at a page edge shaves it, and a caller that only recorded the
     configured fraction would describe a crop bigger than the one it cut.
     """
-    x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
     if page_w <= 0 or page_h <= 0:
         raise ContractError(f"a {page_w}x{page_h} page has no positive area to pad within")
-    if w <= 0 or h <= 0:
-        raise ContractError(f"padding cannot be applied to non-positive bounds {bounds}")
-    if x < 0 or y < 0 or x + w > page_w or y + h > page_h:
-        raise ContractError(f"structural bounds {bounds} fall outside a {page_w}x{page_h} page")
+    _validate_bounds(bounds, page_w, page_h, "structural bounds")
+    x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
 
     top = _pad_amount(h, padding["top_bp"])
     bottom = _pad_amount(h, padding["bottom_bp"])

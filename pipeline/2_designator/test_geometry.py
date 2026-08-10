@@ -92,6 +92,18 @@ def test_padding_refuses_a_non_positive_page():
         apply_padding({"x": 0, "y": 0, "w": 10, "h": 10}, 0, 100, PADDING)
 
 
+def test_padding_refuses_a_bool_coordinate_rather_than_reading_it_as_zero_or_one():
+    # bool is an int subclass in Python -- True silently reads as 1, False as 0,
+    # if a coordinate is only range-checked rather than type-checked.
+    with pytest.raises(ContractError, match="non-integer"):
+        apply_padding({"x": 0, "y": 0, "w": 200, "h": True}, 1000, 1000, PADDING)
+
+
+def test_padding_refuses_a_float_coordinate():
+    with pytest.raises(ContractError, match="non-integer"):
+        apply_padding({"x": 10.5, "y": 10, "w": 20, "h": 20}, 100, 100, PADDING)
+
+
 # --- to_model_space / from_model_space round trip ---------------------------
 
 
@@ -300,7 +312,9 @@ def _write_padding_toml(path, *, fields=None, provenance=None, omit_provenance_t
     skips the table entirely; either argument may be a dict missing or adding
     fields, so a test can construct exactly the malformed shape it needs.
     """
-    lines = ["[padding]"] + [f"{name} = {value}" for name, value in (fields or PADDING).items()]
+    lines = ["[padding]"] + [
+        f"{name} = {_toml_value(value)}" for name, value in (fields or PADDING).items()
+    ]
     if not omit_provenance_table:
         lines.append("[padding.provenance]")
         for name, value in (PROVENANCE if provenance is None else provenance).items():
@@ -344,6 +358,34 @@ def test_load_padding_config_refuses_a_missing_field(tmp_path, missing_field):
     path = tmp_path / "padding.toml"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(ContractError):
+        load_padding_config(path)
+
+
+def test_load_padding_config_refuses_a_negative_bp_field(tmp_path):
+    path = tmp_path / "padding.toml"
+    _write_padding_toml(path, fields={**PADDING, "top_bp": -1})
+    with pytest.raises(ContractError, match="invalid non-negative integer"):
+        load_padding_config(path)
+
+
+def test_load_padding_config_refuses_a_string_bp_field(tmp_path):
+    path = tmp_path / "padding.toml"
+    _write_padding_toml(path, fields={**PADDING, "left_bp": "500"})
+    with pytest.raises(ContractError, match="invalid non-negative integer"):
+        load_padding_config(path)
+
+
+def test_load_padding_config_refuses_a_bool_bp_field(tmp_path):
+    path = tmp_path / "padding.toml"
+    _write_padding_toml(path, fields={**PADDING, "right_bp": True})
+    with pytest.raises(ContractError, match="invalid non-negative integer"):
+        load_padding_config(path)
+
+
+def test_load_padding_config_refuses_malformed_toml_syntax(tmp_path):
+    path = tmp_path / "padding.toml"
+    path.write_text("[padding]\ntop_bp = 600\nbottom_bp = [unterminated\n", encoding="utf-8")
+    with pytest.raises(ContractError, match="could not be read"):
         load_padding_config(path)
 
 
