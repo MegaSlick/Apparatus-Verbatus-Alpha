@@ -2043,10 +2043,46 @@ class TestTheConfigurationThatLivesOutsideTheMount:
     def test_the_login_booth_keeps_the_configuration_it_writes(self):
         """The booth is `--rm`, so a sign-in wrote the credential into the volume and
         the configuration into a container that was thrown away seconds later. That is
-        why the sign-in worked and then died a few hours on."""
+        why the sign-in worked and then died a few hours on.
+
+        **This test used to assert the copy wrapper, and the copy wrapper did not
+        work.** Measured 2026-08-10: `.credentials.json` in the live volume still
+        carried the mtime of the last manual sign-in and had never once been rewritten,
+        while `backups/.claude.json.backup.*` held 50-byte stubs — the CLI backing up
+        the empty configuration it had just been handed. Seven sign-ins in a week, each
+        dying at its first refresh. The wrapper was tested for emitting the right calls
+        and never for the outcome it existed to produce, so a green suite reported a
+        protection that was not there.
+
+        What actually fixes it is `CLAUDE_CONFIG_DIR`: the CLI keeps `.claude.json`
+        beside the credential *inside* the mount instead of one level up, so there is
+        nothing left to copy and nothing left to lose. Probed against CLI 2.1.226 in
+        this image, then confirmed end to end — the expired credential refreshed itself
+        and the volume's `.credentials.json` was rewritten for the first time.
+        """
         source = SCRIPT.read_text()
-        assert "wrap_home_config" in source
-        assert 'login_cmd=$(wrap_home_config "$tool")' in source
+        assert "CLAUDE_CONFIG_DIR=${mount}" in source, (
+            "the login booth no longer points the CLI's configuration at the mounted "
+            "volume, so the sign-in half a refresh needs dies with the --rm container"
+        )
+
+    def test_the_dispatch_points_the_cli_configuration_at_the_volume(self):
+        """The other half. A sign-in that persists is worth nothing if the chamber that
+        runs the CLI writes its refreshed token somewhere the next chamber cannot see."""
+        source = SCRIPT.read_text()
+        assert 'CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE"' in source, (
+            "dispatch no longer sets CLAUDE_CONFIG_DIR, so a refreshed token lands in "
+            "the container and is destroyed with it"
+        )
+
+    def test_the_trust_flag_is_written_where_the_cli_reads_it(self):
+        """`CLAUDE_CONFIG_DIR` moves the file the trust flag belongs in. Written to the
+        old path beside it, the flag is set in a file nothing reads and the trust dialog
+        blocks a detached chamber with nobody there to answer it."""
+        source = SCRIPT.read_text()
+        assert 'd = pathlib.Path("/home/agent/.claude")' in source, (
+            "the trust flag is no longer written into the directory CLAUDE_CONFIG_DIR points at"
+        )
 
     def test_nothing_symlinks_the_configuration_into_the_volume(self):
         """A symlink is the obvious one-line fix and it is wrong: the CLI writes this

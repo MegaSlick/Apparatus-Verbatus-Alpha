@@ -394,22 +394,33 @@ cmd_login() {
     # `.credentials.json` into the volume and `.claude.json` into a container marked
     # `--rm`, so the half the refresh needs was thrown away the moment the sign-in
     # succeeded. Wrapping the CLI keeps both halves. See `HOME_CONFIG_KEPT` above.
+    # `CLAUDE_CONFIG_DIR` points the CLI's whole configuration at the mounted volume,
+    # so the booth's `--rm` can no longer throw away the half a refresh needs. See the
+    # dispatch path for the probe that established this.
     case "$vendor" in
-        claude) login_cmd=$(wrap_home_config "$tool") ;;
-        *) login_cmd="$tool" ;;
+        claude)
+            login_cmd="$tool"
+            login_env="--env CLAUDE_CONFIG_DIR=${mount}" ;;
+        *)
+            login_cmd="$tool"
+            login_env="" ;;
     esac
 
     login_status=0
     if [ -t 0 ]; then
+        # shellcheck disable=SC2086
         docker run --rm --interactive --tty \
             --volume "${volume}:${mount}" \
+            $login_env \
             "$IMAGE" \
             sh -c "$login_cmd" || login_status=$?
     else
         note "(no terminal here — running without one; follow the URL or code below)"
         note ""
+        # shellcheck disable=SC2086
         docker run --rm --interactive \
             --volume "${volume}:${mount}" \
+            $login_env \
             "$IMAGE" \
             sh -c "$login_cmd" || login_status=$?
     fi
@@ -925,12 +936,18 @@ AUTOCLAVE_SETUP
             cat /home/agent/.claude/home-config.json > /home/agent/.claude.json
         fi
         [ -f /home/agent/.claude.json ] || printf "%s\n" "{}" > /home/agent/.claude.json
+        # The trust flag goes where `CLAUDE_CONFIG_DIR` makes the CLI actually look —
+        # inside the mounted directory. Written to the path beside it, as it was, the
+        # flag is set in a file nothing reads and the trust dialog blocks a detached
+        # chamber with no one there to answer it.
         python3 - <<"PY"
 import json, pathlib
-p = pathlib.Path("/home/agent/.claude.json")
+d = pathlib.Path("/home/agent/.claude")
+d.mkdir(parents=True, exist_ok=True)
+p = d / ".claude.json"
 try:
     config = json.loads(p.read_text() or "{}")
-except ValueError:
+except (ValueError, OSError):
     config = {}
 config.setdefault("projects", {}).setdefault("/work", {})["hasTrustDialogAccepted"] = True
 p.write_text(json.dumps(config, indent=2))
@@ -1175,8 +1192,24 @@ cmd_dispatch() {
             # chamber is already the bound on how long anything may run.
             #
             # Codex needs no counterpart: it streams and has no such ceiling.
+            # **`CLAUDE_CONFIG_DIR` is what actually fixes the two-file split**, and it
+            # replaces the copy-in/copy-out above rather than joining it. The CLI keeps
+            # `.claude.json`, `backups/`, `projects/` and `sessions/` inside this
+            # directory instead of beside it — probed on 2026-08-10 against CLI 2.1.226
+            # in this image, not taken from documentation. Pointed at the mounted volume,
+            # every file a refresh touches is persistent by construction, which is why
+            # Codex never had this bug: its whole configuration was already inside its
+            # own mount.
+            #
+            # Before this, the refresh had **never once succeeded** in the credential
+            # volume: `.credentials.json` still carried the mtime of the last manual
+            # sign-in, and `backups/.claude.json.backup.*` held 50-byte stubs — the CLI
+            # backing up the empty configuration it had just been handed. Seven sign-ins
+            # in a week, each dying at its first refresh, roughly eight hours in, while
+            # the refresh token itself stayed valid for weeks.
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
                 -e CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+                -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
                 "$(container_of "$task")" sh -c '
                 cd /work
                 claude --dangerously-skip-permissions \
