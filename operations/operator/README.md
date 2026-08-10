@@ -145,7 +145,11 @@ cannot travel in a commit.
   the verb that called it.
 - `volume_cost.py` holds the ongoing-storage note, with the documentation it was read from
   and the date it was read.
-- Close timing comes from the reviewed spending policy, and falls back to the pod
-  runtime's operational defaults. A drill that needs a close to give up quickly injects a
-  fast clock (`monotonic=`, `sleeper=`); it never shortens the shipped deadline.
+- Close timing comes from the workspace's own `config/spend.toml`, and falls back to the
+  pod runtime's operational defaults if that file is missing, unreadable, or
+  unconfigured. This is always the workspace default, **not** whatever path a `launch
+  --spend` used — nothing records which policy path a launch was given, so close has no
+  way to read it back even if it wanted to. A drill that needs a close to give up
+  quickly injects a fast clock (`monotonic=`, `sleeper=`); it never shortens the shipped
+  deadline.
 - Nothing in this package's tests makes a live call of any kind.

@@ -988,10 +988,13 @@ class OperatorSurface:
     def _close_policy(self) -> SpendPolicy | None:
         """The reviewed policy for close timing, or `None` — never a refusal.
 
-        `launch` must refuse without a reviewed policy, because it spends.
-        `close` must not: an unreadable or unconfigured policy is no reason to
-        leave a pod running, and the ceiling checks a policy carries have nothing
-        to say about stopping one.
+        Always the workspace's own `config/spend.toml`, never the `--spend` path
+        `launch` may have been given: nothing records which policy path a launch
+        used, so close has no path to read back even if it wanted one. `launch`
+        must refuse without a reviewed policy, because it spends. `close` must
+        not: an unreadable or unconfigured policy is no reason to leave a pod
+        running, and the ceiling checks a policy carries have nothing to say
+        about stopping one.
         """
 
         try:
@@ -1003,10 +1006,12 @@ class OperatorSurface:
         """Close timing comes from the reviewed policy, never from a constant here.
 
         A reviewed `shutdown_deadline_seconds` and `shutdown_poll_interval_seconds`
-        are what the operator's own policy says a close may take. Where no
-        configured policy is in hand — `close` is deliberately runnable without
-        one, because closing is always the safe direction — `VerifiedShutdown`'s
-        own operational defaults apply. Speeding either up belongs in a test's
+        are what the operator's own policy says a close may take — read from
+        `_close_policy`'s fixed workspace default, which may not be the policy a
+        `launch --spend` used (see that method's docstring). Where no configured
+        policy is in hand — `close` is deliberately runnable without one, because
+        closing is always the safe direction — `VerifiedShutdown`'s own
+        operational defaults apply. Speeding either up belongs in a test's
         injected clock, not in the shipped surface: a close that gives up in
         milliseconds reports UNVERIFIED every time, which is loud, wrong, and the
         fastest way to teach someone to ignore the one message that matters.
