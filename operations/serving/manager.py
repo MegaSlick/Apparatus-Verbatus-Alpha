@@ -1295,6 +1295,17 @@ def _fatal_log_signature(tail: str) -> str | None:
     every interval, so one benign line naming either word aborts a start that
     was going to succeed.  A missed signature costs a bounded watchdog wait; a
     false one costs a relaunch, and on the real path that is GPU-hours.
+
+    A bare `traceback` is declined for exactly the same reason.  vLLM has
+    printed a benign, logged-and-swallowed traceback at startup for an
+    optional backend that failed to import (FlashInfer probing is the
+    documented case: vllm-project/vllm#12513, #30240) while still going on to
+    serve normally.  Because this poll re-reads the whole tail every interval,
+    that one line would make the chair deterministically unstartable, not
+    merely cost one relaunch.  `EngineDeadError` and `CUDA out of memory`
+    already name the loud fatal cases, and `VLLM_PROCESS_EXITED`
+    (`_assert_process_live`, checked earlier in the same loop) catches a
+    process that a bad traceback actually killed.
     """
 
     normalized = tail.lower()
@@ -1304,9 +1315,9 @@ def _fatal_log_signature(tail: str) -> str | None:
         return "CUDA out of memory"
     if "does not support lora" in normalized:
         return "LORA_UNSUPPORTED"
-    if "unknown model" in normalized:
+    if "unknown model:" in normalized:
         return "UNKNOWN_MODEL"
-    if "vllm_error" in normalized or "traceback" in normalized:
+    if "vllm_error" in normalized:
         return "VLLM_ERROR"
     return None
 

@@ -776,7 +776,7 @@ def test_an_endpoint_answering_as_a_different_model_never_becomes_ready(tmp_path
     [
         ("CUDA out of memory", "CUDA out of memory"),
         ("EngineDeadError", "EngineDeadError"),
-        ("Traceback", "VLLM_ERROR"),
+        ("VLLM_ERROR: fatal engine startup failure", "VLLM_ERROR"),
         # The two the old pipeline's own launch scripts grepped for, and the
         # two vLLM prints when it rejects an adapter loudly rather than
         # ignoring one silently (Tyrel's ruling 1).
@@ -836,6 +836,70 @@ def test_bare_runtimeerror_or_valueerror_in_the_log_does_not_abort_a_start_that_
             "RuntimeError: a transient benign message unrelated to any fatal condition\n"
             "ValueError: also benign, also not one of the named signatures\n"
         ),
+    )
+
+    handle = manager.start(chair, TIER)
+
+    assert registry.refusals == []
+    assert len(publisher.calls) == 1
+    handle.stop()
+
+
+def test_a_benign_startup_traceback_does_not_abort_a_start_that_would_succeed(
+    tmp_path: Path,
+) -> None:
+    """A logged-and-swallowed optional-backend traceback must not be fatal.
+
+    vLLM has printed a benign traceback at startup for an optional backend
+    that failed to import (FlashInfer probing is the documented case:
+    vllm-project/vllm#12513, #30240) while still serving normally afterward.
+    Because the readiness poll re-reads the whole launch tail every interval,
+    treating any ``traceback`` line as fatal would make a chair that prints
+    this deterministically unstartable, not merely cost one relaunch.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, _, registry, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        log_tail=(
+            "WARNING 08-09 12:00:00 [__init__.py:32] Failed to import from vllm._C\n"
+            "Traceback (most recent call last):\n"
+            '  File "vllm/_C.py", line 1, in <module>\n'
+            "ModuleNotFoundError: no flashinfer\n"
+            "INFO: continuing\n"
+        ),
+    )
+
+    handle = manager.start(chair, TIER)
+
+    assert registry.refusals == []
+    assert len(publisher.calls) == 1
+    handle.stop()
+
+
+def test_bare_unknown_model_prose_without_a_colon_does_not_abort_a_start(
+    tmp_path: Path,
+) -> None:
+    """Only vLLM's own 'Unknown model:' rejection form is fatal, not the words."""
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, _, registry, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        log_tail="INFO: this is an unknown model type warning, continuing anyway\n",
     )
 
     handle = manager.start(chair, TIER)
