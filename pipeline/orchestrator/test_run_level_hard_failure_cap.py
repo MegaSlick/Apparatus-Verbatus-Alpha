@@ -18,6 +18,7 @@ alongside the forged failures, so these tests also stand as the end-to-end
 proof that a real truncation does not, by itself, move the tally.
 """
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -126,10 +127,14 @@ def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_pa
     result = orchestrate(root, "r", "truncated-reading")
     assert result.returncode == 4, result.stdout + result.stderr
     assert "halted at the" in result.stdout
+    # Durable failure evidence already on the tree is found before any stage is
+    # re-entered, so the halt is the resume preflight's, not a later boundary's.
+    # What happens when the third failure appears *during* a run is a different
+    # path, driven below by `test_a_breach_first_seen_at_a_stage_boundary...`.
     assert "resume-preflight" in result.stdout
 
-    # The section already in flight (perlector) finished -- its manifest exists --
-    # but nothing past the checkpoint that tripped the cap was ever invoked.
+    # The Perlector section this test's own setup ran is still intact (nothing
+    # was torn down), and nothing past the checkpoint that tripped was invoked.
     assert has_any_artifact(tree, PERLECTOR)
     assert not has_any_artifact(tree, RECENSOR)
     assert not has_any_artifact(tree, ARCHETYPUS)
@@ -203,6 +208,118 @@ def test_a_real_truncated_reading_alone_never_mentions_the_cap(tmp_path):
     assert result.returncode in (0, 3), result.stdout + result.stderr
     assert "hard failure" not in result.stdout
     assert "halted" not in result.stdout
+
+
+# --- The halt at a boundary reached mid-run ------------------------------------
+#
+# Every end-to-end test above forges its failures before the orchestrator starts,
+# so all of them trip at `resume-preflight` — the branch before the sequence loop.
+# The ruling's actual shape ("finishes that section but pauses") lives in the loop
+# body and in `drive_recovery`, and nothing reached either. The two-act synthetic
+# fixture cannot organically produce a third counted hard failure mid-run, and
+# adding a scenario that could would move `config_digest` and every pinned run-tree
+# digest with it. So the sequencing itself is driven directly instead.
+
+
+def _load_orchestrator():
+    path = ROOT / "pipeline/orchestrator/run.py"
+    spec = importlib.util.spec_from_file_location("orchestrator_hard_failure_cap", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _breach(checkpoint_name: str) -> dict:
+    return {
+        "threshold": 2,
+        "count": 3,
+        "breached": True,
+        "by_kind": {"perlector:failed": ["a1", "a2", "a3"]},
+        "subjects": ["perlector:a1", "perlector:a2", "perlector:a3"],
+        "checkpoint": checkpoint_name,
+    }
+
+
+def test_a_breach_first_seen_at_a_stage_boundary_stops_the_rest_of_the_sequence(
+    monkeypatch, tmp_path, capsys
+):
+    """Nothing after the boundary that tripped is invoked, and the halt is said.
+
+    The cap's whole point is that it stops the run from spending more work, so
+    "the stage after the breach was never invoked" is the assertion that matters,
+    not merely the exit code.
+    """
+    orchestrator = _load_orchestrator()
+    invoked: list[str] = []
+    monkeypatch.setattr(
+        orchestrator, "invoke", lambda program, _args, **_extra: invoked.append(program)
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "checkpoint",
+        lambda _args, name, _policy: _breach(name) if name == "designator" else None,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--fixture",
+            FIXTURE,
+            "--scenario",
+            "happy",
+            "--run-id",
+            "r",
+            "--run-root",
+            str(tmp_path / "runs"),
+        ],
+    )
+
+    assert orchestrator.main() == orchestrator.EXIT_RUN_HALTED
+    assert invoked == [
+        orchestrator.STAGE_PROGRAMS["door"],
+        orchestrator.STAGE_PROGRAMS["exemplar"],
+        orchestrator.STAGE_PROGRAMS["designator"],
+    ]
+    printed = capsys.readouterr().out
+    assert "halted at the designator checkpoint" in printed
+    assert "perlector:failed" in printed
+
+
+def test_a_breach_inside_a_recovery_round_stops_before_the_archetypus(monkeypatch, tmp_path):
+    """`drive_recovery` runs before the Archetypus; a breach there halts too.
+
+    Recovery re-invokes the Designator and the Perlector, so it is where a run
+    that is going wrong is most likely to cross the cap — and the one caller
+    whose halt return `main` has to honour before establishing any text.
+    """
+    orchestrator = _load_orchestrator()
+    invoked: list[str] = []
+    monkeypatch.setattr(
+        orchestrator, "invoke", lambda program, _args, **_extra: invoked.append(program)
+    )
+    monkeypatch.setattr(orchestrator, "checkpoint", lambda _args, _name, _policy: None)
+    monkeypatch.setattr(orchestrator, "drive_recovery", lambda _args, _policy: _breach("perlector"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--fixture",
+            FIXTURE,
+            "--scenario",
+            "happy",
+            "--run-id",
+            "r",
+            "--run-root",
+            str(tmp_path / "runs"),
+        ],
+    )
+
+    assert orchestrator.main() == orchestrator.EXIT_RUN_HALTED
+    assert orchestrator.STAGE_PROGRAMS["archetypus"] not in invoked
+    assert orchestrator.STAGE_PROGRAMS["armarium"] not in invoked
+    assert orchestrator.STAGE_PROGRAMS["recensor"] in invoked
 
 
 if __name__ == "__main__":

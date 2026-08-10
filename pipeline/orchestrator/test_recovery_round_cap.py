@@ -124,5 +124,44 @@ def test_a_recovery_checkpoint_waits_for_each_owner_stage_batch(monkeypatch):
     assert checkpoints == ["designator", "perlector", "recensor"]
 
 
+def test_a_breached_checkpoint_ends_the_recovery_round_where_it_was_found(monkeypatch):
+    """The tally travels back to `main`, and the rest of the round is not run.
+
+    Every other test in this file stubs the checkpoint to a permanent non-breach,
+    so the three `return tally` paths inside a recovery round were never taken.
+    The Designator section here finishes — its two recrops were already dispatched
+    — and the reread and re-review that would have followed never happen.
+    """
+    orchestrator = _load_orchestrator()
+    calls = []
+    breach = {"threshold": 2, "count": 3, "breached": True, "by_kind": {}, "checkpoint": None}
+    monkeypatch.setattr(orchestrator, "RunTree", lambda *_args: object())
+    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: {"absolute_cap": 3})
+    monkeypatch.setattr(
+        orchestrator,
+        "pending_recoveries",
+        lambda *_args: [
+            ("act_1", "request_1", "fallback-recrop"),
+            ("act_2", "request_2", "fallback-recrop"),
+        ],
+    )
+    monkeypatch.setattr(
+        orchestrator, "invoke", lambda program, _args, **extra: calls.append((program, extra))
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "checkpoint",
+        lambda _args, checkpoint_name, _policy: dict(breach, checkpoint=checkpoint_name),
+    )
+
+    args = SimpleNamespace(run_root="unused", run_id="unused", recovery_config="unused")
+    tally = orchestrator.drive_recovery(args, hard_failure_policy={})
+    assert tally is not None and tally["checkpoint"] == "designator"
+    assert [program for program, _extra in calls] == [
+        orchestrator.STAGE_PROGRAMS["designator"],
+        orchestrator.STAGE_PROGRAMS["designator"],
+    ]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

@@ -1009,6 +1009,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "recovery_kind": FALLBACK_RECROP,
                     "coverage": coverage,
                     "continuation": continuation_link,
+                    "page_coverage": {
+                        "checked_pages": _region_page_ordinals(state["regions"]),
+                        "flagged_pages": flagged_pages,
+                    },
                     "perlectio_ref": reading_ref,
                     "recovery_request_ref": request_ref,
                     "recovery_policy": budget,

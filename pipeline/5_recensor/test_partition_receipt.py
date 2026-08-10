@@ -330,6 +330,70 @@ def test_a_review_whose_stored_coverage_disagrees_with_disk_is_refused(tmp_path)
         )
 
 
+def test_a_recensor_review_for_an_act_nobody_proposed_is_a_fatal_imbalance(tmp_path):
+    """Spec 09's first test: "a fabricated unit in no set is FATAL".
+
+    The denominator this receipt reconciles against is the Designator's sealed
+    proposal-act set. A Recensor review naming an act that set never named is a
+    unit in no terminal set of the partition -- invariant #10's imbalance -- and
+    the receipt has to refuse rather than quietly widen its own denominator to
+    fit whatever it found on disk. Forged directly, the way the hard-failure cap
+    tests forge theirs: no shipped scenario can produce an act the proposal seal
+    does not name, which is exactly why the refusal needed a test of its own.
+    """
+    from common.contracts.canonical import canonical_bytes
+    from common.contracts.envelope import build_envelope
+    from common.contracts.identities import artifact_id, attempt_id
+
+    root = tmp_path / "runs"
+    through_perlector(root, "fabricated", "happy")
+    assert invoke(root, "fabricated", "happy", "pipeline/5_recensor/run.py").returncode == 0
+
+    tree = RunTree(root, "fabricated")
+    run = tree.read_run()
+    fabricated = "act_nobody_proposed"
+    envelope = build_envelope(
+        run_id=tree.run_id,
+        artifact_id=artifact_id(
+            RECENSOR, "review", fabricated, attempt_id(fabricated, "recense", 1)
+        ),
+        subject_id=fabricated,
+        stage=RECENSOR,
+        kind="review",
+        outcome="accepted",
+        config_digest=run["config_digest"],
+        adapter_revision=run["adapter_recipes"][RECENSOR],
+        inputs=[],
+        payload={"act_key": "fabricated", "attempt_ordinal": 1},
+        attempt=attempt_id(fabricated, "recense", 1),
+    )
+    path = tree.resolve(tree.artifact_path(RECENSOR, "review", envelope["artifact_id"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(envelope))
+    # Refreshed, so the receipt's own manifest-agreement loop does not fire
+    # first and mask the denominator refusal this test is about.
+    tree.write_manifest(RECENSOR)
+
+    recensor = _load_recensor()
+    args = SimpleNamespace(
+        run_root=root,
+        run_id="fabricated",
+        scenario="happy",
+        fixture_root=str(ROOT / "proof"),
+        models_config=str(ROOT / "config/models.toml"),
+        pdf_render_config=str(ROOT / "config/pdf_render.toml"),
+        pdf_target_dpi=None,
+        recovery_config=str(ROOT / "config/recovery.toml"),
+        hard_failure_config=str(ROOT / "config/hard_failure.toml"),
+    )
+    context = recensor.open_context(args, RECENSOR)
+
+    with pytest.raises(FatalAccounting, match="outside the proposal-act denominator"):
+        recensor.write_partition_receipt(
+            context, recensor.load_recovery_policy(args.recovery_config)
+        )
+
+
 def test_an_empty_receipt_may_not_claim_to_be_complete():
     """The status derives from the reasons, and the reason is not optional."""
     from common.contracts.canonical import self_hash

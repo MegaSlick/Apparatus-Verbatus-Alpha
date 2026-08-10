@@ -110,8 +110,14 @@ FIXTURE = "synthetic-two-page-v0"
 # may tune downward. The shipped value remains 2 (the third failure stops), so
 # file counts and scenario behaviour are unchanged; the deliberately sealed
 # policy bytes, and therefore every downstream config digest, moved.
+#
+# Review pin only, second reader: the `recovery-requested` review was the one
+# review shape still missing `page_coverage`, so an act holding for a recrop had
+# its flagged-page finding recorded in no artifact at all until the next pass.
+# Adding it moves the review scenario's tree (the happy scenario requests no
+# recovery, so its pin and both file counts are unchanged).
 HAPPY_RUN_TREE_DIGEST = "eb38bd6a31b07c4e68d3832252aa351de821f6e373ff0ce8b589626d8164b526"
-REVIEW_RUN_TREE_DIGEST = "11fbcd4ec7208f2304ec02ae17ad555b082b3b62ca02bd8084a9987b2ac78c64"
+REVIEW_RUN_TREE_DIGEST = "d013aab736911382f2592cb2a6fb91cb72dcc662e4e26fdd78db0103a6f6b7b2"
 
 
 def orchestrate(

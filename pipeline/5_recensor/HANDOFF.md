@@ -39,8 +39,11 @@ link — carries this fact under `payload["continuation"]`.
 ## `kind="review"`
 
 Every readable-act review payload has `act_key`, `attempt_ordinal`, coverage,
-the applicable recovery counts/bounds, `continuation`, a reason where
-applicable, and `perlectio_ref`.
+the applicable recovery counts/bounds, `continuation`, `page_coverage`, a reason
+where applicable, and `perlectio_ref`. `continuation` and `page_coverage` are on
+every review shape without exception, including the `recovery-requested` one: an
+act whose recrop is never answered would otherwise leave its flagged-page finding
+recorded nowhere at all.
 The Perlectio reference is both a payload fact and a direct input: it names
 exactly the reading the review assessed. Ordinary terminal records use
 `accepted` or `held-for-review`; held Designator acts instead directly input
