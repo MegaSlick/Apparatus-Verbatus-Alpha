@@ -103,6 +103,36 @@ def test_a_non_integer_start_is_refused():
         archetypus.validate_annotations([note], "some text", WITNESSES, "annotations")
 
 
+def test_an_absurdly_large_end_is_refused_cleanly_rather_than_crashing_on_format():
+    """A forged end far past any real text length used to reach the bounds
+    check's own error-message formatting, where Python's int-to-str
+    conversion limit (~4300 digits) turned one malformed annotation into an
+    uncaught ValueError that would take the whole run down with it, not just
+    refuse this act. The magnitude check must fire before that formatting."""
+    huge = 10**10000
+    note = {
+        "kind": "uncertain",
+        "start": 0,
+        "end": huge,
+        "certainty": "high",
+        "alternatives": ["x"],
+    }
+    with pytest.raises(SchemaRefusal, match="far outside any plausible text length"):
+        archetypus.validate_annotations([note], "some text", WITNESSES, "annotations")
+
+
+def test_an_absurdly_large_negative_start_is_refused_cleanly_rather_than_crashing_on_format():
+    huge_negative = -(10**10000)
+    note = {
+        "kind": "illegible",
+        "start": huge_negative,
+        "end": huge_negative,
+        "witness_evidence": [],
+    }
+    with pytest.raises(SchemaRefusal, match="far outside any plausible text length"):
+        archetypus.validate_annotations([note], "some text", WITNESSES, "annotations")
+
+
 def test_a_boolean_start_is_refused_even_though_it_is_technically_an_int():
     note = {"kind": "illegible", "start": True, "end": True, "witness_evidence": []}
     with pytest.raises(SchemaRefusal, match="non-integer"):

@@ -109,6 +109,15 @@ _WITNESS_EVIDENCE_FIELDS = frozenset({"witness_ref", "variant"})
 _UNCERTAIN_FIELDS = frozenset({"kind", "start", "end", "certainty", "alternatives"})
 _ILLEGIBLE_FIELDS = frozenset({"kind", "start", "end", "witness_evidence"})
 
+# No real text is within light-years of this many characters, so any start/end
+# past it is already refused by the bounds check below. The cap exists to keep
+# a forged, absurdly large offset from ever reaching Python's own int-to-str
+# conversion limit (~4300 digits, CPython's "Integer string conversion length
+# limitation", default since 3.11): formatting a start/end that large into
+# this refusal's own message would raise ValueError and crash the whole run
+# instead of refusing one annotation.
+_MAX_PLAUSIBLE_OFFSET = 10**15
+
 # The record's whole field set, closed. A reviewer's question — "is there a
 # second text-bearing field?" — is answered mechanically by this rather than by
 # reading the constructor. Every field is required; `evidence_ref` is present
@@ -192,6 +201,8 @@ def validate_annotations(annotations, text: str, witnesses: dict, what: str) -> 
             or isinstance(end, bool)
         ):
             raise SchemaRefusal(f"{label} has a non-integer start or end")
+        if abs(start) > _MAX_PLAUSIBLE_OFFSET or abs(end) > _MAX_PLAUSIBLE_OFFSET:
+            raise SchemaRefusal(f"{label} has a start or end far outside any plausible text length")
         if start < 0 or end > length or start > end:
             raise SchemaRefusal(
                 f"{label} spans [{start}, {end}), which is outside this reading's own text "
