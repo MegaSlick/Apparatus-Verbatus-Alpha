@@ -49,6 +49,7 @@ from common.recovery import (  # noqa: E402
     FALLBACK_RECROP,
     RECOVERY_KINDS,
     load_recovery_policy,
+    reconcile_recovery_requests,
     recovery_kind_budget,
 )
 from common.stage import (  # noqa: E402
@@ -213,97 +214,23 @@ def recovery_state(context, act_id: str, budget: dict) -> dict:
     request, and a later Perlectio for every recrop.  No branch here establishes
     text or selects among readings; disagreement is fatal accounting.
 
-    The counters each request recorded are reconciled against the requests that
-    preceded it, per kind and in total, rather than trusted because they sit
-    inside a self-hashed payload: the self-hash proves nobody edited the record
-    after publication, not that the number was ever right.
+    The request history itself — ordinals, kinds, and the counters each request
+    recorded — is reconciled by `common/recovery.py::reconcile_recovery_requests`,
+    the one implementation the Designator and orchestrator boundary also uses.
+    What this function adds is the binding between that history and the reviews,
+    recrops and rereads that answered it.
     """
-    requests = artifacts_for(context, RECENSOR, "recovery-request", act_id)
-    request_refs: dict[str, dict] = {}
-    requests_by_ordinal: dict[int, dict] = {}
+    ordered_requests = reconcile_recovery_requests(
+        artifacts_for(context, RECENSOR, "recovery-request", act_id), act_id, budget
+    )
+    requests_by_ordinal = dict(enumerate(ordered_requests, start=1))
     requests_by_kind: dict[str, list[dict]] = {kind: [] for kind in RECOVERY_KINDS}
-    for request in requests:
-        payload = _payload(request, f"recovery request for {act_id}")
-        ordinal = payload.get("attempt_ordinal")
-        if (
-            request.get("outcome") != "recovery-requested"
-            or not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
-            or request.get("attempt_id") != attempt_id(act_id, "recover", ordinal)
-        ):
-            raise FatalAccounting(
-                f"recovery request for {act_id} does not carry its bound recovery ordinal"
-            )
-        if ordinal in requests_by_ordinal:
-            raise FatalAccounting(
-                f"act {act_id} carries two recovery requests for ordinal {ordinal}; recovery "
-                "has no rule for choosing one"
-            )
-        # ARCHITECTURE and spec 09 both name two distinct recovery operations — a
-        # Designator recrop and a Perlector page-level/continuation-aware reread —
-        # and `config/recovery.toml` already budgets them separately. A request
-        # that does not say which one it means cannot be checked against the
-        # kind-specific budget or dispatched to the right owning stage, so this is
-        # refused here rather than left for the Designator or orchestrator to
-        # guess at.
-        kind = payload.get("recovery_kind")
-        if kind not in RECOVERY_KINDS:
-            raise FatalAccounting(
-                f"recovery request for {act_id} does not carry a recognized recovery_kind "
-                f"(one of {sorted(RECOVERY_KINDS)}); a request must name which recovery "
-                "operation it means"
-            )
-        requests_by_ordinal[ordinal] = request
+    request_refs: dict[str, dict] = {}
+    for request in ordered_requests:
+        requests_by_kind[request["payload"]["recovery_kind"]].append(request)
         request_refs[request["artifact_id"]] = context.artifact_ref(
             RECENSOR, "recovery-request", request["artifact_id"]
         )
-
-    # Ordinals are contiguous from 1, and each request's recorded counters agree
-    # with the requests before it. A missing attempt renumbered away would let a
-    # spent budget read as an unspent one, which is the one arithmetic this
-    # bounded loop cannot afford to get wrong.
-    expected_ordinals = set(range(1, len(requests_by_ordinal) + 1))
-    if set(requests_by_ordinal) != expected_ordinals:
-        raise FatalAccounting(
-            f"act {act_id} has non-contiguous recovery request ordinal(s) "
-            f"{sorted(requests_by_ordinal)}; a missing attempt may not be renumbered away"
-        )
-    ordered_requests = [requests_by_ordinal[ordinal] for ordinal in sorted(requests_by_ordinal)]
-    previously_used_by_kind = {kind: 0 for kind in RECOVERY_KINDS}
-    for total_used, request in enumerate(ordered_requests):
-        payload = _payload(request, f"recovery request for {act_id}")
-        kind = payload["recovery_kind"]
-        kind_allowed = recovery_kind_budget(budget, kind)
-        counters = ("budget_allowed", "budget_used", "kind_budget_allowed", "kind_budget_used")
-        if (
-            any(
-                not isinstance(payload.get(field), int) or isinstance(payload.get(field), bool)
-                for field in counters
-            )
-            or payload.get("recovery_policy") != budget
-            or payload.get("budget_allowed") != budget["allowed"]
-            or payload.get("budget_used") != total_used
-            or payload.get("kind_budget_allowed") != kind_allowed
-            or payload.get("kind_budget_used") != previously_used_by_kind[kind]
-        ):
-            raise FatalAccounting(
-                f"recovery request for {act_id} has a recorded total or kind budget that does "
-                "not reconcile to its preceding immutable requests"
-            )
-        requests_by_kind[kind].append(request)
-        previously_used_by_kind[kind] += 1
-
-    if len(ordered_requests) > budget["allowed"] or len(ordered_requests) > budget["absolute_cap"]:
-        raise FatalAccounting(
-            f"act {act_id} has {len(ordered_requests)} recovery request(s), above its sealed "
-            "total budget"
-        )
-    for kind, requests_of_kind in requests_by_kind.items():
-        if len(requests_of_kind) > recovery_kind_budget(budget, kind):
-            raise FatalAccounting(
-                f"act {act_id} has {len(requests_of_kind)} {kind!r} request(s), above that "
-                "kind's sealed budget"
-            )
 
     reviews_by_request = {request_id: [] for request_id in request_refs}
     for review in artifacts_for(context, RECENSOR, "review", act_id):
@@ -639,35 +566,34 @@ def page_coverage_findings(context) -> dict[int, dict]:
     return findings
 
 
-def _region_page_ordinals(regions: list[dict]) -> list[int]:
-    """The sorted, deduplicated source-page ordinals a set of regions was cut from.
+def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dict[str, list[int]]:
+    """The residual-ink fact every review records: which source pages this act's
+    own current regions were cut from, and which of those are flagged.
 
-    Shared by every place a review payload records which pages an act's current
-    regions touch: `flagged_pages_for` below, the ordinary `page_coverage` fact,
-    the `confirmed-blank` evidence's `residual_ink_clear_pages`, and a held act
-    whose own region really was cut (a continuation-declared-but-unsealed hold
-    still leaves a real near-side region — see the held branch in `main`).
+    Every page the act's proposal or recovery regions touch, not only its primary
+    `page_ordinal` — a continuation's far-side page is examined exactly as its
+    near side is, and a successful recovery crop that reaches previously-missed
+    ink clears the page's finding on the very next pass.
+
+    One derivation for all four review shapes, including a Designator-held act
+    whose own near-side region really was cut: a shape that records this fact
+    empty rather than deriving it drops a flagged page's only evidence whenever
+    that act is the only one touching the page.
     """
-    return sorted(
+    ordinals = sorted(
         {
             region["payload"]["transform"]["source_page_ordinal"]
-            for region in regions
+            for region in act_regions
             if isinstance(region.get("payload"), dict)
             and isinstance(region["payload"].get("transform"), dict)
         }
     )
-
-
-def flagged_pages_for(act_regions: list[dict], findings: dict[int, dict]) -> list[int]:
-    """The source pages this act's own current regions touch that are flagged.
-
-    Every page the act's proposal or recovery regions were cut from, not only
-    its primary `page_ordinal` — a continuation's far-side page is examined
-    exactly as its near side is, and a successful recovery crop that reaches
-    previously-missed ink clears the page's finding on the very next pass.
-    """
-    ordinals = _region_page_ordinals(act_regions)
-    return [ordinal for ordinal in ordinals if findings.get(ordinal, {}).get("flagged")]
+    return {
+        "checked_pages": ordinals,
+        "flagged_pages": [
+            ordinal for ordinal in ordinals if findings.get(ordinal, {}).get("flagged")
+        ],
+    }
 
 
 def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) -> list[dict]:
@@ -887,10 +813,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "reason": f"the Designator held this act: {hold['payload']['reason']}",
                     "coverage": coverage,
                     "continuation": recensor_continuation_link(hold_regions, act_id),
-                    "page_coverage": {
-                        "checked_pages": _region_page_ordinals(hold_regions),
-                        "flagged_pages": flagged_pages_for(hold_regions, page_findings),
-                    },
+                    "page_coverage": page_coverage_for(hold_regions, page_findings),
                     "recoveries_used": 0,
                     "budget_allowed": budget["allowed"],
                     "absolute_cap": budget["absolute_cap"],
@@ -899,10 +822,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             held += 1
             continue
 
-        # `preflight_review_evidence`, above, already ran this exact check for
-        # every non-held act over the same Designator proposal seal this
-        # process never writes to -- a second call here would only ever
-        # re-confirm what the first already established.
         state = recovery_state(context, act_id, budget)
         if state["outstanding_request_ids"]:
             # The matching review is already the durable record of this hold. A
@@ -911,12 +830,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             held += 1
             continue
 
+        # `preflight_review_evidence`, above, already refused a non-held act with
+        # no reading at all, over this same list and the same Designator seal
+        # this process never writes to.
         readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
-        if not readings:
-            raise FatalAccounting(
-                f"act {act_id} reached the Recensor with no reading at all. A unit "
-                "in no terminal set is a fatal accounting imbalance (#10)"
-            )
 
         # Every review is about one specific Perlectio, not merely the current
         # object a later stage happens to find.  The reference is both an input
@@ -946,7 +863,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # find. A flagged page holds every act that touches it: nobody yet
         # knows which act, if any, the uncovered ink belongs to, so a human
         # needs the whole page, not a guess at which one act is "responsible".
-        flagged_pages = flagged_pages_for(state["regions"], page_findings)
+        page_coverage = page_coverage_for(state["regions"], page_findings)
+        flagged_pages = page_coverage["flagged_pages"]
 
         used_total = len(state["requests"])
         used_fallback = len(state["requests_by_kind"][FALLBACK_RECROP])
@@ -1009,10 +927,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "recovery_kind": FALLBACK_RECROP,
                     "coverage": coverage,
                     "continuation": continuation_link,
-                    "page_coverage": {
-                        "checked_pages": _region_page_ordinals(state["regions"]),
-                        "flagged_pages": flagged_pages,
-                    },
+                    "page_coverage": page_coverage,
                     "perlectio_ref": reading_ref,
                     "recovery_request_ref": request_ref,
                     "recovery_policy": budget,
@@ -1070,7 +985,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 blank_evidence = {
                     "perlector_outcome": latest["outcome"],
                     "corroborating_chairs": corroborating_chairs,
-                    "residual_ink_clear_pages": _region_page_ordinals(state["regions"]),
+                    "residual_ink_clear_pages": page_coverage["checked_pages"],
                 }
             else:
                 outcome, reason = (
@@ -1078,14 +993,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     f"the latest reading is {latest['outcome']!r} ({reading_class.value}); "
                     "accepting would establish text that nobody successfully read",
                 )
-                held += 1
         elif not isinstance(latest_payload.get("text"), str) or not latest_payload["text"].strip():
             outcome, reason = (
                 "held-for-review",
                 "the latest reading establishes no readable text; silence is not blank proof and "
                 "is held until the Recensor can seal one",
             )
-            held += 1
         elif continuation_shortfall:
             outcome, reason = (
                 "held-for-review",
@@ -1093,7 +1006,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 f"finds proposal regions on only {len(continuation_link['page_ordinals'])} "
                 "distinct page(s); accepting would deliver part of an act as the act",
             )
-            held += 1
         elif flagged_pages:
             outcome, reason = (
                 "held-for-review",
@@ -1102,10 +1014,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "proposal set — GOALS 1: a missed act is worse than a poorly read one); "
                 "accepting this act would leave that ink unaccounted for",
             )
-            held += 1
         elif act_key in scenario["hold_acts"]:
             outcome, reason = "held-for-review", "the act did not reconcile and needs a human"
-            held += 1
         elif wants_recovery:
             outcome, reason = (
                 "held-for-review",
@@ -1114,9 +1024,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "is held rather than re-rolled because recovery recovers coverage and never "
                 "quality",
             )
-            held += 1
         else:
             outcome, reason = "accepted", "coverage and geometry reconcile"
+
+        # Derived from the outcome's own class rather than counted by hand in each
+        # branch above, so a review shape added later cannot land in the tree
+        # without also landing in this stage's exit code.
+        if classify(RECENSOR, outcome) is not OutcomeClass.COMPLETED:
+            held += 1
 
         context.publish(
             kind="review",
@@ -1145,14 +1060,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "budget_allowed": budget["allowed"],
                 "absolute_cap": budget["absolute_cap"],
                 "perlectio_ref": reading_ref,
-                # The residual-ink finding for every page this act's own current
-                # regions were cut from, recorded the same way for every act
-                # rather than only when it flags something — the same reasoning
-                # `continuation` above is recorded under.
-                "page_coverage": {
-                    "checked_pages": _region_page_ordinals(state["regions"]),
-                    "flagged_pages": flagged_pages,
-                },
+                # Recorded the same way for every act rather than only when it
+                # flags something — the same reasoning `continuation` above is
+                # recorded under: a consumer that only ever sees the field
+                # populated cannot tell "checked and clear" from "never checked".
+                "page_coverage": page_coverage,
                 # Present only on a `confirmed-blank`, because it is the evidence
                 # that outcome rests on and nothing else has any. Every other
                 # review carries the fields above and no more.

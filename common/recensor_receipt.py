@@ -161,16 +161,6 @@ def _validate_coverage(coverage: Any) -> None:
         raise SchemaRefusal("Recensor partition receipt has invalid witness coverage counts")
     by_outcome = coverage["by_outcome"]
     by_class = coverage["by_class"]
-    derived_by_class = {key: 0 for key in _PARTITION_KEYS}
-    if isinstance(by_outcome, dict):
-        for outcome, count in by_outcome.items():
-            if isinstance(outcome, str) and isinstance(count, int) and not isinstance(count, bool):
-                try:
-                    derived_by_class[classify(ATTESTATORES, outcome).value] += count
-                except FatalAccounting as error:
-                    raise SchemaRefusal(
-                        "Recensor partition receipt has an unknown witness outcome"
-                    ) from error
     if (
         not isinstance(by_outcome, dict)
         or not all(
@@ -189,12 +179,24 @@ def _validate_coverage(coverage: Any) -> None:
         )
         or sum(by_outcome.values()) != coverage["configured"]
         or sum(by_class.values()) != coverage["configured"]
-        or by_class != derived_by_class
         or coverage["unresolved_chairs"] != by_class[OutcomeClass.UNRESOLVED.value]
         or not isinstance(coverage["under_witnessed"], bool)
         or coverage["under_witnessed"]
         != (by_class[OutcomeClass.COMPLETED.value] < coverage["floor"])
     ):
+        raise SchemaRefusal("Recensor partition receipt witness coverage does not reconcile")
+    # Rederived from the outcome counts rather than compared field by field: the
+    # per-class summary is the receipt's own arithmetic, and a receipt whose
+    # summary does not fall out of its own numbers is not evidence of anything.
+    derived_by_class = {key: 0 for key in _PARTITION_KEYS}
+    for outcome, count in by_outcome.items():
+        try:
+            derived_by_class[classify(ATTESTATORES, outcome).value] += count
+        except FatalAccounting as error:
+            raise SchemaRefusal(
+                "Recensor partition receipt has an unknown witness outcome"
+            ) from error
+    if by_class != derived_by_class:
         raise SchemaRefusal("Recensor partition receipt witness coverage does not reconcile")
 
 

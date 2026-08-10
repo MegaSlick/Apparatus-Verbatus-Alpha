@@ -32,6 +32,7 @@ from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
     RECOVERY_KINDS,
     load_recovery_policy,
+    reconcile_recovery_requests,
     recovery_kind_budget,
 )
 from common.runtree.store import PublishResult, RunTree
@@ -977,7 +978,19 @@ def current_recovery_request(
         raise ContractError(
             f"recovery-requested review of {act_id} does not carry one exact recovery kind"
         )
-    _reconcile_recovery_request_counters(tree, act_id, recovery_policy)
+    # The Recensor performs the fuller request/recrop/reread reconciliation, but a
+    # non-Recensor consumer reads a current request directly, so its counters are
+    # rebuilt here too: the self-hash proves the payload was not edited after
+    # publication, not that its numbers ever agreed with the requests before it.
+    reconcile_recovery_requests(
+        [
+            tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
+            for entry in tree.build_manifest(RECENSOR)["artifacts"]
+            if entry["kind"] == "recovery-request" and entry["subject_id"] == act_id
+        ],
+        act_id,
+        recovery_policy,
+    )
     kind_allowed = recovery_kind_budget(recovery_policy, recovery_kind)
     kind_used = request_payload.get("kind_budget_used")
     if (
@@ -998,83 +1011,6 @@ def current_recovery_request(
         subject_id=act_id,
     )
     return request
-
-
-def _reconcile_recovery_request_counters(
-    tree: RunTree, act_id: str, recovery_policy: dict[str, Any]
-) -> None:
-    """Rebuild request counters before a non-Recensor consumer acts on one.
-
-    The Recensor performs the fuller request/recrop/reread reconciliation. The
-    Designator and orchestrator also read a current request directly, though, so
-    their shared boundary must not trust a counter merely because it is written
-    inside a self-hashed request payload: the self-hash proves the payload was
-    not edited after publication, not that its numbers ever agreed with the
-    requests that came before it.
-    """
-    by_ordinal: dict[int, dict[str, Any]] = {}
-    for entry in tree.build_manifest(RECENSOR)["artifacts"]:
-        if entry["kind"] != "recovery-request" or entry["subject_id"] != act_id:
-            continue
-        request = tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
-        payload = request.get("payload")
-        ordinal = payload.get("attempt_ordinal") if isinstance(payload, dict) else None
-        recovery_kind = payload.get("recovery_kind") if isinstance(payload, dict) else None
-        if (
-            request.get("outcome") != "recovery-requested"
-            or not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
-            or not isinstance(recovery_kind, str)
-            or recovery_kind not in RECOVERY_KINDS
-            or request.get("attempt_id") != attempt_id(act_id, "recover", ordinal)
-            or request.get("artifact_id")
-            != artifact_id(RECENSOR, "recovery-request", act_id, request["attempt_id"])
-            or ordinal in by_ordinal
-        ):
-            raise ContractError(
-                f"recovery request history for {act_id} has no unambiguous bounded ordinal"
-            )
-        by_ordinal[ordinal] = request
-
-    if set(by_ordinal) != set(range(1, len(by_ordinal) + 1)):
-        raise ContractError(
-            f"recovery request history for {act_id} has non-contiguous ordinal(s) "
-            f"{sorted(by_ordinal)}"
-        )
-    used_by_kind = {kind: 0 for kind in RECOVERY_KINDS}
-    for total_used, ordinal in enumerate(sorted(by_ordinal)):
-        payload = by_ordinal[ordinal]["payload"]
-        recovery_kind = payload["recovery_kind"]
-        kind_allowed = recovery_kind_budget(recovery_policy, recovery_kind)
-        counts = ("budget_allowed", "budget_used", "kind_budget_allowed", "kind_budget_used")
-        if (
-            any(
-                not isinstance(payload.get(field), int) or isinstance(payload.get(field), bool)
-                for field in counts
-            )
-            or payload.get("recovery_policy") != recovery_policy
-            or payload.get("budget_allowed") != recovery_policy["allowed"]
-            or payload.get("budget_used") != total_used
-            or payload.get("kind_budget_allowed") != kind_allowed
-            or payload.get("kind_budget_used") != used_by_kind[recovery_kind]
-        ):
-            raise ContractError(
-                f"recovery request history for {act_id} has a counter that does not reconcile "
-                "to its preceding immutable requests"
-            )
-        used_by_kind[recovery_kind] += 1
-    if (
-        len(by_ordinal) > recovery_policy["allowed"]
-        or len(by_ordinal) > recovery_policy["absolute_cap"]
-    ):
-        raise ContractError(
-            f"recovery request history for {act_id} exceeds its sealed total budget"
-        )
-    for recovery_kind, used in used_by_kind.items():
-        if used > recovery_kind_budget(recovery_policy, recovery_kind):
-            raise ContractError(
-                f"recovery request history for {act_id} exceeds its {recovery_kind!r} budget"
-            )
 
 
 def reading_basis_regions(reading: dict[str, Any], what: str) -> list[dict[str, Any]]:

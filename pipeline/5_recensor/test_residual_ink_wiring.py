@@ -3,7 +3,7 @@
 `test_residual_ink.py` proves the pixel-level arithmetic against hand-built
 canvases. This proves the extraction functions in `run.py`
 (`regions_by_source_page`, `sealed_page_images`, `page_coverage_findings`,
-`flagged_pages_for`) read the *real* Designator/Exemplar artifact shapes
+`page_coverage_for`) read the *real* Designator/Exemplar artifact shapes
 correctly, and that `page_residual_ink` fires on genuine pipeline pixel bytes
 when handed an incomplete covered set -- not a synthetic canvas standing in
 for one.
@@ -202,7 +202,7 @@ def test_a_genuinely_incomplete_covered_set_flags_real_pipeline_pixels(tmp_path)
     assert full_finding["flagged"] is False
 
 
-def test_flagged_pages_for_reads_every_page_an_acts_own_regions_touch(tmp_path):
+def test_page_coverage_for_reads_every_page_an_acts_own_regions_touch(tmp_path):
     """Exercises the exact call `main()` makes -- real `state["regions"]`-shaped
     region records against a synthetic findings dict, so the ACT-level
     extraction (which page ordinals an act's regions touch, and whether any of
@@ -222,14 +222,17 @@ def test_flagged_pages_for_reads_every_page_an_acts_own_regions_touch(tmp_path):
         2,
     }
 
-    assert RUN.flagged_pages_for(a2_regions, {1: {"flagged": False}, 2: {"flagged": False}}) == []
-    assert RUN.flagged_pages_for(a2_regions, {1: {"flagged": False}, 2: {"flagged": True}}) == [2]
-    assert RUN.flagged_pages_for(a2_regions, {1: {"flagged": True}, 2: {"flagged": True}}) == [
-        1,
-        2,
-    ]
+    def flagged(findings):
+        return RUN.page_coverage_for(a2_regions, findings)["flagged_pages"]
+
+    # `checked_pages` is every page the act's regions touch, whatever the
+    # findings say about them; only `flagged_pages` narrows.
+    assert RUN.page_coverage_for(a2_regions, {})["checked_pages"] == [1, 2]
+    assert flagged({1: {"flagged": False}, 2: {"flagged": False}}) == []
+    assert flagged({1: {"flagged": False}, 2: {"flagged": True}}) == [2]
+    assert flagged({1: {"flagged": True}, 2: {"flagged": True}}) == [1, 2]
     # A page with no finding at all (never checked) is never treated as flagged.
-    assert RUN.flagged_pages_for(a2_regions, {}) == []
+    assert flagged({}) == []
 
 
 if __name__ == "__main__":
