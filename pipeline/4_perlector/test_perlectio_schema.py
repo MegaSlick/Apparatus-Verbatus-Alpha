@@ -83,7 +83,20 @@ def test_a_real_published_perlectio_satisfies_the_closed_schema(published_payloa
 
 
 @pytest.mark.parametrize(
-    "field", ["text", "basis", "dossier", "prompt", "dissent", "truncation", "provenance"]
+    "field",
+    [
+        "act_key",
+        "attempt_ordinal",
+        "text",
+        "basis",
+        "dossier",
+        "prompt",
+        "dissent",
+        "truncation",
+        "uncertain_spans",
+        "gaps",
+        "provenance",
+    ],
 )
 def test_a_perlectio_missing_any_field_of_its_record_is_refused(published_payload, field):
     payload = copy.deepcopy(published_payload)
