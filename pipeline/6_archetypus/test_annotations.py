@@ -250,6 +250,37 @@ def test_an_uncertain_span_with_zero_width_is_refused():
         archetypus.validate_annotations([uncertain(4, 4)], "some text", WITNESSES, "annotations")
 
 
+def test_an_uncertain_span_covering_only_whitespace_is_refused():
+    """Width is not a readable character, and the difference is load-bearing.
+
+    On text that is entirely blank, `derive_text_status` finds no gap and returns
+    `no_readable_text` — a positive finding that the act held no ink. A span
+    accepted over that blankness would sit in the same record asserting the
+    reader did read characters there and offering alternatives for them. The two
+    silences Tyrel separated would then be one, inside a single sealed record.
+    """
+    with pytest.raises(SchemaRefusal, match="covering no readable character"):
+        archetypus.validate_annotations([uncertain(0, 3)], "   ", WITNESSES, "annotations")
+
+
+def test_no_readable_text_can_never_carry_an_annotation_at_all():
+    """The closure, stated as one property rather than left to be re-derived.
+
+    Only two annotation kinds exist: a gap forces `partial`, and an uncertain
+    span now requires a readable character, which forces `established`. So the
+    status that claims there was no ink is reachable only with an empty
+    annotation list.
+    """
+    for text in ("", "   ", "\n\t "):
+        assert archetypus.derive_text_status(text, []) == "no_readable_text"
+        with pytest.raises(SchemaRefusal):
+            archetypus.validate_annotations(
+                [uncertain(0, len(text))], text, WITNESSES, "annotations"
+            )
+        gapped = archetypus.validate_annotations([gap(0)], text, WITNESSES, "annotations")
+        assert archetypus.derive_text_status(text, gapped) == "partial"
+
+
 def test_an_uncertain_span_with_no_alternatives_is_refused():
     with pytest.raises(SchemaRefusal, match="names no alternatives"):
         archetypus.validate_annotations(

@@ -35,7 +35,13 @@ READING_REF = {"relative_path": "4_perlector/artifacts/perlectio/art_b.json", "s
 REVIEW_REF = {"relative_path": "5_recensor/artifacts/review/art_c.json", "sha256": "c" * 64}
 
 
-def make_record(**overrides) -> dict:
+def seal_record(**overrides) -> dict:
+    """A record with a correct self-hash, whether or not it is otherwise valid.
+
+    Every refusal below is about a record that was *resealed* after editing —
+    a self-hash mismatch would refuse it a step earlier and prove nothing about
+    the check under test.
+    """
     record = {
         **ACT,
         "text": "Maria",
@@ -52,6 +58,11 @@ def make_record(**overrides) -> dict:
     }
     record.update(overrides)
     record["self_hash"] = self_hash(record)
+    return record
+
+
+def make_record(**overrides) -> dict:
+    record = seal_record(**overrides)
     archetypus.validate_record(record)
     return record
 
@@ -164,3 +175,97 @@ def test_record_validation_refuses_a_bad_nested_self_hash():
     record["act_key"] = "edited-after-construction"
     with pytest.raises(SchemaRefusal, match="nested self-hash"):
         archetypus.validate_record(record)
+
+
+# --- The rest of the resealed-record refusals, each exercised ------------------
+#
+# `validate_record` is the check every later stage-local read runs, and
+# HANDOFF.md offers it to any consumer that wants to prove a record before
+# relying on it. Mutation showed the refusals below were carried but unproven:
+# deleting any one of them left the whole suite green, so nothing said whether
+# they worked. Each case reseals a record around one defect and names the
+# refusal it must produce.
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"status": "partial"}, "fixed 'established' literal"),
+        ({"act_id": ""}, "has no act_id"),
+        ({"act_key": 7}, "has no act_key"),
+        ({"page_id": None}, "has no page_id"),
+        ({"text": 7}, "text is not a string"),
+        ({"regions": []}, "retains no source region"),
+        ({"regions": "2_designator/blobs/sha256/deadbeef"}, "retains no source region"),
+        ({"provenance": "perlector"}, "provenance is not an object"),
+        ({"perlectio_ref": {"relative_path": "x"}}, "perlectio_ref is not a digest-checked"),
+        ({"recensor_ref": None}, "recensor_ref is not a digest-checked"),
+        ({"annotations": {}}, "not a list of objects"),
+        ({"annotations": ["not an object"]}, "not a list of objects"),
+    ],
+)
+def test_record_validation_refuses_each_resealed_defect(overrides, expected):
+    with pytest.raises(SchemaRefusal, match=expected):
+        archetypus.validate_record(seal_record(**overrides))
+
+
+def test_record_validation_refuses_a_dissent_pointer_that_left_its_perlectio():
+    """Tyrel's 4d is that dissent travels *to this record's own Perlectio*.
+
+    A `dissent_ref` naming some other artifact would send a reader looking for
+    this act's dissent at a reading this record did not establish from.
+    """
+    other = {"relative_path": "4_perlector/artifacts/perlectio/art_d.json", "sha256": "d" * 64}
+    with pytest.raises(SchemaRefusal, match="dissent must travel by reference"):
+        archetypus.validate_record(seal_record(dissent_ref=other))
+
+
+@pytest.mark.parametrize(
+    ("note", "expected"),
+    [
+        ({"kind": "illegible", "start": 0, "end": 1, "witness_evidence": []}, "zero-width gap"),
+        ({"kind": "speculative", "start": 0, "end": 0}, "closed annotation schema"),
+        (
+            {"kind": "illegible", "start": 0, "end": 0, "witness_evidence": [{"variant": "x"}]},
+            "malformed witness evidence",
+        ),
+        (
+            {"kind": "uncertain", "start": 0, "end": 5, "certainty": "0.9", "alternatives": ["M"]},
+            "malformed uncertain span",
+        ),
+        (
+            {"kind": "uncertain", "start": 0, "end": 5, "certainty": "low", "alternatives": []},
+            "malformed uncertain span",
+        ),
+        (
+            {"kind": "uncertain", "start": 0, "end": 9, "certainty": "low", "alternatives": ["M"]},
+            "outside the text bounds",
+        ),
+    ],
+)
+def test_record_validation_refuses_a_resealed_malformed_annotation(note, expected):
+    """The read-back annotation check, which no test reached before.
+
+    A record is validated again on every later stage-local read precisely
+    because a sealed payload can be edited and resealed on disk. The annotation
+    layer is the part of it a reader most needs to trust — it is where witness
+    material sits beside the established text — so its refusals are exercised
+    here rather than assumed from the constructor's own, separate checks.
+    """
+    with pytest.raises(SchemaRefusal, match=expected):
+        archetypus.validate_record(seal_record(annotations=[note], text_status="partial"))
+
+
+def test_record_validation_refuses_a_no_readable_text_record_carrying_an_annotation():
+    """The two silences, kept apart at read-back as well as at construction."""
+    note = {"kind": "uncertain", "start": 0, "end": 3, "certainty": "low", "alternatives": ["Ave"]}
+    with pytest.raises(SchemaRefusal, match="malformed uncertain span"):
+        archetypus.validate_record(
+            seal_record(
+                text="   ",
+                text_hash=digest_of("   "),
+                text_status="no_readable_text",
+                evidence_ref=REVIEW_REF,
+                annotations=[note],
+            )
+        )

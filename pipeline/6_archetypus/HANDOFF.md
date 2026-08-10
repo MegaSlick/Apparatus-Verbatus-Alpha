@@ -83,6 +83,9 @@ never there.
 evidence that the Recensor accepted a reading; it is not evidence that the page was
 blank. The constructor therefore accepts `no_readable_text` only when the review carries
 a digest-checked `no_readable_text_evidence_ref` as one of its own direct inputs. The
+reverse is fatal rather than ignored: a review that retains a blank proof over a reading
+that establishes text is two upstream claims contradicting each other, and reading past
+the one this stage does not need is how the contradiction would leave no trace. The
 current Recensor publishes no such proof, and its `confirmed-blank` outcome is terminal
 at that stage, bypassing this record. Consequently the current end-to-end pipeline cannot
 yet publish a `no_readable_text` Archetypus. This is a named cross-stage gap, preferable
@@ -91,8 +94,11 @@ keeps Perlector silence unresolved until a blank-proof contract exists.
 
 **`annotations` — carried whole, never in `text`.** A list of:
 
-- `uncertain` — `{kind, start, end, certainty, alternatives}`. A span of at least one
-  character that IS in `text`, with a closed certainty (`high | medium | low | unknown`)
+- `uncertain` — `{kind, start, end, certainty, alternatives}`. A span covering at least
+  one *readable* character in `text` — width alone is not enough, because a span over
+  blank text would sit inside a `no_readable_text` record asserting the reader did read
+  characters there. Where nothing was read, the honest shape is an `illegible` gap. It
+  carries a closed certainty (`high | medium | low | unknown`)
   and the reader's own candidate readings for that span. The alternatives are the
   Perlector's, not a witness's: the Perlector reads the ink, so its uncertainty about a
   span it did read is its own. There is no witness-reference field on this shape at all.

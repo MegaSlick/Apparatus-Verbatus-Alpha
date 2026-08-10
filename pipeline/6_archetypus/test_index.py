@@ -232,6 +232,69 @@ def test_validate_index_refuses_an_index_whose_self_hash_was_not_recomputed(tmp_
         archetypus.validate_index(context, edited)
 
 
+# --- The rest of `validate_index`'s refusals, each exercised ------------------
+#
+# HANDOFF.md offers `validate_index` to any consumer that wants to prove the
+# accounting before relying on it, so its refusals are load-bearing for someone
+# other than this stage. Mutation showed most of them were carried but unproven:
+# deleting the count, type, schema, run, stage-label or row-value check left the
+# whole suite green. These reseal a well-formed index around one defect each.
+
+
+@pytest.fixture(scope="module")
+def established_run(tmp_path_factory):
+    """One happy run, shared by the read-only index refusals below.
+
+    They neither write to the tree nor re-invoke a stage, so orchestrating once
+    is the same evidence as orchestrating six times and several minutes cheaper.
+    """
+    root = tmp_path_factory.mktemp("index-refusals") / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    return _Context(RunTree(root, "r"))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda index: index.update(accepted_count=len(index["rows"]) + 1), "count disagrees"),
+        (lambda index: index.update(accepted_count=-1), "non-negative integer"),
+        (lambda index: index.update(accepted_count=True), "non-negative integer"),
+        (lambda index: index.update(accepted_count="2"), "non-negative integer"),
+        (lambda index: index.update(schema="skeleton.v0"), "different schema or run"),
+        (lambda index: index.update(run_id="another-run"), "different schema or run"),
+        (lambda index: index.update(stage="7_armarium"), "own stage label or self-hash"),
+        (lambda index: index.update(rows={}), "rows are not a list"),
+        (lambda index: index["rows"].__setitem__(0, {"act_id": "a"}), "malformed row"),
+        (lambda index: index["rows"][0].update(act_key=""), "row with malformed values"),
+        (lambda index: index["rows"][0].update(text_hash=7), "row with malformed values"),
+        (lambda index: index["rows"][0].update(sha256="not-a-digest"), "row with malformed values"),
+    ],
+)
+def test_validate_index_refuses_each_resealed_defect(established_run, mutate, expected):
+    index = archetypus.build_index(established_run)
+    mutate(index)
+    # Resealed, so every refusal below is the check under test rather than the
+    # self-hash catching an edit before anything else looks at it.
+    index["self_hash"] = self_hash(index)
+    with pytest.raises(FatalAccounting, match=expected):
+        archetypus.validate_index(established_run, index)
+
+
+def test_validate_index_refuses_an_index_that_is_not_the_closed_shape(established_run):
+    index = archetypus.build_index(established_run)
+    index["note"] = "an extra field the derived shape does not carry"
+    index["self_hash"] = self_hash(index)
+    with pytest.raises(FatalAccounting, match="closed derived-index shape"):
+        archetypus.validate_index(established_run, index)
+
+
+def test_the_index_the_stage_actually_wrote_passes_its_own_consumer_check(established_run):
+    """The acceptance half: the refusals above must not refuse a real index."""
+    assert archetypus.validate_index(
+        established_run, established_run.tree.read_index(ARCHETYPUS)
+    ) == archetypus.build_index(established_run)
+
+
 def test_a_duplicate_record_on_disk_is_fatal_before_an_index_can_paper_over_it(tmp_path):
     root = tmp_path / "runs"
     assert orchestrate(root, "r", "happy").returncode == 0
@@ -255,4 +318,31 @@ def test_a_duplicate_record_on_disk_is_fatal_before_an_index_can_paper_over_it(t
     forged_path.write_bytes(canonical_bytes(forged))
 
     with pytest.raises(FatalAccounting, match="more than one Archetypus record"):
+        archetypus.build_index(_Context(tree))
+
+
+def test_a_record_whose_payload_names_a_different_act_than_its_envelope_is_fatal(tmp_path):
+    """The row's identity comes from the envelope; the text comes from the payload.
+
+    A record resealed so the two disagree would put one act's established text
+    under another act's identity in every consumer that reads the index — the
+    one place a wrong answer would look perfectly well formed.
+    """
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+
+    entry = next(
+        entry
+        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
+        if entry["kind"] == "archetypus"
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"]["act_id"] = "act_ffffffffffffffff"
+    record["payload"]["self_hash"] = self_hash(record["payload"])
+    record["self_hash"] = self_hash(record)
+    path.write_bytes(canonical_bytes(record))
+
+    with pytest.raises(FatalAccounting, match="carries payload identity"):
         archetypus.build_index(_Context(tree))

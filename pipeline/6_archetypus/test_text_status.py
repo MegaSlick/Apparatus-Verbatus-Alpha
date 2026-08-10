@@ -8,9 +8,9 @@ of the empty-reading case lives in
 test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proof`:
 an accepted review over an empty-text reading is refused, not established, because
 the current Recensor never supplies the blank-proof evidence reference this status
-requires (HANDOFF.md's named cross-stage gap). Establishing `no_readable_text`
-successfully needs a forged review carrying that evidence, which no test in this
-suite constructs yet.
+requires (HANDOFF.md's named cross-stage gap). The success path — a forged review
+that does carry that evidence — is exercised beside it, in
+`test_archetypus_establishes_no_readable_text_once_the_review_retains_real_blank_proof`.
 """
 
 import importlib.util

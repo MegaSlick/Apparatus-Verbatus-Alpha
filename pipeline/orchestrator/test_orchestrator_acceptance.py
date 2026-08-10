@@ -1294,6 +1294,118 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     assert export_result.returncode == 0, export_result.stderr
 
 
+def _forge_blank_proof(tree: RunTree, act_id: str) -> dict[str, str]:
+    """A standalone artifact standing in for a real Recensor blank proof."""
+    run = tree.read_run()
+    payload = {"note": "a hypothetical blank-proof artifact"}
+    payload["self_hash"] = self_hash(payload)
+    envelope = build_envelope(
+        run_id="r",
+        artifact_id=artifact_id(RECENSOR, "blank-proof", act_id),
+        subject_id=act_id,
+        stage=RECENSOR,
+        kind="blank-proof",
+        outcome="accepted",
+        config_digest=run["config_digest"],
+        adapter_revision=run["adapter_recipes"][RECENSOR],
+        inputs=[],
+        payload=payload,
+    )
+    relative = tree.artifact_path(RECENSOR, "blank-proof", envelope["artifact_id"])
+    path = tree.resolve(relative)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(envelope))
+    return {"relative_path": relative, "sha256": digest_bytes(path.read_bytes())}
+
+
+def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path):
+    """Two upstream claims that contradict each other are never quietly one claim.
+
+    A review carrying a blank proof says this act held no readable ink; the
+    reading it accepted says otherwise, in characters. The stage used to consult
+    the evidence reference only when its own derivation had already reached
+    `no_readable_text`, so in every other case the Recensor's finding was read
+    past and left no trace in the record — the contradiction resolved silently,
+    in favour of whichever claim the derivation happened to reach first
+    (GOVERNANCE 2).
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    act_id = review["subject_id"]
+    reading = json.loads(
+        tree.resolve(review["payload"]["perlectio_ref"]["relative_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert reading["payload"]["text"].strip(), "this act must carry real text for the conflict"
+
+    evidence_ref = _forge_blank_proof(tree, act_id)
+    review["inputs"] = review["inputs"] + [evidence_ref]
+    review["payload"]["no_readable_text_evidence_ref"] = evidence_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "reconciliation failure" in result.stderr
+    assert not tree.has_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+    )
+
+
+def test_archetypus_refuses_a_crop_the_run_tree_cannot_read(tmp_path):
+    """A named crop that is not there is an accounting failure, not a traceback.
+
+    The reference is built by hashing the bytes on disk, so a reading naming a
+    crop this tree does not hold raised `OSError` — outside the family
+    `run_stage` classifies. Every other act's record went down with it, under
+    exit 1, which the orchestrator does not recognise as a stage outcome at all.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    old_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(old_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    # The envelope's own `inputs` still name the real crops, so the reading
+    # verifies; only the basis this stage reads its regions from is repointed.
+    for region in reading["payload"]["basis"]["regions"]:
+        region["image_path"] = tree.blob_path(DESIGNATOR, "0" * 64)
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    new_ref = {
+        "relative_path": old_ref["relative_path"],
+        "sha256": digest_bytes(reading_path.read_bytes()),
+    }
+    review["inputs"] = [
+        new_ref if reference == old_ref else reference for reference in review["inputs"]
+    ]
+    review["payload"]["perlectio_ref"] = new_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "which this run tree cannot read" in result.stderr
+
+
 def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):
     """A completed Archetypus cannot hide a reading appended after its review."""
     root = tmp_path / "runs"

@@ -223,7 +223,7 @@ def validate_annotations(annotations, text: str, witnesses: dict, what: str) -> 
                 "start": start,
                 "end": end,
                 "certainty": _validate_certainty(note, label),
-                "alternatives": _validate_alternatives(note, start, end, label),
+                "alternatives": _validate_alternatives(note, text, start, end, label),
             }
         unknown = set(note) - allowed_fields
         if unknown:
@@ -243,18 +243,27 @@ def _validate_certainty(note: dict, label: str) -> str:
     return certainty
 
 
-def _validate_alternatives(note: dict, start: int, end: int, label: str) -> list[str]:
+def _validate_alternatives(note: dict, text: str, start: int, end: int, label: str) -> list[str]:
     """The reader's own candidate readings for characters that ARE in `text`.
 
     Deliberately the Perlector's own alternatives and not a witness's: the
     Perlector reads the ink (ARCHITECTURE), so its uncertainty about a span it
     did read is its own. Witness material attaches to a *gap*, where the reader
     read nothing — which is the only place spec 10 asks for it.
+
+    The span must cover a readable character, not merely a width. An uncertain
+    span over blank text is what lets the two silences collapse: on all-blank
+    text `derive_text_status` sees no gap and returns `no_readable_text`, so the
+    record would positively claim the page held no ink while carrying an
+    annotation asserting the reader read characters there and offering
+    alternatives for them. Where the reader saw nothing to be uncertain about,
+    the honest shape is an illegible gap.
     """
-    if start == end:
+    if not text[start:end].strip():
         raise SchemaRefusal(
-            f"{label} is an uncertain span with zero width; uncertainty flags characters "
-            "that ARE present in `text`, so it must cover at least one"
+            f"{label} is an uncertain span covering no readable character; uncertainty "
+            "flags characters that ARE present in `text`, so it must cover at least one, "
+            "and where nothing was read the honest shape is an illegible gap"
         )
     alternatives = note.get("alternatives")
     if not isinstance(alternatives, list) or not alternatives:
@@ -638,7 +647,7 @@ def validate_record(record: dict) -> dict:
                 ):
                     raise SchemaRefusal(f"{label} carries malformed witness evidence")
         elif (
-            start == end
+            not text[start:end].strip()
             or note.get("certainty") not in CERTAINTIES
             or not isinstance(note.get("alternatives"), list)
             or not note["alternatives"]
@@ -683,6 +692,25 @@ def _no_readable_text_evidence(review: dict) -> dict[str, str] | None:
             "no_readable_text evidence is not a digest-checked direct input of the Recensor review"
         )
     return reference
+
+
+def _crop_input(context, image_path: str, act_id: str) -> dict[str, str]:
+    """A digest-checked reference to one crop the accepted reading names.
+
+    `input_ref` hashes the bytes on disk, so a crop the reading names but the
+    tree does not hold raises `OSError` from inside a list comprehension —
+    outside the `ContractError` family `run_stage` classifies, so the whole run
+    ends in a traceback and exit 1 rather than one refused act and exit 2. A
+    missing crop is an ordinary accounting failure (an interrupted copy, a
+    pruned blob) as much as a forged one, and it is named as such here.
+    """
+    try:
+        return context.input_ref(image_path)
+    except OSError as error:
+        raise FatalAccounting(
+            f"accepted reading of {act_id} names crop {image_path!r}, which this run tree "
+            f"cannot read: {error}"
+        ) from error
 
 
 def _direct_inputs(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -730,7 +758,14 @@ def establish_from_accepted_primed_perlectio(
         f"accepted reading of {act['act_id']} annotations",
     )
     text_status = derive_text_status(text, annotations)
-    evidence_ref = _no_readable_text_evidence(review) if text_status == "no_readable_text" else None
+    evidence_ref = _no_readable_text_evidence(review)
+    if evidence_ref is not None and text_status != "no_readable_text":
+        raise FatalAccounting(
+            f"the accepted review of {act['act_id']} retains a proof that this act held no "
+            f"readable ink, but the reading it accepted establishes {text_status!r} text; two "
+            "upstream claims that contradict each other are a reconciliation failure, and "
+            "dropping the unread one is how the contradiction disappears"
+        )
     validate_text_status(text, text_status, evidence_ref)
     validate_serving_provenance(
         context,
@@ -775,7 +810,7 @@ def establish_from_accepted_primed_perlectio(
     # reference stops coinciding with `reading_ref`.
     inputs = _direct_inputs(
         [review_ref, reading_ref],
-        [context.input_ref(region["image_path"]) for region in regions],
+        [_crop_input(context, region["image_path"], act["act_id"]) for region in regions],
     )
     return record, inputs
 
