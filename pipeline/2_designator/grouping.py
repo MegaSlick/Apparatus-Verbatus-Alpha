@@ -39,14 +39,9 @@ never decides that something ungrouped may be discarded.
 
 from typing import Any, Final, TypedDict
 
+from geometry import Bounds
+
 from common.contracts.errors import ContractError
-
-
-class Bounds(TypedDict):
-    x: int
-    y: int
-    w: int
-    h: int
 
 
 class ActGroup(TypedDict):

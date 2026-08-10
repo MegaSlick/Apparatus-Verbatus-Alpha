@@ -27,14 +27,9 @@ keeps one word from scanning as a dozen one-pixel islands.
 
 from typing import Final, TypedDict
 
+from geometry import Bounds
+
 from common.contracts.errors import ContractError
-
-
-class Bounds(TypedDict):
-    x: int
-    y: int
-    w: int
-    h: int
 
 
 class Component(TypedDict):

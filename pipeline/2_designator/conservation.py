@@ -23,10 +23,10 @@ instrument may not constrain what it measures.
 
 from typing import Final, TypedDict
 
+from geometry import Bounds
 from structure import (
     DEFAULT_GAP_TOLERANCE_PX,
     PRIMARY_MARGIN,
-    Bounds,
     Component,
     ink_pixels,
     label_components,
