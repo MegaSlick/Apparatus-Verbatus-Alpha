@@ -408,10 +408,12 @@ class OperatorSurface:
                 },
                 descriptor_action="launch",
             )
-            del receipt
             if prepared.action == "adopt":
-                raise OperatorError(ErrorCode.ADOPTION_REFUSED, detail=result.detail)
-            raise self._launch_error(result)
+                raise OperatorError(
+                    ErrorCode.ADOPTION_REFUSED,
+                    detail=f"{result.detail} Saved receipt: {receipt}",
+                )
+            raise self._launch_error(result, receipt=receipt)
         receipt = self._write_action(
             "launch",
             {
@@ -1092,8 +1094,8 @@ class OperatorSurface:
                 f"Type exactly {prepared.confirmation_phrase!r} to continue with this paid action."
             )
 
-    def _launch_error(self, result: LaunchResult) -> OperatorError:
-        detail = result.detail
+    def _launch_error(self, result: LaunchResult, *, receipt: Path | None = None) -> OperatorError:
+        detail = result.detail if receipt is None else f"{result.detail} Saved receipt: {receipt}"
         if "timeout" in detail.lower():
             return OperatorError(ErrorCode.PROVIDER_TIMEOUT, detail=detail)
         if result.state is LaunchState.REFUSED_CONFIRMATION:

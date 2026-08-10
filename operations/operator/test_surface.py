@@ -826,6 +826,11 @@ def test_a_post_confirmation_provider_failure_is_named_launch_unresolved_not_ret
     rendered = failure.value.render().lower()
     assert "do not launch again" in rendered
     assert "a provider request may already have occurred" in rendered
+    # LAUNCH_UNRESOLVED's own copy says "preserve the saved receipt" - it must
+    # be possible to find it without a developer, the same as every other
+    # failure path in this module already names its own saved receipt.
+    assert "saved receipt:" in rendered
+    assert str(surface._descriptor_receipt("launch")) in failure.value.render()
 
 
 def test_configured_ceiling_refusal_does_not_claim_the_policy_is_missing(tmp_path: Path) -> None:
