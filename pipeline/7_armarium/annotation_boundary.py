@@ -36,11 +36,12 @@ to account for. That is named here rather than half-built.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Final, Protocol, TypeAlias, runtime_checkable
+
+from common.contracts.canonical import digest_bytes
 
 AnnotationValue: TypeAlias = bool | int | None
 
@@ -148,15 +149,29 @@ class AnnotationInput:
             raise ValueError("an annotation input needs a lowercase canonical text sha256")
         if not isinstance(self.canonical_clean_text, str):
             raise TypeError("an annotation input needs the established clean text")
-        expected_hash = hashlib.sha256(self.canonical_clean_text.encode("utf-8")).hexdigest()
+        expected_hash = digest_bytes(self.canonical_clean_text.encode("utf-8"))
         if self.canonical_text_sha256 != expected_hash:
             raise ValueError("an annotation input text hash does not match its established text")
+        object.__setattr__(
+            self,
+            "uncertainty_spans",
+            _coerce_tuple(self.uncertainty_spans, TextSpan, "uncertainty_spans"),
+        )
+        object.__setattr__(self, "gap_spans", _coerce_tuple(self.gap_spans, GapAnchor, "gap_spans"))
+        object.__setattr__(
+            self,
+            "layout_anchors",
+            _coerce_tuple(self.layout_anchors, LayoutAnchor, "layout_anchors"),
+        )
         _check_spans_within_text(self.canonical_clean_text, self.uncertainty_spans)
         for gap in self.gap_spans:
             if gap.position > len(self.canonical_clean_text):
                 raise ValueError("an annotation gap exceeds the established clean text")
         for anchor in self.layout_anchors:
             _check_spans_within_text(self.canonical_clean_text, (anchor.span,))
+
+
+_ATTRIBUTE_NAME: Final = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 @dataclass(frozen=True)
@@ -166,16 +181,23 @@ class AnnotationAttribute:
     Values deliberately exclude strings: a free-form string value would be an
     unbounded side channel for a second transcription.  Future approved
     annotation vocabularies can use the ``kind`` identifier plus bounded
-    booleans and integers without carrying a competing reading.
+    booleans and integers without carrying a competing reading.  ``name`` is
+    bound the same way: a short closed-shape identifier, not free text --
+    otherwise the established text could ride out through the one field this
+    dataclass leaves open-ended, exactly the side channel the value type
+    already guards against.
     """
 
     name: str
     value: AnnotationValue
 
     def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name:
-            raise ValueError("an annotation attribute needs a name")
-        if isinstance(self.value, float) or not isinstance(self.value, (bool, int, type(None))):
+        if not isinstance(self.name, str) or not _ATTRIBUTE_NAME.fullmatch(self.name):
+            raise ValueError(
+                "an annotation attribute name must be a short lowercase identifier "
+                "(matching ^[a-z][a-z0-9_-]{0,63}$), not free text"
+            )
+        if not isinstance(self.value, (bool, int, type(None))):
             raise TypeError("an annotation attribute value must be a non-text scalar")
 
 
@@ -215,6 +237,13 @@ class Annotation:
             raise ValueError(
                 f"annotation kind {self.kind!r} is not one of {sorted(ANNOTATION_KINDS)}"
             )
+        object.__setattr__(self, "spans", _coerce_tuple(self.spans, TextSpan, "spans"))
+        object.__setattr__(
+            self, "attributes", _coerce_tuple(self.attributes, AnnotationAttribute, "attributes")
+        )
+        if not all(isinstance(item, str) for item in self.related_annotation_ids):
+            raise TypeError("related_annotation_ids must be a tuple or list of strings")
+        object.__setattr__(self, "related_annotation_ids", tuple(self.related_annotation_ids))
         if not self.spans:
             raise ValueError("an annotation needs at least one anchored span")
         _require_closed_value(self, "act_type", "act-type", ACT_TYPES)
@@ -235,6 +264,11 @@ class Annotation:
             raise ValueError("only a kinship annotation relates other annotations")
         if self.kind == "kinship" and len(self.related_annotation_ids) != 2:
             raise ValueError("a kinship annotation relates exactly two person annotations")
+        if (
+            self.kind == "kinship"
+            and self.related_annotation_ids[0] == self.related_annotation_ids[1]
+        ):
+            raise ValueError("a kinship annotation cannot relate a person to themselves")
         if not isinstance(self.overlaps_uncertainty, bool):
             raise TypeError("an annotation's uncertainty inheritance is a boolean")
 
@@ -260,8 +294,10 @@ def mark_uncertainty_overlap(span: TextSpan, uncertainty_spans: tuple[TextSpan, 
     Pure and generic: it knows two ranges and nothing about what an annotation is, so
     a future writer can hand it the input's own uncertainty spans without this module
     learning anything new. It is the only sanctioned way to set
-    `Annotation.overlaps_uncertainty`, and it is unused in this build because the
-    Archetypus record carries no uncertainty layer for anything to inherit from yet.
+    `Annotation.overlaps_uncertainty`, and it is called on every
+    `verify_annotations_anchor_to_text` check -- it is the *input data* that is unused
+    in this build, because the Archetypus record carries no uncertainty layer for
+    anything to inherit from yet, so every call today sees an empty span sequence.
     """
     return any(
         uncertain.start < span.end and span.start < uncertain.end for uncertain in uncertainty_spans
@@ -302,6 +338,11 @@ class AnnotationResult:
             raise ValueError("an annotation result needs an act identity")
         if not _is_sha256(self.canonical_text_sha256):
             raise ValueError("an annotation result needs a lowercase canonical text sha256")
+        object.__setattr__(
+            self, "annotations", _coerce_tuple(self.annotations, Annotation, "annotations")
+        )
+        if not isinstance(self.provenance, AnnotationProvenance):
+            raise TypeError("an annotation result needs its producer's AnnotationProvenance")
 
 
 @runtime_checkable
@@ -384,6 +425,22 @@ def _check_spans_within_text(text: str, spans: tuple[TextSpan, ...]) -> None:
     for span in spans:
         if span.end > len(text):
             raise ValueError("an annotation span exceeds the established clean text")
+
+
+def _coerce_tuple(value: object, item_type: type, field: str) -> tuple:
+    """Fix a collection field to an immutable tuple of one checked item type.
+
+    A frozen dataclass only stops reassigning its own fields; it does not stop a
+    caller mutating a list object it handed in and is still holding.  Coercing to a
+    tuple here, once, is what makes the frozen guarantee real rather than
+    contingent on every caller already passing a tuple.
+    """
+    if not isinstance(value, (tuple, list)):
+        raise TypeError(f"{field} must be a tuple or list")
+    coerced = tuple(value)
+    if not all(isinstance(item, item_type) for item in coerced):
+        raise TypeError(f"every item in {field} must be a {item_type.__name__}")
+    return coerced
 
 
 def _is_normalized_date(value: str) -> bool:
