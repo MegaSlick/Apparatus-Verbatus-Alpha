@@ -7,6 +7,7 @@ read or checked in.
 
 import gc
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -22,20 +23,16 @@ from image_formats import MAX_SOURCE_BYTES, validate_png
 from PIL import Image
 from synthetic_sources import (
     blank_pages_pdf,
+    content_page_pdf,
     png,
     single_gray_page_pdf,
     tiff,
     two_page_pdf,
 )
 
-from common.contracts.approval import (
-    ApprovalRecordReference,
-    approval_gated_real_ingress_record,
-    build_approval_record,
-    synthetic_fixture_ingress_record,
-)
+from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
-from common.contracts.errors import ApprovalRefusal, ContractError
+from common.contracts.errors import ContractError
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
 from common.runtree.store import RunTree
 from common.stage import StageContext
@@ -434,6 +431,41 @@ def test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs(tmp_path):
         assert validate_png(tree.read_bytes(payload["stored_at"])).format == "png"
 
 
+def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp_path):
+    """The offset-0 TIFF gap: a real file must never vanish from the census.
+
+    Before the fix, `expand_sources` fanned this source to zero ordinals -- not
+    admitted, not refused, absent even from the run's source_manifest, exactly the
+    silent loss GOVERNANCE 2 forbids. The file beside it must be unaffected
+    (harvest #2: per-file, never per-folder).
+    """
+    import struct as _struct
+
+    corrupt_tiff = b"II*\x00" + _struct.pack("<I", 0) + b"\x00" * 4
+    files = {"corrupt-no-ifd.tif": corrupt_tiff, "good.png": png(4, 3)}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
+            for path, data in files.items()
+        ],
+        reader(files),
+        POLICY,
+    )
+    assert [source.declared_path for source in sources] == ["corrupt-no-ifd.tif", "good.png"]
+    tree, context = open_door(tmp_path, sources)
+
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 1
+    context.finish(DOOR)
+
+    records = admissions(tree)
+    assert len(records) == 2
+    assert records[1]["payload"]["declared_path"] == "corrupt-no-ifd.tif"
+    assert records[1]["outcome"] == "refused"
+    assert reason_code(records[1]["payload"]["reason"]) is RefusalReason.CORRUPT
+    assert records[2]["payload"]["declared_path"] == "good.png"
+    assert records[2]["outcome"] == "admitted"
+
+
 def test_a_pdf_with_a_bounded_transport_preamble_still_routes_and_admits(tmp_path):
     """The Door routes the same preamble PDF that PDFium can actually open."""
     data = b"\n\n" + single_gray_page_pdf()
@@ -738,6 +770,17 @@ def test_expansion_ordinals_are_stable_by_filename_and_page_index():
     ]
 
 
+@pytest.mark.parametrize("bad_bytes", [True, False, -1, "5", 5.0])
+def test_a_row_with_no_non_negative_byte_count_is_a_contract_error(bad_bytes):
+    """`validate_manifest` already refuses this for a real ledger; this proves the
+    guard inside expand_sources itself actually fires too, for a caller that
+    reaches it some other way.
+    """
+    rows = [{"relative_path": "a.png", "sha256": "0" * 64, "bytes": bad_bytes}]
+    with pytest.raises(ContractError, match="no non-negative byte count"):
+        expand_sources(rows, reader({}), POLICY)
+
+
 def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_written(monkeypatch):
     class Models:
         witness_chairs = ("attestator_1",)
@@ -751,15 +794,12 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
     }
-    reference = ApprovalRecordReference("receipts/sha256/" + "c" * 64 + ".json", "c" * 64)
     settings = door.render_config.load_pdf_render_settings(
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
     baseline = door._real_bindings(
         Models(),
         ledger,
-        {"policy": "synthetic"},
-        reference,
         POLICY,
         settings,
         door.load_recovery_policy(),
@@ -769,8 +809,6 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
     changed = door._real_bindings(
         Models(),
         ledger,
-        {"policy": "synthetic"},
-        reference,
         POLICY,
         settings,
         door.load_recovery_policy(),
@@ -792,15 +830,12 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
     }
-    reference = ApprovalRecordReference("receipts/sha256/" + "c" * 64 + ".json", "c" * 64)
     settings = door.render_config.load_pdf_render_settings(
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
     baseline = door._real_bindings(
         Models(),
         ledger,
-        {"policy": "synthetic"},
-        reference,
         POLICY,
         settings,
         door.load_recovery_policy(),
@@ -808,12 +843,10 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
     assert baseline["adapter_recipes"]["door"] == door.REAL_DOOR_ADAPTER_REVISION
     assert baseline["adapter_recipes"]["door"] != "fake-door-v0"
 
-    monkeypatch.setattr(door, "REAL_DOOR_ADAPTER_REVISION", "exemplar-door-v2")
+    monkeypatch.setattr(door, "REAL_DOOR_ADAPTER_REVISION", "exemplar-door-test-change")
     changed = door._real_bindings(
         Models(),
         ledger,
-        {"policy": "synthetic"},
-        reference,
         POLICY,
         settings,
         door.load_recovery_policy(),
@@ -822,7 +855,7 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
 
 
 def _approved_submission(tmp_path, files: dict[str, bytes]):
-    """Create synthetic source files, policy/approval, and the local filename ledger."""
+    """Create synthetic source files, an approved-root policy, and the filename ledger."""
     approved = tmp_path / "approved"
     source = approved / "source"
     source.mkdir(parents=True)
@@ -834,32 +867,16 @@ def _approved_submission(tmp_path, files: dict[str, bytes]):
     policy["storage_roots"] = [str(approved)]
     policy_path = tmp_path / "policy.json"
     policy_path.write_text(json.dumps(policy), encoding="utf-8")
-    approval_path = tmp_path / "approval.json"
-    approval_path.write_text(
-        json.dumps(
-            build_approval_record(
-                subject_ids=["data-handling-policy"],
-                action="data-gate",
-                reason="synthetic System 03 proof only",
-                target_version_hash=gate.policy_hash(policy),
-                timestamp="2026-08-04T12:00:00Z",
-            )
-        ),
-        encoding="utf-8",
-    )
     ledger_path = approved / "source-ledger.json"
     ledger = submit.submit(
         source,
         ledger_path,
-        approval_record=approval_path,
         policy_path=policy_path,
     )
-    return approved, source, policy, policy_path, approval_path, ledger_path, ledger
+    return approved, source, policy, policy_path, ledger_path, ledger
 
 
-def _run_real_door(
-    monkeypatch, *, run_root, source, policy_path, approval_path, ledger_path, run_id
-):
+def _run_real_door(monkeypatch, *, run_root, source, policy_path, ledger_path, run_id):
     monkeypatch.setattr(
         sys,
         "argv",
@@ -873,8 +890,6 @@ def _run_real_door(
             str(source),
             "--submission-manifest",
             str(ledger_path),
-            "--approval-record",
-            str(approval_path),
             "--data-gate-policy",
             str(policy_path),
         ],
@@ -884,7 +899,7 @@ def _run_real_door(
 
 def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, monkeypatch):
     files = {"FS-1234.png": png(4, 3), "iPhone/BATCH-7.pdf": single_gray_page_pdf()}
-    approved, source, policy, policy_path, approval, ledger_path, ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
         tmp_path, files
     )
     run_root = approved / "runs"
@@ -895,7 +910,6 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
             run_root=run_root,
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="real-ledger",
         )
@@ -908,11 +922,10 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     assert {
         (row["relative_path"], row["sha256"], row["bytes"]) for row in run["source_manifest"]
     } == {(row["relative_path"], row["sha256"], row["bytes"]) for row in ledger["files"]}
+    assert run["ingress"] == {"mode": "real"}
     for record in admissions(tree).values():
         assert record["payload"]["ledger_sha256"] == ledger["self_hash"]
-        assert (
-            record["payload"]["data_gate_approval_ref"] == run["ingress"]["data_gate_approval_ref"]
-        )
+        assert "data_gate_approval_ref" not in record["payload"]
 
     before = {
         path.relative_to(run_root): path.read_bytes()
@@ -925,7 +938,6 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
             run_root=run_root,
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="real-ledger",
         )
@@ -958,7 +970,6 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
         if entry["kind"] == "page"
     ]
     assert {page["payload"]["ledger_sha256"] for page in pages} == {ledger["self_hash"]}
-    assert run["ingress"]["data_gate_policy_hash"] == gate.policy_hash(policy)
 
     before_designator = tree.build_manifest(DESIGNATOR)
     boundary = subprocess.run(
@@ -979,11 +990,366 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     assert tree.build_manifest(DESIGNATOR) == before_designator
 
 
+def test_real_pdf_replaced_after_its_hash_seals_the_opened_original(tmp_path, monkeypatch):
+    """PDFium is never given a pathname it can resolve for itself.
+
+    The first PDFium open is expansion's page count. The second is admission,
+    after the real door has streamed the source digest. Both must receive an
+    already-open stream: `pypdfium2` resolves and reopens a path it is handed, so
+    a pathname replaced at that moment used to make it seal the replacement's
+    600-pixel page while writing the original's digest.
+
+    What this pins is the *shape* of what PDFium receives, plus the sealed result.
+    That the stream is the very descriptor the digest came from — a second
+    anchored open would be symlink-safe and still separate the hash from the
+    pixels — is pinned by the test below, which replaces the name in the one
+    window this one cannot reach.
+    """
+    original = content_page_pdf(b"", width=72, height=72)
+    replacement = content_page_pdf(b"", width=144, height=72)
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"register.pdf": original}
+    )
+    replacement_path = tmp_path / "replacement.pdf"
+    replacement_path.write_bytes(replacement)
+    original_open_document = door.pdf_render.open_document
+    settings = door.render_config.load_pdf_render_settings(
+        ROOT / "config" / "pdf_render.toml",
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI,
+    )
+    opened_original = original_open_document(original)
+    try:
+        original_width = door.pdf_render.render_page(opened_original, 0, settings).width
+    finally:
+        door.pdf_render.close_document(opened_original)
+
+    inputs = []
+
+    def replace_before_admission_open(pdf_input, *args, **kwargs):
+        inputs.append(pdf_input)
+        if len(inputs) == 2:
+            os.replace(replacement_path, source / "register.pdf")
+        return original_open_document(pdf_input, *args, **kwargs)
+
+    monkeypatch.setattr(door.pdf_render, "open_document", replace_before_admission_open)
+
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="anchored-pdf",
+        )
+        == 0
+    )
+
+    record = admissions(RunTree(approved / "runs", "anchored-pdf"))[1]
+    assert len(inputs) == 2
+    assert all(not isinstance(pdf_input, (str, Path)) for pdf_input in inputs)
+    assert all(
+        all(hasattr(pdf_input, method) for method in ("read", "readinto", "seek", "tell"))
+        for pdf_input in inputs
+    )
+    assert (source / "register.pdf").read_bytes() == replacement
+    assert record["outcome"] == "admitted"
+    assert record["payload"]["admitted_source_sha256"] == digest_bytes(original)
+    assert record["payload"]["geometry"]["width"] == original_width
+    assert record["payload"]["geometry"]["width"] != original_width * 2
+
+
+def test_the_pdf_pdfium_renders_is_the_descriptor_the_digest_was_taken_from(tmp_path, monkeypatch):
+    """One anchored open, not two: the hash and the pixels are the same bytes.
+
+    A door that streamed the digest through one verified open and then made a
+    second verified open for PDFium would be symlink-safe and still wrong — an
+    `os.replace` in the gap between them writes the original's digest beside the
+    replacement's pixels, and every check downstream would agree with itself.
+    The window is closed by holding one descriptor, so this replaces the name at
+    exactly the moment the digest is finished and expects the already-open inode
+    to be what gets rendered.
+    """
+    original = content_page_pdf(b"", width=72, height=72)
+    replacement = content_page_pdf(b"", width=144, height=72)
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"register.pdf": original}
+    )
+    replacement_path = tmp_path / "replacement.pdf"
+    replacement_path.write_bytes(replacement)
+    settings = door.render_config.load_pdf_render_settings(
+        ROOT / "config" / "pdf_render.toml",
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI,
+    )
+    opened_original = door.pdf_render.open_document(original)
+    try:
+        original_width = door.pdf_render.render_page(opened_original, 0, settings).width
+    finally:
+        door.pdf_render.close_document(opened_original)
+
+    original_digest_stream = door._source_digest_stream
+    replacements = 0
+
+    def replace_the_name_the_moment_its_digest_is_taken(handle):
+        nonlocal replacements
+        result = original_digest_stream(handle)
+        os.replace(replacement_path, source / "register.pdf")
+        replacements += 1
+        return result
+
+    monkeypatch.setattr(
+        door, "_source_digest_stream", replace_the_name_the_moment_its_digest_is_taken
+    )
+
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="one-descriptor-pdf",
+        )
+        == 0
+    )
+
+    record = admissions(RunTree(approved / "runs", "one-descriptor-pdf"))[1]
+    assert replacements == 1
+    assert (source / "register.pdf").read_bytes() == replacement
+    assert record["outcome"] == "admitted"
+    assert record["payload"]["admitted_source_sha256"] == digest_bytes(original)
+    assert record["payload"]["geometry"]["width"] == original_width
+    assert record["payload"]["geometry"]["width"] != original_width * 2
+
+
+def test_real_pdf_rewritten_during_render_is_refused_before_blob_publication(tmp_path, monkeypatch):
+    """An open inode that changes in place cannot become an Exemplar page."""
+    original = content_page_pdf(b"", width=72, height=72)
+    replacement = content_page_pdf(b"", width=144, height=72)
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"register.pdf": original}
+    )
+    original_open_document = door.pdf_render.open_document
+    calls = 0
+
+    def rewrite_before_admission_open(pdf_input, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            # This is deliberately not an atomic rename: the descriptor survives,
+            # but its bytes have changed after the ledger comparison.
+            (source / "register.pdf").write_bytes(replacement)
+        return original_open_document(pdf_input, *args, **kwargs)
+
+    monkeypatch.setattr(door.pdf_render, "open_document", rewrite_before_admission_open)
+
+    with pytest.raises(ContractError, match="the door admitted nothing"):
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="rewritten-pdf",
+        )
+
+    record = admissions(RunTree(approved / "runs", "rewritten-pdf"))[1]
+    assert calls == 2
+    assert record["outcome"] == "refused"
+    assert reason_code(record["payload"]["reason"]) is RefusalReason.DIGEST_MISMATCH
+    assert record["inputs"] == []
+    assert "stored_at" not in record["payload"]
+
+
+def test_real_raster_redirected_after_inventory_is_refused_and_recorded(tmp_path, monkeypatch):
+    """The bounded raster reader must keep the same no-follow boundary as PDF."""
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"register.png": png(4, 3)}
+    )
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(png(7, 5))
+    original_inventory = door.inventory.read_submission
+
+    def inventory_then_redirect(folder, *, max_bytes):
+        found = original_inventory(folder, max_bytes=max_bytes)
+        submitted = source / "register.png"
+        submitted.unlink()
+        submitted.symlink_to(outside)
+        return found
+
+    monkeypatch.setattr(door.inventory, "read_submission", inventory_then_redirect)
+
+    with pytest.raises(ContractError, match="the door admitted nothing"):
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="redirected-raster",
+        )
+
+    record = admissions(RunTree(approved / "runs", "redirected-raster"))[1]
+    assert record["outcome"] == "refused"
+    assert record["payload"]["declared_path"] == "register.png"
+    assert reason_code(record["payload"]["reason"]) is RefusalReason.UNREADABLE
+    assert record["inputs"] == []
+
+
+def test_a_symlink_planted_after_the_walk_refuses_only_its_own_source(tmp_path, monkeypatch):
+    """Per-file, never per-folder: the redirected source is the only casualty.
+
+    The digest check already stops the *wrong content* from being sealed either
+    way — that is not what this proves. What distinguishes the anchored door from
+    the one before it is *when* the redirect is refused: at the reopen itself
+    (`unreadable`, proving the target's bytes were never read at all) rather than
+    after they were read and hashed (`digest-mismatch`, proving they were). The
+    file beside it is untouched and still admits, and no run artifact anywhere
+    carries a byte of the material that was never submitted.
+    """
+    outside_secret = tmp_path / "outside-secret.bin"
+    outside_secret.write_bytes(b"NEVER SUBMITTED")
+
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1.png": png(5, 5), "FS-2.png": png(4, 3)}
+    )
+    run_root = approved / "runs"
+    original_read_submission = door.inventory.read_submission
+
+    def swap_after_the_safe_walk(folder, *, max_bytes):
+        found = original_read_submission(folder, max_bytes=max_bytes)
+        target = folder / "FS-1.png"
+        target.unlink()
+        target.symlink_to(outside_secret)
+        return found
+
+    monkeypatch.setattr(door.inventory, "read_submission", swap_after_the_safe_walk)
+
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="symlink-race",
+        )
+        == 0
+    )
+
+    records = admissions(RunTree(run_root, "symlink-race"))
+    swapped, intact = records[1], records[2]
+    assert swapped["payload"]["declared_path"] == "FS-1.png"
+    assert swapped["outcome"] == "refused"
+    assert reason_code(swapped["payload"]["reason"]) is RefusalReason.UNREADABLE
+    assert intact["payload"]["declared_path"] == "FS-2.png"
+    assert intact["outcome"] == "admitted"
+
+    for path in run_root.rglob("*"):
+        if path.is_file():
+            assert b"NEVER SUBMITTED" not in path.read_bytes()
+
+
+def test_a_forged_nul_byte_manifest_row_refuses_only_itself(tmp_path, monkeypatch):
+    """A hand-forged ledger row cannot crash admission for every file beside it.
+
+    No real directory listing can ever produce a NUL byte in a name, so this row
+    could only reach the door through a manifest built by hand rather than by
+    `submit.py`. Before this fix, `os.open`'s bare `ValueError` for an embedded
+    NUL was not caught anywhere between `inventory.open_submission_source` and
+    `door.expand_sources`'s own except clause, so it escaped as an uncaught
+    traceback and admitted nothing in the same run -- the same "one bad name
+    breaks the whole folder" shape this module already fixed once for directory
+    depth (harvest #2: per-file, never per-folder).
+    """
+    approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
+        tmp_path, {"good.png": png(4, 3)}
+    )
+    forged = dict(ledger)
+    forged["files"] = sorted(
+        [*ledger["files"], {"relative_path": "a\x00b", "sha256": "0" * 64, "bytes": 5}],
+        key=lambda row: row["relative_path"],
+    )
+    del forged["self_hash"]
+    forged["self_hash"] = self_hash(forged)
+    ledger_path.write_bytes(canonical_bytes(forged))
+
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="forged-nul-row",
+        )
+        == 0
+    )
+
+    records = admissions(RunTree(approved / "runs", "forged-nul-row"))
+    assert len(records) == 2
+    forged_record = next(r for r in records.values() if r["payload"]["declared_path"] == "a\x00b")
+    good_record = next(r for r in records.values() if r["payload"]["declared_path"] == "good.png")
+    assert forged_record["outcome"] == "refused"
+    assert reason_code(forged_record["payload"]["reason"]) is RefusalReason.UNREADABLE
+    assert good_record["outcome"] == "admitted"
+
+
+def test_a_symlinked_pdf_is_never_handed_to_pdfium_to_count_or_render(tmp_path, monkeypatch):
+    """The PDF path is the sharper half of the same gap: PDFium parses whatever it
+    opens, in `expand_sources`'s page count *before* any digest is even computed.
+
+    A one-page declared PDF swapped for a two-page PDF at some other path proves
+    whether PDFium ever touched the swap target: if it had, this source would fan
+    out to two ordinals. It must not — the redirect is refused at the reopen,
+    before `pdf_render.count_pages` is ever called on it, so exactly one ordinal
+    exists for the declared document, refused, and the file beside it is
+    unaffected. Proof by page count, not by reason code alone.
+    """
+    swap_target = tmp_path / "outside-two-page.pdf"
+    swap_target.write_bytes(two_page_pdf())
+
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"SCAN.pdf": single_gray_page_pdf(), "OTHER.png": png(4, 3)}
+    )
+    run_root = approved / "runs"
+    original_read_submission = door.inventory.read_submission
+
+    def swap_after_the_safe_walk(folder, *, max_bytes):
+        found = original_read_submission(folder, max_bytes=max_bytes)
+        target = folder / "SCAN.pdf"
+        target.unlink()
+        target.symlink_to(swap_target)
+        return found
+
+    monkeypatch.setattr(door.inventory, "read_submission", swap_after_the_safe_walk)
+
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="pdf-symlink-race",
+        )
+        == 0
+    )
+
+    records = admissions(RunTree(run_root, "pdf-symlink-race"))
+    assert len(records) == 2
+    pdf_record = next(r for r in records.values() if r["payload"]["declared_path"] == "SCAN.pdf")
+    png_record = next(r for r in records.values() if r["payload"]["declared_path"] == "OTHER.png")
+    assert pdf_record["outcome"] == "refused"
+    assert reason_code(pdf_record["payload"]["reason"]) is RefusalReason.UNREADABLE
+    assert png_record["outcome"] == "admitted"
+
+
 def test_a_corrupt_later_tiff_page_keeps_its_good_earlier_page_and_other_sources(
     tmp_path, monkeypatch
 ):
     files = {"bad-volume.tiff": corrupt_later_tiff_page(), "good-page.png": png(4, 3)}
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, files
     )
     run_root = approved / "runs"
@@ -994,7 +1360,6 @@ def test_a_corrupt_later_tiff_page_keeps_its_good_earlier_page_and_other_sources
             run_root=run_root,
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="corrupt-tiff-isolated",
         )
@@ -1022,7 +1387,7 @@ def test_a_truncated_animated_gif_cannot_erase_another_sources_admission(tmp_pat
     lose this source: it aborted the expansion and every other source in the
     submission with it. Two sources in, two records out is the whole assertion."""
     files = {"broken-animation.gif": truncated_animated_gif(), "good-page.png": png(4, 3)}
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, files
     )
     run_root = approved / "runs"
@@ -1033,7 +1398,6 @@ def test_a_truncated_animated_gif_cannot_erase_another_sources_admission(tmp_pat
             run_root=run_root,
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="truncated-gif-isolated",
         )
@@ -1050,7 +1414,7 @@ def test_a_truncated_animated_gif_cannot_erase_another_sources_admission(tmp_pat
 def test_changed_transfer_bytes_raise_a_digest_alarm_under_the_original_filename(
     tmp_path, monkeypatch
 ):
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-4321.png": png(4, 3)}
     )
     (source / "FS-4321.png").write_bytes(png(5, 3))
@@ -1061,7 +1425,6 @@ def test_changed_transfer_bytes_raise_a_digest_alarm_under_the_original_filename
             run_root=approved / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="changed-copy",
         )
@@ -1073,7 +1436,7 @@ def test_changed_transfer_bytes_raise_a_digest_alarm_under_the_original_filename
 def test_extra_copy_absent_from_the_filename_ledger_stops_before_a_run_is_created(
     tmp_path, monkeypatch
 ):
-    approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png()}
     )
     (source / "unledgered.png").write_bytes(png())
@@ -1083,17 +1446,52 @@ def test_extra_copy_absent_from_the_filename_ledger_stops_before_a_run_is_create
             run_root=approved / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="unexpected-copy",
         )
     assert not (approved / "runs" / "unexpected-copy" / "run.json").exists()
 
 
+def test_a_ledgered_file_absent_from_the_folder_keeps_its_ordinal_and_is_named(
+    tmp_path, monkeypatch
+):
+    """The denominator starts at what was *submitted*, not at what survived.
+
+    A file the sealed ledger names and the folder no longer holds is the door's
+    ordinary per-source alarm: it keeps its ordinal, is refused by name, and the
+    source beside it still admits. It may not vanish into a smaller corpus that
+    later looks complete (GOVERNANCE 2), and it may not abort the whole census.
+    """
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1.png": png(4, 3), "FS-2.png": png(5, 5)}
+    )
+    (source / "FS-1.png").unlink()
+
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="vanished-source",
+        )
+        == 0
+    )
+
+    records = admissions(RunTree(approved / "runs", "vanished-source"))
+    assert len(records) == 2
+    assert records[1]["payload"]["declared_path"] == "FS-1.png"
+    assert records[1]["outcome"] == "refused"
+    assert reason_code(records[1]["payload"]["reason"]) is RefusalReason.UNREADABLE
+    assert records[2]["payload"]["declared_path"] == "FS-2.png"
+    assert records[2]["outcome"] == "admitted"
+
+
 def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventory(
     tmp_path, monkeypatch
 ):
-    _approved, source, _policy, policy_path, approval, ledger_path, _ledger = _approved_submission(
+    _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png()}
     )
     with pytest.raises(ContractError, match="run root cannot live inside the submitted folder"):
@@ -1102,39 +1500,14 @@ def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventor
             run_root=source / "runs",
             source=source,
             policy_path=policy_path,
-            approval_path=approval,
             ledger_path=ledger_path,
             run_id="contained-run-root",
         )
     assert not (source / "runs").exists()
 
 
-def test_real_input_refuses_before_opening_a_source_when_approval_evidence_is_missing(tmp_path):
-    opened: list[str] = []
-    data = png()
-    source = SourceEntry(1, "real.png", digest_bytes(data))
-    reference = ApprovalRecordReference(f"receipts/sha256/{'a' * 64}.json", "a" * 64)
-    policy = gate.load_policy()
-    tree, context = open_door(
-        tmp_path,
-        [source],
-        ingress=approval_gated_real_ingress_record(gate.policy_hash(policy), reference),
-    )
-
-    with pytest.raises(ApprovalRefusal, match="could not be read"):
-        process_sources(
-            context,
-            tree,
-            [source],
-            lambda path: opened.append(path) or data,
-            policy=POLICY,
-            data_policy=policy,
-        )
-    assert opened == []
-
-
 def test_a_real_submission_requires_the_local_filename_ledger(tmp_path, monkeypatch):
-    approved, source, _policy, policy_path, approval, _ledger_path, _ledger = _approved_submission(
+    approved, source, _policy, policy_path, _ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-2.png": png()}
     )
     monkeypatch.setattr(
@@ -1148,8 +1521,6 @@ def test_a_real_submission_requires_the_local_filename_ledger(tmp_path, monkeypa
             "no-ledger",
             "--submission-folder",
             str(source),
-            "--approval-record",
-            str(approval),
             "--data-gate-policy",
             str(policy_path),
         ],
@@ -1292,36 +1663,37 @@ def test_an_oversized_source_is_named_too_large_without_ever_being_read(tmp_path
     assert payload["declared_path"] == "enormous.tif"
 
 
-def test_a_path_backed_pdf_is_not_refused_by_the_retired_bytes_allocation_cap(
+def test_a_stream_backed_pdf_is_not_refused_by_the_retired_bytes_allocation_cap(
     tmp_path, monkeypatch
 ):
-    """The source remains a path for both its streamed digest and PDFium open.
+    """The source stays a stream for both its digest and PDFium open, never bytes.
 
     The cap is monkeypatched below this tiny synthetic PDF rather than allocating a
-    64 MiB fixture. If the retired branch returns, it refuses before the reader is
-    called; the page admission below is therefore a direct proof that a path-backed
-    PDF is not treated like a raster bytes allocation.
+    64 MiB fixture. If a PDF were ever routed through the raster allocation guard,
+    it would refuse here before the reader is called; the page admission below is
+    therefore a direct proof that the real anchored-descriptor route -- the one
+    every real submission actually takes -- is exempt.
     """
-    source_path = tmp_path / "microfilm-reel.pdf"
+    folder = tmp_path / "batch"
+    folder.mkdir()
     data = single_gray_page_pdf()
-    source_path.write_bytes(data)
-    source = SourceEntry(
-        1,
-        "microfilm-reel.pdf",
-        digest_bytes(data),
-        0,
-        len(data),
-        None,
-        source_path,
-        "pdf",
-    )
+    (folder / "microfilm-reel.pdf").write_bytes(data)
+    source = SourceEntry(1, "microfilm-reel.pdf", digest_bytes(data), 0, len(data), None, "pdf")
 
     def unexpected_reader(_relative_path: str) -> bytes:
-        raise AssertionError("a path-backed PDF was read as one bytes object")
+        raise AssertionError("a stream-backed PDF was read as one bytes object")
+
+    def open_source(relative_path: str):
+        return door.inventory.open_submission_source(folder, relative_path)
 
     tree, context = open_door(tmp_path, [source])
     monkeypatch.setattr(door, "MAX_SOURCE_BYTES", 1)
-    assert process_sources(context, tree, [source], unexpected_reader, policy=POLICY) == 1
+    assert (
+        process_sources(
+            context, tree, [source], unexpected_reader, policy=POLICY, open_source=open_source
+        )
+        == 1
+    )
     context.finish(DOOR)
     assert admissions(tree)[1]["outcome"] == "admitted"
 

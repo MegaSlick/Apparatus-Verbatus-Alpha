@@ -40,10 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.approval import (  # noqa: E402
-    APPROVAL_GATED_REAL_INGRESS,
-    parse_data_gate_ingress_record,
-)
+from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import self_hash  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
@@ -489,8 +486,8 @@ def _open(args, registry_factory) -> tuple[object, bool]:
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
-    mode, _policy_hash, _reference = parse_data_gate_ingress_record(run.get("ingress"))
-    if mode != APPROVAL_GATED_REAL_INGRESS:
+    mode = parse_ingress_record(run.get("ingress"))
+    if mode != REAL_INGRESS:
         return open_context(args, DESIGNATOR, registry_factory=registry_factory), False
     return (
         StageContext(

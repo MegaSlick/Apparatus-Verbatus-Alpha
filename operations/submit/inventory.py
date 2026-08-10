@@ -1,6 +1,6 @@
 """Reading a submitted folder without following anything out of it.
 
-One reader, used twice: `submit.py` inventories a folder to seal a manifest, and
+One reader, used by both: `submit.py` inventories a folder to seal a manifest, and
 `pipeline/1_exemplar/door.py` reads the same folder to admit its bytes. A second
 walker would be a second set of rules about what a submission *is*, and the drift
 between two such sets is the defect this whole spec exists to kill.
@@ -12,6 +12,17 @@ a sealed corpus that nobody chose to give us. `O_NOFOLLOW | O_DIRECTORY`, `dir_f
 relative opens, and an `lstat` before every decision are what make "this file is
 under this folder" true at the moment of reading rather than at the moment of
 listing.
+
+**Proving it once is not enough, because the walk ends.** `read_submission`
+establishes that no component of a submitted path was a link *at the moment it
+enumerated the folder*, then closes every descriptor. The bytes that become the
+sealed Exemplar are read later, by the door, and a plain second open by path would
+follow a link planted in between — undoing the proof at exactly the point it
+matters. `open_submission_source` is the same anchored walk offered as a reopen,
+and it hands back the live descriptor rather than a path, so the digest, the format
+sniff and PDFium's own reads are all of one file. `assert_unchanged` closes the
+other half: anchoring proves *which* file, and the before/after `fstat` proves the
+file did not move under the reader while it was being read.
 
 **A source that cannot be read is a failure of the whole inventory, not a gap in
 it.** A per-file refusal is the *door's* job and needs bytes to refuse; an
@@ -37,8 +48,9 @@ attacker-shaped. Depth was the sharpest — 2,000 nested directories escaped as 
 import hashlib
 import os
 import stat
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Final, NamedTuple
+from typing import BinaryIO, Final, Iterator, NamedTuple
 
 from common.contracts.errors import ContractError
 
@@ -53,11 +65,11 @@ _CHUNK: Final = 1024 * 1024
 # exhausts a machine. A bound nobody can reach is still the difference between a
 # named refusal and an out-of-memory kill nobody can read afterwards.
 #
-# `MAX_SUBMITTED_BYTES` counts *retained* bytes, so it is inert for `submit.py`,
-# which asks for `max_bytes=0` and holds no content at all, and live for the
-# pipeline door, which asks for 64 MiB per file and is the caller that actually
-# accumulates a corpus in memory. That asymmetry is the point: the bound sits where
-# the memory does. The other three bind both callers.
+# `MAX_SUBMITTED_BYTES` counts *retained* bytes. The production submitter and Door
+# both ask for `max_bytes=0` and stream this inventory without retaining bodies;
+# their later source reads are bounded separately. The aggregate remains live for
+# any caller that asks this reusable reader to retain content. The other three bind
+# every caller.
 MAX_SUBMITTED_FILES: Final = 100_000
 MAX_SUBMITTED_BYTES: Final = 8 * 1024 * 1024 * 1024
 MAX_DIRECTORY_DEPTH: Final = 64
@@ -76,6 +88,117 @@ class SubmittedSource(NamedTuple):
     sha256: str
     size: int
     data: bytes | None
+
+
+class _OpenStreamMetadata(NamedTuple):
+    """Descriptor facts that distinguish a rewrite from a name replacement."""
+
+    device: int
+    inode: int
+    mode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    links: int
+
+
+class OpenedSubmissionSource:
+    """One submitted file held through an anchored, no-follow descriptor.
+
+    The caller uses ``handle`` for every read of the source, then calls
+    :meth:`assert_unchanged` before it treats derived bytes as evidence.  Keeping
+    the descriptor open is essential for container readers such as PDFium: a
+    pathname may be replaced between a pre-read digest and a later decoder open.
+    """
+
+    __slots__ = ("handle", "_descriptor", "_entry", "_before")
+
+    def __init__(
+        self,
+        handle: BinaryIO,
+        descriptor: int,
+        entry: str,
+        before: _OpenStreamMetadata,
+    ) -> None:
+        self.handle = handle
+        self._descriptor = descriptor
+        self._entry = entry
+        self._before = before
+
+    def assert_unchanged(self, *, expected_sha256: str | None) -> None:
+        """Refuse a source modified in place while this descriptor was in use.
+
+        `expected_sha256` is the digest the caller has already bound this source to
+        — its filename-ledger row.  It is consulted only on the name-replacement
+        path below, and it is what makes that path safe.  It has no default: a
+        caller with no digest cannot be given the exemption, and passing `None`
+        says so explicitly rather than by omission.
+        """
+        try:
+            after = _open_stream_metadata(os.fstat(self._descriptor))
+        except OSError as error:
+            raise SubmissionInputError(
+                "a submitted source could not be rechecked after reading; the door will not "
+                "bind evidence to a file it can no longer identify",
+                entry=self._entry,
+            ) from error
+        if after == self._before:
+            return
+        # Replacing this descriptor's *name* removes exactly one hard link and
+        # updates ctime, but leaves the held inode's byte-bearing facts unchanged.
+        # Every stat field except ctime therefore matches, which is why ctime alone
+        # cannot be the signal here.
+        name_replaced = (
+            after.device == self._before.device
+            and after.inode == self._before.inode
+            and after.mode == self._before.mode
+            and after.size == self._before.size
+            and after.mtime_ns == self._before.mtime_ns
+            and after.links == self._before.links - 1
+        )
+        if not name_replaced:
+            raise SubmissionInputError(
+                "a submitted source changed while it was being read; the door refuses to "
+                "bind evidence to moving bytes",
+                entry=self._entry,
+            )
+        # A rewrite of the held inode can wear this exact shape.  Restoring the
+        # original size with the same byte count, restoring mtime with `utime`, and
+        # unlinking one of the inode's names leaves device, inode, mode, size, mtime
+        # and the link-count delta all matching a benign replacement — and ctime,
+        # the only remaining difference, is the one field a genuine name
+        # replacement also moves.  Stat cannot separate the two, so content does:
+        # the held bytes are hashed against the digest this source was bound to.
+        # `os.pread` reads at absolute offsets and never moves the shared file
+        # position, so a decoder part-way through this stream is unaffected.
+        # With no digest there is nothing to prove the held bytes against, and an
+        # unprovable exemption is the hole itself.  Refuse: the cost is a named
+        # refusal on a rename nobody can corroborate, against sealing bytes that
+        # may not be the ones already read.
+        if expected_sha256 is None:
+            raise SubmissionInputError(
+                "a submitted source lost a name while it was being read, and no ledgered "
+                "digest is available to prove its bytes are still the ones that were read",
+                entry=self._entry,
+            )
+        if _descriptor_digest(self._descriptor) != expected_sha256:
+            raise SubmissionInputError(
+                "a submitted source was rewritten while it was being read; the door refuses "
+                "to bind evidence to moving bytes",
+                entry=self._entry,
+            )
+
+
+def _descriptor_digest(descriptor: int) -> str:
+    """Hash a held descriptor's whole content without disturbing its position."""
+    digest = hashlib.sha256()
+    offset = 0
+    while True:
+        chunk = os.pread(descriptor, _CHUNK, offset)
+        if not chunk:
+            return digest.hexdigest()
+        digest.update(chunk)
+        offset += len(chunk)
 
 
 class RawPathReference(NamedTuple):
@@ -147,6 +270,61 @@ class _Budget:
 
 def read_submission(folder: Path, *, max_bytes: int) -> list[SubmittedSource]:
     """Every regular file under `folder`, sorted by path, with its exact bytes."""
+    descriptor = _open_submission_root(folder)
+    try:
+        sources = _walk(descriptor, "", max_bytes, _Budget(), depth=0)
+    finally:
+        os.close(descriptor)
+    return sorted(sources, key=lambda source: source.relative_path)
+
+
+@contextmanager
+def open_submission_source(folder: Path, relative_path: str) -> Iterator[OpenedSubmissionSource]:
+    """Yield one source through the same anchored walk used by the inventory.
+
+    ``read_submission`` deliberately closes every descriptor after producing the
+    filename ledger.  A later consumer must not rebuild an ordinary ``Path`` from
+    that ledger and open it outside the no-follow boundary: an atomic replacement
+    in the interval could make a digest describe one PDF while a decoder seals
+    another.  This context manager recreates the descriptor-relative walk and
+    keeps the final regular-file descriptor alive for the consumer's whole use.
+    """
+    components = _source_components(relative_path)
+    root = _open_submission_root(folder)
+    directories = [root]
+    descriptor: int | None = None
+    handle: BinaryIO | None = None
+    try:
+        parent = root
+        for component in components[:-1]:
+            child = _open_directory(component, parent, entry=relative_path)
+            directories.append(child)
+            parent = child
+        descriptor = _open_regular_file(components[-1], parent, entry=relative_path)
+        try:
+            before = _open_stream_metadata(os.fstat(descriptor))
+            # Keep descriptor ownership here.  PDFium retains a Python stream for
+            # the document's lifetime, so closing this handle early would turn the
+            # secure stream into an unreliable source halfway through rendering.
+            handle = os.fdopen(descriptor, "rb", closefd=False)
+        except OSError as error:
+            raise SubmissionInputError(
+                "a submitted source could not be prepared for a stable read",
+                entry=relative_path,
+            ) from error
+        try:
+            yield OpenedSubmissionSource(handle, descriptor, relative_path, before)
+        finally:
+            handle.close()
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        for directory in reversed(directories):
+            os.close(directory)
+
+
+def _open_submission_root(folder: Path) -> int:
+    """Validate and open a submission root for an anchored descendant walk."""
     root = Path(folder)
     if root.is_symlink():
         raise SubmissionInputError(
@@ -154,12 +332,69 @@ def read_submission(folder: Path, *, max_bytes: int) -> list[SubmittedSource]:
         )
     if not root.is_dir():
         raise SubmissionInputError("the submitted folder is not a directory")
-    descriptor = _open_directory(root)
-    try:
-        sources = _walk(descriptor, "", max_bytes, _Budget(), depth=0)
-    finally:
-        os.close(descriptor)
-    return sorted(sources, key=lambda source: source.relative_path)
+    return _open_directory(root)
+
+
+def _source_components(relative_path: str) -> tuple[str, ...]:
+    """Accept only the canonical slash-relative names an inventory can emit.
+
+    No real directory listing can ever produce a NUL byte in a name -- the kernel
+    itself forbids it. A hand-built manifest is not bound by that, and `os.open`
+    raises a bare `ValueError` for one rather than `OSError`, which is not this
+    project's alarm vocabulary and is not caught anywhere above this call: it
+    would otherwise escape as a raw traceback and take the rest of the submission
+    down with it, the exact "one bad name breaks the whole folder" shape this
+    module's docstring already names as fixed for directory depth.
+    """
+    if not isinstance(relative_path, str) or not relative_path:
+        raise SubmissionInputError(
+            "a requested submitted source has no plain relative filename",
+            entry=relative_path if isinstance(relative_path, str) else None,
+        )
+    if "\x00" in relative_path:
+        raise SubmissionInputError(
+            "a requested submitted source name contains a NUL byte", entry=relative_path
+        )
+    components = tuple(relative_path.split("/"))
+    if any(component in {"", ".", ".."} for component in components):
+        raise SubmissionInputError(
+            "a requested submitted source is not a plain relative filename",
+            entry=relative_path,
+        )
+    return components
+
+
+def _stable_file_metadata(details: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    """The metadata whose change proves an inventory digest had no stable name."""
+    return (
+        details.st_dev,
+        details.st_ino,
+        details.st_mode,
+        details.st_size,
+        details.st_mtime_ns,
+        details.st_ctime_ns,
+    )
+
+
+def _open_stream_metadata(details: os.stat_result) -> _OpenStreamMetadata:
+    """Detect byte-affecting changes without mistaking an unlink for a rewrite.
+
+    An atomic replacement removes this descriptor's name and may update only its
+    ctime.  Its already-open inode still holds the exact bytes the door hashed, so
+    rejecting it would recreate the pathname race this stream exists to avoid.
+    The later descriptor-held reader records both ctime and link count: a rewrite
+    changes ctime without removing this name, while an atomic name replacement
+    removes one link from the still-stable inode.
+    """
+    return _OpenStreamMetadata(
+        details.st_dev,
+        details.st_ino,
+        details.st_mode,
+        details.st_size,
+        details.st_mtime_ns,
+        details.st_ctime_ns,
+        details.st_nlink,
+    )
 
 
 def _open_directory(
@@ -292,7 +527,15 @@ def _walk(
             )
         descriptor = _open_regular_file(name, directory_descriptor, entry=relative_path)
         try:
+            before = _stable_file_metadata(os.fstat(descriptor))
             data, digest, size = _read_once(descriptor, max_bytes)
+            after = _stable_file_metadata(os.fstat(descriptor))
+            if after != before:
+                raise SubmissionInputError(
+                    "a submitted source changed while it was being read; the door refuses "
+                    "to seal a digest over moving bytes",
+                    entry=relative_path,
+                )
         except OSError as error:
             raise SubmissionInputError(
                 "a submitted source could not be read for its digest; the door will not "

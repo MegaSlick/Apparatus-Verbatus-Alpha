@@ -3,10 +3,9 @@
 The import door: a local folder in, a checksummed and sealed manifest out.
 
 `submit.py` walks a folder through `inventory.py`, hashes every regular file, and
-writes one atomic, self-hashed submission manifest naming the approval that admitted
-the corpus. Both the folder and manifest must be under an approved storage root, and
-neither its manifest nor a private refusal report can sit inside the folder it
-inventories. It does not decode, sniff
+writes one atomic, self-hashed submission manifest. Both the folder and manifest
+must be under an approved storage root, and neither its manifest nor a private
+refusal report can sit inside the folder it inventories. It does not decode, sniff
 or judge image content — that is admission,
 and admission belongs to `pipeline/1_exemplar/door.py` and its one format policy.
 It does not transfer anything to a pod either; spec 04 owns "checksummed and
@@ -14,11 +13,10 @@ resumable", and no pod exists yet.
 
 ## What lives here
 
-- `gate.py` — the data-handling gate as machinery. Loads the policy, hashes it the
-  way the rest of the tree hashes, verifies an approval record through its
-  digest-checked reference, and refuses real input without a current one. The
-  pipeline door imports this and enforces it on its own admission loop; nothing here
-  imports the pipeline, so the dependency between the two trees points one way.
+- `gate.py` — the data-handling gate as machinery. Loads the policy and enforces
+  that real material stays inside the storage roots it names. The pipeline door
+  imports this on its own admission loop; nothing here imports the pipeline, so
+  the dependency between the two trees points one way.
 - `inventory.py` — reading a submitted folder without following anything out of it.
   Every open is anchored to a directory descriptor and refuses to follow a link.
 - `submit.py` — the folder-to-manifest tool. It writes a private refusal report
@@ -33,18 +31,21 @@ resumable", and no pod exists yet.
 - `cleanup.py` — the drill's verification half: declared, measurable bounds, and a
   refusal when one of them is not met.
 
-## The gate is not optional and not inferable
+## The storage-root check is mechanical; the approval-record requirement is cut
 
-A folder handed to this tool is never a fixture, by construction: it never goes near
-`load_fixture`. So real input needs Tyrel's approval record naming the current
-version of `config/data_handling_policy.json`, and the gate is checked before a
-single byte is hashed. A missing, stale or edited approval leaves nothing written at
-all.
+**Cut 2026-08-09, per Tyrel's ruling that session:** *"None of these images will be
+on git anyways they run through the pipeline on the gpu and won't ever touch git. So
+yes cut the approval record it's not really needed."* A submission used to also need
+a current data-gate approval-record artifact, verified before a byte was hashed and
+named in the sealed manifest. That requirement is gone: none of this material ever
+reaches git regardless of any per-run sign-off — it runs on a GPU host,
+`workbench/` is gitignored, and an ingress check plus a pre-push payload scan
+already cover that mechanically.
 
-This README is the data-handling gate package for his approval.
-`config/data_handling_policy.json` is its machine-readable half and the version an
-approval names. Until he approves it, no real image may be submitted through here,
-and none has been.
+What remains, and is unaffected: a folder handed to this tool is never a fixture, by
+construction — it never goes near `load_fixture` — and both the submitted folder and
+the manifest must sit inside a storage root `config/data_handling_policy.json`
+names, checked before a single byte is hashed.
 
 Filenames remain in the manifest and private refusal report because they are the
 citation link. The terminal reports counts and a private report location; image bytes

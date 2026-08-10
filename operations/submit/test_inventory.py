@@ -5,10 +5,13 @@ properties of the filesystem — what an open follows, what a listing races with
 so every case here builds a real directory and reads it through the real opener.
 """
 
+import hashlib
 import os
+import time
 
 import pytest
 
+from operations.submit import inventory
 from operations.submit.inventory import SubmissionInputError, read_submission
 
 LIMIT = 1024
@@ -85,6 +88,53 @@ def test_an_oversized_source_keeps_its_exact_digest_and_drops_only_its_bytes(tmp
     assert found[0].sha256 == __import__("hashlib").sha256(payload).hexdigest()
 
 
+def test_a_source_changed_while_its_digest_is_read_is_a_named_refusal(tmp_path, monkeypatch):
+    """A ledger may only bind one stable file, never a sequence of its revisions.
+
+    The real in-place rewrite still happens mid-read, so `_read_once` genuinely
+    reads a file that changed under it. What is mocked is only the *detection*
+    side (`_stable_file_metadata`, called exactly once before and once after):
+    a same-size rewrite's real effect on `mtime_ns`/`ctime_ns` is at the mercy of
+    the filesystem's clock resolution, and under enough scheduler load two writes
+    microseconds apart can land in the same tick -- making this test flake on a
+    real timer without the check itself being wrong. Forcing the two metadata
+    reads to disagree proves `_walk`'s own comparison, not the host clock.
+    """
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    source = folder / "page.png"
+    payload = b"a" * (inventory._CHUNK + 17)
+    source.write_bytes(payload)
+    original_read = inventory.os.read
+    original_metadata = inventory._stable_file_metadata
+    reads = 0
+    metadata_calls = 0
+
+    def replace_after_first_chunk(descriptor: int, count: int) -> bytes:
+        nonlocal reads
+        chunk = original_read(descriptor, count)
+        reads += 1
+        if reads == 1:
+            # Rewriting the open inode exercises the post-read descriptor check;
+            # an atomic path replacement alone would leave this descriptor stable.
+            source.write_bytes(b"b" * len(payload))
+        return chunk
+
+    def force_disagreement_on_the_second_read(details):
+        nonlocal metadata_calls
+        metadata_calls += 1
+        real = original_metadata(details)
+        return real if metadata_calls == 1 else (*real[:-1], real[-1] + 1)
+
+    monkeypatch.setattr(inventory.os, "read", replace_after_first_chunk)
+    monkeypatch.setattr(inventory, "_stable_file_metadata", force_disagreement_on_the_second_read)
+
+    with pytest.raises(SubmissionInputError, match="changed while it was being read") as caught:
+        read_submission(folder, max_bytes=0)
+
+    assert caught.value.entry == "page.png"
+
+
 def test_an_unreadable_source_fails_the_whole_inventory_rather_than_vanishing(tmp_path):
     """A per-file refusal is the door's job and needs bytes to refuse. An inventory
     that silently omitted what it could not open would shrink the denominator the
@@ -109,3 +159,199 @@ def test_an_empty_folder_yields_nothing_and_says_so_plainly(tmp_path):
     folder = tmp_path / "batch"
     folder.mkdir()
     assert read_submission(folder, max_bytes=LIMIT) == []
+
+
+def test_reopening_a_source_reads_an_ordinary_nested_file(tmp_path):
+    folder = tmp_path / "batch"
+    (folder / "sub").mkdir(parents=True)
+    (folder / "sub" / "page.png").write_bytes(b"real bytes")
+
+    with inventory.open_submission_source(folder, "sub/page.png") as opened:
+        assert opened.handle.read() == b"real bytes"
+        opened.assert_unchanged(expected_sha256=hashlib.sha256(b"real bytes").hexdigest())
+
+
+def test_reopening_refuses_a_leaf_swapped_for_a_symlink_after_the_walk(tmp_path):
+    """The exact case a second plain-path open would miss.
+
+    `read_submission` already proved this path held a regular file; something else
+    is there by the time the door reads the bytes it will seal. The refusal must
+    happen at the open, before the swap target's bytes are read at all — not after
+    they have been read and found not to match a digest.
+    """
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"not submitted")
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    (folder / "page.png").write_bytes(b"real bytes")
+    found = read_submission(folder, max_bytes=LIMIT)
+    assert [source.relative_path for source in found] == ["page.png"]
+
+    (folder / "page.png").unlink()
+    (folder / "page.png").symlink_to(outside)
+
+    with pytest.raises(SubmissionInputError, match="redirect"):
+        with inventory.open_submission_source(folder, "page.png"):
+            pass
+
+
+def test_reopening_refuses_a_symlinked_intermediate_directory(tmp_path):
+    """A component earlier in the path, not only the leaf, can be swapped."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "page.png").write_bytes(b"not submitted")
+    folder = tmp_path / "batch"
+    real_sub = tmp_path / "real-sub"
+    real_sub.mkdir()
+    # The leaf has to exist, or this test passes for the wrong reason: with no
+    # `page.png` anywhere, a walk that *did* follow the symlink would fail on the
+    # missing file with "could not be opened without following a redirect", which
+    # matches the same assertion. Creating it makes the refused symlinked directory
+    # the only thing that can raise.
+    (real_sub / "page.png").write_bytes(b"reachable only by following the link")
+    folder.mkdir()
+    (folder / "sub").symlink_to(real_sub, target_is_directory=True)
+
+    with pytest.raises(SubmissionInputError, match="redirect"):
+        with inventory.open_submission_source(folder, "sub/page.png"):
+            pass
+
+
+@pytest.mark.parametrize(
+    "requested", ["../outside.png", "/etc/passwd", "", "a/./b.png", "a//b.png"]
+)
+def test_reopening_refuses_anything_that_is_not_a_plain_relative_name(tmp_path, requested):
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    with pytest.raises(SubmissionInputError, match="plain relative filename"):
+        with inventory.open_submission_source(folder, requested):
+            pass
+
+
+def test_reopening_a_name_with_an_embedded_nul_is_a_named_refusal_not_a_crash(tmp_path):
+    """No real directory listing can produce this; only a forged manifest row can.
+
+    `os.open` raises a bare `ValueError` for an embedded NUL, which is not this
+    project's alarm vocabulary. Left unguarded, that error is not caught by any
+    handler above `open_submission_source`, so it does not merely refuse the one
+    forged source -- it crashes the whole run mid-submission.
+    """
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    with pytest.raises(SubmissionInputError, match="NUL byte"):
+        with inventory.open_submission_source(folder, "a\x00b"):
+            pass
+
+
+def test_an_atomic_replacement_of_the_name_leaves_the_held_descriptor_admissible(tmp_path):
+    """Replacing the *name* is not a change to the bytes this descriptor holds.
+
+    `assert_unchanged` exists to catch a source rewritten under the reader, not to
+    re-litigate the pathname race the anchored descriptor already closed. An
+    `os.replace` unlinks this inode's name and can move its ctime; the open inode
+    still holds exactly the bytes that were hashed, so refusing here would discard
+    a correct read and reintroduce the very race the stream exists to avoid.
+    """
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    (folder / "page.png").write_bytes(b"original bytes")
+    replacement = tmp_path / "replacement.png"
+    replacement.write_bytes(b"different bytes entirely")
+
+    with inventory.open_submission_source(folder, "page.png") as opened:
+        os.replace(replacement, folder / "page.png")
+        assert opened.handle.read() == b"original bytes"
+        opened.assert_unchanged(expected_sha256=hashlib.sha256(b"original bytes").hexdigest())
+
+
+def test_a_rewrite_disguised_as_a_name_replacement_is_refused_by_the_ledgered_digest(tmp_path):
+    """The name-replacement exemption cannot be worn by a rewrite.
+
+    Every stat field the exemption tests can be forged at once: rewrite the held
+    inode with the same byte count, restore its mtime with `utime`, then unlink one
+    of its names so the link count drops exactly as an `os.replace` would. Device,
+    inode, mode, size, mtime and the link delta then all match a benign replacement,
+    and ctime -- the only field left -- moves for the legitimate case too. Content is
+    the only thing that separates them, so the ledgered digest is what refuses.
+    """
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    source = folder / "page.png"
+    source.write_bytes(b"original bytes!")
+    ledgered = hashlib.sha256(b"original bytes!").hexdigest()
+    # A second name for the same inode, so unlinking one leaves the descriptor's
+    # inode alive with `links - 1` -- the shape the exemption admits.
+    os.link(source, folder / "second-name.png")
+
+    with inventory.open_submission_source(folder, "page.png") as opened:
+        before = os.fstat(opened._descriptor)
+        assert opened.handle.read() == b"original bytes!"
+        time.sleep(0.01)
+        with open(source, "r+b") as writable:
+            writable.write(b"changed! bytes!")
+        os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+        os.unlink(folder / "second-name.png")
+
+        after = os.fstat(opened._descriptor)
+        assert after.st_ino == before.st_ino
+        assert after.st_size == before.st_size
+        assert after.st_mtime_ns == before.st_mtime_ns
+        assert after.st_nlink == before.st_nlink - 1
+
+        # Without the ledgered digest this is indistinguishable from an ordinary
+        # atomic replacement, which is exactly why the digest is required here.
+        with pytest.raises(SubmissionInputError, match="rewritten while it was being read"):
+            opened.assert_unchanged(expected_sha256=ledgered)
+
+
+def test_a_name_replacement_still_passes_when_the_bytes_match_the_ledger(tmp_path):
+    """The legitimate case survives the stricter check: same bytes, one name gone."""
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    source = folder / "page.png"
+    source.write_bytes(b"original bytes")
+    ledgered = hashlib.sha256(b"original bytes").hexdigest()
+    os.link(source, folder / "second-name.png")
+
+    with inventory.open_submission_source(folder, "page.png") as opened:
+        assert opened.handle.read() == b"original bytes"
+        os.unlink(folder / "second-name.png")
+        opened.assert_unchanged(expected_sha256=ledgered)
+
+
+def test_a_source_rewritten_in_place_under_the_reader_is_a_named_refusal(tmp_path):
+    """The other half: the same inode, different bytes, while it is being read."""
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    source = folder / "page.png"
+    source.write_bytes(b"original bytes")
+
+    with inventory.open_submission_source(folder, "page.png") as opened:
+        assert opened.handle.read() == b"original bytes"
+        source.write_bytes(b"rewritten in place")
+        with pytest.raises(SubmissionInputError, match="changed while it was being read"):
+            opened.assert_unchanged(expected_sha256=hashlib.sha256(b"original bytes").hexdigest())
+
+
+def test_a_same_size_rewrite_cannot_hide_by_restoring_its_mtime(tmp_path):
+    """Size and mtime alone are not a stable identity; ctime exposes the write."""
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    source = folder / "page.png"
+    source.write_bytes(b"original bytes!")
+
+    with inventory.open_submission_source(folder, "page.png") as opened:
+        before = os.fstat(opened._descriptor)
+        assert opened.handle.read() == b"original bytes!"
+        # Some test filesystems quantize change time; cross one tick so the
+        # regression does not depend on two writes receiving distinct nanoseconds.
+        time.sleep(0.01)
+        source.write_bytes(b"changed! bytes!")
+        os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+        after = os.fstat(opened._descriptor)
+        assert after.st_size == before.st_size
+        assert after.st_mtime_ns == before.st_mtime_ns
+        assert after.st_ctime_ns != before.st_ctime_ns
+        with pytest.raises(SubmissionInputError, match="changed while it was being read"):
+            opened.assert_unchanged(expected_sha256=hashlib.sha256(b"original bytes!").hexdigest())

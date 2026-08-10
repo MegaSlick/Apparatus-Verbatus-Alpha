@@ -21,11 +21,7 @@ from door import SourceEntry, process_sources
 from run import SEAL_SUBJECT, _page_payload
 from synthetic_sources import png
 
-from common.contracts.approval import (
-    ApprovalRecordReference,
-    approval_gated_real_ingress_record,
-    synthetic_fixture_ingress_record,
-)
+from common.contracts.approval import real_ingress_record, synthetic_fixture_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, page_id
@@ -334,26 +330,6 @@ def test_a_door_refusal_carrying_a_free_text_reason_is_refused(tmp_path):
     assert "closed-set code" in result.stderr
 
 
-def test_a_synthetic_run_carrying_approval_evidence_is_refused(tmp_path):
-    """A fixture run that claims it was approval-gated is claiming something that
-    never happened, and the run authority is where that is settled."""
-    tree, _ = build_door_run(tmp_path / "runs")
-    identity = artifact_id(DOOR, "admission", "source-1")
-    path = tree.resolve(tree.artifact_path(DOOR, "admission", identity))
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["data_gate_approval_ref"] = {
-        "relative_path": f"receipts/sha256/{'a' * 64}.json",
-        "sha256": "a" * 64,
-    }
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    tree.write_manifest(DOOR)
-
-    result = run_exemplar(tmp_path / "runs")
-    assert result.returncode != 0
-    assert "carry data-gate approval evidence" in result.stderr
-
-
 def test_the_exemplar_refuses_a_run_the_door_never_wrote(tmp_path):
     bindings = sealed_bindings()
     RunTree.create(
@@ -386,14 +362,13 @@ def test_a_run_with_no_submitted_source_manifest_cannot_be_reconciled_at_all():
 
 def test_a_real_run_source_manifest_reconstructs_its_self_hashed_filename_ledger():
     """The run authority retains the original-name/digest ledger, not a second list."""
-    reference = ApprovalRecordReference(f"receipts/sha256/{'a' * 64}.json", "a" * 64)
     files = [
         {"relative_path": "FS-101.png", "sha256": "1" * 64, "bytes": 123},
         {"relative_path": "volume/FS-102.pdf", "sha256": "2" * 64, "bytes": 456},
     ]
-    ledger = submit.build_manifest(files, authorized_by=reference.to_record())
+    ledger = submit.build_manifest(files)
     run = {
-        "ingress": approval_gated_real_ingress_record("b" * 64, reference),
+        "ingress": real_ingress_record(),
         "source_manifest": [
             {
                 **files[0],

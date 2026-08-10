@@ -85,9 +85,22 @@ def test_the_shipped_decoder_routes_name_readers_not_formats_to_refuse():
 
 
 def test_the_decoder_routes_cover_exactly_the_formats_the_door_can_detect():
-    """The map is derived from the sniffer, so no format can route by omission."""
+    """The map is derived from the sniffer, so no format can route by omission.
+
+    `set(POLICY) == SNIFFABLE_FORMATS` and `POLICY == FORMAT_ROUTES` alone would
+    compare `load_format_policy()`'s output against the exact object it is built
+    from (`dict(FORMAT_ROUTES)`), which can only ever agree with itself. Sniffing
+    real signature bytes and routing the result is what actually exercises
+    `sniff()` and `classify_detected_format()` together, so a regression in
+    either function -- not only in a shared definition -- would show here.
+    """
     assert set(POLICY) == SNIFFABLE_FORMATS
     assert POLICY == FORMAT_ROUTES
+    for name, signatures in image_formats._SIGNATURES:
+        for signature in signatures:
+            detected = image_formats.sniff(signature + b"\x00" * 16)
+            assert detected == name
+            assert classify_detected_format(detected, POLICY) == POLICY[name]
 
 
 def test_a_reader_route_does_not_require_a_bespoke_structural_walker():
