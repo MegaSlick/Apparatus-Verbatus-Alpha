@@ -1735,6 +1735,28 @@ def test_an_unreadable_spend_policy_never_stops_a_close(tmp_path: Path) -> None:
     assert close["spend_policy_error"] is not None
 
 
+def test_the_combined_price_preview_line_is_rounded_to_cents(tmp_path: Path) -> None:
+    """Money on the one screen a person confirms against must read as money.
+
+    The unrounded `Decimal` division (`$0.77/hr` pod + `$0.05/hr` volume over
+    900 seconds) is exactly `$0.2050` — four decimal places, immediately
+    before a non-programmer is asked to type a paid confirmation. The
+    confirmation phrase is derived from the two hourly rates shown just
+    above this line, never from this total, so rounding the display cannot
+    weaken what the typed confirmation actually authorizes.
+    """
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+
+    combined_line = next(line for line in messages if line.startswith("- Combined estimated cost"))
+    assert combined_line == "- Combined estimated cost through the hard lifetime: $0.21"
+
+    result = surface.launch(prepared, prepared.confirmation_phrase)
+    assert result.green
+
+
 def test_a_price_that_moves_after_the_screen_is_named_a_price_change(tmp_path: Path) -> None:
     """The operator typed a phrase built from prices they read. If the provider's
     price has moved by the time the paid call happens, they are told that — not

@@ -14,7 +14,7 @@ import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -1073,7 +1073,8 @@ class OperatorSurface:
         self.present(f"- Pod hourly price: ${assessment.estimate.pod_hourly_usd}")
         self.present(f"- Attached-volume hourly price: ${assessment.estimate.volume_hourly_usd}")
         self.present(
-            f"- Combined estimated cost through the hard lifetime: ${assessment.estimated_total_cost_usd}"
+            "- Combined estimated cost through the hard lifetime: "
+            f"${_display_usd(assessment.estimated_total_cost_usd)}"
         )
         if assessment.policy.configured:
             self.present(f"- Hourly ceiling: ${assessment.policy.max_hourly_usd}")
@@ -1726,6 +1727,18 @@ def _armarium_reference(run_root: Path, run_id: str) -> str:
 
 def _run_program(*args, **kwargs) -> subprocess.CompletedProcess[str]:  # type: ignore[no-untyped-def]
     return subprocess.run(*args, **kwargs)
+
+
+def _display_usd(amount: Decimal) -> str:
+    """Round a dollar amount to two places for the screen a person reads.
+
+    Display only — the stored record keeps the exact `Decimal`, and the paid
+    confirmation phrase is derived from the two hourly rates shown just above
+    this line, never from this total, so rounding it here cannot weaken what
+    the typed confirmation actually authorizes.
+    """
+
+    return str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def _human_duration(seconds: int) -> str:
