@@ -141,9 +141,7 @@ def test_a_rename_failure_at_publish_does_not_orphan_the_staging_directory(
     import bundle as bundle_module
 
     parser = stage_parser("test")
-    args = parser.parse_args(
-        ["--run-root", str(happy_run), "--run-id", "r", "--scenario", "happy"]
-    )
+    args = parser.parse_args(["--run-root", str(happy_run), "--run-id", "r", "--scenario", "happy"])
     context = open_context(args, ARMARIUM)
 
     def _boom(_src, _dst):
