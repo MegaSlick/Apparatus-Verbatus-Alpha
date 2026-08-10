@@ -685,11 +685,11 @@ class OperatorSurface:
             raise OperatorError(ErrorCode.RUN_FAILED, detail=f"Saved run receipt: {receipt}")
         try:
             export_payload = self._armarium_export(run_root, run_id)
+            aggregate = export_payload["aggregate"]
+            state = str(aggregate["status"])
         except Exception as error:
             self._record_failure("run", "armarium-record-unreadable", str(error))
             raise OperatorError(ErrorCode.RUN_FAILED, detail=str(error)) from error
-        aggregate = export_payload["aggregate"]
-        state = str(aggregate["status"])
         receipt = self._write_action(
             "run",
             {
@@ -748,8 +748,8 @@ class OperatorSurface:
                 ErrorCode.EXPORT_MISSING,
                 detail="that run is not the run recorded for this operator session",
             )
-        run_root = Path(str(run_record["run_root"]))
         try:
+            run_root = Path(str(run_record["run_root"]))
             export_payload = self._armarium_export(run_root, recorded_id)
         except Exception as error:
             raise OperatorError(ErrorCode.EXPORT_MISSING, detail=str(error)) from error

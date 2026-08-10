@@ -1123,6 +1123,52 @@ def test_refuse_if_active_pod_names_the_specific_reason_it_could_not_check_safel
     assert "injected lease read failure for this test" in failure.value.render()
 
 
+def test_a_run_whose_recorded_aggregate_has_no_status_fails_as_run_failed_not_unexpected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed Armarium export record must reach the named `run` failure code.
+
+    `aggregate["status"]` and (below) `run_record["run_root"]` sat outside any
+    local try, so a missing key there raised a bare `KeyError` that only the
+    CLI's outermost catch-all could reach — reported as `UNEXPECTED` instead of
+    the code the rest of this failure path already uses and whose copy
+    actually names the right next step.
+    """
+
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {}
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="broken-aggregate")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "status" in failure.value.render()
+
+
+def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_not_unexpected(
+    tmp_path: Path,
+) -> None:
+    """The same class of bug as above, on `export`'s own read of the run receipt."""
+
+    surface = _surface(tmp_path)
+    surface._write_action(
+        "run",
+        {"summary": "test run record with no run_root", "run_id": "broken-run-root"},
+        descriptor_action="run",
+    )
+
+    with pytest.raises(OperatorError) as failure:
+        surface.export(run_id="broken-run-root")
+
+    assert failure.value.code is ErrorCode.EXPORT_MISSING
+    assert "run_root" in failure.value.render()
+
+
 def test_console_entry_renders_an_application_import_failure(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
