@@ -2237,7 +2237,9 @@ def test_prepare_log_root_is_owner_only_regardless_of_umask_or_prior_mode(
     loose.mkdir(mode=0o755)
     prepared_again = _prepare_log_root(loose)
     mode_again = stat.S_IMODE(prepared_again.stat().st_mode)
-    assert mode_again == 0o700, f"expected a pre-existing directory tightened, got {oct(mode_again)}"
+    assert mode_again == 0o700, (
+        f"expected a pre-existing directory tightened, got {oct(mode_again)}"
+    )
 
 
 def test_serving_recipe_and_placement_bytes_are_bound_into_the_run_configuration_digest(
