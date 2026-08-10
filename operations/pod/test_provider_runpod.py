@@ -58,6 +58,9 @@ def request(**overrides: object) -> PodCreateRequest:
             "--timer-factory",
             "operations.pod.provider_runpod:timer_context_from_environment",
             "--bootstrap-command-json",
+            # PLACEHOLDER: bootstrap.py has no __main__ and exits 0 immediately.
+            # Not a template for a real request file -- see test_pod_runtime.py's
+            # request() fixture.
             '["python","-m","operations.pod.bootstrap"]',
             "--report-path",
             f"/workspace/private/pod-runtime-report-{TOKEN}.json",

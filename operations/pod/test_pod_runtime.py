@@ -219,6 +219,10 @@ def request(clock: Clock, *, gpu: str = "fake-48gb", lifetime: int = 300) -> Pod
             "--timer-factory",
             "operations.pod.provider_runpod:timer_context_from_environment",
             "--bootstrap-command-json",
+            # PLACEHOLDER: bootstrap.py is a library module with no __main__, so
+            # this exits 0 immediately.  Tests rely on that to drill the
+            # completed-early close path; it is not a template for a real
+            # request file, which needs a long-running bootstrap/service entrypoint.
             '["python","-m","operations.pod.bootstrap"]',
             "--report-path",
             "/workspace/private/pod-runtime-report.json",
