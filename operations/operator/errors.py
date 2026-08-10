@@ -302,21 +302,22 @@ def strip_control_bytes(value: str) -> str:
 def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     """Keep implementation wording and tracebacks out of the human message.
 
-    Called in exactly two situations, and applying it anywhere else is a second
-    spelling of one idea: `render` calls it on the way to a person, so a raise
-    site passes its detail through raw; and the two call sites that *persist* a
-    detail into a receipt call it themselves, because a receipt is never
-    rendered. Sanitizing twice is not merely redundant — it would append the
-    truncation marker below to text that already carries one.
+    Called in exactly one place: `render`, on the way to a person. A raise site
+    passes its detail through raw, and so does every site that persists a
+    detail into a receipt — a receipt is never rendered, and a person never
+    reads it through this function, so shortening or rewriting its text before
+    it is saved would discard the one copy of the diagnostic that exists
+    anywhere. Calling this anywhere but `render` is a second spelling of one
+    idea, and for a persist site it is worse than redundant: it can throw away
+    evidence GOVERNANCE 2 requires to still be visibly there.
 
     `maximum` stays generous rather than terminal-width-sized: a workspace
     nested inside a synced cloud-drive folder can easily produce a receipt
     path several hundred characters long, and truncating that away would
     silently break the "preserve this message and its saved receipt path"
     instruction most of these error codes give. Where the cut still happens it
-    is named: two call sites persist this text into a receipt, and a stored
-    fragment that reads as a whole diagnostic is exactly the partial result
-    GOVERNANCE 2 requires to be visibly partial.
+    is named, because a rendered fragment that reads as a whole diagnostic is
+    exactly the partial result GOVERNANCE 2 requires to be visibly partial.
     """
 
     compact = strip_control_bytes(" ".join(value.split()))
@@ -324,14 +325,35 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
         return "no additional detail was recorded"
     if "traceback" in compact.lower():
         return "a technical detail was saved locally; this step was not called complete"
-    for pattern, replacement in (
-        (r"\bshutdown\b", "close"),
-        (r"\btermination\b", "close"),
-        (r"\bterminate(?:d|s|ing)?\b", "close"),
-        (r"\bstop(?:ped|s|ping)?\b", "paused"),
-    ):
-        compact = re.sub(pattern, replacement, compact, flags=re.IGNORECASE)
+    compact = " ".join(_translate_close_vocabulary(word) for word in compact.split(" "))
     if len(compact) <= maximum:
         return compact
     marker = f" … (detail truncated at {maximum} characters)"
     return compact[:maximum] + marker
+
+
+_CLOSE_VOCABULARY: Final = (
+    (re.compile(r"\bshutdown\b", re.IGNORECASE), "close"),
+    (re.compile(r"\btermination\b", re.IGNORECASE), "close"),
+    (re.compile(r"\bterminate(?:d|s|ing)?\b", re.IGNORECASE), "close"),
+    (re.compile(r"\bstop(?:ped|s|ping)?\b", re.IGNORECASE), "paused"),
+)
+
+
+def _translate_close_vocabulary(word: str) -> str:
+    """Rewrite old close vocabulary in one prose word, never inside a path.
+
+    A path segment is exactly the substring this rewrite must not touch — a
+    receipt path with "stop" or "shutdown" in one of its directory names is
+    not prose to translate, it is an identifier a person needs intact to find
+    the file again, and this module's own detail contract asks a raise site to
+    "preserve this message and its saved receipt path". `/` and `\\` are the
+    only reliable signal, in text this general, that a word is a path segment
+    rather than a sentence.
+    """
+
+    if "/" in word or "\\" in word:
+        return word
+    for pattern, replacement in _CLOSE_VOCABULARY:
+        word = pattern.sub(replacement, word)
+    return word

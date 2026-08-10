@@ -58,7 +58,6 @@ from operations.submit import submit as submission_door
 
 from . import notify_bridge
 from .errors import ErrorCode, OperatorError, strip_control_bytes
-from .errors import sanitize_detail as _detail
 from .fakes import LocalFixtureObjectStore
 from .notify_bridge import Notifier
 from .records import DescriptorStore, ReceiptStore, RecordError, sha256_file, utc_stamp
@@ -679,7 +678,7 @@ class OperatorSurface:
                     "run_id": run_id,
                     "scenario": scenario,
                     "fixture": fixture,
-                    "detail": _detail(completed.stderr or completed.stdout),
+                    "detail": completed.stderr or completed.stdout,
                 },
                 descriptor_action="run",
             )
@@ -890,7 +889,7 @@ class OperatorSurface:
                     "close_report": report.to_record(),
                     "lease_reconciled": False,
                     "lease": str(lease_store.path),
-                    "lease_record_error": _detail(str(error)),
+                    "lease_record_error": str(error),
                 },
                 descriptor_action="close",
             )

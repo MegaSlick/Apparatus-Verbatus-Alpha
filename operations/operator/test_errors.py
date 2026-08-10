@@ -94,6 +94,23 @@ def test_old_close_vocabulary_is_replaced_even_without_the_word_traceback() -> N
     assert "paused" in rendered
 
 
+def test_a_path_segment_survives_the_close_vocabulary_rewrite_unmangled() -> None:
+    """A receipt path is an identifier, not prose, and must come out byte-true.
+
+    The words this rewrite targets are ordinary English and can legitimately
+    appear inside a directory or file name the operator chose, not only inside
+    the pipeline's own composed sentences. Rewriting "stop" to "paused" inside
+    a path corrupts the exact instruction — "preserve this message and its
+    saved receipt path" — this function exists to keep true.
+    """
+
+    rendered = errors.sanitize_detail(
+        "a technical detail was saved locally at /home/x/stop/terminated-run.log"
+    )
+
+    assert "/home/x/stop/terminated-run.log" in rendered
+
+
 def test_stripping_control_bytes_changes_nothing_else_about_a_line() -> None:
     """The output channel needs the strip without the detail-only rewriting.
 
@@ -109,9 +126,9 @@ def test_stripping_control_bytes_changes_nothing_else_about_a_line() -> None:
 
 
 def test_a_detail_too_long_to_keep_says_it_was_cut() -> None:
-    """Two call sites persist this text into a receipt, not just onto a terminal.
+    """This text reaches a person through `render`, never a stored receipt.
 
-    A stored fragment that reads as a whole diagnostic is the partial result
+    A rendered fragment that reads as a whole diagnostic is the partial result
     GOVERNANCE 2 requires to be visibly partial.
     """
 
