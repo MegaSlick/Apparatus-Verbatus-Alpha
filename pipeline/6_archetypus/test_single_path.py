@@ -282,6 +282,64 @@ def test_a_witness_basis_reference_the_reading_never_input_cannot_establish(tmp_
     assert "not a digest-checked direct input" in result.stderr
 
 
+def test_a_region_carrying_an_extra_field_cannot_enter_the_record(tmp_path):
+    """The closed field set has to reach inside `regions`, or it answers nothing.
+
+    A region is embedded from the reading verbatim, self-hashed into the record,
+    and copied field-for-field into the terminal export. So the record's own
+    top-level closed schema — advertised as the mechanical answer to "is there a
+    second text-bearing field?" — used to say nothing about the one sub-object it
+    embeds whole. `consolidated_literal` is the first name in the old pipeline's
+    dead fallback chain, and it travelled: into the sealed record, past the
+    Armarium, into the delivered export beside the established text.
+    """
+
+    def smuggle(payload):
+        regions = [dict(region) for region in payload["basis"]["regions"]]
+        regions[0]["consolidated_literal"] = "A SECOND READING NOBODY ESTABLISHED"
+        payload["basis"] = dict(payload["basis"], regions=regions)
+
+    result = _archetypus_after(tmp_path, smuggle)
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "outside the closed region schema" in result.stderr
+    assert "consolidated_literal" in result.stderr
+
+
+def test_a_region_missing_one_of_its_crop_facts_cannot_enter_the_record(tmp_path):
+    """Closed both ways: an absent field is refused as loudly as an extra one."""
+
+    def strip(payload):
+        regions = [dict(region) for region in payload["basis"]["regions"]]
+        del regions[0]["verified_dimensions"]
+        payload["basis"] = dict(payload["basis"], regions=regions)
+
+    result = _archetypus_after(tmp_path, strip)
+    assert result.returncode == 2, result.stderr
+    assert "verified_dimensions" in result.stderr
+
+
+def test_a_region_declaring_a_digest_its_crop_does_not_have_cannot_establish(tmp_path):
+    """The one stage that makes the record immutable used to check neither side.
+
+    The Recensor checks a declared crop digest against the Designator's own
+    region record; the Armarium checks it against the crop bytes at export. In
+    between, this stage sealed whatever the reading declared — so a record could
+    be written, write-once, naming ink it does not point at, and the run could
+    then only be abandoned rather than repaired.
+    """
+
+    def relabel(payload):
+        regions = [dict(region) for region in payload["basis"]["regions"]]
+        regions[0]["image_sha256"] = "f" * 64
+        payload["basis"] = dict(payload["basis"], regions=regions)
+
+    result = _archetypus_after(tmp_path, relabel)
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "naming ink it does not point at" in result.stderr
+
+
 def test_one_crop_named_by_two_regions_is_named_once_among_the_direct_inputs(tmp_path):
     """Two regions may legitimately resolve to one blob, and the envelope refuses
     a path listed twice. Blobs are content-addressed, so a recovery crop whose

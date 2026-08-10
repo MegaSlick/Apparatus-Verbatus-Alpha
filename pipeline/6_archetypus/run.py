@@ -142,6 +142,25 @@ _RECORD_FIELDS = frozenset(
     }
 )
 
+# One basis region's whole field set, closed. Exactly what the shared crop
+# verification returns to the Perlector (`common/exemplar_boundary.py`), plus the
+# `witness_covered` flag the Perlector adds to each before sealing its basis.
+# Named here rather than derived, so a producer that starts writing a tenth field
+# is refused at this boundary and read by a person, instead of travelling sealed.
+_REGION_FIELDS = frozenset(
+    {
+        "region_id",
+        "image_path",
+        "image_sha256",
+        "verified_dimensions",
+        "source_page_ordinal",
+        "source_page_id",
+        "transform",
+        "structure_provenance",
+        "witness_covered",
+    }
+)
+
 _INDEX_ROW_FIELDS = frozenset(
     {"act_id", "act_key", "artifact_id", "text_status", "text_hash", "relative_path", "sha256"}
 )
@@ -668,23 +687,57 @@ def _no_readable_text_evidence(review: dict) -> dict[str, str] | None:
     return reference
 
 
-def _crop_input(context, image_path: str, act_id: str) -> dict[str, str]:
-    """A digest-checked reference to one crop the accepted reading names.
+def _crop_references(context, regions: list[dict], act_id: str) -> list[dict[str, str]]:
+    """Close the regions this record will carry, and prove each crop by its bytes.
 
-    `input_ref` hashes the bytes on disk, so a crop the reading names but the
-    tree does not hold raises `OSError` from inside a list comprehension —
-    outside the `ContractError` family `run_stage` classifies, so the whole run
-    ends in a traceback and exit 1 rather than one refused act and exit 2. A
-    missing crop is an ordinary accounting failure (an interrupted copy, a
-    pruned blob) as much as a forged one, and it is named as such here.
+    **The closed field set.** `regions` is embedded from the reading verbatim and
+    self-hashed into the record, so the record's own top-level closed schema —
+    the mechanical answer to "is there a second text-bearing field?" — says
+    nothing about what is inside one. It is an allowlist for the reason
+    `validate_serving_provenance` gives for provenance: a denylist passes
+    whatever a later producer invents, and an unvalidated field inside a sealed
+    record is a field nothing can trust. Extras are refused rather than dropped,
+    because the Armarium compares this list to the reading's own for exact
+    equality; filtering here would refuse a legitimate act at export instead.
+
+    **The crop digest.** The Recensor checks a region's declared `image_sha256`
+    against the Designator's own record, and the Armarium checks it against the
+    crop bytes before exporting. Between them sits the stage that makes the
+    record immutable, and it checked neither: a record could be sealed naming a
+    digest its own crop does not have, and — being write-once — could then never
+    be repaired, only abandoned with the whole run.
+
+    A crop the tree cannot read is named here too. `input_ref` hashes the bytes
+    on disk, so `OSError` would otherwise escape the `ContractError` family
+    `run_stage` classifies: a bare traceback and exit 1, taking every other act's
+    record with it, for what is as often a pruned blob as a forged reading.
     """
-    try:
-        return context.input_ref(image_path)
-    except OSError as error:
-        raise FatalAccounting(
-            f"accepted reading of {act_id} names crop {image_path!r}, which this run tree "
-            f"cannot read: {error}"
-        ) from error
+    references = []
+    for index, region in enumerate(regions):
+        label = f"accepted reading of {act_id} region {index}"
+        unexpected = sorted(set(region) - _REGION_FIELDS)
+        missing = sorted(_REGION_FIELDS - set(region))
+        if unexpected or missing:
+            raise SchemaRefusal(
+                f"{label} is outside the closed region schema (missing {missing}, unexpected "
+                f"{unexpected}); a region travels into this record and out through the export "
+                "whole, so a field beside the crop facts is a second unvalidated payload"
+            )
+        image_path = region["image_path"]
+        try:
+            reference = context.input_ref(image_path)
+        except OSError as error:
+            raise FatalAccounting(
+                f"{label} names crop {image_path!r}, which this run tree cannot read: {error}"
+            ) from error
+        if region["image_sha256"] != reference["sha256"]:
+            raise FatalAccounting(
+                f"{label} declares crop digest {region['image_sha256']!r} but the bytes at "
+                f"{image_path!r} hash to {reference['sha256']!r}; the record would be sealed, "
+                "immutably, naming ink it does not point at"
+            )
+        references.append(reference)
+    return references
 
 
 def _direct_inputs(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -720,6 +773,9 @@ def establish_from_accepted_primed_perlectio(
     payload, witnesses, regions = accepted_primed_perlectio(
         context, review, reading, reading_ref, act["act_id"]
     )
+    # Before the record exists, not after: these regions are about to be
+    # self-hashed into something write-once.
+    crop_references = _crop_references(context, regions, act["act_id"])
     if "text" not in payload:
         raise SchemaRefusal(
             "the accepted Perlectio has no text field; missing evidence cannot mean blank"
@@ -784,11 +840,7 @@ def establish_from_accepted_primed_perlectio(
     # it out here -- and leaving it in would make every future
     # `no_readable_text` record unexportable the day a real blank-proof
     # reference stops coinciding with `reading_ref`.
-    inputs = _direct_inputs(
-        [review_ref, reading_ref],
-        [_crop_input(context, region["image_path"], act["act_id"]) for region in regions],
-    )
-    return record, inputs
+    return record, _direct_inputs([review_ref, reading_ref], crop_references)
 
 
 # --- index.json: a rebuildable manifest, reconciled against the accepted acts ---
