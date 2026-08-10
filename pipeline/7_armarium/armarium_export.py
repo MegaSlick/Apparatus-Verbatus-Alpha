@@ -40,6 +40,10 @@ from common.contracts.stages import ARMARIUM
 from common.imaging import dimensions
 
 EXPORT_MANIFEST_NAME: Final = "EXPORT_MANIFEST.json"
+# The one name for the published archive, shared by run.py (which records it in the
+# export payload) and bundle.py (which writes the file under it), so the two cannot
+# drift into naming two different files the same product.
+ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v1"
 ACT_RECORD_SCHEMA: Final = "armarium-act.v1"
 SOURCES_SCHEMA: Final = "armarium-sources.v1"

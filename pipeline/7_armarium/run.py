@@ -30,7 +30,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # `pipeline/orchestrator/test_terminal_guards.py` loads this file exactly that way.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from armarium_export import ArmariumProjection, build_armarium_bundle  # noqa: E402
+from armarium_export import (  # noqa: E402
+    ARMARIUM_ARCHIVE_NAME,
+    ArmariumProjection,
+    build_armarium_bundle,
+)
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes, verify_self_hash  # noqa: E402
@@ -779,7 +783,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "witness_chairs": context.witness_chairs,
             "witness_floor": context.witness_floor,
             "bundle": {
-                "filename": "armarium-export.zip",
+                "filename": ARMARIUM_ARCHIVE_NAME,
                 "format": "zip",
                 "reference": bundle_ref,
                 "sha256": bundle_digest,

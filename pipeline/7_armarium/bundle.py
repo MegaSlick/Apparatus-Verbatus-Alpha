@@ -28,6 +28,7 @@ The destination gets `armarium-export.zip`, byte-identical to the sealed blob, a
 without a zip tool and the two can be compared.
 """
 
+import contextlib
 import os
 import shutil
 import sys
@@ -37,7 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from armarium_export import verify_export_bundle  # noqa: E402
+from armarium_export import ARMARIUM_ARCHIVE_NAME, verify_export_bundle  # noqa: E402
 
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
@@ -45,7 +46,7 @@ from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.stages import ARMARIUM  # noqa: E402
 from common.stage import EXIT_COMPLETE, open_context, run_stage, stage_parser  # noqa: E402
 
-ARCHIVE_NAME = "armarium-export.zip"
+ARCHIVE_NAME = ARMARIUM_ARCHIVE_NAME
 EXTRACTION_NAME = "bundle"
 
 
@@ -68,7 +69,10 @@ def sealed_bundle(context) -> tuple[bytes, dict]:
     declared = record["payload"].get("bundle", {}).get("sha256")
     if not isinstance(reference, dict) or not isinstance(declared, str):
         raise ContractError("the export artifact names no sealed product bundle")
-    data = context.tree.read_bytes(reference["relative_path"])
+    relative_path = reference.get("relative_path")
+    if not isinstance(relative_path, str):
+        raise ContractError("the export artifact names no sealed product bundle")
+    data = context.tree.read_bytes(relative_path)
     if digest_bytes(data) != declared or reference.get("sha256") != declared:
         raise ContractError(
             "the sealed product bundle no longer matches the digest its export "
@@ -78,25 +82,50 @@ def sealed_bundle(context) -> tuple[bytes, dict]:
 
 
 def publish(context, out_dir: Path) -> dict:
-    """Verify the sealed bundle and put it at `out_dir`, atomically or not at all."""
-    if out_dir.exists() or out_dir.is_symlink():
+    """Verify the sealed bundle and put it at `out_dir`, atomically or not at all.
+
+    The destination is *reserved* with `mkdir` before any of the read, verify and
+    write work below runs, rather than merely checked and trusted. A plain
+    existence check followed by that work leaves a real window in which a second
+    publish -- or anything else -- can create the destination in between; `mkdir`
+    is atomic at the filesystem level, so there is no such window, and it refuses
+    a symlink (broken or not) at this path exactly as the check it replaces did.
+    """
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        out_dir.mkdir()
+    except OSError as error:
         raise ContractError(
             f"{out_dir} already exists; an export destination is never reused or merged "
             "into, so a half-written publication can never be mistaken for a whole one"
-        )
-    data, payload = sealed_bundle(context)
-    out_dir.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}.publishing-", dir=str(out_dir.parent)))
+        ) from error
     try:
-        # Verified into the staging directory, from the bytes alone, exactly as a
-        # recipient with no run tree would: if it does not survive that, it is not a
-        # product to publish and the destination stays absent.
-        manifest = verify_export_bundle(data, staging / EXTRACTION_NAME)
-        (staging / ARCHIVE_NAME).write_bytes(data)
+        data, payload = sealed_bundle(context)
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{out_dir.name}.publishing-", dir=str(out_dir.parent))
+        )
+        try:
+            # Verified into the staging directory, from the bytes alone, exactly as a
+            # recipient with no run tree would: if it does not survive that, it is not a
+            # product to publish and the destination stays absent.
+            manifest = verify_export_bundle(data, staging / EXTRACTION_NAME)
+            (staging / ARCHIVE_NAME).write_bytes(data)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        # `out_dir` was reserved empty above, and `replace` atomically swaps an
+        # empty directory for `staging` -- the same atomic operation the module
+        # docstring already names, now also the one thing that ever populates the
+        # reservation.
+        os.replace(staging, out_dir)
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        # Every failure above re-raises before `os.replace` runs, so `out_dir` is
+        # still exactly the empty reservation created at the top of this
+        # function. Remove it so a failed publish leaves no destination at all,
+        # not an empty one -- the guarantee this function has always documented.
+        with contextlib.suppress(OSError):
+            out_dir.rmdir()
         raise
-    os.replace(staging, out_dir)
     return {
         "archive": ARCHIVE_NAME,
         "extraction": EXTRACTION_NAME,
