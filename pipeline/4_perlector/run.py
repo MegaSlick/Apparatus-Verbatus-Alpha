@@ -413,6 +413,33 @@ _LECTIO_NUDA_FIELDS: Final = frozenset(
     }
 )
 
+# The two shapes a Perlectio takes when nothing was read: a held act (the
+# proposal never completed) and an explicitly absent chair. Both predate the
+# closed-schema guard the other two record kinds already carry -- D-6: the
+# record that says *why nothing was read* deserves the same guard as the one
+# that says what was, so a future edit that quietly drops `provenance` from
+# either shape is refused rather than published.
+_NOT_RUN_HELD_FIELDS: Final = frozenset({"act_key", "attempt_ordinal", "reason", "provenance"})
+_NOT_RUN_ABSENT_FIELDS: Final = frozenset(
+    {"act_key", "attempt_ordinal", "reason", "basis", "dissent", "provenance"}
+)
+
+
+def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
+    """Refuse a not-run Perlectio missing part of the record it claims.
+
+    Deliberately just the closed field set, not full record validation: a
+    not-run payload has no text, no dossier and no completed reading to check
+    against each other -- there is nothing else about it to validate.
+    """
+    missing = sorted(fields - set(payload))
+    unexpected = sorted(set(payload) - fields)
+    if missing or unexpected:
+        raise SchemaRefusal(
+            f"a Perlector not-run payload is not its closed schema: missing {missing}, "
+            f"unexpected {unexpected}"
+        )
+
 
 def validate_reading_payload(payload: dict, *, outcome: str, fields: frozenset) -> None:
     """Refuse a reading payload that is missing part of the record it claims.
@@ -651,21 +678,23 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # truncation is a failure, not an output. The act is acknowledged
             # with an explicit unresolved outcome rather than skipped, because
             # a unit this stage never mentions is invariant #10's imbalance.
+            payload = {
+                "act_key": act["act_key"],
+                "attempt_ordinal": 1,
+                "reason": (
+                    "the Designator held this act; an incomplete proposal is "
+                    "not read, because a reading of part of an act would be a "
+                    "truncation delivered as an output"
+                ),
+                "provenance": provenance_for(context, chair, attempted=False),
+            }
+            validate_not_run_payload(payload, fields=_NOT_RUN_HELD_FIELDS)
             context.publish(
                 kind="perlectio",
                 subject_id=act_id,
                 outcome="not-run",
                 attempt=attempt_id(act_id, "perlegere", 1),
-                payload={
-                    "act_key": act["act_key"],
-                    "attempt_ordinal": 1,
-                    "reason": (
-                        "the Designator held this act; an incomplete proposal is "
-                        "not read, because a reading of part of an act would be a "
-                        "truncation delivered as an output"
-                    ),
-                    "provenance": provenance_for(context, chair, attempted=False),
-                },
+                payload=payload,
             )
             acknowledged += 1
             continue
@@ -675,19 +704,21 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # No chair to read with. Every act still gets an explicit record
             # naming the absence: a stage that simply produced nothing would
             # leave the Recensor to infer a gap it cannot see.
+            payload = {
+                "act_key": act["act_key"],
+                "attempt_ordinal": ordinal,
+                "reason": f"the Perlector chair is explicitly absent: {chair.reason}",
+                "basis": {"regions": [], "testimonia": []},
+                "dissent": [],
+                "provenance": provenance_for(context, chair, attempted=False),
+            }
+            validate_not_run_payload(payload, fields=_NOT_RUN_ABSENT_FIELDS)
             context.publish(
                 kind="perlectio",
                 subject_id=act_id,
                 outcome="not-run",
                 attempt=attempt_id(act_id, "perlegere", ordinal),
-                payload={
-                    "act_key": act["act_key"],
-                    "attempt_ordinal": ordinal,
-                    "reason": f"the Perlector chair is explicitly absent: {chair.reason}",
-                    "basis": {"regions": [], "testimonia": []},
-                    "dissent": [],
-                    "provenance": provenance_for(context, chair, attempted=False),
-                },
+                payload=payload,
             )
             acknowledged += 1
             continue

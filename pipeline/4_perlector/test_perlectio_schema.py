@@ -264,3 +264,106 @@ def test_an_unexpected_field_is_refused_as_loudly_as_a_missing_one(published_pay
     payload["preferred_witness"] = "attestator_1"
     with pytest.raises(SchemaRefusal, match="unexpected"):
         _validate(payload)
+
+
+# --- D-6: the two not-run shapes get the same closed-schema guard ------------
+
+
+@pytest.fixture(scope="module")
+def held_not_run_payload(tmp_path_factory):
+    """A real published held-act Perlectio, not a hand-built stand-in.
+
+    `refused-page` loses page 2 at the door, so a2's proposal never completes
+    and the Perlector acknowledges it without reading -- the "held" not-run
+    shape (`_NOT_RUN_HELD_FIELDS`).
+    """
+    root = tmp_path_factory.mktemp("perlectio-not-run-held") / "runs"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ORCHESTRATOR),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--scenario",
+            "refused-page",
+            "--run-id",
+            "r",
+            "--run-root",
+            str(root),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(root, "r")
+    entry = next(
+        entry
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio"
+    )
+    record = tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+    assert record["outcome"] == "not-run"
+    return record["payload"]
+
+
+def test_a_real_held_not_run_perlectio_satisfies_the_closed_not_run_schema(
+    held_not_run_payload,
+):
+    perlector.validate_not_run_payload(
+        copy.deepcopy(held_not_run_payload), fields=perlector._NOT_RUN_HELD_FIELDS
+    )
+
+
+@pytest.mark.parametrize("field", ["act_key", "attempt_ordinal", "reason", "provenance"])
+def test_a_held_not_run_perlectio_missing_any_field_is_refused(held_not_run_payload, field):
+    payload = copy.deepcopy(held_not_run_payload)
+    del payload[field]
+    with pytest.raises(SchemaRefusal, match="not its closed schema"):
+        perlector.validate_not_run_payload(payload, fields=perlector._NOT_RUN_HELD_FIELDS)
+
+
+def test_a_held_not_run_perlectio_with_an_unexpected_field_is_refused(held_not_run_payload):
+    payload = copy.deepcopy(held_not_run_payload)
+    payload["basis"] = {"regions": [], "testimonia": []}
+    with pytest.raises(SchemaRefusal, match="unexpected"):
+        perlector.validate_not_run_payload(payload, fields=perlector._NOT_RUN_HELD_FIELDS)
+
+
+def _absent_chair_not_run_payload():
+    """The literal shape `run.py` publishes for an explicitly absent chair --
+    mirrored here rather than driven, because standing up an absent-Perlector-
+    chair fixture run is out of proportion to a low-severity schema-coverage
+    gap; the shape itself is unchanged by this fix and is exercised in
+    production by `run.py`'s own absent-chair branch."""
+    return {
+        "act_key": "a1",
+        "attempt_ordinal": 1,
+        "reason": "the Perlector chair is explicitly absent: fixture removes this witness",
+        "basis": {"regions": [], "testimonia": []},
+        "dissent": [],
+        "provenance": {"chair_state": "absent"},
+    }
+
+
+def test_an_absent_chair_not_run_perlectio_satisfies_the_closed_not_run_schema():
+    perlector.validate_not_run_payload(
+        _absent_chair_not_run_payload(), fields=perlector._NOT_RUN_ABSENT_FIELDS
+    )
+
+
+@pytest.mark.parametrize(
+    "field", ["act_key", "attempt_ordinal", "reason", "basis", "dissent", "provenance"]
+)
+def test_an_absent_chair_not_run_perlectio_missing_any_field_is_refused(field):
+    payload = _absent_chair_not_run_payload()
+    del payload[field]
+    with pytest.raises(SchemaRefusal, match="not its closed schema"):
+        perlector.validate_not_run_payload(payload, fields=perlector._NOT_RUN_ABSENT_FIELDS)
+
+
+def test_an_absent_chair_not_run_perlectio_with_an_unexpected_field_is_refused():
+    payload = _absent_chair_not_run_payload()
+    payload["text"] = ""
+    with pytest.raises(SchemaRefusal, match="unexpected"):
+        perlector.validate_not_run_payload(payload, fields=perlector._NOT_RUN_ABSENT_FIELDS)
