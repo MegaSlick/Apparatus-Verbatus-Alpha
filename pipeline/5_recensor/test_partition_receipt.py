@@ -180,6 +180,152 @@ def test_a_run_that_proposed_no_acts_gets_a_visibly_partial_receipt_not_a_refusa
     assert validate_recensor_partition_receipt(receipt) == receipt
 
 
+def _valid_coverage() -> dict:
+    """A self-consistent witness coverage record, the shape `common.contracts.
+    outcomes.witness_coverage` actually returns -- one `read`, one
+    `genuinely-empty` (both COMPLETED), one `not-run` (UNRESOLVED), against a
+    floor of 3, so `under_witnessed` (2 completed < floor 3) is genuinely True
+    and every derived field has real content to tamper with below."""
+    return {
+        "configured": 3,
+        "floor": 3,
+        "by_outcome": {"read": 1, "genuinely-empty": 1, "not-run": 1},
+        "by_class": {"completed": 2, "unresolved": 1, "failed": 0},
+        "under_witnessed": True,
+        "unresolved_chairs": 1,
+    }
+
+
+def _item_with_coverage(coverage: dict) -> dict:
+    return {
+        "act_id": "a1",
+        "act_key": "a1",
+        "designator_outcome": "proposed",
+        "review_ref": {
+            "relative_path": "5_recensor/artifacts/review/none.json",
+            "sha256": "b" * 64,
+        },
+        "review_outcome": "held-for-review",
+        "partition_class": "unresolved",
+        "coverage": coverage,
+    }
+
+
+def _build_with_coverage(coverage: dict):
+    from common.recensor_receipt import build_recensor_partition_receipt
+
+    return build_recensor_partition_receipt(
+        run_id="r",
+        config_digest="a" * 64,
+        proposal_seal_ref={
+            "relative_path": "2_designator/artifacts/proposal-seal.json",
+            "sha256": "b" * 64,
+        },
+        items=[_item_with_coverage(coverage)],
+    )
+
+
+def test_self_consistent_coverage_builds_a_receipt_cleanly():
+    """Proves `_valid_coverage` is genuinely valid before the tampered variants
+    below prove each mismatch it can be turned into is refused -- otherwise a
+    refusal below could be firing on the wrong field entirely."""
+    receipt = _build_with_coverage(_valid_coverage())
+    assert receipt["items"][0]["coverage"] == _valid_coverage()
+
+
+def test_a_by_class_that_disagrees_with_by_outcome_is_refused():
+    coverage = dict(_valid_coverage(), by_class={"completed": 3, "unresolved": 0, "failed": 0})
+    with pytest.raises(SchemaRefusal, match="does not reconcile"):
+        _build_with_coverage(coverage)
+
+
+def test_an_under_witnessed_flag_disagreeing_with_the_floor_formula_is_refused():
+    coverage = dict(_valid_coverage(), under_witnessed=False)  # 2 completed < floor 3 is True
+    with pytest.raises(SchemaRefusal, match="does not reconcile"):
+        _build_with_coverage(coverage)
+
+
+def test_an_unresolved_chairs_count_disagreeing_with_by_class_is_refused():
+    coverage = dict(_valid_coverage(), unresolved_chairs=0)  # by_class["unresolved"] is 1
+    with pytest.raises(SchemaRefusal, match="does not reconcile"):
+        _build_with_coverage(coverage)
+
+
+def test_an_unknown_witness_outcome_in_by_outcome_is_refused():
+    coverage = dict(_valid_coverage(), by_outcome={"not-a-real-outcome": 3})
+    with pytest.raises(SchemaRefusal, match="unknown witness outcome"):
+        _build_with_coverage(coverage)
+
+
+def test_a_missing_coverage_field_is_refused_as_malformed():
+    coverage = {key: value for key, value in _valid_coverage().items() if key != "floor"}
+    with pytest.raises(SchemaRefusal, match="malformed witness coverage"):
+        _build_with_coverage(coverage)
+
+
+def test_a_negative_coverage_count_is_refused():
+    coverage = dict(_valid_coverage(), configured=-1)
+    with pytest.raises(SchemaRefusal, match="invalid witness coverage counts"):
+        _build_with_coverage(coverage)
+
+
+def test_a_review_whose_stored_coverage_disagrees_with_disk_is_refused(tmp_path):
+    """`write_partition_receipt` (`pipeline/5_recensor/run.py`) recomputes each
+    act's witness coverage fresh from the testimonia on disk and refuses a
+    review whose recorded `coverage` disagrees with it -- a check genuinely
+    distinct from the earlier manifest-agreement loop
+    (`test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_
+    denominator`, which trips on a blanked manifest before this one is ever
+    reached) and the self-hash check (`test_a_tampered_partition_receipt_is_
+    refused_by_its_self_hash`, which tampers the receipt after publication).
+    This is the one that catches a testimonium edited after its review was
+    written -- HANDOFF.md's own stated worry for what this receipt exists to
+    make refutable."""
+    from common.contracts.canonical import self_hash
+
+    root = tmp_path / "runs"
+    through_perlector(root, "coverage-drift", "happy")
+    assert invoke(root, "coverage-drift", "happy", "pipeline/5_recensor/run.py").returncode == 0
+
+    tree = RunTree(root, "coverage-drift")
+    review_entry = next(
+        entry for entry in tree.build_manifest(RECENSOR)["artifacts"] if entry["kind"] == "review"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    record = json.loads(review_path.read_text(encoding="utf-8"))
+    stored_coverage = record["payload"]["coverage"]
+    record["payload"]["coverage"] = dict(
+        stored_coverage, under_witnessed=not stored_coverage["under_witnessed"]
+    )
+    # A tampered payload with a stale self-hash would refuse earlier, at
+    # envelope verification, and never reach the coverage-drift check this
+    # test targets -- re-signed the same way `verify_self_hash` checks, to
+    # isolate exactly the boundary named above.
+    record["self_hash"] = self_hash(record)
+    review_path.write_text(json.dumps(record), encoding="utf-8")
+    # The manifest caches each artifact's digest; rewriting the file without
+    # refreshing the manifest would trip the earlier manifest-agreement loop
+    # instead of the coverage-drift check this test targets.
+    tree.write_manifest(RECENSOR)
+
+    recensor = _load_recensor()
+    args = SimpleNamespace(
+        run_root=root,
+        run_id="coverage-drift",
+        scenario="happy",
+        fixture_root=str(ROOT / "proof"),
+        models_config=str(ROOT / "config/models.toml"),
+        pdf_render_config=str(ROOT / "config/pdf_render.toml"),
+        pdf_target_dpi=None,
+        recovery_config=str(ROOT / "config/recovery.toml"),
+        hard_failure_config=str(ROOT / "config/hard_failure.toml"),
+    )
+    context = recensor.open_context(args, RECENSOR)
+
+    with pytest.raises(FatalAccounting, match="does not retain the act key"):
+        recensor.write_partition_receipt(context, recensor.recovery_budget(args.recovery_config))
+
+
 def test_an_empty_receipt_may_not_claim_to_be_complete():
     """The status derives from the reasons, and the reason is not optional."""
     from common.contracts.canonical import self_hash
