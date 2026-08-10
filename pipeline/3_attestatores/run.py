@@ -56,22 +56,18 @@ DEFAULT_FORMAT_CAPABILITIES = {
     "can_express_layout": False,
 }
 
-# The two write paths this program implements, named as a closed set because
-# `--operation` carries no `choices`: the fixture, not argparse, is the authority
-# on the *scenario* list, and the same parser serves every stage. An unrecognized
-# operation used to fall through to the whole pass, so a mistyped reread re-read
-# nothing, ignored the `--act` and `--chair` it was given, and exited 0.
+# The two write paths this program implements, checked against by name because
+# `--operation` carries no argparse `choices` — the same parser serves every
+# stage — so an unrecognized one otherwise falls through to the whole pass and a
+# mistyped reread re-reads nothing while exiting 0.
 OPERATIONS = frozenset({"initial", "reread"})
 
-# A witness response is untrusted input, and unbounded recursion over it is a
-# resource-exhaustion hole in the same family as the ones this stage already
-# refuses (bad UTF-8, non-string keys): a several-thousand-deep nested list or
-# object drives `_native_problem` past Python's recursion limit and raises
-# `RecursionError`, which is not a `ContractError` and so is not caught anywhere
-# between here and the process exiting — one adversarial witness would crash the
-# whole folder, the exact thing section C's isolation bullet exists to refuse.
-# Real transcription output nests a handful of levels deep at most; this cap is
-# generous headroom, not a tight fit.
+# A witness response is untrusted input: a several-thousand-deep nested value
+# drives `_native_problem` past Python's recursion limit, and `RecursionError` is
+# not a `ContractError`, so nothing between here and process exit catches it —
+# one adversarial witness takes down the whole folder rather than its own attempt.
+# Real transcription output nests a handful of levels deep, so this is headroom
+# rather than a fit.
 _MAX_NATIVE_DEPTH = 64
 
 
@@ -391,12 +387,12 @@ def validate_content_health(native_payload: Any, health: Any) -> None:
         return
 
     if recordable is False:
-        # `recordable=False` is the narrowest record this stage writes: nothing of
-        # what the witness returned could be kept, so there is nothing left to
-        # measure. Every remaining field went unchecked until this, and a resealed
-        # record that picked this branch could assert any character count,
-        # truncation state and native payload it liked — self-reported facts
-        # wearing the name of the computed ones spec 07 says these are.
+        # The narrowest record this stage writes: nothing of what the witness
+        # returned could be kept, so there is nothing left to measure and every
+        # remaining field is fixed. Leaving them free would let a resealed record
+        # take this branch and then assert a character count, a truncation state
+        # and a retained payload — self-reported facts wearing the name of the
+        # computed ones spec 07 requires these to be.
         if native_payload is not None:
             raise SchemaRefusal(
                 "a Testimonium whose native channel was unrecordable retains a native "
@@ -579,8 +575,8 @@ def require_appendable_ordinal(context, act_id: str, chair: str, ordinal: int) -
     The bound is `<= current + 1` rather than `in {current, current + 1}` because a
     targeted reread moves one chair's ordinal without moving any other's. Insisting
     every pair be at the same ordinal would mean the orchestrator — which always
-    asks for ordinal 1 — held the whole folder from the moment one chair was reread,
-    over five writes that would have been byte-identical no-ops.
+    asks for ordinal 1 — held the whole folder from the moment one chair was
+    reread, over writes that would every one have been byte-identical no-ops.
     """
     records = _existing_attempts(context, act_id, chair)
     if not records:
@@ -682,29 +678,20 @@ def validate_tallied_testimonium(context, record: dict[str, Any], act: dict[str,
 def require_accounted_unrecordable_channel(record: dict[str, Any], payload: dict[str, Any]) -> None:
     """Tell a witness whose output could not be kept from an evidence channel nobody can read.
 
-    Spec 07 asks for two things that pull apart if `recordable=False` is read as
-    one fact. Its isolation bullet: "one bad crop, one dead witness, one malformed
-    response never kills the folder ... Malformed provider output is recorded as a
-    failed attempt and refused, not repaired silently". Its retention bullet, on
-    invariant #23: "a damaged or unrecordable evidence channel makes the count
-    UNKNOWN, and UNKNOWN holds the folder".
+    Two of spec 07's requirements look contradictory here and are not, because
+    they are about different channels. Its isolation bullet — "one bad crop, one
+    dead witness, one malformed response never kills the folder ... recorded as a
+    failed attempt and refused, not repaired silently" — is about one witness's
+    own output. Invariant #23's — "a damaged or unrecordable evidence channel
+    makes the count UNKNOWN, and UNKNOWN holds the folder" — is about the attempt
+    tally, the independent count of what was attempted.
 
-    Both are true, because they are about different channels. #23's evidence
-    channel is *the attempt tally itself* — the independent count of what was
-    attempted, which is what the old pipeline could not produce. A provider
-    response this stage could not retain is not that: it is one witness's own
-    output, and the `failed` attempt naming it is exactly the record the isolation
-    bullet asks for. That attempt is countable, counted, and visibly failed
-    downstream; the act it belongs to goes under-witnessed and the run goes
-    partial. Holding the whole folder for it would stop the Perlector reading ink
-    that is not in doubt because one witness of three returned rubbish — and with
-    real providers and damaged registers that is the common case, not the edge
-    one.
-
-    So an unrecordable channel is accounted only inside an honestly `failed`
-    attempt that says why. A record that claims to be a *reading* while saying its
-    own channel could not be recorded is incoherent — the one shape that cannot be
-    resolved in the run's favour — and it is #23's UNKNOWN.
+    So an unrecordable response is accounted inside an honestly `failed` attempt
+    that says why: countable, counted, visibly failed, its act under-witnessed and
+    its run partial. Holding the whole folder instead would stop the Perlector
+    reading ink nobody doubts because one witness of three failed. Only a record
+    claiming to be a *reading* while saying nothing could retain what it read is
+    incoherent, and that one is #23's UNKNOWN.
     """
     if record["outcome"] in WITNESS_READING_OUTCOMES:
         raise SchemaRefusal(
@@ -1094,15 +1081,14 @@ def next_attempt_ordinal(context, act_id: str, chair: str) -> int:
 def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) -> int:
     """Append one new attempt for one named chair on one named act.
 
-    Lane A's shape, kept because the whole-pass `--attempt-ordinal` is the wrong
-    instrument for the thing a reread is actually for. A reread happens because
-    *one* chair failed on *one* act; re-witnessing every chair on every act to
-    reach it re-reads ink nobody doubted, costs a provider call per chair per
-    act, and moves every other chair's derived-current record for no reason. This
-    path moves exactly the one chair named, and every other chair's current record
-    stays the attempt it already was.
+    The whole-pass `--attempt-ordinal` is the wrong instrument for this. A reread
+    happens because *one* chair failed on *one* act; re-witnessing every chair on
+    every act to reach it re-reads ink nobody doubted, costs a provider call per
+    chair per act, and moves every other chair's derived-current record for no
+    reason. This path moves exactly the chair named, and every other chair's
+    current record stays the attempt it already was.
 
-    The rest is unchanged from the whole pass: same declaration tables at the new
+    Everything else matches the whole pass: same declaration tables at the new
     ordinal, same regions the first attempt was shown (a reread is a second look
     at the original proposal, never a first look at ink a recovery uncovered),
     same single write path, and no pointer anywhere — "current" stays derived.

@@ -313,7 +313,8 @@ def test_the_whole_pass_still_resumes_over_a_folder_one_chair_has_been_reread_in
 
 
 def test_a_successful_reread_retains_new_testimony_and_keeps_attempt_one(tmp_path):
-    """Lane A's successful-reread capability survives with ordinal-bound native data."""
+    """A reread that succeeds carries its own ordinal's declared response, not
+    attempt 1's, and leaves attempt 1 byte-identical."""
     run_root, tree = run_to_designator(tmp_path, "reread-success")
     initial = invoke_stage(
         run_root, "retention", "reread-success", "pipeline/3_attestatores/run.py"

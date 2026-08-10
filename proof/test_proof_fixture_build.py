@@ -248,8 +248,8 @@ def test_fixture_testimonia_declare_native_payloads_not_the_retired_body_field(s
 
 
 def test_the_review_scenario_exercises_the_repaired_failed_state(skeleton, models_config):
-    """Sol B-2 / blocker 4: `failed` is a member of the witness vocabulary. The
-    fixture drives it end to end rather than leaving it only unit-tested."""
+    """`failed` is a member of the witness vocabulary, and the fixture drives it
+    end to end rather than leaving it only unit-tested."""
     failures = skeleton["witness_failure"]
     assert failures == list(WITNESS_FAILURES)
     assert {failure["scenario"] for failure in failures} == {"review", "reread-failure"}

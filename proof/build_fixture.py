@@ -73,19 +73,14 @@ TESTIMONY = {
     },
 }
 
-# One deliberately non-text native response verifies the Attestatores schema
-# without pretending that the current text-only Perlector bridge can consume it.
-# It is a Stage 3 boundary fixture, not an end-to-end selection surface.
-#
-# The first two rows are the pair spec 07's `format_capabilities` field exists
-# for: "a witness that cannot say 'unsure' must not be read as confident". Chair
-# 1's output format cannot express uncertainty at all and its self-report claims
-# high confidence anyway — the cautionary case. Chair 2's format can express
-# uncertainty and it uses that to report genuine doubt — the legitimate one. Both
-# self-reports are retained verbatim and neither reaches an outcome, a coverage
-# count, or `content_health`. Without both sides declared in one run the
-# distinction is representable but never exercised, which is where a later reader
-# starts treating a self-report as evidence.
+# The first two rows are the pair spec 07's `format_capabilities` exists for: "a
+# witness that cannot say 'unsure' must not be read as confident". Chair 1's
+# format cannot express uncertainty and its self-report claims high confidence
+# anyway; chair 2's can, and reports doubt. Declaring one side only would leave
+# the distinction representable but never exercised, which is where a later
+# reader starts treating a self-report as evidence. The structured row exercises
+# the schema without pretending the text-only Perlector bridge can consume it: a
+# stage 3 boundary fixture, not an end-to-end surface.
 SCENARIO_TESTIMONY = (
     {
         "scenario": "happy",

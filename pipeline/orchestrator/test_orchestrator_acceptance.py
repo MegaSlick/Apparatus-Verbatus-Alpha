@@ -52,12 +52,12 @@ ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
 
-# Re-pinned, in the same commit that changed the provenance block, per spec 02's
-# test 9 — never loosened. Each is the digest of the whole relative-path ->
-# file-digest inventory, so "nothing changed" cannot be satisfied by a run that
-# is internally consistent but no longer the run these tests describe. A change
-# here is legitimate exactly when a commit deliberately changes what a run
-# writes, and then the new value belongs in that commit and nowhere else.
+# Each of these is the digest of a whole run tree's relative-path -> file-digest
+# inventory, per spec 02's test 9. They are re-pinned in the commit that changes
+# what a run writes, and never loosened: "nothing changed" must not be satisfiable
+# by a run that is internally consistent but no longer the run these tests
+# describe, so the new value belongs in that commit and nowhere else. Which past
+# change moved them, and why, is in that commit beside the change itself.
 #
 # Re-pinned again for the System 03 rebuild. The file count remains fixed, but door
 # admissions, Exemplar pages/census, and Armarium export rows now retain original
@@ -2409,8 +2409,8 @@ def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
 
 
 def test_the_failed_chair_is_visible_in_the_export(review_run):
-    """Sol B-2 / blocker 4, driven end to end: `failed` is a real member of the
-    closed vocabulary and reaches the export as a named shortfall."""
+    """`failed` is a real member of the closed witness vocabulary, driven end to
+    end: it reaches the export as a named shortfall rather than as a silence."""
     _, tree = review_run
     export = export_of(tree)
     held = export["review"][0]
