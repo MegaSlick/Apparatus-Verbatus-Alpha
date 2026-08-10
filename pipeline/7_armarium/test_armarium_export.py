@@ -759,6 +759,46 @@ def test_database_keeps_literal_and_derived_search_layers_separate(tmp_path):
     assert matched == [("act-1",)]
 
 
+def test_a_self_consistent_but_falsified_search_fold_column_is_refused(tmp_path):
+    """The digest-checked member and its own self-hash prove the package was not
+    edited after sealing; neither proves `act_search.derived_search_text` was ever
+    a fold of the act's own literal. A build defect or a rebuilt package could
+    otherwise carry a search column disconnected from the one canonical text."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    scratch = tmp_path / "acts.sqlite"
+    scratch.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(scratch)
+    try:
+        connection.execute("UPDATE act_search SET derived_search_text = 'not a fold of anything'")
+        connection.commit()
+    finally:
+        connection.close()
+    members["acts.sqlite"] = scratch.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+
+    with pytest.raises(SchemaRefusal, match="not a fold of its act's literal"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_search_fold_row_dropped_for_a_delivered_act_is_refused(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    scratch = tmp_path / "acts.sqlite"
+    scratch.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(scratch)
+    try:
+        connection.execute("DELETE FROM act_search WHERE act_id='act-1'")
+        connection.commit()
+    finally:
+        connection.close()
+    members["acts.sqlite"] = scratch.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+
+    with pytest.raises(SchemaRefusal, match="does not cover exactly the delivered literals"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
 def test_embedded_page_and_crop_pixels_open_on_a_clean_machine(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=True), _source_bytes)
 

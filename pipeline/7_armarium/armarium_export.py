@@ -2429,6 +2429,60 @@ def _verify_exact_delivered_citations(
             raise SchemaRefusal(f"the {subject} does not retain exact delivered provenance")
 
 
+def _verify_search_fold_claim(path: Path) -> None:
+    """Recompute the derived search column from its own act's literal.
+
+    A digest-checked SQLite member proves the package was not edited after
+    sealing; it proves nothing about whether ``act_search.derived_search_text``
+    was ever actually a fold of its own act's canonical clean text -- a build
+    defect or a package rebuilt around a tampered column would pass every
+    other check in this file with the search projection carrying unrelated
+    text. Unlike ``claims.canonical_text``/``claims.annotations`` above, this
+    one *does* have a source graph to recompute against: the literal each
+    row's own ``act_id`` already carries in ``acts``.
+    """
+    literals = _database_literals(path)
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        rows = connection.execute(
+            "SELECT act_id, derived_search_text, derived_text_sha256, "
+            "derived_from_canonical_sha256, normalizer_revision, derived_kind FROM act_search"
+        ).fetchall()
+    except sqlite3.DatabaseError as error:
+        raise SchemaRefusal(
+            "the acts database search projection cannot be read for verification"
+        ) from error
+    finally:
+        if connection is not None:
+            connection.close()
+    seen: set[str] = set()
+    for act_id, derived, derived_hash, source_hash, revision, kind in rows:
+        if (
+            not isinstance(act_id, str)
+            or act_id not in literals
+            or act_id in seen
+            or not isinstance(derived, str)
+            or revision != TEXTNORM_REVISION
+            or kind != "search-fold"
+        ):
+            raise SchemaRefusal("the acts database search projection has an invalid row")
+        seen.add(act_id)
+        literal, literal_hash = literals[act_id]
+        if (
+            derived != search_fold(literal)
+            or derived_hash != canonical_text_sha256(derived)
+            or source_hash != literal_hash
+        ):
+            raise SchemaRefusal(
+                "the acts database search projection is not a fold of its act's literal"
+            )
+    if seen != set(literals):
+        raise SchemaRefusal(
+            "the acts database search projection does not cover exactly the delivered literals"
+        )
+
+
 def _verify_product_accounting(
     root: Path,
     manifest: dict[str, Any],
@@ -2479,6 +2533,7 @@ def _verify_product_accounting(
         _verify_exact_delivered_citations(
             database_records, citations, act_keys, subject="acts database"
         )
+        _verify_search_fold_claim(root / "acts.sqlite")
     if "jsonl" in formats.formats:
         jsonl_records = _jsonl_act_records(root / "acts.jsonl", sources["regions"])
         if _product_categories(jsonl_records) != expected:
