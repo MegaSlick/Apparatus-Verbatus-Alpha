@@ -1138,9 +1138,10 @@ class OperatorSurface:
             record = _pod_from_record(pod_raw)
             _, lease = self._lease_for_close(launch, record)
         except Exception as error:
+            reason = getattr(error, "detail", None) or str(error)
             raise OperatorError(
                 ErrorCode.SAFETY_CHECK_FAILED,
-                detail="the recorded active fixture pod could not be checked safely",
+                detail=f"the recorded active fixture pod could not be checked safely: {reason}",
             ) from error
         if lease.phase != "closed-verified":
             raise OperatorError(

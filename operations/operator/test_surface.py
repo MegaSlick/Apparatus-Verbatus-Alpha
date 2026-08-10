@@ -1095,6 +1095,34 @@ def test_a_corrupted_launch_descriptor_never_claims_close_has_nothing_to_do(
     assert "No close request was sent and nothing changed" not in captured
 
 
+def test_refuse_if_active_pod_names_the_specific_reason_it_could_not_check_safely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blocked launch must say *which* record or lease failed, and why.
+
+    Before this fix every failure while checking the recorded active pod became
+    the same fixed sentence, and an operator blocked from launching could not
+    tell a broken lease from a broken receipt without a developer reading the
+    code alongside them.
+    """
+
+    surface = _surface(tmp_path)
+    launched = _launch(surface, _spend_policy(tmp_path))
+    assert launched.record is not None
+
+    def broken_load(self):  # type: ignore[no-untyped-def]
+        del self
+        raise OSError("injected lease read failure for this test")
+
+    monkeypatch.setattr(LeaseStore, "load", broken_load)
+
+    with pytest.raises(OperatorError) as failure:
+        surface.prepare_launch(_request(name="second"), policy_path=_spend_policy(tmp_path))
+
+    assert failure.value.code is ErrorCode.SAFETY_CHECK_FAILED
+    assert "injected lease read failure for this test" in failure.value.render()
+
+
 def test_console_entry_renders_an_application_import_failure(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
