@@ -301,6 +301,21 @@ def _overlap_area(a: dict, b: dict) -> int:
     return max(0, x1 - x0) * max(0, y1 - y0)
 
 
+def _body_overlap_area(group: dict, declared_bounds: dict) -> int:
+    """Sum of a group's own body members' overlap with `declared_bounds`.
+
+    Used only to break a tie in `_match_structural_group` between two groups
+    whose full (body + anchor) bounds overlap `declared_bounds` identically —
+    the brace-linked case, where one shared tall anchor dominates both
+    groups' union bounds and makes them indistinguishable by that measure
+    alone. The anchor is common evidence for both acts, so it cannot be what
+    tells them apart; each group's own body text can.
+    """
+    return sum(
+        _overlap_area(member["bounds"], declared_bounds) for member in group.get("body_members", [])
+    )
+
+
 def _match_structural_group(groups: list[dict], declared_bounds: dict, what: str) -> dict:
     """The detected act-group that best overlaps a declared act's bounds.
 
@@ -314,13 +329,21 @@ def _match_structural_group(groups: list[dict], declared_bounds: dict, what: str
     half of where an act is declared to be, that is a real finding — the
     detector missed it — and is refused rather than silently accepted as a
     match of convenience.
+
+    A tie in that overlap — two brace-linked groups sharing one anchor tall
+    enough to dominate both groups' union bounds — is broken by
+    `_body_overlap_area` rather than by input order: a strict `>` alone would
+    silently attribute one act's evidence to its sibling whenever their full
+    bounds happen to coincide, which is exactly the "silent substitution"
+    this function's own callers document it as refusing rather than doing.
     """
     declared_area = declared_bounds["w"] * declared_bounds["h"]
-    best, best_overlap = None, 0
+    best, best_overlap, best_body_overlap = None, 0, 0
     for group in groups:
         overlap = _overlap_area(group["bounds"], declared_bounds)
-        if overlap > best_overlap:
-            best, best_overlap = group, overlap
+        body_overlap = _body_overlap_area(group, declared_bounds)
+        if overlap > best_overlap or (overlap == best_overlap and body_overlap > best_body_overlap):
+            best, best_overlap, best_body_overlap = group, overlap, body_overlap
     if best is None or best_overlap * 2 < declared_area:
         raise ContractError(
             f"{what}: structural grouping found no detected region covering at least "

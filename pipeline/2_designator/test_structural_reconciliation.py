@@ -70,3 +70,40 @@ def test_match_accepts_a_group_covering_exactly_half_the_declared_area():
     declared = {"x": 0, "y": 0, "w": 10, "h": 10}  # area 100
     half = {"bounds": {"x": 0, "y": 0, "w": 10, "h": 5}}  # area 50, overlap 50
     assert designator._match_structural_group([half], declared, "test act") is half
+
+
+def test_match_breaks_a_tied_full_bounds_overlap_by_the_groups_own_body_members():
+    """The brace-linked case: a shared tall anchor makes both groups' union
+    bounds identical, so full-bounds overlap alone cannot tell them apart.
+    Each group's own body text -- not the anchor both groups carry -- must
+    decide which group actually corresponds to which declared act."""
+    designator = _load_designator()
+    shared_bounds = {"x": 0, "y": 0, "w": 20, "h": 20}  # both groups tie here
+    group_a = {
+        "bounds": shared_bounds,
+        "body_members": [{"bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}],
+    }
+    group_b = {
+        "bounds": shared_bounds,
+        "body_members": [{"bounds": {"x": 0, "y": 10, "w": 10, "h": 10}}],
+    }
+    declared_a = {"x": 0, "y": 0, "w": 10, "h": 10}
+    declared_b = {"x": 0, "y": 10, "w": 10, "h": 10}
+    assert designator._match_structural_group([group_a, group_b], declared_a, "act a") is group_a
+    assert designator._match_structural_group([group_a, group_b], declared_b, "act b") is group_b
+    # Order must not matter -- the tie-break is a property of the geometry, not
+    # of which group happened to be checked first.
+    assert designator._match_structural_group([group_b, group_a], declared_a, "act a") is group_a
+    assert designator._match_structural_group([group_b, group_a], declared_b, "act b") is group_b
+
+
+def test_match_falls_back_to_first_when_body_members_cannot_break_the_tie_either():
+    """Neither group carries a `body_members` key (a bare-bounds test double, or
+    an isolated marginal-note group with no body at all): the tie-break has
+    nothing to compare, and the original first-wins behavior is preserved
+    rather than raising or picking arbitrarily."""
+    designator = _load_designator()
+    declared = {"x": 0, "y": 0, "w": 10, "h": 10}
+    first = {"bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}
+    second = {"bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}
+    assert designator._match_structural_group([first, second], declared, "test act") is first
