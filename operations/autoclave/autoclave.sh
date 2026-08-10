@@ -965,28 +965,64 @@ AUTOCLAVE_SETUP
         # save below is. A chamber built without a vendor — the default, and most of
         # them — has no mounted directory here, and there is no trust flag worth writing
         # into a path the CLI will never read.
+        #
+        # **Locked, and written only when the flag is actually missing.** Temp-then-rename
+        # stopped the torn read. It did nothing about the lost update, which is the harder
+        # half of the same finding. Two writers can still race on this file: another
+        # chamber running this same block, and the Claude CLI in any running chamber
+        # refreshing the file for real.
+        #
+        # `flock` closes the first of those completely — the read, the edit and the rename
+        # all happen while the lock is held, and this block is the only read-modify-write
+        # this script performs on that file. The seed and save beside it publish a
+        # *different* file, whole, by rename, so there is nothing there to serialise with.
+        #
+        # It cannot close the second, and nothing in this tree can: the CLI takes no lock
+        # we can name, so a refresh landing between our read and our rename is still
+        # discarded. What shrinks that window is the other half of this change. The flag
+        # is per project, the project path is the same in every chamber, and the file
+        # lives on the volume — so once it is true it stays true, and every later chamber
+        # reads it, sees it, and writes nothing at all. The exposure is one write per
+        # volume, at the moment that volume is newest and least likely to be in use by a
+        # running chamber. That is not zero and this comment does not claim it is.
+        #
+        # The wait is bounded and loud rather than indefinite. A chamber creation that
+        # hangs forever on a lock somebody wedged is worse than one that says why it
+        # stopped, and there is nobody in here to notice the difference.
         python3 - <<"PY"
-import json, os, pathlib, tempfile
+import fcntl, json, os, pathlib, tempfile, time
 d = pathlib.Path("/home/agent/.claude")
 if d.is_dir():
     p = d / ".claude.json"
-    try:
-        config = json.loads(p.read_text() or "{}")
-    except (ValueError, OSError):
-        config = {}
-    config.setdefault("projects", {}).setdefault("/work", {})["hasTrustDialogAccepted"] = True
-    # Temp-then-rename on the real shared filesystem, for the reason the shell helpers
-    # at the top of this file give: a container pid is not unique across chambers, and
-    # rename is atomic only within one filesystem.
-    fd, tmp = tempfile.mkstemp(dir=str(d), prefix=".claude.json.tmp.")
-    try:
-        with os.fdopen(fd, "w") as handle:
-            handle.write(json.dumps(config, indent=2))
-        os.replace(tmp, p)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    with open(d / ".claude.json.autoclave.lock", "a+") as guard:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("another chamber held the shared config lock for 30s")
+                time.sleep(0.05)
+        try:
+            config = json.loads(p.read_text() or "{}")
+        except (ValueError, OSError):
+            config = {}
+        work = config.setdefault("projects", {}).setdefault("/work", {})
+        if work.get("hasTrustDialogAccepted") is not True:
+            work["hasTrustDialogAccepted"] = True
+            # Temp-then-rename on the real shared filesystem, for the reason the shell
+            # helpers at the top of this file give: a container pid is not unique across
+            # chambers, and rename is atomic only within one filesystem.
+            fd, tmp = tempfile.mkstemp(dir=str(d), prefix=".claude.json.tmp.")
+            try:
+                with os.fdopen(fd, "w") as handle:
+                    handle.write(json.dumps(config, indent=2))
+                os.replace(tmp, p)
+            except BaseException:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+                raise
 PY
         # Only where the volume is actually mounted. A chamber created without a vendor
         # — the default, and most of them — has no mounted directory to keep it in, and

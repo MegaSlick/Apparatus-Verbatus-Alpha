@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -2331,6 +2332,124 @@ class TestTheWrapperAgainstARealFilesystem:
         # An empty `seen` would otherwise pass this test after every writer failed.
         assert statuses == [0] * len(procs), f"a writer failed: {statuses}"
         assert seen, "no snapshot was ever observed, so nothing was proven"
+
+
+class TestTheTrustFlagAgainstARealFilesystem:
+    """The trust update, extracted from the launcher and executed for real.
+
+    Temp-then-rename stopped a reader seeing a torn file. It did nothing about a
+    *lost update*, which was the half that remained: a writer landing between the
+    read and the rename has its change discarded, on the one file the mounted
+    sign-in now depends on. These tests run the launcher's own bytes against a
+    temporary directory, so a regression shows up as an outcome rather than as a
+    missing string.
+    """
+
+    def _block(self, tmp_path):
+        """Extract the real python block from the script, retargeted into tmp_path."""
+        source = SCRIPT.read_text()
+        start = source.index('python3 - <<"PY"')
+        end = source.index("\nPY\n", start) + len("\nPY\n")
+        directory = tmp_path / ".claude"
+        directory.mkdir(exist_ok=True)
+        return source[start:end].replace("/home/agent/.claude", str(directory)), directory
+
+    def _run(self, block):
+        return subprocess.run(["sh", "-c", block], capture_output=True, text=True)
+
+    def test_the_flag_is_written_once_and_not_rewritten_afterwards(self, tmp_path):
+        """Once the flag is on the volume it stays there, so no later chamber has any
+        reason to write at all. That is what shrinks the window against the writer no
+        lock here can reach — the CLI itself, refreshing this same file."""
+        block, directory = self._block(tmp_path)
+        config = directory / ".claude.json"
+
+        assert self._run(block).returncode == 0
+        first = config.read_text()
+        assert json.loads(first)["projects"]["/work"]["hasTrustDialogAccepted"] is True
+        inode = config.stat().st_ino
+
+        assert self._run(block).returncode == 0
+        assert config.read_text() == first
+        assert config.stat().st_ino == inode, "a chamber republished a file it already agreed with"
+
+    def test_the_flag_keeps_what_the_cli_had_already_written(self, tmp_path):
+        """The whole hazard is this file carrying the sign-in the CLI refreshes."""
+        block, directory = self._block(tmp_path)
+        config = directory / ".claude.json"
+        config.write_text(
+            json.dumps({"oauthAccount": {"emailAddress": "kept"}, "projects": {"/other": {"x": 1}}})
+        )
+
+        assert self._run(block).returncode == 0
+
+        merged = json.loads(config.read_text())
+        assert merged["oauthAccount"] == {"emailAddress": "kept"}
+        assert merged["projects"]["/other"] == {"x": 1}
+        assert merged["projects"]["/work"]["hasTrustDialogAccepted"] is True
+
+    def test_an_interleaved_update_under_the_same_lock_is_not_lost(self, tmp_path):
+        """The interleaving regression CodeRabbit asked for.
+
+        A competitor takes the same lock, holds it across a read and a write, and
+        adds a key of its own. Unserialized, the launcher reads the file before that
+        key exists and republishes it without — a lost update. Under the lock it
+        waits, reads what the competitor wrote, and both survive.
+
+        What this cannot prove is the half that stays open: the Claude CLI takes no
+        lock this script can name, so a real refresh landing inside the window is
+        still discarded. That is why the write above happens at most once per volume,
+        and why the comment in the launcher says so rather than claiming a fix.
+        """
+        block, directory = self._block(tmp_path)
+        config = directory / ".claude.json"
+        config.write_text(json.dumps({"projects": {}}))
+        holding = tmp_path / "competitor-holds-the-lock"
+        competitor = tmp_path / "competitor.py"
+        competitor.write_text(
+            "import fcntl, json, os, pathlib, tempfile, time\n"
+            f"d = pathlib.Path({str(directory)!r})\n"
+            'guard = open(d / ".claude.json.autoclave.lock", "a+")\n'
+            "fcntl.flock(guard.fileno(), fcntl.LOCK_EX)\n"
+            'p = d / ".claude.json"\n'
+            # Read first, publish last, and only then let the launcher start: that is
+            # the interleaving a lost update needs. Reading after the launcher wrote
+            # would preserve both by accident and prove nothing.
+            "config = json.loads(p.read_text())\n"
+            f"pathlib.Path({str(holding)!r}).write_text('held')\n"
+            "time.sleep(1.0)\n"
+            'config["refreshed"] = True\n'
+            'fd, tmp = tempfile.mkstemp(dir=str(d), prefix=".competitor.")\n'
+            'with os.fdopen(fd, "w") as handle:\n'
+            "    handle.write(json.dumps(config))\n"
+            "os.replace(tmp, p)\n"
+            "guard.close()\n"
+        )
+
+        process = subprocess.Popen(["python3", str(competitor)])
+        try:
+            deadline = time.monotonic() + 10
+            while not holding.exists():
+                assert time.monotonic() < deadline, "the competitor never took the lock"
+                assert process.poll() is None, "the competitor exited before taking the lock"
+                time.sleep(0.01)
+            result = self._run(block)
+        finally:
+            assert process.wait(timeout=30) == 0, "the competitor failed"
+
+        assert result.returncode == 0, result.stderr
+        merged = json.loads(config.read_text())
+        assert merged.get("refreshed") is True, "the competitor's update was lost"
+        assert merged["projects"]["/work"]["hasTrustDialogAccepted"] is True
+
+    def test_the_wait_for_the_lock_is_bounded_rather_than_indefinite(self):
+        """Nobody is in a chamber to notice a creation that hangs forever."""
+        source = SCRIPT.read_text()
+        start = source.index('python3 - <<"PY"')
+        block = source[start : source.index("\nPY\n", start)]
+        assert "LOCK_NB" in block and "time.monotonic()" in block, (
+            "the trust update waits on the shared lock without a deadline"
+        )
 
 
 def test_report_names_the_path_it_looked_for():
