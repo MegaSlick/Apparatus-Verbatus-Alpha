@@ -112,7 +112,15 @@ class ReceiptStore:
             record = json.loads(data.decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise RecordError(f"operator receipt cannot be read: {resolved.name}") from error
-        if canonical_bytes(record) != data:
+        try:
+            # The shared serializer refuses what it cannot hash stably (a float,
+            # a non-string key). A saved file can contain one; that has to arrive
+            # as this module's RecordError, because `status` reports an unreadable
+            # record beside the intact ones only for RecordError.
+            canonical = canonical_bytes(record)
+        except TypeError as error:
+            raise RecordError(f"operator receipt is not canonical: {resolved.name}") from error
+        if canonical != data:
             raise RecordError(f"operator receipt is not canonical: {resolved.name}")
         if not isinstance(record, dict) or set(record) != {
             "schema",
@@ -182,7 +190,10 @@ class DescriptorStore:
             raise RecordError("operator descriptor has an invalid shape")
         expected = dict(raw)
         expected.pop("self_hash")
-        digest = hashlib.sha256(canonical_bytes(expected)).hexdigest()
+        try:
+            digest = hashlib.sha256(canonical_bytes(expected)).hexdigest()
+        except TypeError as error:
+            raise RecordError("operator descriptor is not canonical") from error
         if raw["schema"] != DESCRIPTOR_SCHEMA or raw["self_hash"] != digest:
             raise RecordError("operator descriptor fails its own integrity check")
         if not _valid_actions(raw["actions"]) or not _valid_history(raw["history"], raw["actions"]):

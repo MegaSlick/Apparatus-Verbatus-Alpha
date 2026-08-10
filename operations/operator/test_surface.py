@@ -375,6 +375,58 @@ def test_a_repeated_receipt_never_corrupts_the_descriptors_own_history_invariant
     assert surface.descriptor.load() is not None
 
 
+def test_a_corrupted_saved_record_never_hides_the_intact_ledgers_behind_unexpected(
+    tmp_path: Path,
+) -> None:
+    """A saved file can hold what the shared serializer refuses to hash.
+
+    `status` reports an unreadable record beside the intact ones only for
+    `RecordError`; a raw `TypeError` walks past that guard, abandons the whole
+    listing, and reports `UNEXPECTED` — the opposite of the honesty ledger this
+    verb exists to show (GOVERNANCE 2).
+    """
+
+    surface = _surface(tmp_path)
+    surface.boot()
+    receipt = surface._descriptor_receipt("boot")
+    assert receipt is not None
+
+    record = json.loads(receipt.read_text(encoding="utf-8"))
+    record["payload"] = {"summary": "hand-edited", "amount": 1.5}
+    data = (
+        json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+    replacement = receipt.with_name(f"boot-{hashlib.sha256(data).hexdigest()}.json")
+    receipt.unlink()
+    replacement.write_bytes(data)
+    surface.descriptor.record("boot", replacement)
+
+    with pytest.raises(RecordError, match="not canonical"):
+        surface.receipts.read(replacement)
+    with pytest.raises(OperatorError) as refusal:
+        surface.status()
+
+    assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
+
+
+def test_a_corrupted_descriptor_is_named_unreadable_rather_than_unclassifiable(
+    tmp_path: Path,
+) -> None:
+    """The same guard on the index itself: `status` catches only `RecordError`."""
+
+    surface = _surface(tmp_path)
+    surface.boot()
+    descriptor = surface.descriptor.path
+    raw = json.loads(descriptor.read_text(encoding="utf-8"))
+    raw["actions"]["boot"] = 1.5
+    descriptor.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.status()
+
+    assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
+
+
 def test_a_saved_receipt_is_named_when_its_descriptor_update_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

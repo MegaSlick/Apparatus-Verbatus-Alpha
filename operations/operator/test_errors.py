@@ -94,6 +94,21 @@ def test_old_close_vocabulary_is_replaced_even_without_the_word_traceback() -> N
     assert "paused" in rendered
 
 
+def test_a_detail_too_long_to_keep_says_it_was_cut() -> None:
+    """Two call sites persist this text into a receipt, not just onto a terminal.
+
+    A stored fragment that reads as a whole diagnostic is the partial result
+    GOVERNANCE 2 requires to be visibly partial.
+    """
+
+    rendered = errors.sanitize_detail("x" * 5000)
+
+    assert rendered.startswith("x" * 2000)
+    assert "detail truncated at 2000 characters" in rendered
+    assert errors.sanitize_detail("x" * 2000).endswith("x")
+    assert "truncated" not in errors.sanitize_detail("x" * 2000)
+
+
 def test_control_bytes_are_stripped_from_the_operator_facing_detail() -> None:
     """A path an operator did not choose could carry a terminal escape sequence."""
 

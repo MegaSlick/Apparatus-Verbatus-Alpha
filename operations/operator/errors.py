@@ -291,7 +291,10 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     nested inside a synced cloud-drive folder can easily produce a receipt
     path several hundred characters long, and truncating that away would
     silently break the "preserve this message and its saved receipt path"
-    instruction most of these error codes give.
+    instruction most of these error codes give. Where the cut still happens it
+    is named: two call sites persist this text into a receipt, and a stored
+    fragment that reads as a whole diagnostic is exactly the partial result
+    GOVERNANCE 2 requires to be visibly partial.
     """
 
     compact = " ".join(value.split())
@@ -307,4 +310,7 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
         (r"\bstop(?:ped|s|ping)?\b", "paused"),
     ):
         compact = re.sub(pattern, replacement, compact, flags=re.IGNORECASE)
-    return compact[:maximum]
+    if len(compact) <= maximum:
+        return compact
+    marker = f" … (detail truncated at {maximum} characters)"
+    return compact[:maximum] + marker
