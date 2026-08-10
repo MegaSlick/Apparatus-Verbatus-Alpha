@@ -12,6 +12,7 @@ import pytest
 from armarium_export import (
     EXPORT_MANIFEST_NAME,
     ArmariumProjection,
+    _page_ledger_category,
     _zip_bytes,
     build_armarium_bundle,
     canonical_text_sha256,
@@ -904,6 +905,38 @@ def test_the_terminal_ledger_partitions_sources_pages_and_acts_totally(tmp_path)
     assert ledger["status"] == "partial"
     assert ledger["unresolved_reasons"][0].startswith("act act-2 is held-for-review")
     assert "one unit per page or frame" in ledger["granularity_limit"]
+
+
+def test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_act_agrees():
+    """The two page-category branches spec 11 test 1 names besides delivered/held.
+
+    Every fixture in this file attributes its acts to a shared page ordinal, so
+    end-to-end coverage never exercises a page whose acts are *all*
+    confirmed-blank or *all* excluded-with-approval (neither the Designator nor
+    the Recensor emits either outcome yet, so a full-projection fixture for them
+    would be synthetic in exactly the same way this direct call is). Driven
+    directly against the pure function spec 11 test 1 is really about: neither
+    category is *inferred* here -- both are inherited only when every act cut
+    from the page already carries it, the same way `delivered` is inherited
+    from any one delivered act.
+    """
+    assert _page_ledger_category(1, ["confirmed-blank"]) == (
+        ArmariumCategory.CONFIRMED_BLANK.value,
+        None,
+    )
+    assert _page_ledger_category(2, ["confirmed-blank", "confirmed-blank"]) == (
+        ArmariumCategory.CONFIRMED_BLANK.value,
+        None,
+    )
+    assert _page_ledger_category(3, ["excluded-with-approval"]) == (
+        ArmariumCategory.EXCLUDED_WITH_APPROVAL.value,
+        None,
+    )
+    # A mix with no delivered act present is neither category on its own -- held
+    # for a human, exactly like any other non-unanimous, non-delivered mix.
+    category, reason = _page_ledger_category(4, ["confirmed-blank", "excluded-with-approval"])
+    assert category == ArmariumCategory.HELD_FOR_REVIEW.value
+    assert "delivered no act" in reason
 
 
 def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
