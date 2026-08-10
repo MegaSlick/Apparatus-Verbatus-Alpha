@@ -326,6 +326,10 @@ def test_unselected_format_members_cannot_hide_inside_a_self_consistent_bundle(t
     members = _members(bundle.data)
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
     manifest["formats"]["formats"] = ["jsonl"]
+    # Kept consistent with the tamper above so this test isolates the format-hiding
+    # check under test rather than tripping the (correct) canonical-text identity
+    # mismatch a single selected literal format now produces.
+    manifest["canonical_text"]["identity_verified_across"] = []
     manifest["self_hash"] = self_hash(manifest)
     members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
 
@@ -1140,6 +1144,28 @@ def test_the_manifest_says_the_display_convention_is_only_proposed(tmp_path):
     manifest["claims"]["display"]["status"] = "chosen"
     _refresh_manifest(members, manifest)
     with pytest.raises(SchemaRefusal, match="display claim is not the verified claim"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_the_manifest_says_whether_projection_identity_was_actually_checked(tmp_path):
+    """Below two literal formats, `verify_projection_identity` never runs -- say so."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
+    assert manifest["canonical_text"]["identity_verified_across"] == [
+        "acts-database",
+        "jsonl",
+        "text-bundle",
+    ]
+
+    single_format = ArmariumFormats(("jsonl",), False)
+    single = build_armarium_bundle(_projection(), single_format, _source_bytes)
+    single_manifest = json.loads(_members(single.data)[EXPORT_MANIFEST_NAME])
+    assert single_manifest["canonical_text"]["identity_verified_across"] == []
+
+    members = _members(bundle.data)
+    manifest["canonical_text"]["identity_verified_across"] = []
+    _refresh_manifest(members, manifest)
+    with pytest.raises(SchemaRefusal, match="canonical-text claim is not this build's fixed claim"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 

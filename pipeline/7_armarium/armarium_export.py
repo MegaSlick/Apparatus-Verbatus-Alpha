@@ -1693,6 +1693,13 @@ def _export_manifest(
             "field": CANONICAL_TEXT_FIELD,
             "hash": "sha256-utf-8",
             "derived_columns_are_marked": True,
+            # `verify_projection_identity` only runs when two or more literal
+            # formats are selected -- with one selected (or zero) there is
+            # nothing to compare, and this says so on the bundle's own face
+            # rather than leaving a reader to infer it from `formats`.
+            "identity_verified_across": sorted(set(_LITERAL_TEXT_FORMATS) & set(formats.formats))
+            if len(set(_LITERAL_TEXT_FORMATS) & set(formats.formats)) >= 2
+            else [],
         },
         "run": {
             "fixture_id": projection.fixture_id,
@@ -2661,12 +2668,26 @@ def _verify_canonical_text_claim(manifest: dict[str, Any]) -> None:
     this, a tampered manifest could claim a different authority field, or a
     text-writable annotation layer, and every other check in this function would
     still accept the package.
+
+    ``identity_verified_across`` is the one field in this claim that does vary by
+    build, so it is recomputed from the manifest's own ``formats`` selection
+    rather than compared to a constant.
     """
-    if manifest.get("canonical_text") != {
+    canonical_text = manifest.get("canonical_text")
+    if not isinstance(canonical_text, dict):
+        raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
+    selected = manifest.get("formats")
+    selected_formats = selected.get("formats") if isinstance(selected, dict) else None
+    if not isinstance(selected_formats, list):
+        raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
+    literal_selected = set(_LITERAL_TEXT_FORMATS) & set(selected_formats)
+    expected_identity = sorted(literal_selected) if len(literal_selected) >= 2 else []
+    if canonical_text != {
         "authority": "archetypus",
         "field": CANONICAL_TEXT_FIELD,
         "hash": "sha256-utf-8",
         "derived_columns_are_marked": True,
+        "identity_verified_across": expected_identity,
     }:
         raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
 
