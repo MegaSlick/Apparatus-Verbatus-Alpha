@@ -19,7 +19,7 @@ from common.contracts.canonical import canonical_bytes
 from operations.pod.fake_provider import FakeProvider
 from operations.pod.lease import LeaseStore
 from operations.pod.models import PodCreateRequest, ProviderFailure
-from operations.pod.shutdown import VerifiedShutdown
+from operations.pod.shutdown import CloseReport, VerifiedShutdown
 from operations.pod.spend import load_spend_policy
 from operations.submit.submit import build_manifest, walk_folder
 
@@ -993,14 +993,16 @@ def test_console_close_shows_its_notice_before_asking_for_the_confirmation_phras
     monkeypatch.setattr("builtins.print", recording_print)
     monkeypatch.setattr("builtins.input", recording_input)
 
-    cli.main(["--state-dir", str(state), "close"])
+    exit_code = cli.main(["--state-dir", str(state), "close"])
 
-    # Not asserted: the exit code. This drives a real second `verbatus close`,
-    # which builds its surface on the wall clock while the launch above was
-    # stamped by a frozen one, so the close can legitimately end UNVERIFIED.
-    # That is this test's own arrangement, not a property of the reconstruction
-    # path — driven with one consistent clock it verifies. The order is what
-    # this test is for.
+    # Both `cli.main` calls above run within the same second on the real wall
+    # clock, so this is a same-process-speed close, not a same-process one:
+    # the reconstruction path in `_provider_for_record` still runs, because
+    # `close` is a fresh `OperatorSurface`/`FakeProvider` pair. See
+    # `test_close_reconstruction_verifies_across_a_real_gap_between_processes`
+    # for the case this shape exists to prove: reconstruction staying verified
+    # even when real time has passed between the two processes.
+    assert exit_code == 0
     notice_index = next(
         index
         for index, (kind, text) in enumerate(order)
@@ -1008,6 +1010,55 @@ def test_console_close_shows_its_notice_before_asking_for_the_confirmation_phras
     )
     input_index = next(index for index, (kind, _) in enumerate(order) if kind == "INPUT")
     assert notice_index < input_index
+
+
+def test_close_reconstruction_verifies_across_a_real_gap_between_processes(
+    tmp_path: Path,
+) -> None:
+    """`close` in a fresh process, run well over an hour after `launch` in another.
+
+    `_provider_for_record` recreates the fake pod once the launching process is
+    gone. Before the fix, the recreated provider's clock was frozen at
+    `record.created_at`, so `bill()`'s captured-cost cutoff never advanced past
+    `created_at + 1h`, while `VerifiedShutdown` requested a cutoff at the real,
+    later wall-clock close time. Every close past that one-hour mark reported
+    UNVERIFIED regardless of how healthy the close actually was — this is the
+    fresh-process false alarm the drive in the pre-pull-request audit found.
+    """
+
+    def _launch_then_close(name: str, gap: timedelta) -> CloseReport:
+        state = tmp_path / f"operator-state-{name}"
+        launch_time = START
+        launch_clock = FastElapsedClock()
+        launch_surface = OperatorSurface(
+            ROOT,
+            state,
+            provider=FakeProvider(now=lambda: launch_time),
+            now=lambda: launch_time,
+            monotonic=launch_clock.monotonic,
+            sleeper=launch_clock.sleep,
+        )
+        launched = _launch(launch_surface, _spend_policy(tmp_path), name=name)
+        assert launched.record is not None
+
+        close_time = launch_time + gap
+        close_clock = FastElapsedClock()
+        close_surface = OperatorSurface(
+            ROOT,
+            state,
+            provider=FakeProvider(now=lambda: close_time),
+            now=lambda: close_time,
+            monotonic=close_clock.monotonic,
+            sleeper=close_clock.sleep,
+        )
+        prepared_close = close_surface.prepare_close()
+        return close_surface.close(prepared_close, prepared_close.phrase)
+
+    short_gap = _launch_then_close("short-gap", timedelta(minutes=15))
+    long_gap = _launch_then_close("long-gap", timedelta(hours=2))
+
+    assert short_gap.verified, short_gap.state
+    assert long_gap.verified, long_gap.state
 
 
 def test_a_corrupted_launch_descriptor_never_claims_close_has_nothing_to_do(

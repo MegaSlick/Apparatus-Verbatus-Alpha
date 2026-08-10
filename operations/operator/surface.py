@@ -1259,7 +1259,15 @@ class OperatorSurface:
                 ErrorCode.CLOSE_NOTHING, detail="the launch receipt has no exact request"
             )
         request = _request_from_record(request_raw)
-        recreated = FakeProvider(now=lambda: record.created_at)
+        # This surface's own `now`, not a clock frozen at `record.created_at`:
+        # `bill()` below stamps its billing-capture cutoff from whichever clock
+        # the provider carries, and `VerifiedShutdown` requests its cutoff from
+        # this surface's wall clock. A frozen provider clock and a live request
+        # clock drift apart with every minute between launch and close, and once
+        # that drift exceeds `bill()`'s one-hour buffer, a real, healthy close
+        # reports UNVERIFIED — the one failure this surface exists to avoid
+        # reporting spuriously.
+        recreated = FakeProvider(now=self.now)
         try:
             recreated.seed_existing(record, request)
         except ValueError as error:
