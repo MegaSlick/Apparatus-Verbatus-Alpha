@@ -245,6 +245,20 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
             raise SchemaRefusal("an Armarium package repeats a member name")
         for name in names:
             _validate_member_name(name)
+        # `_zip_bytes` is this module's only writer and it never emits anything but
+        # ZIP_STORED. Refusing any other compression method here -- before a single
+        # byte is decompressed -- is what makes this a check of a package "without
+        # its source run tree" rather than a decompression bomb: a stored member's
+        # decompressed size cannot exceed the archive's own physical size, so a
+        # hand-crafted high-ratio DEFLATE member (kilobytes on disk, gigabytes once
+        # extracted) is refused by name instead of being written to the clean
+        # machine before anything else gets a chance to reject the package.
+        for info in archive.infolist():
+            if info.compress_type != ZIP_STORED:
+                raise SchemaRefusal(
+                    f"package member {info.filename!r} is compressed; an Armarium "
+                    "package is only ever written stored, never compressed"
+                )
         archive.extractall(root)
 
     try:
@@ -1447,6 +1461,20 @@ def _terminal_ledger(
     by_act_id: dict[str, dict[str, Any]] = {}
     categories_by_key: dict[str, str] = {}
     for record in act_outcomes:
+        # Collapsing into a dict keyed by act_id, below, is what the rest of this
+        # function needs -- but done silently it would let a duplicate act_id
+        # overwrite its earlier entry and vanish from every count with no error,
+        # which is exactly the "unit in no set at all" imbalance this function's
+        # own docstring says a repeated unit identity must never become. Both of
+        # today's real callers already refuse a duplicate act_id before reaching
+        # this function, so this is defense in depth, not currently reachable --
+        # but this function's docstring makes a total-partition claim on its own,
+        # and it should hold when this function is called directly, not only
+        # when its callers happen to have deduplicated first.
+        if record["act_id"] in by_act_id:
+            raise SchemaRefusal(
+                f"terminal ledger act outcomes repeat act identity {record['act_id']!r}"
+            )
         by_act_id[record["act_id"]] = record
         categories_by_key[record["act_key"]] = record["category"]
 
