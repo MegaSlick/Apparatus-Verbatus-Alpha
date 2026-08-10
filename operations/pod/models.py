@@ -134,7 +134,7 @@ class PodCreateRequest:
         ):
             raise ValueError("docker_start_cmd must contain non-blank command parts")
         _assert_pod_timer_is_primary_process(self.docker_start_cmd)
-        _required_timer_arguments(self.docker_start_cmd, self.volume_mount_path)
+        _required_timer_arguments(self.docker_start_cmd, self.volume_mount_path, self.metadata)
         if self.interruptible is not False:
             raise ValueError("pod runtime requires interruptible=false")
         if not isinstance(self.recovery_only, bool):
@@ -194,12 +194,20 @@ def _assert_pod_timer_is_primary_process(command: tuple[str, ...]) -> None:
             )
 
 
-def _required_timer_arguments(command: tuple[str, ...], volume_mount_path: str) -> None:
+def _required_timer_arguments(
+    command: tuple[str, ...], volume_mount_path: str, metadata: Mapping[str, str]
+) -> None:
     """Require timer, bootstrap, factory, and durable-report wiring before billing.
 
     The provider can only start the primary command.  If the command does not
     carry all four facts, a successful provider create would leave a pod that
     cannot prove its bootstrap or its independent shutdown evidence.
+
+    A volume is retained across pods by design, so an unbound report path
+    would let a second launch's bootstrap/close evidence silently replace the
+    first's (GOVERNANCE 4).  Once the launch token is sealed into metadata,
+    the report path must carry that same token so two launches on one volume
+    cannot collide.
     """
 
     values: dict[str, str] = {}
@@ -234,6 +242,12 @@ def _required_timer_arguments(command: tuple[str, ...], volume_mount_path: str) 
         or not report_path.is_relative_to(volume_path)
     ):
         raise ValueError("pod timer report path must be inside the attached volume mount")
+    launch_token = metadata.get("VERBATUS_LAUNCH_TOKEN") if isinstance(metadata, Mapping) else None
+    if launch_token and launch_token not in report_path.name:
+        raise ValueError(
+            "pod timer report path must include this launch's token, "
+            "so a second launch on the same volume cannot overwrite its evidence"
+        )
 
 
 _CREDENTIAL_MARKERS = ("key", "secret", "password", "credential", "bearer", "token")

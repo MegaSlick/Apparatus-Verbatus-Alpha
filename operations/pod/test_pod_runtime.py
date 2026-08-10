@@ -183,7 +183,9 @@ class FakeControllerArmer:
                     "started_at": self.clock.now().isoformat().replace("+00:00", "Z"),
                 },
                 "pod_timer": {
-                    "report_path": "/workspace/private/pod-runtime-report.json",
+                    "report_path": request.docker_start_cmd[
+                        request.docker_start_cmd.index("--report-path") + 1
+                    ],
                     "acknowledged_at": self.clock.now().isoformat().replace("+00:00", "Z"),
                 },
             },
@@ -1623,6 +1625,71 @@ def test_timer_report_path_cannot_lexically_escape_the_attached_volume() -> None
 
     with pytest.raises(ValueError, match="inside the attached volume"):
         replace(request(Clock()), docker_start_cmd=tuple(command))
+
+
+def test_a_sealed_report_path_that_omits_its_launch_token_is_refused() -> None:
+    """A volume outlives any one pod; an unbound report path lets a second
+
+    launch on the same volume silently overwrite the first's durable close
+    evidence.  Once the launch token is sealed into metadata, the report
+    path must carry it.
+    """
+
+    clock = Clock()
+    with pytest.raises(ValueError, match="must include this launch's token"):
+        replace(
+            request(clock),
+            metadata={"VERBATUS_LAUNCH_TOKEN": "a" * 32},
+        )
+
+
+def test_guarded_create_binds_the_report_path_to_this_launchs_token(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+
+    result = runtime(provider, clock, tmp_path).create(
+        request(clock), confirmation=CREATE_CONFIRMATION
+    )
+
+    assert result.state is LaunchState.CREATED_GUARDED
+    submitted = provider.create_requests[-1]
+    command = submitted.docker_start_cmd
+    bound_report_path = command[command.index("--report-path") + 1]
+    assert bound_report_path == "/workspace/private/pod-runtime-report-" + "a" * 32 + ".json"
+
+
+def test_two_launches_on_one_volume_get_distinct_report_paths(tmp_path: Path) -> None:
+    """The volume is retained across pods by design; two launches that reuse
+
+    the same request-file report path must still land on non-colliding
+    durable evidence.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    tokens = iter(("a" * 32, "b" * 32, "c" * 32, "d" * 32))
+    pod_runtime = PodRuntime(
+        provider,
+        provider_name="fake",
+        spend_policy=policy(),
+        lease_root=tmp_path,
+        shutdown=shutdown(provider, clock),
+        now=clock.now,
+        token_factory=lambda: next(tokens),
+        controller_armer=FakeControllerArmer(clock, provider),
+    )
+
+    first = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+    assert first.state is LaunchState.CREATED_GUARDED
+    first_command = provider.create_requests[-1].docker_start_cmd
+    first_path = first_command[first_command.index("--report-path") + 1]
+
+    second = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+    assert second.state is LaunchState.CREATED_GUARDED
+    second_command = provider.create_requests[-1].docker_start_cmd
+    second_path = second_command[second_command.index("--report-path") + 1]
+
+    assert first_path != second_path
 
 
 def test_pod_timer_bootstrap_failed_to_start_records_its_own_reason_not_a_write_failure(

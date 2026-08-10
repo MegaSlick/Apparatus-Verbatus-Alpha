@@ -7,7 +7,7 @@ import secrets
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from .arming import (
@@ -34,6 +34,22 @@ from .spend import (
     confirmation_phrase,
     require_confirmation,
 )
+
+
+def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> tuple[str, ...]:
+    """Fold the launch token into the pod-side report path's file name.
+
+    A volume outlives any one pod, so an unbound report path lets a second
+    launch's durable evidence overwrite the first's (GOVERNANCE 4).  Binding
+    happens once, here, at sealing time -- the request's own validation then
+    refuses a report path that does not carry the sealed token.
+    """
+
+    index = command.index("--report-path") + 1
+    original = PurePosixPath(command[index])
+    bound_name = f"{original.stem}-{launch_token}{original.suffix}"
+    bound_path = str(original.with_name(bound_name))
+    return command[:index] + (bound_path,) + command[index + 1 :]
 
 
 class LaunchState(StrEnum):
@@ -422,6 +438,7 @@ class PodRuntime:
     ) -> PodCreateRequest:
         return replace(
             request,
+            docker_start_cmd=_bind_report_path_to_launch(request.docker_start_cmd, launch_token),
             metadata={
                 **dict(request.metadata),
                 "VERBATUS_HARD_DEADLINE": request.hard_deadline.isoformat().replace("+00:00", "Z"),
