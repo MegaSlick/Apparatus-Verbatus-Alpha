@@ -40,6 +40,7 @@ class _Context:
         self.run = tree.read_run()
         self.registry = ChairRegistry.from_toml(ROOT / "config/models.toml")
         self.witness_context = witness_context
+        self.witness_context_config_path = ROOT / "config" / "witness_context.toml"
 
     @property
     def config_digest(self):

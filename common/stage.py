@@ -391,11 +391,35 @@ def run_config_bindings(
             "decision this pipeline does not get to make for him"
         )
     try:
-        witness_context_config_digest = digest_bytes(Path(witness_context_config_path).read_bytes())
+        witness_context_config_bytes = Path(witness_context_config_path).read_bytes()
     except OSError as error:
         raise ContractError(
             f"the witness-context declaration at {witness_context_config_path} could not be read"
         ) from error
+    witness_context_config_digest = digest_bytes(witness_context_config_bytes)
+    # Coverage, not just readability, checked here rather than left to the
+    # Perlector: this function already holds `models.witness_chairs` and
+    # already reads this file's bytes for the digest above, so a chair with no
+    # declared entry can refuse before the run tree exists rather than after
+    # the Exemplar, Designator and the entire Attestatores leg have already
+    # run against every witness model on every act — the expensive part of a
+    # live pod run, spent on what is usually a config typo. The Perlector's own
+    # `dossier.load_witness_context` still does the full per-entry schema
+    # validation when it actually loads this file to build a dossier; this is
+    # only the cheap presence check that can run this early.
+    try:
+        witness_context_table = tomllib.loads(witness_context_config_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise ContractError(
+            f"the witness-context declaration at {witness_context_config_path} could not be "
+            f"parsed: {error}"
+        ) from error
+    missing = [chair for chair in models.witness_chairs if chair not in witness_context_table]
+    if missing:
+        raise ContractError(
+            f"chair {missing[0]!r} has no declared entry in {witness_context_config_path}; "
+            "every configured witness must carry a factual dossier context, or none is described"
+        )
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(

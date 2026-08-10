@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from common.chairs import AbsentChair, ChairIdentity, ChairRegistry, build_receipt
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.runtree.store import RunTree
 from common.stage import (
@@ -21,6 +21,27 @@ from common.stage import (
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_CONFIG = ROOT / "config" / "models.toml"
+
+
+def test_run_config_bindings_refuses_a_witness_context_missing_a_configured_chair(tmp_path):
+    """Audit finding: an incomplete `witness_context.toml` used to refuse only at
+    the Perlector, after the Exemplar, Designator and the entire Attestatores leg
+    had already run against every witness model on every act -- the expensive
+    part of a live pod run, spent on what is usually a config typo.
+    `run_config_bindings` already holds `models.witness_chairs` and already reads
+    this file's bytes for the digest, so the coverage refusal belongs here, at
+    run creation, before any of that work starts."""
+    registry = ChairRegistry.from_toml(MODELS_CONFIG)
+    incomplete = tmp_path / "witness_context.toml"
+    incomplete.write_text('[attestator_1]\ntraining_domain = "only one witness declared"\n')
+
+    with pytest.raises(ContractError, match="attestator_2.*has no declared entry"):
+        run_config_bindings(
+            registry.config,
+            {"fixture": "none"},
+            "test",
+            witness_context_config_path=incomplete,
+        )
 
 
 def _context(tmp_path) -> tuple[StageContext, ChairIdentity]:

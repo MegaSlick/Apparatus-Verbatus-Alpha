@@ -170,6 +170,7 @@ def _testimonium_entry(
     record: dict[str, Any],
     *,
     witness_context: dict[str, dict[str, str]],
+    witness_context_path: Path | str,
     regime: str,
     run_id: str,
     config_digest: str,
@@ -178,7 +179,7 @@ def _testimonium_entry(
     context_entry = witness_context.get(chair)
     if context_entry is None:
         raise ContractError(
-            f"chair {chair!r} has no declared entry in config/witness_context.toml; every "
+            f"chair {chair!r} has no declared entry in {witness_context_path}; every "
             "configured witness must carry a factual dossier context, or none is described"
         )
     reported = (
@@ -270,6 +271,7 @@ def build_dossier(
             _testimonium_entry(
                 record,
                 witness_context=witness_context,
+                witness_context_path=context.witness_context_config_path,
                 regime=regime,
                 run_id=context.tree.run_id,
                 config_digest=context.config_digest,
