@@ -15,7 +15,7 @@ import pytest
 from common.contracts.canonical import canonical_bytes
 from operations.pod.fake_provider import FakeProvider
 from operations.pod.lease import LeaseStore
-from operations.pod.models import PodCreateRequest
+from operations.pod.models import PodCreateRequest, ProviderFailure
 from operations.pod.shutdown import VerifiedShutdown
 from operations.pod.spend import load_spend_policy
 from operations.submit.submit import build_manifest, walk_folder
@@ -293,6 +293,31 @@ def test_saved_request_and_pod_reconstruction_refuse_type_coercion(tmp_path: Pat
         _pod_from_record(pod_record)
 
 
+def test_a_non_serializable_payload_is_a_named_record_error_not_a_raw_typeerror(
+    tmp_path: Path,
+) -> None:
+    """A raw Decimal (every current call site carefully str()s one first) must
+
+    still fail as a RecordError, so a future call site that forgets to would
+    get this surface's specific write-failed copy rather than an unhandled
+    TypeError leaking past it.
+    """
+
+    surface = _surface(tmp_path)
+
+    with pytest.raises(RecordError, match="not serializable"):
+        surface.receipts.write("run", {"amount": Decimal("1.23")})
+
+
+def test_a_raw_float_in_a_receipt_payload_is_refused_not_silently_hashed(tmp_path: Path) -> None:
+    """The same refusal the rest of the pipeline's canonical form already makes."""
+
+    surface = _surface(tmp_path)
+
+    with pytest.raises(RecordError, match="not serializable"):
+        surface.receipts.write("run", {"amount": 1.5})
+
+
 def test_receipt_reader_binds_the_kind_into_the_filename(tmp_path: Path) -> None:
     surface = _surface(tmp_path)
     receipt = surface.receipts.write("run", {"summary": "saved"})
@@ -502,6 +527,32 @@ def test_provider_preview_faults_are_named_and_a_retry_is_safe(
     assert not any(verb == "create" for verb, _ in surface.provider.calls)
     prepared = surface.prepare_launch(_request(), policy_path=spend)
     assert prepared.result.preview is not None
+
+
+def test_a_post_confirmation_provider_failure_is_named_launch_unresolved_not_retryable(
+    tmp_path: Path,
+) -> None:
+    """The orphan-risk case: the provider accepts the paid call, then the
+
+    client loses the response — after the typed confirmation, not before,
+    unlike the preview faults above. This is the one state where a real pod
+    could already be billing while the operator has no confirmation it
+    exists, and it must never be reported as a plain, retryable failure.
+    """
+
+    surface = _surface(tmp_path)
+    prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+    surface.provider.inject_post_create_failure(
+        ProviderFailure("client died after the provider accepted")
+    )
+
+    with pytest.raises(OperatorError) as failure:
+        surface.launch(prepared, prepared.confirmation_phrase)
+
+    assert failure.value.code is ErrorCode.LAUNCH_UNRESOLVED
+    rendered = failure.value.render().lower()
+    assert "do not launch again" in rendered
+    assert "a provider request may already have occurred" in rendered
 
 
 def test_configured_ceiling_refusal_does_not_claim_the_policy_is_missing(tmp_path: Path) -> None:

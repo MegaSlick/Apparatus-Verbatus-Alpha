@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from common.contracts.canonical import canonical_bytes as _pipeline_canonical_bytes
+
 UTC = timezone.utc
 SCHEMA = "operator-receipt.v1"
 DESCRIPTOR_SCHEMA = "operator-surface.v2"
@@ -25,11 +27,18 @@ class RecordError(RuntimeError):
 
 
 def canonical_bytes(value: object) -> bytes:
-    """The stable bytes used for an immutable operator receipt."""
+    """The stable bytes used for an immutable operator receipt.
 
-    return (
-        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
-    ).encode("utf-8")
+    The pipeline's one canonical serialization, not a second reimplementation:
+    same key order, same UTF-8 text rather than \\u-escapes, and the same
+    refusal of a raw float (a float reaching a receipt would be exactly the
+    "silent determinism defect" that serialization exists to make loud
+    instead). A trailing newline is added so a receipt reads as an ordinary
+    text file when opened directly — this module's own concern, not the
+    shared one's.
+    """
+
+    return _pipeline_canonical_bytes(value) + b"\n"
 
 
 def utc_stamp(value: datetime) -> str:
@@ -71,7 +80,10 @@ class ReceiptStore:
             "recorded_at": utc_stamp(self.now()),
             "payload": payload,
         }
-        encoded = canonical_bytes(record)
+        try:
+            encoded = canonical_bytes(record)
+        except TypeError as error:
+            raise RecordError(f"operator receipt payload is not serializable: {error}") from error
         digest = hashlib.sha256(encoded).hexdigest()
         target = self.receipts / f"{kind}-{digest}.json"
         self.receipts.mkdir(parents=True, exist_ok=True)
