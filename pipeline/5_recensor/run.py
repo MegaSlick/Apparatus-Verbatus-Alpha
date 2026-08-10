@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from residual_ink import page_residual_ink  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
@@ -448,10 +449,18 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
             )
         ordinal = transform.get("source_page_ordinal")
         bounds = transform.get("bounds")
+        # Every one of the four numbers, not merely that `bounds` is an object:
+        # `residual_ink` indexes all four, so a rectangle that is a dict and
+        # nothing more reaches the pixel arithmetic and leaves by traceback
+        # instead of by the named refusal this check exists to give.
         if (
             not isinstance(ordinal, int)
             or isinstance(ordinal, bool)
             or not isinstance(bounds, dict)
+            or any(
+                not isinstance(bounds.get(side), int) or isinstance(bounds.get(side), bool)
+                for side in ("x", "y", "w", "h")
+            )
         ):
             raise FatalAccounting(
                 f"Designator region {record.get('artifact_id')} has an invalid transform"
@@ -561,7 +570,19 @@ def page_coverage_findings(context) -> dict[int, dict]:
                 f"a Designator region names source page {ordinal}, which the Exemplar "
                 "did not seal; a crop of unsealed pixels is invariant #10's imbalance"
             )
+        # The bytes this check actually computes over, digested — not the
+        # separate, earlier read `sealed_page_images` verified. A verification
+        # of one read followed by an unchecked second read of the same path
+        # measures whatever is there at the second read, and a residual-ink
+        # finding derived from pixels nobody verified is a metric that was not
+        # measured being recorded as a pass (GOVERNANCE 10). The Armarium's own
+        # crop read makes the same check for the same reason.
         image_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+        if digest_bytes(image_bytes) != page["payload"]["source_sha256"]:
+            raise FatalAccounting(
+                f"the sealed Exemplar page {ordinal} the residual-ink check read does not "
+                "match the pixel digest its own page record verified"
+            )
         findings[ordinal] = page_residual_ink(image_bytes, bounds)
     return findings
 

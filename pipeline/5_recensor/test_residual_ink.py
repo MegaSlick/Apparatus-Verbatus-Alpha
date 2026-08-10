@@ -146,6 +146,35 @@ def test_a_negative_covered_origin_is_clipped_not_refused():
     assert result["flagged"] is False
 
 
+def test_overlapping_and_clipped_bounds_cover_exactly_their_union():
+    """The mask is filled by row slice rather than pixel by pixel, so the cost of
+    this check is the covered AREA and not the sum of the declared rectangles.
+    Overlap, partial overlap and clipping are where a row-slice fill could
+    plausibly differ from a per-pixel one, so each is asserted against a
+    hand-counted union rather than against the implementation."""
+    rows = canvas(20, 20)
+    ink = set()
+    for x, y in ((1, 1), (7, 7), (12, 12), (19, 19), (0, 19), (19, 0)):
+        paint(rows, x, y, 1, 1)
+        ink.add((x, y))
+    covered = [
+        {"x": 0, "y": 0, "w": 10, "h": 10},  # top-left quarter
+        {"x": 5, "y": 5, "w": 10, "h": 10},  # overlaps it, and reaches past it
+        {"x": 18, "y": 18, "w": 50, "h": 50},  # clipped to the page's corner
+        {"x": -5, "y": -5, "w": 7, "h": 7},  # clipped at the origin
+        {"x": 0, "y": 0, "w": 0, "h": 0},  # empty: covers nothing
+    ]
+    union = set()
+    for bounds in covered:
+        for y in range(max(0, bounds["y"]), min(20, bounds["y"] + bounds["h"])):
+            for x in range(max(0, bounds["x"]), min(20, bounds["x"] + bounds["w"])):
+                union.add((x, y))
+    result = residual_ink(20, 20, rows, covered=covered)
+    assert result["total_ink_pixels"] == len(ink)
+    assert result["outside_ink_pixels"] == len(ink - union)
+    assert ink - union  # the case would prove nothing if everything were covered
+
+
 def test_page_residual_ink_decodes_before_measuring():
     rows = canvas(10, 10)
     paint(rows, 0, 0, 6, 6)

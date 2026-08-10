@@ -160,15 +160,25 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
     `subject_id` fields directly does not trust anything this pipeline has not
     already checked once.
     """
+    # One manifest per stage, however many kinds the policy names on it. Building
+    # a manifest revalidates every artifact of that stage and re-verifies every
+    # byte it references, so walking it once per configured kind would make the
+    # cost of this tally the policy's LENGTH times the corpus size — and the
+    # orchestrator recomputes it at every stage boundary and every recovery
+    # round. Two entries already share the door today. Caching also gives every
+    # kind in one tally the same snapshot of the tree.
+    manifests: dict[str, list[dict[str, Any]]] = {}
+
+    def artifacts(stage: str) -> list[dict[str, Any]]:
+        if stage not in manifests:
+            manifests[stage] = tree.build_manifest(stage)["artifacts"]
+        return manifests[stage]
+
     by_kind: dict[str, list[str]] = {}
     subjects: set[tuple[str, str]] = set()
     for stage, outcome in sorted(policy["kinds"]):
         matches = sorted(
-            {
-                entry["subject_id"]
-                for entry in tree.build_manifest(stage)["artifacts"]
-                if entry["outcome"] == outcome
-            }
+            {entry["subject_id"] for entry in artifacts(stage) if entry["outcome"] == outcome}
         )
         by_kind[f"{stage}:{outcome}"] = matches
         subjects.update((stage, subject_id) for subject_id in matches)
@@ -177,7 +187,7 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
         matches = sorted(
             {
                 entry["subject_id"]
-                for entry in tree.build_manifest(stage)["artifacts"]
+                for entry in artifacts(stage)
                 if entry["outcome"] == outcome
                 and _reason_code(
                     tree.read_artifact(stage, entry["kind"], entry["artifact_id"])["payload"].get(

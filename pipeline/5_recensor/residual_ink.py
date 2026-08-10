@@ -102,10 +102,14 @@ def residual_ink(
         y0 = max(0, min(bounds["y"], height))
         x1 = max(x0, min(bounds["x"] + bounds["w"], width))
         y1 = max(y0, min(bounds["y"] + bounds["h"], height))
+        # Filled by row slice, not pixel by pixel. The number of regions on a
+        # page is the number of acts touching it and each one's declared width
+        # and height are its own, so a per-pixel fill makes this check cost the
+        # SUM of the declared areas -- which a page of overlapping full-page
+        # rectangles multiplies by the act count.
+        span = b"\x01" * (x1 - x0)
         for y in range(y0, y1):
-            row_offset = y * width
-            for x in range(x0, x1):
-                covered_mask[row_offset + x] = 1
+            covered_mask[y * width + x0 : y * width + x1] = span
 
     total_ink = 0
     outside_ink = 0

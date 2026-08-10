@@ -33,6 +33,7 @@ import pytest
 
 from common.contracts.errors import FatalAccounting
 from common.contracts.stages import DESIGNATOR
+from common.imaging import encode_grayscale_png
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -163,6 +164,70 @@ def test_sealed_page_images_refuses_duplicate_ordinals_instead_of_selecting_one(
 
     with pytest.raises(FatalAccounting, match="more than one sealed page for ordinal 1"):
         RUN.sealed_page_images(_FakeContext(DuplicatePageTree()))
+
+
+def test_a_region_whose_bounds_are_missing_a_side_is_refused_not_indexed(tmp_path):
+    """`regions_by_source_page` hands `bounds` straight to `residual_ink`, which
+    indexes all four sides. A rectangle that is an object and nothing more used
+    to reach the pixel arithmetic and leave by `KeyError`. Driven through a
+    stand-in tree rather than a tampered artifact on purpose: the proposal seal
+    references every region by digest, so a real edited region is refused by
+    `build_manifest` long before this function sees it (verified). The shape this
+    guards is therefore a Designator regression, not an attacker -- and a
+    regression deserves the named refusal, not a traceback."""
+
+    class ShortBoundsTree:
+        def build_manifest(self, _stage):
+            return {"artifacts": [{"kind": "region", "artifact_id": "region-a"}]}
+
+        def read_artifact(self, _stage, _kind, artifact_id):
+            return {
+                "artifact_id": artifact_id,
+                "payload": {
+                    "transform": {"source_page_ordinal": 1, "bounds": {"x": 0, "y": 0}},
+                },
+            }
+
+        def read_run(self):
+            return {}  # never reached: the refusal is on the region, before any page
+
+    with pytest.raises(FatalAccounting, match="invalid transform"):
+        RUN.regions_by_source_page(_FakeContext(ShortBoundsTree()))
+
+
+def test_the_residual_ink_check_refuses_page_bytes_it_did_not_verify(tmp_path):
+    """`sealed_page_images` verifies each page's pixels; `page_coverage_findings`
+    then reads that path AGAIN to measure it. Two reads of one path is a check
+    followed by a use of something else, and only the second read's bytes are
+    ever measured -- so those are the bytes that have to carry the page's own
+    digest.
+
+    A single-process test cannot land a writer between the two reads, so the
+    race is modelled: this tree is honest on every read the verification makes
+    and returns a different page on the second read of the same path. Before the
+    digest check below, this produced `flagged: False` for both pages of the
+    real fixture over pixels nobody verified -- a measurement recorded as a pass
+    without having been made (GOVERNANCE 10)."""
+    real = _built_through_designator(tmp_path)
+
+    class RacingTree:
+        def __init__(self, tree):
+            self._tree = tree
+            self._read = set()
+
+        def __getattr__(self, name):
+            return getattr(self._tree, name)
+
+        def read_bytes(self, relative_path):
+            if relative_path in self._read:
+                return encode_grayscale_png(40, 40, [bytearray(b"\x00" * 40) for _ in range(40)])
+            self._read.add(relative_path)
+            return self._tree.read_bytes(relative_path)
+
+    context = _FakeContext(real)
+    context.tree = RacingTree(real)
+    with pytest.raises(FatalAccounting, match="does not match the pixel digest"):
+        RUN.page_coverage_findings(context)
 
 
 def test_page_coverage_findings_does_not_flag_the_real_fully_covered_fixture(tmp_path):
