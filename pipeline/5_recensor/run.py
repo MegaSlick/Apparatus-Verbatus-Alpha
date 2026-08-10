@@ -590,6 +590,13 @@ def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dic
     near side is, and a successful recovery crop that reaches previously-missed
     ink clears the page's finding on the very next pass.
 
+    `checked_pages` is narrowed to pages `findings` actually has an entry for,
+    not merely every ordinal an act's regions name: in `main()`'s real call the
+    two sets always coincide (`page_coverage_findings` derives its keys from
+    the same region set this function reads), but the field's own purpose --
+    "a consumer cannot tell 'checked and clear' from 'never checked'" -- only
+    holds if a page absent from `findings` is never reported as checked.
+
     One derivation for all four review shapes, including a Designator-held act
     whose own near-side region really was cut: a shape that records this fact
     empty rather than deriving it drops a flagged page's only evidence whenever
@@ -603,11 +610,10 @@ def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dic
             and isinstance(region["payload"].get("transform"), dict)
         }
     )
+    checked = [ordinal for ordinal in ordinals if ordinal in findings]
     return {
-        "checked_pages": ordinals,
-        "flagged_pages": [
-            ordinal for ordinal in ordinals if findings.get(ordinal, {}).get("flagged")
-        ],
+        "checked_pages": checked,
+        "flagged_pages": [ordinal for ordinal in checked if findings[ordinal].get("flagged")],
     }
 
 

@@ -287,12 +287,18 @@ def test_page_coverage_for_reads_every_page_an_acts_own_regions_touch(tmp_path):
         2,
     }
 
-    def flagged(findings):
-        return RUN.page_coverage_for(a2_regions, findings)["flagged_pages"]
+    def coverage(findings):
+        return RUN.page_coverage_for(a2_regions, findings)
 
-    # `checked_pages` is every page the act's regions touch, whatever the
-    # findings say about them; only `flagged_pages` narrows.
-    assert RUN.page_coverage_for(a2_regions, {})["checked_pages"] == [1, 2]
+    def flagged(findings):
+        return coverage(findings)["flagged_pages"]
+
+    # `checked_pages` is every page the act's regions touch AND findings has an
+    # entry for -- a page absent from findings entirely is never reported as
+    # checked, so "checked and clear" cannot be confused with "never checked".
+    assert coverage({1: {"flagged": False}, 2: {"flagged": False}})["checked_pages"] == [1, 2]
+    assert coverage({1: {"flagged": False}})["checked_pages"] == [1]
+    assert coverage({})["checked_pages"] == []
     assert flagged({1: {"flagged": False}, 2: {"flagged": False}}) == []
     assert flagged({1: {"flagged": False}, 2: {"flagged": True}}) == [2]
     assert flagged({1: {"flagged": True}, 2: {"flagged": True}}) == [1, 2]
