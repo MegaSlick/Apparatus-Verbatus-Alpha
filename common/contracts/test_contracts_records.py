@@ -79,6 +79,22 @@ def test_a_record_with_no_hash_does_not_pass_by_default():
     assert not verify_self_hash({"a": 1})
 
 
+def test_a_deeply_nested_record_fails_its_hash_rather_than_crashing():
+    """`common/runtree/store.py::_read_json`'s `RecursionError` guard protects the
+    JSON scanner only. A record shallow enough to parse but deep enough to exhaust
+    the recursion limit while `self_hash` recomputes it — `canonical_bytes` walks
+    the structure again, to refuse floats — used to crash `read_artifact` and
+    `build_manifest` with a traceback rather than refuse the record. Every caller
+    of `verify_self_hash` already treats `False` as "refuse"; catching the
+    RecursionError here and returning `False` fixes every one of them at once,
+    the same way `_read_json`'s own fix closed the reader-side band."""
+    nested: dict = {"leaf": 1}
+    for _ in range(2000):
+        nested = {"nested": nested}
+    record = {"a": nested, "self_hash": "0" * 64}
+    assert verify_self_hash(record) is False
+
+
 # --- The approval record -------------------------------------------------------
 
 

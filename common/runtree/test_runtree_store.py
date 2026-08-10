@@ -17,6 +17,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1150,13 +1151,13 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
 
 def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_crash(tmp_path):
     """`_read_json` names the ways a file can fail to be read, and `RecursionError`
-    was not among them: `json`'s scanner recurses once per nesting level, so an
-    artifact holding about a thousand nested arrays raised straight through every
-    caller. A stage that should have refused the file and held died with a
-    traceback instead, and because `build_manifest` reads every artifact under a
-    directory, one such file stopped the whole stage rather than its own record.
-    Depth 900 was already refused on its self-hash; only the reader itself was
-    open."""
+    was not among them: `json`'s scanner recurses once per nesting level, so a
+    deeply nested artifact raised straight through every caller. A stage that
+    should have refused the file and held died with a traceback instead, and
+    because `build_manifest` reads every artifact under a directory, one such
+    file stopped the whole stage rather than its own record. 30,000 is driven
+    deliberately deep rather than pinned to the scanner's exact failure depth,
+    which is an interpreter fact, not one this suite should assert."""
     tree = make_run(tmp_path)
     envelope = make_envelope()
     tree.publish_artifact(envelope)
@@ -1168,4 +1169,35 @@ def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_cras
     )
 
     with pytest.raises(SchemaRefusal, match="could not be read as an artifact"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_not_a_crash(
+    tmp_path,
+):
+    """A second, deeper band of the same defect the test above pins.
+
+    `_read_json`'s guard protects `json.loads`, whose C scanner tolerates far
+    deeper nesting than the pure-Python walk `canonical_bytes` makes to refuse
+    floats ahead of hashing. A record shallow enough to parse cleanly but deep
+    enough to exhaust the recursion limit during that second walk reached
+    `verify_self_hash` and crashed one call past where the reader-side guard
+    already closed the door — found by blind audit against this same tree
+    (two independent audits, one depth each) rather than by this suite.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+
+    nesting = 2000
+    deep: Any = "leaf"
+    for _ in range(nesting):
+        deep = {"nested": deep}
+    tampered = dict(envelope)
+    tampered["payload"] = {"deep": deep}
+    tampered["self_hash"] = "0" * 64
+    path.write_text(json.dumps(tampered), encoding="utf-8")
+
+    with pytest.raises(SchemaRefusal, match="fails its self-hash"):
         tree.build_manifest(DESIGNATOR)
