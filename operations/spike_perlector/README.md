@@ -128,6 +128,24 @@ align as an insertion or substitution elsewhere; it cannot be called either corr
 or fabricated *inside* the marked gap. That is a harder problem this instrument does
 not solve and does not claim to.
 
+**Said plainly rather than left to be discovered: reading a gap correctly costs the
+same as inventing something there, and omitting it costs nothing.** Because no
+reference characters exist at a gap, any hypothesis text a candidate produces near
+that position scores as an insertion or substitution against neighbouring ink,
+whether it happens to be the true unread character or a fabrication — and a
+candidate that writes nothing there is charged no error for it at all. Inside a
+marked gap specifically, this instrument rewards silence over any attempt, honest
+or invented; the earlier claim that a partial reading beats declining holds for a
+whole act's response state (the response-state table below), not for a single gap
+inside an otherwise-scored reading.
+
+**`ILLEGIBLE` is a reserved resolution, not free text.** `reconcile` reads an
+adjudicator's resolution for a disputed span as characters, except the literal
+string `ILLEGIBLE`, which it reads instead as the signal for a zero-width gap. No
+live adjudication procedure exists yet; whoever builds one must show adjudicators
+this reserved word so a genuine resolution that happens to equal it is never
+silently turned into a gap instead of nine characters of text.
+
 `no_readable_text` is a positive fact about a truly blank crop, never an empty string. `unresolved_gap` means ink exists but cannot be adjudicated — for the whole crop; unread ink *within* a reading is a gap, above. Neither has a CER/WER denominator, so neither gets an artificial perfect score. Both remain accounted for in `PrivateSampleAccounting` until a separately predeclared masked-alignment method exists.
 
 **What follows from that, said plainly rather than left to be discovered.** A
