@@ -11,12 +11,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import stat
 import sys
+import time
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 import pytest
 
@@ -1478,6 +1481,146 @@ def test_subprocess_launcher_creates_its_log_file_owner_only_from_the_start(
     assert process.wait(3) == 0
     mode = stat.S_IMODE((tmp_path / "child.log").stat().st_mode)
     assert mode == 0o600, f"expected owner-only 0o600, got {oct(mode)}"
+
+
+def _wait_until(predicate: Callable[[], bool], *, timeout_seconds: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("condition did not become true in time")
+        time.sleep(0.02)
+
+
+def test_a_still_running_child_polls_none_and_a_terminated_one_reports_its_signal(
+    tmp_path: Path,
+) -> None:
+    """``poll``/``terminate``/``wait`` against a real child, not ``FakeProcess``."""
+
+    process = SubprocessLauncher().launch(
+        (sys.executable, "-c", "import time; time.sleep(30)"),
+        tmp_path / "child.log",
+    )
+    try:
+        assert process.poll() is None
+        process.terminate()
+        exit_code = process.wait(5)
+        assert exit_code == -signal.SIGTERM
+        assert process.poll() == -signal.SIGTERM
+    finally:
+        with suppress(ProcessLookupError):
+            process.kill()
+
+
+def test_kill_reaches_a_child_that_ignores_sigterm(tmp_path: Path) -> None:
+    """A child that ignores SIGTERM must still fall to SIGKILL."""
+
+    ready = tmp_path / "ready"
+    script = (
+        "import signal, sys, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"open({str(ready)!r}, 'w').close()\n"
+        "time.sleep(30)\n"
+    )
+    process = SubprocessLauncher().launch(
+        (sys.executable, "-c", script),
+        tmp_path / "child.log",
+    )
+    try:
+        # The ready file is only written after the SIGTERM handler is
+        # installed, so terminate() below cannot race the default
+        # disposition and kill the child before it starts ignoring the
+        # signal.
+        _wait_until(lambda: ready.exists())
+        process.terminate()
+        with pytest.raises(TimeoutError):
+            process.wait(0.5)
+        process.kill()
+        assert process.wait(5) == -signal.SIGKILL
+    finally:
+        with suppress(ProcessLookupError):
+            process.kill()
+
+
+def test_terminate_reaches_a_grandchild_in_the_same_owned_session(tmp_path: Path) -> None:
+    """``os.killpg`` against the launch's own session, not just the direct child.
+
+    ``start_new_session=True`` puts the direct child in a fresh process group;
+    an ordinary grandchild it spawns (no ``setsid`` of its own) inherits that
+    same group.  ``terminate`` must reach both, the way a real vLLM process
+    tree does, not merely the one PID this manager launched.
+    """
+
+    pidfile = tmp_path / "grandchild.pid"
+    script = (
+        "import subprocess, sys, time\n"
+        "grandchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "with open(sys.argv[1], 'w') as handle:\n"
+        "    handle.write(str(grandchild.pid))\n"
+        "time.sleep(30)\n"
+    )
+    process = SubprocessLauncher().launch(
+        (sys.executable, "-c", script, str(pidfile)),
+        tmp_path / "child.log",
+    )
+    try:
+        _wait_until(lambda: pidfile.exists() and pidfile.read_text())
+        grandchild_pid = int(pidfile.read_text())
+
+        def _grandchild_alive() -> bool:
+            # The grandchild is orphaned once its true parent (the direct
+            # child this manager owns) is also killed by the same killpg, so
+            # nothing left in this process tree ever reaps it: a signalled
+            # grandchild becomes an unreapable zombie rather than
+            # disappearing, and plain os.kill(pid, 0) still succeeds against
+            # a zombie. /proc's own state character is the one thing that
+            # distinguishes "signalled and exited" from "still running" here.
+            try:
+                status = Path(f"/proc/{grandchild_pid}/status").read_text()
+            except FileNotFoundError:
+                return False
+            return "(zombie)" not in status
+
+        assert _grandchild_alive(), "grandchild must be running before terminate is asserted"
+        process.terminate()
+        process.wait(5)
+        _wait_until(lambda: not _grandchild_alive())
+    finally:
+        with suppress(ProcessLookupError):
+            process.kill()
+        with suppress(ProcessLookupError):
+            os.kill(grandchild_pid, signal.SIGKILL)
+
+
+def test_read_tail_returns_only_the_bounded_tail_of_a_real_log(tmp_path: Path) -> None:
+    marker = "END-OF-LOG-MARKER"
+    script = (
+        "import sys\n"
+        "sys.stdout.write('x' * 4000 + chr(10))\n"
+        f"sys.stdout.write({marker!r} + chr(10))\n"
+        "sys.stdout.flush()\n"
+    )
+    process = SubprocessLauncher().launch(
+        (sys.executable, "-c", script),
+        tmp_path / "child.log",
+    )
+    assert process.wait(5) == 0
+
+    tail = process.read_tail(maximum_bytes=64)
+    assert len(tail.encode("utf-8", errors="replace")) <= 64
+    assert tail.strip().endswith(marker)
+
+    whole = process.read_tail(maximum_bytes=1_000_000)
+    assert marker in whole
+    assert "x" * 4000 in whole
+
+
+def test_close_log_clears_the_handle_once_exit_is_observed(tmp_path: Path) -> None:
+    process = SubprocessLauncher().launch(
+        (sys.executable, "-c", "pass"),
+        tmp_path / "child.log",
+    )
+    assert process.wait(3) == 0
+    assert process._log_handle is None  # type: ignore[attr-defined]
 
 
 def test_each_manager_log_path_is_fresh_even_with_the_same_log_root(tmp_path: Path) -> None:
