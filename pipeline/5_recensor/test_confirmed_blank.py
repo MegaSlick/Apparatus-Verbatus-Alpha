@@ -8,8 +8,8 @@ of the outcome algebra (`common/contracts/outcomes.py`) that nothing ever
 produced -- every `no-readable-text` Perlectio was held for review forever, with
 no path to ever close the act.
 
-The window pass (2026-08-05, `/out/report.md`) found the old pipeline's own
-hard-won rule for this: a blank verdict may never rest on fewer than several
+The window pass (2026-08-05) found the old pipeline's own hard-won rule for
+this: a blank verdict may never rest on fewer than several
 genuinely independent completed reads, and never on a reader's own second
 opinion. This is unanimity about an absence, never a selection among presences
 (GOVERNANCE 3) -- the Perlector's own direct reading of the ink already found

@@ -234,7 +234,7 @@ def test_a_designator_held_act_with_a_real_region_carries_that_regions_own_facts
     page 1 is real, on-disk, sealed evidence. The Recensor's continuation and
     page_coverage facts must reflect that real region rather than assume every
     hold cut nothing, or a flagged page whose only touching act is a hold of
-    this shape would never be reported anywhere (see /out/report.md)."""
+    this shape would never be reported anywhere."""
     root = tmp_path / "runs"
     _run_through_recensor(root, "r", "refused-page")
     tree = RunTree(root, "r")

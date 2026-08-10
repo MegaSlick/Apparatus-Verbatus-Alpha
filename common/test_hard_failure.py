@@ -83,7 +83,7 @@ def test_the_shipped_default_config_loads_at_the_ruled_boundary():
     # Tyrel-ruled distinction) -- a bounded-retry matter, never the run-level
     # systemic-breakage signal. See config/hard_failure.toml's own comment.
     assert (PERLECTOR, "truncated") not in policy["kinds"]
-    # The exclusions argued in the config's own comments and in /out/report.md.
+    # The exclusions argued in the config's own comments.
     assert ("door", "refused") not in policy["kinds"]
     assert ("exemplar", "refused") not in policy["kinds"]
     assert ("recensor", "held-for-review") not in policy["kinds"]

@@ -28,10 +28,8 @@ RULED_ABSOLUTE_CAP: Final = 3
 # (the Recensor that writes it, the Designator and orchestrator that read it)
 # names the same two strings rather than each inventing its own spelling.
 #
-# These name a coverage OPERATION, never a reading's quality. They are spelled
-# the way every other durable word in this pipeline is spelled — hyphenated, like
-# `recovery-requested`, `no-readable-text`, `genuinely-empty` — and are
-# deliberately NOT the config field names they are budgeted under. A sealed
+# These name a coverage OPERATION, never a reading's quality, and are
+# deliberately NOT the config field names they are budgeted under: a sealed
 # artifact's vocabulary must not move because somebody renamed a TOML key, so the
 # mapping below is the one place the two spellings meet.
 FALLBACK_RECROP: Final = "fallback-recrop"

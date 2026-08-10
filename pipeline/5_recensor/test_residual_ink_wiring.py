@@ -21,7 +21,7 @@ evidence list before Recensor ever runs, which is a working guard, not a gap
 to route around. So this exercises every function `main()` actually calls,
 against a real tree, with the one input the walking skeleton cannot yet
 supply (a genuinely short covered set) provided directly -- exactly the
-boundary named in HANDOFF.md and `/out/report.md`.
+boundary named in HANDOFF.md.
 """
 
 import importlib.util
@@ -84,8 +84,8 @@ def _built_through_designator(tmp_path, scenario="happy"):
 
 class _FakeContext:
     """Just enough of `StageContext` for these free functions: a `.tree` and
-    the real sealed `.run`, which `sealed_page_images` now verifies every
-    page's pixels against before trusting them."""
+    the real sealed `.run`, which `sealed_page_images` verifies every page's
+    pixels against before trusting them."""
 
     def __init__(self, tree):
         self.tree = tree
@@ -168,8 +168,8 @@ def test_sealed_page_images_refuses_duplicate_ordinals_instead_of_selecting_one(
 
 def test_a_region_whose_bounds_are_missing_a_side_is_refused_not_indexed(tmp_path):
     """`regions_by_source_page` hands `bounds` straight to `residual_ink`, which
-    indexes all four sides. A rectangle that is an object and nothing more used
-    to reach the pixel arithmetic and leave by `KeyError`. Driven through a
+    indexes all four sides, so a rectangle that is an object and nothing more
+    would reach the pixel arithmetic and leave by `KeyError`. Driven through a
     stand-in tree rather than a tampered artifact on purpose: the proposal seal
     references every region by digest, so a real edited region is refused by
     `build_manifest` long before this function sees it (verified). The shape this

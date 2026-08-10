@@ -120,8 +120,7 @@ evidence to read a region's absence against there: nothing ever examined
 those pixels. Closing that gap needs either a real structural Designator that
 can be *wrong* about finding zero acts (the walking skeleton's synthetic
 proposer always agrees with the declared fixture) or a page-level reread
-capability neither this pass nor spec 08 builds yet. Left named, not
-papered over — see `/out/report.md`.
+capability neither this pass nor spec 08 builds yet. Left named, not papered over.
 
 ## `kind="recovery-request"`
 

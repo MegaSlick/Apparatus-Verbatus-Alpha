@@ -17,15 +17,11 @@ sequence and to checkpoint. Its four jobs:
               re-reviews. The Recensor never cuts a crop, so recovery does not grow
               a second author for regions.
   Checkpoint. After every stage invocation and every recovery round, the run-level
-              hard-failure cap (`common/hard_failure.py`, Tyrel's ruling of
-              2026-08-05) is recomputed from the artifacts actually on disk. Two
-              hard failures is an early warning and the run keeps going; more than
-              two halts it at the stage boundary just finished — never mid-stage —
-              with whatever completed intact. This is distinct from the Recensor's
-              own per-act recovery budget (`common/recovery.py`): that bounds how
-              often ONE ACT may ask for rework, this bounds how many accounted hard
-              failures ONE RUN may carry before it needs Tyrel rather than another
-              automatic stage invocation.
+              hard-failure cap (`common/hard_failure.py`, which owns the tally and
+              the reasoning behind it) is recomputed. Two hard failures is an early
+              warning and the run keeps going; more than two halts it at the stage
+              boundary just finished — never mid-stage — with whatever completed
+              intact.
   Resume.     Nothing here tracks progress in a file of its own. Every stage
               republishes what it already published, and the run tree reuses
               identical bytes and refuses different ones. Resume is therefore a
@@ -69,13 +65,11 @@ from common.stage import (  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# The orchestrator's own exit code, never a stage's. `common/stage.py`'s
-# EXIT_COMPLETE/EXIT_FATAL/EXIT_HELD are the contract a stage PROGRAM returns to
-# the orchestrator that invokes it; no stage ever halts a run for the run-level
-# hard-failure cap; only the orchestrator can, since only it decides whether to
-# invoke another stage at all. A distinct code keeps "the run-level cap tripped"
-# distinguishable from "a stage crashed" (2) and from the ordinary "some acts are
-# held for review" (3) that a working pipeline produces every day.
+# The orchestrator's own exit code, never a stage's: only this process decides
+# whether to invoke another stage, so only it can halt a run for the run-level
+# cap. A distinct code keeps that outcome distinguishable from "a stage crashed"
+# (`EXIT_FATAL`) and from the ordinary "some acts are held" (`EXIT_HELD`) a
+# working pipeline produces every day.
 EXIT_RUN_HALTED = 4
 
 # The pipeline in flow order. The door is a program of the Exemplar's directory
@@ -154,10 +148,8 @@ def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, 
         review = latest_attempt(records, f"Recensor review of {subject}", operation="recense")
         if review["outcome"] != "recovery-requested":
             continue
-        # `current_recovery_request` already refuses unless the request's
-        # payload carries a `recovery_kind` in the closed `RECOVERY_KINDS`
-        # vocabulary before it returns one at all, so re-checking that here
-        # would only ever re-confirm what the callee already guaranteed.
+        # Indexed without a check: `current_recovery_request` refuses a request
+        # whose `recovery_kind` is outside `RECOVERY_KINDS` before returning one.
         request = current_recovery_request(tree, subject, recovery_policy)
         recovery_kind = request["payload"]["recovery_kind"]
         outstanding.append((subject, request["artifact_id"], recovery_kind))
@@ -257,14 +249,9 @@ def checkpoint(args, checkpoint_name: str, hard_failure_policy: dict) -> dict | 
     """Recompute the run-level hard-failure tally from disk; the tally if breached.
 
     The boundary's own name travels back inside the tally, so the halt below can
-    say which section finished rather than only that one did.
-
-    Recomputed fresh every time from the artifacts a stage actually published,
-    never from a counter this process keeps in memory — a count that only lived
-    in this process's memory would read zero exactly when a run is resumed after
-    a crash, which is backwards for a mechanism whose job is noticing that
-    something is going wrong. Two hard failures is Tyrel's named "early warning"
-    and does not stop anything; more than two does, at this exact boundary.
+    say which section finished rather than only that one did. Two hard failures
+    is Tyrel's named "early warning" and stops nothing; more than two halts the
+    run at this exact boundary.
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     tally = tally_hard_failures(tree, hard_failure_policy)

@@ -11,10 +11,10 @@ recovery recovers coverage and not quality (GOVERNANCE 11). Every request is an
 artifact, so nothing can disappear inside a loop.
 
 **It does not select among witnesses.** Witness outcomes are aggregated into a
-    coverage record used to mark an act under-witnessed and force the run's
-    aggregate visibly partial. On an explicit Perlector `no-readable-text`
-    finding, unanimous region-bound absence may additionally corroborate a blank;
-    it never supplies characters, and no count of chairs can change a reading.
+coverage record that marks an act under-witnessed and forces the run's aggregate
+visibly partial. On an explicit Perlector `no-readable-text` finding, unanimous
+region-bound absence may additionally corroborate a blank; it never supplies
+characters, and no count of chairs can change a reading.
 
     python pipeline/5_recensor/run.py --run-root <dir> --run-id <id>
 """
@@ -118,19 +118,17 @@ def blank_corroboration(
 
     ARCHITECTURE and spec 09 both name blank confirmation as a candidate
     completeness check ("a zero-output unit is diagnosed, then either sealed
-    confirmed-blank with evidence or held unresolved-with-evidence"), and the
-    old pipeline's own hard-won lesson (window pass, 2026-08-05; see
-    `/out/report.md`) is that a blank verdict may never rest on fewer than
-    several genuinely INDEPENDENT completed reads, and never on a reader's own
-    second opinion. This is **unanimity about an absence, never a selection
-    among presences** — the distinction that kept the old pipeline's own blank
-    ladder G3-clean even under adversarial review: nothing here chooses a
-    reading or establishes text. The Perlector's own direct examination of the
-    ink (autopsia, not testimony) already produced `no-readable-text`; this
-    only asks whether the witnesses corroborate or contradict that finding. A
-    single chair that actually read text is exactly the disagreement GOALS 1
-    says must never be silently resolved — it holds the act for a human,
-    never outvotes the dissenter.
+    confirmed-blank with evidence or held unresolved-with-evidence"). A blank
+    verdict may not rest on fewer than several genuinely INDEPENDENT completed
+    reads, and never on a reader's own second opinion — the old pipeline paid to
+    learn that (window pass, 2026-08-05).
+
+    This is **unanimity about an absence, never a selection among presences**:
+    the Perlector's own direct examination of the ink (autopsia, not testimony)
+    already produced `no-readable-text`, and this asks only whether the witnesses
+    corroborate or contradict that finding. A single chair that actually read
+    text is exactly the disagreement GOALS 1 says must never be silently
+    resolved — it holds the act for a human, and never outvotes the dissenter.
 
     A recovery region is witness-uncovered by contract: the inherited
     testimonia remain bound to the original proposal regions. They therefore
@@ -167,11 +165,11 @@ def blank_corroboration(
 def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, object]:
     """Return one act's coverage after refusing ambiguous witness history.
 
-    This is deliberately callable before Recensor publishes anything.  A bad
-    testimonium for the second act used to leave a review for the first act on
-    disk before the ambiguity was discovered.  That unpublished fragment was
-    not a completed stage, but it was still an easy thing for a later retry to
-    mistake for history.  Validate the entire witness denominator first.
+    Deliberately callable before the Recensor publishes anything: an ambiguity
+    discovered while reviewing the second act would otherwise leave a review for
+    the first one already on disk. That fragment is not a completed stage, but it
+    is an easy thing for a later retry to mistake for history, so the whole
+    witness denominator is validated before any of it is published.
     """
     outcomes = chair_outcomes(context, act_id)
     sealed = set(context.witness_chairs)
@@ -434,7 +432,7 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
     never any one act's denominator, so a region cut for a different act on the
     same page still counts as coverage here. A page nobody cut a region on at
     all has no entry: there is no evidence to read a region's absence against
-    yet (see HANDOFF.md and `/out/report.md`).
+    yet. That gap is named, not papered over, in `HANDOFF.md`.
     """
     by_page: dict[int, list[dict]] = {}
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
@@ -527,9 +525,8 @@ def sealed_page_images(context) -> dict[int, dict]:
             )
         pages[ordinal] = record
 
-    # The structural denominator (one sealed record per ordinal) is refused
-    # above before any pixel is touched; this second pass verifies every
-    # surviving page's bytes against the run's own submitted source manifest.
+    # Second pass, so the structural denominator above is settled before any
+    # pixel is touched.
     sources = _source_rows(context.run)
     for ordinal, record in pages.items():
         source = sources.get(ordinal)
@@ -570,13 +567,10 @@ def page_coverage_findings(context) -> dict[int, dict]:
                 f"a Designator region names source page {ordinal}, which the Exemplar "
                 "did not seal; a crop of unsealed pixels is invariant #10's imbalance"
             )
-        # The bytes this check actually computes over, digested — not the
-        # separate, earlier read `sealed_page_images` verified. A verification
-        # of one read followed by an unchecked second read of the same path
-        # measures whatever is there at the second read, and a residual-ink
-        # finding derived from pixels nobody verified is a metric that was not
-        # measured being recorded as a pass (GOVERNANCE 10). The Armarium's own
-        # crop read makes the same check for the same reason.
+        # The bytes measured, digested — not the separate earlier read
+        # `sealed_page_images` verified. Verifying one read and measuring
+        # another records a finding derived from pixels nobody checked, which is
+        # a metric that was not measured passing as one (GOVERNANCE 10).
         image_bytes = context.tree.read_bytes(page["payload"]["image_path"])
         if digest_bytes(image_bytes) != page["payload"]["source_sha256"]:
             raise FatalAccounting(
@@ -792,10 +786,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     preflight_recovery_history(context, budget)
     preflight_review_evidence(context, budget)
 
-    # Deterministic core, cheapest instrument first (spec 09): pure geometry
-    # over every sealed page's own pixels, computed once and reused by every
-    # act that reaches one of these pages, entirely independent of any
-    # witness or reading below.
     page_findings = page_coverage_findings(context)
 
     held = 0
@@ -870,12 +860,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             else []
         )
 
-        # The Recensor's own continuation fact, derived only from the original
-        # proposal regions actually cut — never from the Designator's seal flag,
-        # which is that stage's own PROPOSAL rather than a settled fact this
-        # stage may inherit unexamined. ARCHITECTURE and spec 09: "the Designator
-        # proposes continuations; the Recensor's link is the authoritative
-        # relation."
         continuation_link = recensor_continuation_link(state["regions"], act_id)
         continuation_shortfall = reconcile_continuation(act, continuation_link, act_id)
 
@@ -958,13 +942,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             continue
 
         # Whether the reading *succeeded*, not merely whether one exists. The
-        # check above asks only that `readings` is non-empty, and the Archetypus
-        # copies `payload["text"]` out of whatever the latest reading is — so a
-        # `truncated` or `failed` Perlectio carrying stale text was established
-        # as the one text, and a `not-run` record crashed on the missing field.
-        # GOALS 2 is accuracy against the ink; text nobody successfully read is
-        # not a reading, and GOVERNANCE 2 says it may not vanish behind a
-        # successful status either. So it is held, visibly, with the outcome named.
+        # Archetypus copies `payload["text"]` out of whatever the latest reading
+        # is, so a `truncated` or `failed` Perlectio carrying stale text would be
+        # established as the one text and a `not-run` one would crash on the
+        # missing field. GOALS 2 is accuracy against the ink; text nobody
+        # successfully read is not a reading, and GOVERNANCE 2 says it may not
+        # vanish behind a successful status either. Held, visibly, outcome named.
         blank_evidence = None
         if reading_class is not OutcomeClass.COMPLETED:
             # `no-readable-text` is the one non-completed Perlector outcome that
@@ -1059,16 +1042,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             subject_id=act_id,
             outcome=outcome,
             attempt=attempt_id(act_id, "recense", ordinal),
-            # The reading this outcome is actually about, not whichever artifact
-            # id happened to sort first. `readings[0]` is manifest order, which is
-            # a hash: after a recovery it could cite the superseded attempt's crop
-            # as the basis for accepting the new one. Deterministic, and wrong.
-            # `latest`, computed once above, rather than a second `latest_attempt`
-            # over the same list. A completed reading must cite the regions it
-            # read, and is indexed strictly so a missing basis stays a loud
-            # failure. A held one need not: a `not-run` Perlectio carries no
-            # `basis` key at all, and dereferencing it would turn an honest hold
-            # into a traceback — the raw missing-field crash a reviewer filed.
+            # `latest`, never `readings[0]`: manifest order is a hash, so after a
+            # recovery the first record can be the superseded attempt, and citing
+            # its crop as the basis for accepting the new reading is deterministic
+            # and wrong. `basis_regions` is empty unless the reading completed —
+            # a `not-run` Perlectio carries no `basis` key at all, and indexing it
+            # would turn an honest hold into a traceback.
             inputs=[reading_ref]
             + [context.input_ref(reference["image_path"]) for reference in basis_regions],
             payload={
