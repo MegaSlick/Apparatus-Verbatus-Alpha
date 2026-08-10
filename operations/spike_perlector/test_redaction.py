@@ -235,6 +235,12 @@ def test_the_published_schema_and_the_stricter_validator_describe_one_shape():
     assert set(matrix_row["condition"]["enum"]) == conditions
     assert set(schema["properties"]["normalization_profile_id"]["enum"]) == set(PROFILES)
     assert set(schema["properties"]["measure_quotes"]["items"]["enum"]) == set(MEASURE_QUOTES)
+    # The validator requires the exact fixed list (redaction.py's `!= list(MEASURE_QUOTES)`);
+    # the schema can only express that as cardinality plus uniqueness, not order, but it
+    # must at least refuse an empty or duplicated measure_quotes array.
+    assert schema["properties"]["measure_quotes"]["minItems"] == len(MEASURE_QUOTES)
+    assert schema["properties"]["measure_quotes"]["maxItems"] == len(MEASURE_QUOTES)
+    assert schema["properties"]["measure_quotes"]["uniqueItems"] is True
     # The sealed three slots by three conditions, as a count the schema can express.
     assert schema["properties"]["matrix"]["minItems"] == len(conditions) * 3
     assert schema["properties"]["matrix"]["maxItems"] == len(conditions) * 3

@@ -22,6 +22,9 @@
     "normalization_profile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "measure_quotes": {
       "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "uniqueItems": true,
       "items": {
         "enum": [
           "reference_length_cer_wer_v1",
