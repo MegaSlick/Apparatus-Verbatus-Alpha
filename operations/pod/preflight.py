@@ -82,10 +82,12 @@ class SystemGpuProbe:
         self.disk_usage = disk_usage or shutil.disk_usage
 
     def profile(self, dtype: str) -> GpuProfile:
+        disk_detail = ""
         try:
             disk_gib = Decimal(self.disk_usage(self.disk_path).free) / Decimal(1024**3)
-        except Exception:
+        except Exception as error:
             disk_gib = Decimal("0")
+            disk_detail = f"disk: {type(error).__name__}: {error}".strip()
         try:
             query = self.runner(
                 [
@@ -115,8 +117,10 @@ class SystemGpuProbe:
                 vram_gib=Decimal(vram) / Decimal(1024),
                 disk_gib=disk_gib,
                 dtype=dtype,
+                discovery_detail=disk_detail,
             )
         except Exception as error:
+            gpu_detail = f"{type(error).__name__}: {error}".strip()
             return GpuProfile(
                 name="GPU discovery unavailable",
                 cuda_version=None,
@@ -125,7 +129,7 @@ class SystemGpuProbe:
                 vram_gib=Decimal("0"),
                 disk_gib=disk_gib,
                 dtype=dtype,
-                discovery_detail=f"{type(error).__name__}: {error}".strip(),
+                discovery_detail=f"{gpu_detail}; {disk_detail}" if disk_detail else gpu_detail,
             )
 
     @staticmethod
@@ -757,7 +761,12 @@ class PreflightRunner:
             issues.append(
                 PreflightIssue(
                     "disk-missing",
-                    "Disk capacity was not measured as positive.",
+                    "Disk capacity was not measured as positive."
+                    + (
+                        f" Discovery reported: {profile.discovery_detail}"
+                        if profile.discovery_detail
+                        else ""
+                    ),
                     "Attach or provision usable disk and retry.",
                 )
             )

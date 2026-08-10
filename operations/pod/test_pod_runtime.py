@@ -2261,6 +2261,35 @@ def test_system_gpu_probe_returns_red_input_when_nvidia_smi_fails() -> None:
     assert "nvidia-smi: command not found" in profile.discovery_detail
 
 
+def test_system_gpu_probe_preserves_a_disk_measurement_error_when_the_gpu_is_fine() -> None:
+    """A failed disk read must not discard its own reason (audit-d Finding 4).
+
+    Mirrors the GPU leg of the same method, which already preserves its error
+    text into discovery_detail.
+    """
+
+    def runner(argv: list[str]):  # type: ignore[no-untyped-def]
+        import subprocess
+
+        if len(argv) == 1:
+            return subprocess.CompletedProcess(argv, 0, "CUDA Version: 12.4\n", "")
+        return subprocess.CompletedProcess(argv, 0, "Synthetic GPU, 550.54, 49152, 8.0\n", "")
+
+    def failing_disk_usage(path: Path) -> object:
+        raise PermissionError("disk usage refused for /workspace")
+
+    profile = SystemGpuProbe(
+        disk_path="/workspace", runner=runner, disk_usage=failing_disk_usage
+    ).profile("bfloat16")
+
+    assert profile.disk_gib == Decimal("0")
+    assert "disk usage refused for /workspace" in profile.discovery_detail
+
+    report = _preflight(FakeCache(), FakeSmoke()).run(profile)
+    disk_issue = next(issue for issue in report.issues if issue.code == "disk-missing")
+    assert "disk usage refused for /workspace" in disk_issue.message
+
+
 def test_a_red_report_carries_what_happened_not_only_what_to_do_next() -> None:
     """Spec 04 asks a red preflight for "what happened, what to do next"."""
 
