@@ -44,6 +44,7 @@ from .config import (
     load_serving_recipes,
     model_and_tokenizer_pins,
     parse_serving_recipes,
+    seal_json_object,
     verify_recipes_cover_chairs,
 )
 from .errors import (
@@ -2140,6 +2141,45 @@ def test_a_deeply_nested_response_is_a_named_refusal_not_a_recursion_error() -> 
     with pytest.raises(ReadinessError, match="VLLM_PROBE_RESPONSE_INVALID"):
         parse_openai_answer(
             HttpResponse(200, nested), kind="chat-completions", expected_model_id="reader-api"
+        )
+
+
+def test_seal_json_object_refuses_deep_or_cyclic_input_as_a_named_error() -> None:
+    """The outbound/config sealing side of the same RecursionError gap.
+
+    `_json_object`'s own comment (above) explains that a `RecursionError` from
+    nesting escapes every named refusal if left uncaught; `seal_json_object`
+    recurses the same way on its way *out*, and must catch its own.
+    """
+
+    deep: object = "leaf"
+    for _ in range(5_000):
+        deep = [deep]
+    with pytest.raises(ServingConfigurationError, match="must be JSON-compatible"):
+        seal_json_object({"payload": deep}, label="test payload")
+
+    cyclic: dict[str, object] = {}
+    cyclic["self"] = cyclic
+    with pytest.raises(ServingConfigurationError, match="must be JSON-compatible"):
+        seal_json_object(cyclic, label="test payload")
+
+
+def test_readiness_probe_refuses_a_deeply_nested_request_json_as_a_named_error() -> None:
+    deep_request_json = '{"messages":' + "[" * 20_000 + "]" * 20_000 + "}"
+    with pytest.raises(ServingConfigurationError, match="not JSON"):
+        recipes(
+            profile_row(
+                recipe="reader-v1",
+                chair="reader",
+                served_model_id="reader-api",
+                port=8000,
+            )
+            | {
+                "readiness_probe": {
+                    "kind": "chat-completions",
+                    "request_json": deep_request_json,
+                }
+            }
         )
 
 

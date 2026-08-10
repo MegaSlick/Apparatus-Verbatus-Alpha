@@ -518,7 +518,7 @@ def _probe(raw: Any) -> ProbeSpec:
     encoded = _text(raw["request_json"], "readiness_probe.request_json")
     try:
         payload = json.loads(encoded)
-    except json.JSONDecodeError as error:
+    except (json.JSONDecodeError, RecursionError) as error:
         raise ServingConfigurationError("readiness_probe.request_json is not JSON") from error
     if not isinstance(payload, dict):
         raise ServingConfigurationError("readiness_probe.request_json must decode to an object")
@@ -606,7 +606,11 @@ def seal_json_object(value: object, *, label: str) -> tuple[dict[str, object], s
             allow_nan=False,
         )
         snapshot = json.loads(canonical)
-    except (TypeError, ValueError) as error:
+    except (TypeError, ValueError, RecursionError) as error:
+        # RecursionError because nesting, not length, is what breaks the JSON
+        # parser and _json_copy's own recursion -- http.py's _json_object
+        # catches it for the inbound side for the same reason; this closes
+        # the outbound/config side.
         raise ServingConfigurationError(f"{label} must be JSON-compatible: {error}") from error
     if not isinstance(snapshot, dict):
         raise ServingConfigurationError(f"{label} must encode to a JSON object")
