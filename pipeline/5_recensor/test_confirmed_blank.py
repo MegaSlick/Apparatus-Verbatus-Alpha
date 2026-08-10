@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from common.contracts.outcomes import witness_coverage
 from common.contracts.stages import RECENSOR
 from common.runtree.store import RunTree
 
@@ -161,9 +162,26 @@ def test_confirmed_blank_is_a_completed_class_terminal_outcome(tmp_path):
 # --- blank_corroboration: the pure gate, exercised directly -----------------
 
 
-def test_under_witnessed_coverage_never_corroborates_blank():
-    coverage = {"under_witnessed": True, "unresolved_chairs": 0}
+def test_completed_reading_evidence_below_the_floor_never_corroborates_blank():
+    coverage = {"under_witnessed": True, "unresolved_chairs": 0, "floor": 2}
     outcomes = {"attestator_1": "genuinely-empty"}
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) is None
+
+
+def test_an_excluded_chair_cannot_stand_in_for_a_witness_that_never_read(tmp_path):
+    """The floor is met by real ATTESTATORES `witness_coverage` accounting (two
+    genuinely-empty reads plus one Tyrel-approved `excluded` chair, which
+    classifies COMPLETED for ATTESTATORES -- common/contracts/outcomes.py), so
+    `under_witnessed` is `False`. `excluded` is not a reading, though: the
+    chair never looked at the ink, and `blank_corroboration` must not let it
+    stand in for the floor's third genuinely independent read."""
+    outcomes = {
+        "attestator_1": "genuinely-empty",
+        "attestator_2": "genuinely-empty",
+        "attestator_3": "excluded",
+    }
+    coverage = witness_coverage(outcomes, configured_floor=3)
+    assert coverage["under_witnessed"] is False
     assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) is None
 
 
@@ -185,15 +203,15 @@ def test_testimonia_from_original_regions_cannot_confirm_a_recovery_region_blank
 
 
 def test_zero_completed_chairs_never_corroborates_blank():
-    """`under_witnessed` guards the ordinary floor, but a floor of zero must not
-    let an empty completed set stand in for positive evidence of absence."""
-    coverage = {"under_witnessed": False, "unresolved_chairs": 0}
+    """A floor of zero must not let an empty completed set stand in for
+    positive evidence of absence."""
+    coverage = {"under_witnessed": False, "unresolved_chairs": 0, "floor": 0}
     outcomes = {"attestator_1": "failed", "attestator_2": "dead"}
     assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) is None
 
 
 def test_one_dissenting_read_refuses_corroboration():
-    coverage = {"under_witnessed": False, "unresolved_chairs": 0}
+    coverage = {"under_witnessed": False, "unresolved_chairs": 0, "floor": 3}
     outcomes = {
         "attestator_1": "genuinely-empty",
         "attestator_2": "genuinely-empty",
@@ -203,7 +221,7 @@ def test_one_dissenting_read_refuses_corroboration():
 
 
 def test_unanimous_genuinely_empty_corroborates_blank():
-    coverage = {"under_witnessed": False, "unresolved_chairs": 0}
+    coverage = {"under_witnessed": False, "unresolved_chairs": 0, "floor": 3}
     outcomes = {
         "attestator_1": "genuinely-empty",
         "attestator_2": "genuinely-empty",

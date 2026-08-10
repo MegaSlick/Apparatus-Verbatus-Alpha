@@ -237,6 +237,10 @@ def test_a_designator_held_act_carries_a_settled_empty_continuation_fact(tmp_pat
         "page_ordinals": [],
         "region_ids": [],
     }
+    # HANDOFF.md: `page_coverage` is recorded for every act, the same way
+    # `continuation` is, not only when it flags something -- a held act has no
+    # regions to have checked and none to flag.
+    assert held["payload"]["page_coverage"] == {"checked_pages": [], "flagged_pages": []}
 
 
 if __name__ == "__main__":

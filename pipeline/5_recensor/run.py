@@ -142,13 +142,26 @@ def blank_corroboration(
     actually completed a read (not merely configured), and no chair still
     unresolved — a floor met only by `failed`/`dead` chairs, or a run that
     has not yet heard from every configured chair, corroborates nothing.
+
+    The floor is checked against `completed` below, never against
+    `coverage["under_witnessed"]`: that flag is `ATTESTATORES`'s own
+    COMPLETED class, which also counts an approval-bound `excluded` chair
+    (`common/contracts/outcomes.py`) — a chair Tyrel excluded from witnessing
+    at all, not one that read the ink and found nothing. `under_witnessed`
+    can therefore be `False` while the actual reading evidence is one chair
+    short of the floor; trusting it here would let an excluded chair stand
+    in for a witness that never looked.
     """
-    if witness_uncovered or coverage["under_witnessed"] or coverage["unresolved_chairs"]:
+    if witness_uncovered or coverage["unresolved_chairs"]:
         return None
     completed = sorted(
         chair for chair, outcome in outcomes.items() if outcome in WITNESS_READING_OUTCOMES
     )
-    if not completed or any(outcomes[chair] != "genuinely-empty" for chair in completed):
+    if (
+        len(completed) < coverage["floor"]
+        or not completed
+        or any(outcomes[chair] != "genuinely-empty" for chair in completed)
+    ):
         return None
     return completed
 
@@ -805,6 +818,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # than omitted, so a reader of review payloads never has to
                     # ask which acts carry this field.
                     "continuation": recensor_continuation_link([], act_id),
+                    # Same reasoning as `continuation` above: no region was ever
+                    # cut for a Designator-held act, so there are no pages to
+                    # have checked and none can be flagged. Recorded rather than
+                    # omitted, so `payload["page_coverage"]` is present on every
+                    # review exactly as HANDOFF.md documents.
+                    "page_coverage": {"checked_pages": [], "flagged_pages": []},
                     "recoveries_used": 0,
                     "budget_allowed": budget["allowed"],
                     "absolute_cap": budget["absolute_cap"],
