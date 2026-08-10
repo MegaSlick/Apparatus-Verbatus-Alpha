@@ -793,7 +793,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "aggregate": aggregate,
             "expected_acts": expected_count,
             "delivered": sorted(delivered, key=lambda item: item["act_key"]),
-            "review": sorted(review_items, key=lambda item: item["act_key"]),
+            # Every non-delivered act, not only held/refused review items: a
+            # confirmed-blank or excluded-with-approval act (COMPLETED-class) lands
+            # here too. The bundle's own review-items.jsonl filters correctly to
+            # held/refused (armarium_export.py::_review_records); this internal
+            # accounting field is named for what it actually holds.
+            "non_delivered": sorted(review_items, key=lambda item: item["act_key"]),
             # The page-level record beside the act-level one: every source the
             # run declared, with the Exemplar's outcome for it. A page that was
             # refused is named here and in the aggregate's reasons, never only

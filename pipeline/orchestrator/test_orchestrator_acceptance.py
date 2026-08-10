@@ -578,7 +578,7 @@ def test_the_happy_path_runs_and_establishes_both_acts(happy_run):
     assert export["aggregate"]["status"] == "complete"
     assert export["aggregate"]["reasons"] == []
     assert len(export["delivered"]) == 2
-    assert export["review"] == []
+    assert export["non_delivered"] == []
     assert {item["category"] for item in export["delivered"]} == {"delivered"}
 
 
@@ -1480,14 +1480,14 @@ def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(
         }
     export = export_of(tree)
     assert export["aggregate"]["status"] == "partial"
-    assert all(item["under_witnessed"] is True for item in export["review"])
+    assert all(item["under_witnessed"] is True for item in export["non_delivered"])
     assert all(
         item["witness_coverage"]["by_outcome"] == {"read": 2, "dead": 1}
-        for item in export["review"]
+        for item in export["non_delivered"]
     )
     assert all(
         item["witness_coverage"]["by_class"] == {"completed": 2, "unresolved": 0, "failed": 1}
-        for item in export["review"]
+        for item in export["non_delivered"]
     )
     assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
 
@@ -2413,9 +2413,9 @@ def test_the_held_act_appears_in_the_review_output_and_forces_partial(review_run
     _, tree = review_run
     export = export_of(tree)
     assert export["aggregate"]["status"] == "partial"
-    assert len(export["review"]) == 1
-    assert export["review"][0]["act_key"] == "a2"
-    assert export["review"][0]["category"] == "held-for-review"
+    assert len(export["non_delivered"]) == 1
+    assert export["non_delivered"][0]["act_key"] == "a2"
+    assert export["non_delivered"][0]["category"] == "held-for-review"
     assert len(export["delivered"]) == 1
     assert "act a2 is held-for-review" in export["aggregate"]["reasons"]
 
@@ -2441,7 +2441,7 @@ def test_the_failed_chair_is_visible_in_the_export(review_run):
     end: it reaches the export as a named shortfall rather than as a silence."""
     _, tree = review_run
     export = export_of(tree)
-    held = export["review"][0]
+    held = export["non_delivered"][0]
     assert held["under_witnessed"] is True
     assert held["witness_coverage"]["by_outcome"]["failed"] == 1
     assert held["witness_coverage"]["by_class"] == {"completed": 2, "unresolved": 0, "failed": 1}
@@ -2801,8 +2801,8 @@ def test_the_act_with_the_lost_continuation_is_held_not_delivered(refused_page_r
 
     export = export_of(tree)
     assert [item["act_key"] for item in export["delivered"]] == ["a1"]
-    assert [item["act_key"] for item in export["review"]] == ["a2"]
-    assert export["review"][0]["category"] == "held-for-review"
+    assert [item["act_key"] for item in export["non_delivered"]] == ["a2"]
+    assert export["non_delivered"][0]["category"] == "held-for-review"
 
 
 def test_the_hold_is_a_real_artifact_naming_the_lost_page(refused_page_run):
@@ -2882,7 +2882,7 @@ def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_firs
         reason.startswith("page 1 was refused:") for reason in export["aggregate"]["reasons"]
     )
     assert export["delivered"] == []
-    assert [item["category"] for item in export["review"]] == [
+    assert [item["category"] for item in export["non_delivered"]] == [
         "held-for-review",
         "held-for-review",
         "held-for-review",
@@ -3063,7 +3063,7 @@ def test_the_truncated_reading_never_becomes_established_text(truncated_reading_
     assert established == [], "a failed reading may not be established"
 
     export = export_of(tree)
-    assert [item["act_key"] for item in export["review"]] == ["a1"]
+    assert [item["act_key"] for item in export["non_delivered"]] == ["a1"]
     assert export["aggregate"]["status"] == "partial"
 
 

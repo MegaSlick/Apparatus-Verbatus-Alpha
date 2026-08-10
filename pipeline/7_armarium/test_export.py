@@ -207,7 +207,9 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     assert result.returncode == 3, result.stderr
     export = _export(tree)
     assert export["payload"]["aggregate"]["status"] == "partial"
-    refused = [entry for entry in export["payload"]["review"] if entry["act_id"] == refused_act_id]
+    refused = [
+        entry for entry in export["payload"]["non_delivered"] if entry["act_id"] == refused_act_id
+    ]
     assert len(refused) == 1
     assert refused[0]["category"] == "refused-with-reason"
     assert expected_reason in refused[0]["reason"]
@@ -317,7 +319,9 @@ def test_a_provenance_that_fails_deeper_validation_is_also_downgraded_to_refused
     assert result.returncode == 3, result.stderr
     export = _export(tree)
     assert export["payload"]["aggregate"]["status"] == "partial"
-    refused = [entry for entry in export["payload"]["review"] if entry["act_id"] == refused_act_id]
+    refused = [
+        entry for entry in export["payload"]["non_delivered"] if entry["act_id"] == refused_act_id
+    ]
     assert len(refused) == 1
     assert refused[0]["category"] == "refused-with-reason"
     assert "provenance was refused" in refused[0]["reason"]
