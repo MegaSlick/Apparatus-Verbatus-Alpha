@@ -416,8 +416,8 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         if not isinstance(act, dict):
             raise SchemaRefusal("an Armarium projection act is not an object")
         act_id, act_key, category = act.get("act_id"), act.get("act_key"), act.get("category")
-        if not isinstance(act_id, str) or not act_id or not isinstance(act_key, str) or not act_key:
-            raise SchemaRefusal("an Armarium projection act lacks an act identity")
+        if not _is_line_safe_identity(act_id) or not _is_line_safe_identity(act_key):
+            raise SchemaRefusal("an Armarium projection act lacks a line-safe act identity")
         if act_id in act_ids or act_key in act_keys:
             raise SchemaRefusal("an Armarium projection repeats an act identity")
         act_ids.add(act_id)
@@ -897,6 +897,20 @@ def _salvage_with_source_references(
 
 
 _UNSAFE_PATH_CHARACTERS: Final = frozenset({"\\", "\x00"})
+
+
+def _is_line_safe_identity(value: object) -> bool:
+    """Whether an identity may be spliced unescaped into a line-oriented format.
+
+    `act_id`/`act_key` are written raw into the text bundle's ``## key (id)`` header
+    and ``act-id: id`` line, which the clean verifier then parses line by line. The
+    canonical text beside them is JSON-escaped onto one line; these are not, so this
+    is the boundary's own answer rather than relying on the downstream cross-checks
+    that happen to catch a forged line today.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    return not any(ord(character) < 0x20 or character == "\x7f" for character in value)
 
 
 def _is_safe_path_segment(value: object) -> bool:

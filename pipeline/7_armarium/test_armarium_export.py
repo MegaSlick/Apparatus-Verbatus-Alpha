@@ -222,6 +222,25 @@ def test_an_act_missing_the_canonical_text_field_entirely_is_refused(tmp_path):
         )
 
 
+@pytest.mark.parametrize("field", ["act_id", "act_key"])
+def test_a_newline_in_an_act_identity_is_refused_at_the_boundary_that_owns_it(field, tmp_path):
+    """The identity fields are spliced unescaped into a line-oriented format.
+
+    Downstream cross-checks (aggregate-basis reconciliation, source-citation parsing)
+    happen to catch a forged line today, but that is not the boundary that claims to
+    own the question -- `_validate_projection` should refuse it directly.
+    """
+    projection = _projection()
+    forged = {**projection.acts[0], field: "one\nact-id: forged"}
+
+    with pytest.raises(SchemaRefusal, match="line-safe act identity"):
+        build_armarium_bundle(
+            replace(projection, acts=(forged, projection.acts[1])),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
 @pytest.mark.parametrize(
     ("name", "separator"),
     # Written as code points rather than as glyphs: all three are invisible, and a
