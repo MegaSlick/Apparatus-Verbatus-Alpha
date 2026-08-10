@@ -225,22 +225,63 @@ def test_the_continuation_act_carries_the_recensors_own_confirmed_link(tmp_path)
     assert sorted(region["payload"]["region_id"] for region in regions) == link["region_ids"]
 
 
-def test_a_designator_held_act_carries_a_settled_empty_continuation_fact(tmp_path):
+def test_a_designator_held_act_with_a_real_region_carries_that_regions_own_facts(tmp_path):
+    """A hold has two distinct shapes (`pipeline/2_designator/run.py::
+    initial_pass`): the act's own page never sealed, and no region of it is cut
+    at all; or the act's own page sealed and its near-side region really was
+    cut, and only a declared continuation's page never sealed. The "refused-
+    page" scenario is the second shape for act a2 -- its near-side region on
+    page 1 is real, on-disk, sealed evidence. The Recensor's continuation and
+    page_coverage facts must reflect that real region rather than assume every
+    hold cut nothing, or a flagged page whose only touching act is a hold of
+    this shape would never be reported anywhere (see /out/report.md)."""
     root = tmp_path / "runs"
     _run_through_recensor(root, "r", "refused-page")
     tree = RunTree(root, "r")
     reviews = _reviews_by_key(tree)
     held = reviews["a2"]
     assert held["outcome"] == "held-for-review"
+
+    regions = [
+        tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == "region" and entry["subject_id"] == held["subject_id"]
+    ]
+    assert len(regions) == 1
+    region_id = regions[0]["payload"]["region_id"]
+
     assert held["payload"]["continuation"] == {
         "is_continuation": False,
-        "page_ordinals": [],
-        "region_ids": [],
+        "page_ordinals": [1],
+        "region_ids": [region_id],
     }
-    # HANDOFF.md: `page_coverage` is recorded for every act, the same way
-    # `continuation` is, not only when it flags something -- a held act has no
-    # regions to have checked and none to flag.
-    assert held["payload"]["page_coverage"] == {"checked_pages": [], "flagged_pages": []}
+    assert held["payload"]["page_coverage"] == {"checked_pages": [1], "flagged_pages": []}
+
+
+def test_a_designator_held_act_with_no_region_at_all_carries_empty_facts(tmp_path):
+    """The other hold shape: the act's own page never sealed, so no region of
+    it was ever cut, and the empty continuation/page_coverage the previous
+    test used to assert for BOTH shapes is only actually correct for this
+    one. The "refused-first-page" scenario loses page 1, the page both a1 and
+    a2 live on, so neither act has any region at all."""
+    root = tmp_path / "runs"
+    _run_through_recensor(root, "r", "refused-first-page")
+    tree = RunTree(root, "r")
+    reviews = _reviews_by_key(tree)
+    for act_key in ("a1", "a2"):
+        held = reviews[act_key]
+        assert held["outcome"] == "held-for-review"
+        assert not [
+            entry
+            for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+            if entry["kind"] == "region" and entry["subject_id"] == held["subject_id"]
+        ]
+        assert held["payload"]["continuation"] == {
+            "is_continuation": False,
+            "page_ordinals": [],
+            "region_ids": [],
+        }
+        assert held["payload"]["page_coverage"] == {"checked_pages": [], "flagged_pages": []}
 
 
 if __name__ == "__main__":

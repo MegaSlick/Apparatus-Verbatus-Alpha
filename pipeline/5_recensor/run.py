@@ -588,6 +588,25 @@ def page_coverage_findings(context) -> dict[int, dict]:
     return findings
 
 
+def _region_page_ordinals(regions: list[dict]) -> list[int]:
+    """The sorted, deduplicated source-page ordinals a set of regions was cut from.
+
+    Shared by every place a review payload records which pages an act's current
+    regions touch: `flagged_pages_for` below, the ordinary `page_coverage` fact,
+    the `confirmed-blank` evidence's `residual_ink_clear_pages`, and a held act
+    whose own region really was cut (a continuation-declared-but-unsealed hold
+    still leaves a real near-side region — see the held branch in `main`).
+    """
+    return sorted(
+        {
+            region["payload"]["transform"]["source_page_ordinal"]
+            for region in regions
+            if isinstance(region.get("payload"), dict)
+            and isinstance(region["payload"].get("transform"), dict)
+        }
+    )
+
+
 def flagged_pages_for(act_regions: list[dict], findings: dict[int, dict]) -> list[int]:
     """The source pages this act's own current regions touch that are flagged.
 
@@ -596,14 +615,7 @@ def flagged_pages_for(act_regions: list[dict], findings: dict[int, dict]) -> lis
     exactly as its near side is, and a successful recovery crop that reaches
     previously-missed ink clears the page's finding on the very next pass.
     """
-    ordinals = sorted(
-        {
-            region["payload"]["transform"]["source_page_ordinal"]
-            for region in act_regions
-            if isinstance(region.get("payload"), dict)
-            and isinstance(region["payload"].get("transform"), dict)
-        }
-    )
+    ordinals = _region_page_ordinals(act_regions)
     return [ordinal for ordinal in ordinals if findings.get(ordinal, {}).get("flagged")]
 
 
@@ -801,29 +813,33 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # still gets this stage's explicit outcome, so its terminal category
             # derives from a review like every other act's.
             hold, hold_path = designator_hold(context, act_id)
+            # A Designator hold has two distinct shapes (`pipeline/2_designator/
+            # run.py::initial_pass`): the act's own page never sealed, and no
+            # region of it is cut at all; or the act's own page sealed and its
+            # near-side region WAS cut, but a declared continuation's page
+            # never sealed. `hold_regions` reads what was actually cut rather
+            # than assuming the first shape for both — a real near-side region
+            # has real continuation and page-coverage facts to report, and
+            # hardcoding them empty would silently drop a flagged page's
+            # evidence for the one act that touches it.
+            hold_regions = artifacts_for(context, DESIGNATOR, "region", act_id)
             context.publish(
                 kind="review",
                 subject_id=act_id,
                 outcome="held-for-review",
                 attempt=attempt_id(act_id, "recense", 1),
-                inputs=[context.input_ref(hold_path)],
+                inputs=[context.input_ref(hold_path)]
+                + [context.input_ref(region["payload"]["image_path"]) for region in hold_regions],
                 payload={
                     "act_key": act_key,
                     "attempt_ordinal": 1,
                     "reason": f"the Designator held this act: {hold['payload']['reason']}",
                     "coverage": coverage,
-                    # No region was ever cut for a Designator-held act, so no
-                    # proposal evidence exists to derive a continuation fact
-                    # from; recorded the same way as every other act's, rather
-                    # than omitted, so a reader of review payloads never has to
-                    # ask which acts carry this field.
-                    "continuation": recensor_continuation_link([], act_id),
-                    # Same reasoning as `continuation` above: no region was ever
-                    # cut for a Designator-held act, so there are no pages to
-                    # have checked and none can be flagged. Recorded rather than
-                    # omitted, so `payload["page_coverage"]` is present on every
-                    # review exactly as HANDOFF.md documents.
-                    "page_coverage": {"checked_pages": [], "flagged_pages": []},
+                    "continuation": recensor_continuation_link(hold_regions, act_id),
+                    "page_coverage": {
+                        "checked_pages": _region_page_ordinals(hold_regions),
+                        "flagged_pages": flagged_pages_for(hold_regions, page_findings),
+                    },
                     "recoveries_used": 0,
                     "budget_allowed": budget["allowed"],
                     "absolute_cap": budget["absolute_cap"],
@@ -997,12 +1013,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 blank_evidence = {
                     "perlector_outcome": latest["outcome"],
                     "corroborating_chairs": corroborating_chairs,
-                    "residual_ink_clear_pages": sorted(
-                        {
-                            region["payload"]["transform"]["source_page_ordinal"]
-                            for region in state["regions"]
-                        }
-                    ),
+                    "residual_ink_clear_pages": _region_page_ordinals(state["regions"]),
                 }
             else:
                 outcome, reason = (
@@ -1082,12 +1093,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # rather than only when it flags something — the same reasoning
                 # `continuation` above is recorded under.
                 "page_coverage": {
-                    "checked_pages": sorted(
-                        {
-                            region["payload"]["transform"]["source_page_ordinal"]
-                            for region in state["regions"]
-                        }
-                    ),
+                    "checked_pages": _region_page_ordinals(state["regions"]),
                     "flagged_pages": flagged_pages,
                 },
                 # Present only on a `confirmed-blank`, because it is the evidence
