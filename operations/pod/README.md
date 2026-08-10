@@ -36,8 +36,17 @@ line saying "terminated".
 
 A close is green only when **provider state says the same pod is gone** (both exact-pod GET
 and the pod list) and the provider returns non-empty, exact-pod billing records whose named
-window begins no later than pod creation and reaches the provider-resolved cutoff requested
-by close. Billing can lag; this instrument never claims “no future charges.” An empty,
+window begins no later than the instant the record is anchored on and reaches the
+provider-resolved cutoff requested by close.
+
+**That anchor is not proven to be pod creation, and this paragraph used to say it was.**
+`PodRecord.created_at` is filled from RunPod's `lastStartedAt`, falling back to the
+observation instant when that field is null, and the capture query is composed from the
+same value — so the narrowed-window check compares a value against itself and cannot fire
+for this narrowing. If RunPod posts any charge between creation and first start,
+a close can read `verified` over a total that omits it. Deferral 04-7 carries this to the
+first live run, where the relationship between the two instants can be observed instead of
+assumed. Billing can lag; this instrument never claims “no future charges.” An empty,
 unreachable, misattributed, narrowed, or stale billing response is *unverified*, not zero.
 
 A shutdown that cannot be verified is not a tidy-up for next session. Say it now.
@@ -111,7 +120,9 @@ check.
   storage seam. It streams and verifies SHA-256/size before and after upload, persists
   verified rows, and refuses conflicting target bytes rather than overwriting them.
   `bootstrap.py` journals idempotent exact-commit, locked-`uv`, transfer, chair-cache,
-  and preflight steps. A cache digest mismatch receives at most one same-pin re-fetch;
+  and preflight steps. A cache digest mismatch is *specified* to receive at most one
+  same-pin re-fetch — see deferral 04-8: the class implementing it is constructed nowhere
+  and tested nowhere, so this describes the design rather than a shipped behaviour;
   another mismatch is red and names the chair.
 - `preflight.py` measures or receives CUDA/driver/capability/VRAM/disk facts, selects a
   single-resident plan only from `config/pod_placement.toml`, verifies every configured
@@ -239,6 +250,14 @@ each closes on the named condition, not on being noticed again.
 | 04-4 | `pod_timer.py` startup failure leaves nothing able to terminate; pod goes `EXITED` and bills volume disk at double rate. The laptop supervisor is the only backstop and does not exist | 04-1 lands |
 | 04-5 | Five untested seams: `cli.main` success path, `pod_timer.main`/`load_timer_context`, `SubprocessBootstrapActions.checkout_commit`, `sync_uv_environment` success path, `UrllibRunPodTransport` ordinary success | the live pieces above exist to test against |
 | 04-6 | Every RunPod field name is documented, not observed — no live call has been made | the first authorised live run |
+
+Two more, found by the pre-push review of this branch and disclosed here rather than
+fixed on an assumption. Both are Tyrel's to accept or send back:
+
+| # | What is deferred | Closes when |
+|---|---|---|
+| 04-7 | The verified-close billing window is anchored on `lastStartedAt`, not on pod creation, and the check meant to catch a narrowed window compares that value against itself. A close can read `verified` over a partial total. Whether RunPod bills between creation and first start is documented-only; changing the query now would swap one unverified assumption for another | the first authorised live run observes the two instants |
+| 04-8 | `ChairCacheBootstrapAction` is constructed nowhere and tested nowhere — the README describes its at-most-one same-pin re-fetch as though it ships. The equivalent rule in `preflight.py` **is** exercised | the live bootstrap path is built, or the class is removed |
 
 ## If your task seems to need one
 
