@@ -81,7 +81,7 @@ class FrameMember:
 
     def binding(
         self,
-    ) -> tuple[str, str, str, MaterialClass, ReferenceStatus, tuple[str, ...]]:
+    ) -> tuple[str, str, str, MaterialClass, ReferenceStatus | None, tuple[str, ...]]:
         """The exact material classification and evidence set a run must reproduce."""
 
         return (
