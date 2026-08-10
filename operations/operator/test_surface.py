@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
+import threading
+import tracemalloc
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -23,7 +26,8 @@ from operations.submit.submit import build_manifest, walk_folder
 from . import cli, entry
 from .dry_run import make_transcript
 from .errors import ErrorCode, OperatorError
-from .records import DescriptorStore, ReceiptStore, RecordError
+from .fakes import LocalFixtureObjectStore
+from .records import MAX_RECORD_BYTES, DescriptorStore, ReceiptStore, RecordError, sha256_file
 from .surface import (
     OPERATOR_CLOSE_PREFIX,
     Faults,
@@ -425,6 +429,145 @@ def test_a_corrupted_descriptor_is_named_unreadable_rather_than_unclassifiable(
         surface.status()
 
     assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
+
+
+def test_a_control_sequence_in_a_saved_record_never_reaches_the_terminal(
+    tmp_path: Path,
+) -> None:
+    """`errors.py` makes this argument for a detail; it holds for the channel.
+
+    A page census's own refusal reason is free text that travels up into the
+    Armarium aggregate, into `reconciliation_table`, into the export receipt,
+    and back out of `status`. An escape sequence in one could clear the screen
+    and paint a false "close verified" line above the real result.
+    """
+
+    spoof = "held\x1b[2J\x1b[H\x1b[32mVerbatus: close verified, $0.00 billed\x1b[0m"
+    messages: list[str] = []
+    surface = _surface(tmp_path, output=messages)
+    surface._write_action(
+        "export",
+        {"summary": "saved", "reconciliation": [f"Recorded reason: {spoof}"]},
+        descriptor_action="export",
+    )
+    messages.clear()
+
+    surface.status()
+
+    assert any("Verbatus: close verified" in line for line in messages)
+    assert not any("\x1b" in line for line in messages)
+
+
+def test_a_record_too_large_to_be_one_of_ours_is_refused_rather_than_read(
+    tmp_path: Path,
+) -> None:
+    """`status` reads every recorded receipt, so an unbounded read is its own
+    failure — and an out-of-memory kill prints nothing at all (GOVERNANCE 2).
+    """
+
+    surface = _surface(tmp_path)
+    surface.boot()
+    receipt = surface._descriptor_receipt("boot")
+    assert receipt is not None
+    receipt.write_bytes(b"{" + b"x" * (MAX_RECORD_BYTES + 1))
+
+    with pytest.raises(RecordError, match="larger than"):
+        surface.receipts.read(receipt)
+
+    surface.descriptor.path.write_bytes(b"{" + b"x" * (MAX_RECORD_BYTES + 1))
+    with pytest.raises(RecordError, match="larger than"):
+        surface.descriptor.load()
+
+
+def test_a_fifo_at_a_recorded_path_cannot_hang_a_read_only_verb(tmp_path: Path) -> None:
+    """Opening a FIFO for reading blocks until a writer appears, so the check
+    has to be on the open descriptor and the open has to be non-blocking.
+    """
+
+    fifo = tmp_path / "sealed-submission.json"
+    os.mkfifo(fifo)
+    finished = threading.Event()
+    refusal: list[BaseException] = []
+
+    def digest() -> None:
+        try:
+            sha256_file(fifo)
+        except OSError as error:
+            refusal.append(error)
+        finished.set()
+
+    threading.Thread(target=digest, daemon=True).start()
+
+    assert finished.wait(10), "sha256_file blocked on a FIFO instead of refusing it"
+    assert refusal and "regular file" in str(refusal[0])
+
+
+def _race_one_fixture_object(root: Path, sources: tuple[Path, Path]) -> list[BaseException]:
+    """Start both writers on the same key at once and collect what was refused."""
+
+    store = LocalFixtureObjectStore(root)
+    refusals: list[BaseException] = []
+    gate = threading.Barrier(len(sources))
+
+    def put(source: Path) -> None:
+        try:
+            gate.wait()
+            store.put_file("volume/page.bin", source)
+        except Exception as error:  # noqa: BLE001 - the refusal is exactly what is counted
+            refusals.append(error)
+
+    writers = [threading.Thread(target=put, args=(source,)) for source in sources]
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join()
+    return refusals
+
+
+def test_two_writers_cannot_both_claim_one_fixture_object(tmp_path: Path) -> None:
+    """Asking `exists()` and replacing afterwards is two steps, and two writers
+    that each saw the key absent each replaced the other's bytes with no
+    refusal at all — 90 times in 400 before the claim became one step.
+    """
+
+    first = tmp_path / "a.bin"
+    first.write_bytes(b"A" * 512)
+    second = tmp_path / "b.bin"
+    second.write_bytes(b"B" * 512)
+
+    for attempt in range(40):
+        refusals = _race_one_fixture_object(tmp_path / f"volume-{attempt}", (first, second))
+
+        assert len(refusals) == 1, f"attempt {attempt}: {len(refusals)} refusals, expected 1"
+        assert "different bytes" in str(refusals[0])
+
+
+def test_the_default_upload_target_never_holds_a_whole_file_in_memory(tmp_path: Path) -> None:
+    """This store is what `verbatus upload` uses by default, over real
+    submitted pages — not test scaffolding. A submission is sized by what a
+    person photographed, and reading one whole cost 512 MiB resident for a
+    512 MiB page set.
+    """
+
+    source = tmp_path / "pages.bin"
+    with source.open("wb") as handle:
+        for _ in range(32):
+            handle.write(b"z" * (1024 * 1024))
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    tracemalloc.start()
+    try:
+        store.put_file("volume/pages.bin", source)
+        _, put_peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        observed = store.inspect("volume/pages.bin")
+        _, inspect_peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert observed is not None and observed.size == 32 * 1024 * 1024
+    assert put_peak < 8 * 1024 * 1024, put_peak
+    assert inspect_peak < 8 * 1024 * 1024, inspect_peak
 
 
 def test_a_saved_receipt_is_named_when_its_descriptor_update_fails(

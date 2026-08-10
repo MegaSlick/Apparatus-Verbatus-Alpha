@@ -9,14 +9,24 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
 from operations.pod.transfer import RemoteObject, TransferTarget
 
+from .records import BLOCK_BYTES
+
 
 class LocalFixtureObjectStore(TransferTarget):
-    """A file-backed implementation of the transfer seam for offline rehearsals."""
+    """A file-backed implementation of the transfer seam for offline rehearsals.
+
+    This is the default target of `verbatus upload`, not test scaffolding, so
+    it moves real submitted material. Nothing here holds a whole file in
+    memory: a submission is sized by what a person photographed, and reading
+    one whole was the difference between 21 MiB resident and 533 MiB for a
+    single 512 MiB page set.
+    """
 
     def __init__(self, root: str | Path, *, fail_once_for: str | None = None) -> None:
         self.root = Path(root)
@@ -27,8 +37,13 @@ class LocalFixtureObjectStore(TransferTarget):
         path = self._path(key)
         if not path.is_file() or path.is_symlink():
             return None
-        data = path.read_bytes()
-        return RemoteObject(hashlib.sha256(data).hexdigest(), len(data))
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(BLOCK_BYTES), b""):
+                digest.update(block)
+                size += len(block)
+        return RemoteObject(digest.hexdigest(), size)
 
     def put_file(self, key: str, source: Path) -> None:
         if self.fail_once_for == key:
@@ -36,21 +51,26 @@ class LocalFixtureObjectStore(TransferTarget):
             raise RuntimeError("injected partial transfer")
         target = self._path(key)
         target.parent.mkdir(parents=True, exist_ok=True)
-        payload = source.read_bytes()
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "wb") as handle:
                 os.fchmod(handle.fileno(), 0o600)
-                handle.write(payload)
+                with Path(source).open("rb") as reader:
+                    shutil.copyfileobj(reader, handle, BLOCK_BYTES)
                 handle.flush()
                 os.fsync(handle.fileno())
-            if target.exists():
-                existing = target.read_bytes()
-                if existing != payload:
-                    raise RuntimeError("fixture object already exists with different bytes")
-            else:
-                os.replace(temporary, target)
+            try:
+                # Claim the name and compare in one step. Asking `exists()` first
+                # and replacing after is two, and two racing writers each saw it
+                # absent and each replaced the other — the refusal below never
+                # fired in 90 of 400 attempts.
+                os.link(temporary, target)
+            except FileExistsError:
+                if not _same_bytes(temporary, target):
+                    raise RuntimeError(
+                        "fixture object already exists with different bytes"
+                    ) from None
             self.puts.append(key)
         finally:
             temporary.unlink(missing_ok=True)
@@ -63,3 +83,13 @@ class LocalFixtureObjectStore(TransferTarget):
         if not candidate.is_relative_to(resolved_root):
             raise ValueError("fixture object key escapes its store")
         return candidate
+
+
+def _same_bytes(left: Path, right: Path) -> bool:
+    with left.open("rb") as first, right.open("rb") as second:
+        while True:
+            block = first.read(BLOCK_BYTES)
+            if block != second.read(BLOCK_BYTES):
+                return False
+            if not block:
+                return True

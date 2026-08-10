@@ -7,19 +7,36 @@ only and never creates a directory, a marker, or an observation of its own.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import stat
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Final
 
 from common.contracts.canonical import canonical_bytes as _pipeline_canonical_bytes
 
 UTC = timezone.utc
 SCHEMA = "operator-receipt.v1"
 DESCRIPTOR_SCHEMA = "operator-surface.v2"
+
+BLOCK_BYTES: Final = 1024 * 1024
+
+MAX_RECORD_BYTES: Final = 4 * 1024 * 1024
+"""How large one of these files may be before reading it is itself the failure.
+
+Both readers below load a whole file before they can check anything about it,
+and `status` — the verb documented as read-only and safe — calls them once per
+recorded action. Without a bound, a 600 MiB file left at either path costs 1.8
+GiB of resident memory and ends as a kill, which is the least honest failure
+available: no message at all, against GOVERNANCE 2. The largest receipt this
+surface writes is a few kilobytes, and the descriptor grows by one absolute
+path per recorded action, so four mebibytes is three orders of magnitude above
+either. Only a file this tool did not write can reach it.
+"""
 
 
 class RecordError(RuntimeError):
@@ -50,13 +67,32 @@ def utc_stamp(value: datetime) -> str:
 
 
 def sha256_file(path: Path) -> str:
-    """The one spelling of a file digest, read in blocks rather than whole."""
+    """The one spelling of a file digest, read in blocks rather than whole.
 
+    Opened non-blocking and refused unless the *open descriptor* says it is a
+    regular file — not the name, which can change between the check and the
+    open. A FIFO left at a path a receipt records would otherwise block on the
+    open itself, and `status` would hang forever having printed nothing.
+    """
+
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError(errno.EINVAL, "a digest needs a regular file", str(path))
+        for block in iter(lambda: handle.read(BLOCK_BYTES), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _bounded_bytes(path: Path, subject: str) -> bytes:
+    """Read a whole record, or refuse a file too large to be one of ours."""
+
+    with path.open("rb") as handle:
+        data = handle.read(MAX_RECORD_BYTES + 1)
+    if len(data) > MAX_RECORD_BYTES:
+        raise RecordError(f"{subject} is larger than {MAX_RECORD_BYTES} bytes and was not read")
+    return data
 
 
 class ReceiptStore:
@@ -120,7 +156,7 @@ class ReceiptStore:
         if not resolved.is_relative_to(resolved_root):
             raise RecordError("operator receipt path is outside the receipt directory")
         try:
-            data = resolved.read_bytes()
+            data = _bounded_bytes(resolved, "operator receipt")
             record = json.loads(data.decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise RecordError(f"operator receipt cannot be read: {resolved.name}") from error
@@ -193,7 +229,7 @@ class DescriptorStore:
         if not self.path.exists():
             return None
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            raw = json.loads(_bounded_bytes(self.path, "operator descriptor").decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise RecordError("operator descriptor cannot be read") from error
         if not isinstance(raw, dict):

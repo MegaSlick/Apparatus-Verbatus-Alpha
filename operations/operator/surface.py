@@ -57,7 +57,7 @@ from operations.pod.transfer import ChecksummedTransfer, TransferFailure, Transf
 from operations.submit import submit as submission_door
 
 from . import notify_bridge
-from .errors import ErrorCode, OperatorError
+from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .errors import sanitize_detail as _detail
 from .fakes import LocalFixtureObjectStore
 from .notify_bridge import Notifier
@@ -291,7 +291,7 @@ class OperatorSurface:
         self.workspace = Path(workspace).resolve()
         self.state_root = Path(state_root).resolve()
         self.now = now or (lambda: datetime.now(UTC))
-        self.present = present or print
+        self._present: Presenter = present or print
         candidate = provider or FakeProvider(now=self.now)
         if not isinstance(candidate, FakeProvider):
             raise OperatorError(ErrorCode.LIVE_PROVIDER_BLOCKED)
@@ -308,6 +308,20 @@ class OperatorSurface:
         self.sleeper = sleeper or time.sleep
         self.receipts = ReceiptStore(self.state_root, now=self.now)
         self.descriptor = DescriptorStore(self.state_root)
+
+    def present(self, line: str = "") -> None:
+        """Show one line, with terminal control bytes removed on the way out.
+
+        `errors.py` already makes this argument for an error detail. It holds
+        for everything else this surface prints, and for more of it: a recorded
+        pod id, a receipt summary, and a reconciliation row carrying a page
+        census's own refusal reason all reach here from a file or a run tree
+        rather than from a constant. Stripping belongs on the channel, not on
+        one kind of string. The receipt keeps the bytes it was given —
+        GOVERNANCE 4 — the terminal simply does not get to act on them.
+        """
+
+        self._present(strip_control_bytes(line))
 
     # -- launch ---------------------------------------------------------------
 

@@ -278,11 +278,26 @@ class OperatorError(RuntimeError):
         return "\n".join(lines)
 
 
-# C0/C1 control bytes, including ESC (0x1B): a detail string can embed a
-# filename or path an operator did not choose (a submitted folder, a manifest
-# entry), and an ANSI escape sequence in one could clear the screen or spoof a
-# fake confirmation line on the terminal that renders this text.
+# C0/C1 control bytes, including ESC (0x1B): text this surface prints can embed
+# a filename, a path or a refusal reason an operator did not choose (a submitted
+# folder, a manifest entry, a page-census reason that travelled up from the run
+# tree), and an ANSI escape sequence in one could clear the screen or spoof a
+# fake confirmation line on the terminal that renders it.
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def strip_control_bytes(value: str) -> str:
+    """Make one line safe to print, and change nothing else about it.
+
+    Every operator-facing line goes through this, not only an error detail: the
+    argument above is about where the text came from, and a receipt summary, a
+    reconciliation row and a recorded pod id come from the same places a detail
+    does. Deliberately separate from `sanitize_detail`, which additionally
+    rewrites vocabulary, collapses whitespace and truncates — none of which a
+    reconciliation table or a price screen should have done to it.
+    """
+
+    return _CONTROL_CHARACTERS.sub("", value)
 
 
 def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
@@ -305,8 +320,7 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     GOVERNANCE 2 requires to be visibly partial.
     """
 
-    compact = " ".join(value.split())
-    compact = _CONTROL_CHARACTERS.sub("", compact)
+    compact = strip_control_bytes(" ".join(value.split()))
     if not compact:
         return "no additional detail was recorded"
     if "traceback" in compact.lower():

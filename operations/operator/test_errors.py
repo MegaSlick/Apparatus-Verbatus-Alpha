@@ -94,6 +94,20 @@ def test_old_close_vocabulary_is_replaced_even_without_the_word_traceback() -> N
     assert "paused" in rendered
 
 
+def test_stripping_control_bytes_changes_nothing_else_about_a_line() -> None:
+    """The output channel needs the strip without the detail-only rewriting.
+
+    A reconciliation table, a price screen and a close notice must keep their
+    spacing, their vocabulary and their full length; only the bytes a terminal
+    would act on come out.
+    """
+
+    line = "| Delivered acts | 2 |   spaced\x1b[2Jand terminated\x00"
+
+    assert errors.strip_control_bytes(line) == "| Delivered acts | 2 |   spaced[2Jand terminated"
+    assert errors.strip_control_bytes("x" * 5000) == "x" * 5000
+
+
 def test_a_detail_too_long_to_keep_says_it_was_cut() -> None:
     """Two call sites persist this text into a receipt, not just onto a terminal.
 
