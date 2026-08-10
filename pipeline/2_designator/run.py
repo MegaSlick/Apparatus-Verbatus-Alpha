@@ -64,7 +64,7 @@ import structure  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
-from common.contracts.canonical import self_hash  # noqa: E402
+from common.contracts.canonical import digest_bytes, self_hash  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import act_id as derive_residual_act_id  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
@@ -262,6 +262,30 @@ def secondary_provenance(context) -> dict:
     }
 
 
+def _read_checked_page_bytes(context, page_record: dict) -> bytes:
+    """Re-read a sealed page's pixels and re-verify their digest before use.
+
+    `_verify_exemplar_boundary` checks every sealed page's pixel digest once,
+    up front, before the first region is cut. Every later read of the same
+    bytes -- a structure scan, a proposal or recovery crop, a secondary
+    rescue crop -- used to trust that one-time check for the rest of the run,
+    with no re-verification of its own. Re-checking here closes the gap
+    between that upfront check and each later use: a page's pixels changing
+    on disk mid-run is caught before it is baked into sealed Designator
+    evidence, rather than only the next time some downstream stage happens to
+    call `verify_exemplar_crop_lineage`.
+    """
+    image_path = page_record["payload"]["image_path"]
+    expected = page_record["payload"]["source_sha256"]
+    data = context.tree.read_bytes(image_path)
+    if digest_bytes(data) != expected:
+        raise ContractError(
+            f"the sealed page pixel blob at {image_path} no longer matches its recorded "
+            "digest; a sealed page's pixels may not change after they are sealed"
+        )
+    return data
+
+
 def page_pixels(context, page_record: dict) -> tuple[int, int, list, int]:
     """Decode one sealed page and infer its own background value.
 
@@ -271,7 +295,7 @@ def page_pixels(context, page_record: dict) -> tuple[int, int, list, int]:
     would be worse than one that says no. Real ingress never reaches here at
     all (`_open` stops before it).
     """
-    page_bytes = context.tree.read_bytes(page_record["payload"]["image_path"])
+    page_bytes = _read_checked_page_bytes(context, page_record)
     width, height, rows = decode_grayscale_png(page_bytes)
     background = structure.infer_background(width, height, rows)
     return width, height, rows, background
@@ -498,7 +522,7 @@ def cut_region(
     act_id = act_identity(context.fixture, act)
     provenance = structure_provenance(context)
     image_path = page_record["payload"]["image_path"]
-    page_bytes = context.tree.read_bytes(image_path)
+    page_bytes = _read_checked_page_bytes(context, page_record)
 
     if padding is not None:
         page_w, page_h = dimensions(page_bytes)
@@ -825,7 +849,7 @@ def _publish_secondary_proposals(
     )
     rescues = _secondary_rescue_candidates(claimed, candidates, ordinal)
     image_path = page_record["payload"]["image_path"]
-    page_bytes = context.tree.read_bytes(image_path)
+    page_bytes = _read_checked_page_bytes(context, page_record)
     for index, candidate in enumerate(rescues):
         subject = f"{page_identity(context.fixture, ordinal)}-secondary-{index}"
         transform = _crop_transform(ordinal, page_record["subject_id"], candidate["bounds"])
