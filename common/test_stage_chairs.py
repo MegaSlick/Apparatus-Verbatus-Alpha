@@ -154,6 +154,27 @@ def test_serving_launch_audit_is_a_content_addressed_stage_blob(tmp_path):
                 },
             }
         )
+    # The equality-mismatch case above exercises write_serving_launch_audit's
+    # own comparison against the run-sealed inputs; these three exercise
+    # _serving_config_inputs' own shape/format refusals, which a well-formed
+    # but differing digest does not reach.
+    without_inputs = {key: value for key, value in audit.items() if key != "configuration_inputs"}
+    with pytest.raises(SchemaRefusal, match="must contain exactly schema"):
+        context.write_serving_launch_audit(without_inputs)
+    with pytest.raises(SchemaRefusal, match="schema must be"):
+        context.write_serving_launch_audit(
+            {**audit, "configuration_inputs": {**context.serving_config_inputs, "schema": "wrong"}}
+        )
+    with pytest.raises(SchemaRefusal, match="must be lowercase SHA-256"):
+        context.write_serving_launch_audit(
+            {
+                **audit,
+                "configuration_inputs": {
+                    **context.serving_config_inputs,
+                    "serving_recipes_sha256": "F" * 64,
+                },
+            }
+        )
 
 
 def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_path):
@@ -176,6 +197,23 @@ def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_pa
         context.write_serving_evidence_manifest(
             {"relative_path": "/absolute", "sha256": "c" * 64}, audit_reference
         )
+    with pytest.raises(SchemaRefusal, match="malformed"):
+        context.write_serving_evidence_manifest(
+            {"relative_path": "stages/preflight/../../escape", "sha256": "c" * 64}, audit_reference
+        )
+    with pytest.raises(SchemaRefusal, match="malformed"):
+        context.write_serving_evidence_manifest(
+            {"relative_path": "stages/preflight/blobs/sha256/x", "sha256": "not-a-digest"},
+            audit_reference,
+        )
+    with pytest.raises(SchemaRefusal, match="unknown or missing fields"):
+        context.write_serving_evidence_manifest({"relative_path": "x"}, audit_reference)
+    with pytest.raises(SchemaRefusal, match="unknown or missing fields"):
+        context.write_serving_evidence_manifest(
+            {"relative_path": "x", "sha256": "c" * 64, "extra": "field"}, audit_reference
+        )
+    with pytest.raises(SchemaRefusal, match="unknown or missing fields"):
+        context.write_serving_evidence_manifest("not-a-mapping", audit_reference)
 
 
 def test_receipt_reuse_is_by_full_serving_moment_not_only_model_identity(tmp_path):
