@@ -1,8 +1,8 @@
-"""Explicit no-network adapters for the operator rehearsal.
+"""Explicit no-network adapter for the operator rehearsal.
 
-They are application fakes, not a pretend provider integration.  Every value
-they return is labelled fixture-only by the caller, and neither class contains a
-credential, HTTP client, or S3 client.
+It is an application fake, not a pretend provider integration.  Every value it
+returns is labelled fixture-only by the caller, and it contains no credential,
+HTTP client, or S3 client.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
-from datetime import datetime
 from pathlib import Path
 
 from operations.pod.transfer import RemoteObject, TransferTarget
@@ -64,13 +63,3 @@ class LocalFixtureObjectStore(TransferTarget):
         if not candidate.is_relative_to(resolved_root):
             raise ValueError("fixture object key escapes its store")
         return candidate
-
-
-class FixtureClock:
-    """A controllable UTC clock used in deterministic operator drills."""
-
-    def __init__(self, value: datetime) -> None:
-        self.value = value
-
-    def now(self) -> datetime:
-        return self.value
