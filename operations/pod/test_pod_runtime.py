@@ -40,6 +40,7 @@ from .models import (
     LeaseFormatError,
     PodCreateRequest,
     PodRecord,
+    ProviderFailure,
     ProviderStatus,
 )
 from .pod_timer import TimerContext, run_with_bootstrap
@@ -897,6 +898,61 @@ def test_billing_reconciliation_is_bounded_and_absorbs_a_lagging_first_answer() 
     assert provider.billing_calls == 3
 
 
+def test_billing_capture_that_raises_is_retried_like_any_other_non_captured_answer() -> None:
+    """The shipped RunPod adapter raises ProviderFailure on any non-200 billing
+
+    response -- the likeliest real billing failure -- but only the
+    returns-an-unavailable-object path was ever driven (audit-d Finding 6).
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.09")
+    provider.inject_failure("capture_cost", ProviderFailure("RunPod billing returned HTTP 500"))
+    closer = VerifiedShutdown(
+        provider,
+        timeout_seconds=8,
+        poll_seconds=1,
+        billing_attempts=2,
+        billing_retry_seconds=1,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+        now=clock.now,
+    )
+
+    report = closer.close(record, reason="raising billing capture drill")
+
+    assert report.state is CloseState.VERIFIED
+    assert report.captured_cost_usd == Decimal("0.09")
+    assert report.billing_attempts == 2
+
+
+def test_billing_capture_that_always_raises_exhausts_its_bounded_retry_and_stays_red() -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.inject_failure(
+        "capture_cost", ProviderFailure("RunPod billing returned HTTP 500"), times=2
+    )
+    closer = VerifiedShutdown(
+        provider,
+        timeout_seconds=8,
+        poll_seconds=1,
+        billing_attempts=2,
+        billing_retry_seconds=1,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+        now=clock.now,
+    )
+
+    report = closer.close(record, reason="always-raising billing capture drill")
+
+    assert report.state is CloseState.UNVERIFIED_BILLING
+    assert report.captured_cost_usd is None
+    assert "RunPod billing returned HTTP 500" in report.last_detail
+
+
 def test_billing_that_never_posts_exhausts_its_bounded_retry_and_stays_red() -> None:
     clock = Clock()
     provider = fake(clock)
@@ -1370,6 +1426,36 @@ def _lease(
     )
     store.create(lease)
     return lease
+
+
+def test_laptop_supervisor_steady_state_heartbeats_a_healthy_pod_without_closing_it(
+    tmp_path: Path,
+) -> None:
+    """The normal path every few seconds of a live run: nothing to do but
+
+    refresh the heartbeat.  Every other supervisor test ends in a close;
+    audit-d Finding 6 names this untested gap.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = LeaseStore(tmp_path / "steady-state.json")
+    before = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=60)
+
+    result = LaptopSupervisor(
+        store,
+        shutdown(provider, clock),
+        owner_token="laptop",
+        heartbeat_timeout=timedelta(seconds=30),
+        now=clock.now,
+    ).run_once()
+
+    assert result.state is ControllerState.ACTIVE
+    assert result.close_report is None
+    assert result.lease is not None and result.lease.heartbeat_at >= before.heartbeat_at
+    assert provider.status(record.pod_id).presence.value == "present"
+    assert provider.terminate_calls == []
 
 
 def test_laptop_lifetime_expiry_terminates_through_verified_path(tmp_path: Path) -> None:
