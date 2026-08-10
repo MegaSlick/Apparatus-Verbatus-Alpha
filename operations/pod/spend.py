@@ -237,12 +237,28 @@ def require_confirmation(value: str | None, expected: str) -> None:
     """The same gate for create and adoption, without a side door.
 
     No stripping and no case-folding: a near-miss is not a confirmation.
+
+    ``create``/``adopt`` re-assess the price internally after the operator's
+    preview, so ``expected`` may carry a rate the operator never saw typed
+    back at them.  A mismatch that still names the same action and subject
+    (only the rate suffix differs) is named as a possible price move rather
+    than left to read like a plain typo.
     """
 
-    if value != expected:
+    if value == expected:
+        return
+    prefix_end = expected.rfind(" AT $")
+    if (
+        isinstance(value, str)
+        and prefix_end != -1
+        and value[:prefix_end] == expected[:prefix_end]
+    ):
         raise SpendRefusal(
-            f"typed confirmation must be exactly {expected!r}; no paid action occurred"
+            f"typed confirmation must be exactly {expected!r}; the price may have "
+            "changed between preview and confirmation -- re-run the preview and "
+            "confirm the current price; no paid action occurred"
         )
+    raise SpendRefusal(f"typed confirmation must be exactly {expected!r}; no paid action occurred")
 
 
 def _decimal_text(value: object, label: str) -> Decimal:

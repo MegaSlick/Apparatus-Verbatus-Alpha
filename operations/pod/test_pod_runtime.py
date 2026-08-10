@@ -379,6 +379,32 @@ def test_create_and_adopt_share_the_price_ceiling_and_typed_confirmation_gate(
     assert list(tmp_path.glob("*.json")) == []
 
 
+def test_a_price_move_between_preview_and_confirmation_names_itself(tmp_path: Path) -> None:
+    """create() re-assesses the price internally, so a moved price must not
+
+    read like a typo'd confirmation (audit-d Finding 12).
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = runtime(provider, clock, tmp_path)
+    create_request = request(clock)
+
+    preview = pod_runtime.preview_create(create_request)
+    assert preview.state is LaunchState.PREVIEW
+    assert preview.preview is not None
+    shown_phrase = preview.preview.confirmation_phrase
+
+    provider.price_sheet["fake-48gb"] = (Decimal("0.90"), Decimal("0.05"))
+
+    result = pod_runtime.create(create_request, confirmation=shown_phrase)
+
+    assert result.state is LaunchState.REFUSED_CONFIRMATION
+    assert result.detail is not None
+    assert "price may have changed" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
 def test_cli_prints_preview_before_collecting_typed_confirmation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
