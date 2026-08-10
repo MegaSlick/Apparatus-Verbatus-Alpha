@@ -83,8 +83,8 @@ launch gate estimates against, because RunPod publishes no endpoint that quotes 
 price without creating a pod. Naming a card here does not choose one, and no number here
 has been benchmarked on real silicon.
 
-Two directories sit beside it because they are resolved relative to it, and could
-not be pinned by it from anywhere else:
+Two directories sit beside `models.toml` because they are resolved relative to it,
+and could not be pinned by it from anywhere else:
 
 - `manifests/` — one digest-manifest artifact per configured chair: the sorted
   `{path, sha256, size}` rows whose canonical bytes a chair's `digest_manifest`
