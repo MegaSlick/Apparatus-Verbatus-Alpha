@@ -579,10 +579,26 @@ def export_evidence_refs(context, review: dict, established: dict | None) -> lis
 def exclusion_approval_ref(act: dict, category: ArmariumCategory) -> str | None:
     """Carry an exclusion's recorded approval, or refuse it before export.
 
-    The current Designator contract does not yet emit exclusions.  This boundary
-    is intentionally present now: when that contract is widened, a bare
-    ``excluded-with-approval`` category cannot become an apparently complete
-    export with its required approval citation silently missing.
+    The current Designator contract does not yet emit exclusions, and this
+    function cannot yet carry a real approval through even once it does:
+    ``act`` is one row of ``expected_acts()``, whose closed schema
+    (``common/stage.py``) is exactly ``act_id``, ``act_key``, ``page_id``,
+    ``page_ordinal``, ``has_continuation``, ``outcome``, ``evidence`` -- there is
+    no ``approval_ref`` field for ``act.get("approval_ref")`` to ever find, so
+    every ``excluded-with-approval`` category reaching this function today is
+    refused by ``require_approval`` regardless of whether Tyrel actually
+    approved it. That is a safe failure mode (loud, not silent -- an export
+    stops rather than admitting an unapproved exclusion) but not a working one.
+
+    This boundary is intentionally present now so that a bare
+    ``excluded-with-approval`` category can never become an apparently complete
+    export with its required approval citation silently missing. Making the
+    citation actually reach here needs a decision this function cannot make on
+    its own: where the Designator's exclusion approval reference will live (a
+    widened ``expected_acts()`` row, or its own Designator-published artifact
+    read via ``artifacts_for`` the way an Archetypus record already is) --
+    that is a Designator-contract question, out of this stage's scope to
+    invent unilaterally.
     """
     if category is not ArmariumCategory.EXCLUDED_WITH_APPROVAL:
         return None

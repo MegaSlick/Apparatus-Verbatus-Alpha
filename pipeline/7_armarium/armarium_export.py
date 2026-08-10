@@ -1414,9 +1414,12 @@ def _page_ledger_category(ordinal: int, act_categories: list[str]) -> tuple[str,
     Every rule here errs toward `held-for-review`, the category that means a human
     must look.  A sealed page nobody marked an act out on is held, never
     `confirmed-blank`: silence cannot tell a genuinely blank page from a detection
-    failure, and `run_aggregate` already refuses to infer blank from silence.
-    Nothing in this stage can prove a page blank, so nothing here ever writes that
-    category for a page -- what artifact would prove it is open (HANDOFF.md).
+    failure, and `run_aggregate` already refuses to infer blank from silence. This
+    function itself never *infers* blank -- a page whose acts are all themselves
+    `confirmed-blank` simply inherits that proof from them, the same way it
+    inherits `delivered` when any act on it is delivered; what artifact would let
+    this stage *prove* a page blank on its own, with no acts to inherit the
+    category from, is open (HANDOFF.md).
     """
     if not act_categories:
         return ArmariumCategory.HELD_FOR_REVIEW.value, SILENT_PAGE_REASON.format(ordinal=ordinal)
@@ -1826,9 +1829,14 @@ def _required_format_members(
     return required
 
 
-def _embedded_member_paths(sources: dict[str, list[dict[str, Any]]]) -> set[str]:
-    """Return exactly the pixel members cited as embedded by the source graph."""
-    members: set[str] = set()
+def _all_pixel_references(sources: dict[str, list[dict[str, Any]]]) -> list[Any]:
+    """Every page and crop pixel reference in the source graph, one place to gather.
+
+    Shared by every reader that needs "all of them regardless of namespace" --
+    a future pixel-bearing collection, or a rename of one of these three keys,
+    now only has to be added here to stay visible to both the embedded-member
+    inventory and the pixel-claim verifier below.
+    """
     references: list[Any] = [
         page.get("page_image") for page in sources["pages"] if isinstance(page, dict)
     ]
@@ -1840,7 +1848,13 @@ def _embedded_member_paths(sources: dict[str, list[dict[str, Any]]]) -> set[str]
         for region in sources["salvage_regions"]
         if isinstance(region, dict)
     )
-    for reference in references:
+    return references
+
+
+def _embedded_member_paths(sources: dict[str, list[dict[str, Any]]]) -> set[str]:
+    """Return exactly the pixel members cited as embedded by the source graph."""
+    members: set[str] = set()
+    for reference in _all_pixel_references(sources):
         if not isinstance(reference, dict) or reference.get("availability") != _EMBEDDED:
             continue
         member = reference.get("member_path")
@@ -2356,14 +2370,7 @@ def _verify_salvage_claim(
     else:
         raise SchemaRefusal("EXPORT_MANIFEST.json has an invalid salvage-tier status")
 
-    flattened = sorted(
-        (
-            {"salvage_id": item["salvage_id"], **region}
-            for item in records
-            for region in item["source_regions"]
-        ),
-        key=lambda row: (row["salvage_id"], row["region_id"]),
-    )
+    flattened = _salvage_regions(records)
     if canonical_text(flattened) != canonical_text(sources["salvage_regions"]):
         raise SchemaRefusal("salvage-tier records do not reconcile to their source citations")
 
@@ -2516,18 +2523,7 @@ def _verify_pixel_claims(
         raise SchemaRefusal("the package pixel-resolution claim is not the verified claim")
 
     expected_availability = _EMBEDDED if formats.embed_pixels else _SOURCE_ACCESS_REQUIRED
-    references: list[Any] = [
-        page.get("page_image") for page in sources["pages"] if isinstance(page, dict)
-    ]
-    references.extend(
-        region.get("crop_image") for region in sources["regions"] if isinstance(region, dict)
-    )
-    references.extend(
-        region.get("crop_image")
-        for region in sources["salvage_regions"]
-        if isinstance(region, dict)
-    )
-    for reference in references:
+    for reference in _all_pixel_references(sources):
         if reference is not None and (
             not isinstance(reference, dict)
             or reference.get("availability") != expected_availability
@@ -2751,10 +2747,13 @@ def _verify_reference(reference: Any, root) -> None:
             raise SchemaRefusal("an embedded package source reference has no member path")
         _validate_member_name(member)
         path = root / member
-        if not path.is_file() or digest_bytes(path.read_bytes()) != sha256:
+        if not path.is_file():
+            raise SchemaRefusal("an embedded package source reference does not resolve")
+        content = path.read_bytes()
+        if digest_bytes(content) != sha256:
             raise SchemaRefusal("an embedded package source reference does not resolve")
         try:
-            dimensions(path.read_bytes())
+            dimensions(content)
         except ValueError as error:
             raise SchemaRefusal("an embedded package source pixel does not open") from error
     elif availability == _SOURCE_ACCESS_REQUIRED:
