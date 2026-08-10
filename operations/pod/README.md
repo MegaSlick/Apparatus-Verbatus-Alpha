@@ -53,6 +53,11 @@ is named with its date in `provider_runpod.py`. So the field names here are docu
 not observed, and the first authorised live run is what confirms the provider answers
 the way its documentation says.
 
+Before the first authorized live demonstration, use the
+[first gated live-pod checklist](#first-gated-live-pod-checklist) below. It names the
+observations the fake suite cannot establish and the first response-as-arrival durability
+check.
+
 - `provider.py` is the seven-verb provider seam; `provider_runpod.py` is the sole
   RunPod adapter and speaks **REST v1** (`rest.runpod.io/v1`), the route spec 04
   names and the only one whose published pod-create schema proves the two facts
@@ -160,6 +165,65 @@ They include deliberately broken confirmation, ceiling, status, billing, transfe
 cache, smoke-read, laptop-controller, and pod-timer paths. A full real-chair preflight
 is not demonstrated: the committed roster is still fixture-only and has no real GPU or
 model-service measurement.
+
+## First gated live-pod checklist
+
+This is a checklist for one authorized live demonstration, not authorization to create a
+pod. Record the exact pod id, timestamps, provider response, and whether each item is
+**verified**, **unverified**, or **not run**. The RunPod field names in this tree are
+documented shapes, not observed behavior; no unchecked item may be reported as a pass.
+
+- [ ] Record Tyrel's current-session authorization, the synthetic workload, the
+  configured spend ceilings, and `account_balance_floor_usd`. The floor is a manual
+  reserve policy, not a current-balance observation. Record any actual balance observation
+  separately, including active obligations and the maximum additional liability of this
+  run; the runtime has no account-balance provider verb.
+- [ ] Confirm whether the pod-scoped API key actually holds **delete** and **billing**
+  rights. DELETE must be accepted for this exact pod, and the billing query must return
+  usable, exact-pod records. Do not infer either right from successful creation or GET.
+- [ ] Exercise **a pod that fails field validation and cannot then be auto-terminated**.
+  Record any returned identity, the exact launch-token recovery result, whether the
+  automatic close path could act, and the manual provider-console recovery if it could
+  not. A create response can fail contract validation before the runtime has a
+  `PodRecord` to close.
+- [ ] Verify that REST-v1 creation accepts the selected real `gpuTypeIds` value and
+  attaches the requested network volume at the requested mount path. Confirm the returned
+  id, name, `desiredStatus`, `costPerHr`, `networkVolume` id, `volumeMountPath`,
+  `machine.gpuTypeId`, image, `dockerStartCmd`, template, and explicit
+  `interruptible=false` against the sealed request.
+- [ ] Verify exact launch-token recovery from the pod list after a deliberately lost
+  create response. The list must expose the token-bearing environment and must not confuse
+  a same-name pod with the one to recover.
+- [ ] Verify that the network volume is mounted at the sealed path, receives the
+  token-bound pod report, survives a process restart, and supports the run tree's
+  immutable hard-link publication. Write a control report and one pipeline artifact
+  there, read both back, and record the filesystem result.
+- [ ] Before the first real response, prove the durable laptop supervisor, controller
+  armer, acknowledgement channel, and long-running bootstrap/service entrypoint work
+  together. The tracked Stage 04 tree does not currently supply those live integrations.
+- [ ] Verify the pod-side timer receives the real pod identity, its ephemeral termination
+  capability, and the sealed billing-cutoff margin; verify it writes an acknowledgement to
+  the token-bound report path. The laptop controller must retain a receipt bound to the
+  exact lease, pod, and hard deadline without capability material.
+- [ ] Demonstrate the timer-startup backstop. If required environment data prevents it
+  from constructing a provider object, it cannot terminate the pod; verify that the laptop
+  supervisor detects and reconciles that `EXITED` pod rather than leaving volume billing
+  unobserved.
+- [ ] Run the actual GPU, driver, capability, VRAM, disk, chair-cache, and chair smoke-read
+  preflight. The committed preflight and roster are fixture and planning evidence, not a
+  measured assembly.
+- [ ] At the first real response, require Spec 05's harness to publish an immutable
+  run-tree artifact on the attached network volume before requesting the next response;
+  interrupt the harness and read it back. Stage 04 does not own this response path. Repeat
+  the response-as-arrival check for every live Testimonium in Spec 07 and every live
+  Perlectio in Spec 08. A final-only export or stage-boundary backup does not satisfy this
+  item.
+- [ ] Verify shutdown rather than its acknowledgement: exact-pod GET reaches 404, the
+  independent pod list omits that id, and `GET /billing/pods` returns non-empty, exact-pod
+  billing rows covering creation through the requested cutoff. Record lag, empty records,
+  or malformed/misattributed records as **unverified**, never zero. Confirm that the close
+  report names the network volume's continuing hourly price and that no volume deletion
+  occurred.
 
 ## If your task seems to need one
 
