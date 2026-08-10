@@ -133,10 +133,7 @@ class PodCreateRequest:
             isinstance(part, str) and part for part in self.docker_start_cmd
         ):
             raise ValueError("docker_start_cmd must contain non-blank command parts")
-        if self.docker_start_cmd[:3] != ("python", "-m", "operations.pod.pod_timer"):
-            raise ValueError(
-                "docker_start_cmd must make operations.pod.pod_timer the primary process"
-            )
+        _assert_pod_timer_is_primary_process(self.docker_start_cmd)
         _required_timer_arguments(self.docker_start_cmd, self.volume_mount_path)
         if self.interruptible is not False:
             raise ValueError("pod runtime requires interruptible=false")
@@ -164,6 +161,37 @@ class PodCreateRequest:
         """Return a non-creating exact-token lookup request for crash reconciliation."""
 
         return replace(self, recovery_only=True)
+
+
+_SHELL_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+
+
+def _assert_pod_timer_is_primary_process(command: tuple[str, ...]) -> None:
+    """The pod timer must be the primary process, whatever names the interpreter.
+
+    The provider image may run ``python``, ``python3``, a virtualenv's absolute
+    path, or ``uv run python`` -- the module being launched is what matters,
+    not the interpreter's spelling.  A shell ahead of it (``sh -c "..."``)
+    would hide the real command from this check entirely, so that is refused
+    explicitly rather than silently trusted.
+    """
+
+    primary_process_error = ValueError(
+        "docker_start_cmd must make operations.pod.pod_timer the primary process"
+    )
+    if "-m" not in command:
+        raise primary_process_error
+    module_flag_index = command.index("-m")
+    if (
+        module_flag_index + 1 >= len(command)
+        or command[module_flag_index + 1] != "operations.pod.pod_timer"
+    ):
+        raise primary_process_error
+    for part in command[:module_flag_index]:
+        if part.rsplit("/", 1)[-1] in _SHELL_INTERPRETERS:
+            raise ValueError(
+                "docker_start_cmd must not invoke a shell before the pod timer module"
+            )
 
 
 def _required_timer_arguments(command: tuple[str, ...], volume_mount_path: str) -> None:

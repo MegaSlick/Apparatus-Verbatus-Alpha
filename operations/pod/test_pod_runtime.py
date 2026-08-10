@@ -1546,6 +1546,34 @@ def test_bare_timer_command_is_rejected_before_a_paid_create() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "interpreter",
+    [
+        ("python3",),
+        ("/opt/venv/bin/python",),
+        ("uv", "run", "python"),
+    ],
+)
+def test_pod_timer_primary_process_check_accepts_any_interpreter_spelling(
+    interpreter: tuple[str, ...],
+) -> None:
+    clock = Clock()
+    flags_after_module = request(clock).docker_start_cmd[3:]
+    command = interpreter + ("-m", "operations.pod.pod_timer") + flags_after_module
+
+    created = replace(request(clock), docker_start_cmd=command)
+
+    assert created.docker_start_cmd[: len(interpreter)] == interpreter
+
+
+def test_pod_timer_primary_process_check_refuses_a_shell_ahead_of_the_interpreter() -> None:
+    clock = Clock()
+    command = ("sh", "-c") + request(clock).docker_start_cmd
+
+    with pytest.raises(ValueError, match="must not invoke a shell"):
+        replace(request(clock), docker_start_cmd=command)
+
+
 @pytest.mark.parametrize("field", ["HF_TOKEN", "hf-token", "APIKEY", "MY_TOKEN", "SERVICE_KEY"])
 def test_credential_shaped_metadata_is_refused_by_bare_key_and_token_markers(field: str) -> None:
     """A credential-like field cannot ride in pod metadata under any common naming style."""
