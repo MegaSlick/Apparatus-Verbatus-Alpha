@@ -50,6 +50,31 @@ class HttpTransport(Protocol):
         """Make one bounded request or raise :class:`EndpointUnavailable`."""
 
 
+# Every legitimate response here (health/models/chat-completions) is a small,
+# local, well-known shape.  A response past this bound is refused rather than
+# buffered whole into memory.
+_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse a 3xx rather than follow it.
+
+    Every URL this module builds is provably ``127.0.0.1`` at construction
+    time (``models_url``/``health_url``/``endpoint_for_probe``), but the
+    stdlib's default opener follows a redirect Location header to *any* host
+    with no same-origin check.  A loopback process that redirects — buggy,
+    compromised, or racing this manager for the port — must not be able to
+    make a readiness/health/inference probe silently answered by somewhere
+    else.  Declining here surfaces the 3xx as an ordinary non-200 response.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
 class UrllibHttpTransport:
     """Stdlib production transport; it contains no provider/model-host behavior."""
 
@@ -66,10 +91,10 @@ class UrllibHttpTransport:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                return HttpResponse(int(response.status), response.read())
+            with _NO_REDIRECT_OPENER.open(request, timeout=timeout_seconds) as response:
+                return HttpResponse(int(response.status), _bounded_read(response))
         except urllib.error.HTTPError as error:
-            return HttpResponse(int(error.code), error.read())
+            return HttpResponse(int(error.code), _bounded_read(error))
         except (OSError, urllib.error.URLError) as error:
             raise EndpointUnavailable(
                 f"{method} {url}: {type(error).__name__}: {error}",
@@ -235,3 +260,20 @@ def _connection_refused(error: OSError) -> bool:
     if isinstance(reason, ConnectionRefusedError):
         return True
     return getattr(reason, "errno", None) == errno.ECONNREFUSED
+
+
+def _bounded_read(response: Any) -> bytes:
+    """Read at most ``_MAX_RESPONSE_BYTES``; an oversized body is refused, not buffered.
+
+    The extra byte requested past the bound is what turns "read a lot" into a
+    detectable overage rather than a response that merely happens to be
+    exactly at the limit.
+    """
+
+    data = response.read(_MAX_RESPONSE_BYTES + 1)
+    if len(data) > _MAX_RESPONSE_BYTES:
+        raise EndpointUnavailable(
+            f"response exceeded the {_MAX_RESPONSE_BYTES}-byte bound for a loopback serving check",
+            definitively_absent=False,
+        )
+    return data
