@@ -225,11 +225,19 @@ def test_upload_through_the_surface_sends_only_the_sealed_record(tmp_path: Path)
 
 
 def test_naming_a_volume_says_what_will_be_contacted_before_anything_moves(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     messages: list[str] = []
     surface = _surface(tmp_path, output=messages)
     source, manifest = _manifest(tmp_path)
+    # Explicitly absent, not ambiently absent: this test's refusal must come
+    # from missing credentials, the same refusal a real operator would see,
+    # not merely from whatever happens to be unset in the environment this
+    # suite runs in. With both variables actually exported and boto3 installed,
+    # an unguarded test here would build a real client and reach the network
+    # before the assertion below ever ran.
+    monkeypatch.delenv("RUNPOD_S3_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("RUNPOD_S3_SECRET_KEY", raising=False)
 
     with pytest.raises(OperatorError) as refusal:
         # No credentials here, so building the real client refuses — which is the
