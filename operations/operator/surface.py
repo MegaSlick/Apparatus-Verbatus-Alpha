@@ -1310,7 +1310,7 @@ class OperatorSurface:
         if report.captured_cost_usd is not None:
             self.present(
                 f"Charges captured through {utc_stamp(report.cutoff_at)}: "
-                f"${report.captured_cost_usd}."
+                f"${report.captured_cost_usd} (fixture billing, not a measurement)."
             )
         else:
             self.present("No captured-cost line was available; this close remains unverified.")
@@ -1410,7 +1410,10 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
             cutoff = cost.get("cutoff_at")
             total = cost.get("total_usd")
             if isinstance(cutoff, str) and isinstance(total, str):
-                lines.append("  Saved charges captured through {}: ${}.".format(cutoff, total))
+                lines.append(
+                    "  Saved charges captured through {}: ${} (fixture billing, not a "
+                    "measurement).".format(cutoff, total)
+                )
         if state != "verified" and isinstance(state, str):
             lines.append(f"  Saved close state: {state.upper()}.")
         if isinstance(volume, dict) and isinstance(volume.get("ongoing_hourly_usd"), str):
