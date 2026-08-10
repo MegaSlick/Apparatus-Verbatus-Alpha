@@ -209,6 +209,35 @@ def test_literal_display_markers_do_not_refuse_or_change_an_established_text(tmp
     assert verify_projection_identity(bundle.data, tmp_path) == {"act-1": literal}
 
 
+@pytest.mark.parametrize(
+    ("name", "separator"),
+    # Written as code points rather than as glyphs: all three are invisible, and a
+    # reader of this file has to be able to see which character is under test.
+    [("U+0085", chr(0x85)), ("U+2028", chr(0x2028)), ("U+2029", chr(0x2029))],
+)
+def test_a_unicode_line_separator_in_a_reading_does_not_stop_the_whole_export(
+    name, separator, tmp_path
+):
+    """Every line-oriented member must split only where its own writer joined.
+
+    `canonical_bytes` serializes with `ensure_ascii=False` on purpose, so these
+    three characters reach `acts.jsonl` and the text bundle as raw bytes inside a
+    JSON string. `str.splitlines` breaks on all three, so one such character in one
+    act's established reading cut that record in half and refused the entire run's
+    product -- every act, not only the one carrying it.
+    """
+    projection = _projection()
+    literal = f"Marie{separator}Anne"
+    delivered = {**projection.acts[0], "canonical_clean_text": literal}
+    bundle = build_armarium_bundle(
+        replace(projection, acts=(delivered, projection.acts[1])),
+        _formats(embed_pixels=False),
+        _source_bytes,
+    )
+
+    assert verify_projection_identity(bundle.data, tmp_path / name) == {"act-1": literal}
+
+
 def test_projection_identity_refuses_a_self_consistent_package_with_one_drifted_format(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)

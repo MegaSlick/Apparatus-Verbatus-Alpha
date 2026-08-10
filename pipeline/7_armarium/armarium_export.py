@@ -1252,6 +1252,25 @@ def _jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
     return b"".join(canonical_bytes(record) + b"\n" for record in records)
 
 
+def _package_lines(path, subject: str) -> list[str]:
+    r"""Split one package member on exactly the separator its writer used.
+
+    ``str.splitlines`` also breaks on U+0085, U+2028 and U+2029, and this project
+    serializes with ``ensure_ascii=False`` on purpose -- ``canonical.py``: "the
+    stored bytes should be the text itself -- this is a project about the very
+    words" -- so ``json.dumps`` emits all three of those raw inside a JSON string
+    rather than escaping them. An established reading containing one therefore cut
+    its own record in half in every line-oriented member, and the export refused the
+    whole run over one act's character. ``newline=""`` suppresses universal-newline
+    translation for the same reason: this reader is the exact inverse of writers
+    that only ever join on ``\n``.
+    """
+    try:
+        return path.read_text(encoding="utf-8", newline="").split("\n")
+    except (OSError, UnicodeDecodeError) as error:
+        raise SchemaRefusal(f"the {subject} cannot be read") from error
+
+
 def _text_bundle_records(
     root, source_pages: list[dict[str, Any]] | None = None
 ) -> dict[str, tuple[str, str, tuple[tuple[str, str], ...]]]:
@@ -1270,7 +1289,7 @@ def _text_bundle_records(
 
     records: dict[str, tuple[str, str, tuple[tuple[str, str], ...]]] = {}
     for path in sorted((root / "text").rglob("readings.txt")) if (root / "text").exists() else []:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _package_lines(path, "text bundle")
         current_id: str | None = None
         pending: tuple[str, str, tuple[tuple[str, str], ...]] | None = None
         citations: list[tuple[str, str]] = []
@@ -1386,7 +1405,7 @@ def _database_literals(path) -> dict[str, tuple[str, str]]:
 
 def _jsonl_literals(path) -> dict[str, tuple[str, str]]:
     records: dict[str, tuple[str, str]] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in _package_lines(path, "acts JSONL"):
         if not line:
             continue
         record = json.loads(line)
@@ -2148,10 +2167,7 @@ def _jsonl_act_records(
     path: Path, source_graph_regions: list[dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
     """Validate JSONL's one-record-per-act projection and return its categories."""
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as error:
-        raise SchemaRefusal("the acts JSONL cannot be read") from error
+    lines = _package_lines(path, "acts JSONL")
     records: dict[str, dict[str, Any]] = {}
     known = {category.value for category in ArmariumCategory}
     for line in lines:
@@ -2279,10 +2295,7 @@ def _database_act_records(
 
 def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
     """Validate the selected review projection's exact terminal population."""
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as error:
-        raise SchemaRefusal("the review-items JSONL cannot be read") from error
+    lines = _package_lines(path, "review-items JSONL")
     records: dict[str, dict[str, str]] = {}
     allowed = {
         ArmariumCategory.HELD_FOR_REVIEW.value,
@@ -2322,10 +2335,7 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
 
 def _salvage_product_records(path: Path) -> tuple[dict[str, Any], ...]:
     """Read the tier-only JSONL and reapply its no-acts firewall."""
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as error:
-        raise SchemaRefusal("the salvage-tier JSONL cannot be read") from error
+    lines = _package_lines(path, "salvage-tier JSONL")
     records: list[dict[str, Any]] = []
     for line in lines:
         if not line:
