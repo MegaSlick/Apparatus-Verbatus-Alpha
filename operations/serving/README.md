@@ -99,6 +99,18 @@ its image URL. A visual request must place its one image in an actual OpenAI
 `chat-completions` `role=user` `messages[].content[]` image block; an ignored
 extension field called `image_url` is not visual evidence.
 
+**What this proves, and what it does not.** A base/adapter digest difference is
+necessary evidence, not attribution: nothing here runs a base-versus-base control to
+establish that the calibration is deterministic on the serving engine at all before a
+difference is read as adapter activity, so vLLM-level nondeterminism (continuous
+batching, chunked prefill, batch composition) could in principle produce a difference
+neither request caused. Symmetrically, a genuinely active adapter that happens to
+answer the calibration identically to its base is refused — a real, uncorrupted chair
+declined, loudly, never silently. Neither the calibration prompt nor the fixture is
+constrained to be discriminative; `calibration_for` is a free caller seam. **Whoever
+wires the real rollout must choose a calibration that is known to differ between the
+configured base and adapter before launch**, not merely one that is well-formed.
+
 ## Receipt and launch audit
 
 `chair-serving-receipt.v1` remains closed. It holds what answered: identity,
