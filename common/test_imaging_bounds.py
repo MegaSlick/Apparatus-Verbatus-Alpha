@@ -127,6 +127,29 @@ def test_crop_refuses_what_the_decoder_refuses():
         crop_png(b"not a png", {"x": 0, "y": 0, "w": 1, "h": 1})
 
 
+def test_crop_refuses_a_declared_size_past_the_bound_on_its_pillow_fallback_path():
+    """`crop_png` falls back to `_crop_decoded_page` for anything this module's own
+    native codec cannot decode (RGB, CMYK, 16-bit, ...). That fallback called
+    `Image.open` + `image.load()` with no `MAX_PIXELS` check of its own, so a
+    declared size between `MAX_PIXELS` and Pillow's own 2x hard-raise ceiling
+    decoded and materialized cleanly with nothing but a non-fatal
+    `DecompressionBombWarning` -- exactly the gap `dimensions` and
+    `grayscale_rows` were already closed for on the same bytes.
+
+    RGB rather than this module's own grayscale encoding, so `decode_grayscale_png`
+    refuses for a reason unrelated to size and this exercises the Pillow fallback,
+    not the native path `test_a_declared_size_past_the_pixel_bound_is_refused_
+    before_any_decompression` already covers."""
+    # 100,500,000 pixels: over MAX_PIXELS, under Pillow's own 2x raise ceiling
+    width, height = 10_050, 10_000
+    assert MAX_PIXELS < width * height < 2 * MAX_PIXELS
+    source = BytesIO()
+    Image.new("RGB", (width, height), (1, 2, 3)).save(source, format="PNG")
+
+    with pytest.raises(ValueError, match="pixel bound"):
+        crop_png(source.getvalue(), {"x": 0, "y": 0, "w": 4, "h": 4})
+
+
 def test_crop_converts_an_admitted_cmyk_jpeg_to_a_png_compatible_display_mode():
     source = BytesIO()
     Image.new("CMYK", (3, 2), (0, 255, 255, 0)).save(source, format="JPEG")

@@ -298,6 +298,11 @@ def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> byte
     """
     try:
         with Image.open(BytesIO(png_bytes)) as image:
+            if image.width * image.height > MAX_PIXELS:
+                raise ValueError(
+                    f"a {image.width}x{image.height} page is past this pipeline's "
+                    f"{MAX_PIXELS}-pixel bound"
+                )
             image.load()
             if x < 0 or y < 0 or x + w > image.width or y + h > image.height:
                 raise ValueError(
