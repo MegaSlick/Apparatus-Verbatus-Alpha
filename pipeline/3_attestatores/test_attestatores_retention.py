@@ -631,6 +631,38 @@ def test_unrecordable_native_output_becomes_failed_without_replacement_text():
     assert "�" not in str(record)
 
 
+def test_a_deeply_nested_native_payload_becomes_failed_not_a_recursion_crash():
+    """A witness response nested past Python's recursion limit must become one
+    isolated `failed` attempt, the same as any other malformed response -- never
+    an uncaught RecursionError that would crash the whole stage process and take
+    every other act and chair in the pass down with it (spec 07's isolation
+    bullet: "one ... malformed response never kills the folder")."""
+    nested = "leaf"
+    for _ in range(5000):
+        nested = [nested]
+
+    problem = attestatores._native_problem(nested)
+    assert problem is not None
+    assert "nests deeper" in problem
+
+    health = attestatores.content_health(nested, completed=True)
+    assert health["recordable"] is False
+    assert health["truncation_basis"] == problem
+
+    native, self_report, capabilities, prepared_health, prepared_problem = (
+        attestatores.prepared_response({"payload": nested})
+    )
+    assert native is None
+    assert self_report is None
+    assert capabilities is None
+    assert prepared_health["recordable"] is False
+    assert prepared_problem == problem
+
+    # Reasonable real-world nesting must not be caught by the same guard.
+    reasonable = {"tokens": ["a", "b"], "layout": {"line": 4, "spans": [{"a": 1}, {"b": 2}]}}
+    assert attestatores._native_problem(reasonable) is None
+
+
 def test_configured_never_attempted_seat_is_not_run_not_dead(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "not-run-witness")
     result = invoke_stage(

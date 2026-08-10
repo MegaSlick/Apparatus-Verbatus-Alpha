@@ -134,30 +134,27 @@ def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
     return declared == ordinal
 
 
-def declared_failures(context, ordinal: int) -> set[tuple[str, str]]:
+def _declared_pairs(context, ordinal: int, fixture_key: str) -> set[tuple[str, str]]:
+    """The (act, chair) pairs one fixture table declares for this exact attempt."""
     return {
         (row["act_key"], row["chair"])
-        for row in context.fixture.get("witness_failure", [])
+        for row in context.fixture.get(fixture_key, [])
         if row["scenario"] == context.scenario and _declared_for_ordinal(row, ordinal)
     }
+
+
+def declared_failures(context, ordinal: int) -> set[tuple[str, str]]:
+    return _declared_pairs(context, ordinal, "witness_failure")
 
 
 def declared_empty(context, ordinal: int) -> set[tuple[str, str]]:
     """Completed empty readings, distinct from an absent response."""
-    return {
-        (row["act_key"], row["chair"])
-        for row in context.fixture.get("witness_empty", [])
-        if row["scenario"] == context.scenario and _declared_for_ordinal(row, ordinal)
-    }
+    return _declared_pairs(context, ordinal, "witness_empty")
 
 
 def declared_not_run(context, ordinal: int) -> set[tuple[str, str]]:
     """Configured chairs deliberately never asked for this attempt."""
-    return {
-        (row["act_key"], row["chair"])
-        for row in context.fixture.get("witness_not_run", [])
-        if row["scenario"] == context.scenario and _declared_for_ordinal(row, ordinal)
-    }
+    return _declared_pairs(context, ordinal, "witness_not_run")
 
 
 def _page_fallback_bounds(context) -> dict[str, dict]:
