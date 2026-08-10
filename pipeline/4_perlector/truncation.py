@@ -37,6 +37,8 @@ from __future__ import annotations
 
 from typing import Final, TypedDict
 
+from common.contracts.errors import ContractError
+
 COMPLETE: Final = "complete"
 TRUNCATED: Final = "truncated"
 UNKNOWN: Final = "unknown"
@@ -73,14 +75,22 @@ class TruncationRecord(TypedDict):
 
 
 def _stop_reason_signal(stop_reason: str | None) -> str | None:
-    """The one declared, fixture-only signal. `None` means nothing was declared."""
+    """The one declared, fixture-only signal. `None` means nothing was declared.
+
+    This fixture chamber only ever declares `"stop"` or `"length"`, but the
+    reader protocol this stands in for (`pipeline/4_perlector/reader.py`) is the
+    seam a real serving engine occupies later, and a real engine's own
+    finish-reason string is untrusted input this module has not seen before --
+    refused by name rather than let through as an unhandled crash, exactly as
+    every other boundary in this stage refuses rather than guesses.
+    """
     if stop_reason is None:
         return None
     if stop_reason == "length":
         return TRUNCATED
     if stop_reason == "stop":
         return COMPLETE
-    raise ValueError(f"stop_reason {stop_reason!r} is neither 'stop' nor 'length'")
+    raise ContractError(f"stop_reason {stop_reason!r} is neither 'stop' nor 'length'")
 
 
 def has_unclosed_structure(text: str) -> bool:

@@ -9,6 +9,8 @@ complete.
 import pytest
 import truncation
 
+from common.contracts.errors import ContractError
+
 
 def test_a_clean_short_reading_whose_engine_reported_stop_is_complete():
     record = truncation.classify("alpha beta gamma.", region_pixels=1000, stop_reason="stop")
@@ -50,7 +52,12 @@ def test_an_engine_declared_stop_reason_does_not_force_complete_over_bad_signals
 
 
 def test_an_unrecognized_stop_reason_refuses_rather_than_guesses():
-    with pytest.raises(ValueError, match="neither 'stop' nor 'length'"):
+    """A structured refusal, not a bare crash: `stop_reason` is the one signal
+    in this module that will carry a real serving engine's own untrusted
+    finish-reason string once a real reader occupies this seam, and every
+    other boundary in this stage refuses unrecognized input by name rather
+    than letting it escape as an unhandled exception."""
+    with pytest.raises(ContractError, match="neither 'stop' nor 'length'"):
         truncation.classify("text", region_pixels=100, stop_reason="banana")
 
 
