@@ -619,8 +619,11 @@ def validate_record(record: dict) -> dict:
             f"and gaps (expected {derived_status!r})"
         )
     validate_text_status(text, record["text_status"], record["evidence_ref"])
-    if not isinstance(record["regions"], list) or not record["regions"]:
+    regions = record["regions"]
+    if not isinstance(regions, list) or not regions:
         raise SchemaRefusal("the Archetypus record retains no source region")
+    for index, region in enumerate(regions):
+        _validate_region_fields(region, f"Archetypus record region {index}")
     if not isinstance(record["provenance"], dict):
         raise SchemaRefusal("the Archetypus provenance is not an object")
     for field in ("dissent_ref", "perlectio_ref", "recensor_ref"):
@@ -644,6 +647,29 @@ def _no_readable_text_evidence(review: dict) -> dict[str, str] | None:
             "no_readable_text evidence is not a digest-checked direct input of the Recensor review"
         )
     return reference
+
+
+def _validate_region_fields(region, label: str) -> None:
+    """The region's closed field set, checked identically at write and read-back.
+
+    A region is embedded from the reading whole and copied field-for-field into
+    the export, so the record's own closed top-level schema
+    (`validate_record_fields`) says nothing about what rides inside one — this
+    is the field-set closure for that sub-object, the shape that stopped
+    `consolidated_literal` at construction (`_crop_references`) and now also
+    stops it surviving a reseal past `validate_record`, the function every later
+    stage-local read and `HANDOFF.md` both rely on.
+    """
+    if not isinstance(region, dict):
+        raise SchemaRefusal(f"{label} is not an object")
+    unexpected = sorted(set(region) - _REGION_FIELDS)
+    missing = sorted(_REGION_FIELDS - set(region))
+    if unexpected or missing:
+        raise SchemaRefusal(
+            f"{label} is outside the closed region schema (missing {missing}, unexpected "
+            f"{unexpected}); a region travels into this record and out through the export "
+            "whole, so a field beside the crop facts is a second unvalidated payload"
+        )
 
 
 def _crop_references(context, regions: list[dict], act_id: str) -> list[dict[str, str]]:
@@ -670,14 +696,7 @@ def _crop_references(context, regions: list[dict], act_id: str) -> list[dict[str
     references = []
     for index, region in enumerate(regions):
         label = f"accepted reading of {act_id} region {index}"
-        unexpected = sorted(set(region) - _REGION_FIELDS)
-        missing = sorted(_REGION_FIELDS - set(region))
-        if unexpected or missing:
-            raise SchemaRefusal(
-                f"{label} is outside the closed region schema (missing {missing}, unexpected "
-                f"{unexpected}); a region travels into this record and out through the export "
-                "whole, so a field beside the crop facts is a second unvalidated payload"
-            )
+        _validate_region_fields(region, label)
         image_path = region["image_path"]
         try:
             reference = context.input_ref(image_path)

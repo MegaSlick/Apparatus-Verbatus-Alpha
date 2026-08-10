@@ -33,6 +33,17 @@ archetypus = _load_archetypus()
 ACT = {"act_id": "act_0000000000000001", "act_key": "a1", "page_id": "pg_0000000000000001"}
 READING_REF = {"relative_path": "4_perlector/artifacts/perlectio/art_b.json", "sha256": "b" * 64}
 REVIEW_REF = {"relative_path": "5_recensor/artifacts/review/art_c.json", "sha256": "c" * 64}
+REGION = {
+    "region_id": "reg_0000000000000001",
+    "image_path": "2_designator/blobs/sha256/deadbeef",
+    "image_sha256": "d" * 64,
+    "verified_dimensions": {"w": 100, "h": 50},
+    "source_page_ordinal": 1,
+    "source_page_id": "pg_0000000000000001",
+    "transform": {"x": 0, "y": 0, "w": 100, "h": 50},
+    "structure_provenance": {"chair": "designator"},
+    "witness_covered": True,
+}
 
 
 def seal_record(**overrides) -> dict:
@@ -48,7 +59,7 @@ def seal_record(**overrides) -> dict:
         "text_hash": digest_of("Maria"),
         "status": "established",
         "text_status": "established",
-        "regions": [{"image_path": "2_designator/blobs/sha256/deadbeef"}],
+        "regions": [dict(REGION)],
         "provenance": {"chair": "perlector"},
         "annotations": [],
         "evidence_ref": None,
@@ -205,6 +216,28 @@ def test_record_validation_refuses_a_bad_nested_self_hash():
 def test_record_validation_refuses_each_resealed_defect(overrides, expected):
     with pytest.raises(SchemaRefusal, match=expected):
         archetypus.validate_record(seal_record(**overrides))
+
+
+def test_record_validation_refuses_a_resealed_region_outside_the_closed_schema():
+    """The read-back proof used to stop at the record's top level.
+
+    `_crop_references` closes `_REGION_FIELDS` at construction — the fix that
+    stopped `consolidated_literal`, the first name in the old pipeline's dead
+    fallback chain, from travelling sealed into the record and out through the
+    export. But `validate_record`, the function every later stage-local read and
+    `HANDOFF.md` both rely on, checked only that `regions` was a non-empty list:
+    a record resealed on disk with the same dead field smuggled inside a region
+    passed it. `_validate_region_fields` now runs on both paths.
+    """
+    smuggled = dict(REGION, consolidated_literal="A SECOND READING NOBODY ESTABLISHED")
+    with pytest.raises(SchemaRefusal, match="outside the closed region schema"):
+        archetypus.validate_record(seal_record(regions=[smuggled]))
+
+
+def test_record_validation_refuses_a_resealed_region_missing_a_crop_fact():
+    stripped = {key: value for key, value in REGION.items() if key != "verified_dimensions"}
+    with pytest.raises(SchemaRefusal, match="outside the closed region schema"):
+        archetypus.validate_record(seal_record(regions=[stripped]))
 
 
 def test_record_validation_refuses_a_dissent_pointer_that_left_its_perlectio():
