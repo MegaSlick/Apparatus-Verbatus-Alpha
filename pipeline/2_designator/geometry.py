@@ -40,14 +40,7 @@ DEFAULT_PADDING_CONFIG_PATH = (
 # 1 basis point = 1/10000. Chosen over percent-as-integer (1/100) because a
 # percentile-of-shortfall calibration (see `padding_calibration.py`) can land
 # on a fractional percent, and basis points hold that precision as an exact
-# integer rather than rounding it away at the unit's own boundary. (An earlier
-# version of this comment cited "0.52 IoU-adjacent figures" as an example of
-# that precision; a window read for this build's second pass found that 0.52
-# is a median *union IoU* from the old pipeline's own calibration record — a
-# different quantity from a per-edge shortfall percentile entirely, and citing
-# it here was a loose citation rather than a wrong one. See
-# `config/designator_padding.toml`'s `[padding.provenance]` for what this
-# project can actually claim about where its own current numbers came from.)
+# integer rather than rounding it away at the unit's own boundary.
 BP_DENOMINATOR: Final = 10_000
 
 # How far two independently-computed axis scale factors may differ, in basis
@@ -61,13 +54,11 @@ _PADDING_FIELDS: Final = ("top_bp", "bottom_bp", "left_bp", "right_bp")
 
 # Every field a padding config's `[padding.provenance]` table must carry, and
 # the only fields it may carry -- a closed schema, not a convention, because a
-# config that can silently omit provenance is exactly what let the old
-# numbers travel forward as though this project had validated them (this
-# build's window read found the calibration source was never named as
-# specifically as "gold annotations" suggested -- see
-# `calibrated_for_this_corpus` below). `caveat` is free text for a human
-# reader; every other field is read by `load_padding_config` and is expected
-# to answer a specific question rather than restate the caveat in other words.
+# config that can silently omit provenance is what lets a number carried from
+# somewhere else travel forward as though this project had validated it.
+# `caveat` is free text for a human reader; every other field is read by
+# `load_padding_config` and is expected to answer a specific question rather
+# than restate the caveat in other words.
 _PROVENANCE_FIELDS: Final = (
     "source",
     "corpus",
@@ -119,17 +110,13 @@ def load_padding_config(path: str | Path = DEFAULT_PADDING_CONFIG_PATH) -> dict[
     Refused loudly rather than defaulted: a padding fraction silently taken as
     zero would cut a crop nobody configured and no provenance would say so.
 
-    A `[padding.provenance]` table is required, not optional: this build's
-    window read found that "calibrated against gold annotations" (the phrase
-    the shipped default used to carry alone) was materially incomplete —
-    the annotations in question are a third-party corpus, not this project's
-    own, and the exact calibration statistic could not be independently
-    verified. Requiring the table is what stops that same incompleteness from
-    happening again silently: a future padding value with no declared source
-    is refused here rather than shipped with an implied claim nobody checked.
-    `cut_region` copies this block into every proposal region's `padding`
-    field, so a reviewer can see it on the evidence itself, not only in a
-    repository file they may never open.
+    A `[padding.provenance]` table is required, not optional. A padding value
+    with no declared source is refused here rather than shipped with an implied
+    claim nobody checked — "calibrated against gold annotations" is the kind of
+    phrase that reads as validation while naming neither the corpus nor the
+    statistic. `cut_region` copies this block onto every proposal region, so a
+    reviewer sees it on the evidence itself rather than only in a repository
+    file they may never open.
     """
     path = Path(path)
     try:
@@ -296,13 +283,12 @@ def from_model_space(
 
     **Low edges floor, far edges ceil**, so a rectangle that survives a round
     trip through model space can only ever grow, never shrink. Rounding both
-    edges the same way (which this function did until the two independent
-    builds of this stage were compared) loses up to a pixel on each far edge,
-    and the direction of that loss is the whole point: a shaved far edge is a
-    clipped signature, and GOALS 1 puts a missed act above a poorly read one.
-    Taken from the lane-B build of this stage, whose `source_bounds_from_view`
-    reached the same conclusion independently and named the reason: it "cannot
-    round a source pixel out of the emitted crop".
+    edges the same way loses up to a pixel on each far edge, and the direction
+    of that loss is the whole point: a shaved far edge is a clipped signature,
+    and GOALS 1 puts a missed act above a poorly read one. (The lane-B build of
+    this stage reached the same rule independently in `source_bounds_from_view`
+    and named it the same way: it "cannot round a source pixel out of the
+    emitted crop".)
 
     The out-of-page refusal is deliberately tested against the *floored* far
     edge rather than the ceiled one, so a rescale genuinely belonging to a

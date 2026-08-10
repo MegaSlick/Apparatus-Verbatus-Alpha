@@ -12,10 +12,10 @@ Every seal entry carries this stage's outcome for the act: `proposed` when it wa
 fully marked out, `held` when it could not be — its page unsealed, a declared
 continuation whose page never sealed, or a sealed page the structure pass could
 not mark out — with a `hold` artifact recording which of those it was. An act
-this stage cannot mark out is a unit it still accounts for; before the hold
-existed, such an act was skipped, sealed nowhere, and the run reported complete
-over its absence. A run that held anything exits `EXIT_HELD`, so the same fact
-reaches an operator who never opens the tree.
+this stage cannot mark out is a unit it still accounts for: skipped instead, it
+is sealed nowhere and the run reports complete over its absence. A run that held
+anything exits `EXIT_HELD`, so the same fact reaches an operator who never opens
+the tree.
 
 Regions are append-only per act, and each carries an `origin` saying what kind of
 region it is: a **proposal** region is part of what was originally marked out — the
@@ -298,16 +298,11 @@ def page_pixels(context, page_record: dict) -> tuple[int, int, list, int]:
 def _bounds_of(row: dict) -> dict:
     """The one reader of a fixture row's `x, y, w, h` fields as a `Bounds` dict.
 
-    A continuation row and a recovery row each carry their rectangle this way,
-    and three call sites once each rebuilt the same four-key comprehension by
-    hand: the act-group evidence, the continuation crop, and the recovery crop.
-    Three independent copies of one projection is the same risk class as two
-    independent copies of a transform (`_crop_transform`) -- a fourth field
-    added to a fixture row and read by only some of the copies would silently
-    change what one call site cuts or compares without the others noticing.
+    Same risk class as `_crop_transform`: a fifth field added to a fixture row
+    and read by only some of the hand-written copies of this projection would
+    change what one call site cuts or compares while the others carried on.
     `common.stage.act_bounds` is the sibling of this for a declared act row;
-    this is what a continuation or recovery row uses, since neither is an act
-    row itself.
+    this is what a continuation or recovery row uses, since neither is one.
     """
     return {key: row[key] for key in ("x", "y", "w", "h")}
 
@@ -477,19 +472,14 @@ def sealed_pages(records: dict[int, dict]) -> dict[int, dict]:
 
 def _crop_transform(page_ordinal: int, page_id: str, bounds: dict) -> dict:
     """The one construction of a crop transform: `verify_exemplar_crop_lineage`'s
-    exact four fields, and every caller that must know a region's identity uses
-    this rather than hand-building the shape again.
+    exact four fields.
 
-    This used to have two independent authors: `cut_region` built it to
-    actually publish a region, and `recovery_pass` built a second, separately
-    typed copy of the identical shape purely to predict what `region_id` a
-    would-be duplicate recrop would carry before ever cutting one. A field
-    added to one and not the other would have let the two silently diverge —
-    `recovery_pass`'s duplicate check would then compute a `region_id` for a
-    transform `cut_region` could never actually produce, and the check would
-    stop firing without either function's own code changing shape in a way a
-    reader would notice. One builder removes the seam entirely rather than
-    documenting a discipline for keeping two hand-written copies in lockstep.
+    A region's identity derives from this shape, and `recovery_pass` builds one
+    to predict what `region_id` a would-be duplicate recrop would carry before
+    cutting it. A second hand-written copy of the shape therefore fails
+    silently rather than loudly: the predicted identity would be computed for a
+    transform `cut_region` could never produce, and the duplicate check would
+    stop firing with neither function's code looking wrong.
     """
     return {
         "operation": "crop",
@@ -605,21 +595,18 @@ def hold_act(
 ):
     """Publish the artifact that says why this act could not be marked out.
 
-    The hold is a real record, never a skipped loop iteration: before it existed,
-    an act on an unsealed page was written nowhere at all, the proposal seal came
-    up short, and the Armarium's conservation check reconciled perfectly against
-    a record of the loss's absence. The hold references the Exemplar's own page
-    outcome as its evidence, so the refusal it rests on is one digest-checked
-    hop away.
+    The hold is a real record, never a skipped loop iteration. An act written
+    nowhere leaves the proposal seal short, and the Armarium's conservation
+    check then reconciles perfectly against a record of the loss's absence. The
+    hold references the Exemplar's own page outcome as its evidence, so the
+    refusal it rests on is one digest-checked hop away.
 
     `blocking_ordinal` is the page whose state stopped this act, and
     `reason_code` says which state that was. The two are separate fields because
     the page is not always *unsealed*: a page the structure pass could not mark
-    out is sealed ink this stage still cannot bound, and a field named
-    `unsealed_page_ordinal` — which is what this payload carried while an
-    unsealed page was the only way to reach here — would have said something
-    false about it. `reason` stays the sentence a reviewer reads; `reason_code`
-    is the closed vocabulary a consumer may branch on without parsing prose.
+    out is sealed ink this stage still cannot bound. `reason` stays the sentence
+    a reviewer reads; `reason_code` is the closed vocabulary a consumer may
+    branch on without parsing prose.
     """
     entry = records.get(blocking_ordinal)
     if entry is None:
@@ -843,17 +830,14 @@ def _secondary_rescue_candidates(claimed: list[dict], candidates: list[dict]) ->
     at once is the P0-incident shape and a reviewer has to be able to see that
     on the record rather than infer it from geometry.
 
-    That count is recorded, never acted on. This pass may not decide which of
-    two acts such a box belongs to, and it may not merge or split either — but
-    it also may not refuse the run over one, which is what it did until the
-    second review pass of 2026-08-10 measured the consequence: a single
-    review-only box straddling the row where two padded claims abut aborted
-    `initial_pass` before the proposal seal was written, so configuring an
-    optional, explicitly non-authoritative seat turned a complete run into a
-    fatal one with no denominator at all. Spec 06's test 5 requires the
-    opposite — "removing the proposer changes no authority decision (it adds
-    recall, never verdicts)" — and a held, flagged, page-subject rescue crop
-    that enters no act and no seal decides nothing either way.
+    That count is recorded, never acted on — including by refusing. Two acts'
+    *padded* claims can abut at a single row, so one ordinary pen mark in the
+    blank band between two entries reaches both; raising here aborts
+    `initial_pass` before the proposal seal is written, and every act on every
+    page loses its denominator over a review-only box. Spec 06's test 5 wants
+    the opposite — "removing the proposer changes no authority decision (it
+    adds recall, never verdicts)" — and a held, flagged, page-subject rescue
+    crop that enters no act and no seal decides nothing either way.
     """
     rescues = []
     for candidate in candidates:
@@ -1061,10 +1045,9 @@ def _publish_conservation_and_secondary(
 
     Returns the expected-act row for every residual this page's reconciliation
     found, so `initial_pass` can extend the proposal seal's own denominator
-    with them. A residual is no longer only a passive audit-trail entry: it is
-    a unit this run accounts for exactly as it accounts for a page that never
-    sealed, closing the gap `HANDOFF.md` named as unclosed pending this exact
-    change to `common.stage.expected_acts`.
+    with them. A residual left inside the conservation artifact alone is an
+    audit-trail entry nothing downstream reads; as a seal row it is a unit this
+    run accounts for exactly as it accounts for a page that never sealed.
     """
     result = conservation.reconcile(
         analysis["width"],
@@ -1110,13 +1093,11 @@ def initial_pass(context) -> bool:
     if not pages:
         raise ContractError("the Designator found no sealed page to mark out")
 
-    # Read from the run's own argument rather than the module default, so the
-    # bytes this stage pads with are the exact bytes `run_config_bindings`
-    # sealed into `run.json` — one path, one digest, no way for the two to name
-    # different files. Same path is not yet same bytes: `open_context` read this
-    # file to check the run's binding and this reads it again to get the values,
-    # and a rewrite between the two reads pads every crop under a policy the run
-    # never sealed while every other check still passes.
+    # The run's own argument, not the module default, so the file this pads
+    # with is the file the run sealed. Same file is not yet same bytes:
+    # `open_context` read it to check the binding and this reads it again for
+    # the values, and a rewrite between the two reads pads every crop under a
+    # policy the run never sealed while every other check still passes.
     padding = geometry.load_padding_config(context.args.designator_padding_config)
     context.require_sealed_config("designator-padding", padding["config_sha256"])
     secondary = secondary_provenance(context)
@@ -1316,13 +1297,11 @@ def initial_pass(context) -> bool:
         inputs=seal_inputs,
         payload=payload,
     )
-    # A run that held an act, or held a page, or found ink no crop claimed, has
-    # not completed — and said so only inside its artifacts until now. The exit
-    # code is the one signal an operator reads without opening the tree, and a 0
-    # over a hold is a partial result wearing "complete" (GOVERNANCE 2). The
-    # Act holds are counted from the seal itself. Secondary holds deliberately
-    # sit outside that authority and are carried by `secondary_held`, derived
-    # from the same list of rescue records this pass just published.
+    # A run that held an act, or held a page, or found ink no crop claimed has
+    # not completed. The exit code is the one signal an operator reads without
+    # opening the tree, and a 0 over a hold is a partial result wearing
+    # "complete" (GOVERNANCE 2). Act holds come from the seal itself; secondary
+    # holds deliberately sit outside that authority, so they arrive separately.
     return any(row["outcome"] == "held" for row in expected) or bool(failures) or secondary_held
 
 
@@ -1390,9 +1369,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
     bounds = _bounds_of(recovery[0])
     page_record = pages[act["page_ordinal"]]
     # The same builder `cut_region` uses, so this duplicate check is computed
-    # against the exact shape that would actually be published -- see
-    # `_crop_transform`'s docstring for why two independent copies of this
-    # shape was a real defect class rather than a style preference.
+    # against the exact shape that would actually be published.
     transform = _crop_transform(act["page_ordinal"], page_record["subject_id"], bounds)
     duplicate = region_id(act_id, transform)
     existing_regions = _regions_of(context, act_id)

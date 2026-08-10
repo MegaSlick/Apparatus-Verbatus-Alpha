@@ -924,14 +924,14 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     seals those fixture bytes.  Real ingress intentionally stops before any
     proposal seal exists, so no unbuilt structural model is being prescribed.
 
-    The fixture's own acts are still a *floor*, never a ceiling: every one of
-    them must appear, exactly as before. But the seal may now also carry acts
-    the fixture never declared, minted from an ink residual conservation found
-    that structural grouping never claimed (`pipeline/2_designator/run.py`'s
-    `_publish_residual_holds`). Those extra rows are not fixture data and
-    cannot be checked against it — `_verify_residual_act_rows` checks them
-    against the one thing they *can* be checked against: their own hold
-    record's residual facts, recomputed rather than trusted.
+    The fixture's own acts are a *floor*, never a ceiling: every one must
+    appear, and the seal may also carry acts the fixture never declared, minted
+    from ink conservation found that structural grouping never claimed
+    (`pipeline/2_designator/run.py`'s `_publish_residual_holds`). Those extra
+    rows are not fixture data and cannot be checked against it —
+    `_verify_residual_act_rows` checks them against the one thing they *can* be
+    checked against: their own hold record's residual facts, recomputed rather
+    than trusted.
     """
     fixture_acts = context.fixture.get("act", [])
     if not fixture_acts:
@@ -988,11 +988,8 @@ def residual_act_ordinal(index: int) -> int:
     shared `structure.label_components`, so the same page reconciles to the
     same ordinal on every run.
 
-    A single function used by both the minting code
-    (`pipeline/2_designator/run.py`) and this module's own verification of what
-    was minted is what keeps the two from becoming a second instance of the
-    duplicate-construction risk class this build's report names — one
-    definition, not two hand-typed copies of `-(index + 1)`.
+    The minting code and this module's verification of what was minted call the
+    same function, so the two cannot drift on what `-(index + 1)` means.
     """
     if index < 0:
         raise ContractError(f"a residual index {index} is negative and names no residual")

@@ -4,10 +4,10 @@ The old pipeline's own conservation logic proved coverage of units the
 structure model itself had already emitted -- a chunk not claimed by a crop
 was accounted for, but a mark the structure model never emitted as a chunk at
 all had no denominator to be missing from. An independent second read
-(`/stage/70_gpt_review/MISSING.md`) named this precisely: "the present
-conservation logic proves coverage of units already emitted by a structural
-model. It cannot prove that the model did not miss ink entirely." This module
-closes exactly that gap: it does not trust the structure pass's own claimed
+(`/stage/70_gpt_review/ASSESSMENT.md:172-173`) named this precisely: "the
+present conservation logic proves coverage of units already emitted by a
+structural model. It cannot prove that the model did not miss ink entirely."
+This module closes exactly that gap: it does not trust the structure pass's own claimed
 regions as the denominator. It rescans the page's actual pixels independently
 and classifies every ink pixel found as claimed (inside some cut crop) or
 residual (not inside any), so a mark the grouping pass never produced a region

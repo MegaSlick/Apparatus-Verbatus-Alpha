@@ -6,9 +6,8 @@ cues"). This walking skeleton has no model to call -- constraint: no pod, no
 model call, synthetic pages only -- so its structure pass is a real,
 deterministic, independently-checkable *visual* pass: it finds every
 ink-bearing connected component on the decoded page and reports its geometry.
-Nothing about this is a stand-in that pretends to be something else; it is the
-actual visual half of "may use textual as well as visual cues", exercised for
-real on every run rather than declared and skipped.
+What is absent is the textual half of that sentence and the model that would
+supply it — not the pass, which runs for real on every page.
 
 Two independent sensitivity presets exist, `PRIMARY` and `SECONDARY`, so that
 wiring in a genuinely different secondary detector (`run.py`'s

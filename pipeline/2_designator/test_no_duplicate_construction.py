@@ -1,26 +1,15 @@
 """Guards against the identity-bearing-structure risk class named in HANDOFF.md.
 
-`recovery_pass` once hand-built its own copy of `cut_region`'s `transform` dict,
-purely to predict a would-be duplicate's `region_id` before ever cutting a crop
-(`_crop_transform`'s docstring tells the story). A reconnaissance sweep for
-other instances of the same class -- two independently hand-written
-constructions of a structure that then feeds an identity or a comparison --
-found a second one inside this stage's own file: three call sites once each
-rebuilt a continuation or recovery rectangle from a fixture row's `x, y, w, h`
-fields by hand (`_bounds_of`'s docstring tells that story).
+Two hand-written constructions of one structure that then feeds an identity or
+a comparison fail *silently*: the two copies diverge, the identity computed
+from one no longer describes what the other builds, and neither function's code
+looks wrong (`_crop_transform` and `_bounds_of` carry the specifics). So the
+guard has to be over the file's actual source rather than over today's belief
+about it.
 
-Both are now single-construction: `_crop_transform` and `_bounds_of` are
-the only places these shapes are built. These tests are the mechanical proof
-that stays true, over the file's actual source rather than over today's belief
-about it -- a future edit that reintroduces a second hand-built copy fails one
-of these rather than silently reopening the class of defect this file was
-already bitten by once.
-
-This is a targeted regression guard for the two instances this stage already
-found and fixed, not a general static analyzer for the whole risk class across
-the pipeline -- a reconnaissance sweep found several more instances in other
-stages' files, which this test cannot reach and does not attempt to (see this
-build's report).
+A targeted regression guard for two known shapes, not a static analyzer for the
+risk class across the pipeline -- other stages' files carry their own instances
+this cannot reach and does not attempt to.
 """
 
 import ast
@@ -73,23 +62,13 @@ def _count_xywh_dict_comprehensions(tree: ast.AST) -> int:
 
 
 def test_exactly_one_crop_transform_literal_exists():
-    """`_crop_transform` is the only place this shape may be built.
-
-    Deleting `_crop_transform` and inlining its body at its call sites
-    call sites (as the file used to do) makes this count 2 and fails here --
-    checked directly below rather than only asserted in prose.
-    """
+    """`_crop_transform` is the only place this shape may be built."""
     tree = ast.parse(RUN_PY.read_text())
     assert _count_crop_transform_literals(tree) == 1
 
 
 def test_deleting_the_shared_transform_builder_is_caught():
-    """Prove the guard above can go red: reintroduce the historical duplicate.
-
-    This does not touch the file on disk -- it parses a patched copy of the
-    same source in memory, so the guard is proven against the exact defect it
-    exists to catch without ever leaving `run.py` in a broken state.
-    """
+    """Prove the guard above can go red, over a patched copy held in memory."""
     source = RUN_PY.read_text()
     reintroduced = source.replace(
         'transform = _crop_transform(act["page_ordinal"], page_record["subject_id"], bounds)',
@@ -105,11 +84,7 @@ def test_deleting_the_shared_transform_builder_is_caught():
 
 
 def test_exactly_one_hand_built_xywh_comprehension_exists():
-    """`_bounds_of` is the only reader of a fixture row's `x, y, w, h` fields.
-
-    Its own body is necessarily the one place this comprehension is written;
-    every other call site uses `_bounds_of` rather than rebuilding it.
-    """
+    """`_bounds_of` is the only reader of a fixture row's `x, y, w, h` fields."""
     tree = ast.parse(RUN_PY.read_text())
     assert _count_xywh_dict_comprehensions(tree) == 1
 

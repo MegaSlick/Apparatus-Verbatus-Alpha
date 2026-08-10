@@ -34,11 +34,9 @@ from geometry import BP_DENOMINATOR, Bounds
 from common.contracts.errors import ContractError
 
 # Below this many gold samples, a percentile estimate is named provisional
-# rather than refused outright — GOALS 1 and 2 want capture padding sooner
-# rather than a perfect one later, and a provisional number that says so is
-# safer than none at all. The number itself follows CLSI EP28-A3c's
-# nonparametric reference-range guidance (minimum ~60, 120+ preferred), not an
-# invented threshold: see the module docstring.
+# rather than refused outright: a provisional number that says so is safer than
+# none at all. The numbers follow CLSI EP28-A3c rather than being invented here
+# — see the module docstring.
 MINIMUM_DEFENSIBLE_SAMPLES: Final = 60
 PREFERRED_SAMPLE_COUNT: Final = 120
 

@@ -1,9 +1,9 @@
 """The secondary proposer adds recall, never a verdict (spec 06 test 5).
 
-Three levels, cheapest first: the pure selection/hard-error rule with no I/O
-at all, a real rescue crop published through a real (but hand-fed) page
-analysis, and a full end-to-end orchestrator run proving that configuring the
-role changes no authoritative outcome relative to leaving it absent.
+Three levels, cheapest first: the pure candidate rule with no I/O at all, a
+real rescue crop published through a real (but hand-fed) page analysis, and a
+full end-to-end orchestrator run proving that configuring the role changes no
+authoritative outcome relative to leaving it absent.
 """
 
 import importlib.util
@@ -23,7 +23,7 @@ def _load_designator():
     return module
 
 
-# --- level 1: the pure candidate-selection rule, no I/O at all -----------------
+# --- level 1: the pure candidate rule, no I/O at all ---------------------------
 
 
 def test_a_candidate_touching_no_claim_is_rescued():

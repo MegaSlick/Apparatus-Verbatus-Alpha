@@ -138,14 +138,12 @@ def _boundary_index(y: int, boundaries: list[int], reach: int) -> int:
 
     A body component's own top edge can land a few pixels before the anchor
     that actually seeds its act -- ordinary detection jitter, not evidence of
-    an earlier start -- so a boundary within `reach` pixels of `y` still
-    counts as reached. Zero-tolerance equality here would make the split
-    depend on a body run's top edge landing on or after its anchor's top edge
-    to the pixel, which the anchor-attachment overlap test a few lines below
-    already declines to require of the same geometry (it is given
-    `anchor_reach_px` slack); this is the same tolerance applied where the
-    partition itself is decided rather than only where an anchor attaches to
-    an already-decided run.
+    an earlier start -- so a boundary within `reach` pixels of `y` still counts
+    as reached. Requiring equality to the pixel merges the second act into the
+    first and loses its identity entirely, and the anchor-attachment overlap
+    test below already declines to require that of the same geometry: this is
+    the same slack, applied where the partition is decided rather than only
+    where an anchor attaches to a run already decided.
     """
     index = 0
     for boundary in boundaries:
