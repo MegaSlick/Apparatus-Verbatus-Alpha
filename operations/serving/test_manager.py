@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -1200,6 +1201,20 @@ def test_subprocess_launcher_passes_declared_lease_fd_to_the_owned_child(tmp_pat
     )
     assert process.wait(3) == 0
     held.release()
+
+
+def test_subprocess_launcher_creates_its_log_file_owner_only_from_the_start(
+    tmp_path: Path,
+) -> None:
+    """No window where the log is world/group-readable between create and chmod."""
+
+    process = SubprocessLauncher().launch(
+        (sys.executable, "-c", "pass"),
+        tmp_path / "child.log",
+    )
+    assert process.wait(3) == 0
+    mode = stat.S_IMODE((tmp_path / "child.log").stat().st_mode)
+    assert mode == 0o600, f"expected owner-only 0o600, got {oct(mode)}"
 
 
 def test_each_manager_log_path_is_fresh_even_with_the_same_log_root(tmp_path: Path) -> None:

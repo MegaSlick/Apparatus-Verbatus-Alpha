@@ -124,8 +124,12 @@ class SubprocessLauncher:
         if any(not isinstance(fd, int) or isinstance(fd, bool) or fd < 0 for fd in inheritable_fds):
             raise ProcessLaunchError("inherited file descriptors must be non-negative integers")
         try:
-            handle = log_path.open("xb")
-            os.chmod(log_path, 0o600)
+            # Request the owner-only mode at creation rather than open-then-chmod:
+            # the latter leaves the file briefly at the umask-derived default mode
+            # (commonly world/group-readable) before narrowing it.
+            handle = os.fdopen(
+                os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
+            )
             process = subprocess.Popen(
                 argv,
                 stdin=subprocess.DEVNULL,
