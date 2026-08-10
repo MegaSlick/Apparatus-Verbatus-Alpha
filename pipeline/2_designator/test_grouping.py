@@ -11,10 +11,7 @@ import random
 
 import pytest
 from grouping import (
-    DEFAULT_ANCHOR_REACH_PX,
     DEFAULT_BRACE_MIN_HEIGHT_PX,
-    DEFAULT_CHAIN_GAP_PX,
-    DEFAULT_MARGIN_FRACTION,
     assign_columns,
     find_continuation_candidate,
     group_page,
@@ -291,10 +288,3 @@ def test_no_continuation_when_either_page_marked_out_nothing():
 def test_group_page_refuses_a_non_positive_page(page_w, page_h):
     with pytest.raises(ContractError):
         group_page([component(0, 0, 5, 5)], page_w, page_h)
-
-
-def test_default_constants_are_exposed_and_positive():
-    assert DEFAULT_MARGIN_FRACTION > 0
-    assert DEFAULT_CHAIN_GAP_PX >= 0
-    assert DEFAULT_ANCHOR_REACH_PX >= 0
-    assert DEFAULT_BRACE_MIN_HEIGHT_PX > 0

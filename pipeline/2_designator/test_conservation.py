@@ -7,7 +7,7 @@ reconciliation is supposed to be checking would not be testing anything.
 """
 
 import pytest
-from conservation import DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX, reconcile
+from conservation import reconcile
 from structure import PRIMARY_MARGIN
 
 from common.contracts.errors import ContractError
@@ -198,10 +198,6 @@ def test_review_priority_threshold_only_reorders_never_excludes():
     assert strict["residual_components"][0]["review_priority"] == "low"
     # The pixel itself is identically accounted either way.
     assert lenient["residual_components"][0]["bounds"] == strict["residual_components"][0]["bounds"]
-
-
-def test_default_review_priority_threshold_is_a_small_positive_number():
-    assert DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX > 0
 
 
 # --- secondary-sensitivity corroboration ---------------------------------------

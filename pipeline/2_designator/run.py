@@ -155,6 +155,13 @@ def _refuse_text_fields(value, path: str = "$") -> None:
             _refuse_text_fields(item, f"{path}[{index}]")
 
 
+def _require_rectangle_fields(block: dict, what: str) -> None:
+    for field in ("declared_bounds", "detected_bounds"):
+        bounds = block[field]
+        if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
+            raise ContractError(f"a Designator act-group {what} has invalid {field}")
+
+
 def _validate_act_group_payload(payload: object) -> None:
     """Validate the closed, geometry-only act-group contract before publication."""
     required = {
@@ -168,10 +175,7 @@ def _validate_act_group_payload(payload: object) -> None:
     }
     if not isinstance(payload, dict) or set(payload) != required:
         raise ContractError("a Designator act-group payload has fields outside its closed contract")
-    for field in ("declared_bounds", "detected_bounds"):
-        bounds = payload[field]
-        if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
-            raise ContractError(f"a Designator act-group payload has invalid {field}")
+    _require_rectangle_fields(payload, "payload")
     continuation = payload["continuation"]
     if continuation is not None:
         continuation_fields = {
@@ -184,11 +188,23 @@ def _validate_act_group_payload(payload: object) -> None:
             raise ContractError(
                 "a Designator act-group continuation has fields outside its closed contract"
             )
-        for field in ("declared_bounds", "detected_bounds"):
-            bounds = continuation[field]
-            if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
-                raise ContractError(f"a Designator act-group continuation has invalid {field}")
+        _require_rectangle_fields(continuation, "continuation")
     _refuse_text_fields(payload)
+
+
+def _configured_chair_record(context, resolved: ChairIdentity) -> dict:
+    """The provenance block a resolved chair contributes to every artifact."""
+    return {
+        "chair": resolved.role,
+        "chair_state": "configured",
+        "resolved_identity": resolved.to_record(),
+        "resolved_revision": {
+            "kind": resolved.receipt_revision_kind,
+            "value": resolved.receipt_revision,
+        },
+        "receipt_ref": context.write_serving_receipt(resolved, fixture_serving_details(resolved)),
+        "adapter_revision": context.adapter_revision,
+    }
 
 
 def structure_provenance(context) -> dict:
@@ -206,18 +222,7 @@ def structure_provenance(context) -> dict:
         )
     if not isinstance(resolved, ChairIdentity):
         raise ContractError("Designator resolution returned neither an identity nor an absence")
-    receipt_ref = context.write_serving_receipt(resolved, fixture_serving_details(resolved))
-    return {
-        "chair": resolved.role,
-        "chair_state": "configured",
-        "resolved_identity": resolved.to_record(),
-        "resolved_revision": {
-            "kind": resolved.receipt_revision_kind,
-            "value": resolved.receipt_revision,
-        },
-        "receipt_ref": receipt_ref,
-        "adapter_revision": context.adapter_revision,
-    }
+    return _configured_chair_record(context, resolved)
 
 
 def secondary_provenance(context) -> dict:
@@ -248,18 +253,7 @@ def secondary_provenance(context) -> dict:
         raise ContractError(
             "secondary proposer resolution returned neither an identity nor an absence"
         )
-    receipt_ref = context.write_serving_receipt(resolved, fixture_serving_details(resolved))
-    return {
-        "chair": resolved.role,
-        "chair_state": "configured",
-        "resolved_identity": resolved.to_record(),
-        "resolved_revision": {
-            "kind": resolved.receipt_revision_kind,
-            "value": resolved.receipt_revision,
-        },
-        "receipt_ref": receipt_ref,
-        "adapter_revision": context.adapter_revision,
-    }
+    return _configured_chair_record(context, resolved)
 
 
 def _read_checked_page_bytes(context, page_record: dict) -> bytes:
@@ -1322,13 +1316,13 @@ def initial_pass(context) -> bool:
     return any(row["outcome"] == "held" for row in expected) or bool(failures) or secondary_held
 
 
-def recovery_pass(context, act_id: str, request_id: str) -> int:
+def recovery_pass(context, act_id: str, request_id: str) -> None:
     """Cut one replacement region for one act, at the Recensor's request.
 
     The Recensor asked; the Designator cuts. Keeping the ownership straight is
     what stops the recovery loop from growing a second author for crops.
     """
-    seal = context.tree.read_artifact(DESIGNATOR, "proposal-seal", _seal_artifact_id(context))
+    seal = context.tree.read_artifact(DESIGNATOR, "proposal-seal", _seal_artifact_id())
     match = [item for item in seal["payload"]["expected_acts"] if item["act_id"] == act_id]
     if not match:
         raise ContractError(f"recovery asked for {act_id}, which the proposal seal does not name")
@@ -1421,11 +1415,9 @@ def recovery_pass(context, act_id: str, request_id: str) -> int:
         "recovery",
         context.artifact_ref(RECENSOR, "recovery-request", request["artifact_id"]),
     )
-    return 1
 
 
-def _seal_artifact_id(context) -> str:
-
+def _seal_artifact_id() -> str:
     return artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
 
 

@@ -21,9 +21,16 @@ property GOVERNANCE 10 requires of any threshold in an instrument: the
 instrument may not constrain what it measures.
 """
 
-from typing import Any, Final, TypedDict
+from typing import Final, TypedDict
 
-from structure import PRIMARY_MARGIN, Bounds, Component, ink_pixels, label_components
+from structure import (
+    DEFAULT_GAP_TOLERANCE_PX,
+    PRIMARY_MARGIN,
+    Bounds,
+    Component,
+    ink_pixels,
+    label_components,
+)
 
 from common.contracts.errors import ContractError
 
@@ -59,7 +66,7 @@ def reconcile(
     background: int,
     claimed_bounds: list[Bounds],
     margin: int = PRIMARY_MARGIN,
-    gap_tolerance_px: int | None = None,
+    gap_tolerance_px: int = DEFAULT_GAP_TOLERANCE_PX,
     review_priority_min_dimension_px: int = DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX,
 ) -> ReconciliationResult:
     """Reconcile one page's ink against the crops actually cut on it.
@@ -80,22 +87,11 @@ def reconcile(
             raise ContractError(f"claimed bounds {bounds} are not a positive rectangle")
 
     pixels = ink_pixels(width, height, rows, background=background, margin=margin)
-    total = len(pixels)
-    if total == 0:
-        return {
-            "total_ink_pixel_count": 0,
-            "claimed_pixel_count": 0,
-            "residual_pixel_count": 0,
-            "residual_components": [],
-        }
-
     claimed = {pixel for pixel in pixels if _is_claimed(pixel[0], pixel[1], claimed_bounds)}
     residual = pixels - claimed
-
-    label_kwargs: dict[str, Any] = {}
-    if gap_tolerance_px is not None:
-        label_kwargs["gap_tolerance_px"] = gap_tolerance_px
-    residual_components: list[Component] = label_components(residual, **label_kwargs)
+    residual_components: list[Component] = label_components(
+        residual, gap_tolerance_px=gap_tolerance_px
+    )
 
     accounted: list[dict] = []
     for component in residual_components:
@@ -110,7 +106,7 @@ def reconcile(
         )
 
     return {
-        "total_ink_pixel_count": total,
+        "total_ink_pixel_count": len(pixels),
         "claimed_pixel_count": len(claimed),
         "residual_pixel_count": len(residual),
         "residual_components": accounted,

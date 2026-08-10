@@ -292,7 +292,7 @@ def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_aut
     seal = context.tree.read_artifact(
         designator.DESIGNATOR,
         "proposal-seal",
-        designator._seal_artifact_id(context),
+        designator._seal_artifact_id(),
     )
     assert {row["outcome"] for row in seal["payload"]["expected_acts"]} == {"proposed"}
 
@@ -374,7 +374,7 @@ def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_
     context.finish()
 
     seal = context.tree.read_artifact(
-        designator.DESIGNATOR, "proposal-seal", designator._seal_artifact_id(context)
+        designator.DESIGNATOR, "proposal-seal", designator._seal_artifact_id()
     )
     assert {row["outcome"] for row in seal["payload"]["expected_acts"]} == {"proposed"}
     # The stand-in scan returns this one candidate for every sealed page; only

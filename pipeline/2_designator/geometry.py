@@ -86,14 +86,22 @@ class Bounds(TypedDict):
     h: int
 
 
+def _is_plain_int(value: Any) -> bool:
+    """An `int` that is not a `bool`.
+
+    `bool` is an `int` subclass, so an unqualified `isinstance` check reads
+    `True` as the coordinate `1`. A hand-edited `h = true` in a fixture would
+    otherwise cut a one-pixel-tall crop and publish it as an act's evidence
+    without a single refusal anywhere.
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def validate_bounds(bounds: Any, width: int, height: int, what: str) -> None:
     """Refuse a rectangle that does not belong to its declared pixel space."""
     if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
         raise ContractError(f"{what} is not a closed x/y/w/h rectangle")
-    if any(
-        not isinstance(bounds[field], int) or isinstance(bounds[field], bool)
-        for field in ("x", "y", "w", "h")
-    ):
+    if not all(_is_plain_int(bounds[field]) for field in ("x", "y", "w", "h")):
         raise ContractError(f"{what} has a non-integer coordinate")
     x, y, w, h = (bounds[field] for field in ("x", "y", "w", "h"))
     if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > width or y + h > height:
@@ -101,14 +109,7 @@ def validate_bounds(bounds: Any, width: int, height: int, what: str) -> None:
 
 
 def _validate_dimensions(width: Any, height: Any, what: str) -> None:
-    if (
-        not isinstance(width, int)
-        or isinstance(width, bool)
-        or not isinstance(height, int)
-        or isinstance(height, bool)
-        or width <= 0
-        or height <= 0
-    ):
+    if not _is_plain_int(width) or not _is_plain_int(height) or width <= 0 or height <= 0:
         raise ContractError(f"{what} {width}x{height} does not have positive integer dimensions")
 
 
@@ -143,9 +144,7 @@ def load_padding_config(path: str | Path = DEFAULT_PADDING_CONFIG_PATH) -> dict[
         raise ContractError("the padding configuration has no [padding] table")
     values = {name: padding.get(name) for name in _PADDING_FIELDS}
     invalid = [
-        name
-        for name in _PADDING_FIELDS
-        if not isinstance(values[name], int) or isinstance(values[name], bool) or values[name] < 0
+        name for name in _PADDING_FIELDS if not _is_plain_int(values[name]) or values[name] < 0
     ]
     if invalid:
         raise ContractError(
@@ -182,11 +181,7 @@ def _load_padding_provenance(provenance: Any) -> dict[str, Any]:
             raise ContractError(
                 f"the padding configuration's provenance field {field!r} is not a non-empty string"
             )
-    if (
-        not isinstance(provenance["sample_count"], int)
-        or isinstance(provenance["sample_count"], bool)
-        or provenance["sample_count"] < 0
-    ):
+    if not _is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
         raise ContractError(
             "the padding configuration's provenance sample_count is not a non-negative integer"
         )
@@ -220,8 +215,7 @@ def apply_padding(
     clamping at a page edge shaves it, and a caller that only recorded the
     configured fraction would describe a crop bigger than the one it cut.
     """
-    if page_w <= 0 or page_h <= 0:
-        raise ContractError(f"a {page_w}x{page_h} page has no positive area to pad within")
+    _validate_dimensions(page_w, page_h, "page")
     validate_bounds(bounds, page_w, page_h, "structural bounds")
     x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
 
@@ -325,10 +319,8 @@ def from_model_space(
             raise ContractError(f"scale has no {axis!r} ratio")
         numerator, denominator = ratio.get("numerator"), ratio.get("denominator")
         if (
-            not isinstance(numerator, int)
-            or isinstance(numerator, bool)
-            or not isinstance(denominator, int)
-            or isinstance(denominator, bool)
+            not _is_plain_int(numerator)
+            or not _is_plain_int(denominator)
             or numerator <= 0
             or denominator <= 0
         ):
@@ -370,10 +362,8 @@ def verify_isotropic(
     later, because a distorted geometry used anyway is exactly the "narrow
     left-margin crops" defect class this module exists to close.
     """
-    for axis, other in (("x", "y"), ("y", "x")):
-        ratio = scale.get(axis)
-        other_ratio = scale.get(other)
-        if not isinstance(ratio, dict) or not isinstance(other_ratio, dict):
+    for axis in ("x", "y"):
+        if not isinstance(scale.get(axis), dict):
             raise ContractError(f"scale has no {axis!r} ratio to check for anisotropy")
     x_num, x_den = scale["x"]["numerator"], scale["x"]["denominator"]
     y_num, y_den = scale["y"]["numerator"], scale["y"]["denominator"]
