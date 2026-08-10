@@ -40,6 +40,7 @@ from .assembly import assemble_serving_preflight_callback, assemble_serving_smok
 from .config import (
     FixtureProfile,
     ServingConfigInputs,
+    ServingRecipes,
     load_serving_recipes,
     model_and_tokenizer_pins,
     parse_serving_recipes,
@@ -651,6 +652,41 @@ def test_named_fatal_log_signatures_refuse_and_clean_up(
     assert launcher.processes[0].terminate_calls == 1
     assert publisher.calls == []
     assert expected_code in registry.refusals[0][1]
+
+
+def test_bare_runtimeerror_or_valueerror_in_the_log_does_not_abort_a_start_that_would_succeed(
+    tmp_path: Path,
+) -> None:
+    """The exact false positive the old pipeline's grep produced, deliberately not carried.
+
+    ``_fatal_log_signature`` docstring: a missed signature costs a bounded
+    watchdog wait; a false one costs a relaunch, and on the real path that is
+    GPU-hours. A launch log naming ``RuntimeError``/``ValueError`` without one
+    of the five named fatal substrings must reach a normal successful start.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, _, registry, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        log_tail=(
+            "INFO: warming up\n"
+            "RuntimeError: a transient benign message unrelated to any fatal condition\n"
+            "ValueError: also benign, also not one of the named signatures\n"
+        ),
+    )
+
+    handle = manager.start(chair, TIER)
+
+    assert registry.refusals == []
+    assert len(publisher.calls) == 1
+    handle.stop()
 
 
 def test_process_exit_before_readiness_has_its_own_named_refusal(tmp_path: Path) -> None:
@@ -1295,6 +1331,32 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
     assert model_and_tokenizer_pins(identity("reader", "reader-v1")) == (REVISION, REVISION)
     with pytest.raises(ServingConfigurationError, match="without a commit pin"):
         model_and_tokenizer_pins(identity("reader", "reader-v1", revision="not-a-commit"))
+
+
+def test_for_identity_refuses_both_zero_and_multiple_matches() -> None:
+    """No nearest-tier/nearest-chair fallback: lookup is exact, or it refuses.
+
+    This is also a hard-rule-8 "no picker" check: weakening ``len(matches) !=
+    1`` to pick ``matches[0]`` on zero or several rows would be exactly the
+    ranking/fallback shape that rule forbids. A multiple-match catalogue can't
+    be built through the parser (it forbids a duplicate key), so this
+    constructs one directly, as the catalogue's own docstring says lookup
+    itself — not just the parser — must still refuse it.
+    """
+
+    catalogue = recipes(
+        profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    )
+    chair = identity("reader", "reader-v1")
+
+    with pytest.raises(ServingConfigurationError, match="returned 0 profiles"):
+        catalogue.for_identity(chair, "unconfigured-tier")
+    with pytest.raises(ServingConfigurationError, match="returned 0 profiles"):
+        catalogue.for_identity(identity("other", "reader-v1"), TIER)
+
+    duplicated = ServingRecipes(profiles=(catalogue.profiles[0], catalogue.profiles[0]))
+    with pytest.raises(ServingConfigurationError, match="returned 2 profiles"):
+        duplicated.for_identity(chair, TIER)
 
 
 def test_readiness_probe_request_is_sealed_against_nested_mutation() -> None:
