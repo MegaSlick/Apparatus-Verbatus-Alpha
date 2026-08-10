@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +13,7 @@ from operations.pod.models import PodCreateRequest, require_utc
 
 from . import notify_bridge
 from .errors import ErrorCode, OperatorError
+from .errors import sanitize_detail as _safe_detail
 from .surface import DEFAULT_FIXTURE, OPERATOR_CLOSE_PREFIX, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
@@ -370,22 +370,6 @@ def _typed_close_confirmation(pod_id: str) -> str | None:
         return input(f"Type exactly {phrase!r} to continue with close: ")
     except EOFError:
         return None
-
-
-def _safe_detail(value: str) -> str:
-    compact = " ".join(value.split())
-    if not compact:
-        return "no additional detail was recorded"
-    if "traceback" in compact.lower():
-        return "a technical detail was saved locally; this step was not called complete"
-    for pattern, replacement in (
-        (r"\bshutdown\b", "close"),
-        (r"\btermination\b", "close"),
-        (r"\bterminate(?:d|s|ing)?\b", "close"),
-        (r"\bstop(?:ped|s|ping)?\b", "paused"),
-    ):
-        compact = re.sub(pattern, replacement, compact, flags=re.IGNORECASE)
-    return compact[:240]
 
 
 if __name__ == "__main__":  # pragma: no cover - console wrapper

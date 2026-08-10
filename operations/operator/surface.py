@@ -9,7 +9,6 @@ surface.
 from __future__ import annotations
 
 import hashlib
-import re
 import subprocess
 import sys
 import time
@@ -60,6 +59,7 @@ from operations.submit import submit as submission_door
 
 from . import notify_bridge
 from .errors import ErrorCode, OperatorError
+from .errors import sanitize_detail as _detail
 from .fakes import LocalFixtureObjectStore
 from .notify_bridge import Notifier
 from .records import DescriptorStore, ReceiptStore, RecordError
@@ -1137,7 +1137,9 @@ class OperatorSurface:
         except RecordError as error:
             detail = _detail(str(error))
             if receipt is not None:
-                detail = f"Receipt saved at {receipt}, but its operator index was not updated: {detail}"
+                detail = (
+                    f"Receipt saved at {receipt}, but its operator index was not updated: {detail}"
+                )
             raise OperatorError(failure_code, detail=detail) from error
 
     def _record_failure(self, action: str, state: str, detail: str) -> None:
@@ -1636,23 +1638,6 @@ def _human_duration(seconds: int) -> str:
         unit = "minute" if count == 1 else "minutes"
         return f"{count} {unit} ({seconds} seconds)"
     return f"{seconds} seconds"
-
-
-def _detail(value: str, *, maximum: int = 240) -> str:
-    normalized = " ".join(value.split())
-    if not normalized:
-        return "no additional detail was recorded"
-    if "traceback" in normalized.lower():
-        return "a technical detail was saved locally; this step was not called complete"
-    replacements = (
-        (r"\bshutdown\b", "close"),
-        (r"\btermination\b", "close"),
-        (r"\bterminate(?:d|s|ing)?\b", "close"),
-        (r"\bstop(?:ped|s|ping)?\b", "paused"),
-    )
-    for pattern, replacement in replacements:
-        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
-    return normalized[:maximum]
 
 
 def _declared_work(workspace: Path) -> tuple[list[str], list[str]]:

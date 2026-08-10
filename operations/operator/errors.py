@@ -270,12 +270,22 @@ class OperatorError(RuntimeError):
             f"Next step: {self.copy.next_step}",
         ]
         if self.detail:
-            lines.append(f"Saved detail: {_safe_detail(self.detail)}")
+            lines.append(f"Saved detail: {sanitize_detail(self.detail)}")
         return "\n".join(lines)
 
 
-def _safe_detail(value: str) -> str:
-    """Keep implementation wording and tracebacks out of the human message."""
+def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
+    """Keep implementation wording and tracebacks out of the human message.
+
+    The one place this surface and its callers turn arbitrary implementation
+    text into operator-safe prose, so a receipt path or other load-bearing
+    fact embedded in a detail string is not itself the thing that gets cut.
+    `maximum` stays generous rather than terminal-width-sized: a workspace
+    nested inside a synced cloud-drive folder can easily produce a receipt
+    path several hundred characters long, and truncating that away would
+    silently break the "preserve this message and its saved receipt path"
+    instruction most of these error codes give.
+    """
 
     compact = " ".join(value.split())
     if not compact:
@@ -289,4 +299,4 @@ def _safe_detail(value: str) -> str:
         (r"\bstop(?:ped|s|ping)?\b", "paused"),
     ):
         compact = re.sub(pattern, replacement, compact, flags=re.IGNORECASE)
-    return compact[:240]
+    return compact[:maximum]
