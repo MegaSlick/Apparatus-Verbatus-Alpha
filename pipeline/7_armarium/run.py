@@ -617,7 +617,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     expected = expected_acts(context)
 
     for act in expected:
-        act_id = act["act_key"]
+        act_key = act["act_key"]
         category, review, established = categorize(context, act["act_id"], manifest_cache)
 
         # The seal's own word is binding: an act the Designator held terminates
@@ -699,9 +699,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             entry["reason"] = review["payload"].get("reason", "")
             review_items.append(entry)
 
-        categories[act_id] = category
-        coverages[act_id] = review["payload"]["coverage"]
-        act_pages[act_id] = marked_out_pages[act["act_id"]]
+        categories[act_key] = category
+        coverages[act_key] = review["payload"]["coverage"]
+        act_pages[act_key] = marked_out_pages[act["act_id"]]
         if category is ArmariumCategory.DELIVERED:
             canonical_clean_text = entry.get("text")
             if not isinstance(canonical_clean_text, str):
