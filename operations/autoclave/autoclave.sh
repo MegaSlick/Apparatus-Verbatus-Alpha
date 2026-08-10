@@ -912,6 +912,19 @@ AUTOCLAVE_SETUP
     # `settings.local.json` takes precedence and is gitignored, so the tracked tree
     # stays clean and `collect` still sees an untouched checkout.
     docker exec "$(container_of "$task")" sh -c '
+        # Without `set -eu` this body ends on the copy at the bottom, so a failed trust
+        # update is masked by a copy that then succeeds: the chamber comes up with no
+        # trust flag, the CLI blocks on a dialog nobody is there to answer, and the die
+        # at the end of this command never fires. The block at AUTOCLAVE_SETUP has had
+        # this line since it was written; this one never did, and the locked trust
+        # update below has just added a new way to fail — a held lock. Found by
+        # CodeRabbit on PR 22.
+        #
+        # Nothing here is expected to fail. The one guarded failure, the copy below,
+        # already ends in `false` deliberately, and the only variable in this block is
+        # read as "${ac_tmp:-}" so `set -u` has nothing to catch.
+        set -eu
+
         printf "%s\n" \
             "{" \
             "  \"env\": {" \

@@ -2452,6 +2452,67 @@ class TestTheTrustFlagAgainstARealFilesystem:
         )
 
 
+class TestTheEnclosingShellBodyDoesNotMaskAFailure:
+    """The launcher command around the trust update, not just the heredoc inside it.
+
+    Every test above extracts the python block alone, so none of them could see the
+    shell it runs in. That shell had no `set -eu`, and it ends on a copy — so a trust
+    update that failed was masked by a copy that then succeeded, the command exited
+    zero, and the die beside it never fired. A chamber would have come up with no
+    trust flag at all, where the CLI blocks on a dialog nobody is there to answer.
+    Found by CodeRabbit on PR 22, on the change that added a new way to fail here.
+    """
+
+    def _shell_body(self, tmp_path):
+        """Extract the whole `sh -c` body, retargeted into tmp_path."""
+        source = SCRIPT.read_text()
+        end = source.index(
+            '\' || die "chamber started but the agent configuration could not be written"'
+        )
+        opening = "sh -c '"
+        start = source.rindex(opening, 0, end) + len(opening)
+        home = tmp_path / ".claude"
+        home.mkdir()
+        work = tmp_path / "work" / ".claude"
+        work.mkdir(parents=True)
+        body = source[start:end]
+        body = body.replace("/home/agent/.claude", str(home))
+        return body.replace("/work/.claude", str(work)), home
+
+    def _run(self, body):
+        return subprocess.run(["sh", "-c", body], capture_output=True, text=True)
+
+    def test_the_body_still_succeeds_when_nothing_fails(self, tmp_path):
+        """The control. Without it the test below could pass on a retargeting typo."""
+        body, home = self._shell_body(tmp_path)
+
+        result = self._run(body)
+
+        assert result.returncode == 0, result.stderr
+        config = json.loads((home / ".claude.json").read_text())
+        assert config["projects"]["/work"]["hasTrustDialogAccepted"] is True
+        assert (home / "home-config.json").exists(), "the copy at the end of the body never ran"
+
+    def test_a_failed_trust_update_is_fatal_rather_than_copied_over(self, tmp_path):
+        """The regression itself.
+
+        The lock path is a directory, so the trust update raises where it opens it.
+        Everything after that point would otherwise run and succeed, and the last of
+        it — the copy onto the shared volume — would decide the exit status. Checked
+        by hand against a copy of the body with `set -eu` removed: there the command
+        exits 0 and `home-config.json` is written, which is the masking this catches.
+        """
+        body, home = self._shell_body(tmp_path)
+        (home / ".claude.json.autoclave.lock").mkdir()
+
+        result = self._run(body)
+
+        assert result.returncode != 0, "a failed trust update was masked by the copy after it"
+        assert not (home / "home-config.json").exists(), (
+            "the body carried on past the failure instead of stopping at it"
+        )
+
+
 def test_report_names_the_path_it_looked_for():
     """A missing report says where it looked, so the operator can go and see."""
     result = run("report", "no-such-task")
