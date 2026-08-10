@@ -1140,7 +1140,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
             ) from error
         finally:
             connection.close()
-        return open(path, "rb").read()
+        return Path(path).read_bytes()
 
 
 def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
