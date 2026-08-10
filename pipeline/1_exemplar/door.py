@@ -374,7 +374,7 @@ def expand_sources(
                 # reconstructed from the ledger would have a replacement window.
                 with open_source(path) as opened_source:
                     detected = _sniff_source_stream(opened_source.handle)
-                    opened_source.assert_unchanged()
+                    opened_source.assert_unchanged(expected_sha256=declared_sha256)
             else:
                 # A caller with no anchored opener supplies bytes directly; there is
                 # no second, path-based way to classify a source (the door hands
@@ -400,7 +400,7 @@ def expand_sources(
             if detected == "pdf" and open_source is not None:
                 with open_source(path) as opened_source:
                     page_count = pdf_render.count_pages(opened_source.handle)
-                    opened_source.assert_unchanged()
+                    opened_source.assert_unchanged(expected_sha256=declared_sha256)
             else:
                 page_count = (
                     pdf_render.count_pages(data) if detected == "pdf" else count_raster_pages(data)
@@ -543,7 +543,9 @@ def process_sources(
                             actual_digest, actual_size = _source_digest_stream(
                                 candidate_source.handle
                             )
-                            candidate_source.assert_unchanged()
+                            candidate_source.assert_unchanged(
+                                expected_sha256=source.declared_sha256
+                            )
                         except BaseException:
                             candidate_context.close()
                             raise
@@ -648,7 +650,7 @@ def process_sources(
             if streamed_pdf:
                 try:
                     assert active_opened_source is not None
-                    active_opened_source.assert_unchanged()
+                    active_opened_source.assert_unchanged(expected_sha256=source.declared_sha256)
                 except inventory.SubmissionInputError as error:
                     _publish(
                         context,
@@ -1108,6 +1110,10 @@ def real_submission(args, registry) -> int:
     # reopen by directory descriptor, never by a reconstructed ordinary path: a
     # 15 GB PDF remains a stream, and the digest and PDFium renderer hold the same
     # submitted file even if its name is replaced after inventory.
+    # The digest each submitted path is already bound to, for the one check that
+    # cannot be settled by `fstat` alone: a rewrite of a held inode can imitate a
+    # name replacement exactly (`inventory.OpenedSubmissionSource.assert_unchanged`).
+    ledger_digests = {row["relative_path"]: row["sha256"] for row in ledger["files"]}
     found = inventory.read_submission(submission_folder, max_bytes=0)
     found_paths = {source.relative_path for source in found}
     declared_paths = {row["relative_path"] for row in ledger["files"]}
@@ -1128,7 +1134,7 @@ def real_submission(args, registry) -> int:
                 # `process_sources` compares this observed size to the ledger and
                 # records the mismatch; it never allocates an arbitrary replacement.
                 data = opened_source.handle.read(MAX_SOURCE_BYTES + 1)
-                opened_source.assert_unchanged()
+                opened_source.assert_unchanged(expected_sha256=ledger_digests.get(relative_path))
                 return data
         except inventory.SubmissionInputError as error:
             # `process_sources` turns a per-source read failure into its ordinary,

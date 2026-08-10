@@ -125,8 +125,15 @@ class OpenedSubmissionSource:
         self._entry = entry
         self._before = before
 
-    def assert_unchanged(self) -> None:
-        """Refuse a source modified in place while this descriptor was in use."""
+    def assert_unchanged(self, *, expected_sha256: str | None) -> None:
+        """Refuse a source modified in place while this descriptor was in use.
+
+        `expected_sha256` is the digest the caller has already bound this source to
+        — its filename-ledger row.  It is consulted only on the name-replacement
+        path below, and it is what makes that path safe.  It has no default: a
+        caller with no digest cannot be given the exemption, and passing `None`
+        says so explicitly rather than by omission.
+        """
         try:
             after = _open_stream_metadata(os.fstat(self._descriptor))
         except OSError as error:
@@ -139,10 +146,8 @@ class OpenedSubmissionSource:
             return
         # Replacing this descriptor's *name* removes exactly one hard link and
         # updates ctime, but leaves the held inode's byte-bearing facts unchanged.
-        # That is safe: this descriptor still reads the ledgered bytes.  A rewrite
-        # that restores its original size and mtime does not change link count, so
-        # ctime still exposes it rather than letting altered pixels seal under the
-        # earlier digest.
+        # Every stat field except ctime therefore matches, which is why ctime alone
+        # cannot be the signal here.
         name_replaced = (
             after.device == self._before.device
             and after.inode == self._before.inode
@@ -157,6 +162,43 @@ class OpenedSubmissionSource:
                 "bind evidence to moving bytes",
                 entry=self._entry,
             )
+        # A rewrite of the held inode can wear this exact shape.  Restoring the
+        # original size with the same byte count, restoring mtime with `utime`, and
+        # unlinking one of the inode's names leaves device, inode, mode, size, mtime
+        # and the link-count delta all matching a benign replacement — and ctime,
+        # the only remaining difference, is the one field a genuine name
+        # replacement also moves.  Stat cannot separate the two, so content does:
+        # the held bytes are hashed against the digest this source was bound to.
+        # `os.pread` reads at absolute offsets and never moves the shared file
+        # position, so a decoder part-way through this stream is unaffected.
+        # With no digest there is nothing to prove the held bytes against, and an
+        # unprovable exemption is the hole itself.  Refuse: the cost is a named
+        # refusal on a rename nobody can corroborate, against sealing bytes that
+        # may not be the ones already read.
+        if expected_sha256 is None:
+            raise SubmissionInputError(
+                "a submitted source lost a name while it was being read, and no ledgered "
+                "digest is available to prove its bytes are still the ones that were read",
+                entry=self._entry,
+            )
+        if _descriptor_digest(self._descriptor) != expected_sha256:
+            raise SubmissionInputError(
+                "a submitted source was rewritten while it was being read; the door refuses "
+                "to bind evidence to moving bytes",
+                entry=self._entry,
+            )
+
+
+def _descriptor_digest(descriptor: int) -> str:
+    """Hash a held descriptor's whole content without disturbing its position."""
+    digest = hashlib.sha256()
+    offset = 0
+    while True:
+        chunk = os.pread(descriptor, _CHUNK, offset)
+        if not chunk:
+            return digest.hexdigest()
+        digest.update(chunk)
+        offset += len(chunk)
 
 
 class RawPathReference(NamedTuple):

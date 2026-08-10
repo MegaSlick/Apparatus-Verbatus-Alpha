@@ -5,6 +5,7 @@ properties of the filesystem — what an open follows, what a listing races with
 so every case here builds a real directory and reads it through the real opener.
 """
 
+import hashlib
 import os
 import time
 
@@ -167,7 +168,7 @@ def test_reopening_a_source_reads_an_ordinary_nested_file(tmp_path):
 
     with inventory.open_submission_source(folder, "sub/page.png") as opened:
         assert opened.handle.read() == b"real bytes"
-        opened.assert_unchanged()
+        opened.assert_unchanged(expected_sha256=hashlib.sha256(b"real bytes").hexdigest())
 
 
 def test_reopening_refuses_a_leaf_swapped_for_a_symlink_after_the_walk(tmp_path):
@@ -260,7 +261,62 @@ def test_an_atomic_replacement_of_the_name_leaves_the_held_descriptor_admissible
     with inventory.open_submission_source(folder, "page.png") as opened:
         os.replace(replacement, folder / "page.png")
         assert opened.handle.read() == b"original bytes"
-        opened.assert_unchanged()
+        opened.assert_unchanged(expected_sha256=hashlib.sha256(b"original bytes").hexdigest())
+
+
+def test_a_rewrite_disguised_as_a_name_replacement_is_refused_by_the_ledgered_digest(tmp_path):
+    """The name-replacement exemption cannot be worn by a rewrite.
+
+    Every stat field the exemption tests can be forged at once: rewrite the held
+    inode with the same byte count, restore its mtime with `utime`, then unlink one
+    of its names so the link count drops exactly as an `os.replace` would. Device,
+    inode, mode, size, mtime and the link delta then all match a benign replacement,
+    and ctime -- the only field left -- moves for the legitimate case too. Content is
+    the only thing that separates them, so the ledgered digest is what refuses.
+    """
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    source = folder / "page.png"
+    source.write_bytes(b"original bytes!")
+    ledgered = hashlib.sha256(b"original bytes!").hexdigest()
+    # A second name for the same inode, so unlinking one leaves the descriptor's
+    # inode alive with `links - 1` -- the shape the exemption admits.
+    os.link(source, folder / "second-name.png")
+
+    with inventory.open_submission_source(folder, "page.png") as opened:
+        before = os.fstat(opened._descriptor)
+        assert opened.handle.read() == b"original bytes!"
+        time.sleep(0.01)
+        with open(source, "r+b") as writable:
+            writable.write(b"changed! bytes!")
+        os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+        os.unlink(folder / "second-name.png")
+
+        after = os.fstat(opened._descriptor)
+        assert after.st_ino == before.st_ino
+        assert after.st_size == before.st_size
+        assert after.st_mtime_ns == before.st_mtime_ns
+        assert after.st_nlink == before.st_nlink - 1
+
+        # Without the ledgered digest this is indistinguishable from an ordinary
+        # atomic replacement, which is exactly why the digest is required here.
+        with pytest.raises(SubmissionInputError, match="rewritten while it was being read"):
+            opened.assert_unchanged(expected_sha256=ledgered)
+
+
+def test_a_name_replacement_still_passes_when_the_bytes_match_the_ledger(tmp_path):
+    """The legitimate case survives the stricter check: same bytes, one name gone."""
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    source = folder / "page.png"
+    source.write_bytes(b"original bytes")
+    ledgered = hashlib.sha256(b"original bytes").hexdigest()
+    os.link(source, folder / "second-name.png")
+
+    with inventory.open_submission_source(folder, "page.png") as opened:
+        assert opened.handle.read() == b"original bytes"
+        os.unlink(folder / "second-name.png")
+        opened.assert_unchanged(expected_sha256=ledgered)
 
 
 def test_a_source_rewritten_in_place_under_the_reader_is_a_named_refusal(tmp_path):
@@ -274,7 +330,7 @@ def test_a_source_rewritten_in_place_under_the_reader_is_a_named_refusal(tmp_pat
         assert opened.handle.read() == b"original bytes"
         source.write_bytes(b"rewritten in place")
         with pytest.raises(SubmissionInputError, match="changed while it was being read"):
-            opened.assert_unchanged()
+            opened.assert_unchanged(expected_sha256=hashlib.sha256(b"original bytes").hexdigest())
 
 
 def test_a_same_size_rewrite_cannot_hide_by_restoring_its_mtime(tmp_path):
@@ -298,4 +354,4 @@ def test_a_same_size_rewrite_cannot_hide_by_restoring_its_mtime(tmp_path):
         assert after.st_mtime_ns == before.st_mtime_ns
         assert after.st_ctime_ns != before.st_ctime_ns
         with pytest.raises(SubmissionInputError, match="changed while it was being read"):
-            opened.assert_unchanged()
+            opened.assert_unchanged(expected_sha256=hashlib.sha256(b"original bytes!").hexdigest())
