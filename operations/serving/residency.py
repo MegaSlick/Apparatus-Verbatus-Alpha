@@ -69,12 +69,22 @@ class _FileResidencyHandle:
             return
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            handle.close()
         except OSError as error:
             raise ServiceStopError(
                 f"could not release serving residency lease {self.path}: {error}"
             ) from error
+        # The OS-level lock is gone the instant LOCK_UN succeeds, independent of
+        # whether closing the descriptor afterward also succeeds (flock(2)).  A
+        # failed close here must not report the lease as still retained: a
+        # different process is already free to acquire it.
         self._handle = None
+        try:
+            handle.close()
+        except OSError as error:
+            raise ServiceStopError(
+                f"serving residency lease {self.path} was released but its descriptor "
+                f"could not be closed: {error}"
+            ) from error
 
 
 class FileResidencyLease:
