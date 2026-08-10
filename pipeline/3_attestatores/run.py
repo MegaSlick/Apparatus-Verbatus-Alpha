@@ -56,6 +56,17 @@ DEFAULT_FORMAT_CAPABILITIES = {
     "can_express_layout": False,
 }
 
+# A witness response is untrusted input, and unbounded recursion over it is a
+# resource-exhaustion hole in the same family as the ones this stage already
+# refuses (bad UTF-8, non-string keys): a several-thousand-deep nested list or
+# object drives `_native_problem` past Python's recursion limit and raises
+# `RecursionError`, which is not a `ContractError` and so is not caught anywhere
+# between here and the process exiting — one adversarial witness would crash the
+# whole folder, the exact thing section C's isolation bullet exists to refuse.
+# Real transcription output nests a handful of levels deep at most; this cap is
+# generous headroom, not a tight fit.
+_MAX_NATIVE_DEPTH = 64
+
 
 def proposed_regions(context, act_id: str) -> list[dict]:
     """Every original Designator region the chair was actually shown.
@@ -216,7 +227,7 @@ def testimony_for(context, act_key: str, chair: str, ordinal: int) -> dict[str, 
     return matches[0] if matches else None
 
 
-def _native_problem(value: Any, path: str = "payload") -> str | None:
+def _native_problem(value: Any, path: str = "payload", *, depth: int = 0) -> str | None:
     """Return why a native response cannot be retained as canonical JSON.
 
     The generic artifact writer rejects floats and malformed Unicode later, but a
@@ -225,6 +236,8 @@ def _native_problem(value: Any, path: str = "payload") -> str | None:
     or a shared text schema. This is deliberately strict until Spec 04 defines a
     binary provider-body contract.
     """
+    if depth > _MAX_NATIVE_DEPTH:
+        return f"{path} nests deeper than {_MAX_NATIVE_DEPTH} levels"
     if value is None or isinstance(value, (bool, int)):
         return None
     if isinstance(value, str):
@@ -235,7 +248,7 @@ def _native_problem(value: Any, path: str = "payload") -> str | None:
         return None
     if isinstance(value, list):
         for index, item in enumerate(value):
-            if problem := _native_problem(item, f"{path}[{index}]"):
+            if problem := _native_problem(item, f"{path}[{index}]", depth=depth + 1):
                 return problem
         return None
     if isinstance(value, dict):
@@ -246,7 +259,7 @@ def _native_problem(value: Any, path: str = "payload") -> str | None:
                 key.encode("utf-8", "strict")
             except UnicodeEncodeError:
                 return f"{path} has an object key that is not valid UTF-8"
-            if problem := _native_problem(item, f"{path}.{key}"):
+            if problem := _native_problem(item, f"{path}.{key}", depth=depth + 1):
                 return problem
         return None
     return f"{path} has unsupported native type {type(value).__name__!r}"
