@@ -365,7 +365,7 @@ def test_a_repeated_receipt_never_corrupts_the_descriptors_own_history_invariant
     surface.descriptor.record("boot", first)
     surface.descriptor.record("boot", second)
 
-    surface.descriptor.record("boot", first)  # the repeat that used to corrupt history
+    surface.descriptor.record("boot", first)  # the repeat, after a different one
 
     loaded = surface.descriptor.load()
     assert loaded is not None
@@ -931,10 +931,10 @@ def test_console_interrupt_never_prints_a_raw_traceback(
 def test_console_interrupt_at_the_interactive_prompt_never_prints_a_raw_traceback(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The interactive path (empty argv) used to run before this module's own
+    """A Ctrl+C while answering "What would you like to do?" is a failure like
 
-    try/except existed, so a Ctrl+C while answering "What would you like to
-    do?" raised straight past it.
+    any other, and `cli.main` is a directly-tested entry point: nothing enforces
+    that it is only ever reached through `entry.py`'s outer handler.
     """
 
     monkeypatch.setattr(
@@ -970,10 +970,9 @@ def test_console_close_shows_its_notice_before_asking_for_the_confirmation_phras
 ) -> None:
     """The close notice has to be read before the phrase is typed, not after —
 
-    the same order `launch` already uses (show the price screen, then ask). A
-    prior version of this dispatch collected the typed phrase first and only
-    printed the notice — including "the attached volume keeps its own ongoing
-    price" — once `surface.close()` was already running.
+    the same order `launch` already uses: show the price screen, then ask. The
+    notice is where "the attached volume keeps its own ongoing price" is said,
+    so asking first means asking someone who has not been told what it costs.
     """
 
     state = tmp_path / "operator-state"
@@ -996,11 +995,12 @@ def test_console_close_shows_its_notice_before_asking_for_the_confirmation_phras
 
     cli.main(["--state-dir", str(state), "close"])
 
-    # Not asserted: the exit code. Closing from a freshly reconstructed process
-    # (a real second `verbatus close` invocation, which is what this drives) can
-    # legitimately end CLOSE_UNVERIFIED rather than verified — a separate,
-    # pre-existing property of that reconstruction path. What this test is for
-    # is the order below.
+    # Not asserted: the exit code. This drives a real second `verbatus close`,
+    # which builds its surface on the wall clock while the launch above was
+    # stamped by a frozen one, so the close can legitimately end UNVERIFIED.
+    # That is this test's own arrangement, not a property of the reconstruction
+    # path — driven with one consistent clock it verifies. The order is what
+    # this test is for.
     notice_index = next(
         index
         for index, (kind, text) in enumerate(order)

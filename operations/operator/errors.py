@@ -270,10 +270,9 @@ class OperatorError(RuntimeError):
             f"Next step: {self.copy.next_step}",
         ]
         if self.detail is not None:
-            # An empty detail still gets its line: a raise site that had a
-            # diagnostic slot and filled it with nothing is a different fact
-            # from one that never had a diagnostic to give, and `sanitize_detail`
-            # says which.
+            # Not truthiness: a raise site that had a diagnostic slot and
+            # filled it with nothing is a different fact from one that never
+            # had a diagnostic to give, and the line below says which.
             lines.append(f"Saved detail: {sanitize_detail(self.detail)}")
         return "\n".join(lines)
 

@@ -61,10 +61,10 @@ class LocalFixtureObjectStore(TransferTarget):
                 handle.flush()
                 os.fsync(handle.fileno())
             try:
-                # Claim the name and compare in one step. Asking `exists()` first
-                # and replacing after is two, and two racing writers each saw it
-                # absent and each replaced the other — the refusal below never
-                # fired in 90 of 400 attempts.
+                # Claiming the name and comparing has to be one step. Ask
+                # `exists()` and replace afterwards and two racing writers each
+                # see it absent and each replace the other: 90 times in 400,
+                # with the refusal below never firing.
                 os.link(temporary, target)
             except FileExistsError:
                 if not _same_bytes(temporary, target):

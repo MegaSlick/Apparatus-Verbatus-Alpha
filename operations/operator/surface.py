@@ -298,12 +298,8 @@ class OperatorSurface:
         self.provider = candidate
         self.faults = faults or Faults()
         self.runner = runner or _run_program
-        # Default silent: nothing this surface does reaches a phone unless the
-        # caller supplied a notifier, so no test and no first rehearsal can send
-        # a ping nobody asked for.
+        # Silent unless asked: no test and no first rehearsal sends a ping.
         self.notifier: Notifier = notifier or notify_bridge.silent
-        # Real time by default. A drill that needs a close to give up quickly
-        # injects a fast clock here rather than shortening the shipped deadline.
         self.monotonic = monotonic or time.monotonic
         self.sleeper = sleeper or time.sleep
         self.receipts = ReceiptStore(self.state_root, now=self.now)
@@ -727,9 +723,8 @@ class OperatorSurface:
         self.present("Run is held. It was not called complete.")
         for reason in reasons:
             self.present(f"Hold reason: {reason}")
-        # A hold is the pipeline asking a person to decide, which is exactly the
-        # `decision` moment — sent when the hold happens, not when someone
-        # eventually looks.
+        # A hold is the pipeline asking a person to decide: the `decision`
+        # moment, sent when the hold happens rather than when someone looks.
         self._notify(
             "decision",
             f"Verbatus run {run_id} is held and needs a decision: "
@@ -830,10 +825,9 @@ class OperatorSurface:
         try:
             lease_store, lease = self._lease_for_close(launch, record)
         except OperatorError:
-            # The pod's own billing note is what _lease_for_close's error carries;
-            # the volume's ongoing price is a fact this surface already has in
-            # hand (record.estimate) and must still say, per volume_cost.py's own
-            # "printed on every close, verified or not" contract.
+            # The lease error carries the pod's billing note; the volume's
+            # ongoing price is this surface's own to say, and volume_cost.py
+            # requires it "on every close, verified or not".
             self._show_volume_cost(
                 volume_id=record.volume_id, hourly_usd=str(record.estimate.volume_hourly_usd)
             )
@@ -1124,8 +1118,6 @@ class OperatorSurface:
         return None
 
     def _active_launch_receipt(self) -> Path | None:
-        """The active-launch receipt if one is recorded, else the plain launch receipt."""
-
         return self._descriptor_receipt("active-launch", "launch")
 
     def _refuse_if_active_pod(self) -> None:
@@ -1320,8 +1312,8 @@ class OperatorSurface:
         """One standing moment, reported honestly and never able to fail a verb."""
 
         if self.notifier is notify_bridge.silent:
-            # Nobody asked for a phone message, so there is nothing to report
-            # about one. Every attempted send is reported, delivered or not.
+            # Every *attempted* send is reported, delivered or not — and this
+            # is not an attempt, so there is nothing to report.
             return
         try:
             outcome = self.notifier(event, message)

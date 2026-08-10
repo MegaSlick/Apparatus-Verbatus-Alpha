@@ -120,10 +120,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
         if not arguments:
-            # Inside the try, not before it: a Ctrl+C at the interactive prompt
-            # must reach the same three-part contract as every other failure,
-            # not a raw traceback this module's own docstring promises never
-            # to show.
+            # Inside the try, not before it: a Ctrl+C at this prompt has to
+            # reach the same three-part contract as every other failure.
             arguments = _interactive_arguments()
             if not arguments:
                 return 0

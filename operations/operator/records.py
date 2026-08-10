@@ -29,13 +29,11 @@ MAX_RECORD_BYTES: Final = 4 * 1024 * 1024
 """How large one of these files may be before reading it is itself the failure.
 
 Both readers below load a whole file before they can check anything about it,
-and `status` — the verb documented as read-only and safe — calls them once per
-recorded action. Without a bound, a 600 MiB file left at either path costs 1.8
-GiB of resident memory and ends as a kill, which is the least honest failure
-available: no message at all, against GOVERNANCE 2. The largest receipt this
-surface writes is a few kilobytes, and the descriptor grows by one absolute
-path per recorded action, so four mebibytes is three orders of magnitude above
-either. Only a file this tool did not write can reach it.
+and `status` calls them once per recorded action. Measured: a 600 MiB file at
+either path costs 1.8 GiB resident, and a larger one ends as a kill — the one
+failure that prints nothing at all, against GOVERNANCE 2. The largest receipt
+written here is a few kilobytes and the descriptor grows by one path per
+action, so only a file this tool did not write can reach four mebibytes.
 """
 
 
@@ -261,11 +259,10 @@ class DescriptorStore:
         receipt_text = str(receipt.resolve())
         actions[action] = receipt_text
         entries = history.setdefault(action, [])
-        # Move-to-end rather than skip-if-present: a repeated receipt (the same
-        # content-addressed path as an earlier one for this action, e.g. an
-        # idempotent retry that reproduces identical bytes) must still end up
-        # last, or history[-1] no longer equals actions[action] and every
-        # future load()/record() call refuses the descriptor as invalid.
+        # Move-to-end, never skip-if-present. Receipts are content-addressed,
+        # so an idempotent retry reproduces an earlier path exactly; skipping it
+        # leaves history[-1] naming something else, and every later load() and
+        # record() then refuses the descriptor as invalid.
         if receipt_text in entries:
             entries.remove(receipt_text)
         entries.append(receipt_text)
