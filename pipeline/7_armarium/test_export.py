@@ -13,9 +13,9 @@ from zipfile import ZipFile
 import pytest
 from armarium_export import verify_export_bundle, verify_projection_identity
 
-from common.contracts.canonical import canonical_bytes, self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARCHETYPUS
+from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -225,3 +225,103 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     assert verify_projection_identity(
         tree.read_bytes(reference["relative_path"]), tmp_path / f"id-{missing_field}"
     )
+
+
+def test_a_provenance_that_fails_deeper_validation_is_also_downgraded_to_refused(tmp_path):
+    """The `except SchemaRefusal` branch in run.py's main(), not just the narrower
+    field-presence check `missing_export_provenance` performs before it.
+
+    Provenance and regions are both structurally present here -- unlike the
+    parametrized test above -- so `missing_export_provenance` finds nothing wrong.
+    Tampering only the Perlectio's provenance would just trip
+    `verify_established_record`'s exact-preservation check (it would no longer
+    match the Archetypus's copy) -- the shallower, already-covered branch. Reaching
+    `validate_serving_provenance` needs the Archetypus's own provenance tampered
+    identically, which in turn means every digest-checked reference between the
+    three sealed records -- Perlectio, the Recensor review that accepted it, and
+    the Archetypus -- has to be updated to match the new bytes: exactly the
+    chain-of-custody `verify_established_record` exists to enforce, so a corrupted
+    provenance cannot simply carry its own falsified referrers along with it.
+    """
+    root = tmp_path / "runs"
+    assert _orchestrate(root, "deeper-refusal").returncode == 0
+    tree = RunTree(root, "deeper-refusal")
+    original = next(
+        tree.read_artifact(ARCHETYPUS, "archetypus", entry["artifact_id"])
+        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
+        if entry["kind"] == "archetypus"
+    )
+    refused_act_id = original["subject_id"]
+
+    perlectio_ref = original["payload"]["perlectio_ref"]
+    perlectio_original = tree.read_artifact_reference(
+        perlectio_ref, stage=PERLECTOR, kind="perlectio", subject_id=refused_act_id
+    )
+    recensor_ref = original["payload"]["recensor_ref"]
+    review_original = tree.read_artifact_reference(
+        recensor_ref, stage=RECENSOR, kind="review", subject_id=refused_act_id
+    )
+
+    shutil.rmtree(tree.root / "7_armarium")
+    endpoint = "https://example.invalid/served"
+
+    def _with_updated_ref(inputs, old_ref, new_ref):
+        return [new_ref if entry == old_ref else entry for entry in inputs]
+
+    altered_perlectio = json.loads(json.dumps(perlectio_original))
+    altered_perlectio["payload"]["provenance"]["endpoint"] = endpoint
+    altered_perlectio["payload"]["self_hash"] = self_hash(altered_perlectio["payload"])
+    altered_perlectio["self_hash"] = self_hash(altered_perlectio)
+    perlectio_path = tree.resolve(
+        tree.artifact_path(PERLECTOR, "perlectio", altered_perlectio["artifact_id"])
+    )
+    perlectio_path.write_bytes(canonical_bytes(altered_perlectio))
+    new_perlectio_ref = {
+        "relative_path": perlectio_ref["relative_path"],
+        "sha256": digest_bytes(canonical_bytes(altered_perlectio)),
+    }
+
+    altered_review = json.loads(json.dumps(review_original))
+    altered_review["payload"]["perlectio_ref"] = new_perlectio_ref
+    altered_review["inputs"] = _with_updated_ref(
+        altered_review["inputs"], perlectio_ref, new_perlectio_ref
+    )
+    altered_review["self_hash"] = self_hash(altered_review)
+    review_path = tree.resolve(
+        tree.artifact_path(RECENSOR, "review", altered_review["artifact_id"])
+    )
+    review_path.write_bytes(canonical_bytes(altered_review))
+    new_recensor_ref = {
+        "relative_path": recensor_ref["relative_path"],
+        "sha256": digest_bytes(canonical_bytes(altered_review)),
+    }
+
+    altered = json.loads(json.dumps(original))
+    altered["payload"]["provenance"]["endpoint"] = endpoint
+    altered["payload"]["perlectio_ref"] = new_perlectio_ref
+    altered["payload"]["dissent_ref"] = new_perlectio_ref
+    altered["payload"]["recensor_ref"] = new_recensor_ref
+    altered["inputs"] = _with_updated_ref(
+        _with_updated_ref(altered["inputs"], perlectio_ref, new_perlectio_ref),
+        recensor_ref,
+        new_recensor_ref,
+    )
+    altered["payload"]["self_hash"] = self_hash(altered["payload"])
+    altered["self_hash"] = self_hash(altered)
+    artifact_path = tree.resolve(
+        tree.artifact_path(ARCHETYPUS, "archetypus", altered["artifact_id"])
+    )
+    artifact_path.write_bytes(canonical_bytes(altered))
+
+    result = _run_armarium(root, "deeper-refusal")
+    assert result.returncode == 3, result.stderr
+    export = _export(tree)
+    assert export["payload"]["aggregate"]["status"] == "partial"
+    refused = [entry for entry in export["payload"]["review"] if entry["act_id"] == refused_act_id]
+    assert len(refused) == 1
+    assert refused[0]["category"] == "refused-with-reason"
+    assert "provenance was refused" in refused[0]["reason"]
+    assert "leaks serving-only field" in refused[0]["reason"]
+    assert not [
+        entry for entry in export["payload"]["delivered"] if entry["act_id"] == refused_act_id
+    ]
