@@ -312,6 +312,61 @@ def test_the_whole_pass_still_resumes_over_a_folder_one_chair_has_been_reread_in
     assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
 
 
+def test_a_whole_pass_at_an_ordinal_a_reread_already_sealed_differently_is_refused_before_any_write(
+    tmp_path,
+):
+    """audit-d's F2: a targeted reread and a whole pass can reach the very same
+    (act, chair, ordinal) identity with a different honest outcome —
+    `resolve_attempt`'s own docstring says silence means `failed` under a reread
+    and `not-run` under a whole pass. Before the fix, a whole pass at that ordinal
+    wrote every pair up to the collision, then hit `IncompatibleReuse` reactively
+    and exited fatal (2) with a half-written attempt layer and a stale stored
+    manifest — from that point on, no whole pass at any ordinal could complete in
+    that folder again, not even a resume at ordinal 1. The preflight now catches
+    this before any pair is published, so the pass holds cleanly (3) and writes
+    nothing, and the folder is not stranded: a resume at ordinal 1 still works."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    before = {
+        record["artifact_id"]: tree.resolve(
+            tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"])
+        ).read_bytes()
+        for record in _testimonia(tree)
+    }
+
+    reread = _reread(run_root, "happy", _act_id_for(tree, "a1"), "attestator_3")
+    assert reread.returncode == 0, reread.stderr
+
+    colliding = invoke_stage(
+        run_root, "retention", "happy", "pipeline/3_attestatores/run.py", attempt_ordinal=2
+    )
+
+    assert colliding.returncode == 3
+    assert "would record a different attempt" in colliding.stderr
+    # Nothing from this refused pass was written: the reread's own record is the
+    # only ordinal-2 artifact, and every ordinal-1 artifact is still exactly what
+    # it was.
+    after_refusal = {
+        record["artifact_id"]: tree.resolve(
+            tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"])
+        ).read_bytes()
+        for record in _testimonia(tree)
+        if record["payload"]["attempt_ordinal"] == 1
+    }
+    assert after_refusal == before
+    assert sum(1 for r in _testimonia(tree) if r["payload"]["attempt_ordinal"] == 2) == 1
+
+    # The folder is not stranded: a resume at ordinal 1 still completes cleanly.
+    resumed = invoke_stage(
+        run_root, "retention", "happy", "pipeline/3_attestatores/run.py", attempt_ordinal=1
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
 def test_a_successful_reread_retains_new_testimony_and_keeps_attempt_one(tmp_path):
     """A reread that succeeds carries its own ordinal's declared response, not
     attempt 1's, and leaves attempt 1 byte-identical."""
@@ -1090,9 +1145,7 @@ def test_damaged_attempt_tally_is_unknown_and_refuses_to_add_a_replacement(tmp_p
         manifest_path.write_bytes(b"{")
     elif damage == "recursion":
         nesting = 30_000
-        manifest_path.write_bytes(
-            f'{{"deep": {"[" * nesting}"leaf"{"]" * nesting}}}'.encode()
-        )
+        manifest_path.write_bytes(f'{{"deep": {"[" * nesting}"leaf"{"]" * nesting}}}'.encode())
     else:
         manifest_path.write_bytes(original[:-1])
 

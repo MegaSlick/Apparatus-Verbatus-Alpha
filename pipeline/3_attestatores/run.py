@@ -598,11 +598,91 @@ def require_appendable_ordinal(context, act_id: str, chair: str, ordinal: int) -
         )
 
 
+def _refuse_write_collision(
+    context, act: dict[str, Any], chair: str, ordinal: int, attempt: "Attempt"
+) -> None:
+    """Refuse before any write if this pass would seal different bytes than an
+    attempt already recorded at this exact (act, chair, ordinal) identity.
+
+    A targeted reread and a whole pass can reach the very same identity with a
+    different honest outcome — `resolve_attempt`'s docstring says so plainly: an
+    undeclared response is `failed` under a reread and `not-run` under a whole
+    pass, because the two write paths mean different things by silence.
+    `RunTree.publish_artifact` already refuses a colliding write, but only when
+    it is reached, mid-pass, after every earlier pair in this invocation has
+    already been published — a half-written attempt layer whose stored manifest
+    was never rewritten to describe it. Checking every pair against what already
+    exists, before any of them is written, keeps a doomed pass from writing
+    anything at all rather than stranding the folder partway through.
+
+    Only a pair whose target ordinal already holds a record can collide;
+    `require_appendable_ordinal` already refuses any ordinal beyond that, so
+    this only ever compares against a genuine resume attempt. Compared on the
+    fields the two write paths can actually disagree on, not the full sealed
+    envelope: provenance does not vary with the `reread` flag, only what
+    `resolve_attempt` decided did.
+    """
+    existing = [
+        record
+        for record in _existing_attempts(context, act["act_id"], chair)
+        if record["payload"]["attempt_ordinal"] == ordinal
+    ]
+    if not existing:
+        return
+    (record,) = existing
+    payload = record["payload"]
+    if (
+        record["outcome"] != attempt.outcome
+        or payload.get("payload") != attempt.native_payload
+        or payload.get("witness_reported") != attempt.witness_reported
+        or payload.get("format_capabilities") != attempt.format_capabilities
+        or payload.get("content_health") != attempt.health
+        or payload.get("reason") != attempt.reason
+    ):
+        raise SchemaRefusal(
+            f"a whole pass at ordinal {ordinal} would record a different attempt for "
+            f"{(act['act_key'], chair)!r} than the one already sealed there: sealed outcome "
+            f"{record['outcome']!r}, this pass would write {attempt.outcome!r}. Nothing was "
+            "written for this pass"
+        )
+
+
 def preflight_appendable_ordinals(context, acts: list[dict[str, Any]], ordinal: int) -> None:
-    """Refuse a damaged history before adding any new attempt to this invocation."""
+    """Refuse a damaged history, or a colliding write, before adding any new
+    attempt to this invocation.
+
+    The ordinal bound alone is not enough: it lets a whole pass through at an
+    ordinal a targeted reread has already sealed a *different* record at for one
+    chair, and the collision then surfaces reactively, mid-pass, at whichever
+    pair the loop reaches it on — see `_refuse_write_collision`. Declarations
+    are read once, ahead of the loop, exactly as `attempt_pass` reads them,
+    since the two must agree on what this ordinal means to compute the same
+    would-be attempt this pass is actually about to write.
+    """
+    declarations = declarations_for(context, ordinal)
     for act in acts:
+        if act["outcome"] == "held":
+            not_read: str | None = (
+                "the Designator held this act; its incomplete proposal was not shown "
+                "to any configured witness"
+            )
+        else:
+            try:
+                proposed_regions(context, act["act_id"])
+                not_read = None
+            except ContractError as error:
+                if isinstance(error, FatalAccounting):
+                    raise
+                not_read = f"the proposed region was refused before this chair ran: {error}"
         for chair in context.witness_chairs:
             require_appendable_ordinal(context, act["act_id"], chair, ordinal)
+            resolved = context.registry.resolve(chair)
+            attempt = (
+                not_read_attempt(resolved, not_read)
+                if not_read is not None
+                else resolve_attempt(context, act, chair, resolved, declarations)
+            )
+            _refuse_write_collision(context, act, chair, ordinal, attempt)
 
 
 def validate_tallied_testimonium(context, record: dict[str, Any], act: dict[str, Any]) -> None:
