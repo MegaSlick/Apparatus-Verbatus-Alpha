@@ -246,6 +246,8 @@ scores below 1.0 and therefore better than declining.
 
 A refusal cannot improve by disappearing. Synthetic hand-worked tests pin exact match, one substitution/deletion/insertion on `abc`, empty against `abc`, two-error WER, composed/decomposed acute, whitespace, and preservation of case/punctuation/diacritics.
 
+**Response and text bounds.** Every field this instrument hashes, aligns, or segments -- a candidate response, a Testimonium, a checked reference, an adjudicator's resolution -- is refused above 20,000 characters (`MAX_TEXT_LENGTH`) and above 30 combining marks stacked on one character (`MAX_COMBINING_RUN`), and refused outright if it contains an unpaired UTF-16 surrogate. GLOSSARY's *act* is deliberately broad, but none of index rows, letters, notes, or essays approaches either bound; a field over it is a mis-pasted file, not a reading, and scores `malformed` rather than being measured. The character bound keeps `score_text` and `disagreement_spans` off their quadratic worst case (measured 2026-08-09: `disagreement_spans` costs up to ~1 minute of CPU at the 20,000-character bound on adversarial input); the combining-mark bound exists because `uniseg` grapheme segmentation is quadratic in one cluster's own length regardless of total text length.
+
 ## 8. Measures and evidence, never a picker
 
 For each candidate slot × condition, report CER/WER numerator, denominator, and rate; character completeness; every state count; structural dissent counts/rate; wall-time mean; and cost mean. A publishable run requires a wall-time and cost observation for every candidate × act × condition cell. Synthetic interface exercises may leave either unknown, but they cannot become a finding.
