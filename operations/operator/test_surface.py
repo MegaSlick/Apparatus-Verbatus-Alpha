@@ -15,12 +15,14 @@ from typing import Callable
 
 import pytest
 
+from common.contracts.approval import build_approval_record
 from common.contracts.canonical import canonical_bytes
 from operations.pod.fake_provider import FakeProvider
 from operations.pod.lease import LeaseStore
-from operations.pod.models import PodCreateRequest, ProviderFailure
+from operations.pod.models import PodCreateRequest, ProviderFailure, require_utc
 from operations.pod.shutdown import CloseReport, VerifiedShutdown
 from operations.pod.spend import load_spend_policy
+from operations.submit import gate
 from operations.submit.submit import build_manifest, walk_folder
 
 from . import cli, entry
@@ -104,6 +106,40 @@ def _manifest(tmp_path: Path) -> tuple[Path, Path]:
     )
     manifest.write_bytes(canonical_bytes(record))
     return source, manifest
+
+
+def _approved_submission(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """An approved storage root, a matching gate policy, and its approval record.
+
+    Every other upload test in this file starts from an already-sealed
+    manifest; this is what `submit_and_upload` needs to seal a new one through
+    Spec 03's door itself, mirroring `operations/submit/test_submit.py`'s own
+    fixture shape.
+    """
+
+    approved = tmp_path / "approved-storage"
+    source = approved / "batch"
+    source.mkdir(parents=True)
+    (source / "page-1.png").write_bytes(b"\x89PNG\r\n\x1a\nfirst")
+    policy = json.loads(gate.DEFAULT_POLICY_PATH.read_text(encoding="utf-8"))
+    policy["storage_roots"] = [str(approved)]
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    approval_path = tmp_path / "approval.json"
+    approval_path.write_text(
+        json.dumps(
+            build_approval_record(
+                subject_ids=["data-handling-policy"],
+                action="data-gate",
+                reason="synthetic proving record; approves nothing",
+                target_version_hash=gate.policy_hash(policy),
+                timestamp="2026-08-04T12:00:00Z",
+            )
+        ),
+        encoding="utf-8",
+    )
+    manifest_out = approved / "submission.json"
+    return source, manifest_out, approval_path, policy_path
 
 
 class FastElapsedClock:
@@ -542,6 +578,48 @@ def test_two_writers_cannot_both_claim_one_fixture_object(tmp_path: Path) -> Non
         assert "different bytes" in str(refusals[0])
 
 
+def test_submit_and_upload_seals_a_new_manifest_then_transfers_it(tmp_path: Path) -> None:
+    """The `--manifest-out` route through Spec 03's door, end to end.
+
+    Every other upload test in this file starts from an already-sealed
+    manifest; nothing exercised the door itself — sealing a brand new one,
+    then transferring it — until this test.
+    """
+
+    surface = _surface(tmp_path)
+    source, manifest_out, approval_path, policy_path = _approved_submission(tmp_path)
+
+    receipt = surface.submit_and_upload(
+        source,
+        manifest_out=manifest_out,
+        approval_record=approval_path,
+        policy_path=policy_path,
+    )
+
+    assert receipt.is_file()
+    assert manifest_out.is_file()
+    payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert payload["state"] == "complete"
+
+
+def test_submit_and_upload_refuses_by_name_when_the_door_refuses(tmp_path: Path) -> None:
+    """A submission the gate refuses must reach `UPLOAD_REFUSED`, not a raw exception."""
+
+    surface = _surface(tmp_path)
+    source, manifest_out, _approval_path, policy_path = _approved_submission(tmp_path)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.submit_and_upload(
+            source,
+            manifest_out=manifest_out,
+            approval_record=tmp_path / "no-such-approval.json",
+            policy_path=policy_path,
+        )
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert not manifest_out.exists()
+
+
 def test_the_default_upload_target_never_holds_a_whole_file_in_memory(tmp_path: Path) -> None:
     """This store is what `verbatus upload` uses by default, over real
     submitted pages — not test scaffolding. A submission is sized by what a
@@ -899,6 +977,95 @@ def test_unknown_fake_failure_verb_cannot_make_a_drill_pass_without_failing() ->
 
     with pytest.raises(ValueError, match="unknown fake-provider failure verb"):
         provider.inject_failure("typo", RuntimeError("should not be silently queued"))
+
+
+def _request_json(tmp_path: Path, **overrides: object) -> Path:
+    payload: dict[str, object] = {
+        "name": "operator-test",
+        "gpu_type": "fake-48gb",
+        "image": "registry.example/verbatus@sha256:" + "a" * 64,
+        "volume_id": "fixture-volume",
+        "volume_mount_path": "/workspace/private",
+        "docker_start_cmd": [
+            "python",
+            "-m",
+            "operations.pod.pod_timer",
+            "--timer-factory",
+            "operations.pod.provider_runpod:timer_context_from_environment",
+            "--bootstrap-command-json",
+            '["python","-m","operations.pod.bootstrap"]',
+            "--report-path",
+            "/workspace/private/pod-runtime-report.json",
+        ],
+        "hard_deadline": "2026-08-09T12:15:00Z",
+        "repository_commit": "b" * 40,
+        "template": "fixture-template",
+    }
+    payload.update(overrides)
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_load_request_reads_a_well_formed_reviewed_pod_request(tmp_path: Path) -> None:
+    """The reader for the reviewed pod-request JSON — a money-path input — must
+    parse a well-formed file, not only refuse a broken one.
+    """
+
+    request = cli.load_request(_request_json(tmp_path))
+
+    assert request.name == "operator-test"
+    assert request.gpu_type == "fake-48gb"
+    assert request.docker_start_cmd[:3] == ("python", "-m", "operations.pod.pod_timer")
+    assert require_utc(request.hard_deadline, "test hard deadline") == request.hard_deadline
+
+
+def test_load_request_refuses_unreadable_json(tmp_path: Path) -> None:
+    broken = tmp_path / "request.json"
+    broken.write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(OperatorError) as refusal:
+        cli.load_request(broken)
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+
+
+def test_load_request_refuses_a_non_object_json_value(tmp_path: Path) -> None:
+    array = tmp_path / "request.json"
+    array.write_text("[1, 2, 3]", encoding="utf-8")
+
+    with pytest.raises(OperatorError) as refusal:
+        cli.load_request(array)
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+
+
+def test_load_request_refuses_an_unknown_field(tmp_path: Path) -> None:
+    with pytest.raises(OperatorError) as refusal:
+        cli.load_request(_request_json(tmp_path, unexpected_field="not allowed"))
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+
+
+def test_load_request_refuses_an_incomplete_request(tmp_path: Path) -> None:
+    """A missing required key must reach the plain-language contract, not a raw KeyError."""
+
+    path = tmp_path / "request.json"
+    payload = json.loads(_request_json(tmp_path).read_text(encoding="utf-8"))
+    del payload["name"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(OperatorError) as refusal:
+        cli.load_request(path)
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+
+
+def test_load_request_refuses_a_malformed_docker_start_cmd(tmp_path: Path) -> None:
+    with pytest.raises(OperatorError) as refusal:
+        cli.load_request(_request_json(tmp_path, docker_start_cmd="not-a-list"))
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
 
 
 def test_console_parser_never_prints_a_raw_traceback(capsys: pytest.CaptureFixture[str]) -> None:
