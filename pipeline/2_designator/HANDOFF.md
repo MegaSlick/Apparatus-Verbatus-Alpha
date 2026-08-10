@@ -488,3 +488,23 @@ claimed-aware residual labeling pass rather than a change to the shared
 and has no notion of "claimed" to give — a change worth its own design and
 test pass rather than folding into this build's repair commits. Named here
 rather than fixed quietly or left undiscovered.
+
+**Conservation's own denominator is `PRIMARY_MARGIN`-sensitive, not the page's
+whole ink.** `_publish_conservation_and_secondary` calls `conservation.reconcile`
+with no `margin` override, so it defaults to `structure.PRIMARY_MARGIN` — the
+same threshold `primary_scan` uses, and strictly less sensitive than
+`SECONDARY_MARGIN`. Ink in the band between the two margins (closer to the
+page's background value than `PRIMARY_MARGIN` but past `SECONDARY_MARGIN`) is
+outside `total_ink_pixel_count` and can never become a residual: with the
+secondary chair absent (the shipped default), such ink is recorded nowhere at
+all, and a run can exit `EXIT_COMPLETE` over it; with the chair configured, it
+can only surface as a held rescue crop, outside the conservation arithmetic
+entirely. This is bounded by how faint the synthetic fixtures' ink is today
+(high-contrast, well past `PRIMARY_MARGIN`), so it changes no digest and no
+test outcome in this build — but faded ink and pencil marginalia are exactly
+what a real register page carries, and this is the accounting layer built
+specifically so faint marks are not lost silently (GOALS 1, GOVERNANCE 2).
+Closing it means a decision about which margin conservation should reconcile
+at, which changes review volume and is not this build's to make quietly; named
+here rather than left for a reader to discover against a real page. Found in
+review, 2026-08-10.
