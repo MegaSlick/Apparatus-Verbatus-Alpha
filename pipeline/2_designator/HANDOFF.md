@@ -374,3 +374,50 @@ contract it would hand to is spec 07's, which the spec's own exit criteria say
 is verified "against the intake schema **as written in Spec 07's text**". This
 is a named gap awaiting a real structure model and that intake schema, not an
 oversight.
+
+**`infer_background`'s majority-paper assumption is unvalidated, not enforced.**
+`structure.infer_background` takes a decoded page's single most common pixel
+value as its paper colour, and `run.py` caches that one value and feeds it,
+unchanged, into both `structure.primary_scan`/`secondary_scan` *and*
+`conservation.reconcile`. A page where ink genuinely is the numeric majority —
+heavy staining, bleed-through, an inverted or badly under-exposed scan — gets
+its ink classified as background: the structure pass finds no components, and
+conservation, sharing the same wrong background, reconciles to
+`total_ink_pixel_count == 0` and mints no residual. On a page with a declared
+act, `_match_structural_group` happens to catch this as a hard `ContractError`
+(no detected group covers the declared bounds); on a page with **no** declared
+act — the exact case conservation exists to cover — nothing catches it, and
+the run can exit `EXIT_COMPLETE` having silently accounted for zero ink on a
+visibly inked page. This build found the gap (2026-08-10 review) and did not
+close it: a real fix needs either a background heuristic that does not depend
+solely on global modal frequency (border-sampling was considered, but is
+itself an uncalibrated guess for a photographed register page) or a
+cross-check reconciling the two independent scans use of it, and this walking
+skeleton's ink-scan is explicitly a stand-in for a real structure model, not
+a hardened production detector — calibrating one is the same kind of decision
+`padding_calibration.py` already declines to make without a gold set. Named
+here rather than fixed quietly or left undiscovered.
+
+**A conservation residual's reported bounds can span claimed territory.**
+`conservation.reconcile` labels connected components over the *residual*
+pixel set alone, using `structure.label_components`'s ordinary gap-tolerant
+adjacency (a few pixels, meant to bridge a pen stroke's own gaps). That
+adjacency test knows nothing about `claimed_bounds`: two residual patches
+separated by a claimed rectangle narrower than the gap tolerance are unioned
+into one component, and the resulting `bounds` (the member pixels' own
+min/max extent) is a bounding box that encloses the claimed rectangle
+sitting between them, even though every pixel actually inside that claimed
+rectangle is correctly excluded from the residual set and from the pixel
+count. `claimed_pixel_count + residual_pixel_count == total_ink_pixel_count`
+still holds exactly — no ink is lost or double-counted — and no crop is ever
+cut from a residual's bounds (a residual is `held`, never `proposed`), so
+this is a review-clarity and `review_priority` defect rather than an
+accounting one: a reviewer reading a residual's `bounds` can see a rectangle
+that visually overlaps an already-claimed act's own crop, and a merge across
+claimed territory can inflate a residual over `review_priority`'s size
+threshold that would otherwise sit below it. Closing this properly means a
+claimed-aware residual labeling pass rather than a change to the shared
+`label_components` that `structure.py`'s own full-page scan also depends on
+and has no notion of "claimed" to give — a change worth its own design and
+test pass rather than folding into this build's repair commits. Named here
+rather than fixed quietly or left undiscovered.
