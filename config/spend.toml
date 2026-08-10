@@ -1,11 +1,11 @@
-# Deliberately non-operational until Tyrel chooses a GPU class and spend ceilings.
+# Deliberately non-operational until Tyrel chooses a GPU class and spend policy.
 # Both creation and adoption refuse this state.  Test fixtures supply configured
 # policy values; this file contains no personal default or billable approval.
 #
-# This is a refusal, not a placeholder.  A committed example ceiling reads as an
+# This is a refusal, not a placeholder.  A committed active policy reads as an
 # approved one to whoever opens the file next, and CLAUDE.md hard rule 1 puts the
-# spend ceilings and the GPU class in Tyrel's hands.  The keys below document the
-# shape a configured policy must have so that filling it in needs no code
+# spend policy and GPU class in Tyrel's hands.  The commented keys below document
+# the shape a configured policy must have so that filling it in needs no code
 # reading — the loader refuses any key it does not know, and refuses a policy
 # missing any of them.
 #
@@ -28,6 +28,12 @@
 #   # Independent of max_hourly_usd, so either ceiling alone can refuse a run.
 #   max_estimated_metered_cost_usd = "..."
 #
+#   # A manual reserve that must remain available to preserve the network volume
+#   # while data is secured after a spend incident. "50.00" is a documented,
+#   # unverified default: check it against RunPod before a live run. The runtime
+#   # has no account-balance API, so this is not evidence of the current balance.
+#   account_balance_floor_usd = "50.00"
+#
 #   # The hard lifetime both controllers enforce independently — the laptop
 #   # supervisor and the pod-side dead-man timer.  Whichever fires first
 #   # terminates through the verified path.
@@ -43,6 +49,12 @@
 #   shutdown_poll_interval_seconds = 0
 #   shutdown_deadline_seconds = 0
 #
+#   # How far provider-resolved billing evidence may extend beyond the requested
+#   # cutoff. The verifier accepts only 0–3600 seconds; an out-of-bounds value
+#   # is refused, never clamped. 3600 preserves the previous behavior but is
+#   # not a measured RunPod value and must be chosen deliberately for a live run.
+#   billing_cutoff_margin_seconds = 3600
+#
 # Billing reconciliation is not a key here: VerifiedShutdown's retry (3 attempts,
 # 15s apart) is fixed in code, not reviewed policy, and can add up to 30s past
 # shutdown_deadline_seconds above before a close is reported. Bounded and named
@@ -51,5 +63,5 @@
 # Nothing above authorises deleting or retaining the network volume after a
 # close.  That is its own separately named decision, and every close report
 # states the volume's ongoing hourly price so it cannot be forgotten.
-schema = "pod-spend.v1"
+schema = "pod-spend.v2"
 state = "unconfigured"

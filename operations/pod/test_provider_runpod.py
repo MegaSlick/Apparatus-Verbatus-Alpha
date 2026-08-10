@@ -16,7 +16,13 @@ from decimal import Decimal
 
 import pytest
 
-from .models import BillingState, PodCreateRequest, Presence, ProviderFailure
+from .models import (
+    BILLING_CUTOFF_MARGIN_ENV,
+    BillingState,
+    PodCreateRequest,
+    Presence,
+    ProviderFailure,
+)
 from .provider_runpod import (
     _MAX_RESPONSE_BYTES,
     HttpResponse,
@@ -67,7 +73,7 @@ def request(**overrides: object) -> PodCreateRequest:
         ),
         "hard_deadline": NOW + timedelta(hours=1),
         "repository_commit": "b" * 40,
-        "metadata": {"VERBATUS_LAUNCH_TOKEN": TOKEN},
+        "metadata": {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"},
     }
     fields.update(overrides)
     return PodCreateRequest(**fields)  # type: ignore[arg-type]
@@ -97,7 +103,7 @@ def pod_payload(**overrides: object) -> dict[str, object]:
         "dockerStartCmd": list(request().docker_start_cmd),
         "networkVolume": {"id": "volume-1"},
         "machine": {"gpuTypeId": "NVIDIA RTX 6000 Ada Generation"},
-        "env": {"VERBATUS_LAUNCH_TOKEN": TOKEN},
+        "env": {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"},
         "lastStartedAt": "2026-08-08T11:59:00Z",
     }
     payload.update(overrides)
@@ -152,7 +158,7 @@ def test_create_correlates_the_launch_token_before_it_posts() -> None:
     assert body["networkVolumeId"] == "volume-1"
     assert body["volumeMountPath"] == "/workspace/private"
     assert body["gpuTypeIds"] == ["NVIDIA RTX 6000 Ada Generation"]
-    assert body["env"] == {"VERBATUS_LAUNCH_TOKEN": TOKEN}
+    assert body["env"] == {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"}
 
 
 def test_create_returns_the_existing_token_pod_without_posting_again() -> None:
@@ -317,12 +323,34 @@ def test_pod_timer_reuses_the_prearmed_launch_lease_identity() -> None:
             "VERBATUS_REQUESTED_AT": "2026-08-08T12:00:00Z",
             "VERBATUS_POD_HOURLY_USD": "0.77",
             "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
+            BILLING_CUTOFF_MARGIN_ENV: "3600",
             "VERBATUS_LAUNCH_TOKEN": TOKEN,
         }
     )
 
     assert context.timer.lease.lease_id == TOKEN
     assert context.timer.lease.launch_token == TOKEN
+    assert context.timer.shutdown.billing_cutoff_margin_seconds == 3600
+
+
+@pytest.mark.parametrize("margin", ["3601", "01"])
+def test_pod_timer_refuses_an_unbounded_or_noncanonical_sealed_cutoff_margin(
+    margin: str,
+) -> None:
+    environment = {
+        "RUNPOD_POD_ID": "pod-1",
+        "RUNPOD_API_KEY": "test-" + "capability",
+        "VERBATUS_VOLUME_ID": "volume-1",
+        "VERBATUS_HARD_DEADLINE": "2026-08-08T13:00:00Z",
+        "VERBATUS_REQUESTED_AT": "2026-08-08T12:00:00Z",
+        "VERBATUS_POD_HOURLY_USD": "0.77",
+        "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
+        BILLING_CUTOFF_MARGIN_ENV: margin,
+        "VERBATUS_LAUNCH_TOKEN": TOKEN,
+    }
+
+    with pytest.raises(ProviderFailure, match="VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS"):
+        timer_context_from_environment(environment)
 
 
 def test_a_present_pod_reports_present_with_its_200() -> None:

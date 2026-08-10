@@ -94,7 +94,14 @@ the way its documentation says.
   running, and the ceiling is applied a second time to the price the provider *actually*
   returned — a created pod that bills above it is closed immediately rather than left
   running. `config/spend.toml` is deliberately unconfigured, so both paid paths refuse
-  until Tyrel supplies a reviewed policy.
+  until Tyrel supplies a reviewed policy. A configured policy must set a
+  `billing_cutoff_margin_seconds` value within the code-owned 0–3600-second envelope;
+  the exact value is sealed into both shutdown controllers and the pending-create
+  recovery record, while an out-of-bounds value refuses rather than being clamped. It
+  also displays an `account_balance_floor_usd` manual reserve. The runtime does not
+  observe account balance: the commented `$50.00` template value is unverified and must
+  be checked against RunPod before a live run, not treated as evidence that the reserve
+  is actually available.
 - `transfer.py` carries Spec 03's sealed submission-manifest rows through a generic
   storage seam. It streams and verifies SHA-256/size before and after upload, persists
   verified rows, and refuses conflicting target bytes rather than overwriting them.

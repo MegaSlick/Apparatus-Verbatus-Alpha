@@ -16,6 +16,7 @@ from .models import (
     PodRecord,
     Presence,
     ProviderStatus,
+    require_billing_cutoff_margin_seconds,
     require_utc,
     utc_now,
 )
@@ -154,6 +155,7 @@ class VerifiedShutdown:
         poll_seconds: float = 2.0,
         billing_attempts: int = 3,
         billing_retry_seconds: float = 15.0,
+        billing_cutoff_margin_seconds: int = 0,
         monotonic: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
         now: Callable[[], datetime] = utc_now,
@@ -172,6 +174,9 @@ class VerifiedShutdown:
         # because GOVERNANCE 11 does not allow an unbounded reconsideration loop.
         self.billing_attempts = billing_attempts
         self.billing_retry_seconds = billing_retry_seconds
+        self.billing_cutoff_margin_seconds = require_billing_cutoff_margin_seconds(
+            billing_cutoff_margin_seconds, "billing cutoff margin"
+        )
         self.monotonic = monotonic
         self.sleeper = sleeper
         self.now = now
@@ -357,7 +362,12 @@ class VerifiedShutdown:
                 _join_details(last_detail, f"billing capture failed: {capture}"),
                 console,
             )
-        evidence_error = _billing_evidence_error(record, capture, requested_cutoff=cutoff)
+        evidence_error = _billing_evidence_error(
+            record,
+            capture,
+            requested_cutoff=cutoff,
+            billing_cutoff_margin_seconds=self.billing_cutoff_margin_seconds,
+        )
         if evidence_error is not None:
             return report(
                 CloseState.UNVERIFIED_BILLING,
@@ -423,20 +433,12 @@ def _join_details(*parts: str) -> str:
     return "; ".join(part for part in parts if part)
 
 
-_MAX_CUTOFF_OVERHANG = timedelta(hours=1)
-"""How far a resolved cutoff may exceed the requested one before it is refused.
-
-Generous slack for billing-bucket granularity (RunPod's own bucket is one
-hour) and clock skew between the laptop and the provider -- not a claim
-about any specific provider's bucket size.  The close report's whole claim
-is "charges captured through a named cutoff"; a cutoff nobody has reached
-yet is a claim about unmeasured time (GOVERNANCE 10), so this is bounded
-the same way the window start already is on the other side.
-"""
-
-
 def _billing_evidence_error(
-    record: PodRecord, capture: object, *, requested_cutoff: datetime
+    record: PodRecord,
+    capture: object,
+    *,
+    requested_cutoff: datetime,
+    billing_cutoff_margin_seconds: int,
 ) -> str | None:
     """Return why a provider billing response cannot prove this close.
 
@@ -452,7 +454,12 @@ def _billing_evidence_error(
         return "billing capture names a different pod; this pod's charges are unverified"
     if capture.cutoff_at < requested_cutoff:
         return "billing capture cutoff precedes the requested shutdown cutoff"
-    if capture.cutoff_at > requested_cutoff + _MAX_CUTOFF_OVERHANG:
+    margin = timedelta(
+        seconds=require_billing_cutoff_margin_seconds(
+            billing_cutoff_margin_seconds, "billing cutoff margin"
+        )
+    )
+    if capture.cutoff_at > requested_cutoff + margin:
         return "billing capture cutoff is too far beyond the requested window to be verified"
     if capture.window_start_at is None:
         return "billing capture omits its window start; coverage from pod creation is unproven"

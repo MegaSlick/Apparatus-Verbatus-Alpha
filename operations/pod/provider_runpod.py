@@ -50,6 +50,7 @@ from typing import Callable, Mapping, Protocol
 from .controllers import PodDeadmanTimer
 from .lease import PodLease
 from .models import (
+    BILLING_CUTOFF_MARGIN_ENV,
     AbsenceObservation,
     BillingState,
     CostCapture,
@@ -62,6 +63,7 @@ from .models import (
     ProviderFailure,
     ProviderStatus,
     as_decimal,
+    parse_billing_cutoff_margin_seconds,
     require_utc,
     utc_now,
 )
@@ -541,6 +543,7 @@ def _runtime_contract(
             payload.get("volumeMountPath"), f"RunPod pod {pod_id} volumeMountPath"
         ),
         docker_start_cmd=tuple(command),
+        billing_cutoff_margin_seconds=_billing_cutoff_margin_from_environment(pod_id, payload),
         template=template if isinstance(template, str) and template else None,
     )
 
@@ -595,6 +598,9 @@ def timer_context_from_environment(environment: Mapping[str, str] | None = None)
     volume_rate = as_decimal(
         _required_environment(env, "VERBATUS_VOLUME_ONGOING_HOURLY_USD"), "pod timer volume rate"
     )
+    billing_cutoff_margin_seconds = _parse_billing_cutoff_margin(
+        _required_environment(env, BILLING_CUTOFF_MARGIN_ENV), BILLING_CUTOFF_MARGIN_ENV
+    )
     launch_identity = _required_environment(env, LAUNCH_TOKEN_ENV)
     provider = RunPodProvider(
         UrllibRunPodTransport(capability),
@@ -622,7 +628,33 @@ def timer_context_from_environment(environment: Mapping[str, str] | None = None)
         heartbeat_at=started,
         phase="active",
     )
-    return TimerContext(PodDeadmanTimer(lease, VerifiedShutdown(provider)))
+    return TimerContext(
+        PodDeadmanTimer(
+            lease,
+            VerifiedShutdown(provider, billing_cutoff_margin_seconds=billing_cutoff_margin_seconds),
+        )
+    )
+
+
+def _billing_cutoff_margin_from_environment(pod_id: str, payload: Mapping[str, object]) -> int:
+    environment = payload.get("env")
+    if not isinstance(environment, Mapping):
+        raise ProviderFailure(
+            f"RunPod pod {pod_id} reports no env; its billing cutoff margin is unproven"
+        )
+    return _parse_billing_cutoff_margin(
+        environment.get(BILLING_CUTOFF_MARGIN_ENV),
+        f"RunPod pod {pod_id} {BILLING_CUTOFF_MARGIN_ENV}",
+    )
+
+
+def _parse_billing_cutoff_margin(value: object, label: str) -> int:
+    """Parse the exact environment spelling that binds a pod-side timer."""
+
+    try:
+        return parse_billing_cutoff_margin_seconds(value, label)
+    except ValueError as error:
+        raise ProviderFailure(str(error)) from error
 
 
 def _path_id(value: str) -> str:

@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import Callable
 
 from .models import (
+    BILLING_CUTOFF_MARGIN_ENV,
     AbsenceObservation,
     BillingState,
     CostCapture,
@@ -25,6 +26,7 @@ from .models import (
     ProviderFailure,
     ProviderStatus,
     as_decimal,
+    parse_billing_cutoff_margin_seconds,
     utc_now,
 )
 
@@ -124,6 +126,10 @@ class FakeProvider:
                 volume_id=request.volume_id,
                 volume_mount_path=request.volume_mount_path,
                 docker_start_cmd=request.docker_start_cmd,
+                billing_cutoff_margin_seconds=parse_billing_cutoff_margin_seconds(
+                    request.metadata.get(BILLING_CUTOFF_MARGIN_ENV),
+                    "fake request billing cutoff margin",
+                ),
             ),
         )
         self.pods[pod_id] = record

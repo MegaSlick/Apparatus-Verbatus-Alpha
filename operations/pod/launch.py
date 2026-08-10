@@ -18,6 +18,7 @@ from .arming import (
 )
 from .lease import LeaseStore, PodLease
 from .models import (
+    BILLING_CUTOFF_MARGIN_ENV,
     PendingCreateIntent,
     PodCreateRequest,
     PodEstimate,
@@ -139,10 +140,12 @@ class PodRuntime:
             if spend_policy.configured:
                 assert spend_policy.shutdown_deadline_seconds is not None
                 assert spend_policy.shutdown_poll_interval_seconds is not None
+                assert spend_policy.billing_cutoff_margin_seconds is not None
                 shutdown = VerifiedShutdown(
                     provider,
                     timeout_seconds=spend_policy.shutdown_deadline_seconds,
                     poll_seconds=spend_policy.shutdown_poll_interval_seconds,
+                    billing_cutoff_margin_seconds=spend_policy.billing_cutoff_margin_seconds,
                 )
             else:
                 shutdown = VerifiedShutdown(provider)
@@ -294,6 +297,7 @@ class PodRuntime:
     def preview_adopt(self, pod_id: str, *, expected: PodCreateRequest) -> LaunchResult:
         """Use the exact same shutdown proof, estimate display, and ceiling calculation."""
 
+        expected = self._policy_bound_request(expected)
         readiness = self.shutdown.prove_ready()
         if not readiness.ready:
             return LaunchResult(
@@ -331,6 +335,7 @@ class PodRuntime:
     ) -> LaunchResult:
         """No pod bills its way around the gate: adoption shares every create check."""
 
+        expected = self._policy_bound_request(expected)
         preview_result = self.preview_adopt(pod_id, expected=expected)
         if preview_result.state is not LaunchState.PREVIEW:
             return preview_result
@@ -441,6 +446,7 @@ class PodRuntime:
     def _sealed_request(
         self, request: PodCreateRequest, launch_token: str, estimate: PodEstimate
     ) -> PodCreateRequest:
+        request = self._policy_bound_request(request)
         return replace(
             request,
             docker_start_cmd=_bind_report_path_to_launch(request.docker_start_cmd, launch_token),
@@ -452,6 +458,25 @@ class PodRuntime:
                 "VERBATUS_POD_HOURLY_USD": str(estimate.pod_hourly_usd),
                 "VERBATUS_VOLUME_ONGOING_HOURLY_USD": str(estimate.volume_hourly_usd),
                 "VERBATUS_REQUESTED_AT": self.now().isoformat().replace("+00:00", "Z"),
+            },
+        )
+
+    def _policy_bound_request(self, request: PodCreateRequest) -> PodCreateRequest:
+        """Bind both controllers to the configured billing-evidence margin.
+
+        An adoption never recreates a pod, so it cannot receive a later timer
+        configuration. Its provider-observed contract must therefore prove the
+        same margin that this runtime would give a newly created pod.
+        """
+
+        if not self.spend_policy.configured:
+            return request
+        assert self.spend_policy.billing_cutoff_margin_seconds is not None
+        return replace(
+            request,
+            metadata={
+                **dict(request.metadata),
+                BILLING_CUTOFF_MARGIN_ENV: str(self.spend_policy.billing_cutoff_margin_seconds),
             },
         )
 

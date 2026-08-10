@@ -8,9 +8,15 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from .models import PodEstimate, SpendRefusal, as_decimal, require_utc
+from .models import (
+    PodEstimate,
+    SpendRefusal,
+    as_decimal,
+    require_billing_cutoff_margin_seconds,
+    require_utc,
+)
 
-SPEND_SCHEMA = "pod-spend.v1"
+SPEND_SCHEMA = "pod-spend.v2"
 
 CONFIRMATION_PREFIX = "I CONFIRM PAID POD"
 """The fixed opening of the typed phrase; the rest is derived from the price.
@@ -41,15 +47,23 @@ class SpendPolicy:
     ``max_hourly_usd`` and ``max_estimated_metered_cost_usd`` apply to all
     launch-time metering: the pod plus its attached volume. Ongoing volume
     retention or deletion after close remains a separately authorized decision.
+
+    ``account_balance_floor_usd`` is a manual reserve threshold, not an
+    observed account balance. The documented ``"50.00"`` config-template
+    default is unverified and must be checked against RunPod before a live run.
     """
 
     state: str
     max_hourly_usd: Decimal | None = None
     max_estimated_metered_cost_usd: Decimal | None = None
+    # "$50.00" is unverified and must be checked against RunPod before a live run.
+    # This is configuration for a manual reserve, never an observed balance.
+    account_balance_floor_usd: Decimal | None = None
     hard_lifetime_seconds: int | None = None
     laptop_heartbeat_timeout_seconds: int | None = None
     shutdown_poll_interval_seconds: int | None = None
     shutdown_deadline_seconds: int | None = None
+    billing_cutoff_margin_seconds: int | None = None
 
     @property
     def configured(self) -> bool:
@@ -61,10 +75,12 @@ class SpendPolicy:
         values = (
             self.max_hourly_usd,
             self.max_estimated_metered_cost_usd,
+            self.account_balance_floor_usd,
             self.hard_lifetime_seconds,
             self.laptop_heartbeat_timeout_seconds,
             self.shutdown_poll_interval_seconds,
             self.shutdown_deadline_seconds,
+            self.billing_cutoff_margin_seconds,
         )
         if not self.configured:
             if any(value is not None for value in values):
@@ -78,8 +94,17 @@ class SpendPolicy:
             "max_estimated_metered_cost_usd",
             as_decimal(self.max_estimated_metered_cost_usd, "max estimated metered cost"),
         )
-        if self.max_hourly_usd <= 0 or self.max_estimated_metered_cost_usd <= 0:
-            raise SpendRefusal("money ceilings must be positive")
+        object.__setattr__(
+            self,
+            "account_balance_floor_usd",
+            as_decimal(self.account_balance_floor_usd, "account balance floor"),
+        )
+        if (
+            self.max_hourly_usd <= 0
+            or self.max_estimated_metered_cost_usd <= 0
+            or self.account_balance_floor_usd <= 0
+        ):
+            raise SpendRefusal("money ceilings and account-balance floor must be positive")
         for label, value in (
             ("hard lifetime", self.hard_lifetime_seconds),
             ("laptop heartbeat timeout", self.laptop_heartbeat_timeout_seconds),
@@ -90,6 +115,16 @@ class SpendPolicy:
                 raise SpendRefusal(f"{label} must be a positive integer")
         if self.laptop_heartbeat_timeout_seconds >= self.hard_lifetime_seconds:
             raise SpendRefusal("laptop heartbeat timeout must be shorter than hard lifetime")
+        try:
+            object.__setattr__(
+                self,
+                "billing_cutoff_margin_seconds",
+                require_billing_cutoff_margin_seconds(
+                    self.billing_cutoff_margin_seconds, "billing cutoff margin"
+                ),
+            )
+        except ValueError as error:
+            raise SpendRefusal(str(error)) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +162,10 @@ class SpendAssessment:
             else {
                 "max_hourly_usd": str(self.policy.max_hourly_usd),
                 "max_estimated_metered_cost_usd": str(self.policy.max_estimated_metered_cost_usd),
+                "account_balance_floor_usd": str(self.policy.account_balance_floor_usd),
+                "account_balance_observation": "not-observed-by-runtime",
                 "hard_lifetime_seconds": self.policy.hard_lifetime_seconds,
+                "billing_cutoff_margin_seconds": self.policy.billing_cutoff_margin_seconds,
             },
         }
 
@@ -163,10 +201,12 @@ def load_spend_policy(path: str | Path) -> SpendPolicy:
         "currency",
         "max_hourly_usd",
         "max_estimated_metered_cost_usd",
+        "account_balance_floor_usd",
         "hard_lifetime_seconds",
         "laptop_heartbeat_timeout_seconds",
         "shutdown_poll_interval_seconds",
         "shutdown_deadline_seconds",
+        "billing_cutoff_margin_seconds",
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:
@@ -180,10 +220,14 @@ def load_spend_policy(path: str | Path) -> SpendPolicy:
             max_estimated_metered_cost_usd=_decimal_text(
                 raw.get("max_estimated_metered_cost_usd"), "max_estimated_metered_cost_usd"
             ),
+            account_balance_floor_usd=_decimal_text(
+                raw.get("account_balance_floor_usd"), "account_balance_floor_usd"
+            ),
             hard_lifetime_seconds=raw.get("hard_lifetime_seconds"),
             laptop_heartbeat_timeout_seconds=raw.get("laptop_heartbeat_timeout_seconds"),
             shutdown_poll_interval_seconds=raw.get("shutdown_poll_interval_seconds"),
             shutdown_deadline_seconds=raw.get("shutdown_deadline_seconds"),
+            billing_cutoff_margin_seconds=raw.get("billing_cutoff_margin_seconds"),
         )
     except (TypeError, ValueError, SpendRefusal) as error:
         if isinstance(error, SpendRefusal):

@@ -32,6 +32,7 @@ from .fake_provider import FakeProvider
 from .launch import LaunchState, PodRuntime
 from .lease import LeaseStore, PodLease
 from .models import (
+    BILLING_CUTOFF_MARGIN_ENV,
     AbsenceObservation,
     BillingState,
     CloseState,
@@ -42,6 +43,7 @@ from .models import (
     PodRecord,
     ProviderFailure,
     ProviderStatus,
+    SpendRefusal,
 )
 from .pod_timer import TimerContext, run_with_bootstrap
 from .preflight import (
@@ -193,16 +195,36 @@ class FakeControllerArmer:
         )
 
 
-def policy(*, hourly: str = "1.00", lifetime: int = 3600) -> SpendPolicy:
+def policy(
+    *,
+    hourly: str = "1.00",
+    lifetime: int = 3600,
+    balance_floor: str = "50.00",
+    cutoff_margin: int = 3600,
+) -> SpendPolicy:
     return SpendPolicy(
         state="configured",
         max_hourly_usd=Decimal(hourly),
         max_estimated_metered_cost_usd=Decimal("2.00"),
+        account_balance_floor_usd=Decimal(balance_floor),
         hard_lifetime_seconds=lifetime,
         laptop_heartbeat_timeout_seconds=30,
         shutdown_poll_interval_seconds=1,
         shutdown_deadline_seconds=5,
+        billing_cutoff_margin_seconds=cutoff_margin,
     )
+
+
+@pytest.mark.parametrize("margin", [-1, True, 1.5, "3600", 3601])
+def test_spend_policy_refuses_an_out_of_bounds_billing_cutoff_margin(margin: object) -> None:
+    with pytest.raises(SpendRefusal, match="billing cutoff margin"):
+        replace(policy(), billing_cutoff_margin_seconds=margin)
+
+
+@pytest.mark.parametrize("field", ["account_balance_floor_usd", "billing_cutoff_margin_seconds"])
+def test_configured_spend_policy_refuses_each_required_new_field(field: str) -> None:
+    with pytest.raises(SpendRefusal, match="missing a required ceiling"):
+        replace(policy(), **{field: None})
 
 
 def request(clock: Clock, *, gpu: str = "fake-48gb", lifetime: int = 300) -> PodCreateRequest:
@@ -230,6 +252,7 @@ def request(clock: Clock, *, gpu: str = "fake-48gb", lifetime: int = 300) -> Pod
         ),
         hard_deadline=clock.now() + timedelta(seconds=lifetime),
         repository_commit="b" * 40,
+        metadata={BILLING_CUTOFF_MARGIN_ENV: "3600"},
     )
 
 
@@ -320,11 +343,14 @@ class WrongBillingEvidenceFake(FakeProvider):
         )
 
 
-def shutdown(provider: FakeProvider, clock: Clock, *, timeout: float = 8) -> VerifiedShutdown:
+def shutdown(
+    provider: FakeProvider, clock: Clock, *, timeout: float = 8, cutoff_margin: int = 3600
+) -> VerifiedShutdown:
     return VerifiedShutdown(
         provider,
         timeout_seconds=timeout,
         poll_seconds=1,
+        billing_cutoff_margin_seconds=cutoff_margin,
         monotonic=clock.monotonic,
         sleeper=clock.sleep,
         now=clock.now,
@@ -420,15 +446,17 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
     spend_path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v1"',
+                'schema = "pod-spend.v2"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',
                 'max_estimated_metered_cost_usd = "2.00"',
+                'account_balance_floor_usd = "50.00"',
                 "hard_lifetime_seconds = 3600",
                 "laptop_heartbeat_timeout_seconds = 30",
                 "shutdown_poll_interval_seconds = 1",
                 "shutdown_deadline_seconds = 5",
+                "billing_cutoff_margin_seconds = 3600",
             )
         )
         + "\n",
@@ -482,6 +510,8 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
 
     assert exit_code == 2
     assert "estimated_total_metered_cost_usd" in observed["prior_output"]
+    assert "account_balance_floor_usd" in observed["prior_output"]
+    assert "billing_cutoff_margin_seconds" in observed["prior_output"]
     assert CONFIRMATION_PREFIX in observed["prompt"]
     # The prompt carries the phrase for *this* pod at *this* price — not a
     # constant an operator could have typed without reading the preview above.
@@ -565,6 +595,10 @@ def test_confirmation_preview_shows_cost_rounded_to_the_cent(tmp_path: Path) -> 
     assert result.preview.assessment.estimated_pod_cost_usd != Decimal("0.06")
     record = result.preview.assessment.to_record()
     assert record["estimated_pod_cost_usd"] == "0.06"
+    ceilings = record["ceilings"]
+    assert isinstance(ceilings, dict)
+    assert ceilings["account_balance_floor_usd"] == "50.00"
+    assert ceilings["account_balance_observation"] == "not-observed-by-runtime"
 
 
 def test_spend_guard_rounds_fractional_lifetime_up_not_down(tmp_path: Path) -> None:
@@ -609,6 +643,16 @@ def test_adoption_uses_current_price_and_proves_the_expected_runtime_contract(
     assert existing.runtime_contract is not None
     provider.pods[existing.pod_id] = replace(
         existing,
+        runtime_contract=replace(existing.runtime_contract, billing_cutoff_margin_seconds=0),
+    )
+    mismatched_margin = runtime(provider, clock, tmp_path / "margin-mismatch").preview_adopt(
+        existing.pod_id, expected=expected
+    )
+
+    assert mismatched_margin.state is LaunchState.REFUSED_RUNTIME_CONTRACT
+
+    provider.pods[existing.pod_id] = replace(
+        existing,
         runtime_contract=replace(
             existing.runtime_contract, image="registry.example/other@sha256:" + "c" * 64
         ),
@@ -637,6 +681,7 @@ def test_guarded_create_seals_dead_man_facts_into_the_creation_request(tmp_path:
     assert submitted.metadata["VERBATUS_VOLUME_ID"] == "test-volume"
     assert submitted.metadata["VERBATUS_POD_HOURLY_USD"] == "0.77"
     assert submitted.metadata["VERBATUS_VOLUME_ONGOING_HOURLY_USD"] == "0.05"
+    assert submitted.metadata[BILLING_CUTOFF_MARGIN_ENV] == "3600"
 
 
 def test_default_runtime_refuses_paid_create_without_an_approved_controller_harness(
@@ -690,6 +735,10 @@ def test_configured_spend_timing_wires_the_default_verified_shutdown_controller(
 
     assert pod_runtime.shutdown.timeout_seconds == configured.shutdown_deadline_seconds
     assert pod_runtime.shutdown.poll_seconds == configured.shutdown_poll_interval_seconds
+    assert (
+        pod_runtime.shutdown.billing_cutoff_margin_seconds
+        == configured.billing_cutoff_margin_seconds
+    )
 
 
 def test_green_launch_requires_and_persists_two_controller_acknowledgements(tmp_path: Path) -> None:
@@ -914,6 +963,7 @@ def test_billing_capture_that_raises_is_retried_like_any_other_non_captured_answ
         provider,
         timeout_seconds=8,
         poll_seconds=1,
+        billing_cutoff_margin_seconds=3600,
         billing_attempts=2,
         billing_retry_seconds=1,
         monotonic=clock.monotonic,
@@ -939,6 +989,7 @@ def test_billing_capture_that_always_raises_exhausts_its_bounded_retry_and_stays
         provider,
         timeout_seconds=8,
         poll_seconds=1,
+        billing_cutoff_margin_seconds=3600,
         billing_attempts=2,
         billing_retry_seconds=1,
         monotonic=clock.monotonic,
@@ -961,6 +1012,7 @@ def test_billing_that_never_posts_exhausts_its_bounded_retry_and_stays_red() -> 
         provider,
         timeout_seconds=8,
         poll_seconds=1,
+        billing_cutoff_margin_seconds=3600,
         billing_attempts=2,
         billing_retry_seconds=1,
         monotonic=clock.monotonic,
@@ -1108,7 +1160,9 @@ def test_restart_recovers_exact_pending_launch_token_and_closes_only_that_orphan
     assert recovered.close_report is not None and recovered.close_report.verified
     assert orphan_id in provider.terminate_calls
     assert unrelated.pod_id not in provider.terminate_calls
-    assert any(item.recovery_only for item in provider.create_requests)
+    recovery_requests = [item for item in provider.create_requests if item.recovery_only]
+    assert len(recovery_requests) == 1
+    assert recovery_requests[0].metadata[BILLING_CUTOFF_MARGIN_ENV] == "3600"
 
 
 def test_pending_create_recovery_attempts_are_bounded_before_manual_review(tmp_path: Path) -> None:
@@ -1277,6 +1331,29 @@ def test_close_report_names_the_provider_resolved_billing_cutoff() -> None:
             "recorded_at": None,
         }
     ]
+
+
+def test_billing_cutoff_margin_refuses_evidence_one_second_past_the_configured_bound() -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.set_billing(
+        CostCapture(
+            pod_id=record.pod_id,
+            state=BillingState.CAPTURED,
+            cutoff_at=clock.now() + timedelta(seconds=31),
+            lines=(CostLine(Decimal("0.11"), "one second beyond configured margin"),),
+            source="fake provider resolved cutoff",
+            window_start_at=record.created_at,
+        )
+    )
+
+    report = shutdown(provider, clock, cutoff_margin=30).close(
+        record, reason="configured cutoff margin drill"
+    )
+
+    assert report.state is CloseState.UNVERIFIED_BILLING
+    assert "too far beyond the requested window" in report.last_detail
 
 
 def test_a_billing_cutoff_arbitrarily_far_in_the_future_is_refused_not_verified() -> None:

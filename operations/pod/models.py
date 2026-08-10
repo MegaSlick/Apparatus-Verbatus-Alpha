@@ -92,6 +92,47 @@ def as_decimal(value: Decimal | str | int | float, label: str) -> Decimal:
     return parsed
 
 
+BILLING_CUTOFF_MARGIN_ENV = "VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS"
+"""The sealed pod environment key shared by both shutdown controllers."""
+
+MIN_BILLING_CUTOFF_MARGIN_SECONDS = 0
+MAX_BILLING_CUTOFF_MARGIN_SECONDS = 3600
+"""Code-owned safety envelope for a provider billing-cutoff margin.
+
+Configuration selects the margin used for a particular paid run, but it cannot
+make the generic verifier accept more than its prior one-hour envelope of future
+billing evidence. The cap is a safety bound, not a measured provider fact; zero
+is stricter and therefore safe.
+"""
+
+
+def require_billing_cutoff_margin_seconds(value: object, label: str) -> int:
+    """Return a whole-second margin only when it remains inside code-owned bounds."""
+
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{label} must be a whole number of seconds")
+    if not MIN_BILLING_CUTOFF_MARGIN_SECONDS <= value <= MAX_BILLING_CUTOFF_MARGIN_SECONDS:
+        raise ValueError(
+            f"{label} must be between {MIN_BILLING_CUTOFF_MARGIN_SECONDS} and "
+            f"{MAX_BILLING_CUTOFF_MARGIN_SECONDS} seconds"
+        )
+    return value
+
+
+def parse_billing_cutoff_margin_seconds(value: object, label: str) -> int:
+    """Parse the canonical string form carried through pod metadata."""
+
+    if not isinstance(value, str):
+        return require_billing_cutoff_margin_seconds(value, label)
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ValueError(f"{label} must be a whole number of seconds") from error
+    if str(parsed) != value:
+        raise ValueError(f"{label} must be a canonical whole number of seconds")
+    return require_billing_cutoff_margin_seconds(parsed, label)
+
+
 @dataclass(frozen=True, slots=True)
 class PodCreateRequest:
     """The complete requested pod shape, before a provider sees it.
@@ -306,6 +347,7 @@ class PendingCreateIntent:
     launch_token: str
     pod_hourly_usd: Decimal
     volume_hourly_usd: Decimal
+    billing_cutoff_margin_seconds: int
     template: str | None = None
 
     @classmethod
@@ -326,6 +368,10 @@ class PendingCreateIntent:
             volume_hourly_usd=as_decimal(
                 request.metadata["VERBATUS_VOLUME_ONGOING_HOURLY_USD"], "pending create volume rate"
             ),
+            billing_cutoff_margin_seconds=parse_billing_cutoff_margin_seconds(
+                request.metadata.get(BILLING_CUTOFF_MARGIN_ENV),
+                "pending create billing cutoff margin",
+            ),
             template=request.template,
         )
 
@@ -339,6 +385,13 @@ class PendingCreateIntent:
             self,
             "volume_hourly_usd",
             as_decimal(self.volume_hourly_usd, "pending create volume rate"),
+        )
+        object.__setattr__(
+            self,
+            "billing_cutoff_margin_seconds",
+            require_billing_cutoff_margin_seconds(
+                self.billing_cutoff_margin_seconds, "pending create billing cutoff margin"
+            ),
         )
         self.recovery_request()
 
@@ -357,6 +410,7 @@ class PendingCreateIntent:
                 "VERBATUS_LAUNCH_TOKEN": self.launch_token,
                 "VERBATUS_POD_HOURLY_USD": str(self.pod_hourly_usd),
                 "VERBATUS_VOLUME_ONGOING_HOURLY_USD": str(self.volume_hourly_usd),
+                BILLING_CUTOFF_MARGIN_ENV: str(self.billing_cutoff_margin_seconds),
             },
             recovery_only=True,
         )
@@ -374,6 +428,7 @@ class PendingCreateIntent:
             "launch_token": self.launch_token,
             "pod_hourly_usd": str(self.pod_hourly_usd),
             "volume_hourly_usd": str(self.volume_hourly_usd),
+            "billing_cutoff_margin_seconds": self.billing_cutoff_margin_seconds,
             "template": self.template,
         }
 
@@ -393,6 +448,7 @@ class PendingCreateIntent:
             "launch_token",
             "pod_hourly_usd",
             "volume_hourly_usd",
+            "billing_cutoff_margin_seconds",
             "template",
         }
         if set(value) != required:
@@ -419,6 +475,7 @@ class PendingCreateIntent:
                 volume_hourly_usd=as_decimal(
                     value["volume_hourly_usd"], "pending create volume rate"
                 ),
+                billing_cutoff_margin_seconds=value["billing_cutoff_margin_seconds"],
                 template=value["template"],
             )
         except (TypeError, ValueError) as error:
@@ -435,6 +492,7 @@ class PodRuntimeContract:
     volume_id: str
     volume_mount_path: str
     docker_start_cmd: tuple[str, ...]
+    billing_cutoff_margin_seconds: int
     template: str | None = None
 
     def __post_init__(self) -> None:
@@ -454,6 +512,13 @@ class PodRuntimeContract:
             isinstance(item, str) and item for item in self.docker_start_cmd
         ):
             raise ValueError("observed docker_start_cmd must be non-empty string argv")
+        object.__setattr__(
+            self,
+            "billing_cutoff_margin_seconds",
+            require_billing_cutoff_margin_seconds(
+                self.billing_cutoff_margin_seconds, "observed billing cutoff margin"
+            ),
+        )
 
     def matches(self, request: PodCreateRequest) -> bool:
         return (
@@ -463,6 +528,8 @@ class PodRuntimeContract:
             and self.volume_id == request.volume_id
             and self.volume_mount_path == request.volume_mount_path
             and self.docker_start_cmd == request.docker_start_cmd
+            and request.metadata.get(BILLING_CUTOFF_MARGIN_ENV)
+            == str(self.billing_cutoff_margin_seconds)
             and self.template == request.template
         )
 
