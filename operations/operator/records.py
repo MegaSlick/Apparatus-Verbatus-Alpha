@@ -200,8 +200,14 @@ class DescriptorStore:
         receipt_text = str(receipt.resolve())
         actions[action] = receipt_text
         entries = history.setdefault(action, [])
-        if receipt_text not in entries:
-            entries.append(receipt_text)
+        # Move-to-end rather than skip-if-present: a repeated receipt (the same
+        # content-addressed path as an earlier one for this action, e.g. an
+        # idempotent retry that reproduces identical bytes) must still end up
+        # last, or history[-1] no longer equals actions[action] and every
+        # future load()/record() call refuses the descriptor as invalid.
+        if receipt_text in entries:
+            entries.remove(receipt_text)
+        entries.append(receipt_text)
         record: dict[str, Any] = {
             "schema": DESCRIPTOR_SCHEMA,
             "actions": actions,

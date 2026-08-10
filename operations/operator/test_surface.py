@@ -303,6 +303,37 @@ def test_receipt_reader_binds_the_kind_into_the_filename(tmp_path: Path) -> None
         surface.receipts.read(renamed)
 
 
+def test_a_repeated_receipt_never_corrupts_the_descriptors_own_history_invariant(
+    tmp_path: Path,
+) -> None:
+    """A retried action that reproduces an earlier receipt's exact bytes must not
+
+    leave the descriptor unreadable. `ReceiptStore.write` is content-addressed —
+    identical payload and timestamp return the identical path — so recording the
+    same receipt twice for one action, with a different receipt recorded for
+    that action in between, is a real, reachable sequence, not a contrived one.
+    """
+
+    surface = _surface(tmp_path)
+    first = surface.receipts.write("boot", {"summary": "first"})
+    second = surface.receipts.write("boot", {"summary": "second"})
+    surface.descriptor.record("boot", first)
+    surface.descriptor.record("boot", second)
+
+    surface.descriptor.record("boot", first)  # the repeat that used to corrupt history
+
+    loaded = surface.descriptor.load()
+    assert loaded is not None
+    assert loaded["actions"]["boot"] == str(first)
+    assert loaded["history"]["boot"][-1] == str(first)
+    assert loaded["history"]["boot"].count(str(first)) == 1
+
+    # And the descriptor must still be readable and writable afterward.
+    third = surface.receipts.write("boot", {"summary": "third"})
+    surface.descriptor.record("boot", third)
+    assert surface.descriptor.load() is not None
+
+
 def test_a_saved_receipt_is_named_when_its_descriptor_update_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
