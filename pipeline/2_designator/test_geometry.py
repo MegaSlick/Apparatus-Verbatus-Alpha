@@ -185,7 +185,7 @@ def test_model_space_scale_is_an_exact_integer_ratio_not_a_float():
 
 def test_from_model_space_refuses_a_scale_that_does_not_belong_to_this_page():
     projected = to_model_space({"x": 0, "y": 0, "w": 200, "h": 260}, 200, 260, 1024, 1024)
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match="recorded for"):
         from_model_space(projected["bounds"], projected["scale"], 50, 50)
 
 

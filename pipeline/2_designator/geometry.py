@@ -290,10 +290,12 @@ def from_model_space(
     and named it the same way: it "cannot round a source pixel out of the
     emitted crop".)
 
-    The out-of-page refusal is deliberately tested against the *floored* far
-    edge rather than the ceiled one, so a rescale genuinely belonging to a
-    different page is still refused while a single pixel of outward rounding at
-    the true page edge is merely clamped.
+    A rescale recorded for a page of the wrong dimensions is refused above,
+    against `x_den`/`y_den` directly, before any arithmetic on `model_bounds`
+    runs: `validate_bounds(model_bounds, x_num, y_num, ...)` then guarantees
+    `model_bounds` sits inside the `x_num`x`y_num` space the scale itself
+    declares, so nothing computed from it can land outside the `page_w`x`page_h`
+    page once `x_den == page_w` and `y_den == page_h` are already known to hold.
     """
     _validate_dimensions(page_w, page_h, "page")
     if not isinstance(scale, dict):
@@ -325,11 +327,6 @@ def from_model_space(
     y0 = (model_bounds["y"] * y_den) // y_num
     far_x = (model_bounds["x"] + model_bounds["w"]) * x_den
     far_y = (model_bounds["y"] + model_bounds["h"]) * y_den
-    if x0 < 0 or y0 < 0 or far_x // x_num > page_w or far_y // y_num > page_h:
-        raise ContractError(
-            f"rescaling {model_bounds} by {scale} lands outside a {page_w}x{page_h} page; "
-            "the scale does not belong to this page"
-        )
     x1 = min(page_w, -((-far_x) // x_num))
     y1 = min(page_h, -((-far_y) // y_num))
     return {"x": x0, "y": y0, "w": max(1, x1 - x0), "h": max(1, y1 - y0)}
