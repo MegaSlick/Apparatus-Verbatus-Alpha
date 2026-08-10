@@ -262,6 +262,9 @@ def assess_spend(
     elif requested_seconds <= 0:
         reasons.append("hard lifetime must end in the future")
     else:
+        # Narrowing, not a check: this branch is reached only on a configured policy, and
+        # `SpendPolicy.__post_init__` raises `SpendRefusal` when one is missing a ceiling.
+        # A `raise` survives `-O`, so the invariant holds where these asserts do not.
         assert policy.hard_lifetime_seconds is not None
         assert policy.max_hourly_usd is not None
         assert policy.max_estimated_metered_cost_usd is not None

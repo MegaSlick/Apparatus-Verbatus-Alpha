@@ -150,6 +150,8 @@ class PodRuntime:
         self.lease_root = Path(lease_root)
         if shutdown is None:
             if spend_policy.configured:
+                # Narrowing, not a check: `SpendPolicy.__post_init__` raises `SpendRefusal`
+                # on a configured policy missing any ceiling, and a `raise` survives `-O`.
                 assert spend_policy.shutdown_deadline_seconds is not None
                 assert spend_policy.shutdown_poll_interval_seconds is not None
                 assert spend_policy.billing_cutoff_margin_seconds is not None
@@ -199,6 +201,8 @@ class PodRuntime:
         preview_result = self.preview_create(request)
         if preview_result.state is not LaunchState.PREVIEW:
             return preview_result
+        # Narrowing, not a check: `_preview` is the only producer of `PREVIEW` and it
+        # always carries a `PaidActionPreview`, under `-O` as much as without it.
         assert preview_result.preview is not None
         if not preview_result.preview.assessment.allowed:
             return LaunchResult(
@@ -362,6 +366,8 @@ class PodRuntime:
         preview_result = self.preview_adopt(pod_id, expected=expected)
         if preview_result.state is not LaunchState.PREVIEW:
             return preview_result
+        # Narrowing, not a check: `preview_adopt` returns `PREVIEW` from one line, and it
+        # passes `_preview`'s preview and a non-None record on it. Neither needs `-O` off.
         assert preview_result.preview is not None and preview_result.record is not None
         if not preview_result.preview.assessment.allowed:
             return LaunchResult(
@@ -517,6 +523,8 @@ class PodRuntime:
 
         if not self.spend_policy.configured:
             return request
+        # Narrowing, not a check: `SpendPolicy.__post_init__` raises `SpendRefusal` on a
+        # configured policy missing any ceiling, and a `raise` survives `-O`.
         assert self.spend_policy.billing_cutoff_margin_seconds is not None
         return replace(
             request,
