@@ -673,7 +673,7 @@ def structure_failures(context, pages: dict[int, dict]) -> dict[int, str]:
 
 
 def publish_structure_status(context, records, pages, provenance, failures) -> None:
-    """One visible per-page outcome for the structure pass, held or marked out.
+    """One visible per-page outcome for the structure pass: scanned or held.
 
     Published for every sealed page, not only the failing ones, so "the
     structure pass ran on this page and succeeded" is a record rather than the
@@ -700,7 +700,7 @@ def publish_structure_status(context, records, pages, provenance, failures) -> N
             payload={
                 "page_id": pages[ordinal]["subject_id"],
                 "page_ordinal": ordinal,
-                "state": "held" if reason_code else "marked-out",
+                "state": "held" if reason_code else "scanned",
                 "reason_code": reason_code,
                 "provenance": provenance,
             },
@@ -889,6 +889,15 @@ def _publish_secondary_proposals(
     page_bytes = _read_checked_page_bytes(context, page_record)
     for index, rescue_row in enumerate(rescues):
         candidate = rescue_row["candidate"]
+        # Today's secondary scan derives every candidate from the page's own
+        # pixel scan, so it is in-page by construction. A real detector chair
+        # would not carry that guarantee, and without this check its box would
+        # reach `crop_png`'s bare `ValueError` -- which `run_stage` does not
+        # catch as a `ContractError` -- instead of this pipeline's own refusal
+        # shape, exactly the defect class `bf6a716` closed for the recovery path.
+        geometry.validate_bounds(
+            candidate["bounds"], analysis["width"], analysis["height"], "secondary candidate bounds"
+        )
         overlap_count = rescue_row["overlapping_claimed_act_count"]
         subject = f"{page_identity(context.fixture, ordinal)}-secondary-{index}"
         transform = _crop_transform(ordinal, page_record["subject_id"], candidate["bounds"])

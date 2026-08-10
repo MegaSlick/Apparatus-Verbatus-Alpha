@@ -241,14 +241,19 @@ evidence and held exit disappear.
 ## `kind="structure-status"`
 
 One record per sealed page, subject-keyed to the page identity: whether the
-structure pass marked that page out or was held on it, and if held, the reason
+structure pass scanned that page or was held on it, and if held, the reason
 code. Published for every sealed page rather than only the failing ones, because
-a page nothing marked out and a page nothing *tried* to mark out would otherwise
+a page nothing scanned and a page nothing *tried* to scan would otherwise
 look identical — a reader could only infer the structural outcome from whether
 crops happen to exist, which is exactly the inference GOVERNANCE 2 refuses.
+`state` says "scanned", deliberately not "marked-out": GLOSSARY's Designator
+entry already owns that verb for the stage as a whole, and a page can be
+scanned by the structure pass while marking out no act on it at all (no
+declared act touches that page) — the Recensor's own "marked out" is a
+different fact about the *act*, not this per-page structural pass record.
 
 ```text
-page_id, page_ordinal, state ("marked-out" | "held"), reason_code | null
+page_id, page_ordinal, state ("scanned" | "held"), reason_code | null
 provenance (the resolved Designator chair)
 ```
 

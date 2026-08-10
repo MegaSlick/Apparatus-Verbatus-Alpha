@@ -284,8 +284,14 @@ FIXTURE = "synthetic-two-page-v0"
 # a witness is shown, so a run reusing an id across a padding change would hold
 # two geometries under one name — which moves every downstream artifact digest
 # with it, exactly as the pdf_render binding above does.
-HAPPY_RUN_TREE_DIGEST = "09b23ed014b76972be1597a9a3b64fc13f46f248da33ce4db88ed1b5d7f0be44"
-REVIEW_RUN_TREE_DIGEST = "e50c1f4f990cb5474a0d053c7d7ba4ac76496bf4bcb3d6c00f45a6e95c1c92ef"
+#
+# Re-pinned again for the audit-repair pass: `structure-status`'s success
+# `state` was "marked-out", colliding with GLOSSARY's Designator entry (which
+# already owns that verb for the stage as a whole) and with the Recensor's own,
+# different "marked out" fact about an act. Renamed to "scanned" — counts
+# unchanged, only these two artifacts' bytes move.
+HAPPY_RUN_TREE_DIGEST = "7c8d918ff3c28bdfb2a9e910c5ee0f54ffdec42f83571820cb83206450504968"
+REVIEW_RUN_TREE_DIGEST = "ed130ed7744a517de544194dc88212940d5df20afe04fc57dacbb105cdf17791"
 
 
 def orchestrate(
