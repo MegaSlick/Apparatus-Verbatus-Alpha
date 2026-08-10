@@ -2688,7 +2688,15 @@ def _verify_annotations_claim(manifest: dict[str, Any]) -> None:
 def _verify_manifest_source_counts(
     manifest: dict[str, Any], sources: dict[str, list[dict[str, Any]]]
 ) -> None:
-    """A source-page census claim must be no larger or smaller than its citations."""
+    """A source-page census claim must be no larger or smaller than its citations.
+
+    `claims.submission_inventory`'s fields are named "submission" but counted here
+    from `sources["pages"]`, the page census. The two populations are always equal
+    because `run.py::page_census` refuses any submitted source with no page outcome
+    and any page outcome with no submitted source before either can diverge -- so
+    this is, in practice, a *stronger* check that source and page counts agree, not
+    a weaker one that happens to read the wrong field.
+    """
     ordinals: set[int] = set()
     paths: set[str] = set()
     for page in sources["pages"]:
