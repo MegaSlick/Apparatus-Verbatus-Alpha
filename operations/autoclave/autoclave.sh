@@ -300,7 +300,15 @@ authenticated() {
     mount_asked=$(auth_dir "$vendor_asked") || return 2
     check_asked=$(auth_check "$vendor_asked") || return 2
     has_volume "$volume_asked" || return 1
-    answer=$(docker run --rm --volume "${volume_asked}:${mount_asked}" "$IMAGE" \
+    # `CLAUDE_CONFIG_DIR` belongs here too, and its absence was the sharpest gap in the
+    # first cut of this fix: `cmd_login` calls this function *to verify the sign-in that
+    # just completed*, and `require_signed_in` calls it on every `new`. Without the
+    # variable this throwaway container holds the credential with no configuration beside
+    # it — the exact condition the header above names as fatal. If `claude auth status`
+    # ever refreshes a near-expiry token, the check verifying a sign-in would be the thing
+    # that destroyed it, and the symptom would once again look like an expiry.
+    answer=$(docker run --rm --volume "${volume_asked}:${mount_asked}" \
+        --env "CLAUDE_CONFIG_DIR=${mount_asked}" "$IMAGE" \
         sh -c "${check_asked} >/dev/null 2>&1; printf 'ac-auth:%s' \$?" 2>/dev/null) || return 2
     case "$answer" in
         ac-auth:0) return 0 ;;
@@ -815,6 +823,7 @@ cmd_new() {
         --volume "${outdir}:/out" \
         --volume "${specs_stage}:/specs" \
         $auth_mounts $window_mount $window_masks \
+        --env "CLAUDE_CONFIG_DIR=${AUTH_DIR_CLAUDE}" \
         --workdir /work \
         "$IMAGE" \
         sleep infinity >/dev/null || {
@@ -940,17 +949,44 @@ AUTOCLAVE_SETUP
         # inside the mounted directory. Written to the path beside it, as it was, the
         # flag is set in a file nothing reads and the trust dialog blocks a detached
         # chamber with no one there to answer it.
+        # **Published by temp-then-rename, because this file is now shared and live.**
+        # `/home/agent/.claude` is the credential volume every Claude chamber mounts, and
+        # `CLAUDE_CONFIG_DIR` has just made `.claude.json` the configuration the CLI
+        # refreshes against rather than a throwaway. A plain read-modify-write here races
+        # two ways: a refresh from a concurrent chamber landing between the read and the
+        # write is discarded, and a reader can see a truncated file. The doctrine at the
+        # top of this file says exactly that about this volume, and the first cut of this
+        # fix broke it on the one file it had just made load-bearing.
+        #
+        # No apostrophe may appear in this block, as the warning above it says. The first
+        # cut of this comment used one and silently swallowed every function defined after
+        # it — the same failure that warning was written about, in the block it guards.
+        # Guarded on the directory existing rather than creating it, the same way the
+        # save below is. A chamber built without a vendor — the default, and most of
+        # them — has no mounted directory here, and there is no trust flag worth writing
+        # into a path the CLI will never read.
         python3 - <<"PY"
-import json, pathlib
+import json, os, pathlib, tempfile
 d = pathlib.Path("/home/agent/.claude")
-d.mkdir(parents=True, exist_ok=True)
-p = d / ".claude.json"
-try:
-    config = json.loads(p.read_text() or "{}")
-except (ValueError, OSError):
-    config = {}
-config.setdefault("projects", {}).setdefault("/work", {})["hasTrustDialogAccepted"] = True
-p.write_text(json.dumps(config, indent=2))
+if d.is_dir():
+    p = d / ".claude.json"
+    try:
+        config = json.loads(p.read_text() or "{}")
+    except (ValueError, OSError):
+        config = {}
+    config.setdefault("projects", {}).setdefault("/work", {})["hasTrustDialogAccepted"] = True
+    # Temp-then-rename on the real shared filesystem, for the reason the shell helpers
+    # at the top of this file give: a container pid is not unique across chambers, and
+    # rename is atomic only within one filesystem.
+    fd, tmp = tempfile.mkstemp(dir=str(d), prefix=".claude.json.tmp.")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps(config, indent=2))
+        os.replace(tmp, p)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 PY
         # Only where the volume is actually mounted. A chamber created without a vendor
         # — the default, and most of them — has no mounted directory to keep it in, and
@@ -1153,9 +1189,20 @@ cmd_dispatch() {
     # and dispatched after one, so the configuration the CLI is about to refresh against
     # has to be the current one rather than whatever existed when the chamber was built.
     dispatch_status=0
+    # **Superseded by `CLAUDE_CONFIG_DIR`, and no longer allowed to be fatal.** The seed
+    # copies into `/home/agent/.claude.json`, which the CLI no longer reads: its
+    # configuration now lives inside the mount. So this copy protects nothing, and its
+    # old `die` — "dispatching without it is what silently blanks the sign-in" — would
+    # kill a whole dispatch over a file that has no bearing on the sign-in. The claim was
+    # true when it was written and is false now.
+    #
+    # It is left in place rather than deleted only because removing it also deletes two
+    # test classes, and a partial removal is worse than a clean one. **That removal is
+    # the named follow-up**, agreed with CodeRabbit and the pre-push review, both of
+    # which found this independently.
     if [ "$vendor" = claude ]; then
         docker exec "$(container_of "$task")" sh -c "$HOME_CONFIG_SEED" ||
-            die "the CLI configuration could not be seeded from the credential volume, and dispatching without it is what silently blanks the sign-in"
+            note "note: the superseded configuration copy failed; harmless under CLAUDE_CONFIG_DIR"
     fi
 
     case "$vendor" in
