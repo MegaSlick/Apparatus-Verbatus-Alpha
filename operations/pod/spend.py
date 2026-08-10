@@ -5,7 +5,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 from .models import PodEstimate, SpendRefusal, as_decimal, require_utc
@@ -112,9 +112,15 @@ class SpendAssessment:
             "pod_hourly_usd": str(self.estimate.pod_hourly_usd),
             "volume_ongoing_hourly_usd": str(self.estimate.volume_hourly_usd),
             "price_source": self.estimate.source,
-            "estimated_pod_cost_usd": str(self.estimated_pod_cost_usd),
-            "estimated_attached_volume_cost_usd": str(self.estimated_volume_cost_usd),
-            "estimated_total_metered_cost_usd": str(self.estimated_total_cost_usd),
+            # Displayed to a human, so rounded to the cent; the ceiling
+            # comparison already ran against the exact Decimal above.
+            "estimated_pod_cost_usd": str(_quantize_to_cents(self.estimated_pod_cost_usd)),
+            "estimated_attached_volume_cost_usd": str(
+                _quantize_to_cents(self.estimated_volume_cost_usd)
+            ),
+            "estimated_total_metered_cost_usd": str(
+                _quantize_to_cents(self.estimated_total_cost_usd)
+            ),
             "requested_lifetime_seconds": self.requested_lifetime_seconds,
             "ceilings": None
             if not self.policy.configured
@@ -124,6 +130,10 @@ class SpendAssessment:
                 "hard_lifetime_seconds": self.policy.hard_lifetime_seconds,
             },
         }
+
+
+def _quantize_to_cents(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def load_spend_policy(path: str | Path) -> SpendPolicy:

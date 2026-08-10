@@ -544,6 +544,24 @@ def test_spend_ceiling_counts_attached_volume_during_the_hard_lifetime(tmp_path:
     assert any("attached-volume" in reason for reason in result.preview.assessment.reasons)
 
 
+def test_confirmation_preview_shows_cost_rounded_to_the_cent(tmp_path: Path) -> None:
+    """The one screen read slowly before spending money should not be noisy
+
+    with repeating-decimal division (audit-d Finding 15). The exact value
+    still governs the ceiling check; only the displayed record is rounded.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    result = runtime(provider, clock, tmp_path).preview_create(request(clock, lifetime=300))
+
+    assert result.state is LaunchState.PREVIEW
+    assert result.preview is not None
+    assert result.preview.assessment.estimated_pod_cost_usd != Decimal("0.06")
+    record = result.preview.assessment.to_record()
+    assert record["estimated_pod_cost_usd"] == "0.06"
+
+
 def test_spend_guard_rounds_fractional_lifetime_up_not_down(tmp_path: Path) -> None:
     clock = Clock()
     provider = fake(clock)
