@@ -92,6 +92,15 @@ yet publish a `no_readable_text` Archetypus. This is a named cross-stage gap, pr
 to manufacturing a blank finding from empty text; the shared outcome algebra likewise
 keeps Perlector silence unresolved until a blank-proof contract exists.
 
+`evidence_ref` is checked for shape and for membership in the review's own inputs, but —
+unlike `perlectio_ref` and `recensor_ref` — it is never read, stage-checked, or
+kind-checked, because no `blank-proof` artifact kind exists yet to check it against. The
+one thing checkable without that missing contract is refused: the reading itself may never
+stand as its own evidence of its own silence (`no_readable_text_evidence_ref ==
+perlectio_ref` is a `SchemaRefusal`). Resolving the reference through
+`read_artifact_reference` against a real `kind="blank-proof"` — the way `perlectio_ref`
+and `recensor_ref` are resolved — is still owed once the Recensor lane defines that kind.
+
 **`annotations` — carried whole, never in `text`.** A list of:
 
 - `uncertain` — `{kind, start, end, certainty, alternatives}`. A span covering at least
@@ -119,6 +128,26 @@ Rendering either of them — brackets, underdots, sigla — is the Armarium's bu
 export time and is deliberately not stored here. `annotations` is optional on the wire
 today: nothing upstream of this stage populates it yet, and it defaults to `[]`, which is
 exactly today's behaviour.
+
+**A malformed annotation is run-fatal, with no per-act route around it — a producer
+obligation, not (only) a reader problem.** `validate_annotations` raises `SchemaRefusal`
+out of `main` for the whole run on the first malformed note it meets: a closed kind, exact
+integer offsets within `[0, len(text)]`, a closed `certainty` enum, non-empty
+`alternatives`, and — for `witness_evidence` — an **exact, unnormalized substring match**
+against what the cited witness reported. That comparison is correct for what this stage
+stores (normalizing here is where a record starts to differ from the testimony it quotes),
+but once the Perlector lane starts emitting annotations from a language model, several of
+these become reachable on ordinary model variance rather than only on forged input: a
+witness quotation returned in a different Unicode normalization form (NFC vs. NFD) or with
+a stripped trailing space is byte-different and refused; offsets are model-computed, so a
+model counting grapheme clusters or UTF-16 units instead of Python code points is off by
+one on every accented character; `certainty` values like `"very low"` or `0.7` are refused
+outright. **The obligation this places on the Perlector lane: validate or repair a
+reading's offsets and quotations against these same rules before sealing a Perlectio**,
+so a malformed model output is refused (or normalized) at its own stage rather than taking
+the whole Archetypus run down for every other act. Whether the comparison itself should
+Unicode-normalize before checking substring containment (while continuing to *store* exact
+bytes either way) is a product decision, not made here.
 
 `text`, `regions`, and provenance are exact copies of the one reviewed Perlectio;
 `dissent_ref` names that Perlectio artifact rather than making a second mutable dissent

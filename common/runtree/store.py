@@ -295,6 +295,13 @@ class RunTree:
         immutable artifacts, never the evidence that an artifact exists. The
         store owns the path and the atomic rewrite so stage code cannot invent
         an untracked side file beside the evidence it summarizes.
+
+        Door and Exemplar share one physical directory (`writing_directory`), so
+        `index_path(DOOR)` and `index_path(EXEMPLAR)` collide, exactly as
+        `manifest_path` already does for the two. Unlike `build_manifest`, which
+        filters entries by `record["stage"]`, `write_index` writes whatever its
+        caller builds with no such filter — latent today because no stage
+        sharing a directory calls `write_index`, worth knowing before one does.
         """
         return f"{writing_directory(stage)}/{INDEX_FILE}"
 
