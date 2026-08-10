@@ -84,6 +84,15 @@ def digest_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def is_sha256(value: Any) -> bool:
+    """Whether a value is the lowercase hex shape every digest in this system uses."""
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def digest_of(value: Any) -> str:
     """The digest of a structure, via the one serialization."""
     return digest_bytes(canonical_bytes(value))

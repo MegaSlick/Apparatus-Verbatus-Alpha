@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Final, Protocol, TypeAlias, runtime_checkable
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, is_sha256
 
 AnnotationValue: TypeAlias = bool | int | None
 
@@ -145,7 +145,7 @@ class AnnotationInput:
     def __post_init__(self) -> None:
         if not isinstance(self.act_id, str) or not self.act_id:
             raise ValueError("an annotation input needs an act identity")
-        if not _is_sha256(self.canonical_text_sha256):
+        if not is_sha256(self.canonical_text_sha256):
             raise ValueError("an annotation input needs a lowercase canonical text sha256")
         if not isinstance(self.canonical_clean_text, str):
             raise TypeError("an annotation input needs the established clean text")
@@ -320,7 +320,7 @@ class AnnotationProvenance:
             or not self.producer_revision
         ):
             raise ValueError("annotation provenance needs a producer identity and revision")
-        if not _is_sha256(self.configuration_sha256):
+        if not is_sha256(self.configuration_sha256):
             raise ValueError("annotation provenance needs a lowercase configuration sha256")
 
 
@@ -336,7 +336,7 @@ class AnnotationResult:
     def __post_init__(self) -> None:
         if not isinstance(self.act_id, str) or not self.act_id:
             raise ValueError("an annotation result needs an act identity")
-        if not _is_sha256(self.canonical_text_sha256):
+        if not is_sha256(self.canonical_text_sha256):
             raise ValueError("an annotation result needs a lowercase canonical text sha256")
         object.__setattr__(
             self, "annotations", _coerce_tuple(self.annotations, Annotation, "annotations")
@@ -456,11 +456,3 @@ def _is_normalized_date(value: str) -> bool:
     except ValueError:
         return False
     return True
-
-
-def _is_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )

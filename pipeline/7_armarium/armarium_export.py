@@ -28,7 +28,13 @@ from display import DISPLAY_CONVENTION, render_display, strip_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats, armarium_formats_from_record
-from common.contracts.canonical import canonical_bytes, canonical_text, digest_bytes, self_hash
+from common.contracts.canonical import (
+    canonical_bytes,
+    canonical_text,
+    digest_bytes,
+    is_sha256,
+    self_hash,
+)
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.outcomes import (
     SILENT_PAGE_REASON,
@@ -950,16 +956,8 @@ def _source_folder_for_declared_path(declared_path: str) -> str:
     return "" if parent == "." else parent
 
 
-def _is_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
 def _require_sha256(value: object, label: str) -> str:
-    if not _is_sha256(value):
+    if not is_sha256(value):
         raise SchemaRefusal(f"{label} is not a lowercase sha256")
     return value
 
