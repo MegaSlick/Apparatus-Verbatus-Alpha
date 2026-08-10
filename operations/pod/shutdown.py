@@ -397,6 +397,11 @@ class VerifiedShutdown:
         list_absent: bool,
         last_detail: str,
     ) -> CloseReport:
+        # Presence was never proven, so billing capture is not attempted here:
+        # the window this pod actually ran is not closed, and a captured
+        # number would read as the total while really being a partial one.
+        # The report's own manual_action sends the operator to the console
+        # instead of showing a figure that could be mistaken for final.
         return CloseReport(
             record.pod_id,
             CloseState.FAILED_SHUTDOWN,
