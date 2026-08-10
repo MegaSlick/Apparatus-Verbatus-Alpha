@@ -60,10 +60,11 @@ class TransferReport:
     def to_record(self) -> dict[str, object]:
         return {
             "schema": TRANSFER_SCHEMA,
-            "state": "complete",
-            # An empty receipt has two causes and only one of them is fine: a
-            # manifest with nothing left to send, and a manifest path this pod
-            # never found. A green bootstrap journal has to say which.
+            # An absent manifest is not a completed transfer -- there was
+            # nothing to send -- and the word a reader scans for must say so
+            # rather than require noticing "submission_manifest": "absent"
+            # one field over (GOVERNANCE 2: a partial result is visibly partial).
+            "state": "complete" if self.submission_manifest_present else "nothing-to-transfer",
             "submission_manifest": "present" if self.submission_manifest_present else "absent",
             "completed_keys": list(self.completed_keys),
             "skipped_keys": list(self.skipped_keys),

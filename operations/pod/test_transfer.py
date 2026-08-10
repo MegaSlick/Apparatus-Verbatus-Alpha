@@ -119,6 +119,10 @@ def test_resume_with_no_submission_manifest_yet_is_a_vacuous_success(tmp_path: P
     # An empty receipt has to say which empty it is, or a green bootstrap journal
     # reads the same for "nothing to send" and "I never found the manifest".
     assert report.to_record()["submission_manifest"] == "absent"
+    # GOVERNANCE 2: a partial result must be visibly partial -- "complete" is
+    # the word a reader scans for, and it must not describe a transfer that
+    # never found anything to send.
+    assert report.to_record()["state"] == "nothing-to-transfer"
 
 
 def test_a_journaled_row_the_target_lost_is_reported_as_sent_again(tmp_path: Path) -> None:
@@ -145,6 +149,7 @@ def test_a_journaled_row_the_target_lost_is_reported_as_sent_again(tmp_path: Pat
     assert second.skipped_keys == ()
     assert target.puts == ["run/page.bin", "run/page.bin"]
     assert second.to_record()["submission_manifest"] == "present"
+    assert second.to_record()["state"] == "complete"
 
 
 def test_open_verified_regular_file_refuses_a_symlink_leaf_directly(tmp_path: Path) -> None:
