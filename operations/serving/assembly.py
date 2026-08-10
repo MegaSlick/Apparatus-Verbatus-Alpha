@@ -253,11 +253,13 @@ def _prepare_log_root(log_root: str | Path) -> Path:
 
     prepared = Path(log_root)
     try:
+        # exist_ok=True already raises FileExistsError -- an OSError caught
+        # below -- for every case where the path exists as something other
+        # than a directory (a file, a symlink to one, or a broken symlink), so
+        # a trailing is_dir() check here can never observe a non-directory.
         prepared.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise ServingConfigurationError(
             f"cannot prepare serving log root {prepared}: {error}"
         ) from error
-    if not prepared.is_dir():
-        raise ServingConfigurationError(f"serving log root {prepared} is not a directory")
     return prepared
