@@ -7,6 +7,7 @@ without the paired red path would not establish that the guard is wired.
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -1622,6 +1623,45 @@ def test_timer_report_path_cannot_lexically_escape_the_attached_volume() -> None
 
     with pytest.raises(ValueError, match="inside the attached volume"):
         replace(request(Clock()), docker_start_cmd=tuple(command))
+
+
+def test_pod_timer_bootstrap_failed_to_start_records_its_own_reason_not_a_write_failure(
+    tmp_path: Path,
+) -> None:
+    """The durable close evidence must name the failure that actually happened.
+
+    A popen failure and a durable-write failure are different events; the
+    close reason and the fallback error key must not always claim the write
+    failed.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.06")
+    store = LeaseStore(tmp_path / "timer-popen-failure.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    report_path = tmp_path / "popen-failure-report.json"
+
+    def failing_popen(argv: list[str]) -> subprocess.Popen[bytes]:
+        raise OSError("injected popen failure")
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"mandatory bootstrap process failed to start \(injected popen failure\)",
+    ):
+        run_with_bootstrap(
+            TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
+            bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+            report_path=report_path,
+            popen=failing_popen,  # type: ignore[arg-type]
+        )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["bootstrap"]["state"] == "failed-to-start"
+    assert report["bootstrap"]["failure_detail"] == "injected popen failure"
+    assert "report_write_error" not in report["bootstrap"]
+    assert report["close"]["reason"] == "mandatory bootstrap process failed to start"
 
 
 def test_pod_timer_report_write_failure_immediately_closes_and_never_returns_green(

@@ -193,11 +193,18 @@ def _durable_failure_close(
     error: Exception,
     label: str,
 ) -> None:
-    """Attempt verified close even when the retained-volume receipt is unavailable."""
+    """Attempt verified close even when the retained-volume receipt is unavailable.
 
-    result = context.timer.close_now("mandatory pod report could not be durably written")
+    ``label`` names the failure that triggered this close (bootstrap failed to
+    start, or the durable report write itself failed) and is used both as the
+    close reason and the fallback report's error key, so the record filed on
+    the volume says what actually happened rather than always blaming the
+    write.
+    """
+
+    result = context.timer.close_now(label)
     fallback = {
-        "bootstrap": {**bootstrap, "report_write_error": str(error)},
+        "bootstrap": {**bootstrap, "failure_detail": str(error)},
         "close": result.close_report.to_record() if result.close_report else None,
         "green": False,
     }
