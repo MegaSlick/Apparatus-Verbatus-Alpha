@@ -900,7 +900,12 @@ def test_a_reading_that_claims_its_own_channel_was_unrecordable_is_unknown(tmp_p
     accounted failure: a record claiming to be a *reading* while recording that
     nothing could retain what it read. A reading nothing could keep is not a
     reading, and it is the shape a resealed artifact would take to slip a lost
-    payload past the tally as though it were counted evidence."""
+    payload past the tally as though it were counted evidence.
+
+    The resealed health record here is otherwise exactly what this stage writes
+    for an unrecordable channel, so the outcome is the only thing wrong with it:
+    the tally has to refuse it for claiming to be a reading, not for some other
+    damage that happens to be alongside."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
         invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
@@ -909,7 +914,18 @@ def test_a_reading_that_claims_its_own_channel_was_unrecordable_is_unknown(tmp_p
     record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
     assert record["outcome"] == "read"
     changed = copy.deepcopy(record)
-    changed["payload"]["content_health"]["recordable"] = False
+    changed["payload"]["payload"] = None
+    changed["payload"].pop("reported")
+    changed["payload"]["content_health"] = {
+        "native_type": "unrecordable",
+        "encoding": "invalid-or-unrecordable",
+        "recordable": False,
+        "empty": None,
+        "blank": None,
+        "truncated": None,
+        "characters": None,
+        "truncation_basis": "the provider body could not be retained",
+    }
     changed["self_hash"] = self_hash(changed)
     path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
     path.write_bytes(canonical_bytes(changed))
@@ -921,6 +937,47 @@ def test_a_reading_that_claims_its_own_channel_was_unrecordable_is_unknown(tmp_p
     assert tally["count"] is None
     assert tally["hold"] is True
     assert "is not a reading" in tally["reason"]
+
+
+def test_an_unrecordable_channel_may_not_assert_facts_nothing_measured(tmp_path):
+    """`content_health` is the one field spec 07 requires to be "computed here,
+    deterministically ... never self-reported". `recordable=False` used to be a
+    door out of every other check in this validator, so a resealed record could
+    take that branch and then claim a character count, a truncation state, a valid
+    encoding and a full native payload — all of them uncomputable by definition,
+    since the premise of the branch is that nothing could be kept. The tally
+    counted such a record as KNOWN.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    fabricated = copy.deepcopy(record)
+    fabricated["outcome"] = "failed"
+    fabricated["payload"]["reason"] = "the provider response was refused without repair"
+    fabricated["payload"].pop("reported")
+    fabricated["payload"]["content_health"] = {
+        "native_type": "string",
+        "encoding": "utf-8-json-native",
+        "recordable": False,
+        "empty": False,
+        "blank": False,
+        "truncated": False,
+        "characters": 9999,
+        "truncation_basis": "trusted-response-boundary",
+    }
+    fabricated["self_hash"] = self_hash(fabricated)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(fabricated))
+    tree.write_manifest(ATTESTATORES)
+
+    tally = attestatores.attempt_tally(tree)
+
+    assert tally["state"] == "UNKNOWN"
+    assert tally["hold"] is True
+    assert "retains a native payload" in tally["reason"]
 
 
 def test_a_failed_attempt_with_an_unrecordable_channel_and_no_reason_is_unknown(tmp_path):

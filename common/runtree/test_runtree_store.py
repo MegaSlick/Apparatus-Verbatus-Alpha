@@ -1146,3 +1146,26 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
         f"a receipt damaged as {damage_kind} blocked its own replacement"
     )
     assert tree.read_recensor_partition_receipt()["run_id"] == "r1"
+
+
+def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_crash(tmp_path):
+    """`_read_json` names the ways a file can fail to be read, and `RecursionError`
+    was not among them: `json`'s scanner recurses once per nesting level, so an
+    artifact holding about a thousand nested arrays raised straight through every
+    caller. A stage that should have refused the file and held died with a
+    traceback instead, and because `build_manifest` reads every artifact under a
+    directory, one such file stopped the whole stage rather than its own record.
+    Depth 900 was already refused on its self-hash; only the reader itself was
+    open."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    nesting = 30_000
+    path.write_text(
+        f'{{"deep": {"[" * nesting}"leaf"{"]" * nesting}}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SchemaRefusal, match="could not be read as an artifact"):
+        tree.build_manifest(DESIGNATOR)

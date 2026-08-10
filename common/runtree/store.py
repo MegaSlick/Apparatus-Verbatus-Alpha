@@ -980,9 +980,17 @@ def _write_temporary(target: Path, data: bytes) -> Path:
 
 
 def _read_json(path: Path) -> Any:
+    # `RecursionError` beside the two obvious ones because it is the same fact —
+    # this file could not be read — arriving by a route the tuple did not name.
+    # `json`'s scanner recurses per nesting level, so an artifact holding roughly
+    # a thousand nested arrays raised it straight through every caller: a stage
+    # that should have refused the file and held instead died with a traceback,
+    # and the manifest walk that reads every artifact in a directory made one
+    # such file enough to stop the whole stage. Demonstrated on a run tree at
+    # depth 1000; depth 900 was already being refused, on its self-hash.
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, RecursionError) as error:
         raise SchemaRefusal(f"{path} could not be read as an artifact: {error}") from error
 
 

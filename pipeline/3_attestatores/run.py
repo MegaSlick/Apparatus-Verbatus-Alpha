@@ -340,9 +340,10 @@ def validate_content_health(native_payload: Any, health: Any) -> None:
 
     A self-hashed artifact can still have been re-sealed with a damaged health
     field.  The tally must not count it as known simply because its envelope and
-    JSON syntax remain valid.  `recordable=False` is allowed through this shape
-    check only so the caller can turn that explicitly unrecordable channel into
-    UNKNOWN and hold the folder.
+    JSON syntax remain valid.  Whether an unrecordable channel is an accounted
+    failure or #23's UNKNOWN is not decided here — that is
+    `require_accounted_unrecordable_channel`, which reads the outcome this
+    function deliberately does not.
     """
     if not isinstance(health, dict):
         raise SchemaRefusal("a Testimonium carries no object content_health record")
@@ -390,6 +391,28 @@ def validate_content_health(native_payload: Any, health: Any) -> None:
         return
 
     if recordable is False:
+        # `recordable=False` is the narrowest record this stage writes: nothing of
+        # what the witness returned could be kept, so there is nothing left to
+        # measure. Every remaining field went unchecked until this, and a resealed
+        # record that picked this branch could assert any character count,
+        # truncation state and native payload it liked — self-reported facts
+        # wearing the name of the computed ones spec 07 says these are.
+        if native_payload is not None:
+            raise SchemaRefusal(
+                "a Testimonium whose native channel was unrecordable retains a native "
+                "payload; either nothing could be kept or something could"
+            )
+        if health["encoding"] != "invalid-or-unrecordable":
+            raise SchemaRefusal("an unrecordable Testimonium channel claims a valid encoding")
+        for field in ("empty", "blank", "truncated", "characters"):
+            if health[field] is not None:
+                raise SchemaRefusal(
+                    f"an unrecordable Testimonium channel asserts content_health.{field}, "
+                    "which nothing was able to measure"
+                )
+        for field in ("native_type", "truncation_basis"):
+            if not isinstance(health[field], str) or not health[field].strip():
+                raise SchemaRefusal(f"an unrecordable Testimonium channel has no {field}")
         return
     raise SchemaRefusal("a Testimonium content_health.recordable is not boolean or null")
 
