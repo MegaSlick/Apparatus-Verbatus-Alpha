@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Callable
 
@@ -423,6 +423,18 @@ def _join_details(*parts: str) -> str:
     return "; ".join(part for part in parts if part)
 
 
+_MAX_CUTOFF_OVERHANG = timedelta(hours=1)
+"""How far a resolved cutoff may exceed the requested one before it is refused.
+
+Generous slack for billing-bucket granularity (RunPod's own bucket is one
+hour) and clock skew between the laptop and the provider -- not a claim
+about any specific provider's bucket size.  The close report's whole claim
+is "charges captured through a named cutoff"; a cutoff nobody has reached
+yet is a claim about unmeasured time (GOVERNANCE 10), so this is bounded
+the same way the window start already is on the other side.
+"""
+
+
 def _billing_evidence_error(
     record: PodRecord, capture: object, *, requested_cutoff: datetime
 ) -> str | None:
@@ -440,6 +452,8 @@ def _billing_evidence_error(
         return "billing capture names a different pod; this pod's charges are unverified"
     if capture.cutoff_at < requested_cutoff:
         return "billing capture cutoff precedes the requested shutdown cutoff"
+    if capture.cutoff_at > requested_cutoff + _MAX_CUTOFF_OVERHANG:
+        return "billing capture cutoff is too far beyond the requested window to be verified"
     if capture.window_start_at is None:
         return "billing capture omits its window start; coverage from pod creation is unproven"
     if capture.window_start_at > record.created_at:

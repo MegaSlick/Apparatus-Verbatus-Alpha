@@ -1223,6 +1223,33 @@ def test_close_report_names_the_provider_resolved_billing_cutoff() -> None:
     ]
 
 
+def test_a_billing_cutoff_arbitrarily_far_in_the_future_is_refused_not_verified() -> None:
+    """"Charges captured through a named cutoff" is a claim about measured time
+
+    (GOVERNANCE 10); a cutoff nobody has reached yet is not that (audit-d
+    Finding 2).
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    far_future_cutoff = clock.now() + timedelta(days=3650)
+    provider.set_billing(
+        CostCapture(
+            pod_id=record.pod_id,
+            state=BillingState.CAPTURED,
+            cutoff_at=far_future_cutoff,
+            lines=(CostLine(Decimal("0.11"), "implausible far-future bucket"),),
+            window_start_at=record.created_at,
+        )
+    )
+
+    report = shutdown(provider, clock).close(record, reason="far future cutoff drill")
+
+    assert report.state is CloseState.UNVERIFIED_BILLING
+    assert "too far beyond the requested window" in report.last_detail
+
+
 def test_follow_up_supervisor_never_turns_unverified_close_green(tmp_path: Path) -> None:
     clock = Clock()
     provider = fake(clock)
