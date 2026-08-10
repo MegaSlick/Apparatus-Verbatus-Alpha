@@ -22,7 +22,7 @@ from typing import Any, Callable, Final, Protocol
 from common.armarium_formats import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     ArmariumFormats,
-    parse_armarium_formats_bytes,
+    bind_armarium_formats,
 )
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails
 from common.chairs.protocol import ChairProtocol
@@ -569,17 +569,7 @@ def run_config_bindings(
             "the Designator padding configuration binding at "
             f"{designator_padding_config_path} could not be read"
         ) from error
-    try:
-        armarium_formats_bytes = Path(armarium_formats_config_path).read_bytes()
-    except OSError as error:
-        raise ContractError(
-            "the Armarium formats configuration binding at "
-            f"{armarium_formats_config_path} could not be read"
-        ) from error
-    armarium_formats_digest = digest_bytes(armarium_formats_bytes)
-    armarium_formats = parse_armarium_formats_bytes(
-        armarium_formats_bytes, source=armarium_formats_config_path
-    )
+    armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     recovery_policy = load_recovery_policy(recovery_config_path)
     hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
     witness_context_config_digest = validate_witness_context_bindings(

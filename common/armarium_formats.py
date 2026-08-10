@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from common.contracts.errors import SchemaRefusal
+from common.contracts.canonical import digest_bytes
+from common.contracts.errors import ContractError, SchemaRefusal
 
 FORMAT_SCHEMA: Final = "armarium-formats.v1"
 KNOWN_FORMATS: Final = frozenset(
@@ -105,3 +106,22 @@ def load_armarium_formats(path: str | Path) -> ArmariumFormats:
     except OSError as error:
         raise SchemaRefusal(f"Armarium formats configuration {source} could not be read") from error
     return parse_armarium_formats_bytes(data, source=source)
+
+
+def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
+    """Read, digest and parse one formats configuration for a run binding.
+
+    The digest is over exactly the bytes read here, before parsing -- the same
+    bytes a sealed run's ``config_digest`` must be reproducible from. Two
+    independent call sites (a fixture run's config bindings, and the real
+    Door's) used to each read, digest and parse this file themselves; sharing
+    one function is what keeps a future change to any of those three steps
+    from having to be made twice to stay correct in both places.
+    """
+    try:
+        data = Path(path).read_bytes()
+    except OSError as error:
+        raise ContractError(
+            f"the Armarium formats configuration binding at {path} could not be read"
+        ) from error
+    return digest_bytes(data), parse_armarium_formats_bytes(data, source=path)

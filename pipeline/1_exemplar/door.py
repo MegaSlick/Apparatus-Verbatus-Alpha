@@ -75,7 +75,7 @@ from image_formats import (  # noqa: E402
 
 from common.armarium_formats import (  # noqa: E402
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
-    parse_armarium_formats_bytes,
+    bind_armarium_formats,
 )
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
@@ -1347,17 +1347,7 @@ def _real_bindings(
     )
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
-    try:
-        armarium_formats_bytes = Path(armarium_formats_config_path).read_bytes()
-    except OSError as error:
-        raise ContractError(
-            "the Armarium formats configuration binding at "
-            f"{armarium_formats_config_path} could not be read"
-        ) from error
-    armarium_formats_digest = digest_bytes(armarium_formats_bytes)
-    armarium_formats = parse_armarium_formats_bytes(
-        armarium_formats_bytes, source=armarium_formats_config_path
-    )
+    armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
