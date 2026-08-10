@@ -56,6 +56,13 @@ DEFAULT_FORMAT_CAPABILITIES = {
     "can_express_layout": False,
 }
 
+# The two write paths this program implements, named as a closed set because
+# `--operation` carries no `choices`: the fixture, not argparse, is the authority
+# on the *scenario* list, and the same parser serves every stage. An unrecognized
+# operation used to fall through to the whole pass, so a mistyped reread re-read
+# nothing, ignored the `--act` and `--chair` it was given, and exited 0.
+OPERATIONS = frozenset({"initial", "reread"})
+
 # A witness response is untrusted input, and unbounded recursion over it is a
 # resource-exhaustion hole in the same family as the ones this stage already
 # refuses (bad UTF-8, non-string keys): a several-thousand-deep nested list or
@@ -735,7 +742,17 @@ def attempt_tally(
 
     A witness whose own output could not be retained is a different fact and does
     not make the count unknown — see `require_accounted_unrecordable_channel`.
+
+    `chairs` supplies the act/chair denominator and is optional independently of
+    `acts`, because *whether every pair is accounted for* is a closing check and
+    not a precondition. Demanding it before a pass deadlocks the one thing that
+    could satisfy it: a pass interrupted before its manifest was written leaves a
+    partial inventory, and the pass that would complete it was refused on the
+    grounds that it was incomplete. Every record on disk is still validated
+    either way; only the denominator moves.
     """
+    if chairs is not None and acts is None:
+        raise SchemaRefusal("an attempt tally denominator names chairs but no expected acts")
     try:
         stored_path = tree.resolve(tree.manifest_path(ATTESTATORES))
         stored = json.loads(stored_path.read_bytes().decode("utf-8"))
@@ -751,6 +768,7 @@ def attempt_tally(
         }
 
     testimonia = [entry for entry in rebuilt["artifacts"] if entry["kind"] == "testimonium"]
+    by_act = {act["act_id"]: act for act in acts or ()}
     try:
         by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for entry in testimonia:
@@ -784,26 +802,23 @@ def attempt_tally(
                     raise SchemaRefusal(
                         "a contextual attempt tally has no expected-act denominator"
                     )
-                by_act = {act["act_id"]: act for act in acts}
                 act = by_act.get(record["subject_id"])
                 if act is None:
                     raise SchemaRefusal("a Testimonium tally record names no expected act")
                 validate_tallied_testimonium(context, record, act)
-        if (acts is None) != (chairs is None):
-            raise SchemaRefusal("attempt tally received only half its act/chair denominator")
-        if acts is not None and chairs is not None:
+        if chairs is not None:
             expected_pairs = {(act["act_id"], chair) for act in acts for chair in chairs}
             if set(by_pair) != expected_pairs:
                 raise SchemaRefusal(
                     "the rebuilt Testimonium inventory does not account for every expected "
                     "act/chair pair"
                 )
-            for (act_id, chair), records in by_pair.items():
-                latest_attempt(
-                    records,
-                    f"Testimonium tally for {(act_id, chair)!r}",
-                    operation=f"read:{chair}",
-                )
+        for (act_id, chair), records in by_pair.items():
+            latest_attempt(
+                records,
+                f"Testimonium tally for {(act_id, chair)!r}",
+                operation=f"read:{chair}",
+            )
     except (ContractError, OSError) as error:
         return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
     return {"state": "KNOWN", "count": len(testimonia), "hold": False, "reason": None}
@@ -902,12 +917,22 @@ def resolve_attempt(
     chair: str,
     resolved: ChairIdentity | AbsentChair,
     declarations: dict[str, Any],
+    *,
+    reread: bool = False,
 ) -> Attempt:
     """What one configured chair's attempt at one act came to.
 
     Every branch ends in exactly one member of the closed six-outcome vocabulary,
     because a chair that simply does not appear is the silent skip this stage
     exists to refuse.
+
+    `reread` decides which member an undeclared response lands on, and the two
+    write paths genuinely differ there. A whole pass asks the fixture what each
+    chair returned at this ordinal, and silence means the chair was not asked:
+    `not-run`. A targeted reread names one chair on one act, so the invocation
+    *is* the attempt and silence is an attempt that produced no usable
+    Testimonium — which spec 07 gives to `failed`, "as against ... `not-run`
+    (configured, never attempted)".
     """
     key = (act["act_key"], chair)
     native_payload: Any = None
@@ -947,7 +972,11 @@ def resolve_attempt(
         health = content_health(native_payload, completed=True)
     else:
         response = testimony_for(context, act["act_key"], chair, declarations["ordinal"])
-        if response is None:
+        if response is None and reread:
+            outcome = "failed"
+            health = no_response_health(reason="attempted-but-no-usable-response")
+            reason = "the reread reached this chair and it returned no response"
+        elif response is None:
             outcome = "not-run"
             reason = "no attempt was made for this configured chair"
         else:
@@ -1127,7 +1156,9 @@ def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) ->
         resolved=resolved,
         ordinal=ordinal,
         regions=proposed_regions(context, act_id),
-        attempt=resolve_attempt(context, act, chair, resolved, declarations_for(context, ordinal)),
+        attempt=resolve_attempt(
+            context, act, chair, resolved, declarations_for(context, ordinal), reread=True
+        ),
     )
     return 1
 
@@ -1138,10 +1169,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     parser.add_argument(
         "--attempt-ordinal",
         type=_positive_ordinal,
-        default=1,
+        # No default ordinal: a reread derives its own from the named chair's
+        # history, and a default would make "asked for ordinal 1" and "asked for
+        # nothing" the same argv, so the reread could not say it was overridden.
+        default=None,
         help="append this ordinal for every act/chair, or repeat the current one byte-identically",
     )
     args = parser.parse_args()
+    if args.operation not in OPERATIONS:
+        raise ContractError(
+            f"the Attestatores has no {args.operation!r} operation; it implements "
+            f"{sorted(OPERATIONS)}. A mistyped reread would otherwise run a whole pass, "
+            "ignore the act and chair it was given, and report success"
+        )
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
     acts = expected_acts(context)
     try:
@@ -1150,9 +1190,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
         return EXIT_HELD
     if has_existing_attempts:
-        prior_tally = attempt_tally(
-            context.tree, context=context, acts=acts, chairs=context.witness_chairs
-        )
+        # No chair denominator here: this pass is what fills it. See `attempt_tally`.
+        prior_tally = attempt_tally(context.tree, context=context, acts=acts)
         if prior_tally["hold"]:
             print(f"Attestatores attempt tally UNKNOWN: {prior_tally['reason']}", file=sys.stderr)
             return EXIT_HELD
@@ -1164,16 +1203,28 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "a reread names the one act and the one chair it rereads; without both it "
                 "would be a whole second pass wearing a narrower name"
             )
+        if args.attempt_ordinal is not None:
+            raise ContractError(
+                "a reread appends at the ordinal the named chair's own history says comes "
+                f"next; --attempt-ordinal {args.attempt_ordinal} names a different attempt "
+                "and honouring neither of the two silently is not an option"
+            )
         recorded = reread_pass(context, acts, args.act, args.chair)
     else:
+        if args.act or args.chair:
+            raise ContractError(
+                "--act and --chair name a targeted reread; a whole pass reads every "
+                "configured chair on every expected act and cannot narrow to them"
+            )
+        ordinal = 1 if args.attempt_ordinal is None else args.attempt_ordinal
         try:
-            preflight_appendable_ordinals(context, acts, args.attempt_ordinal)
+            preflight_appendable_ordinals(context, acts, ordinal)
         except ContractError as error:
             # A damaged existing channel cannot be repaired by adding a replacement
             # attempt. It is an UNKNOWN tally and holds the folder as it stands.
             print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
             return EXIT_HELD
-        recorded, isolated_crop_failure = attempt_pass(context, acts, args.attempt_ordinal)
+        recorded, isolated_crop_failure = attempt_pass(context, acts, ordinal)
 
     if recorded == 0:
         raise ContractError("no chair produced an outcome for any act")

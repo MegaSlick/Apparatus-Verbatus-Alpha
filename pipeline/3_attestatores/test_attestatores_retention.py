@@ -440,6 +440,126 @@ def test_a_targeted_reread_of_an_absent_chair_is_refused(tmp_path):
     assert len(_testimonia(tree)) == before
 
 
+def test_a_reread_that_gets_nothing_back_is_failed_rather_than_never_attempted(tmp_path):
+    """Spec 07 separates `failed` — "an attempt was made and produced no usable
+    Testimonium" — from `not-run`, "configured, never attempted". A targeted reread
+    names one chair on one act, so the invocation is the attempt: no response to it
+    is a reading that failed, and filing it as never-attempted would put the reread
+    in the unresolved class and report "chair with no outcome yet" over a chair that
+    was asked and answered nothing."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    act_id = _act_id_for(tree, "a1")
+
+    assert _reread(run_root, "happy", act_id, "attestator_3").returncode == 0
+
+    second = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=2)
+    assert second["outcome"] == "failed"
+    assert second["payload"]["reason"]
+    assert (
+        _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)["outcome"] == "read"
+    )
+
+
+def test_an_operation_this_stage_does_not_implement_is_refused(tmp_path):
+    """`--operation` carries no argparse `choices` — the same parser serves every
+    stage — so an unrecognized one fell through to the whole pass. A mistyped
+    reread therefore re-read nothing, ignored the act and chair it was handed, and
+    exited 0 over a witness that was never asked again."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    before = len(_testimonia(tree))
+
+    result = invoke_stage(
+        run_root,
+        "retention",
+        "happy",
+        "pipeline/3_attestatores/run.py",
+        operation="reraed",
+        act=_act_id_for(tree, "a1"),
+        chair="attestator_3",
+    )
+
+    assert result.returncode == 2
+    assert "has no 'reraed' operation" in result.stderr
+    assert len(_testimonia(tree)) == before
+
+
+def test_neither_write_path_accepts_the_other_path_s_arguments(tmp_path):
+    """Each ignored argument was an instruction the operator gave and the stage did
+    not carry out: a reread honours its own history's next ordinal, so an
+    `--attempt-ordinal` beside it was silently discarded, and a whole pass reads
+    every chair regardless of the one it was told to narrow to."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    act_id = _act_id_for(tree, "a1")
+    before = len(_testimonia(tree))
+
+    overridden = _reread(run_root, "happy", act_id, "attestator_3", attempt_ordinal=9)
+    assert overridden.returncode == 2
+    assert "names a different attempt" in overridden.stderr
+
+    narrowed = invoke_stage(
+        run_root,
+        "retention",
+        "happy",
+        "pipeline/3_attestatores/run.py",
+        act=act_id,
+        chair="attestator_3",
+    )
+    assert narrowed.returncode == 2
+    assert "cannot narrow to them" in narrowed.stderr
+
+    assert len(_testimonia(tree)) == before
+
+
+def test_a_pass_interrupted_before_its_manifest_was_written_can_still_be_completed(tmp_path):
+    """A pass killed part way through leaves attempts on disk and no stored tally.
+
+    The tally staying UNKNOWN until someone re-derives it is spec 07 test 5 and it
+    is kept. What is not kept is the second gate behind it: the act/chair
+    denominator was demanded *before* the pass, so the pass that would have
+    supplied the missing pairs was refused for their being missing, and the folder
+    could never be finished at all — only abandoned and re-run under a new run id,
+    taking every earlier stage's work with it. The denominator is a closing check,
+    and it still holds the folder after the pass if it does not reconcile.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    manifest = tree.resolve(tree.manifest_path(ATTESTATORES))
+    manifest.unlink()
+    for record in _testimonia(tree)[:2]:
+        tree.resolve(
+            tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"])
+        ).unlink()
+
+    held = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
+    assert held.returncode == 3, "an absent stored tally still holds, before anything else"
+    assert "UNKNOWN" in held.stderr
+
+    tree.write_manifest(ATTESTATORES)
+    assert len(_testimonia(tree)) == 4
+
+    resumed = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
+
+    assert resumed.returncode == 0, resumed.stderr
+    assert len(_testimonia(tree)) == 6
+    assert all(record["payload"]["attempt_ordinal"] == 1 for record in _testimonia(tree))
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
 # --- `witness_reported`: kept, and demoted ---------------------------------------
 
 

@@ -127,10 +127,18 @@ Designator-held act (no witness was shown a reading there), an absent chair
 (a dead chair asked again is not a second attempt), and a chair with no first
 attempt to follow. The orchestrator never invokes it.
 
+Neither path accepts the other's arguments: `--attempt-ordinal` beside a reread,
+or `--act`/`--chair` beside a whole pass, is refused rather than ignored. An
+operation this stage does not implement is refused for the same reason — a
+mistyped `reread` would otherwise run a whole pass and exit 0 over a witness it
+never asked again.
+
 Fixture response declarations are ordinal-bound. An older row without an
 `attempt_ordinal` describes attempt 1 only; a successful reread therefore carries
 the newly declared native response for its own ordinal rather than silently
-reusing attempt 1's testimony.
+reusing attempt 1's testimony. A reread for which no response is declared at its
+own ordinal is `failed`, not `not-run`: the invocation named one chair on one
+act, so it is an attempt that produced no usable Testimonium.
 
 Each identity is `read:<chair>:<ordinal>`; the RunTree's immutable publish
 boundary atomically creates it and refuses different bytes at an existing
@@ -165,3 +173,14 @@ This check runs immediately after Stage 3 and before a later re-read; the
 orchestrator stops at an Attestatores `UNKNOWN` hold, so an older complete export
 cannot mask it. Direct invocation of a later owner stage still needs that owner's
 own evidence-boundary check and is not simulated here.
+
+**Whether every configured act/chair pair is accounted for is a closing check, not
+a precondition.** A pass killed part way through leaves attempts on disk and no
+stored manifest, and the pass that would supply the missing pairs may not be
+refused for their being missing. The stored manifest is still required before a
+re-read, per spec 07 test 5, so an interrupted pass holds until someone
+re-derives it — `RunTree.write_manifest("attestatores")`, one step, losing
+nothing because the manifest is derived from the immutable attempts. After that
+the pass resumes: the attempts already written are byte-identical repeats and the
+missing ones are created. If the denominator still does not reconcile once the
+pass has run, the folder holds.
