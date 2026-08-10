@@ -896,6 +896,25 @@ class OperatorSurface:
             )
         return report
 
+    def recorded_pod_id(self) -> str | None:
+        """The pod id from the most recently recorded launch, or ``None``.
+
+        Read-only, and the one way a caller outside this class learns which pod
+        a close would act on — so a caller never has to reach past this method
+        into the receipt index and the receipt store directly.
+        """
+
+        launch_receipt = self._descriptor_receipt("active-launch")
+        if launch_receipt is None:
+            launch_receipt = self._descriptor_receipt("launch")
+        if launch_receipt is None:
+            return None
+        payload = self.receipts.read(launch_receipt)["payload"]
+        pod = payload.get("pod")
+        if isinstance(pod, dict) and isinstance(pod.get("pod_id"), str):
+            return pod["pod_id"]
+        return None
+
     # -- status ---------------------------------------------------------------
 
     def status(self) -> list[str]:

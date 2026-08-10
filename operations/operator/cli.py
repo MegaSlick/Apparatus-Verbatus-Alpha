@@ -342,26 +342,18 @@ def _recorded_pod_id(surface: OperatorSurface) -> str:
     """Read one explicit launch record before asking a person for a close phrase."""
 
     try:
-        launch = surface._descriptor_receipt("active-launch")
-        if launch is None:
-            launch = surface._descriptor_receipt("launch")
-        if launch is None:
-            raise OperatorError(ErrorCode.CLOSE_NOTHING)
-        payload = surface.receipts.read(launch)["payload"]
-        pod = payload.get("pod")
-        if isinstance(pod, dict) and isinstance(pod.get("pod_id"), str):
-            return pod["pod_id"]
-    except OperatorError:
-        raise
+        pod_id = surface.recorded_pod_id()
     except Exception as error:
         raise OperatorError(
             ErrorCode.CLOSE_NOTHING,
             detail="the saved launch record does not name a fixture pod",
         ) from error
-    raise OperatorError(
-        ErrorCode.CLOSE_NOTHING,
-        detail="the saved launch record does not name a fixture pod",
-    )
+    if pod_id is None:
+        raise OperatorError(
+            ErrorCode.CLOSE_NOTHING,
+            detail="the saved launch record does not name a fixture pod",
+        )
+    return pod_id
 
 
 def _typed_close_confirmation(pod_id: str) -> str | None:
