@@ -13,12 +13,15 @@ detected box's own dimension.
 **Nothing here invents a number.** `calibrate_padding` refuses an empty sample
 set outright, and `sample_size_caveat` names — rather than silently accepts —
 a sample too small for the requested percentile to be a defensible estimate
-rather than noise dressed as a statistic. Nonparametric percentile estimation
-for a reference range needs on the order of 60 samples at a minimum, more for
-a percentile near the tails (CLSI EP28-A3c's guidance for exactly this kind of
-estimate, and independent work on percentile confidence intervals for skewed
-data agrees on the same order of magnitude) — this module's threshold follows
-that guidance rather than a number invented for this project.
+rather than noise dressed as a statistic. CLSI EP28-A3c gives 120 as its own
+minimum for a nonparametric reference interval — but that figure is for
+estimating the 2.5th/97.5th percentiles, which need more samples than a
+percentile nearer the median to hold the same confidence. This module
+estimates p75, not a tail percentile, so treating CLSI's 120 as the
+*preferred* rather than the required floor here is this project's own
+conservative choice, not a number CLSI names for this statistic. 60 is a
+locally chosen provisional floor below that, not a figure either source
+states — see `sample_size_caveat` for what a count below it actually means.
 
 This harness produces the SAME four fractions the shipped config carries in
 shape (basis points of the detected box's own width/height, asymmetric per
@@ -35,8 +38,10 @@ from common.contracts.errors import ContractError
 
 # Below this many gold samples, a percentile estimate is named provisional
 # rather than refused outright: a provisional number that says so is safer than
-# none at all. The numbers follow CLSI EP28-A3c rather than being invented here
-# — see the module docstring.
+# none at all. `PREFERRED_SAMPLE_COUNT` is CLSI EP28-A3c's own minimum for a
+# nonparametric reference interval (a stricter statistic than the p75 this
+# module estimates); `MINIMUM_DEFENSIBLE_SAMPLES` is this project's own,
+# smaller, provisional floor below it — see the module docstring.
 MINIMUM_DEFENSIBLE_SAMPLES: Final = 60
 PREFERRED_SAMPLE_COUNT: Final = 120
 

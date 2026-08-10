@@ -124,16 +124,18 @@ handoff does not settle" below.
 ## `kind="conservation"`
 
 One record per sealed page this run reached, subject-keyed to the page identity,
-no attempt binding. The independent coverage proof: every ink pixel this page's
-own decoded bytes actually contain, reconciled against the *final* (padded)
+no attempt binding. The independent coverage proof: every ink pixel at
+`structure.PRIMARY_MARGIN` sensitivity — not, despite this section's own past
+phrasing, every ink pixel the page's decoded bytes actually contain; see "what
+this handoff does not settle" below — reconciled against the *final* (padded)
 proposal crops actually cut on it — never against what grouping *claims* to have
 found, which is the gap an independent second read of the old pipeline's own
 conservation logic named precisely (`/stage/70_gpt_review/ASSESSMENT.md:172-173`
 in the window: it "proves coverage of units already emitted by a structural
-model. It cannot prove that the model did not miss ink at all." An earlier draft
-of this sentence cited `MISSING.md`, which carries the same idea in different
-words at line 319 but is not where this exact sentence lives; corrected here
-after a second window read).
+model. It cannot prove that the model did not miss ink entirely." An earlier
+draft of this sentence cited `MISSING.md`, which carries the same idea in
+different words at line 319 but is not where this exact sentence lives;
+corrected here after a second window read).
 
 ```text
 page_ordinal
