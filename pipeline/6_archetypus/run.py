@@ -449,10 +449,19 @@ def accepted_primed_perlectio(
 
     Spec 10 test 1 names four things that must not reach it: a Testimonium, a
     salvage-tier piece, a Lectio nuda, and a raw Perlectio the Recensor never
-    accepted. The stage/kind check inside `read_artifact_reference` closes the
-    first; the rest are closed here, by name, so a producer that later starts
-    labelling its readings cannot slip an unprimed or salvage one through on a
-    field this stage does not look at.
+    accepted. The stage/kind check inside `read_artifact_reference` already
+    closes the first, structurally, before `review`/`reading` ever reach this
+    function; the rest are closed here, by name, so a producer that later
+    starts labelling its readings cannot slip an unprimed or salvage one
+    through on a field this stage does not look at.
+
+    The `stage`/`kind` checks below repeat what `read_artifact_reference`
+    already guaranteed for both arguments at their one call site
+    (`establish_from_accepted_primed_perlectio`, via `reviewed_reading`) —
+    deliberately: this is the single function spec 10 names as the whole of
+    the boundary, and a second, cheap check here means a future caller that
+    resolves `review`/`reading` some other way still cannot slip past it
+    silently.
 
     This is a boundary, not a ranking mechanism. It compares, counts and scores
     nothing, and the only witness text it reads is checked against a quotation
