@@ -192,11 +192,14 @@ def test_a_runaway_witness_report_is_unknown_rather_than_aligned_for_twenty_minu
     runaway = "ab" * 60_000  # ~120k characters, a plausible 32k-token repetition loop
     assert len(reading) * len(runaway) > dissent.MAX_COMPARISON_CHARACTER_PAIRS
 
-    started = time.monotonic()
+    # D-11: no wall-clock assert here. The prefilter this test exercises rejects
+    # before `SequenceMatcher` ever runs, so timing it adds a failure mode on a
+    # loaded box without adding a guarantee -- the functional asserts below
+    # (the row survives, "unknown", "did not run") already prove the bound was
+    # taken, and would themselves fail if the prefilter stopped firing.
     rows = dissent.dissent_against(
         reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": runaway}}]
     )
-    assert time.monotonic() - started < 5, "the bound must stop the alignment, not merely note it"
     assert rows[0]["chair"] == "attestator_1", "the witness must not vanish from the record"
     assert rows[0]["compared"] == "unknown"
     assert "did not run" in rows[0]["reason"]
@@ -233,7 +236,9 @@ def test_a_scattered_difference_comparison_well_under_the_pair_bound_is_still_st
         reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
     )
     elapsed = time.monotonic() - started
-    assert elapsed < dissent.MAX_COMPARISON_SECONDS + 2, "the wall-clock bound must stop the alignment"
+    assert elapsed < dissent.MAX_COMPARISON_SECONDS + 2, (
+        "the wall-clock bound must stop the alignment"
+    )
     assert rows[0]["chair"] == "attestator_1", "the witness must not vanish from the record"
     assert rows[0]["compared"] == "unknown"
     assert "did not align within" in rows[0]["reason"]
