@@ -14,6 +14,7 @@ has none yet.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable, Final
 
 from common.chairs.models import ChairIdentity
@@ -43,15 +44,19 @@ _BUILDERS: Final[dict[str, Callable[[str, dict[str, Any]], str]]] = {
 }
 
 
-def build_prompt(serving_recipe: str, chair_role: str, dossier: dict[str, Any]) -> str:
-    """Build one chair's declared prompt, byte-exact, or refuse by name."""
+def _builder_for(serving_recipe: str) -> Callable[[str, dict[str, Any]], str]:
     builder = _BUILDERS.get(serving_recipe)
     if builder is None:
         raise ValueError(
             f"no declared prompt builder is registered for serving recipe {serving_recipe!r}; "
             "a chair with no registered builder is never silently served a default template"
         )
-    return builder(chair_role, dossier)
+    return builder
+
+
+def build_prompt(serving_recipe: str, chair_role: str, dossier: dict[str, Any]) -> str:
+    """Build one chair's declared prompt, byte-exact, or refuse by name."""
+    return _builder_for(serving_recipe)(chair_role, dossier)
 
 
 def prompt_evidence(chair: ChairIdentity, dossier: dict[str, Any]) -> dict[str, str]:
@@ -72,11 +77,22 @@ def prompt_evidence(chair: ChairIdentity, dossier: dict[str, Any]) -> dict[str, 
     The rendered bytes are recorded by digest, not verbatim: they contain every
     testimonium the reader was shown, which already travels once on the
     Perlectio's own `dossier`, and a second copy is a second thing to drift.
+
+    D-7: the recipe name pins *which* template a reading was produced through
+    only by convention -- nothing bound the builder's own bytes into the
+    record, so reproducing `rendered_sha256` later needs the builder at the
+    exact revision that ran, and the record itself could not say whether that
+    revision had moved. `builder_sha256` closes that: a digest of the
+    builder's own source, so a later edit to `_fake_perlector_v0` (or any
+    future recipe's builder) changes this record's own claim about itself
+    rather than silently invalidating an old one nothing can detect.
     """
-    rendered = build_prompt(chair.serving_recipe, chair.role, dossier)
+    builder = _builder_for(chair.serving_recipe)
+    rendered = builder(chair.role, dossier)
     return {
         "serving_recipe": chair.serving_recipe,
         "chair_identity_sha256": digest_of(chair.to_record()),
         "dossier_digest": dossier["dossier_digest"],
         "rendered_sha256": digest_bytes(rendered.encode("utf-8")),
+        "builder_sha256": digest_bytes(inspect.getsource(builder).encode("utf-8")),
     }

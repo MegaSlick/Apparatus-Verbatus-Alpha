@@ -162,6 +162,12 @@ FIXTURE = "synthetic-two-page-v0"
 # sealed source page into the Perlectio's direct inputs. File counts remain 44 and
 # 48; the changed bytes are the evidence the reading now honestly retains.
 #
+# Re-pinned again by the D-7 fix: `prompts.prompt_evidence` now folds a digest of
+# the builder's own source (`builder_sha256`) into every prompt record, so a
+# later edit to a recipe's builder changes what the record claims about itself
+# instead of silently invalidating an old one nothing could detect. File counts
+# remain 44 and 48; only the prompt record's bytes changed.
+#
 # Re-pinned for the rebase of the System 08 build onto the merged System 09 tree:
 # both movements above are now in one tree, so the counts are 45 (happy) and 49
 # (review) -- main's Recensor partition receipt plus this branch's two page-render
