@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from residual_ink import page_residual_ink  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.errors import FatalAccounting  # noqa: E402
+from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     OutcomeClass,
@@ -43,6 +43,7 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
+from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
 from common.recovery import (  # noqa: E402
     FALLBACK_RECROP,
@@ -537,8 +538,45 @@ def regions_by_source_page(context) -> dict[int, list[dict]]:
     return by_page
 
 
+def _source_rows(run: dict) -> dict[int, dict]:
+    """The submitted source-manifest row for each ordinal, by ordinal.
+
+    The same reconciliation `pipeline/2_designator/run.py::_source_rows` and
+    `pipeline/7_armarium/run.py::page_census` each carry locally rather than
+    share — every stage that touches sealed Exemplar pixels rebuilds its own
+    view of the submitted denominator before trusting a page's own claim
+    about them.
+    """
+    rows = run.get("source_manifest")
+    if not isinstance(rows, list) or not rows:
+        raise FatalAccounting("run.json carries no source manifest for the Exemplar boundary")
+    sources: dict[int, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise FatalAccounting("run.json carries a source-manifest row that is not an object")
+        ordinal = row.get("ordinal")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise FatalAccounting(
+                "run.json carries a source-manifest row without an integer ordinal"
+            )
+        if ordinal in sources:
+            raise FatalAccounting(f"run.json repeats source ordinal {ordinal}")
+        sources[ordinal] = row
+    return sources
+
+
 def sealed_page_images(context) -> dict[int, dict]:
-    """Every sealed Exemplar page's own artifact, by ordinal."""
+    """Every sealed Exemplar page's own artifact, by ordinal.
+
+    Verified against the run's own submitted source manifest before this
+    stage trusts its pixels — the residual-ink check reads raw bytes off
+    `payload["image_path"]`, a self-declared field `validate_envelope` never
+    relates to a page's digest-checked `inputs`. Every other stage that reads
+    sealed page pixels (`pipeline/2_designator/run.py`,
+    `pipeline/7_armarium/run.py`) calls this exact check first; reading raw
+    bytes off an unverified path here would be the one place in the pipeline
+    that skips it.
+    """
     pages: dict[int, dict] = {}
     for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]:
         if entry["kind"] != "page":
@@ -557,6 +595,24 @@ def sealed_page_images(context) -> dict[int, dict]:
                 "the Recensor has no rule for selecting one page image"
             )
         pages[ordinal] = record
+
+    # The structural denominator (one sealed record per ordinal) is refused
+    # above before any pixel is touched; this second pass verifies every
+    # surviving page's bytes against the run's own submitted source manifest.
+    sources = _source_rows(context.run)
+    for ordinal, record in pages.items():
+        source = sources.get(ordinal)
+        if source is None:
+            raise FatalAccounting(
+                f"a sealed Exemplar page names ordinal {ordinal}, which run.json never submitted"
+            )
+        try:
+            verify_sealed_page_pixels(context.tree, context.run, source, record)
+        except ContractError as error:
+            raise FatalAccounting(
+                f"sealed Exemplar page {ordinal} failed pixel verification; the residual-ink "
+                "check may not read bytes over an unverified image_path"
+            ) from error
     return pages
 
 

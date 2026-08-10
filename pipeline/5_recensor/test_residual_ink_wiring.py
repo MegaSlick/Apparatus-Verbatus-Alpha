@@ -82,10 +82,13 @@ def _built_through_designator(tmp_path, scenario="happy"):
 
 
 class _FakeContext:
-    """Just enough of `StageContext` for these free functions: a `.tree`."""
+    """Just enough of `StageContext` for these free functions: a `.tree` and
+    the real sealed `.run`, which `sealed_page_images` now verifies every
+    page's pixels against before trusting them."""
 
     def __init__(self, tree):
         self.tree = tree
+        self.run = tree.read_run()
 
 
 def test_regions_by_source_page_reads_every_real_designator_region(tmp_path):
@@ -110,6 +113,31 @@ def test_sealed_page_images_reads_every_real_sealed_page(tmp_path):
         assert isinstance(record["payload"]["image_path"], str)
 
 
+def test_sealed_page_images_refuses_a_page_whose_pixels_no_longer_verify(tmp_path):
+    """`sealed_page_images` reads raw bytes off `payload["image_path"]`, a
+    self-declared field `validate_envelope` never relates to a page's own
+    digest-checked `inputs`. Every other stage that reads sealed page pixels
+    (`pipeline/2_designator/run.py`, `pipeline/7_armarium/run.py`) calls
+    `verify_sealed_page_pixels` first; this proves the Recensor's own wiring
+    does too, rather than trusting the pixels this stage was told to check.
+
+    `verify_sealed_page_pixels` itself is already proven directly against
+    every kind of mismatch in `common/test_exemplar_boundary.py`; this only
+    proves this stage's own call site actually reaches it -- corrupting the
+    run's submitted filename ledger for page 1 is the simplest mismatch that
+    function is already known to refuse.
+    """
+    tree = _built_through_designator(tmp_path)
+    context = _FakeContext(tree)
+    context.run = dict(context.run)
+    context.run["source_manifest"] = [
+        dict(row, relative_path="a-different-file.png") if row["ordinal"] == 1 else row
+        for row in context.run["source_manifest"]
+    ]
+    with pytest.raises(FatalAccounting, match="failed pixel verification"):
+        RUN.sealed_page_images(context)
+
+
 def test_sealed_page_images_refuses_duplicate_ordinals_instead_of_selecting_one():
     class DuplicatePageTree:
         def build_manifest(self, _stage):
@@ -126,6 +154,12 @@ def test_sealed_page_images_refuses_duplicate_ordinals_instead_of_selecting_one(
                 "outcome": "sealed",
                 "payload": {"ordinal": 1, "image_path": f"{artifact_id}.png"},
             }
+
+        def read_run(self):
+            # Never reached: the duplicate-ordinal refusal fires in the
+            # purely structural first pass, before pixel verification (which
+            # would need this to be a real source manifest) ever runs.
+            return {"source_manifest": [{"ordinal": 1}]}
 
     with pytest.raises(FatalAccounting, match="more than one sealed page for ordinal 1"):
         RUN.sealed_page_images(_FakeContext(DuplicatePageTree()))
