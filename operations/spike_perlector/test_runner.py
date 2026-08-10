@@ -149,6 +149,46 @@ def test_an_overlong_response_scores_malformed_instead_of_discarding_the_matrix(
     assert all(cell.perlectio.status is OutputStatus.COMPLETE for cell in survivors)
 
 
+def test_aggregate_cer_is_micro_averaged_across_acts_of_different_lengths():
+    """README section 7: sum edit counts and denominators across acts, then
+    divide once -- never average each act's own rate. With acts this
+    different in length, the two conventions give different numbers, so a
+    regression to macro-averaging cannot pass unnoticed."""
+
+    base = identity("base-private", 1)
+    short_act = evaluation_act("micro-short", text="ab")
+    long_act = evaluation_act("micro-long", text="c" * 100)
+    candidate = FakeCandidate(
+        base,
+        replies={
+            **{
+                (short_act.opaque_act_id, condition): FakeReply(OutputStatus.COMPLETE, "ab")
+                for condition in ALL_CONDITIONS
+            },
+            **{
+                (long_act.opaque_act_id, condition): FakeReply(OutputStatus.REFUSED, None)
+                for condition in ALL_CONDITIONS
+            },
+        },
+    )
+    run = run_matrix(
+        (candidate,),
+        (short_act, long_act),
+        prompt_registry=registry(base),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    nuda = next(
+        row for row in run.condition_aggregates() if row.condition is Condition.LECTIO_NUDA
+    )
+    assert nuda.metrics.cer_errors == 100
+    assert nuda.metrics.cer_reference_units == 102
+    micro_cer = 100 / 102
+    macro_cer = (0 / 2 + 100 / 100) / 2
+    assert micro_cer != macro_cer
+    assert nuda.metrics.cer == pytest.approx(micro_cer)
+
+
 def test_a_refused_cell_retaining_stray_raw_text_is_refused_on_replay():
     """The replay must re-check raw_response_text, not the self-consistent
     Perlectio.text, which is None for a non-reading status either way."""
