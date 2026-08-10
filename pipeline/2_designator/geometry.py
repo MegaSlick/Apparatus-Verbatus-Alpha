@@ -11,6 +11,12 @@ names the fix that held: record both axes' scale factors and refuse an
 anisotropic result rather than trust a single ratio silently. `verify_isotropic`
 below is that same discipline, kept as a hard refusal rather than a warning.
 
+Nothing in this build calls `to_model_space`, `from_model_space`, or
+`verify_isotropic` -- no run of this walking skeleton rescales anything, so no
+run exercises this check in practice. They exist, property-tested, for the day
+a real structure-pass model needs its own downscaled input; nothing here is an
+armed guard against today's runs.
+
 Two padding roles exist and must never be conflated. *Structural* bounds are
 what grouping decided a region's own rectangle is, and an act's identity is
 bound to them (`common/contracts/identities.py::act_bindings`) -- recropping

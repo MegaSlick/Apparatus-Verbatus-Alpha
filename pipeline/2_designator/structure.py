@@ -44,9 +44,10 @@ class Component(TypedDict):
 
 # Fraction points below the declared background value, deducted from it to get
 # the ink threshold: a pixel at or below `background - margin` counts as ink.
-# `SECONDARY_MARGIN` is smaller (a lower threshold, i.e. closer to the
-# background value) so it also catches fainter marks `PRIMARY_MARGIN` misses --
-# the whole "adds recall" property, expressed as one number.
+# `SECONDARY_MARGIN` is smaller, which makes `background - margin` a *higher*
+# threshold -- numerically closer to the background value -- so it also
+# catches fainter marks `PRIMARY_MARGIN` misses: the whole "adds recall"
+# property, expressed as one number.
 PRIMARY_MARGIN: Final = 20
 SECONDARY_MARGIN: Final = 2
 

@@ -5,11 +5,14 @@ file elected a "pivot witness" per act -- a static trust table scored
 candidate witnesses and the highest-scoring one became the act's authoritative
 structure, with everyone else diff-aligned onto it (`resolve_columns`,
 confirmed a GOVERNANCE 3 picker by this project's own audit). Nothing here
-scores, ranks, weights, or elects among candidate regions. Every grouping
-decision below is a deterministic partition or an overlap test over fixed
-geometry: a component belongs to a column because of where it sits, a body
-run splits because a boundary crosses it, an anchor attaches to a group
-because their y-ranges overlap. Two callers handed the same set of components
+scores, ranks, or weights candidate regions *by quality*, and nothing elects
+among witnesses. Every grouping decision below is a deterministic partition
+or an overlap test over fixed geometry: a component belongs to a column
+because of where it sits, a body run splits because a boundary crosses it, an
+anchor attaches to a group because their y-ranges overlap. Where a single
+group must be picked from several (`find_continuation_candidate`'s trailing
+and leading groups), the pick is the extremal one by position -- bottommost
+or topmost -- never a score. Two callers handed the same set of components
 in different input order get the identical set of groups back -- `test_grouping.py`
 proves this directly, because "the same evidence groups the same way regardless
 of who is asked first" is the property an election shape cannot have.
@@ -54,8 +57,10 @@ class ActGroup(TypedDict):
 
 
 # Defaults. Each is a geometric policy, not a magic number buried in a stage
-# program: a caller may override any of them, and `run.py` passes the ones it
-# uses down from a named constant so a review can see the value in one place.
+# program: a caller may override any of them by keyword. `run.py` today calls
+# `group_page` with no overrides, so what runs on every page is exactly the
+# default declared here -- named and reviewable in one place even though
+# nothing currently overrides it.
 DEFAULT_MARGIN_FRACTION: Final = 0.15
 DEFAULT_CHAIN_GAP_PX: Final = 6
 DEFAULT_ANCHOR_REACH_PX: Final = 2
