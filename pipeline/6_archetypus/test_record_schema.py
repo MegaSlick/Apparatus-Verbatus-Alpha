@@ -200,8 +200,8 @@ def test_record_validation_refuses_a_bad_nested_self_hash():
         ({"provenance": "perlector"}, "provenance is not an object"),
         ({"perlectio_ref": {"relative_path": "x"}}, "perlectio_ref is not a digest-checked"),
         ({"recensor_ref": None}, "recensor_ref is not a digest-checked"),
-        ({"annotations": {}}, "not a list of objects"),
-        ({"annotations": ["not an object"]}, "not a list of objects"),
+        ({"annotations": {}}, "annotation is not a list"),
+        ({"annotations": ["not an object"]}, r"annotation\[0\] is not an object"),
     ],
 )
 def test_record_validation_refuses_each_resealed_defect(overrides, expected):
@@ -223,23 +223,23 @@ def test_record_validation_refuses_a_dissent_pointer_that_left_its_perlectio():
 @pytest.mark.parametrize(
     ("note", "expected"),
     [
-        ({"kind": "illegible", "start": 0, "end": 1, "witness_evidence": []}, "zero-width gap"),
-        ({"kind": "speculative", "start": 0, "end": 0}, "closed annotation schema"),
+        ({"kind": "illegible", "start": 0, "end": 1, "witness_evidence": []}, "zero-width anchor"),
+        ({"kind": "speculative", "start": 0, "end": 0}, "not one of"),
         (
             {"kind": "illegible", "start": 0, "end": 0, "witness_evidence": [{"variant": "x"}]},
-            "malformed witness evidence",
+            "is not exactly",
         ),
         (
             {"kind": "uncertain", "start": 0, "end": 5, "certainty": "0.9", "alternatives": ["M"]},
-            "malformed uncertain span",
+            "not one of",
         ),
         (
             {"kind": "uncertain", "start": 0, "end": 5, "certainty": "low", "alternatives": []},
-            "malformed uncertain span",
+            "names no alternatives",
         ),
         (
             {"kind": "uncertain", "start": 0, "end": 9, "certainty": "low", "alternatives": ["M"]},
-            "outside the text bounds",
+            "outside this reading's own text bounds",
         ),
     ],
 )
@@ -250,16 +250,30 @@ def test_record_validation_refuses_a_resealed_malformed_annotation(note, expecte
     because a sealed payload can be edited and resealed on disk. The annotation
     layer is the part of it a reader most needs to trust — it is where witness
     material sits beside the established text — so its refusals are exercised
-    here rather than assumed from the constructor's own, separate checks.
+    here as well as at the constructor, over the one validator both now use.
     """
     with pytest.raises(SchemaRefusal, match=expected):
         archetypus.validate_record(seal_record(annotations=[note], text_status="partial"))
 
 
+def test_record_validation_refuses_an_annotation_short_of_its_validated_form():
+    """A gap with no `witness_evidence` key validates, but not as what is stored.
+
+    `validate_annotations` fills the absent field in, so the record on disk is
+    not what validation produces from it — and a record carrying a shape the
+    constructor would never have written is refused rather than normalized
+    underneath the reader.
+    """
+    with pytest.raises(SchemaRefusal, match="not in the exact form validation produces"):
+        archetypus.validate_record(
+            seal_record(annotations=[{"kind": "illegible", "start": 0, "end": 0}])
+        )
+
+
 def test_record_validation_refuses_a_no_readable_text_record_carrying_an_annotation():
     """The two silences, kept apart at read-back as well as at construction."""
     note = {"kind": "uncertain", "start": 0, "end": 3, "certainty": "low", "alternatives": ["Ave"]}
-    with pytest.raises(SchemaRefusal, match="malformed uncertain span"):
+    with pytest.raises(SchemaRefusal, match="covering no readable character"):
         archetypus.validate_record(
             seal_record(
                 text="   ",

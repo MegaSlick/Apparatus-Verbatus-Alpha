@@ -282,6 +282,35 @@ def test_a_witness_basis_reference_the_reading_never_input_cannot_establish(tmp_
     assert "not a digest-checked direct input" in result.stderr
 
 
+def test_one_crop_named_by_two_regions_is_named_once_among_the_direct_inputs(tmp_path):
+    """Two regions may legitimately resolve to one blob, and the envelope refuses
+    a path listed twice. Blobs are content-addressed, so a recovery crop whose
+    pixels match its proposal crop *is* the same file; combining this record's
+    evidence by path is what keeps such an act establishable rather than refused
+    by its own accounting."""
+
+    def name_the_same_crop_twice(payload):
+        regions = payload["basis"]["regions"]
+        payload["basis"] = dict(payload["basis"], regions=regions + [dict(regions[0])])
+
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review = accepted_review(tree)
+    act_id = review["subject_id"]
+    _reseal_reading(tree, review, name_the_same_crop_twice)
+
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 0, result.stderr
+
+    record = tree.read_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+    )
+    crop = record["payload"]["regions"][0]["image_path"]
+    assert [region["image_path"] for region in record["payload"]["regions"]].count(crop) == 2
+    assert [reference["relative_path"] for reference in record["inputs"]].count(crop) == 1
+
+
 def test_one_testimonium_cannot_be_repeated_to_make_the_basis_look_larger(tmp_path):
     def repeat(payload):
         testimonia = [dict(item) for item in payload["basis"]["testimonia"]]

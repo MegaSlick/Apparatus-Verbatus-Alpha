@@ -162,7 +162,7 @@ def _reference_key(reference: dict) -> tuple[str, str]:
     return (reference["relative_path"], reference["sha256"])
 
 
-def validate_annotations(annotations, text: str, witnesses: dict, what: str) -> list[dict]:
+def validate_annotations(annotations, text: str, witnesses: dict | None, what: str) -> list[dict]:
     """The Perlectio's uncertainty layer, carried whole and refused if malformed.
 
     Every span is checked against the text it annotates, every gap is refused
@@ -179,6 +179,14 @@ def validate_annotations(annotations, text: str, witnesses: dict, what: str) -> 
     is neither the ink nor testimony, and there is nothing else it could honestly
     be. Comparison is exact — normalizing here would be a place for the record to
     differ from the testimony it claims to quote.
+
+    **`witnesses=None` is the read-back caller**, `validate_record`, which has a
+    sealed record and no reading beside it: the roster lives in the Perlectio's
+    basis, so attribution and quotation are the two things it cannot re-check.
+    Everything else is checked identically, from this one spelling, because the
+    alternative — a second copy of these rules for the record's own read path —
+    is a pair that drifts. It already had: the two copies disagreed about
+    whether an uncertain span had to cover a readable character.
     """
     if not isinstance(annotations, list):
         raise SchemaRefusal(f"{what} is not a list")
@@ -277,13 +285,15 @@ def _validate_alternatives(note: dict, text: str, start: int, end: int, label: s
 
 
 def _validate_witness_evidence(
-    note: dict, start: int, end: int, witnesses: dict, label: str
+    note: dict, start: int, end: int, witnesses: dict | None, label: str
 ) -> list[dict]:
     """What a witness claimed at a gap: retained as evidence, never as characters.
 
     An absent or empty list is ordinary — every witness may have found the same
     damage the reader did. What is refused is a claim attributed to a witness that
-    this act was not read against, or words that witness never reported.
+    this act was not read against, or words that witness never reported. Both of
+    those need the roster; `witnesses=None` is the read-back caller that has no
+    reading to get one from, and checks the shape alone.
     """
     if start != end:
         raise SchemaRefusal(
@@ -306,7 +316,9 @@ def _validate_witness_evidence(
                 "field beside a gap would be a second source of established characters"
             )
         witness_ref = item.get("witness_ref")
-        if not _is_ref_shaped(witness_ref) or _reference_key(witness_ref) not in witnesses:
+        if not _is_ref_shaped(witness_ref) or (
+            witnesses is not None and _reference_key(witness_ref) not in witnesses
+        ):
             raise SchemaRefusal(
                 f"{item_label} names a witness reference that is not one of this act's own "
                 "witnesses; annotation evidence may only cite a testimonium already in "
@@ -315,13 +327,14 @@ def _validate_witness_evidence(
         variant = item.get("variant")
         if not isinstance(variant, str) or not variant:
             raise SchemaRefusal(f"{item_label} names no variant reading")
-        reported = witnesses[_reference_key(witness_ref)]
-        if not isinstance(reported, str) or variant not in reported:
-            raise SchemaRefusal(
-                f"{item_label} quotes a variant its cited witness never reported; a variant "
-                "that is neither the ink nor something a witness actually said is a "
-                "reconstruction, and the record carries none"
-            )
+        if witnesses is not None:
+            reported = witnesses[_reference_key(witness_ref)]
+            if not isinstance(reported, str) or variant not in reported:
+                raise SchemaRefusal(
+                    f"{item_label} quotes a variant its cited witness never reported; a variant "
+                    "that is neither the ink nor something a witness actually said is a "
+                    "reconstruction, and the record carries none"
+                )
         identity = (witness_ref["relative_path"], witness_ref["sha256"], variant)
         if identity in seen:
             raise SchemaRefusal(f"{item_label} repeats the same witness claim")
@@ -429,11 +442,8 @@ def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str
         kind="perlectio",
         subject_id=act_id,
     )
-    current = latest_attempt(
-        artifacts_for(context, PERLECTOR, "perlectio", act_id),
-        f"reading of {act_id}",
-        operation="perlegere",
-    )
+    readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
+    current = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
     if current["artifact_id"] != reading["artifact_id"]:
         raise FatalAccounting(
             f"act {act_id} has a newer Perlectio that the accepted Recensor review did not "
@@ -442,7 +452,6 @@ def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str
     recovery_regions = recovery_region_count(
         act_id, artifacts_for(context, DESIGNATOR, "region", act_id)
     )
-    readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
     if len(readings) != recovery_regions + 1:
         raise FatalAccounting(
             f"act {act_id} has {recovery_regions} recovery crop(s) but {len(readings)} "
@@ -598,6 +607,11 @@ def validate_record(record: dict) -> dict:
     nested self-hash, text hash, status derivation, references, and the scalar
     identities needed to return to the act.  A derived index must not turn a
     resealed but internally contradictory payload into a trusted summary.
+
+    The annotation layer goes back through `validate_annotations`, without a
+    witness roster, and the result must equal what is stored: anything the
+    constructor would not have written is refused, without a second copy of the
+    annotation rules living here to drift from the first.
     """
     if not isinstance(record, dict):
         raise SchemaRefusal("the Archetypus record is not an object")
@@ -615,52 +629,12 @@ def validate_record(record: dict) -> dict:
     if record["status"] != "established":
         raise SchemaRefusal("the Archetypus record status is not the fixed 'established' literal")
     annotations = record["annotations"]
-    if not isinstance(annotations, list) or any(not isinstance(note, dict) for note in annotations):
-        raise SchemaRefusal("the Archetypus annotations are not a list of objects")
-    for index, note in enumerate(annotations):
-        label = f"Archetypus annotation {index}"
-        kind = note.get("kind")
-        expected_fields = _ILLEGIBLE_FIELDS if kind == "illegible" else _UNCERTAIN_FIELDS
-        if kind not in ANNOTATION_KINDS or set(note) != expected_fields:
-            raise SchemaRefusal(f"{label} is outside the closed annotation schema")
-        start, end = note.get("start"), note.get("end")
-        if (
-            not isinstance(start, int)
-            or isinstance(start, bool)
-            or not isinstance(end, int)
-            or isinstance(end, bool)
-            or start < 0
-            or end > len(text)
-            or start > end
-        ):
-            raise SchemaRefusal(f"{label} is outside the text bounds")
-        if kind == "illegible":
-            if start != end or not isinstance(note["witness_evidence"], list):
-                raise SchemaRefusal(f"{label} is not a zero-width gap with an evidence list")
-            for evidence in note["witness_evidence"]:
-                if (
-                    not isinstance(evidence, dict)
-                    or set(evidence) != _WITNESS_EVIDENCE_FIELDS
-                    or not _is_ref_shaped(evidence.get("witness_ref"))
-                    or not isinstance(evidence.get("variant"), str)
-                    or not evidence["variant"]
-                ):
-                    raise SchemaRefusal(f"{label} carries malformed witness evidence")
-        elif (
-            not text[start:end].strip()
-            or note.get("certainty") not in CERTAINTIES
-            or not isinstance(note.get("alternatives"), list)
-            or not note["alternatives"]
-            or any(not isinstance(value, str) or not value for value in note["alternatives"])
-            or len(set(note["alternatives"])) != len(note["alternatives"])
-        ):
-            raise SchemaRefusal(f"{label} carries a malformed uncertain span")
-    try:
-        derived_status = derive_text_status(text, annotations)
-    except (KeyError, TypeError):
+    if validate_annotations(annotations, text, None, "Archetypus annotation") != annotations:
         raise SchemaRefusal(
-            "the Archetypus annotations cannot derive an honest text_status"
-        ) from None
+            "the Archetypus annotations are not in the exact form validation produces; a "
+            "resealed record may not carry a shape the constructor would never have written"
+        )
+    derived_status = derive_text_status(text, annotations)
     if record["text_status"] != derived_status:
         raise SchemaRefusal(
             f"the Archetypus text_status {record['text_status']!r} disagrees with its text "
@@ -714,15 +688,17 @@ def _crop_input(context, image_path: str, act_id: str) -> dict[str, str]:
 
 
 def _direct_inputs(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Combine required evidence once, refusing one path with two digests."""
+    """Combine the record's required evidence, naming one path only once.
+
+    `validate_input_refs` refuses an envelope that lists a path twice, and a
+    reading may legitimately name the same crop from two regions — or name the
+    review or the Perlectio itself as its crop. Every digest here was read off
+    the same disk moments earlier, so two entries for one path cannot disagree;
+    the only work is the deduplication.
+    """
     by_path: dict[str, dict[str, str]] = {}
     for group in groups:
         for reference in group:
-            if not _is_ref_shaped(reference):
-                raise SchemaRefusal("an Archetypus direct input is not a digest-checked reference")
-            existing = by_path.get(reference["relative_path"])
-            if existing is not None and existing != reference:
-                raise FatalAccounting("one Archetypus evidence path carries contradictory digests")
             by_path[reference["relative_path"]] = reference
     return list(by_path.values())
 

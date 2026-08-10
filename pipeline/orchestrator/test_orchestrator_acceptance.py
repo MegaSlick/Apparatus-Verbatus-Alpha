@@ -1202,20 +1202,46 @@ def test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proo
     )
 
 
+def _forge_blank_proof(tree: RunTree, act_id: str) -> dict[str, str]:
+    """A standalone artifact standing in for a real Recensor blank proof.
+
+    Deliberately a *distinct* artifact rather than a reference already in the
+    review's inputs: reusing `perlectio_ref` or a region blob would coincidentally
+    satisfy the Armarium's input reconciliation even if this stage's own inputs
+    were wrong, which is the gap the caller below exists to close.
+    """
+    run = tree.read_run()
+    payload = {"note": "a hypothetical blank-proof artifact"}
+    payload["self_hash"] = self_hash(payload)
+    envelope = build_envelope(
+        run_id="r",
+        artifact_id=artifact_id(RECENSOR, "blank-proof", act_id),
+        subject_id=act_id,
+        stage=RECENSOR,
+        kind="blank-proof",
+        outcome="accepted",
+        config_digest=run["config_digest"],
+        adapter_revision=run["adapter_recipes"][RECENSOR],
+        inputs=[],
+        payload=payload,
+    )
+    relative = tree.artifact_path(RECENSOR, "blank-proof", envelope["artifact_id"])
+    path = tree.resolve(relative)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(envelope))
+    return {"relative_path": relative, "sha256": digest_bytes(path.read_bytes())}
+
+
 def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_blank_proof(
     tmp_path,
 ):
     """The success path `_no_readable_text_evidence` exists for, exercised for real.
 
     No producer in this build writes `no_readable_text_evidence_ref` today
-    (HANDOFF.md's named cross-stage gap), so this forges a standalone
-    blank-proof artifact onto an accepted review's own inputs the same way the
-    sibling refusal test above forges an empty reading -- standing in for
-    whatever real blank-proof artifact a future Recensor contract produces.
-    Deliberately a *distinct* artifact rather than reusing `perlectio_ref` or a
-    region blob already in the review's inputs: those would coincidentally
-    satisfy the Armarium's input reconciliation below even if this stage's own
-    inputs were wrong, which is exactly the gap this test exists to close.
+    (HANDOFF.md's named cross-stage gap), so this forges a blank proof onto an
+    accepted review's own inputs the same way the sibling refusal test above
+    forges an empty reading -- standing in for whatever real blank-proof
+    artifact a future Recensor contract produces.
 
     The point is twofold: prove the constructor's success path actually writes
     the record spec 10 describes, not only that its refusal paths fire; and
@@ -1245,32 +1271,7 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     }
 
     act_id = review["subject_id"]
-    run = tree.read_run()
-    evidence_payload = {"note": "a hypothetical blank-proof artifact"}
-    evidence_payload["self_hash"] = self_hash(evidence_payload)
-    evidence_envelope = build_envelope(
-        run_id="r",
-        artifact_id=artifact_id(RECENSOR, "blank-proof", act_id),
-        subject_id=act_id,
-        stage=RECENSOR,
-        kind="blank-proof",
-        outcome="accepted",
-        config_digest=run["config_digest"],
-        adapter_revision=run["adapter_recipes"][RECENSOR],
-        inputs=[],
-        payload=evidence_payload,
-    )
-    evidence_path = tree.resolve(
-        tree.artifact_path(RECENSOR, "blank-proof", evidence_envelope["artifact_id"])
-    )
-    evidence_path.parent.mkdir(parents=True, exist_ok=True)
-    evidence_path.write_bytes(canonical_bytes(evidence_envelope))
-    evidence_ref = {
-        "relative_path": tree.artifact_path(
-            RECENSOR, "blank-proof", evidence_envelope["artifact_id"]
-        ),
-        "sha256": digest_bytes(evidence_path.read_bytes()),
-    }
+    evidence_ref = _forge_blank_proof(tree, act_id)
 
     review["inputs"] = [
         new_ref if reference == old_ref else reference for reference in review["inputs"]
@@ -1292,30 +1293,6 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
 
     export_result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
     assert export_result.returncode == 0, export_result.stderr
-
-
-def _forge_blank_proof(tree: RunTree, act_id: str) -> dict[str, str]:
-    """A standalone artifact standing in for a real Recensor blank proof."""
-    run = tree.read_run()
-    payload = {"note": "a hypothetical blank-proof artifact"}
-    payload["self_hash"] = self_hash(payload)
-    envelope = build_envelope(
-        run_id="r",
-        artifact_id=artifact_id(RECENSOR, "blank-proof", act_id),
-        subject_id=act_id,
-        stage=RECENSOR,
-        kind="blank-proof",
-        outcome="accepted",
-        config_digest=run["config_digest"],
-        adapter_revision=run["adapter_recipes"][RECENSOR],
-        inputs=[],
-        payload=payload,
-    )
-    relative = tree.artifact_path(RECENSOR, "blank-proof", envelope["artifact_id"])
-    path = tree.resolve(relative)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(canonical_bytes(envelope))
-    return {"relative_path": relative, "sha256": digest_bytes(path.read_bytes())}
 
 
 def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path):

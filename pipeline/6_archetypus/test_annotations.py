@@ -389,26 +389,6 @@ def test_fifty_gaps_at_once_behave_no_differently_than_one():
 # --- End-to-end: a tampered Perlectio carrying annotations, through the real CLI
 
 
-def orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            scenario,
-            "--run-id",
-            run_id,
-            "--run-root",
-            str(root),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-
 def invoke_archetypus(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [

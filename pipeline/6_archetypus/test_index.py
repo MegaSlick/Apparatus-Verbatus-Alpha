@@ -114,10 +114,22 @@ def _index(tree: RunTree) -> dict:
     return json.loads(tree.resolve(tree.index_path(ARCHETYPUS)).read_text(encoding="utf-8"))
 
 
-def test_index_reconciles_1_to_1_with_both_established_acts_in_the_happy_scenario(tmp_path):
-    root = tmp_path / "runs"
+@pytest.fixture(scope="module")
+def established_run(tmp_path_factory):
+    """One happy run, shared by every test below that only reads it.
+
+    `build_index` and `validate_index` write nothing, so orchestrating once is
+    the same evidence as orchestrating ten times and several minutes cheaper.
+    The tests that mutate a tree — deleting the index, forging a second record —
+    still take their own run, because they change what the next reader sees.
+    """
+    root = tmp_path_factory.mktemp("established") / "runs"
     assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
+    return _Context(RunTree(root, "r"))
+
+
+def test_index_reconciles_1_to_1_with_both_established_acts_in_the_happy_scenario(established_run):
+    tree = established_run.tree
     index = _index(tree)
 
     established = {
@@ -131,10 +143,8 @@ def test_index_reconciles_1_to_1_with_both_established_acts_in_the_happy_scenari
     assert index["stage"] == ARCHETYPUS
 
 
-def test_every_index_row_carries_its_records_status_and_text_hash(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
+def test_every_index_row_carries_its_records_status_and_text_hash(established_run):
+    tree = established_run.tree
     for row in _index(tree)["rows"]:
         record = tree.read_artifact(ARCHETYPUS, "archetypus", row["artifact_id"])["payload"]
         assert row["text_status"] == record["text_status"]
@@ -158,10 +168,8 @@ def test_the_held_act_never_appears_in_the_index(tmp_path):
     assert index["accepted_count"] == 1
 
 
-def test_the_index_self_hash_verifies(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    assert verify_self_hash(_index(RunTree(root, "r")))
+def test_the_index_self_hash_verifies(established_run):
+    assert verify_self_hash(_index(established_run.tree))
 
 
 def test_deleting_and_rerunning_rebuilds_the_index_identically(tmp_path):
@@ -179,57 +187,37 @@ def test_deleting_and_rerunning_rebuilds_the_index_identically(tmp_path):
     assert path.read_bytes() == original
 
 
-def test_validate_index_refuses_a_missing_row(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    context = _Context(tree)
-
-    short = archetypus.build_index(context)
+def test_validate_index_refuses_a_missing_row(established_run):
+    short = archetypus.build_index(established_run)
     short["rows"] = short["rows"][:-1]
     short["accepted_count"] = len(short["rows"])
     short["self_hash"] = self_hash(short)
     with pytest.raises(FatalAccounting, match="do not reconcile 1:1"):
-        archetypus.validate_index(context, short)
+        archetypus.validate_index(established_run, short)
 
 
-def test_validate_index_refuses_a_duplicate_row(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    context = _Context(tree)
-
-    doubled = archetypus.build_index(context)
+def test_validate_index_refuses_a_duplicate_row(established_run):
+    doubled = archetypus.build_index(established_run)
     doubled["rows"] = doubled["rows"] + [dict(doubled["rows"][0])]
     doubled["accepted_count"] = len(doubled["rows"])
     doubled["self_hash"] = self_hash(doubled)
     with pytest.raises(FatalAccounting, match="duplicate row"):
-        archetypus.validate_index(context, doubled)
+        archetypus.validate_index(established_run, doubled)
 
 
-def test_validate_index_refuses_a_row_that_disagrees_with_its_record(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    context = _Context(tree)
-
-    edited = archetypus.build_index(context)
+def test_validate_index_refuses_a_row_that_disagrees_with_its_record(established_run):
+    edited = archetypus.build_index(established_run)
     edited["rows"][0]["text_status"] = "no_readable_text"
     edited["self_hash"] = self_hash(edited)
     with pytest.raises(FatalAccounting, match="does not match its immutable record"):
-        archetypus.validate_index(context, edited)
+        archetypus.validate_index(established_run, edited)
 
 
-def test_validate_index_refuses_an_index_whose_self_hash_was_not_recomputed(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    context = _Context(tree)
-
-    edited = archetypus.build_index(context)
+def test_validate_index_refuses_an_index_whose_self_hash_was_not_recomputed(established_run):
+    edited = archetypus.build_index(established_run)
     edited["accepted_count"] = 99
     with pytest.raises(FatalAccounting, match="self-hash"):
-        archetypus.validate_index(context, edited)
+        archetypus.validate_index(established_run, edited)
 
 
 # --- The rest of `validate_index`'s refusals, each exercised ------------------
@@ -239,18 +227,6 @@ def test_validate_index_refuses_an_index_whose_self_hash_was_not_recomputed(tmp_
 # other than this stage. Mutation showed most of them were carried but unproven:
 # deleting the count, type, schema, run, stage-label or row-value check left the
 # whole suite green. These reseal a well-formed index around one defect each.
-
-
-@pytest.fixture(scope="module")
-def established_run(tmp_path_factory):
-    """One happy run, shared by the read-only index refusals below.
-
-    They neither write to the tree nor re-invoke a stage, so orchestrating once
-    is the same evidence as orchestrating six times and several minutes cheaper.
-    """
-    root = tmp_path_factory.mktemp("index-refusals") / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    return _Context(RunTree(root, "r"))
 
 
 @pytest.mark.parametrize(
