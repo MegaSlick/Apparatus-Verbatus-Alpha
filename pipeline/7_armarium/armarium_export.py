@@ -321,6 +321,8 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_pixel_claims(manifest, formats, sources)
     _verify_display_claim(manifest)
     _verify_retained_run_claim(manifest)
+    _verify_canonical_text_claim(manifest)
+    _verify_annotations_claim(manifest)
     _verify_exact_product_members(formats, sources, actual_names)
     _verify_product_accounting(root, manifest, formats, sources)
     return manifest
@@ -2559,6 +2561,40 @@ def _verify_retained_run_claim(manifest: dict[str, Any]) -> None:
         "resolution_claim": "artifact and receipt citations require retained-run access",
     }:
         raise SchemaRefusal("the package retained-run reference claim is not the verified claim")
+
+
+def _verify_canonical_text_claim(manifest: dict[str, Any]) -> None:
+    """The one field name and hash convention every literal projection is built from.
+
+    Unlike every other ``claims.*`` section, this one and ``claims.annotations``
+    below describe a fixed contract of this build rather than something computed
+    from the package's own source graph -- there is nothing in ``sources.json`` to
+    recompute them against. That is not a reason to leave them unchecked: without
+    this, a tampered manifest could claim a different authority field, or a
+    text-writable annotation layer, and every other check in this function would
+    still accept the package.
+    """
+    if manifest.get("canonical_text") != {
+        "authority": "archetypus",
+        "field": CANONICAL_TEXT_FIELD,
+        "hash": "sha256-utf-8",
+        "derived_columns_are_marked": True,
+    }:
+        raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
+
+
+def _verify_annotations_claim(manifest: dict[str, Any]) -> None:
+    """No build in this repository can produce a text-writable annotation layer.
+
+    The annotator is unbuilt and unwired (HANDOFF.md), so this claim is a fixed
+    constant today, not a measurement -- but a tampered manifest claiming
+    ``text_writable: true`` must still be refused here rather than accepted
+    because nothing yet exists to disprove it.
+    """
+    claims = manifest.get("claims")
+    annotations = claims.get("annotations") if isinstance(claims, dict) else None
+    if annotations != {"status": _ANNOTATION_NOT_PRODUCED, "text_writable": False}:
+        raise SchemaRefusal("the package annotations claim is not this build's fixed claim")
 
 
 def _verify_manifest_source_counts(
