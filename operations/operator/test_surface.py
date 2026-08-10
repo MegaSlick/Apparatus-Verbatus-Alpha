@@ -1345,6 +1345,42 @@ def test_a_held_run_raises_run_held_not_run_failed(
     assert "could not reach" not in failure.value.render()
 
 
+def test_a_run_whose_declared_fixture_cannot_be_read_says_so(tmp_path: Path) -> None:
+    """A fixture that cannot be read must not silently become a placeholder.
+
+    Before this fix, `run` fell back to the generic "the declared pages"/"the
+    declared acts" labels with no comment at all — exactly the progress detail
+    Spec 12 asks for ("names pages and acts, not percentages") quietly
+    replaced by a placeholder with nothing to say it happened.
+    """
+
+    workspace = tmp_path / "workspace-with-no-fixture"
+    workspace.mkdir()
+    messages: list[str] = []
+    clock = FastElapsedClock()
+    surface = OperatorSurface(
+        workspace,
+        tmp_path / "operator-state",
+        provider=FakeProvider(now=lambda: START),
+        now=lambda: START,
+        present=messages.append,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+    )
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete"},
+        "pages": [],
+        "expected_acts": 0,
+    }
+
+    surface.run(run_id="unreadable-fixture-run")
+
+    assert any("declared fixture could not be read" in line for line in messages)
+
+
 def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1670,11 +1706,13 @@ def test_an_unreadable_spend_policy_never_stops_a_close(tmp_path: Path) -> None:
         load_spend_policy(workspace / "config" / "spend.toml")
 
     clock = FastElapsedClock()
+    messages: list[str] = []
     surface = OperatorSurface(
         workspace,
         tmp_path / "operator-state",
         provider=FakeProvider(now=lambda: START),
         now=lambda: START,
+        present=messages.append,
         monotonic=clock.monotonic,
         sleeper=clock.sleep,
     )
@@ -1685,6 +1723,11 @@ def test_an_unreadable_spend_policy_never_stops_a_close(tmp_path: Path) -> None:
     report = surface.close(prepared_close, prepared_close.phrase)
 
     assert report.verified
+    # The fallback to built-in timing is a fact the operator must be told,
+    # not silently substituted for the reviewed policy that could not be read.
+    assert any("built-in operational deadline" in line for line in messages)
+    close = surface.receipts.read(surface._descriptor_receipt("close"))["payload"]
+    assert close["spend_policy_error"] is not None
 
 
 def test_a_price_that_moves_after_the_screen_is_named_a_price_change(tmp_path: Path) -> None:

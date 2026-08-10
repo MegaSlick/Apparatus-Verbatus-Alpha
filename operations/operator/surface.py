@@ -619,7 +619,11 @@ class OperatorSurface:
         """Drive the current tree's actual fixture orchestrator, with resumable evidence."""
 
         run_root = self.state_root / "runs"
-        pages, acts = _declared_work(self.workspace)
+        pages, acts, declared_ok = _declared_work(self.workspace)
+        if not declared_ok:
+            self.present(
+                "The declared fixture could not be read; naming pages and acts generically."
+            )
         prior_state = self._prior_run_state(run_id)
         if prior_state == "interrupted-recoverable":
             self.present(f"Resuming run {run_id}. Checking {', '.join(pages)}.")
@@ -886,7 +890,13 @@ class OperatorSurface:
         else:
             provider.clear_failures("terminate")
             provider.bill(record.pod_id, Decimal("0.82"), description="fixture pod runtime")
-        report = self._shutdown(self._close_policy()).close(record, reason="manual operator close")
+        policy, policy_error = self._close_policy()
+        if policy_error is not None:
+            self.present(
+                "Your reviewed spend policy could not be read; close is using its "
+                "built-in operational deadline instead."
+            )
+        report = self._shutdown(policy).close(record, reason="manual operator close")
         try:
             lease_store.record_close(
                 owner_token=lease.owner_token,
@@ -904,6 +914,7 @@ class OperatorSurface:
                     "lease_reconciled": False,
                     "lease": str(lease_store.path),
                     "lease_record_error": str(error),
+                    "spend_policy_error": policy_error,
                 },
                 descriptor_action="close",
             )
@@ -935,6 +946,7 @@ class OperatorSurface:
                 "close_report": report.to_record(),
                 "lease_reconciled": True,
                 "lease": str(lease_store.path),
+                "spend_policy_error": policy_error,
             },
             descriptor_action="close",
         )
@@ -999,8 +1011,8 @@ class OperatorSurface:
             controller_armer=FixtureControllerArmer(self.now),
         )
 
-    def _close_policy(self) -> SpendPolicy | None:
-        """The reviewed policy for close timing, or `None` — never a refusal.
+    def _close_policy(self) -> tuple[SpendPolicy | None, str | None]:
+        """The reviewed policy for close timing, and why it was unavailable if so.
 
         Always the workspace's own `config/spend.toml`, never the `--spend` path
         `launch` may have been given: nothing records which policy path a launch
@@ -1008,13 +1020,17 @@ class OperatorSurface:
         must refuse without a reviewed policy, because it spends. `close` must
         not: an unreadable or unconfigured policy is no reason to leave a pod
         running, and the ceiling checks a policy carries have nothing to say
-        about stopping one.
+        about stopping one. The second element is the reason close is falling
+        back to `VerifiedShutdown`'s own operational defaults, or `None` when
+        the workspace's policy was read without incident — the caller says so
+        rather than silently substituting a shorter deadline for the reviewed
+        one.
         """
 
         try:
-            return load_spend_policy(self.workspace / "config" / "spend.toml")
-        except Exception:
-            return None
+            return load_spend_policy(self.workspace / "config" / "spend.toml"), None
+        except Exception as error:
+            return None, str(error)
 
     def _shutdown(self, policy: SpendPolicy | None) -> VerifiedShutdown:
         """Close timing comes from the reviewed policy, never from a constant here.
@@ -1724,15 +1740,20 @@ def _human_duration(seconds: int) -> str:
     return f"{seconds} seconds"
 
 
-def _declared_work(workspace: Path) -> tuple[list[str], list[str]]:
-    """Name the fixture's actual declared work rather than invent a progress number."""
+def _declared_work(workspace: Path) -> tuple[list[str], list[str], bool]:
+    """Name the fixture's actual declared work rather than invent a progress number.
+
+    The third element is `False` exactly when the declared fixture could not
+    be read at all, so the caller can say so — a generic placeholder shown
+    without comment reads as the real page/act list, which it is not.
+    """
 
     try:
         fixture = load_fixture(str(workspace / "proof"))
         pages = [f"page {page['ordinal']}" for page in fixture["page"]]
         acts = [f"act {act['key']}" for act in fixture["act"]]
         if pages and acts and all(isinstance(value, str) for value in pages + acts):
-            return pages, acts
+            return pages, acts, True
     except Exception:
         pass
-    return ["the declared pages"], ["the declared acts"]
+    return ["the declared pages"], ["the declared acts"], False
