@@ -87,9 +87,8 @@ FIXTURE = "synthetic-two-page-v0"
 # how a settled decision gets re-litigated, so the prose was corrected and these two pins
 # moved with it. Nothing about the pipeline's behaviour changed.
 #
-# Re-pinned 2026-08-09 for the System 09 (Recensor) merge, and the counts move with
-# them for the first time in a while — 42 → 43 and 46 → 47. Four deliberate changes,
-# all of them recorded facts rather than behavioural drift in the pinned scenarios:
+# Moved for the System 09 (Recensor) merge — 42 → 43 and 46 → 47 — for four
+# deliberate, recorded changes, not behavioural drift in the pinned scenarios:
 #
 #   - Every Recensor `review` payload now carries `continuation` (the Recensor's own
 #     authoritative continuation link, derived from region evidence rather than
@@ -104,20 +103,21 @@ FIXTURE = "synthetic-two-page-v0"
 #     `run-health/recensor-partition-receipt.json`, recomputed from the artifacts on
 #     disk rather than from any stage manifest.
 #
-# Recomputed against the real orchestrator with the whole merge landed.
-# Re-pinned by the System 09 audit: `config/hard_failure.toml` now says what its
-# validator enforces — the ruled threshold is exact, not a ceiling configuration
-# may tune downward. The shipped value remains 2 (the third failure stops), so
-# file counts and scenario behaviour are unchanged; the deliberately sealed
-# policy bytes, and therefore every downstream config digest, moved.
+# Moved twice more within the same build, with neither file count changing: a
+# `config/hard_failure.toml` prose correction (the ruled threshold is exact, not a
+# tunable ceiling) moved its sealed config digest, and the `recovery-requested`
+# review shape gained the `page_coverage` field every other shape already carried
+# (the happy scenario requests no recovery, so only the review pin moved).
 #
-# Review pin only, second reader: the `recovery-requested` review was the one
-# review shape still missing `page_coverage`, so an act holding for a recrop had
-# its flagged-page finding recorded in no artifact at all until the next pass.
-# Adding it moves the review scenario's tree (the happy scenario requests no
-# recovery, so its pin and both file counts are unchanged).
-HAPPY_RUN_TREE_DIGEST = "eb38bd6a31b07c4e68d3832252aa351de821f6e373ff0ce8b589626d8164b526"
-REVIEW_RUN_TREE_DIGEST = "d013aab736911382f2592cb2a6fb91cb72dcc662e4e26fdd78db0103a6f6b7b2"
+# Moved once more for the audit-repair pass that removed two dead `/out/report.md`
+# citations from `config/hard_failure.toml`'s comments (audit-c.md F1, audit-d.md
+# F7): the config digest covers the file's bytes including its prose, so even a
+# citation the code never reads moves every downstream artifact digest. File
+# counts and scenario behaviour are unchanged.
+#
+# Recomputed against the real orchestrator for this merge.
+HAPPY_RUN_TREE_DIGEST = "8a7624d6c4f62b834a3c02b27dbb174be054464d83b0ff5ff35a0768cb5a2d25"
+REVIEW_RUN_TREE_DIGEST = "a1f58df6a7f968d4597705830aa7ea5dae6d0ee71717b6e784c4da9d5546ae28"
 
 
 def orchestrate(
