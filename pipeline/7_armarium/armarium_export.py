@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final
-from zipfile import ZIP_STORED, ZipFile, ZipInfo
+from zipfile import ZIP_STORED, BadZipFile, LargeZipFile, ZipFile, ZipInfo
 
 from display import DISPLAY_CONVENTION, render_display, strip_display
 from textnorm import TEXTNORM_REVISION, search_fold
@@ -247,7 +247,14 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     """
     root = clean_root
     root.mkdir(parents=True, exist_ok=True)
-    with ZipFile(BytesIO(data)) as archive:
+    # A recipient runs this on bytes somebody sent them, so "these bytes are not an
+    # archive at all" is one of the refusals this function exists to make. It was
+    # the one malformation that escaped as a raw `BadZipFile` instead.
+    try:
+        archive = ZipFile(BytesIO(data))
+    except (BadZipFile, LargeZipFile, OSError) as error:
+        raise SchemaRefusal("an Armarium package is not a readable ZIP archive") from error
+    with archive:
         names = archive.namelist()
         if not names or names[0] != EXPORT_MANIFEST_NAME:
             raise SchemaRefusal("an Armarium package must begin with EXPORT_MANIFEST.json")
@@ -255,6 +262,21 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
             raise SchemaRefusal("an Armarium package repeats a member name")
         for name in names:
             _validate_member_name(name)
+        # One member cannot be both a file and another member's parent directory.
+        # Extraction discovers that as a `NotADirectoryError` *after* it has already
+        # written part of the package to the clean machine, which is the same
+        # write-then-refuse order the compression check below exists to avoid.
+        ancestors = {
+            parent.as_posix()
+            for name in names
+            for parent in PurePosixPath(name).parents
+            if parent.as_posix() != "."
+        }
+        shadowed = sorted(set(names) & ancestors)
+        if shadowed:
+            raise SchemaRefusal(
+                f"package member(s) {shadowed} are named as both a file and a directory"
+            )
         # `_zip_bytes` is this module's only writer and it never emits anything but
         # ZIP_STORED. Refusing any other compression method here -- before a single
         # byte is decompressed -- is what makes this a check of a package "without
@@ -529,7 +551,14 @@ def _aggregate_from_basis(
             unaddressed_chairs=chairs,
             act_pages=act_pages,
         )
-    except ContractError as error:
+    # `KeyError`/`TypeError` as well as the contract refusals: the basis is read back
+    # out of a package a recipient was handed, and `run_aggregate` reads fields
+    # inside a coverage record -- `by_class['completed']`, `floor` -- that nothing
+    # above proves are there. A coverage record claiming `under_witnessed` with no
+    # `by_class` crashed the whole verifier with a bare `KeyError`. Every hole in the
+    # basis is one answer: this basis does not reconcile. The original is chained, so
+    # a genuine defect inside `run_aggregate` is still visible in the traceback.
+    except (ContractError, KeyError, TypeError) as error:
         raise SchemaRefusal("an Armarium aggregate basis cannot be reconciled") from error
 
 
@@ -1336,7 +1365,17 @@ def _text_bundle_records(
                     rendered = json.loads(lines[index + 1])
                 except json.JSONDecodeError as error:
                     raise SchemaRefusal("a text-bundle display is not JSON") from error
-                if not isinstance(rendered, str) or strip_display(rendered) != pending[0]:
+                # `strip_display` raises `ValueError` on markup it cannot parse -- an
+                # unclosed marker, a marker whose payload is not JSON, a dangling
+                # escape. All three are reachable from a package a recipient was
+                # handed, so they are refusals about the package, not crashes.
+                try:
+                    stripped = strip_display(rendered) if isinstance(rendered, str) else None
+                except ValueError as error:
+                    raise SchemaRefusal(
+                        "a text-bundle display is not a renderable display convention"
+                    ) from error
+                if stripped != pending[0]:
                     raise SchemaRefusal(
                         "a text-bundle display does not strip back to its canonical clean text"
                     )
@@ -1354,10 +1393,56 @@ def _text_bundle_literals(root) -> dict[str, tuple[str, str]]:
     }
 
 
+_STORED_ACTS_TABLES: Final = ("acts", "act_search")
+
+
+def _open_acts_database(path) -> sqlite3.Connection:
+    """Open a package's acts database read-only, as stored rows and not as a program.
+
+    Two things this cannot take on trust, because the file arrived inside a package
+    somebody else assembled.
+
+    **Its path is not a URI.**  ``f"file:{path}?mode=ro"`` splices a filesystem path
+    into URI syntax, so a clean root whose name contains ``?`` or ``#`` -- which
+    ``bundle.py`` derives from the operator's own ``--out`` directory -- silently
+    becomes a query string, and a perfectly good package is refused with a message
+    blaming the package.  ``as_uri`` percent-encodes instead.
+
+    **A table is not a view.**  Every read below names ``acts`` or ``act_search``,
+    and SQLite is perfectly happy for either to be a *view* -- which is a program.
+    A view over a recursive CTE turns a few kilobytes of package member into an
+    unbounded result set: confirmed by building one and watching this function's
+    caller allocate until the kernel killed it.  That is the same amplification the
+    ``ZIP_STORED`` check above refuses, arriving through the database reader instead
+    of the archive reader, and it is closed the same way -- by construction rather
+    than by an arbitrary cap.  A *stored* table's row count is bounded by the
+    member's own physical bytes; a view's is not bounded by anything.
+    """
+    uri = f"{Path(path).resolve().as_uri()}?mode=ro"
+    try:
+        connection = sqlite3.connect(uri, uri=True)
+    except sqlite3.DatabaseError as error:
+        raise SchemaRefusal("the acts database cannot be opened") from error
+    try:
+        kinds = dict(
+            connection.execute(
+                "SELECT name, type FROM sqlite_master WHERE name IN (?, ?)",
+                _STORED_ACTS_TABLES,
+            ).fetchall()
+        )
+    except sqlite3.DatabaseError as error:
+        connection.close()
+        raise SchemaRefusal("the acts database has no readable schema") from error
+    if any(kinds.get(name) != "table" for name in _STORED_ACTS_TABLES):
+        connection.close()
+        raise SchemaRefusal("the acts database does not carry acts and act_search as stored tables")
+    return connection
+
+
 def _database_literals(path) -> dict[str, tuple[str, str]]:
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        connection = _open_acts_database(path)
         rows = connection.execute(
             """
             SELECT act_id, canonical_clean_text, canonical_text_sha256
@@ -2203,7 +2288,7 @@ def _database_act_records(
     """Validate the SQLite one-record-per-act projection and return categories."""
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        connection = _open_acts_database(path)
         rows = connection.execute(
             "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
             "provenance_json, source_regions_json, evidence_json, reason FROM acts"
@@ -2431,7 +2516,7 @@ def _verify_search_fold_claim(path: Path) -> None:
     literals = _database_literals(path)
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        connection = _open_acts_database(path)
         rows = connection.execute(
             "SELECT act_id, derived_search_text, derived_text_sha256, "
             "derived_from_canonical_sha256, normalizer_revision, derived_kind FROM act_search"

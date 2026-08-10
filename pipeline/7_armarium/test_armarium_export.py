@@ -1141,6 +1141,127 @@ def test_a_salvage_shaped_record_cannot_enter_the_acts_namespace(field, tmp_path
         )
 
 
+def test_bytes_that_are_not_an_archive_are_refused_rather_than_raising_out_of_the_verifier(
+    tmp_path,
+):
+    """`verify_export_bundle` is what a recipient runs on bytes somebody sent them.
+
+    "These bytes are not an archive" is one of the refusals it exists to make, and it
+    was the one malformation that escaped as a raw `BadZipFile` with no contract
+    reason attached.
+    """
+    with pytest.raises(SchemaRefusal, match="not a readable ZIP archive"):
+        verify_export_bundle(b"PK\x03\x04 but not really a zip", tmp_path / "clean")
+
+
+def test_a_member_named_as_both_file_and_directory_is_refused_before_extraction(tmp_path):
+    """Extraction discovered this as `NotADirectoryError` after writing part of the
+    package to the clean machine -- the same write-then-refuse order the stored-member
+    check exists to avoid."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    members["sources.json/child"] = b"x"
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["members"].append(
+        {"path": "sources.json/child", "sha256": digest_bytes(b"x"), "bytes": 1}
+    )
+    _refresh_manifest(members, manifest)
+
+    clean = tmp_path / "clean"
+    with pytest.raises(SchemaRefusal, match="both a file and a directory"):
+        verify_export_bundle(_zip_bytes(members), clean)
+    assert not [path for path in clean.rglob("*") if path.is_file()]
+
+
+def test_a_display_rendering_that_cannot_be_parsed_is_refused_not_raised(tmp_path):
+    """`strip_display` raises `ValueError` on markup it cannot parse. Every one of
+    those is reachable from a package a recipient was handed."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    lines[lines.index("display:") + 1] = json.dumps("⟨never closed", ensure_ascii=False)
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="not a renderable display convention"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_coverage_record_missing_the_fields_the_aggregate_reads_is_refused(tmp_path):
+    """The exported basis is recomputed, and `run_aggregate` reaches inside a coverage
+    record for `by_class['completed']` when it claims `under_witnessed`. Nothing above
+    proved that field was there, so a tampered basis crashed the verifier outright."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    sources = json.loads(members["sources.json"])
+    for record in sources["aggregate_basis"]["coverage_records"].values():
+        record["under_witnessed"] = True
+    members["sources.json"] = canonical_bytes(sources)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["aggregate_basis"] = sources["aggregate_basis"]
+    row = next(item for item in manifest["members"] if item["path"] == "sources.json")
+    row["sha256"] = digest_bytes(members["sources.json"])
+    row["bytes"] = len(members["sources.json"])
+    _refresh_manifest(members, manifest)
+
+    with pytest.raises(SchemaRefusal, match="basis cannot be reconciled"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_an_acts_database_whose_acts_are_a_view_is_refused_before_it_is_queried(tmp_path):
+    """A few kilobytes of package member, an unbounded result set.
+
+    SQLite is perfectly happy for `acts` to be a view, and a view over a recursive
+    CTE is a program rather than stored rows. Before this refusal, verification of
+    the package below allocated until the kernel killed the process. This is the same
+    amplification the stored-member check refuses in the archive reader, arriving
+    through the database reader instead, and it is closed the same way -- by
+    construction, because a stored table's row count is bounded by the member's own
+    physical bytes and a view's is bounded by nothing.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    scratch = tmp_path / "acts.sqlite"
+    scratch.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(scratch)
+    try:
+        connection.execute("ALTER TABLE acts RENAME TO acts_real")
+        connection.execute(
+            """
+            CREATE VIEW acts AS
+            WITH RECURSIVE forever(act_id, act_key, category, canonical_clean_text,
+                                   canonical_text_sha256, provenance_json,
+                                   source_regions_json, evidence_json, reason) AS (
+                SELECT 'a', 'k', 'delivered', 'x', 'y', NULL, NULL, NULL, NULL
+                UNION ALL
+                SELECT act_id || 'a', act_key, category, canonical_clean_text,
+                       canonical_text_sha256, provenance_json, source_regions_json,
+                       evidence_json, reason
+                FROM forever
+            )
+            SELECT * FROM forever
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    members["acts.sqlite"] = scratch.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+
+    with pytest.raises(SchemaRefusal, match="stored tables"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_clean_root_whose_path_carries_uri_syntax_still_verifies(tmp_path):
+    """The database path was spliced into `file:{path}?mode=ro`, so a directory name
+    containing `?` became a query string. `bundle.py` derives its staging directory
+    from the operator's own `--out` name, so an ordinary destination could make a good
+    package fail with a message blaming the package."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    manifest = verify_export_bundle(bundle.data, tmp_path / "deliver?run#7" / "bundle")
+    assert manifest["claims"]["status"] == "partial"
+
+
 def _members(data: bytes) -> dict[str, bytes]:
     with ZipFile(BytesIO(data)) as archive:
         return {name: archive.read(name) for name in archive.namelist()}
