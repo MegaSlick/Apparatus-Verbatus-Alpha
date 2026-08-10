@@ -135,7 +135,7 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
     page_record = pages[1]
     width, height, rows, background = designator.page_pixels(context, page_record)
 
-    claimed = designator._claimed_regions(context, 1)
+    claimed = designator._claimed_regions_by_page(context)[1]
     # Bottom-right corner of the page: both fixture acts on page 1 (a1, a2,
     # even generously padded) stop well short of the page's own bottom edge,
     # so this pixel is not inside any claimed rectangle.

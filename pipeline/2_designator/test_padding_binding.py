@@ -104,3 +104,53 @@ def test_reusing_a_run_id_under_changed_padding_is_refused_before_a_crop_is_cut(
     assert not (root / "r" / "2_designator" / "artifacts").exists(), (
         "the refusal must land before the first region write, not after it"
     )
+
+
+def test_padding_rewritten_between_the_binding_check_and_its_use_is_refused(tmp_path):
+    """The window between the two reads of one file, closed at the point of use.
+
+    `open_context` reads the padding policy to check this run's binding; the
+    stage reads it a second time to get the values it pads with. A rewrite
+    landing between those two reads passed every check the run had: the binding
+    comparison saw the old bytes and the crops were cut from the new ones, so
+    every act on the page was captured under a policy `run.json` never sealed
+    and the run still exited complete. Reproduced against the real stage before
+    this check existed.
+    """
+    import importlib.util
+    import shutil
+
+    from common.stage import open_context, stage_parser
+
+    root = tmp_path / "runs"
+    padding_path = tmp_path / "designator_padding.toml"
+    shutil.copyfile(SHIPPED_PADDING, padding_path)
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = _invoke(program, root, "--designator-padding-config", str(padding_path))
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    spec = importlib.util.spec_from_file_location(
+        "designator_padding_toctou_under_test", ROOT / "pipeline" / "2_designator" / "run.py"
+    )
+    designator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(designator)
+
+    args = stage_parser("padding TOCTOU test").parse_args(
+        [
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+            "--designator-padding-config",
+            str(padding_path),
+        ]
+    )
+    context = open_context(args, designator.DESIGNATOR)  # the check
+    padding_path.write_text(
+        SHIPPED_PADDING.read_text(encoding="utf-8").replace("bottom_bp = 1800", "bottom_bp = 9000"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError, match="changed between this run's binding check"):
+        designator.initial_pass(context)  # the use

@@ -143,9 +143,21 @@ class StageContext:
         "adapter_revision",
         "args",
         "registry",
+        "sealed_config_digests",
     )
 
-    def __init__(self, tree, run, fixture, scenario, stage, adapter_revision, args, registry):
+    def __init__(
+        self,
+        tree,
+        run,
+        fixture,
+        scenario,
+        stage,
+        adapter_revision,
+        args,
+        registry,
+        sealed_config_digests=None,
+    ):
         self.tree = tree
         self.run = run
         self.fixture = fixture
@@ -154,10 +166,35 @@ class StageContext:
         self.adapter_revision = adapter_revision
         self.args = args
         self.registry = registry
+        # The digest of each configuration file's bytes *as they were when this
+        # context checked them against `run.json`*. A stage that later re-reads
+        # one of those files to get its values reads it a second time, and the
+        # two reads are not the same act: between them the file can change, and
+        # the stage would then work under a policy the run never sealed while
+        # every other check still passed. `require_sealed_config` is the
+        # point-of-use comparison that makes the second read prove it saw the
+        # first read's bytes. Empty for a context built without one (real
+        # ingress, which reaches no configuration-driven work).
+        self.sealed_config_digests = dict(sealed_config_digests or {})
 
     @property
     def config_digest(self) -> str:
         return self.run["config_digest"]
+
+    def require_sealed_config(self, name: str, observed_sha256: str) -> None:
+        """Refuse a configuration whose bytes changed after this run bound them."""
+        sealed = self.sealed_config_digests.get(name)
+        if sealed is None:
+            raise ContractError(
+                f"this context sealed no digest for the {name} configuration, so the bytes "
+                "a stage just read cannot be proven to be the ones this run is bound to"
+            )
+        if sealed != observed_sha256:
+            raise ContractError(
+                f"the {name} configuration changed between this run's binding check and the "
+                f"read that used it: bound {sealed}, read {observed_sha256}. A stage may not "
+                "work under a policy the run never sealed"
+            )
 
     @property
     def witness_chairs(self) -> list[str]:
@@ -521,6 +558,14 @@ def run_config_bindings(
             }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
+        # Not a run.json binding — every caller writing a run takes the three
+        # above by name. This is the record of which bytes each digest above was
+        # taken over, so a stage that re-reads one of these files for its values
+        # can prove it read what was bound (`StageContext.require_sealed_config`).
+        "sealed_config_digests": {
+            "pdf-render": pdf_render_config_digest,
+            "designator-padding": padding_config_digest,
+        },
     }
 
 
@@ -967,7 +1012,13 @@ def _verify_residual_act_rows(context, extra_rows: dict[str, dict[str, Any]]) ->
     extra row is not trustworthy merely because the seal's own producer wrote
     it down, which is the same reasoning `expected_acts` already applies to
     every fixture-derived row above.
+
+    The hold index is built once for the whole set rather than per row. Every
+    residual component on a page mints one of these rows, and a speckled or
+    foxed page reconciles to tens of thousands of them, so a per-row walk of the
+    stage's whole artifact tree makes ordinary input quadratic in itself.
     """
+    holds_by_subject = _designator_holds_by_subject(context) if extra_rows else {}
     for act_id, row in extra_rows.items():
         if row["outcome"] != "held":
             raise FatalAccounting(
@@ -980,7 +1031,12 @@ def _verify_residual_act_rows(context, extra_rows: dict[str, dict[str, Any]]) ->
                 f"act {act_id} extends the denominator beyond the fixture but claims a "
                 "continuation; a residual has no declared continuation to claim"
             )
-        hold = _residual_hold_for(context, act_id)
+        hold = holds_by_subject.get(act_id)
+        if hold is None:
+            raise FatalAccounting(
+                f"act {act_id} extends the denominator beyond the fixture but the Designator "
+                "published no hold record for it"
+            )
         payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
         ordinal, bounds = payload.get("residual_ordinal"), payload.get("residual_bounds")
         if (
@@ -1002,21 +1058,19 @@ def _verify_residual_act_rows(context, extra_rows: dict[str, dict[str, Any]]) ->
             ) from error
 
 
-def _residual_hold_for(context, act_id: str) -> dict[str, Any]:
-    """The one Designator hold record for an act extending the denominator.
+def _designator_holds_by_subject(context) -> dict[str, dict[str, Any]]:
+    """Every Designator hold record, by the act it holds.
 
     Read the same way `_verify_proposal_seal_evidence` reads every act's
     evidence below, but ahead of it: the denominator check runs first, so an
     extra row must already name a real hold before that later, more general
     evidence check ever sees it.
     """
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
-        if entry["kind"] == "hold" and entry["subject_id"] == act_id:
-            return context.tree.read_artifact(DESIGNATOR, "hold", entry["artifact_id"])
-    raise FatalAccounting(
-        f"act {act_id} extends the denominator beyond the fixture but the Designator "
-        "published no hold record for it"
-    )
+    return {
+        entry["subject_id"]: context.tree.read_artifact(DESIGNATOR, "hold", entry["artifact_id"])
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == "hold"
+    }
 
 
 def _verify_proposal_seal_evidence(
@@ -1134,6 +1188,7 @@ def open_context(
         adapter_revision=adapter_recipe_for(run, stage),
         args=args,
         registry=registry,
+        sealed_config_digests=bindings["sealed_config_digests"],
     )
 
 

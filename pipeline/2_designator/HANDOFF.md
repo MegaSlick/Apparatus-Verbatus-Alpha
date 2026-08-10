@@ -323,6 +323,18 @@ geometry under the first run's name. The stage reads the policy from the run's
 own `--designator-padding-config` argument, so the bytes it pads with and the
 bytes the run sealed are the same file by construction.
 
+The same file, however, is not the same *bytes*: `open_context` reads it to
+check the run's binding and `initial_pass` reads it again to get the values it
+pads with, and a rewrite landing between those two reads passed everything —
+the binding comparison saw the old bytes, every crop was cut from the new ones,
+and the run exited complete having captured every act under a policy `run.json`
+never sealed. `StageContext.require_sealed_config` closes that window at the
+point of use: `run_config_bindings` now hands back the digest each configuration
+file's binding was taken over, and the stage refuses unless the bytes it read
+are the bytes that were bound. The precondition is local write access to the
+configuration path during a run — the same class of precondition as the sealed-
+page-pixel re-check above, and closed the same way.
+
 ## Recovery boundary
 
 `--operation recover --act <id> --recovery-request <id>` is the only recovery
@@ -360,6 +372,30 @@ downstream of it by every stage that already knows how to carry a held act to
 its terminal category. The conservation artifact remains what it always was,
 an audit trail nothing reads directly; what changed is that it is no longer the
 only trace a residual leaves.
+
+## Cost, and where it is unbounded
+
+Two of this stage's per-page reads were once-per-page walks of the whole
+artifact tree, which made ordinary input quadratic in itself: conservation
+asked for the claimed regions on each page separately (pages × regions) and
+`common/stage.py`'s residual-row check walked the tree once per extra seal row
+(residual acts × artifacts). Both are one pass now
+(`_claimed_regions_by_page`, `_designator_holds_by_subject`). Neither changed
+what is computed.
+
+**The residual denominator itself stays unbounded in the input, deliberately.**
+Every residual component becomes one held act, one hold artifact and one seal
+row, because "every residual region is accounted regardless of size" is spec
+06's own sentence and a size floor in the accounting is GOVERNANCE 10's named
+defect. A page whose ink is scattered rather than clustered therefore mints
+acts in proportion to the scatter: measured on this build, a synthetic A4 page
+at 300 dpi with 3% randomly scattered ink reconciles to ~60,000 residual
+components in about 3 seconds of labeling, and would mint ~60,000 held acts
+that every stage after this one carries to the Armarium's review list. That is
+the correct accounting and the wrong ergonomics, and it is a real operating
+limit rather than a bug to close by dropping regions: whatever bounds it must
+bound the *page* (refuse a page this speckled, visibly and as a hold) rather
+than the accounting over one. Named here rather than discovered at scale.
 
 ## What this handoff does not settle
 

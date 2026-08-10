@@ -802,9 +802,15 @@ def _publish_act_group(
     )
 
 
-def _claimed_regions(context, page_ordinal: int) -> list[dict]:
-    """Every proposal region's final (capture) bounds cut on this page so far."""
-    claimed = []
+def _claimed_regions_by_page(context) -> dict[int, list[dict]]:
+    """Every proposal region's final (capture) bounds cut so far, by page ordinal.
+
+    Read in one pass over the stage's artifacts rather than once per page. Each
+    pass walks the whole tree and re-reads every region record, so asking per
+    page made conservation's own input cost pages x regions — quadratic in an
+    ordinary book, on evidence that does not change between pages.
+    """
+    claimed: dict[int, list[dict]] = {}
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
         if entry["kind"] != "region":
             continue
@@ -812,9 +818,9 @@ def _claimed_regions(context, page_ordinal: int) -> list[dict]:
         payload = record["payload"]
         if payload.get("origin") != "proposal":
             continue
-        if payload["transform"]["source_page_ordinal"] != page_ordinal:
-            continue
-        claimed.append({"act_id": record["subject_id"], "bounds": payload["transform"]["bounds"]})
+        claimed.setdefault(payload["transform"]["source_page_ordinal"], []).append(
+            {"act_id": record["subject_id"], "bounds": payload["transform"]["bounds"]}
+        )
     return claimed
 
 
@@ -1043,7 +1049,7 @@ def _publish_residual_holds(
 
 
 def _publish_conservation_and_secondary(
-    context, ordinal: int, page_record: dict, analysis: dict, secondary: dict
+    context, ordinal: int, page_record: dict, analysis: dict, claimed: list[dict], secondary: dict
 ) -> tuple[list[dict], bool]:
     """Independent ink-vs-crop reconciliation, plus non-authoritative rescue crops.
 
@@ -1060,7 +1066,6 @@ def _publish_conservation_and_secondary(
     sealed, closing the gap `HANDOFF.md` named as unclosed pending this exact
     change to `common.stage.expected_acts`.
     """
-    claimed = _claimed_regions(context, ordinal)
     result = conservation.reconcile(
         analysis["width"],
         analysis["height"],
@@ -1108,8 +1113,12 @@ def initial_pass(context) -> bool:
     # Read from the run's own argument rather than the module default, so the
     # bytes this stage pads with are the exact bytes `run_config_bindings`
     # sealed into `run.json` — one path, one digest, no way for the two to name
-    # different files.
+    # different files. Same path is not yet same bytes: `open_context` read this
+    # file to check the run's binding and this reads it again to get the values,
+    # and a rewrite between the two reads pads every crop under a policy the run
+    # never sealed while every other check still passes.
     padding = geometry.load_padding_config(context.args.designator_padding_config)
+    context.require_sealed_config("designator-padding", padding["config_sha256"])
     secondary = secondary_provenance(context)
     context.publish(
         kind="secondary-provenance",
@@ -1280,10 +1289,11 @@ def initial_pass(context) -> bool:
     # start, so it reaches expected_acts()/the seal exactly like every other
     # act rather than sitting inert inside the conservation artifact alone.
     secondary_held = False
+    claimed_by_page = _claimed_regions_by_page(context)
     for ordinal, page_record in pages.items():
         analysis = _analyze_page(page_cache, context, ordinal, page_record)
         residual_rows, page_secondary_held = _publish_conservation_and_secondary(
-            context, ordinal, page_record, analysis, secondary
+            context, ordinal, page_record, analysis, claimed_by_page.get(ordinal, []), secondary
         )
         secondary_held = secondary_held or page_secondary_held
         expected.extend(residual_rows)
