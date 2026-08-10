@@ -97,6 +97,68 @@ def test_match_breaks_a_tied_full_bounds_overlap_by_the_groups_own_body_members(
     assert designator._match_structural_group([group_b, group_a], declared_b, "act b") is group_b
 
 
+def test_two_declared_acts_cannot_both_claim_one_detected_group():
+    """Detection merged a boundary it did not find; it corroborates neither act.
+
+    Built on real `grouping.group_page` output rather than a hand-written group:
+    two register entries with no margin anchor and three blank rows between them
+    (under `DEFAULT_CHAIN_GAP_PX`) are one detected run, and each declared act's
+    own rectangle lies wholly inside it, so `_match_structural_group` returns the
+    same group for both. Recording it as each act's own `detected_bounds` would
+    claim a corroboration that was never measured.
+    """
+    import grouping
+
+    designator = _load_designator()
+
+    def component(x, y, w, h):
+        return {"bounds": {"x": x, "y": y, "w": w, "h": h}, "pixel_count": w * h}
+
+    groups = grouping.group_page([component(40, 20, 120, 40), component(40, 63, 120, 37)], 200, 300)
+    assert len(groups) == 1, "the premise of this test is that detection merged the two"
+    declared_a = {"x": 40, "y": 20, "w": 120, "h": 40}
+    declared_b = {"x": 40, "y": 63, "w": 120, "h": 37}
+    analysis = {"groups": groups}
+
+    first = designator._match_structural_group(groups, declared_a, "act a")
+    designator._claim_structural_group(analysis, first, "a", "act a")
+    second = designator._match_structural_group(groups, declared_b, "act b")
+    with pytest.raises(ContractError, match="already corresponds to act 'a'"):
+        designator._claim_structural_group(analysis, second, "b", "act b")
+
+
+def test_one_act_may_claim_its_own_group_twice_without_refusing_itself():
+    """A same-act second claim is not a second claimant."""
+    designator = _load_designator()
+    group = {"bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}
+    analysis: dict = {}
+    designator._claim_structural_group(analysis, group, "a1", "act a1")
+    designator._claim_structural_group(analysis, group, "a1", "act a1 continuation")
+
+
+def test_brace_linked_acts_each_claim_their_own_group():
+    """The named brace fixture stays legal: two groups sharing one anchor."""
+    import grouping
+
+    designator = _load_designator()
+
+    def component(x, y, w, h):
+        return {"bounds": {"x": x, "y": y, "w": w, "h": h}, "pixel_count": w * h}
+
+    brace = component(2, 20, 15, grouping.DEFAULT_BRACE_MIN_HEIGHT_PX + 10)
+    groups = grouping.group_page(
+        [brace, component(40, 20, 120, 20), component(40, 45, 120, 20)], 200, 300
+    )
+    assert len(groups) == 2
+    analysis = {"groups": groups}
+    for key, declared in (
+        ("a", {"x": 40, "y": 20, "w": 120, "h": 20}),
+        ("b", {"x": 40, "y": 45, "w": 120, "h": 20}),
+    ):
+        group = designator._match_structural_group(groups, declared, f"act {key}")
+        designator._claim_structural_group(analysis, group, key, f"act {key}")
+
+
 def test_match_falls_back_to_first_when_body_members_cannot_break_the_tie_either():
     """Neither group carries a `body_members` key (a bare-bounds test double, or
     an isolated marginal-note group with no body at all): the tie-break has

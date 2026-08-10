@@ -12,10 +12,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
-from common.contracts.errors import ContractError
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -34,33 +30,44 @@ def test_a_candidate_touching_no_claim_is_rescued():
     designator = _load_designator()
     claimed = [{"act_id": "act_a", "bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}]
     candidates = [{"bounds": {"x": 100, "y": 100, "w": 5, "h": 5}, "pixel_count": 25}]
-    assert designator._secondary_rescue_candidates(claimed, candidates, 1) == candidates
+    assert designator._secondary_rescue_candidates(claimed, candidates) == [
+        {"candidate": candidates[0], "overlapping_claimed_act_count": 0}
+    ]
 
 
 def test_a_candidate_already_inside_one_claim_is_not_a_rescue():
     designator = _load_designator()
     claimed = [{"act_id": "act_a", "bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}]
     candidates = [{"bounds": {"x": 2, "y": 2, "w": 3, "h": 3}, "pixel_count": 9}]
-    assert designator._secondary_rescue_candidates(claimed, candidates, 1) == []
+    assert designator._secondary_rescue_candidates(claimed, candidates) == []
 
 
 def test_a_candidate_that_only_overlaps_one_claim_keeps_its_additional_coverage():
     designator = _load_designator()
     claimed = [{"act_id": "act_a", "bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}]
     candidate = {"bounds": {"x": 8, "y": 2, "w": 6, "h": 3}, "pixel_count": 18}
-    assert designator._secondary_rescue_candidates(claimed, [candidate], 1) == [candidate]
+    assert designator._secondary_rescue_candidates(claimed, [candidate]) == [
+        {"candidate": candidate, "overlapping_claimed_act_count": 1}
+    ]
 
 
-def test_a_candidate_spanning_two_claims_is_a_hard_error():
-    """The P0-incident-shaped rule: a detector may never decide between two acts."""
+def test_a_candidate_spanning_two_claims_is_held_with_the_ambiguity_counted():
+    """The P0-incident-shaped rule, without the proposer gaining a verdict.
+
+    A box reaching two established acts may not decide between them — and it
+    may not end the run either. It is carried as a held, review-only rescue
+    whose payload states how many claims it touched, so a reviewer sees the
+    ambiguity instead of an aborted stage.
+    """
     designator = _load_designator()
     claimed = [
         {"act_id": "act_a", "bounds": {"x": 0, "y": 0, "w": 10, "h": 10}},
         {"act_id": "act_b", "bounds": {"x": 12, "y": 0, "w": 10, "h": 10}},
     ]
     candidates = [{"bounds": {"x": 8, "y": 0, "w": 6, "h": 10}, "pixel_count": 60}]
-    with pytest.raises(ContractError, match="overlaps 2 already-claimed acts"):
-        designator._secondary_rescue_candidates(claimed, candidates, 1)
+    assert designator._secondary_rescue_candidates(claimed, candidates) == [
+        {"candidate": candidates[0], "overlapping_claimed_act_count": 2}
+    ]
 
 
 def test_removing_the_proposer_from_a_candidate_set_never_changes_the_rescue_set_of_the_rest():
@@ -69,9 +76,10 @@ def test_removing_the_proposer_from_a_candidate_set_never_changes_the_rescue_set
     claimed = [{"act_id": "act_a", "bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}]
     rescuable = {"bounds": {"x": 50, "y": 50, "w": 4, "h": 4}, "pixel_count": 16}
     already_covered = {"bounds": {"x": 1, "y": 1, "w": 2, "h": 2}, "pixel_count": 4}
-    with_both = designator._secondary_rescue_candidates(claimed, [rescuable, already_covered], 1)
-    with_only_rescuable = designator._secondary_rescue_candidates(claimed, [rescuable], 1)
-    assert with_both == with_only_rescuable == [rescuable]
+    with_both = designator._secondary_rescue_candidates(claimed, [rescuable, already_covered])
+    with_only_rescuable = designator._secondary_rescue_candidates(claimed, [rescuable])
+    assert with_both == with_only_rescuable
+    assert [row["candidate"] for row in with_both] == [rescuable]
 
 
 # --- level 2: a real rescue crop, published, flagged non-authoritative ---------
@@ -287,6 +295,105 @@ def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_aut
         designator._seal_artifact_id(context),
     )
     assert {row["outcome"] for row in seal["payload"]["expected_acts"]} == {"proposed"}
+
+
+def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_pass(
+    tmp_path, monkeypatch
+):
+    """The optional seat may not cost the run its denominator.
+
+    Act a1's and act a2's *padded* capture rectangles abut exactly at one row of
+    the fixture page, so an ordinary pen mark in the blank band between the two
+    entries produces a secondary component touching both claims at once. This
+    used to raise out of `initial_pass` before the proposal seal was written:
+    every act's authoritative work was discarded and every downstream stage lost
+    its expected-act denominator, because a review-only box was ambiguous.
+    """
+    from common.stage import open_context, stage_parser
+
+    designator = _load_designator()
+    root = tmp_path / "runs"
+    models_config = _configured_models_config(tmp_path)
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / program),
+                "--run-root",
+                str(root),
+                "--run-id",
+                "r",
+                "--scenario",
+                "happy",
+                "--models-config",
+                str(models_config),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    args = stage_parser("straddling rescue test").parse_args(
+        [
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+            "--models-config",
+            str(models_config),
+        ]
+    )
+    context = open_context(args, designator.DESIGNATOR)
+
+    # The two claims `initial_pass` is about to cut, computed from the same
+    # fixture rectangles and the same padding policy it will use.
+    padding = designator.geometry.load_padding_config(args.designator_padding_config)
+    page = next(row for row in context.fixture["page"] if row["ordinal"] == 1)
+    will_claim = [
+        designator.geometry.apply_padding(
+            designator.act_bounds(act), page["width"], page["height"], padding
+        )["bounds"]
+        for act in context.fixture["act"]
+        if act["page_ordinal"] == 1
+    ]
+    assert len(will_claim) == 2
+    seam = max(bounds["y"] for bounds in will_claim)
+    straddle = {"bounds": {"x": 100, "y": seam - 4, "w": 1, "h": 8}, "pixel_count": 8}
+    touched = [
+        bounds for bounds in will_claim if designator._overlap_area(bounds, straddle["bounds"]) > 0
+    ]
+    assert len(touched) == 2, "the mark must genuinely reach both claims for this to be the case"
+
+    monkeypatch.setattr(
+        designator.structure, "secondary_scan", lambda *a, **k: [dict(straddle)], raising=True
+    )
+    assert designator.initial_pass(context) is True
+    context.finish()
+
+    seal = context.tree.read_artifact(
+        designator.DESIGNATOR, "proposal-seal", designator._seal_artifact_id(context)
+    )
+    assert {row["outcome"] for row in seal["payload"]["expected_acts"]} == {"proposed"}
+    # The stand-in scan returns this one candidate for every sealed page; only
+    # page 1 carries the two abutting claims that make it ambiguous.
+    proposals = [
+        record
+        for record in (
+            context.tree.read_artifact(
+                designator.DESIGNATOR, "secondary-proposal", entry["artifact_id"]
+            )
+            for entry in context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
+            if entry["kind"] == "secondary-proposal"
+        )
+        if record["payload"]["page_ordinal"] == 1
+    ]
+    assert len(proposals) == 1
+    assert proposals[0]["outcome"] == "held"
+    assert proposals[0]["payload"]["authoritative"] is False
+    assert proposals[0]["payload"]["overlapping_claimed_act_count"] == 2
 
 
 def _orchestrate(root: Path, models_config: Path | None) -> subprocess.CompletedProcess:

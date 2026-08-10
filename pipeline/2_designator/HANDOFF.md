@@ -101,6 +101,18 @@ continuation = {declared_bounds, detected_bounds, rationale, geometric_corrobora
 `rationale` is one of a small set of code-generated strings naming which
 grouping rule fired (a single anchor, a brace linking two acts, an isolated
 marginal note, a leading fragment with no anchor) — never a reading of the ink.
+
+**One detected group corresponds to at most one act** (`_claim_structural_group`).
+`_match_structural_group` answers "which detected group best covers this
+declared act" one act at a time, so two acts whose declared rectangles both sit
+inside a single detected group both matched it, and each act-group recorded the
+merged rectangle as its own `detected_bounds` and the merged run as its own
+`body_member_count` — a claim that detection corroborated each act separately
+when detection found the boundary between them not at all. That is refused:
+the structure pass merging two acts is a real finding about the detector, and
+GOVERNANCE 10 does not allow it to be reported as two independent
+corroborations. A brace-linked pair is unaffected — `grouping.group_page`
+returns two distinct groups sharing one anchor, so each act claims its own.
 `continuation.geometric_corroboration` is `grouping.find_continuation_candidate`'s
 independent, page-edge-based check for whether the *geometry itself* looks like
 a page-break continuation; it is recorded, never gating, because a declared
@@ -195,16 +207,28 @@ carry.
 `secondary-proposal` exists only when the chair is configured, one held record
 per rescue candidate the secondary scan finds outside authoritative coverage —
 `authoritative: false`, always, at the schema level and in fact. A candidate
-wholly contained by exactly one claimed act is ordinary coverage and is not
-published; merely overlapping one does not discard the additional area outside
-that claim. A candidate touching two or more claimed acts at once is refused
-outright rather than published (`_secondary_rescue_candidates`)
-— the P0-incident-shaped rule: a detector may add recall, never decide between
-two acts or refine either.
+wholly contained by one claimed act is ordinary coverage and is not published;
+merely overlapping one does not discard the additional area outside that claim.
+Every published candidate carries `overlapping_claimed_act_count`: how many
+already-claimed acts its box touches. That number is **recorded and never acted
+on** — the P0-incident-shaped rule is that a detector may add recall and never
+decide between two acts or refine either, and a held, page-subject,
+`authoritative: false` crop that enters no act, no act-group and no proposal
+seal decides nothing whichever count it carries.
+
+A count of two or more used to be a hard refusal instead. The second review
+pass of 2026-08-10 measured what that cost: act a1's and act a2's *padded*
+capture rectangles abut at exactly one row of the shipped fixture page, so a
+single ordinary pen mark in the blank band between the two entries produced a
+candidate touching both, and `initial_pass` raised before the proposal seal was
+written. Configuring an optional, explicitly non-authoritative seat therefore
+turned a complete run into a fatal one with no denominator at all — the exact
+inverse of spec 06's test 5, "removing the proposer changes no authority
+decision (it adds recall, never verdicts)".
 
 Each proposal directly references a `rescue-crop`: the exact unpadded source
-pixels inside the secondary box, with its origin, null padding, transform, and
-image digests. Both
+pixels inside the secondary box, with its origin, null padding, transform,
+image digests and the same `overlapping_claimed_act_count`. Both
 records have `outcome="held"`; the crop says `authority_effect="review-only"`,
 and neither enters an act, a structure region, or the proposal seal. This is the
 terminal review disposition that prevents an additive proposal from existing

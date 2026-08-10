@@ -377,6 +377,35 @@ def _match_structural_group(groups: list[dict], declared_bounds: dict, what: str
     return best
 
 
+def _claim_structural_group(analysis: dict, group: dict, act_key: str, what: str) -> None:
+    """Bind one detected group to one act, and refuse a second claimant.
+
+    `_match_structural_group` answers "which detected group best covers this
+    declared act" for one act at a time, so two acts whose declared rectangles
+    both fall inside a single detected group both match it — the case where the
+    structure pass found one region across a boundary it did not detect (two
+    entries with no margin anchor and fewer blank rows between them than
+    `grouping.DEFAULT_CHAIN_GAP_PX`). Each act's `act-group` artifact would then
+    record the merged rectangle as its own `detected_bounds` and the merged run
+    as its own `body_member_count`, so the record claims detection corroborated
+    each act separately when detection found neither. That is the "silent
+    substitution" `_publish_act_group` documents itself as refusing, and it is a
+    claim about what was measured that was not measured (GOVERNANCE 10).
+
+    A brace-linked pair is not this case and stays legal: `grouping.group_page`
+    returns two distinct groups sharing one anchor, so each act claims its own.
+    """
+    claims = analysis.setdefault("group_claims", {})
+    holder = claims.get(id(group))
+    if holder is not None and holder != act_key:
+        raise ContractError(
+            f"{what}: the detected region {group['bounds']} already corresponds to act "
+            f"{holder!r}; the structure pass found one region where two acts are declared, "
+            "so it corroborates neither and the boundary between them was not detected"
+        )
+    claims[id(group)] = act_key
+
+
 def page_records(context) -> dict[int, dict]:
     """Every page outcome the Exemplar recorded — sealed and refused — by ordinal.
 
@@ -732,6 +761,7 @@ def _publish_act_group(
     primary_group = _match_structural_group(
         analysis["groups"], act_bounds(act), f"act {act['key']}"
     )
+    _claim_structural_group(analysis, primary_group, act["key"], f"act {act['key']}")
     payload: dict = {
         "act_key": act["key"],
         "declared_bounds": act_bounds(act),
@@ -746,6 +776,12 @@ def _publish_act_group(
         continuation_bounds = _bounds_of(continuation)
         continuation_group = _match_structural_group(
             continuation_analysis["groups"], continuation_bounds, f"act {act['key']} continuation"
+        )
+        _claim_structural_group(
+            continuation_analysis,
+            continuation_group,
+            act["key"],
+            f"act {act['key']} continuation",
         )
         # Recorded, not gated: the synthetic fixture's continuation rectangles
         # do not touch either page's edge (`proof/synthetic_pages.py` says
@@ -788,44 +824,53 @@ def _claimed_regions(context, page_ordinal: int) -> list[dict]:
     return claimed
 
 
-def _secondary_rescue_candidates(
-    claimed: list[dict], candidates: list[dict], page_ordinal: int
-) -> list[dict]:
+def _contains(outer: dict, inner: dict) -> bool:
+    return (
+        outer["x"] <= inner["x"]
+        and outer["y"] <= inner["y"]
+        and outer["x"] + outer["w"] >= inner["x"] + inner["w"]
+        and outer["y"] + outer["h"] >= inner["y"] + inner["h"]
+    )
+
+
+def _secondary_rescue_candidates(claimed: list[dict], candidates: list[dict]) -> list[dict]:
     """Every secondary-scan candidate that genuinely adds coverage, none that refine one.
 
-    A candidate touching zero already-claimed acts is real rescue material. One
-    wholly contained by exactly one claim is already inside ordinary coverage
-    and is not a find; merely touching one does not erase the part outside it.
-    One touching two or more is refused outright — the P0-incident-shaped rule,
-    as a hard error rather than a silent decision: a detector box that would
-    reach two already-established acts at once may not decide which one it
-    belongs to, and may not merge or split either.
+    A candidate wholly contained by one claim is already inside ordinary
+    coverage and is not a find; merely touching one does not erase the part
+    outside it. Each surviving candidate is returned with the number of
+    already-claimed acts it touches, because a candidate reaching two of them
+    at once is the P0-incident shape and a reviewer has to be able to see that
+    on the record rather than infer it from geometry.
+
+    That count is recorded, never acted on. This pass may not decide which of
+    two acts such a box belongs to, and it may not merge or split either — but
+    it also may not refuse the run over one, which is what it did until the
+    second review pass of 2026-08-10 measured the consequence: a single
+    review-only box straddling the row where two padded claims abut aborted
+    `initial_pass` before the proposal seal was written, so configuring an
+    optional, explicitly non-authoritative seat turned a complete run into a
+    fatal one with no denominator at all. Spec 06's test 5 requires the
+    opposite — "removing the proposer changes no authority decision (it adds
+    recall, never verdicts)" — and a held, flagged, page-subject rescue crop
+    that enters no act and no seal decides nothing either way.
     """
     rescues = []
     for candidate in candidates:
-        overlapping_acts = {
-            entry["act_id"]
-            for entry in claimed
-            if _overlap_area(entry["bounds"], candidate["bounds"]) > 0
-        }
-        if len(overlapping_acts) >= 2:
-            raise ContractError(
-                f"secondary proposer candidate {candidate['bounds']} on page {page_ordinal} "
-                f"overlaps {len(overlapping_acts)} already-claimed acts; a secondary "
-                "proposer may add recall, never refine or split an established act"
-            )
-        if overlapping_acts and any(
-            entry["act_id"] in overlapping_acts
-            and entry["bounds"]["x"] <= candidate["bounds"]["x"]
-            and entry["bounds"]["y"] <= candidate["bounds"]["y"]
-            and entry["bounds"]["x"] + entry["bounds"]["w"]
-            >= candidate["bounds"]["x"] + candidate["bounds"]["w"]
-            and entry["bounds"]["y"] + entry["bounds"]["h"]
-            >= candidate["bounds"]["y"] + candidate["bounds"]["h"]
-            for entry in claimed
-        ):
+        if any(_contains(entry["bounds"], candidate["bounds"]) for entry in claimed):
             continue
-        rescues.append(candidate)
+        rescues.append(
+            {
+                "candidate": candidate,
+                "overlapping_claimed_act_count": len(
+                    {
+                        entry["act_id"]
+                        for entry in claimed
+                        if _overlap_area(entry["bounds"], candidate["bounds"]) > 0
+                    }
+                ),
+            }
+        )
     return rescues
 
 
@@ -847,10 +892,12 @@ def _publish_secondary_proposals(
     candidates = structure.secondary_scan(
         analysis["width"], analysis["height"], analysis["rows"], background=analysis["background"]
     )
-    rescues = _secondary_rescue_candidates(claimed, candidates, ordinal)
+    rescues = _secondary_rescue_candidates(claimed, candidates)
     image_path = page_record["payload"]["image_path"]
     page_bytes = _read_checked_page_bytes(context, page_record)
-    for index, candidate in enumerate(rescues):
+    for index, rescue_row in enumerate(rescues):
+        candidate = rescue_row["candidate"]
+        overlap_count = rescue_row["overlapping_claimed_act_count"]
         subject = f"{page_identity(context.fixture, ordinal)}-secondary-{index}"
         transform = _crop_transform(ordinal, page_record["subject_id"], candidate["bounds"])
         crop_bytes = crop_png(page_bytes, candidate["bounds"])
@@ -862,6 +909,7 @@ def _publish_secondary_proposals(
             "padding": None,
             "authoritative": False,
             "authority_effect": "review-only",
+            "overlapping_claimed_act_count": overlap_count,
             "transform": transform,
             "transform_digest": geometry.transform_digest(transform),
             "image_path": stored.relative_path,
@@ -882,6 +930,7 @@ def _publish_secondary_proposals(
             "pixel_count": candidate["pixel_count"],
             "authoritative": False,
             "terminal_disposition": "held-for-review",
+            "overlapping_claimed_act_count": overlap_count,
             "rescue_ref": context.input_ref(rescue.relative_path),
             "provenance": secondary,
         }
