@@ -424,7 +424,9 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         act_keys.add(act_key)
         if category not in known_categories:
             raise SchemaRefusal(f"an Armarium projection uses unknown category {category!r}")
-        literal = act.get(CANONICAL_TEXT_FIELD)
+        if CANONICAL_TEXT_FIELD not in act:
+            raise SchemaRefusal("an Armarium projection act has no canonical-text field")
+        literal = act[CANONICAL_TEXT_FIELD]
         regions = act.get("source_regions", [])
         if not isinstance(regions, list):
             raise SchemaRefusal("an Armarium projection act has malformed source-region provenance")

@@ -208,6 +208,20 @@ def test_literal_display_markers_do_not_refuse_or_change_an_established_text(tmp
     assert verify_projection_identity(bundle.data, tmp_path) == {"act-1": literal}
 
 
+def test_an_act_missing_the_canonical_text_field_entirely_is_refused(tmp_path):
+    """A dropped key must refuse like every other malformed field, not raise a bare KeyError."""
+    projection = _projection()
+    held = dict(projection.acts[1])
+    del held["canonical_clean_text"]
+
+    with pytest.raises(SchemaRefusal, match="no canonical-text field"):
+        build_armarium_bundle(
+            replace(projection, acts=(projection.acts[0], held)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
 @pytest.mark.parametrize(
     ("name", "separator"),
     # Written as code points rather than as glyphs: all three are invisible, and a
