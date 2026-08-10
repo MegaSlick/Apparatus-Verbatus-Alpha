@@ -162,6 +162,27 @@ def test_two_acts_with_no_body_gap_still_split_at_the_margin_anchor():
     assert groups[1]["body_members"] == [body_b]
 
 
+def test_a_body_run_starting_slightly_above_its_own_anchor_still_splits():
+    """Ordinary detection jitter, not evidence the second act starts earlier.
+
+    A second act's first body line can land a pixel or two above its own
+    margin anchor's own top edge (scan noise, not an interleaved-margins
+    zero-gap page). A strict, zero-tolerance boundary comparison would count
+    that line as still belonging to the previous zone and silently merge the
+    two acts into one -- the same `anchor_reach_px` slack the anchor
+    attachment test already gives this geometry must also apply to the
+    partition itself.
+    """
+    anchor_a = margin_component(0, h=8)
+    anchor_b = margin_component(50, h=8)
+    body_a = body_component(10, 35)  # y in [10, 45)
+    body_b = body_component(49, 42)  # y in [49, 91): starts 1px above anchor_b
+    groups = group_page([anchor_a, body_a, anchor_b, body_b], PAGE_W, PAGE_H)
+    assert len(groups) == 2
+    assert groups[0]["body_members"] == [body_a]
+    assert groups[1]["body_members"] == [body_b]
+
+
 # --- no picker: permutation invariance ------------------------------------------
 
 

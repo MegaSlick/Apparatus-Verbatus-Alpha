@@ -133,11 +133,23 @@ def _boundaries(anchors: list[dict], brace_min_height_px: int) -> list[int]:
     return sorted(boundaries)
 
 
-def _boundary_index(y: int, boundaries: list[int]) -> int:
-    """How many act-start rows are at or before `y`. A pure partition key."""
+def _boundary_index(y: int, boundaries: list[int], reach: int) -> int:
+    """How many act-start rows are at or before `y`, allowing `reach` pixels of slack.
+
+    A body component's own top edge can land a few pixels before the anchor
+    that actually seeds its act -- ordinary detection jitter, not evidence of
+    an earlier start -- so a boundary within `reach` pixels of `y` still
+    counts as reached. Zero-tolerance equality here would make the split
+    depend on a body run's top edge landing on or after its anchor's top edge
+    to the pixel, which the anchor-attachment overlap test a few lines below
+    already declines to require of the same geometry (it is given
+    `anchor_reach_px` slack); this is the same tolerance applied where the
+    partition itself is decided rather than only where an anchor attaches to
+    an already-decided run.
+    """
     index = 0
     for boundary in boundaries:
-        if boundary <= y:
+        if boundary <= y + reach:
             index += 1
         else:
             break
@@ -145,7 +157,7 @@ def _boundary_index(y: int, boundaries: list[int]) -> int:
 
 
 def _chain_body(
-    body_sorted: list[dict], boundaries: list[int], chain_gap_px: int
+    body_sorted: list[dict], boundaries: list[int], chain_gap_px: int, anchor_reach_px: int
 ) -> list[list[dict]]:
     """Partition y-sorted body components into runs.
 
@@ -162,7 +174,7 @@ def _chain_body(
     previous_bottom: int | None = None
     for component in body_sorted:
         top, bottom = _y_range(component)
-        index = _boundary_index(top, boundaries)
+        index = _boundary_index(top, boundaries, anchor_reach_px)
         starts_new = (
             not current
             or index != current_index
@@ -211,7 +223,7 @@ def group_page(
     )
     boundaries = _boundaries(anchors_sorted, brace_min_height_px)
 
-    runs = _chain_body(body_sorted, boundaries, chain_gap_px)
+    runs = _chain_body(body_sorted, boundaries, chain_gap_px, anchor_reach_px)
 
     provisional: list[tuple[list[dict], list[dict]]] = []
     claimed_anchor_ids: set[int] = set()
@@ -299,11 +311,6 @@ def find_continuation_candidate(
         return None
     if leading["anchors"]:
         return None
-    if not _intervals_overlap(_x_range_of(trailing), _x_range_of(leading), column_overlap_px):
+    if not _intervals_overlap(_x_range(trailing), _x_range(leading), column_overlap_px):
         return None
     return {"page_a_group": trailing, "page_b_group": leading}
-
-
-def _x_range_of(group: ActGroup) -> tuple[int, int]:
-    bounds = group["bounds"]
-    return bounds["x"], bounds["x"] + bounds["w"]
