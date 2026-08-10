@@ -132,7 +132,9 @@ def test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_denominato
     context = recensor.open_context(args, RECENSOR)
 
     with pytest.raises(FatalAccounting, match="manifest disagrees"):
-        recensor.write_partition_receipt(context, recensor.recovery_budget(args.recovery_config))
+        recensor.write_partition_receipt(
+            context, recensor.load_recovery_policy(args.recovery_config)
+        )
 
 
 def test_a_tampered_partition_receipt_is_refused_by_its_self_hash(tmp_path):
@@ -323,7 +325,9 @@ def test_a_review_whose_stored_coverage_disagrees_with_disk_is_refused(tmp_path)
     context = recensor.open_context(args, RECENSOR)
 
     with pytest.raises(FatalAccounting, match="does not retain the act key"):
-        recensor.write_partition_receipt(context, recensor.recovery_budget(args.recovery_config))
+        recensor.write_partition_receipt(
+            context, recensor.load_recovery_policy(args.recovery_config)
+        )
 
 
 def test_an_empty_receipt_may_not_claim_to_be_complete():

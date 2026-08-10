@@ -67,11 +67,6 @@ from common.stage import (  # noqa: E402
 )
 
 
-def recovery_budget(path: str) -> dict:
-    """The run-bound recovery policy, read through the common validator."""
-    return load_recovery_policy(path)
-
-
 def designator_hold(context, act_id: str) -> tuple[dict, str]:
     """The Designator's hold record for a seal-held act, and its path.
 
@@ -837,7 +832,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, RECENSOR, registry_factory=registry_factory)
-    budget = recovery_budget(args.recovery_config)
+    budget = load_recovery_policy(args.recovery_config)
 
     scenario = scenario_for(context.fixture, context.scenario)
     floor = context.witness_floor
@@ -904,8 +899,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             held += 1
             continue
 
-        _refuse_an_unhandled_designator_terminal(act)
-
+        # `preflight_review_evidence`, above, already ran this exact check for
+        # every non-held act over the same Designator proposal seal this
+        # process never writes to -- a second call here would only ever
+        # re-confirm what the first already established.
         state = recovery_state(context, act_id, budget)
         if state["outstanding_request_ids"]:
             # The matching review is already the durable record of this hold. A

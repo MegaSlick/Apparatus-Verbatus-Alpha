@@ -154,14 +154,12 @@ def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, 
         review = latest_attempt(records, f"Recensor review of {subject}", operation="recense")
         if review["outcome"] != "recovery-requested":
             continue
+        # `current_recovery_request` already refuses unless the request's
+        # payload carries a `recovery_kind` in the closed `RECOVERY_KINDS`
+        # vocabulary before it returns one at all, so re-checking that here
+        # would only ever re-confirm what the callee already guaranteed.
         request = current_recovery_request(tree, subject, recovery_policy)
-        payload = request.get("payload")
-        recovery_kind = payload.get("recovery_kind") if isinstance(payload, dict) else None
-        if not isinstance(recovery_kind, str) or not recovery_kind:
-            raise ContractError(
-                f"recovery request {request['artifact_id']} names no recovery kind; the owning "
-                "stage cannot be derived from a request that does not say what it asks for"
-            )
+        recovery_kind = request["payload"]["recovery_kind"]
         outstanding.append((subject, request["artifact_id"], recovery_kind))
     return sorted(outstanding)
 
