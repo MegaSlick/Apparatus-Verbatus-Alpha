@@ -733,6 +733,27 @@ def test_console_interrupt_never_prints_a_raw_traceback(
     assert "Traceback" not in captured
 
 
+def test_console_interrupt_at_the_interactive_prompt_never_prints_a_raw_traceback(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The interactive path (empty argv) used to run before this module's own
+
+    try/except existed, so a Ctrl+C while answering "What would you like to
+    do?" raised straight past it.
+    """
+
+    monkeypatch.setattr(
+        "builtins.input", lambda _prompt="": (_ for _ in ()).throw(KeyboardInterrupt)
+    )
+
+    assert cli.main([]) == 2
+    captured = capsys.readouterr().out
+    assert "What happened:" in captured
+    assert "What it means:" in captured
+    assert "Next step:" in captured
+    assert "Traceback" not in captured
+
+
 def test_console_close_with_no_saved_pod_refuses_before_prompting(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

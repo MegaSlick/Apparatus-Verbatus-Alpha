@@ -118,12 +118,16 @@ def build_parser() -> PlainParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if not arguments:
-        arguments = _interactive_arguments()
-        if not arguments:
-            return 0
     parser = build_parser()
     try:
+        if not arguments:
+            # Inside the try, not before it: a Ctrl+C at the interactive prompt
+            # must reach the same three-part contract as every other failure,
+            # not a raw traceback this module's own docstring promises never
+            # to show.
+            arguments = _interactive_arguments()
+            if not arguments:
+                return 0
         args = parser.parse_args(arguments)
         workspace = args.workspace.resolve()
         state = args.state_dir if args.state_dir.is_absolute() else workspace / args.state_dir
