@@ -255,6 +255,10 @@ class RunPodProvider:
         record = self._record(_object(response.body, "RunPod adopt"))
         if record.pod_id != pod_id:
             raise ProviderFailure("RunPod adopt response names a different pod id")
+        if record.state != "RUNNING":
+            raise ProviderFailure(
+                f"RunPod cannot adopt pod {pod_id!r}: desiredStatus is {record.state!r}, not RUNNING"
+            )
         return record
 
     def status(self, pod_id: str) -> ProviderStatus:

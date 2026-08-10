@@ -257,6 +257,21 @@ def test_adopting_an_absent_pod_refuses_rather_than_inventing_a_record() -> None
         provider(transport).adopt("pod-1")
 
 
+@pytest.mark.parametrize("desired_status", ["EXITED", "TERMINATED"])
+def test_adopting_a_non_running_pod_is_refused_with_its_status_named(desired_status: str) -> None:
+    """desiredStatus is validated then must actually gate adoption (audit-d Finding 13).
+
+    A pod that is EXITED or TERMINATED can still answer 200 on GET; walking it
+    through the full paid-gate would manufacture a lease and controller
+    receipt for a pod that will never run.
+    """
+
+    transport = ScriptedTransport([json_response(pod_payload(desiredStatus=desired_status))])
+
+    with pytest.raises(ProviderFailure, match=f"desiredStatus is {desired_status!r}, not RUNNING"):
+        provider(transport).adopt("pod-1")
+
+
 @pytest.mark.parametrize("pod_id", [".", "..", "pod\nheader", "pod/child", "pod?query"])
 def test_provider_refuses_unsafe_pod_ids_before_transport(pod_id: str) -> None:
     transport = ScriptedTransport([])
