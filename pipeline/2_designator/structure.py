@@ -162,20 +162,33 @@ def label_components(
     for pixel in pixels:
         members.setdefault(find(pixel), []).append(pixel)
 
-    components: list[Component] = []
+    components: list[tuple[Component, tuple[tuple[int, int], ...]]] = []
     for group in members.values():
         xs = [x for x, _ in group]
         ys = [y for _, y in group]
         x0, x1 = min(xs), max(xs)
         y0, y1 = min(ys), max(ys)
         components.append(
-            {
-                "bounds": {"x": x0, "y": y0, "w": x1 - x0 + 1, "h": y1 - y0 + 1},
-                "pixel_count": len(group),
-            }
+            (
+                {
+                    "bounds": {"x": x0, "y": y0, "w": x1 - x0 + 1, "h": y1 - y0 + 1},
+                    "pixel_count": len(group),
+                },
+                # Two disjoint components can share a (top, left) origin -- the
+                # sort key below -- while differing everywhere else; a pixel
+                # belongs to exactly one component, so no two components can
+                # ever share the same sorted member-pixel tuple. Carried only
+                # to break that tie, never returned: two components with the
+                # same origin still need *some* deterministic order, and
+                # falling back to `members.values()`'s own iteration order
+                # (a dict keyed by union-find root, itself pixel hash order)
+                # would make that order depend on set/dict construction rather
+                # than on the ink itself.
+                tuple(sorted(group)),
+            )
         )
-    components.sort(key=lambda component: (component["bounds"]["y"], component["bounds"]["x"]))
-    return components
+    components.sort(key=lambda entry: (entry[0]["bounds"]["y"], entry[0]["bounds"]["x"], entry[1]))
+    return [component for component, _members in components]
 
 
 def scan_ink_components(

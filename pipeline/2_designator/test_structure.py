@@ -11,6 +11,7 @@ from structure import (
     PRIMARY_MARGIN,
     SECONDARY_MARGIN,
     infer_background,
+    label_components,
     primary_scan,
     scan_ink_components,
     secondary_scan,
@@ -127,7 +128,12 @@ def test_a_gap_beyond_tolerance_stays_two_components():
     assert len(components) == 2
 
 
-def test_zero_gap_tolerance_is_strict_four_connectivity():
+def test_zero_gap_tolerance_still_requires_pixels_to_touch():
+    """A tolerance of 0 bridges no gap at all: a 1px blank column keeps two
+    blocks split. This does not test connectivity shape (4- vs 8-neighbour) --
+    the blocks are row-aligned rectangles with no diagonal-only adjacency to
+    tell the two apart. See `test_zero_gap_tolerance_still_connects_diagonal_neighbours`
+    for that."""
     width, height = 40, 20
     rows = blank_rows(width, height)
     paint_rect(rows, 2, 5, 5, 5, INK)
@@ -136,6 +142,50 @@ def test_zero_gap_tolerance_is_strict_four_connectivity():
         width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN, gap_tolerance_px=0
     )
     assert len(components) == 2
+
+
+def test_zero_gap_tolerance_still_connects_diagonal_neighbours():
+    """Connectivity here is 8-connected (Chebyshev radius), not 4-connected:
+    two ink pixels touching only at a corner still union into one component
+    even at zero gap tolerance. A pen stroke's own diagonal jitter must not
+    scan as two separate marks."""
+    width, height = 10, 10
+    rows = blank_rows(width, height)
+    paint_pixel(rows, 2, 2, INK)
+    paint_pixel(rows, 3, 3, INK)  # touches (2, 2) only diagonally
+    components = scan_ink_components(
+        width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN, gap_tolerance_px=0
+    )
+    assert len(components) == 1
+
+
+def test_two_components_sharing_a_top_left_origin_still_sort_deterministically():
+    """`label_components` sorts by (top, left) only -- a component's own origin,
+    not its full bounding box. Two disjoint components can share that origin
+    while differing in every other respect: a lone pixel at (0, 0), and a
+    four-pixel diagonal staircase from (3, 0) to (0, 3) whose own bounds also
+    start at (0, 0). Neither touches the other (every cross-pixel Chebyshev
+    distance is at least 2, above the zero-tolerance radius of 1), so both
+    survive as separate components with a tied sort key. Without a tiebreak
+    beyond (y, x), their relative order would fall back to `members.values()`'s
+    dict-iteration order -- itself a function of Python's pixel-tuple hashing,
+    not of the ink -- which is deterministic within one process but not a
+    documented property a caller may rely on."""
+    pixels = {(0, 0), (0, 3), (1, 2), (2, 1), (3, 0)}
+    components = label_components(pixels, gap_tolerance_px=0)
+    assert len(components) == 2
+    assert [c["bounds"]["y"] for c in components] == [0, 0]
+    assert [c["bounds"]["x"] for c in components] == [0, 0]  # both origins genuinely tie
+    assert [c["bounds"] for c in components] == [
+        {"x": 0, "y": 0, "w": 1, "h": 1},
+        {"x": 0, "y": 0, "w": 4, "h": 4},
+    ]
+    assert [c["pixel_count"] for c in components] == [1, 4]
+
+    # Rerun with the same pixels inserted in a different order (a fresh set
+    # literal, same elements): the result must not depend on that order.
+    reordered = {(3, 0), (2, 1), (0, 0), (1, 2), (0, 3)}
+    assert label_components(reordered, gap_tolerance_px=0) == components
 
 
 # --- primary vs secondary sensitivity ----------------------------------------
