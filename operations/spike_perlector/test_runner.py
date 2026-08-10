@@ -117,6 +117,38 @@ def test_missing_but_proved_response_remains_a_scored_matrix_cell():
     assert primed.metrics.cer == 1
 
 
+def test_an_overlong_response_scores_malformed_instead_of_discarding_the_matrix():
+    """A model producing unmeasurable text (README section 7's ``malformed`` row)
+    is a named response state, not a harness delivery failure: the cell it broke
+    is recorded and scored empty, and every other cell survives with it."""
+
+    base = identity("base-private", 1)
+    act = evaluation_act()
+    candidate = FakeCandidate(
+        base,
+        replies={
+            (act.opaque_act_id, Condition.LECTIO_NUDA): FakeReply(
+                OutputStatus.COMPLETE, "x" * 20_001
+            )
+        },
+    )
+    run = run_matrix(
+        (candidate,),
+        (act,),
+        prompt_registry=registry(base),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert len(run.cells) == len(ALL_CONDITIONS)
+    broken = next(cell for cell in run.cells if cell.perlectio.condition is Condition.LECTIO_NUDA)
+    assert broken.perlectio.status is OutputStatus.MALFORMED
+    assert broken.perlectio.text is None
+    assert broken.raw_response_text is None
+    assert broken.score.cer.rate == 1.0
+    survivors = [cell for cell in run.cells if cell.perlectio.condition is not Condition.LECTIO_NUDA]
+    assert all(cell.perlectio.status is OutputStatus.COMPLETE for cell in survivors)
+
+
 def test_a_refused_cell_retaining_stray_raw_text_is_refused_on_replay():
     """The replay must re-check raw_response_text, not the self-consistent
     Perlectio.text, which is None for a non-reading status either way."""

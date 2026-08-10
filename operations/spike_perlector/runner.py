@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from math import fsum, isfinite
 from typing import Iterable
 
-from .errors import MatrixRefusal, PromptFidelityRefusal
+from .errors import MatrixRefusal, MeasurementRefusal, PromptFidelityRefusal
 from .gates import RunAuthorization, require_authorized_delivery
 from .holdout import EvaluationManifest, PrivateSampleAccounting
 from .models import (
@@ -713,10 +713,28 @@ def _execute_matrix(
                 try:
                     response = candidate.read(request)
                 except Exception as error:
-                    raise MatrixRefusal(
-                        "candidate adapter failed before the harness could prove delivery; "
-                        "the matrix is invalid rather than a model score"
-                    ) from error
+                    if type(error) is MeasurementRefusal:
+                        # The adapter received its delivery and produced a
+                        # response; that response is simply unmeasurable (too
+                        # long, an unpaired surrogate, an excessive
+                        # combining-mark run). README section 7 predeclares
+                        # `malformed` as a named response state for exactly
+                        # this -- it is scored, not a reason to discard every
+                        # cell already paid for.
+                        response = CandidateResponse(
+                            status=OutputStatus.MALFORMED,
+                            text=None,
+                            elapsed_ms=None,
+                            cost_usd=None,
+                            observed_prompt_sha256=request.prompt_format_sha256,
+                            observed_dossier_sha256=dossier.wire_sha256,
+                            observed_delivery_sha256=request.delivery_sha256,
+                        )
+                    else:
+                        raise MatrixRefusal(
+                            "candidate adapter failed before the harness could prove delivery; "
+                            "the matrix is invalid rather than a model score"
+                        ) from error
                 if not isinstance(response, CandidateResponse):
                     raise MatrixRefusal("candidate adapter did not return CandidateResponse")
                 if response.observed_prompt_sha256 != request.prompt_format_sha256:
