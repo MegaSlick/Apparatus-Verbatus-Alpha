@@ -29,6 +29,7 @@ from operations.spike_perlector.roster import (
     FORBIDDEN_ATTESTATOR_SOURCE,
     STOCK_BASE_SOURCE,
     CandidateRoster,
+    validate_perlector_candidate,
 )
 from operations.spike_perlector.runner import run_declared_roster_matrix, run_matrix
 from operations.spike_perlector.testkit import (
@@ -550,3 +551,38 @@ def test_declared_run_refuses_mixed_selected_material_classes_even_when_one_is_e
             sample_accounting=accounting,
         )
     assert all(candidate.requests == [] for candidate in candidates)
+
+
+def test_the_no_self_witness_refusal_survives_a_differently_spelled_source_ref():
+    """The rule is structural, so the comparison must not be a string match.
+
+    A source reference is written by hand into configuration, and the same model
+    arrives spelled several ways. Compared exactly, each of these walked the
+    Attestator straight past the one check standing in its way — and a refusal
+    that does not fire leaves no trace. GOVERNANCE 3 and hard rule 8: the
+    Perlector reads and never picks among witnesses, so a witness in the
+    candidate roster is that rule broken at the root. Found by CodeRabbit.
+    """
+
+    for spelling in (
+        f"  {FORBIDDEN_ATTESTATOR_SOURCE}  ",
+        FORBIDDEN_ATTESTATOR_SOURCE.upper(),
+        FORBIDDEN_ATTESTATOR_SOURCE.lower(),
+        f"{FORBIDDEN_ATTESTATOR_SOURCE}@main",
+        f"{FORBIDDEN_ATTESTATOR_SOURCE}@3f9a1c2",
+    ):
+        with pytest.raises(CandidateRosterRefusal, match="Attestator"):
+            validate_perlector_candidate(identity("forbidden-private", 1, source_ref=spelling))
+
+
+def test_a_genuinely_different_model_is_still_accepted_at_that_boundary():
+    """Invariant #14: the strictness above must not have been bought by refusing
+    good input. A repository whose name merely contains the forbidden one, or
+    shares its owner, is a different model and passes."""
+
+    for allowed in (
+        STOCK_BASE_SOURCE,
+        "Teklia/Some-Other-Model",
+        f"NotTeklia/{FORBIDDEN_ATTESTATOR_SOURCE.split('/', 1)[1]}",
+    ):
+        validate_perlector_candidate(identity("fine-private", 1, source_ref=allowed))

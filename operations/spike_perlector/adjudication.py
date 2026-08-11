@@ -92,7 +92,19 @@ def _opcodes(first: str, second: str) -> list[tuple[str, int, int, int, int]]:
     the protocol tells an adjudicator to call, on bare strings.
     """
 
-    for text in (first, second):
+    for name, text in (("first", first), ("second", second)):
+        # A type check rather than `require_measurable_text`, which refuses the
+        # empty string: the protocol pins "empty against `abc`" as a case this
+        # function must answer, so emptiness is valid input here. What is not
+        # valid is something that merely answers to `len()` — bytes, a list —
+        # which would reach `SequenceMatcher` and be aligned as a sequence of
+        # something other than characters, producing offsets into a text that
+        # does not exist. `disagreement_spans` takes bare strings from an
+        # adjudicator, so this is the boundary. Found by CodeRabbit.
+        if not isinstance(text, str):
+            raise AdjudicationRefusal(
+                f"the {name} draft is {type(text).__name__}, not the text this aligns"
+            )
         if len(text) > MAX_TEXT_LENGTH:
             raise AdjudicationRefusal(
                 f"a text of {len(text)} characters exceeds the "

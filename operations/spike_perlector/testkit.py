@@ -101,8 +101,13 @@ def evaluation_act(
             ),
             gaps=gaps,
         ),
+        # `is None`, not truthiness: an explicitly supplied empty tuple means a
+        # caller wants an act with no witnesses, and `or` silently handed it the
+        # default witness instead — so a test written to prove behaviour with no
+        # Testimonia was proving it with one. Found by CodeRabbit.
         testimonia=testimonia
-        or (
+        if testimonia is not None
+        else (
             Testimonium(
                 private_source_id="synthetic-source-private",
                 public_source_index=1,

@@ -12,10 +12,33 @@ STOCK_BASE_SOURCE = "Qwen/Qwen3.5-9B"
 FORBIDDEN_ATTESTATOR_SOURCE = "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR"
 
 
-def validate_perlector_candidate(identity: ResolvedIdentity) -> None:
-    """Apply the structural no-self-witness rule at every execution boundary."""
+def _repository_of(source_ref: object) -> str:
+    """The comparable repository name inside a source reference.
 
-    if identity.source_ref == FORBIDDEN_ATTESTATOR_SOURCE:
+    A source reference is written by hand into configuration, so the same model
+    arrives spelled several ways: with surrounding whitespace, in a different case,
+    or pinned as ``repository@revision``. An exact string comparison treats every
+    one of those as a different model.
+    """
+
+    if not isinstance(source_ref, str):
+        return ""
+    return source_ref.strip().split("@", 1)[0].strip().casefold()
+
+
+def validate_perlector_candidate(identity: ResolvedIdentity) -> None:
+    """Apply the structural no-self-witness rule at every execution boundary.
+
+    **The comparison is normalized, because this is a structural rule and not a
+    string match.** GOVERNANCE 3 and CLAUDE.md hard rule 8 say the Perlector reads
+    and never picks among witnesses; a witness sitting in the candidate roster is
+    that rule broken at the root. Compared exactly, a trailing space, a capital
+    letter, or a `@revision` pin walked the Attestator straight through the one
+    check standing in its way — and the refusal that did not fire is invisible.
+    Found by CodeRabbit on the rebased branch.
+    """
+
+    if _repository_of(identity.source_ref) == _repository_of(FORBIDDEN_ATTESTATOR_SOURCE):
         raise CandidateRosterRefusal(
             "the Teklia RecordGold ATR model is an Attestator and cannot be a Perlector candidate"
         )

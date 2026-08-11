@@ -254,3 +254,22 @@ def test_the_sealed_draw_selects_exactly_these_acts_and_a_reader_can_recompute_i
         ).digest(),
     )[:2]
     assert {item.opaque_act_id for item in recomputed} == {"opaque-3", "opaque-4"}
+
+
+def test_an_exclusion_that_is_not_a_checked_exclusion_is_refused():
+    """The scoreable IDs beside it were already type-checked; these were not.
+
+    An exclusion is Tyrel's approved removal of an act from the scored set, and
+    it lands in the accounting digest and record. Anything that merely answered
+    to `.opaque_act_id` was taken at its word. Found by CodeRabbit.
+    """
+
+    class LooksLikeOne:
+        opaque_act_id = "act-1"
+
+    with pytest.raises(HoldoutRefusal, match="unchecked exclusion"):
+        PrivateSampleAccounting(
+            manifest_sha256=digest("manifest"),
+            scoreable_opaque_act_ids=("act-2",),
+            exclusions=(LooksLikeOne(),),
+        )

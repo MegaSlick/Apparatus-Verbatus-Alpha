@@ -292,6 +292,13 @@ class PrivateSampleAccounting:
             for opaque_act_id in self.scoreable_opaque_act_ids
         ):
             raise HoldoutRefusal("private sample accounting has an invalid scoreable act ID")
+        # Type-checked before its ID is read, the same way the scoreable IDs
+        # above already are. An exclusion is Tyrel's approved removal of an act
+        # from the scored set, and it lands in the digest and the accounting
+        # record; anything that merely answers to `.opaque_act_id` was being
+        # taken at its word. Found by CodeRabbit.
+        if any(not isinstance(item, ReferenceExclusion) for item in self.exclusions):
+            raise HoldoutRefusal("private sample accounting has an unchecked exclusion")
         exclusion_ids = [item.opaque_act_id for item in self.exclusions]
         if len(set(exclusion_ids)) != len(exclusion_ids):
             raise HoldoutRefusal("private sample accounting repeats an excluded act")

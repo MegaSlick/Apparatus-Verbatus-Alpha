@@ -297,3 +297,34 @@ def test_the_gap_excised_form_is_bound_as_held_out_evidence():
 
     truth = checked("Jean UNREAD Baptiste", (GapSpan(5, 12),))
     assert sha256_bytes(b"Jean Baptiste") in truth.held_out_evidence_sha256s
+
+
+def test_disagreement_spans_refuses_something_that_is_not_text():
+    """Emptiness is valid input here; being the wrong type is not.
+
+    The protocol pins "empty against `abc`" as a case this must answer, so the
+    bound cannot be `require_measurable_text`, which refuses empty strings. What
+    must be refused is a value that merely answers to `len()` — bytes, a list —
+    which reaches `SequenceMatcher` and is aligned as a sequence of something
+    other than characters, returning offsets into a text that does not exist.
+    Found by CodeRabbit.
+    """
+
+    for wrong in (b"abc", ["a", "b", "c"], 123, None):
+        with pytest.raises(AdjudicationRefusal, match="not the text this aligns"):
+            disagreement_spans(wrong, "abc")
+        with pytest.raises(AdjudicationRefusal, match="not the text this aligns"):
+            disagreement_spans("abc", wrong)
+
+
+def test_disagreement_spans_still_answers_the_empty_case_the_protocol_pins():
+    """Invariant #14: the refusal above must not have cost a documented answer.
+
+    An insertion is a zero-width span at the offset it would land in the first
+    draft, which is why the empty-against-`abc` case is `((0, 0),)` and not `()`
+    — there *is* a disagreement, and it has nowhere to be wide.
+    """
+
+    assert disagreement_spans("", "abc") == ((0, 0),)
+    assert disagreement_spans("abc", "") == ((0, 3),)
+    assert disagreement_spans("", "") == ()

@@ -271,3 +271,43 @@ def test_resolved_identity_accepts_a_genuine_delivery_mode():
         delivery=DeliveryMode.LOCAL,
     )
     assert resolved.delivery is DeliveryMode.LOCAL
+
+
+def _witness_primed_perlectio(**overrides):
+    fields = dict(
+        identity=identity("candidate", 1),
+        opaque_act_id="act-1",
+        condition=Condition.WITNESS_PRIMED,
+        status=OutputStatus.COMPLETE,
+        text="a reading",
+        dossier_sha256=digest("dossier"),
+        prompt_format_sha256=digest("prompt"),
+        delivery_sha256=digest("delivery"),
+        image_present=True,
+        testimonia_count=1,
+        dissent=DissentSummary(0, 0, 0),
+        elapsed_ms=None,
+        cost_usd=None,
+    )
+    fields.update(overrides)
+    return Perlectio(**fields)
+
+
+def test_a_perlectio_testimonia_count_must_be_a_count_before_it_is_read_as_a_flag():
+    """Every condition rule reads this field for truthiness alone.
+
+    So `-1` and `True` both passed as "saw Testimonia" and were then retained as
+    evidence — and the number travels into the dissent and parroting measures,
+    where a count that is not a count is a measurement claim about something that
+    never happened (GOVERNANCE 10). Found by CodeRabbit.
+    """
+
+    for wrong in (True, -1, 2.0, "3"):
+        with pytest.raises(MeasurementRefusal, match="testimonia_count"):
+            _witness_primed_perlectio(testimonia_count=wrong)
+
+
+def test_a_real_testimonia_count_is_still_accepted():
+    """Invariant #14, the other direction."""
+
+    assert _witness_primed_perlectio(testimonia_count=3).testimonia_count == 3

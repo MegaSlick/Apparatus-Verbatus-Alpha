@@ -832,6 +832,16 @@ class Perlectio:
                 )
         elif self.image_present:
             raise MeasurementRefusal("image-absent Perlectio claims an image was present")
+        # Checked as a count before it is read as a flag. Every rule below tests
+        # it for truthiness alone, so `-1` and `True` both pass as "saw
+        # Testimonia" and are then retained as evidence — and this number travels
+        # into the dissent and parroting measures, where a count that is not a
+        # count is a measurement claim about something that never happened
+        # (GOVERNANCE 10). Found by CodeRabbit.
+        if not isinstance(self.testimonia_count, int) or isinstance(self.testimonia_count, bool):
+            raise MeasurementRefusal("Perlectio testimonia_count must be an integer count")
+        if self.testimonia_count < 0:
+            raise MeasurementRefusal("Perlectio testimonia_count cannot be negative")
         if self.condition is Condition.LECTIO_NUDA:
             if self.testimonia_count:
                 raise MeasurementRefusal("Lectio nuda Perlectio claims it saw Testimonia")
