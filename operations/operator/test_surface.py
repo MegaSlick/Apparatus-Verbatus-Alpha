@@ -1761,6 +1761,49 @@ def test_an_evidence_bundle_short_of_run_json_refuses_rather_than_saying_complet
     assert not destination.exists(), "a refused bundle must not leave a file behind"
 
 
+def test_an_evidence_bundle_whose_armarium_is_a_file_refuses_too(tmp_path: Path) -> None:
+    """Present is not the same as the right kind, and `exists()` cannot tell them apart.
+
+    A `7_armarium` that is a regular file passes an existence check, takes the
+    `is_file()` arm of the writer's loop, and is archived as a single member — so
+    the bundle carries none of the Armarium output and still records itself
+    complete. That is the same defect as the missing `run.json` above, reached
+    through a different door, and the first version of this repair closed only the
+    door it came in by. Found by CodeRabbit reviewing that repair.
+    """
+
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "run-with-a-file-where-a-stage-belongs"
+    root = run_root / run_id
+    root.mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    (root / "7_armarium").write_text("not a directory", encoding="utf-8")
+
+    destination = tmp_path / "bundle-wrong-kind.zip"
+    with pytest.raises(OperatorError) as refusal:
+        surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert "7_armarium is not a directory" in (refusal.value.detail or "")
+    assert not destination.exists(), "a refused bundle must not leave a file behind"
+
+
+def test_an_evidence_bundle_whose_run_authority_is_a_directory_refuses(tmp_path: Path) -> None:
+    """The mirror case: `run.json` present as a directory would be rglob-ed in whole."""
+
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "run-whose-authority-is-a-directory"
+    root = run_root / run_id
+    (root / "run.json").mkdir(parents=True)
+    (root / "7_armarium").mkdir(parents=True)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface._write_base_armarium_bundle(run_root, run_id, tmp_path / "bundle-dir.zip")
+
+    assert "run.json is not a regular file" in (refusal.value.detail or "")
+
+
 def test_the_top_of_the_reviewed_margin_range_passes_through_unchanged(tmp_path: Path) -> None:
     """3600 is both the floor and the top of the accepted range, so nothing is raised.
 

@@ -1326,23 +1326,44 @@ class OperatorSurface:
     def _write_base_armarium_bundle(self, run_root: Path, run_id: str, destination: Path) -> None:
         tree = RunTree(run_root, run_id)
         source = tree.root
-        selected = [source / "run.json", source / "7_armarium"]
-        # **A member that is neither a file nor a directory was silently dropped.**
-        # The loop below is `if is_file() ... elif is_dir()`, so an absent
-        # `run.json` matched neither arm, contributed nothing, and the receipt
-        # still recorded `"state": "complete"` -- a bundle short of the record
-        # that says what run produced it, describing itself as whole. GOVERNANCE 2
-        # is exactly this: "a partial result is visibly partial; 'complete' is
-        # refused unless everything reconciles." Both members are required, so
-        # missing one is a refusal rather than a smaller bundle.
-        missing = [entry for entry in selected if not entry.exists()]
-        if missing:
+        run_authority = source / "run.json"
+        armarium = source / "7_armarium"
+        selected = [run_authority, armarium]
+        # **A member of the wrong kind was written as complete, same as a missing one.**
+        # The loop below is `if is_file() ... elif is_dir()`, so an absent `run.json`
+        # matched neither arm, contributed nothing, and the receipt still recorded
+        # `"state": "complete"` -- a bundle short of the record saying which run
+        # produced it, describing itself as whole.
+        #
+        # Checking `exists()` alone closed only half of that, and CodeRabbit caught
+        # the other half on this very repair: a `7_armarium` that is a **regular
+        # file** exists, takes the `is_file()` arm, and is written as a single
+        # member -- so the bundle ships without any of the Armarium output and
+        # still says complete. That is the same defect through a different door,
+        # which is the shape this whole review keeps finding. So each member is
+        # required to be the *kind* it is expected to be, not merely present.
+        #
+        # GOVERNANCE 2: "a partial result is visibly partial; 'complete' is refused
+        # unless everything reconciles."
+        wrong = []
+        if not run_authority.is_file():
+            wrong.append(
+                "run.json is missing"
+                if not run_authority.exists()
+                else "run.json is not a regular file"
+            )
+        if not armarium.is_dir():
+            wrong.append(
+                "7_armarium is missing"
+                if not armarium.exists()
+                else "7_armarium is not a directory"
+            )
+        if wrong:
             raise OperatorError(
                 ErrorCode.EXPORT_FAILED,
                 detail=(
-                    "the Armarium evidence bundle is missing "
-                    + ", ".join(sorted(str(entry.relative_to(source)) for entry in missing))
-                    + " and would have been written as complete without them"
+                    "the Armarium evidence bundle cannot be written as complete: "
+                    + "; ".join(wrong)
                 ),
             )
         temporary = destination.with_name(f".{destination.name}.tmp")
