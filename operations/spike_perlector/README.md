@@ -287,7 +287,7 @@ A dated finding conforms to `reading_claim_public_finding.schema.json`, which li
 | Dependency | Pin | Use | Source and licence |
 |---|---:|---|---|
 | RapidFuzz | 3.14.5 | Unit-cost Levenshtein distance and edit operations over already-normalized units. | [source](https://github.com/rapidfuzz/RapidFuzz/tree/v3.14.5), [MIT licence](https://github.com/rapidfuzz/RapidFuzz/blob/v3.14.5/LICENSE) |
-| uniseg | 0.10.1 | UAX #29 extended grapheme-cluster segmentation after framework normalization. | [source](https://github.com/rivo/uniseg-python/tree/v0.10.1), [MIT licence](https://github.com/rivo/uniseg-python/blob/v0.10.1/LICENSE) |
+| uniseg | 0.10.1 | UAX #29 extended grapheme-cluster segmentation after framework normalization. | Masaaki Shibata, [source](https://bitbucket.org/emptypage/uniseg-py), MIT licence (Copyright (c) 2013-2024 Masaaki Shibata), read from the installed distribution's own metadata |
 
 The framework owns normalization; neither dependency gets to normalize text. This
 protocol and the repository lock record the dependency pins; every real run records the

@@ -154,12 +154,24 @@ class DataGateAuthority:
             raise DisclosureRefusal(
                 f"current data-gate approval is unavailable: {error}"
             ) from error
-        return cls(
-            policy_content=policy_content,
-            approval_reference=approval_reference,
-            approval_record=record,
-            approval_bytes=payload,
-        )
+        try:
+            return cls(
+                policy_content=policy_content,
+                approval_reference=approval_reference,
+                approval_record=record,
+                approval_bytes=payload,
+            )
+        except TypeError as error:
+            # Strict canonicalization refuses a float or a non-string key by raising
+            # `TypeError`, and the construction that triggers it sat outside the
+            # `try` above — so non-canonical policy content left this gate as a bare
+            # Python exception rather than a `DisclosureRefusal`. The refusal was
+            # restored by `96e1f59`; the *governed* refusal was not. A caller
+            # catching `DisclosureRefusal` to hold would not have caught this at all.
+            # Found by the Opus read of this branch.
+            raise DisclosureRefusal(
+                f"data-gate policy content cannot be canonically bound: {error}"
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +234,17 @@ class NormalizationApproval:
         read_bytes: Callable[[str], bytes],
     ) -> "NormalizationApproval":
         """Load a profile selection through an immutable Tyrel approval artifact."""
+
+        # Checked before it is dereferenced, for the reason `DataGateAuthority.load`
+        # gives: reading `.relative_path` off a missing reference reports a Python
+        # attribute where the governed condition is the absence of Tyrel's approval.
+        # That fix reached one of four loaders; this is another. Found by the Opus
+        # read of this branch.
+        if not isinstance(approval_reference, ApprovalRecordReference):
+            raise DisclosureRefusal(
+                "normalization approval is missing; this run requires a current "
+                "approval-record artifact"
+            )
 
         try:
             payload = read_bytes(approval_reference.relative_path)
@@ -334,6 +357,17 @@ class ThirdPartyTransmissionApproval:
         read_bytes: Callable[[str], bytes],
     ) -> "ThirdPartyTransmissionApproval":
         """Load an immutable vendor/pages approval from an approved private reader."""
+
+        # Checked before it is dereferenced, for the reason `DataGateAuthority.load`
+        # gives: reading `.relative_path` off a missing reference reports a Python
+        # attribute where the governed condition is the absence of Tyrel's approval.
+        # That fix reached one of four loaders; this is another. Found by the Opus
+        # read of this branch.
+        if not isinstance(approval_reference, ApprovalRecordReference):
+            raise DisclosureRefusal(
+                "third-party transmission approval is missing; this run requires a current "
+                "approval-record artifact"
+            )
 
         try:
             payload = read_bytes(approval_reference.relative_path)
@@ -481,6 +515,16 @@ class RunPlanApproval:
         read_bytes: Callable[[str], bytes],
     ) -> "RunPlanApproval":
         """Load Tyrel's immutable approval of this exact private run plan."""
+
+        # Checked before it is dereferenced, for the reason `DataGateAuthority.load`
+        # gives: reading `.relative_path` off a missing reference reports a Python
+        # attribute where the governed condition is the absence of Tyrel's approval.
+        # That fix reached one of four loaders; this is another. Found by the Opus
+        # read of this branch.
+        if not isinstance(approval_reference, ApprovalRecordReference):
+            raise DisclosureRefusal(
+                "run-plan approval is missing; this run requires a current approval-record artifact"
+            )
 
         try:
             payload = read_bytes(approval_reference.relative_path)

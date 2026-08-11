@@ -519,3 +519,51 @@ def test_policy_content_that_cannot_be_canonicalized_refuses_rather_than_aliasin
         DataGateAuthority.scope_digest(policy_content={1: "same-json"})
     with pytest.raises(TypeError, match="float"):
         DataGateAuthority.scope_digest(policy_content={"retention_days": 1.5})
+
+
+def test_non_canonical_policy_content_refuses_as_a_disclosure_not_a_type_error():
+    """The gate's refusal must be the governed one, not a bare `TypeError`.
+
+    Strict canonicalization refuses a float or a non-string key by raising
+    `TypeError`, and the construction that triggers it sat outside the `try` that
+    converts failures into `DisclosureRefusal` — so a caller catching
+    `DisclosureRefusal` in order to hold would not have caught this at all. The
+    refusal was restored when the digest was made strict; the *governed* refusal
+    was not. Found by the Opus read of this branch.
+    """
+
+    reference, payload = approval_reference_for(
+        action="other",
+        target_version_hash=DataGateAuthority.scope_digest(policy_content=POLICY),
+    )
+    with pytest.raises(DisclosureRefusal, match="cannot be canonically bound"):
+        DataGateAuthority.load(
+            policy_content={"retention_days": 1.5},
+            approval_reference=reference,
+            read_bytes=lambda _path: payload,
+        )
+
+
+def test_every_approval_loader_names_a_missing_approval_rather_than_an_attribute():
+    """The fix reached one loader of four; the other three said `'NoneType' object
+    has no attribute 'relative_path'` — verbatim the diagnostic the commit that
+    made it identified as wrong, in the same file. Lower stakes than the data
+    gate, since these do not gate private-register disclosure, but the reasoning
+    is unchanged. Found by the Opus read of this branch."""
+
+    with pytest.raises(DisclosureRefusal, match="normalization approval is missing"):
+        NormalizationApproval.load(
+            profile_id="graphemic-v1",
+            profile_sha256=digest("profile"),
+            approval_reference=None,
+            read_bytes=lambda _path: b"",
+        )
+    with pytest.raises(DisclosureRefusal, match="third-party transmission approval is missing"):
+        ThirdPartyTransmissionApproval.load(
+            vendor="synthetic-vendor",
+            candidate_artifact_digest=digest("candidate"),
+            page_ids=frozenset({"p1"}),
+            manifest_sha256=digest("manifest"),
+            approval_reference=None,
+            read_bytes=lambda _path: b"",
+        )

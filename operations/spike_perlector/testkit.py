@@ -47,7 +47,13 @@ def identity(
     return ResolvedIdentity(
         candidate_key=key,
         public_slot=slot,
-        source_ref=source_ref or f"synthetic/{key}",
+        # `is None`, not `or` — the same defect fixed two lines below in
+        # `evaluation_act`, and it survived that fix. An explicitly supplied
+        # empty `source_ref` is exactly what a test probing the source-comparison
+        # rules wants, and `or` silently replaced it with a well-formed synthetic
+        # one, so the test would have proved nothing about the empty case. Found
+        # by the Opus read of this branch.
+        source_ref=f"synthetic/{key}" if source_ref is None else source_ref,
         revision=f"revision-{key}",
         artifact_digest=digest(f"artifact-{key}"),
         delivery=delivery,

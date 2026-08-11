@@ -6,24 +6,10 @@ from dataclasses import dataclass
 
 from .encoding import canonical_json_bytes, is_sha256, sha256_bytes
 from .errors import CandidateRosterRefusal
-from .models import DeliveryMode, ResolvedIdentity
+from .models import DeliveryMode, ResolvedIdentity, repository_of
 
 STOCK_BASE_SOURCE = "Qwen/Qwen3.5-9B"
 FORBIDDEN_ATTESTATOR_SOURCE = "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR"
-
-
-def _repository_of(source_ref: object) -> str:
-    """The comparable repository name inside a source reference.
-
-    A source reference is written by hand into configuration, so the same model
-    arrives spelled several ways: with surrounding whitespace, in a different case,
-    or pinned as ``repository@revision``. An exact string comparison treats every
-    one of those as a different model.
-    """
-
-    if not isinstance(source_ref, str):
-        return ""
-    return source_ref.strip().split("@", 1)[0].strip().casefold()
 
 
 def validate_perlector_candidate(identity: ResolvedIdentity) -> None:
@@ -38,7 +24,7 @@ def validate_perlector_candidate(identity: ResolvedIdentity) -> None:
     Found by CodeRabbit on the rebased branch.
     """
 
-    if _repository_of(identity.source_ref) == _repository_of(FORBIDDEN_ATTESTATOR_SOURCE):
+    if repository_of(identity.source_ref) == repository_of(FORBIDDEN_ATTESTATOR_SOURCE):
         raise CandidateRosterRefusal(
             "the Teklia RecordGold ATR model is an Attestator and cannot be a Perlector candidate"
         )
@@ -86,7 +72,12 @@ class CandidateRoster:
         candidate_keys = [identity.candidate_key for identity in identities]
         slots = [identity.public_slot for identity in identities]
         artifacts = [identity.artifact_digest for identity in identities]
-        sources = [identity.source_ref for identity in identities]
+        # Normalized, for the reason `repository_of` gives: three roles whose
+        # `source_ref`s differ only by a trailing space or an `@revision` pin are
+        # three names for one model, and this refusal exists to stop exactly that
+        # roster. Three lines above the normalized check and still a raw compare
+        # until the Opus read of this branch executed it.
+        sources = [repository_of(identity.source_ref) for identity in identities]
         if len(set(candidate_keys)) != len(candidate_keys) or set(slots) != {1, 2, 3}:
             raise CandidateRosterRefusal(
                 "candidate roster requires three distinct identities and slots"

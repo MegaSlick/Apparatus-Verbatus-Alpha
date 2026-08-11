@@ -124,6 +124,24 @@ def _require_nonempty(value: str, field: str) -> None:
 MAX_TEXT_LENGTH = 20_000
 
 
+def repository_of(source_ref: object) -> str:
+    """The comparable repository name inside a source reference.
+
+    A source reference is written by hand into configuration, so the same model
+    arrives spelled several ways: with surrounding whitespace, in a different case,
+    or pinned as ``repository@revision``. Every rule in this instrument that asks
+    "is this the same model?" must ask it of this value and not of the raw string,
+    because an exact comparison answers "no" for all three spellings — and each of
+    those rules is structural. Defined here rather than in ``roster`` so the witness
+    configuration and the roster share one definition instead of drifting apart,
+    which is exactly what happened when only one of them was normalized.
+    """
+
+    if not isinstance(source_ref, str):
+        return ""
+    return source_ref.strip().split("@", 1)[0].strip().casefold()
+
+
 def _require_status_conditioned_text(status: OutputStatus, text: str | None, label: str) -> None:
     """Text is present and non-blank exactly when status is complete or truncated.
 
@@ -558,14 +576,24 @@ class WitnessConfiguration:
             )
 
     def require_distinct_from_candidates(self, identities: tuple[ResolvedIdentity, ...]) -> None:
-        """Refuse self-witness overlap by source or exact model artifact."""
+        """Refuse self-witness overlap by source or exact model artifact.
+
+        **Compared on the normalized repository name.** This is the same structural
+        rule `roster.validate_perlector_candidate` enforces against one hardcoded
+        Attestator, applied here against the *actually configured* witnesses — which
+        makes it the one that matters more, and it was still an exact string match
+        after the other was fixed. A trailing space, a capital letter or a
+        `@revision` pin let a configured witness sit in the candidate roster, and
+        self-witness agreement is not evidence (GOVERNANCE 3, hard rule 8).
+        Found by the Opus read of this branch, which executed all four spellings.
+        """
 
         witness_artifacts = {source.artifact_digest for source in self.sources}
-        witness_sources = {source.source_ref for source in self.sources}
+        witness_sources = {repository_of(source.source_ref) for source in self.sources}
         for identity in identities:
             if (
                 identity.artifact_digest in witness_artifacts
-                or identity.source_ref in witness_sources
+                or repository_of(identity.source_ref) in witness_sources
             ):
                 raise MatrixRefusal(
                     "a Perlector candidate shares an Attestator source or artifact; "

@@ -586,3 +586,53 @@ def test_a_genuinely_different_model_is_still_accepted_at_that_boundary():
         f"NotTeklia/{FORBIDDEN_ATTESTATOR_SOURCE.split('/', 1)[1]}",
     ):
         validate_perlector_candidate(identity("fine-private", 1, source_ref=allowed))
+
+
+def test_a_configured_witness_cannot_be_a_candidate_under_any_spelling():
+    """The same structural rule as `validate_perlector_candidate`, against the
+    *actually configured* witnesses rather than one hardcoded constant — which
+    makes this the one that matters more. It stayed an exact string match after
+    the other was normalized, so all four spellings walked a live witness into
+    the candidate roster. GOVERNANCE 3, hard rule 8: self-witness agreement is
+    not evidence. Found by the Opus read of this branch.
+    """
+
+    act = evaluation_act()
+    witnesses = witness_configuration_for(act)
+    witness_source = witnesses.sources[0].source_ref
+    for spelling in (
+        witness_source,
+        f"  {witness_source}  ",
+        witness_source.upper(),
+        witness_source.lower(),
+        f"{witness_source}@main",
+    ):
+        candidate = identity("shadow-private", 1, source_ref=spelling)
+        with pytest.raises(MatrixRefusal, match="shares an Attestator"):
+            witnesses.require_distinct_from_candidates((candidate,))
+
+
+def test_a_roster_naming_one_model_three_ways_is_not_three_distinct_sources():
+    """`len(set(sources))` on raw strings counted three spellings as three models.
+
+    The three roles exist to be genuinely different — a stock base, an unaltered
+    vendor model and a trained checkpoint — and a roster that is one model wearing
+    three spellings defeats the comparison the whole instrument is for. Found by
+    the Opus read of this branch.
+    """
+
+    roster = CandidateRoster(
+        stock_base=identity("a", 1, source_ref=STOCK_BASE_SOURCE),
+        vendor_unaltered=identity(
+            "b",
+            2,
+            source_ref=f"{STOCK_BASE_SOURCE} ",
+            delivery=DeliveryMode.EXTERNAL,
+            provider="synthetic-vendor",
+        ),
+        trained_checkpoint=identity("c", 3, source_ref=f"{STOCK_BASE_SOURCE}@main"),
+        vendor_unaltered_evidence_sha256=digest("vendor-evidence"),
+        checkpoint_repository_evidence_sha256=digest("checkpoint-evidence"),
+    )
+    with pytest.raises(CandidateRosterRefusal, match="three distinct source repositories"):
+        roster.validate()
