@@ -570,6 +570,10 @@ def test_policy_content_that_cannot_be_canonicalized_refuses_rather_than_aliasin
         DataGateAuthority.scope_digest(policy_content={1: "same-json"})
     with pytest.raises(DisclosureRefusal, match="cannot be canonically bound.*float"):
         DataGateAuthority.scope_digest(policy_content={"retention_days": 1.5})
+    with pytest.raises(
+        DisclosureRefusal, match="cannot be canonically bound.*surrogates not allowed"
+    ):
+        DataGateAuthority.scope_digest(policy_content={"purpose": chr(0xD800)})
 
 
 def test_non_canonical_policy_content_refuses_as_a_disclosure_not_a_type_error():
