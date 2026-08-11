@@ -879,7 +879,6 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
         "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
         "self_hash": "b" * 64,
     }
-    reference = ApprovalRecordReference("receipts/sha256/" + "c" * 64 + ".json", "c" * 64)
     settings = door.render_config.load_pdf_render_settings(
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
@@ -887,8 +886,6 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
     baseline = door._real_bindings(
         Models(),
         ledger,
-        {"policy": "synthetic"},
-        reference,
         POLICY,
         settings,
         recovery,
@@ -897,8 +894,6 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
     changed = door._real_bindings(
         Models(),
         ledger,
-        {"policy": "synthetic"},
-        reference,
         POLICY,
         settings,
         recovery,
