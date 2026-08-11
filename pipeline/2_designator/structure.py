@@ -66,6 +66,23 @@ def infer_background(width: int, height: int, rows: list) -> int:
     hardcoded background would be exactly the kind of magic number this
     rebuild's audit trail names as a defect class in the old pipeline's
     thresholds; inferring it per page needs no such constant at all.
+
+    **The premise above is a premise, and this function now checks it.** Where
+    ink is the numeric majority of a page -- a heavily inked page, an inverted
+    scan, a photographic negative -- the modal pixel is the *ink* colour. The
+    threshold below it then admits almost nothing, the page reconciles to zero
+    ink, and the stage exits `complete` having found no acts at all. That is a
+    page lost in silence, which is the exact shape GOALS 1 forbids: a missed act
+    is worse than a poorly read one, and Tyrel's 2026-08-04 ruling 15 says blank
+    is proved and never inferred. Recorded as deferral 06-3, whose own note says
+    to fix it rather than ship it.
+
+    The check needs no constant either. Paper is the lighter surface, so an
+    inferred background must be at least as light as the page's own mean; when
+    it is darker than the average pixel, the mode is ink and this function has
+    nothing honest to return. Compared as `mode * count >= total` so the
+    arithmetic stays in integers -- every quantity this module handles is an
+    integer, and a float comparison here could pass by accident.
     """
     if width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to infer a background from")
@@ -78,7 +95,17 @@ def infer_background(width: int, height: int, rows: list) -> int:
             raise ContractError(f"scanline {y} has width {len(row)}, expected {width}")
         for value in row:
             histogram[value] += 1
-    return max(range(256), key=lambda value: histogram[value])
+    background = max(range(256), key=lambda value: histogram[value])
+    counted = width * height
+    total = sum(value * count for value, count in enumerate(histogram))
+    if background * counted < total:
+        raise ContractError(
+            f"the most common pixel on this {width}x{height} page is {background}, which is "
+            f"darker than its own mean of {total // counted}: the page is majority ink, so "
+            "its background cannot be inferred and a blank result here would be inferred "
+            "rather than proved"
+        )
+    return background
 
 
 def ink_pixels(width: int, height: int, rows: list, *, background: int, margin: int) -> set:

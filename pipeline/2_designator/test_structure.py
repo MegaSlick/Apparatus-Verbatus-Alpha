@@ -237,6 +237,54 @@ def test_infer_background_refuses_a_mismatched_scanline_shape():
         infer_background(10, 3, blank_rows(10, 2))
 
 
+def test_a_majority_ink_page_is_refused_rather_than_reconciling_to_zero_ink():
+    """The one deferral that could lose a whole page in silence (06-3).
+
+    `infer_background` takes the modal pixel as paper. On a page where ink is the
+    numeric majority the mode *is* the ink, the threshold below it admits almost
+    nothing, and the page reconciles to zero ink and exits `complete` having
+    marked out no acts at all.
+
+    Measured against the pre-fix implementation on exactly this page: background
+    inferred as 30, and **0 ink pixels found out of the 60 that are there.**
+    GOALS 1 -- a missed act is worse than a poorly read one -- and Tyrel's
+    2026-08-04 ruling 15, that blank is proved and never inferred.
+    """
+
+    width, height = 10, 10
+    rows = [bytearray([INK] * width) for _ in range(6)]
+    rows += [bytearray([200] * width) for _ in range(4)]
+
+    with pytest.raises(ContractError, match=r"the page is majority ink"):
+        infer_background(width, height, rows)
+
+
+def test_an_inverted_scan_is_refused_rather_than_read_as_a_blank_page():
+    """Light ink on dark paper is the same defect wearing a different cause."""
+
+    width, height = 10, 10
+    rows = [bytearray([30] * width) for _ in range(8)]
+    rows += [bytearray([220] * width) for _ in range(2)]
+
+    with pytest.raises(ContractError, match=r"the page is majority ink"):
+        infer_background(width, height, rows)
+
+
+def test_a_genuinely_blank_page_still_infers_its_paper_rather_than_being_refused():
+    """The premise check must not fire on the case it exists to protect.
+
+    A blank page's mode is its paper and its mean is that same value, so the
+    comparison is an equality and passes. Zero ink here is honest: it is what the
+    page has, proved from a background the page itself supplied.
+    """
+
+    width, height = 12, 12
+    paper = 210
+    rows = [bytearray([paper] * width) for _ in range(height)]
+
+    assert infer_background(width, height, rows) == paper
+
+
 # --- refusals -----------------------------------------------------------------
 
 
