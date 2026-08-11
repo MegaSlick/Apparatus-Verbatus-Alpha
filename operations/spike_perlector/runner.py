@@ -482,7 +482,12 @@ class MeasurementRun:
         aggregates = self.condition_aggregates()
         grouped = _condition_index(aggregates)
         values: list[CandidateConditionDeltas] = []
-        for slot in sorted({aggregate.public_slot for aggregate in aggregates}):
+        # Every planned candidate, not every candidate that produced an aggregate.
+        # A candidate whose reads *all* failed contributes no aggregate at all, so
+        # deriving the slots from `aggregates` dropped it from the deltas in
+        # silence rather than refusing — the same loss the refusal below exists to
+        # prevent, one level up.
+        for slot in sorted(identity.public_slot for identity in self.candidates):
             # A condition whose every planned read became a failed attempt
             # contributes no cells, so `condition_aggregates` emits no group for
             # it at all and the subscript below would raise a bare `KeyError`

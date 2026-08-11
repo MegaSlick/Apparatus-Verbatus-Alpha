@@ -326,6 +326,36 @@ def test_a_condition_whose_only_read_failed_refuses_deltas_by_name_not_by_key_er
         run.condition_deltas()
 
 
+def test_a_candidate_whose_every_read_failed_is_refused_not_quietly_dropped():
+    """Deriving the slot list from the aggregates loses the candidate entirely.
+
+    A candidate with no successful read contributes no aggregate, so a slot set
+    built from `condition_aggregates()` never mentions it and `condition_deltas`
+    returned the *other* candidates' deltas as though the matrix were whole.
+    Hard rule 7: the loss has to be named, not skipped.
+    """
+
+    working = identity("working-private", 1)
+    broken_identity = identity("broken-private", 2)
+
+    class BrokenCandidate:
+        identity = broken_identity
+
+        def read(self, _request):
+            raise RuntimeError("synthetic transport error")
+
+    run = run_matrix(
+        (FakeCandidate(working), BrokenCandidate()),
+        (evaluation_act(),),
+        prompt_registry=registry(working, broken_identity),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert len(run.failed_attempts) == len(ALL_CONDITIONS)
+    with pytest.raises(MatrixRefusal, match="public slot 2"):
+        run.condition_deltas()
+
+
 def test_pairwise_deltas_refuse_an_unscored_denominator_instead_of_subtracting_none():
     """`None - None` is a `TypeError`, and the `KeyError` handler never caught it.
 
