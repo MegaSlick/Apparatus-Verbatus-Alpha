@@ -15,11 +15,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from common.contracts.canonical import canonical_bytes
-from operations.pod.fake_provider import FakeProvider
 from operations.pod.models import PodCreateRequest
 from operations.submit.submit import build_manifest, walk_folder
 
 from .errors import OperatorError
+from .fakes import OperatorFakeProvider
 from .surface import OperatorSurface
 
 UTC = timezone.utc
@@ -44,34 +44,30 @@ def make_transcript(output: str | Path) -> Path:
         source.mkdir()
         (source / "page-one.bin").write_bytes(b"synthetic submission page one\n")
         manifest = temporary / "sealed-submission.json"
-        submission = build_manifest(
-            walk_folder(source),
-            authorized_by={
-                "relative_path": "receipts/sha256/" + "a" * 64 + ".json",
-                "sha256": "a" * 64,
-            },
-        )
+        submission = build_manifest(walk_folder(source))
         manifest.write_bytes(canonical_bytes(submission))
         spend = temporary / "reviewed-spend.toml"
         spend.write_text(
             "\n".join(
                 (
-                    'schema = "pod-spend.v1"',
+                    'schema = "pod-spend.v2"',
                     'state = "configured"',
                     'currency = "USD"',
                     'max_hourly_usd = "1.00"',
                     'max_estimated_metered_cost_usd = "2.00"',
+                    'account_balance_floor_usd = "50.00"',
                     "hard_lifetime_seconds = 900",
                     "laptop_heartbeat_timeout_seconds = 60",
                     "shutdown_poll_interval_seconds = 1",
                     "shutdown_deadline_seconds = 5",
+                    "billing_cutoff_margin_seconds = 3600",
                     "",
                 )
             ),
             encoding="utf-8",
         )
         request = _request()
-        provider = FakeProvider(now=lambda: START)
+        provider = OperatorFakeProvider(now=lambda: START)
 
         def present(value: str = "") -> None:
             lines.append(_friendly_path(value, temporary))

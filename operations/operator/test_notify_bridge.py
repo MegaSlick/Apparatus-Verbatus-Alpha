@@ -7,10 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from operations.pod.fake_provider import FakeProvider
-
 from . import notify_bridge
 from .errors import OperatorError
+from .fakes import OperatorFakeProvider
 from .test_surface import START, _launch, _manifest, _spend_policy, _surface
 
 
@@ -138,7 +137,7 @@ def test_a_held_run_sends_a_decision_when_it_stops_not_afterwards(tmp_path: Path
 
 def test_a_raising_notifier_cannot_fail_the_verb_that_triggered_it(tmp_path: Path) -> None:
     messages: list[str] = []
-    surface = _surface(tmp_path, provider=FakeProvider(now=lambda: START), output=messages)
+    surface = _surface(tmp_path, provider=OperatorFakeProvider(now=lambda: START), output=messages)
 
     def explodes(event: str, message: str) -> notify_bridge.NotifyOutcome:
         del event, message

@@ -12,10 +12,51 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from typing import BinaryIO
 
+from operations.pod.fake_provider import FakeProvider
+from operations.pod.models import PodCreateRequest, PodRecord
 from operations.pod.transfer import RemoteObject, TransferTarget
 
 from .records import BLOCK_BYTES
+
+
+class OperatorFakeProvider(FakeProvider):
+    """`operations.pod.fake_provider.FakeProvider`, plus rehearsal-only affordances.
+
+    The pod package's own fake carries only what its own test suite needs.
+    The operator surface additionally needs to reopen a local fake state for a
+    later `close` rehearsal in a fresh process (`seed_existing`), and to reset
+    a hardening drill's injected failure before its retry (`clear_failures`).
+    Neither belongs in `operations/pod/fake_provider.py` itself: that module
+    is the reviewed, merged pod runtime's own fixture, taken as-is, and these
+    two methods exist only for this surface's own tests and rehearsals.
+    """
+
+    def seed_existing(self, record: PodRecord, request: PodCreateRequest) -> None:
+        """Install an already-recorded fixture pod without simulating a provider action.
+
+        Used only to reopen a local fake state for a later `close` rehearsal.
+        In particular, it must not call `create`: rehydration before a close
+        confirmation cannot look like a paid action.
+        """
+
+        if record.pod_id in self.pods:
+            raise ValueError(f"fixture pod already exists: {record.pod_id!r}")
+        if record.name != request.name or record.volume_id != request.volume_id:
+            raise ValueError("fixture pod does not match its recorded request")
+        self.pods[record.pod_id] = record
+        self._requests_by_pod[record.pod_id] = request
+        self._present[record.pod_id] = True
+        if record.pod_id.startswith("fake-pod-"):
+            suffix = record.pod_id.removeprefix("fake-pod-")
+            if suffix.isdigit():
+                self._next_id = max(self._next_id, int(suffix) + 1)
+
+    def clear_failures(self, verb: str) -> None:
+        """Discard a still-queued synthetic drill failure before its recovery retry."""
+
+        self._failures[verb].clear()
 
 
 class LocalFixtureObjectStore(TransferTarget):
@@ -45,7 +86,7 @@ class LocalFixtureObjectStore(TransferTarget):
                 size += len(block)
         return RemoteObject(digest.hexdigest(), size)
 
-    def put_file(self, key: str, source: Path) -> None:
+    def put_file(self, key: str, source: BinaryIO) -> None:
         if self.fail_once_for == key:
             self.fail_once_for = None
             raise RuntimeError("injected partial transfer")
@@ -56,8 +97,7 @@ class LocalFixtureObjectStore(TransferTarget):
         try:
             with os.fdopen(descriptor, "wb") as handle:
                 os.fchmod(handle.fileno(), 0o600)
-                with Path(source).open("rb") as reader:
-                    shutil.copyfileobj(reader, handle, BLOCK_BYTES)
+                shutil.copyfileobj(source, handle, BLOCK_BYTES)
                 handle.flush()
                 os.fsync(handle.fileno())
             try:

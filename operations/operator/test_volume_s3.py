@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from operations.pod.transfer import ChecksummedTransfer, TransferFailure
+from operations.pod.transfer import ChecksummedTransfer
 
 from .errors import ErrorCode, OperatorError
 from .test_surface import _manifest, _spend_policy, _surface
@@ -45,13 +45,13 @@ class FakeS3Client:
         payload, metadata = self.objects[Key]
         return {"ContentLength": len(payload), "Metadata": {} if self.drop_metadata else metadata}
 
-    def upload_file(self, *, Filename: str, Bucket: str, Key: str, ExtraArgs=None, Config=None):  # noqa: N803
+    def upload_fileobj(self, *, Fileobj, Bucket: str, Key: str, ExtraArgs=None, Config=None):  # noqa: N803
         del Bucket, Config
         if self.upload_error is not None:
             raise self.upload_error
         self.uploads.append(Key)
         self.objects[Key] = (
-            Path(Filename).read_bytes(),
+            Fileobj.read(),
             dict((ExtraArgs or {}).get("Metadata", {})),
         )
 
@@ -122,7 +122,8 @@ def test_an_uploaded_file_reads_back_with_the_digest_it_was_tagged_with(tmp_path
     source = tmp_path / "page.bin"
     source.write_bytes(b"a synthetic page\n")
 
-    target.put_file("volume/page.bin", source)
+    with source.open("rb") as handle:
+        target.put_file("volume/page.bin", handle)
     observed = target.inspect("volume/page.bin")
 
     assert observed is not None
@@ -137,7 +138,8 @@ def test_an_object_without_our_digest_is_refused_and_not_overwritten(tmp_path: P
     target = S3VolumeTarget(_spec(), client=client)
     source = tmp_path / "page.bin"
     source.write_bytes(b"a synthetic page\n")
-    target.put_file("volume/page.bin", source)
+    with source.open("rb") as handle:
+        target.put_file("volume/page.bin", handle)
     client.drop_metadata = True
 
     with pytest.raises(VolumeTransferRefusal, match="was not overwritten"):
@@ -153,7 +155,7 @@ def test_a_target_that_never_returns_our_digest_cannot_be_called_complete(
     client.drop_metadata = True
     source, manifest = _manifest(tmp_path)
 
-    with pytest.raises(TransferFailure, match="exists without the digest"):
+    with pytest.raises(VolumeTransferRefusal, match="exists without the digest"):
         ChecksummedTransfer(
             source_root=source,
             submission_manifest=manifest,
@@ -190,17 +192,28 @@ def test_a_contradictory_access_denied_404_is_not_absence() -> None:
         S3VolumeTarget(_spec(), client=client).inspect("volume/page.bin")
 
 
-def test_a_directory_or_symlink_named_by_the_record_is_refused(tmp_path: Path) -> None:
-    target = S3VolumeTarget(_spec(), client=FakeS3Client())
-    real = tmp_path / "page.bin"
-    real.write_bytes(b"page\n")
-    link = tmp_path / "link.bin"
-    link.symlink_to(real)
+class _BrokenHandle:
+    """A handle that fails mid-read, the one way `put_file` can still see a bad source.
 
-    with pytest.raises(VolumeTransferRefusal):
-        target.put_file("volume/missing.bin", tmp_path / "missing.bin")
-    with pytest.raises(VolumeTransferRefusal):
-        target.put_file("volume/link.bin", link)
+    Refusing a symlink or a missing file is no longer this class's job: the
+    caller opens and verifies the source exactly once, with `O_NOFOLLOW`,
+    before `put_file` ever sees it (`operations.pod.transfer.TransferTarget`'s
+    own docstring), and that refusal is covered by
+    `operations/pod/test_transfer.py`'s
+    `test_open_verified_regular_file_refuses_a_symlink_leaf_directly`. What is
+    still this class's job is turning a failure reading the handle it was
+    given into a named `VolumeTransferRefusal`, not a raw exception.
+    """
+
+    def read(self, size: int = -1) -> bytes:
+        raise OSError("injected read failure")
+
+
+def test_a_read_failure_on_the_handle_is_a_named_refusal() -> None:
+    target = S3VolumeTarget(_spec(), client=FakeS3Client())
+
+    with pytest.raises(VolumeTransferRefusal, match="could not be read"):
+        target.put_file("volume/broken.bin", _BrokenHandle())
 
 
 def test_upload_through_the_surface_sends_only_the_sealed_record(tmp_path: Path) -> None:

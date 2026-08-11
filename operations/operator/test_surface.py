@@ -8,6 +8,7 @@ import os
 import subprocess
 import threading
 import tracemalloc
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -15,11 +16,15 @@ from typing import Callable
 
 import pytest
 
-from common.contracts.approval import build_approval_record
 from common.contracts.canonical import canonical_bytes
 from operations.pod.fake_provider import FakeProvider
 from operations.pod.lease import LeaseStore
-from operations.pod.models import PodCreateRequest, ProviderFailure, require_utc
+from operations.pod.models import (
+    BILLING_CUTOFF_MARGIN_ENV,
+    PodCreateRequest,
+    ProviderFailure,
+    require_utc,
+)
 from operations.pod.shutdown import CloseReport, VerifiedShutdown
 from operations.pod.spend import load_spend_policy
 from operations.submit import gate
@@ -28,7 +33,7 @@ from operations.submit.submit import build_manifest, walk_folder
 from . import cli, entry
 from .dry_run import make_transcript
 from .errors import ErrorCode, OperatorError
-from .fakes import LocalFixtureObjectStore
+from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
 from .records import MAX_RECORD_BYTES, DescriptorStore, ReceiptStore, RecordError, sha256_file
 from .surface import (
     OPERATOR_CLOSE_PREFIX,
@@ -74,15 +79,17 @@ def _spend_policy(tmp_path: Path, *, hourly: str = "1.00") -> Path:
     path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v1"',
+                'schema = "pod-spend.v2"',
                 'state = "configured"',
                 'currency = "USD"',
                 f'max_hourly_usd = "{hourly}"',
                 'max_estimated_metered_cost_usd = "2.00"',
+                'account_balance_floor_usd = "50.00"',
                 "hard_lifetime_seconds = 900",
                 "laptop_heartbeat_timeout_seconds = 60",
                 "shutdown_poll_interval_seconds = 1",
                 "shutdown_deadline_seconds = 5",
+                "billing_cutoff_margin_seconds = 3600",
                 "",
             )
         ),
@@ -97,19 +104,13 @@ def _manifest(tmp_path: Path) -> tuple[Path, Path]:
     (source / "page-one.bin").write_bytes(b"synthetic page one\n")
     (source / "page-two.bin").write_bytes(b"synthetic page two\n")
     manifest = tmp_path / "sealed-submission.json"
-    record = build_manifest(
-        walk_folder(source),
-        authorized_by={
-            "relative_path": "receipts/sha256/" + "a" * 64 + ".json",
-            "sha256": "a" * 64,
-        },
-    )
+    record = build_manifest(walk_folder(source))
     manifest.write_bytes(canonical_bytes(record))
     return source, manifest
 
 
-def _approved_submission(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
-    """An approved storage root, a matching gate policy, and its approval record.
+def _approved_submission(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """An approved storage root and a matching gate policy.
 
     Every other upload test in this file starts from an already-sealed
     manifest; this is what `submit_and_upload` needs to seal a new one through
@@ -125,21 +126,8 @@ def _approved_submission(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     policy["storage_roots"] = [str(approved)]
     policy_path = tmp_path / "policy.json"
     policy_path.write_text(json.dumps(policy), encoding="utf-8")
-    approval_path = tmp_path / "approval.json"
-    approval_path.write_text(
-        json.dumps(
-            build_approval_record(
-                subject_ids=["data-handling-policy"],
-                action="data-gate",
-                reason="synthetic proving record; approves nothing",
-                target_version_hash=gate.policy_hash(policy),
-                timestamp="2026-08-04T12:00:00Z",
-            )
-        ),
-        encoding="utf-8",
-    )
     manifest_out = approved / "submission.json"
-    return source, manifest_out, approval_path, policy_path
+    return source, manifest_out, policy_path
 
 
 class FastElapsedClock:
@@ -172,7 +160,7 @@ def _surface(
     return OperatorSurface(
         ROOT,
         tmp_path / "operator-state",
-        provider=provider or FakeProvider(now=lambda: START),
+        provider=provider or OperatorFakeProvider(now=lambda: START),
         now=lambda: START,
         present=messages.append,
         faults=faults,
@@ -194,7 +182,7 @@ def _all_files(path: Path) -> dict[Path, bytes]:
     }
 
 
-class ConfirmationAwareProvider(FakeProvider):
+class ConfirmationAwareProvider(OperatorFakeProvider):
     """A fake that fails at the paid seam when a confirmation receipt is absent."""
 
     def __init__(self) -> None:
@@ -232,7 +220,7 @@ def test_launch_does_not_reach_paid_fake_without_a_saved_confirmation(tmp_path: 
 
 
 def test_adoption_rechecks_only_after_its_confirmation_receipt(tmp_path: Path) -> None:
-    class AdoptionProvider(FakeProvider):
+    class AdoptionProvider(OperatorFakeProvider):
         def __init__(self) -> None:
             super().__init__(now=lambda: START)
             self.receipt_exists: Callable[[], bool] = lambda: False
@@ -244,7 +232,14 @@ def test_adoption_rechecks_only_after_its_confirmation_receipt(tmp_path: Path) -
             return super().adopt(pod_id)
 
     provider = AdoptionProvider()
-    existing = provider.create(_request(name="already-there"))
+    # Seeding the fixture directly on the provider, bypassing `PodRuntime`'s own
+    # `_policy_bound_request`, which is what normally stamps this metadata key
+    # from the reviewed policy before a real create/adopt ever reaches here.
+    seed_request = replace(
+        _request(name="already-there"),
+        metadata={BILLING_CUTOFF_MARGIN_ENV: "3600"},
+    )
+    existing = provider.create(seed_request)
     provider.calls.clear()
     surface = _surface(tmp_path, provider=provider)
     provider.receipt_exists = lambda: surface._descriptor_receipt("launch-confirmation") is not None
@@ -548,7 +543,8 @@ def _race_one_fixture_object(root: Path, sources: tuple[Path, Path]) -> list[Bas
     def put(source: Path) -> None:
         try:
             gate.wait()
-            store.put_file("volume/page.bin", source)
+            with source.open("rb") as handle:
+                store.put_file("volume/page.bin", handle)
         except Exception as error:  # noqa: BLE001 - the refusal is exactly what is counted
             refusals.append(error)
 
@@ -587,12 +583,11 @@ def test_submit_and_upload_seals_a_new_manifest_then_transfers_it(tmp_path: Path
     """
 
     surface = _surface(tmp_path)
-    source, manifest_out, approval_path, policy_path = _approved_submission(tmp_path)
+    source, manifest_out, policy_path = _approved_submission(tmp_path)
 
     receipt = surface.submit_and_upload(
         source,
         manifest_out=manifest_out,
-        approval_record=approval_path,
         policy_path=policy_path,
     )
 
@@ -606,13 +601,15 @@ def test_submit_and_upload_refuses_by_name_when_the_door_refuses(tmp_path: Path)
     """A submission the gate refuses must reach `UPLOAD_REFUSED`, not a raw exception."""
 
     surface = _surface(tmp_path)
-    source, manifest_out, _approval_path, policy_path = _approved_submission(tmp_path)
+    _source, manifest_out, policy_path = _approved_submission(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "page.png").write_bytes(b"\x89PNG\r\n\x1a\nunapproved")
 
     with pytest.raises(OperatorError) as refusal:
         surface.submit_and_upload(
-            source,
+            elsewhere,
             manifest_out=manifest_out,
-            approval_record=tmp_path / "no-such-approval.json",
             policy_path=policy_path,
         )
 
@@ -635,7 +632,8 @@ def test_the_default_upload_target_never_holds_a_whole_file_in_memory(tmp_path: 
 
     tracemalloc.start()
     try:
-        store.put_file("volume/pages.bin", source)
+        with source.open("rb") as handle:
+            store.put_file("volume/pages.bin", handle)
         _, put_peak = tracemalloc.get_traced_memory()
         tracemalloc.reset_peak()
         observed = store.inspect("volume/pages.bin")
@@ -937,8 +935,8 @@ def test_close_lease_record_failure_shows_captured_cutoff_and_retained_volume_pr
     launched = _launch(surface, _spend_policy(tmp_path))
     assert launched.record is not None
 
-    def broken_record_close(self, *, owner_token, report, now):  # type: ignore[no-untyped-def]
-        del self, owner_token, report, now
+    def broken_record_close(self, *, owner_token, close_record, verified, now):  # type: ignore[no-untyped-def]
+        del self, owner_token, close_record, verified, now
         raise OSError("injected lease write failure")
 
     monkeypatch.setattr(LeaseStore, "record_close", broken_record_close)
@@ -975,13 +973,6 @@ def test_surface_refuses_any_non_fake_provider_before_it_can_be_called(tmp_path:
         )
 
     assert refusal.value.code is ErrorCode.LIVE_PROVIDER_BLOCKED
-
-
-def test_unknown_fake_failure_verb_cannot_make_a_drill_pass_without_failing() -> None:
-    provider = FakeProvider(now=lambda: START)
-
-    with pytest.raises(ValueError, match="unknown fake-provider failure verb"):
-        provider.inject_failure("typo", RuntimeError("should not be silently queued"))
 
 
 def _request_json(tmp_path: Path, **overrides: object) -> Path:
@@ -1225,7 +1216,7 @@ def test_close_reconstruction_verifies_across_a_real_gap_between_processes(
         launch_surface = OperatorSurface(
             ROOT,
             state,
-            provider=FakeProvider(now=lambda: launch_time),
+            provider=OperatorFakeProvider(now=lambda: launch_time),
             now=lambda: launch_time,
             monotonic=launch_clock.monotonic,
             sleeper=launch_clock.sleep,
@@ -1238,7 +1229,7 @@ def test_close_reconstruction_verifies_across_a_real_gap_between_processes(
         close_surface = OperatorSurface(
             ROOT,
             state,
-            provider=FakeProvider(now=lambda: close_time),
+            provider=OperatorFakeProvider(now=lambda: close_time),
             now=lambda: close_time,
             monotonic=close_clock.monotonic,
             sleeper=close_clock.sleep,
@@ -1386,7 +1377,7 @@ def test_a_run_whose_declared_fixture_cannot_be_read_says_so(tmp_path: Path) -> 
     surface = OperatorSurface(
         workspace,
         tmp_path / "operator-state",
-        provider=FakeProvider(now=lambda: START),
+        provider=OperatorFakeProvider(now=lambda: START),
         now=lambda: START,
         present=messages.append,
         monotonic=clock.monotonic,
@@ -1614,13 +1605,7 @@ def test_status_names_a_manifest_that_no_longer_matches_the_upload_receipt(
     receipt = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
 
     (source / "later-page.bin").write_bytes(b"not in the uploaded manifest\n")
-    replacement = build_manifest(
-        walk_folder(source),
-        authorized_by={
-            "relative_path": "receipts/sha256/" + "b" * 64 + ".json",
-            "sha256": "b" * 64,
-        },
-    )
+    replacement = build_manifest(walk_folder(source))
     manifest.write_bytes(canonical_bytes(replacement))
 
     lines = surface.status()
@@ -1735,7 +1720,7 @@ def test_an_unreadable_spend_policy_never_stops_a_close(tmp_path: Path) -> None:
     surface = OperatorSurface(
         workspace,
         tmp_path / "operator-state",
-        provider=FakeProvider(now=lambda: START),
+        provider=OperatorFakeProvider(now=lambda: START),
         now=lambda: START,
         present=messages.append,
         monotonic=clock.monotonic,

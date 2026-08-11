@@ -52,17 +52,16 @@ quoted rather than paraphrased where the detail is load-bearing:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Final, Mapping
+from typing import Any, BinaryIO, Final, Mapping
 
 from operations.pod.transfer import RemoteObject
 
-from .records import sha256_file
-
 SHA256_METADATA_KEY: Final = "verbatus-sha256"
+BLOCK_BYTES: Final = 1024 * 1024
 
 # 64 MiB parts: comfortably inside the documented 500MB-per-part ceiling, and at
 # S3's 10,000-part limit still enough for a single file of roughly 625 GiB. The
@@ -208,30 +207,40 @@ class S3VolumeTarget:
             )
         return RemoteObject(sha256=recorded, size=size)
 
-    def put_file(self, key: str, source: Path) -> None:
-        """Send one file, tagging it with the digest `inspect` reads back.
+    def put_file(self, key: str, source: BinaryIO) -> None:
+        """Send the exact bytes behind this already-opened handle, tagged with their digest.
 
-        `upload_file` rather than `put_object`: boto3's managed transfer switches
-        to multipart above the configured threshold, which is what keeps a file
-        past RunPod's documented single-`PutObject` limit working without a second
-        code path here.
+        `upload_fileobj` rather than `upload_file`: the caller has already opened
+        and verified this handle once (see `TransferTarget.put_file`'s docstring),
+        so this seam reads only from it and never re-resolves the source by name.
+        boto3's managed transfer still switches to multipart above the configured
+        threshold, which is what keeps a file past RunPod's documented single-
+        `PutObject` limit working without a second code path here.
+
+        `upload_fileobj` takes the same `ExtraArgs`/`Config` as `upload_file` and
+        needs only a binary-mode, readable file object — no path, no seekability
+        requirement beyond what this handle already gives it. Confirmed 2026-08-11
+        against `https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/upload_fileobj.html`.
         """
 
-        path = Path(source)
-        if not path.is_file() or path.is_symlink():
+        try:
+            digest = hashlib.sha256()
+            for block in iter(lambda: source.read(BLOCK_BYTES), b""):
+                digest.update(block)
+            source.seek(0)
+        except OSError as error:
             raise VolumeTransferRefusal(
-                f"a file named by the sealed record is not a regular file at {path}; "
-                "nothing was sent for it"
-            )
-        extra = {"Metadata": {SHA256_METADATA_KEY: sha256_file(path)}}
+                f"the source for {key!r} could not be read while sending it: {error}"
+            ) from error
+        extra = {"Metadata": {SHA256_METADATA_KEY: digest.hexdigest()}}
         try:
             if self.transfer_config is None:
-                self.client.upload_file(
-                    Filename=str(path), Bucket=self.spec.volume_id, Key=key, ExtraArgs=extra
+                self.client.upload_fileobj(
+                    Fileobj=source, Bucket=self.spec.volume_id, Key=key, ExtraArgs=extra
                 )
             else:
-                self.client.upload_file(
-                    Filename=str(path),
+                self.client.upload_fileobj(
+                    Fileobj=source,
                     Bucket=self.spec.volume_id,
                     Key=key,
                     ExtraArgs=extra,
@@ -239,7 +248,7 @@ class S3VolumeTarget:
                 )
         except OSError as error:
             raise VolumeTransferRefusal(
-                f"the file at {path} could not be read while sending it: {error}"
+                f"the source for {key!r} could not be read while sending it: {error}"
             ) from error
         except Exception as error:
             raise VolumeTransferRefusal(

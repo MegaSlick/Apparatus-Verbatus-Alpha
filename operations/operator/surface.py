@@ -40,7 +40,7 @@ from operations.pod.models import (
     PodRecord,
     PodRuntimeContract,
     ProviderFailure,
-    ProviderTimeout,
+    require_billing_cutoff_margin_seconds,
     require_utc,
 )
 from operations.pod.preflight import (
@@ -58,15 +58,22 @@ from operations.submit import submit as submission_door
 
 from . import notify_bridge
 from .errors import ErrorCode, OperatorError, strip_control_bytes
-from .fakes import LocalFixtureObjectStore
+from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
 from .notify_bridge import Notifier
 from .records import DescriptorStore, ReceiptStore, RecordError, sha256_file, utc_stamp
 from .volume_cost import volume_cost_lines
-from .volume_s3 import S3VolumeTarget, VolumeSpec
+from .volume_s3 import S3VolumeTarget, VolumeSpec, VolumeTransferRefusal
 
 UTC = timezone.utc
 OPERATOR_CLOSE_PREFIX = "CLOSE"
 DEFAULT_FIXTURE = "synthetic-two-page-v0"
+# `FakeProvider.bill()` always backdates its cutoff by exactly one hour (see its
+# own docstring) so a frozen test clock still opens a valid, non-empty billing
+# window. This surface is fixture-only and always closes through that same
+# `bill()`, so its own billing-cutoff margin must cover that backdating
+# whenever no reviewed policy overrides it -- matching the margin
+# `operations/pod/test_pod_runtime.py` pairs with `.bill()` throughout.
+FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS = 3600
 
 
 class Presenter(Protocol):
@@ -153,9 +160,15 @@ class FixtureControllerArmer:
         )
 
     def arm(self, *, action, request, record, lease, store, owner_token, policy):  # type: ignore[no-untyped-def]
-        del action, request, store, owner_token, policy
+        del action, store, owner_token, policy
         observed = self.now()
         stamp = utc_stamp(observed)
+        # `request` is the sealed request: its `--report-path` has already been
+        # bound to this exact launch token (`launch._bind_report_path_to_launch`).
+        # `_validate_arming_binding` compares that exact value against what this
+        # acknowledgement reports, so a fixture-only constant here can never match.
+        command = request.docker_start_cmd
+        report_path = command[command.index("--report-path") + 1]
         return ControllerArming(
             True,
             True,
@@ -170,7 +183,7 @@ class FixtureControllerArmer:
                     "started_at": stamp,
                 },
                 "pod_timer": {
-                    "report_path": "/workspace/private/fixture-pod-timer-report.json",
+                    "report_path": report_path,
                     "acknowledged_at": stamp,
                 },
             },
@@ -278,7 +291,7 @@ class OperatorSurface:
         workspace: str | Path,
         state_root: str | Path,
         *,
-        provider: FakeProvider | None = None,
+        provider: OperatorFakeProvider | None = None,
         now: Callable[[], datetime] | None = None,
         present: Presenter | None = None,
         faults: Faults | None = None,
@@ -291,7 +304,7 @@ class OperatorSurface:
         self.state_root = Path(state_root).resolve()
         self.now = now or (lambda: datetime.now(UTC))
         self._present: Presenter = present or print
-        candidate = provider or FakeProvider(now=self.now)
+        candidate = provider or OperatorFakeProvider(now=self.now)
         if not isinstance(candidate, FakeProvider):
             raise OperatorError(ErrorCode.LIVE_PROVIDER_BLOCKED)
         self.provider = candidate
@@ -449,7 +462,6 @@ class OperatorSurface:
         source: str | Path,
         *,
         manifest_out: str | Path,
-        approval_record: str | Path,
         policy_path: str | Path | None = None,
         volume: VolumeSpec | None = None,
     ) -> Path:
@@ -459,7 +471,6 @@ class OperatorSurface:
             submission_door.submit(
                 Path(source),
                 Path(manifest_out),
-                approval_record=Path(approval_record),
                 policy_path=(
                     Path(policy_path)
                     if policy_path is not None
@@ -535,7 +546,7 @@ class OperatorSurface:
             ).resume()
             if sha256_file(manifest_path) != manifest_sha256:
                 raise TransferFailure("sealed submission record changed during transfer")
-        except (TransferFailure, OSError, ValueError) as error:
+        except (TransferFailure, VolumeTransferRefusal, OSError, ValueError) as error:
             receipt = self._write_action(
                 "upload",
                 {
@@ -902,7 +913,8 @@ class OperatorSurface:
         try:
             lease_store.record_close(
                 owner_token=lease.owner_token,
-                report=report,
+                close_record=report.to_record(),
+                verified=report.verified,
                 now=self.now(),
             )
         except Exception as error:
@@ -1049,11 +1061,14 @@ class OperatorSurface:
         fastest way to teach someone to ignore the one message that matters.
         """
 
-        timings: dict[str, float] = {}
+        timings: dict[str, float | int] = {
+            "billing_cutoff_margin_seconds": FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS
+        }
         if policy is not None and policy.configured:
             timings = {
                 "timeout_seconds": policy.shutdown_deadline_seconds,
                 "poll_seconds": policy.shutdown_poll_interval_seconds,
+                "billing_cutoff_margin_seconds": policy.billing_cutoff_margin_seconds,
             }
         return VerifiedShutdown(
             self.provider,
@@ -1100,8 +1115,13 @@ class OperatorSurface:
         if "timeout" in detail.lower():
             return OperatorError(ErrorCode.PROVIDER_TIMEOUT, detail=detail)
         if result.state is LaunchState.REFUSED_CONFIRMATION:
-            return OperatorError(ErrorCode.CONFIRMATION_REQUIRED, detail=detail)
-        if result.state is LaunchState.REFUSED_REPREVIEW:
+            # `launch()` already refuses a typed confirmation that does not match
+            # the phrase the operator was shown, before the provider is ever
+            # called (see `launch()`'s own equality check). The only way the
+            # runtime itself can still return this state is its own internal
+            # re-preview finding the price moved between preview and this call
+            # (`operations.pod.spend.require_confirmation`'s price-move branch) --
+            # so this is always a price change, never a mistyped phrase.
             return OperatorError(ErrorCode.PRICE_CHANGED, detail=detail)
         if result.state is LaunchState.REFUSED_CEILING:
             return OperatorError(ErrorCode.PAID_ACTION_REFUSED, detail=detail)
@@ -1126,7 +1146,7 @@ class OperatorSurface:
     def _inject_provider_preview_fault(self) -> None:
         if self.faults.provider_timeout:
             self.faults.provider_timeout = False
-            self.provider.inject_failure("estimate", ProviderTimeout("injected provider timeout"))
+            self.provider.inject_failure("estimate", ProviderFailure("injected provider timeout"))
         elif self.faults.provider_error:
             self.faults.provider_error = False
             self.provider.inject_failure("estimate", ProviderFailure("injected provider failure"))
@@ -1286,7 +1306,9 @@ class OperatorSurface:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _provider_for_record(self, launch: dict[str, Any], record: PodRecord) -> FakeProvider:
+    def _provider_for_record(
+        self, launch: dict[str, Any], record: PodRecord
+    ) -> OperatorFakeProvider:
         """Recreate the one fake pod when a later CLI process performs close."""
 
         if record.pod_id in self.provider.pods:
@@ -1305,7 +1327,7 @@ class OperatorSurface:
         # that drift exceeds `bill()`'s one-hour buffer, a real, healthy close
         # reports UNVERIFIED — the one failure this surface exists to avoid
         # reporting spuriously.
-        recreated = FakeProvider(now=self.now)
+        recreated = OperatorFakeProvider(now=self.now)
         try:
             recreated.seed_existing(record, request)
         except ValueError as error:
@@ -1605,6 +1627,7 @@ def _pod_record(record: PodRecord) -> dict[str, Any]:
             "volume_id": contract.volume_id,
             "volume_mount_path": contract.volume_mount_path,
             "docker_start_cmd": list(contract.docker_start_cmd),
+            "billing_cutoff_margin_seconds": contract.billing_cutoff_margin_seconds,
             "template": contract.template,
         },
     }
@@ -1641,6 +1664,7 @@ def _pod_from_record(value: dict[str, Any]) -> PodRecord:
             "volume_id",
             "volume_mount_path",
             "docker_start_cmd",
+            "billing_cutoff_margin_seconds",
             "template",
         }:
             raise ValueError("pod runtime contract has missing or unknown fields")
@@ -1692,6 +1716,9 @@ def _pod_from_record(value: dict[str, Any]) -> PodRecord:
                 volume_id=contract_raw["volume_id"],
                 volume_mount_path=contract_raw["volume_mount_path"],
                 docker_start_cmd=tuple(command),
+                billing_cutoff_margin_seconds=require_billing_cutoff_margin_seconds(
+                    contract_raw["billing_cutoff_margin_seconds"], "recorded billing cutoff margin"
+                ),
                 template=template,
             ),
         )

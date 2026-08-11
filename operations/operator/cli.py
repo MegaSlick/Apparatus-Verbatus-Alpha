@@ -86,11 +86,6 @@ def build_parser() -> PlainParser:
         type=Path,
         help="where Spec 03 should write a new sealed submission record",
     )
-    upload.add_argument(
-        "--approval-record",
-        type=Path,
-        help="current data-handling approval, required with --manifest-out",
-    )
     upload.add_argument("--policy", type=Path, help="data-handling policy used with --manifest-out")
     upload.add_argument(
         "--network-volume",
@@ -166,15 +161,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.sealed_manifest is not None:
                 surface.upload(args.source, sealed_manifest=args.sealed_manifest, volume=volume)
             else:
-                if args.approval_record is None:
-                    raise OperatorError(
-                        ErrorCode.INVALID_COMMAND,
-                        detail="--approval-record is required when --manifest-out creates a submission record",
-                    )
                 surface.submit_and_upload(
                     args.source,
                     manifest_out=args.manifest_out,
-                    approval_record=args.approval_record,
                     policy_path=args.policy,
                     volume=volume,
                 )
