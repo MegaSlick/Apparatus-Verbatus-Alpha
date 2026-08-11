@@ -42,3 +42,22 @@ def test_an_ordinary_record_is_still_read_whole(tmp_path: Path):
     path = tmp_path / "record.json"
     path.write_bytes(b'{"ok": true}')
     assert records._bounded_bytes(path, "a record") == b'{"ok": true}'
+
+
+def test_a_fifo_in_a_sealed_source_folder_refuses_instead_of_hanging_the_upload(tmp_path: Path):
+    """The third site of the same rule, reached through the transfer layer.
+
+    `_open_verified_regular_file` opened with `O_NOFOLLOW` but without
+    `O_NONBLOCK`, so a leaf swapped for a **symlink** was refused while a leaf
+    swapped for a **FIFO** blocked on the open — before the `S_ISREG` check below
+    it could run. Driven through the operator's upload verb, the process printed
+    its pre-transfer lines and then hung indefinitely: the one failure that tells
+    an operator nothing at all. Found by the Opus read of this branch, reproduced
+    end to end.
+    """
+    from operations.pod import transfer
+
+    fifo = tmp_path / "page-1.png"
+    os.mkfifo(fifo)
+    with pytest.raises(transfer.TransferFailure, match="not a regular file|absent"):
+        transfer._open_verified_regular_file(fifo, relative="page-1.png")

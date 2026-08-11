@@ -195,7 +195,15 @@ class S3VolumeTarget:
             raise VolumeTransferRefusal(
                 f"the network volume refused or could not answer a check for {key!r}: {error}"
             ) from error
-        metadata = head.get("Metadata") or {}
+        # Checked for being a mapping, not merely truthy — the same reasoning as
+        # `_means_absent` below, applied to the *same server's* response. `or {}`
+        # substitutes for `None` and passes a string or a list straight through to
+        # `.get`, and this line sits outside the `try` above, so the resulting
+        # `AttributeError` escapes as a traceback rather than as this module's own
+        # `VolumeTransferRefusal`. Hardened in one of the two readers when it was
+        # found; this is the other. Found by the Opus read of this branch.
+        metadata = head.get("Metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
         recorded = metadata.get(SHA256_METADATA_KEY)
         size = head.get("ContentLength")
         if not isinstance(recorded, str) or not isinstance(size, int):

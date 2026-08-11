@@ -309,6 +309,14 @@ def _interactive_arguments() -> list[str]:
     if verb == "upload":
         source = _ask("Folder containing the submitted files")
         manifest = _ask("Path to its sealed submission record")
+        # The same guard the launch route above carries. A blank answer became
+        # `Path("")` and then `Path(".")`, which `upload` refuses cleanly further
+        # down — so nothing was ever sent or billed, and the defect is that a
+        # person who pressed return twice was answered with an error about a
+        # sealed manifest rather than with "nothing changed". Found by CodeRabbit.
+        if not source or not manifest:
+            _print("No folder and sealed record were both chosen. Nothing changed.")
+            return []
         return ["upload", "--source", source, "--sealed-manifest", manifest]
     if verb == "run":
         run_id = _ask("A short name for this run", default="dry-run")
