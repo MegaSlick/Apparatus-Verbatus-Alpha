@@ -172,7 +172,7 @@ def test_public_validator_refuses_partial_or_arithmetically_false_matrix():
     unmeasured = deepcopy(finding)
     unmeasured["matrix"][0]["elapsed_observed_cells"] = 0
     unmeasured["matrix"][0]["mean_elapsed_ms"] = None
-    with pytest.raises(PublicSafetyRefusal, match="every act"):
+    with pytest.raises(PublicSafetyRefusal, match="every measurable act"):
         validate_public_finding(unmeasured)
 
 

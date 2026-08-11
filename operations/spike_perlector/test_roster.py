@@ -531,6 +531,9 @@ def test_a_declared_run_refuses_a_checked_reference_nobody_independently_drafted
             ),
             sample_accounting=accounting,
         )
+    # Before any candidate is called, which is the point of a preflight: an act
+    # nobody independently drafted must not reach a model at all.
+    assert all(not candidate.requests for candidate in candidates)
 
 
 def test_declared_run_reads_an_unresolved_selected_act_without_scoring_it():

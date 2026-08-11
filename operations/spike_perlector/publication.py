@@ -65,6 +65,14 @@ def write_public_finding(
             handle.flush()
             os.fsync(handle.fileno())
         os.link(scratch, target)
+        # The directory entry too, not only the file's contents: without it a
+        # crash after the link can leave the finding's bytes on disk with no
+        # name pointing at them, which reads afterwards as never published.
+        directory_fd = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except FileExistsError as error:
         raise PublicSafetyRefusal("public finding already exists; history is write-once") from error
     finally:

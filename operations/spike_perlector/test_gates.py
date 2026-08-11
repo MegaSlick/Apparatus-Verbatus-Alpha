@@ -705,7 +705,10 @@ def test_every_typed_approval_retains_an_immutable_checked_record():
         transmission_approval(
             vendor="synthetic-vendor",
             candidate_artifact_digest=roster.vendor_unaltered.artifact_digest,
-            page_ids=frozenset({act.opaque_act_id}),
+            # The page identifier, as every other `transmission_approval` call
+            # in this file uses. `page_ids` is a page-scoped field and an act ID
+            # is not a page ID.
+            page_ids=frozenset({act.image.opaque_page_id}),
             manifest_sha256=manifest.manifest_sha256,
         ),
         run_plan_approval_for(

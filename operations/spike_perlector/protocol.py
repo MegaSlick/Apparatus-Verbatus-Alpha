@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .encoding import sha256_bytes
+from .encoding import is_sha256, sha256_bytes
 from .errors import MatrixRefusal
 
 # Updated only in the same reviewable change as the protocol document itself.
@@ -58,6 +58,14 @@ def protocol_document_sha256() -> str:
 def require_predeclared_protocol() -> str:
     """Refuse a declared run if its committed protocol is no longer the pinned artifact."""
 
+    # The pin itself first. A malformed or miscased constant can never equal a
+    # measured digest, so the run would refuse with "the protocol differs" and
+    # send the reader to diff a document that had not changed.
+    if not is_sha256(PREDECLARED_PROTOCOL_SHA256):
+        raise MatrixRefusal(
+            "the predeclared Spec 05 protocol pin is not a lowercase SHA-256: "
+            f"{PREDECLARED_PROTOCOL_SHA256!r}"
+        )
     observed = protocol_document_sha256()
     if observed != PREDECLARED_PROTOCOL_SHA256:
         raise MatrixRefusal(
