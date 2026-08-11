@@ -14,6 +14,7 @@ from operations.spike_perlector.errors import DisclosureRefusal, MatrixRefusal
 from operations.spike_perlector.fakes import FakeCandidate
 from operations.spike_perlector.gates import (
     DataGateAuthority,
+    NormalizationApproval,
     RunAuthorization,
     ThirdPartyTransmissionApproval,
 )
@@ -420,3 +421,101 @@ def test_generic_matrix_refuses_real_material_before_any_adapter_call():
             authorization=_private_authorization(roster, manifest, witnesses, prompts),
         )
     assert candidate.requests == []
+
+
+# --- DataGateAuthority's own refusals -----------------------------------------
+#
+# This class decides whether private-register material may be disclosed to an
+# external adapter.  Until now its stale/missing/tampered behaviour was covered
+# only through `common/contracts/test_contracts_approval.py`, against the shared
+# "data-gate" action Tyrel retired on 2026-08-09.  When the rebase onto that cut
+# moved the behaviour into this class, the coverage did not come with it — and two
+# real regressions then passed the whole suite unnoticed.  These tests are the
+# protection moving to where the behaviour now lives.
+
+
+def test_a_missing_data_gate_approval_refuses_by_name_not_by_attribute_error():
+    """The refusal must name the governed condition, not leak a Python attribute."""
+
+    with pytest.raises(DisclosureRefusal, match="data-gate approval is missing"):
+        DataGateAuthority.load(
+            policy_content=POLICY,
+            approval_reference=None,
+            read_bytes=lambda _path: b"",
+        )
+
+
+def test_an_approval_for_earlier_policy_content_is_stale_for_changed_content():
+    reference, payload = approval_reference_for(
+        action="other",
+        target_version_hash=DataGateAuthority.scope_digest(policy_content=POLICY),
+    )
+    with pytest.raises(DisclosureRefusal, match="stale"):
+        DataGateAuthority.load(
+            policy_content={**POLICY, "purpose": "a different policy entirely"},
+            approval_reference=reference,
+            read_bytes=lambda _path: payload,
+        )
+
+
+def test_approval_bytes_that_do_not_match_their_content_address_refuse():
+    reference, payload = approval_reference_for(
+        action="other",
+        target_version_hash=DataGateAuthority.scope_digest(policy_content=POLICY),
+    )
+    with pytest.raises(DisclosureRefusal, match="unavailable"):
+        DataGateAuthority.load(
+            policy_content=POLICY,
+            approval_reference=reference,
+            read_bytes=lambda _path: payload + b" ",
+        )
+
+
+def test_a_record_whose_action_is_not_the_recorded_one_refuses():
+    """'exclusion' is a real action in the shared taxonomy — and not this one.
+
+    The retired 'data-gate' spelling cannot be used here at all: `build_approval_record`
+    now refuses it, which is itself the cut this branch had to absorb.
+    """
+
+    reference, payload = approval_reference_for(
+        action="exclusion",
+        target_version_hash=DataGateAuthority.scope_digest(policy_content=POLICY),
+    )
+    with pytest.raises(DisclosureRefusal, match="recorded approval action"):
+        DataGateAuthority.load(
+            policy_content=POLICY,
+            approval_reference=reference,
+            read_bytes=lambda _path: payload,
+        )
+
+
+def test_a_sibling_scope_digest_cannot_satisfy_the_data_gate():
+    """The schema tag is what separates the four scopes; prove it does."""
+
+    sibling = NormalizationApproval.scope_digest(
+        profile_id=GRAPHEMIC_V1.profile_id, profile_sha256=digest("any-profile")
+    )
+    assert sibling != DataGateAuthority.scope_digest(policy_content=POLICY)
+    reference, payload = approval_reference_for(action="other", target_version_hash=sibling)
+    with pytest.raises(DisclosureRefusal, match="stale"):
+        DataGateAuthority.load(
+            policy_content=POLICY,
+            approval_reference=reference,
+            read_bytes=lambda _path: payload,
+        )
+
+
+def test_policy_content_that_cannot_be_canonicalized_refuses_rather_than_aliasing():
+    """An integer key and its string spelling must not digest to the same scope.
+
+    Under a permissive JSON encoder they do, because `json.dumps` converts the key
+    silently — so a policy could change underneath a live approval without ever
+    becoming stale.  The retired `data_gate_policy_hash` refused both this and any
+    float; the scope digest refuses them again.
+    """
+
+    with pytest.raises(TypeError, match="non-string key"):
+        DataGateAuthority.scope_digest(policy_content={1: "same-json"})
+    with pytest.raises(TypeError, match="float"):
+        DataGateAuthority.scope_digest(policy_content={"retention_days": 1.5})

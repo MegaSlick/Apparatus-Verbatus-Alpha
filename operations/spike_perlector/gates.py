@@ -18,8 +18,9 @@ from common.contracts.approval import (
     ApprovalRecordReference,
     validate_approval_record,
 )
+from common.contracts.canonical import digest_of
 
-from .encoding import canonical_json_bytes, is_sha256, sha256_bytes
+from .encoding import is_sha256, sha256_bytes
 from .errors import DisclosureRefusal
 from .holdout import EvaluationManifest
 from .models import DeliveryMode, EvaluationAct, MaterialClass, ResolvedIdentity
@@ -27,7 +28,25 @@ from .normalization import NormalizationProfile
 
 
 def _approval_digest(record: Mapping[str, object]) -> str:
-    return sha256_bytes(canonical_json_bytes(dict(record)))
+    """Digest one approval scope under the strict repository canonicalization.
+
+    Not this package's own ``canonical_json_bytes``, which is the byte-stable envelope
+    for a candidate dossier and is deliberately permissive: it hands the value to
+    ``json.dumps``, which silently converts an integer mapping key to its string
+    spelling and accepts any finite float.  That is harmless for a dossier and wrong
+    for an approval, because an approval scope is a *claim about exactly what was
+    approved*.  Under the permissive encoder ``{1: x}`` and ``{"1": x}`` digest
+    identically, so a policy could change underneath a live approval without making it
+    stale — and the retired ``data_gate_policy_hash`` these scopes replaced refused
+    both cases outright.
+
+    ``digest_of`` refuses floats and non-string keys recursively, which restores that
+    guarantee.  The three sibling scopes carry only strings and pinned digests, so this
+    is a no-op for them; ``DataGateAuthority`` is the one that embeds caller-supplied
+    policy content, and the one this protects.
+    """
+
+    return digest_of(dict(record))
 
 
 def _checked_approval_record(reference: ApprovalRecordReference, payload: bytes) -> dict[str, Any]:
@@ -116,6 +135,17 @@ class DataGateAuthority:
         read_bytes: Callable[[str], bytes],
     ) -> "DataGateAuthority":
         """Load a current data-gate record through the approved-root reader."""
+
+        # Checked before it is dereferenced, so a missing approval refuses by the
+        # governed condition that actually failed.  Reading `.relative_path` first
+        # turned the missing case into an AttributeError wearing a refusal's clothes:
+        # it still failed closed, but it reported a Python attribute rather than the
+        # absence of Tyrel's approval, which is the one fact a reader needs here.
+        if not isinstance(approval_reference, ApprovalRecordReference):
+            raise DisclosureRefusal(
+                "data-gate approval is missing; real input requires a current "
+                "approval-record artifact"
+            )
 
         try:
             payload = read_bytes(approval_reference.relative_path)
