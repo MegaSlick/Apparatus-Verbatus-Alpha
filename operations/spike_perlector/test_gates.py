@@ -518,12 +518,35 @@ def test_a_record_whose_action_is_not_the_recorded_one_refuses():
         )
 
 
-def test_a_sibling_scope_digest_cannot_satisfy_the_data_gate():
+@pytest.mark.parametrize(
+    "sibling",
+    (
+        NormalizationApproval.scope_digest(
+            profile_id=GRAPHEMIC_V1.profile_id,
+            profile_sha256=digest("any-profile"),
+        ),
+        ThirdPartyTransmissionApproval.scope_digest(
+            vendor="synthetic-vendor",
+            candidate_artifact_digest=digest("candidate"),
+            page_ids=frozenset({"p1"}),
+            manifest_sha256=digest("manifest"),
+        ),
+        RunPlanApproval.scope_digest(
+            protocol_sha256=digest("protocol"),
+            manifest_sha256=digest("manifest"),
+            candidate_roster_sha256=digest("roster"),
+            witness_configuration_sha256=digest("witnesses"),
+            prompt_registry_sha256=digest("prompts"),
+            normalization_profile_id="graphemic-v1",
+            normalization_profile_sha256=digest("normalization"),
+            budget_evidence_sha256=digest("budget"),
+            private_sample_accounting_sha256=digest("accounting"),
+        ),
+    ),
+)
+def test_a_sibling_scope_digest_cannot_satisfy_the_data_gate(sibling):
     """The schema tag is what separates the four scopes; prove it does."""
 
-    sibling = NormalizationApproval.scope_digest(
-        profile_id=GRAPHEMIC_V1.profile_id, profile_sha256=digest("any-profile")
-    )
     assert sibling != DataGateAuthority.scope_digest(policy_content=POLICY)
     reference, payload = approval_reference_for(action="other", target_version_hash=sibling)
     with pytest.raises(DisclosureRefusal, match="stale"):
@@ -567,6 +590,15 @@ def test_non_canonical_policy_content_refuses_as_a_disclosure_not_a_type_error()
     with pytest.raises(DisclosureRefusal, match="cannot be canonically bound"):
         DataGateAuthority.load(
             policy_content={"retention_days": 1.5},
+            approval_reference=reference,
+            read_bytes=lambda _path: payload,
+        )
+    with pytest.raises(
+        DisclosureRefusal,
+        match=r"cannot be canonically bound: float at \$\.policy_content\.outer\[0\]\.retention_days",
+    ):
+        DataGateAuthority.load(
+            policy_content={"outer": [{"retention_days": 1.5}]},
             approval_reference=reference,
             read_bytes=lambda _path: payload,
         )
@@ -630,6 +662,34 @@ def test_data_gate_authority_deeply_owns_the_policy_bound_by_approval():
     assert authority.scope_sha256 == approved_scope
     with pytest.raises(TypeError, match="does not support item assignment"):
         authority.policy_content["limits"]["retention_days"] = (3650,)
+
+
+def test_every_typed_approval_retains_an_immutable_checked_record():
+    roster = private_roster()
+    act = evaluation_act(material_class=MaterialClass.PRIVATE_REGISTER)
+    manifest = manifest_for(act)
+    witnesses = witness_configuration_for(act)
+    prompts = registry(*roster.identities())
+    approvals = (
+        checked_data_gate_authority(),
+        normalization_approval_for(GRAPHEMIC_V1),
+        transmission_approval(
+            vendor="synthetic-vendor",
+            candidate_artifact_digest=roster.vendor_unaltered.artifact_digest,
+            page_ids=frozenset({act.opaque_act_id}),
+            manifest_sha256=manifest.manifest_sha256,
+        ),
+        run_plan_approval_for(
+            manifest=manifest,
+            roster=roster,
+            witness_configuration=witnesses,
+            prompt_registry=prompts,
+            profile=GRAPHEMIC_V1,
+        ),
+    )
+    for approval in approvals:
+        with pytest.raises(AttributeError, match="'tuple' object has no attribute 'append'"):
+            approval.approval_record["subject_ids"].append("mutated-after-check")
 
 
 def test_generic_other_approval_for_another_purpose_cannot_open_the_data_gate():

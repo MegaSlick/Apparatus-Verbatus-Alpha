@@ -238,10 +238,8 @@ class NormalizationApproval:
             raise DisclosureRefusal("normalization approval must name a profile")
         if not is_sha256(self.profile_sha256):
             raise DisclosureRefusal("normalization approval requires a profile SHA-256")
-        record = MappingProxyType(dict(self.approval_record))
-        object.__setattr__(self, "approval_record", record)
         checked = _checked_approval_record(self.approval_reference, self.approval_bytes)
-        if checked != dict(record):
+        if checked != dict(self.approval_record):
             raise DisclosureRefusal("normalization approval record differs from its checked bytes")
         if checked["action"] != "other":
             raise DisclosureRefusal(
@@ -254,6 +252,7 @@ class NormalizationApproval:
             raise DisclosureRefusal(
                 "normalization approval record does not bind this exact profile"
             )
+        object.__setattr__(self, "approval_record", _deep_freeze(checked))
 
     @classmethod
     def load(
@@ -362,10 +361,8 @@ class ThirdPartyTransmissionApproval:
             not isinstance(page_id, str) or not page_id for page_id in self.page_ids
         ):
             raise DisclosureRefusal("third-party approval must name exact pages")
-        record = MappingProxyType(dict(self.approval_record))
-        object.__setattr__(self, "approval_record", record)
         checked = _checked_approval_record(self.approval_reference, self.approval_bytes)
-        if checked != dict(record):
+        if checked != dict(self.approval_record):
             raise DisclosureRefusal("third-party approval record differs from its checked bytes")
         if checked["action"] != "other":
             raise DisclosureRefusal(
@@ -380,6 +377,7 @@ class ThirdPartyTransmissionApproval:
             raise DisclosureRefusal(
                 "third-party approval record does not bind this exact vendor, pages, candidate, and manifest"
             )
+        object.__setattr__(self, "approval_record", _deep_freeze(checked))
 
     @classmethod
     def load(
@@ -522,10 +520,8 @@ class RunPlanApproval:
             raise DisclosureRefusal("run-plan approval requires every sealed digest")
         if not isinstance(self.normalization_profile_id, str) or not self.normalization_profile_id:
             raise DisclosureRefusal("run-plan approval must name the normalization profile")
-        record = MappingProxyType(dict(self.approval_record))
-        object.__setattr__(self, "approval_record", record)
         checked = _checked_approval_record(self.approval_reference, self.approval_bytes)
-        if checked != dict(record):
+        if checked != dict(self.approval_record):
             raise DisclosureRefusal("run-plan approval record differs from its checked bytes")
         if checked["action"] != "other":
             raise DisclosureRefusal(
@@ -536,6 +532,7 @@ class RunPlanApproval:
         )
         if checked["target_version_hash"] != self.scope_sha256:
             raise DisclosureRefusal("run-plan approval record does not bind its declared scope")
+        object.__setattr__(self, "approval_record", _deep_freeze(checked))
 
     @classmethod
     def load(
