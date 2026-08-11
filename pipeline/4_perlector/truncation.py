@@ -117,8 +117,20 @@ def ends_abruptly(text: str) -> bool:
 
     The same rubric `pipeline/3_attestatores/run.py::content_health` already
     uses for a witness's own report ("a report ending mid-token is the shape of
-    a truncation") extended here to the Perlector's own reading, so the two
-    stages judge an abrupt ending the same way. Deliberately not "does the
+    a truncation"), extended here to the Perlector's own reading.
+
+    **The two do not agree exactly, and this is the honest statement of where.**
+    This function strips trailing whitespace before looking for the hyphen;
+    `content_health` on `main` does not, so it reads `"word-   "` as complete
+    where this reads it as abrupt. Stripping is the better rubric — trailing
+    whitespace should not hide a truncation — so the divergence is left standing
+    rather than made consistent by adopting the weaker one. Aligning
+    `content_health` belongs with the Attestatores, not here, and is carried as a
+    cross-stage item. The docstring previously claimed the two stages judged this
+    the same way, which was simply false. Found by CodeRabbit, whose report had
+    the two functions the other way round.
+
+    Deliberately not "does the
     reading end in terminal punctuation": a genuine parish-register act
     routinely ends on a name or a signature, not a period, and requiring
     punctuation would misclassify most honest complete readings in this

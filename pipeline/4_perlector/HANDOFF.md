@@ -43,8 +43,11 @@ basis = {
 dossier          -- the full spec_08 input contract, persisted as evidence
                     (see below); a superset of `basis`, never a replacement
 prompt           -- {serving_recipe, chair_identity_sha256, dossier_digest,
-                    rendered_sha256}: the declared prompt this reading was
-                    actually produced through (invariant #49, see below)
+                    rendered_sha256, builder_sha256}: the declared prompt this
+                    reading was actually produced through (invariant #49, see
+                    below). `builder_sha256` digests the prompt builder's own
+                    source, so editing the builder changes the record even when
+                    its name and every other field stay identical
 dissent          -- derived-comparison-view rows (see below)
 truncation       -- {classification, signals}, present on every attempted
                     reading regardless of outcome (see below)

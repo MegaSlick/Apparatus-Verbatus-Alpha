@@ -167,6 +167,28 @@ FIXTURE = "synthetic-two-page-v0"
 # later edit to a recipe's builder changes what the record claims about itself
 # instead of silently invalidating an old one nothing could detect. File counts
 # remain 44 and 48; only the prompt record's bytes changed.
+# **These two pins are platform-dependent as of this branch, and that is a finding
+# rather than a property of this test.** Diagnosed 2026-08-11 after they failed on
+# macOS while passing in a Linux chamber and in CI, on the identical commit:
+#
+#   - the divergence begins at the Perlector and everything downstream inherits it;
+#     stages 1-3 are byte-identical;
+#   - it is `dossier.page_renders[0].image_sha256`, a PNG this branch newly binds
+#     into the Perlectio's sealed inputs — `main` has no `page_renders` at all;
+#   - the two renders' **pixels are identical** (same `Image.tobytes()` digest);
+#     only the PNG container differs, 364 bytes against 366, because the macOS and
+#     Linux Pillow wheels carry different zlib builds. Same Pillow 12.3.0 both sides.
+#
+# So ARCHITECTURE invariant 3 holds — the image shown to a model *is* reproducible
+# from the Exemplar and the recorded transforms — while the run tree's sealed
+# identity is not, because it binds the encoded container rather than the image.
+# Two platforms reading the same Exemplar produce different Archetypus and Armarium
+# digests, and a run verified across platforms would refuse legitimate reuse.
+#
+# **Deliberately not re-pinned.** Re-pinning for macOS would break CI, and picking
+# either platform's bytes decides by accident a question that should be decided on
+# purpose: whether a run's identity binds pixels or bytes. Carried to Tyrel in
+# workbench/raw/stage-prs/THE_ONE_DECISION.md.
 #
 # Re-pinned for the rebase of the System 08 build onto the merged System 09 tree:
 # both movements above are now in one tree, so the counts are 45 (happy) and 49

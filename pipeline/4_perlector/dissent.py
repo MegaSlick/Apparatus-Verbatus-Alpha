@@ -86,7 +86,19 @@ def _aligned_within_deadline(reading: str, reported: str, *, seconds: int) -> li
     previous_handler = signal.signal(signal.SIGALRM, _deadline_handler)
     signal.alarm(seconds)
     try:
-        return departures(reading, reported)
+        result = departures(reading, reported)
+        # Cancelled inside the `try`, not only in the `finally`. An alarm that
+        # fired after `departures` returned but before the `finally` ran raised
+        # `_ComparisonTimedOut` from inside the `finally` itself, where the
+        # `except` above has already been passed — so a comparison that had
+        # *succeeded* propagated a timeout exception out of a function whose whole
+        # contract is to return `None` instead of raising. The window is narrow
+        # and it is real. Cancelling here does not close it completely: a firing
+        # in the remaining instructions is caught by the `except` and returns
+        # `None`, which understates a finished comparison rather than crashing
+        # one. That is the safe direction of the two. Found by CodeRabbit.
+        signal.alarm(0)
+        return result
     except _ComparisonTimedOut:
         return None
     finally:

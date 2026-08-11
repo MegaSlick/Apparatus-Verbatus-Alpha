@@ -75,7 +75,12 @@ def load_witness_context(path: Path) -> dict[str, dict[str, str]]:
     try:
         with open(path, "rb") as handle:
             raw = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as error:
+    # `UnicodeDecodeError` beside the others because `tomllib` decodes the bytes
+    # itself: a declaration file that is not valid UTF-8 raises it rather than
+    # `TOMLDecodeError`, and it escaped this handler as a raw traceback where
+    # every other malformed-file case is a named refusal. `common/stage.py`
+    # already catches it for the same reason. Found by CodeRabbit.
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ContractError(
             f"witness context declaration at {path} could not be read: {error}"
         ) from error
