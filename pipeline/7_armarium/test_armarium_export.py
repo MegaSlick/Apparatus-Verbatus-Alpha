@@ -779,7 +779,15 @@ def test_excluded_act_requires_and_carries_its_approval_reference(tmp_path):
     )
     root = tmp_path / "clean"
     verify_export_bundle(bundle.data, root)
-    rows = [json.loads(line) for line in (root / "acts.jsonl").read_text().splitlines()]
+    # `encoding="utf-8"` explicitly: `read_text()` without it decodes under the
+    # locale, and the bundle is written as UTF-8 by `_jsonl_bytes`. A machine
+    # whose locale is not UTF-8 would decode a published product's own bytes
+    # differently from the machine that wrote them — the same environment
+    # dependence this branch already carries in its sealed bundle identity.
+    # Found by CodeRabbit.
+    rows = [
+        json.loads(line) for line in (root / "acts.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     assert next(row for row in rows if row["act_id"] == "act-2")["approval_ref"] == (
         "art_0123456789abcdef"
     )

@@ -220,7 +220,15 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     reference = export["payload"]["bundle"]["reference"]
     clean = tmp_path / f"clean-{missing_field}"
     verify_export_bundle(tree.read_bytes(reference["relative_path"]), clean)
-    rows = [json.loads(line) for line in (clean / "acts.jsonl").read_text().splitlines()]
+    # `encoding="utf-8"` explicitly: `read_text()` without it decodes under the
+    # locale, and the bundle is written as UTF-8 by `_jsonl_bytes`. A machine
+    # whose locale is not UTF-8 would decode a published product's own bytes
+    # differently from the machine that wrote them — the same environment
+    # dependence this branch already carries in its sealed bundle identity.
+    # Found by CodeRabbit.
+    rows = [
+        json.loads(line) for line in (clean / "acts.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     row = next(item for item in rows if item["act_id"] == refused_act_id)
     assert row["category"] == "refused-with-reason"
     assert row["canonical_clean_text"] is None

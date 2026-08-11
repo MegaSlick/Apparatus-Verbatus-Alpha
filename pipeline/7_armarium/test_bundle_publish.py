@@ -7,7 +7,9 @@ would prove the functions work rather than that the program does.
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -170,3 +172,22 @@ def test_a_tampered_sealed_blob_is_refused_before_anything_is_published(tmp_path
     # The run tree's own damage report, not a reassuring "there is no export here".
     assert "no sealed armarium/export artifact" not in result.stderr
     assert not out.exists()
+
+
+def test_a_published_bundle_directory_carries_the_operators_umask_not_mkdtemps(happy_run, tmp_path):
+    """`mkdtemp` creates at 0o700 and `os.replace` moves that directory intact.
+
+    So the published product inherited a *temporary* directory's permissions
+    rather than the operator's own, and a bundle a recipient cannot enter is not
+    a bundle that was published. The mode is set from the umask before the
+    rename, the way `mkdir` would have done it. Found by CodeRabbit.
+    """
+    out = tmp_path / "bundle-out"
+    result = _publish(happy_run, "r", out)
+    assert result.returncode == 0, result.stderr
+
+    umask = os.umask(0)
+    os.umask(umask)
+    expected = 0o777 & ~umask
+    mode = stat.S_IMODE(out.stat().st_mode)
+    assert mode == expected, f"published at {mode:o}, not the umask-derived {expected:o}"

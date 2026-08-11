@@ -107,6 +107,17 @@ def publish(context, out_dir: Path) -> dict:
             # product to publish and the destination stays absent.
             manifest = verify_export_bundle(data, staging / EXTRACTION_NAME)
             (staging / ARMARIUM_ARCHIVE_NAME).write_bytes(data)
+            # `mkdtemp` creates at 0o700, so the published directory's permissions
+            # would otherwise be whatever the staging call happened to make them —
+            # narrower than the surrounding tree and unrelated to the operator's
+            # umask, because `os.replace` moves the directory rather than creating
+            # one at the destination. A published product a recipient cannot read
+            # is not published. Set from the umask the way `mkdir` would, so the
+            # bundle looks like every other directory this operator makes rather
+            # than like a temporary one. Found by CodeRabbit.
+            umask = os.umask(0)
+            os.umask(umask)
+            os.chmod(staging, 0o777 & ~umask)
             # The one thing that ever populates the reservation, and it does so
             # atomically. Inside this try so a rename failure also cleans the staging
             # directory rather than orphaning it beside the empty reservation.
