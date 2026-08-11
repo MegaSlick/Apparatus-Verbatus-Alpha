@@ -1,9 +1,17 @@
+from dataclasses import replace
+
 import pytest
 
 from operations.spike_perlector.errors import PromptFidelityRefusal
 from operations.spike_perlector.models import Condition, dossier_for
 from operations.spike_perlector.prompting import PromptFormat, PromptRegistry
-from operations.spike_perlector.testkit import evaluation_act, identity, prompt_format, registry
+from operations.spike_perlector.testkit import (
+    digest,
+    evaluation_act,
+    identity,
+    prompt_format,
+    registry,
+)
 
 
 def test_registry_passes_the_declared_format_byte_for_byte():
@@ -43,9 +51,28 @@ def test_unknown_candidate_cannot_fall_back_to_another_prompt_format():
         )
 
 
-def test_prompt_format_binds_its_model_revision_and_digest():
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("source_ref", "synthetic/a-other"),
+        ("revision", "revision-other"),
+        # A *valid* different digest: an invalid one is refused by
+        # `ResolvedIdentity` before `verify_identity` is ever consulted, so it
+        # would prove the wrong guard.
+        ("artifact_digest", digest("other-artifact")),
+    ),
+)
+def test_prompt_format_binds_its_model_revision_and_digest(field, value):
+    """Each bound field on its own, with the other two held equal.
+
+    `identity` derives `revision` and `artifact_digest` from the key, so varying
+    only `source_ref` left two of the three fields `verify_identity` compares
+    untested — either could have been dropped from the comparison with this
+    test still green.
+    """
+
     candidate = identity("synthetic-a", 1)
-    changed = identity("synthetic-a", 1, source_ref="synthetic/a-other")
+    changed = replace(candidate, **{field: value})
     with pytest.raises(PromptFidelityRefusal, match="does not bind"):
         registry(candidate).request_for(
             changed, dossier_for(evaluation_act(), Condition.LECTIO_NUDA)
