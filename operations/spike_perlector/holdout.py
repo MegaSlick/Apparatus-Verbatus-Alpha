@@ -219,22 +219,14 @@ class EvaluationManifest:
             "members": [member.record() for member in self.members],
         }
 
-    def require_scoreable_acts(
+    def require_run_acts(
         self,
         acts: Iterable[tuple[str, str, str, MaterialClass, ReferenceStatus, tuple[str, ...]]],
-        *,
-        excluded_opaque_act_ids: Iterable[str],
     ) -> None:
-        """Bind the scoreable subset after every selected exclusion is accounted for."""
+        """Bind every selected act; scoring exclusions never suppress a read."""
 
         observed = tuple(acts)
-        excluded = frozenset(excluded_opaque_act_ids)
-        selected_ids = {member.opaque_act_id for member in self.members}
-        if not excluded <= selected_ids:
-            raise HoldoutRefusal("sample accounting excludes an act outside the sealed selection")
-        expected = {
-            member.binding() for member in self.members if member.opaque_act_id not in excluded
-        }
+        expected = {member.binding() for member in self.members}
         if len(observed) != len(set(observed)):
             raise HoldoutRefusal("run repeats an act/material-class/evidence binding")
         if set(observed) != expected:
@@ -242,10 +234,21 @@ class EvaluationManifest:
                 "run acts are not exactly the material, classification, and evidence in the sealed manifest"
             )
 
+    def require_scoreable_acts(
+        self,
+        acts: Iterable[tuple[str, str, str, MaterialClass, ReferenceStatus, tuple[str, ...]]],
+        *,
+        excluded_opaque_act_ids: Iterable[str],
+    ) -> None:
+        """Compatibility boundary: exclusions affect scoring, never act delivery."""
+
+        frozenset(excluded_opaque_act_ids)
+        self.require_run_acts(acts)
+
 
 @dataclass(frozen=True, slots=True)
 class ReferenceExclusion:
-    """Private accounting for a selected reference that cannot enter CER/WER."""
+    """Private accounting for a selected reference excluded only from CER/WER."""
 
     opaque_act_id: str
     status: ReferenceStatus
@@ -275,7 +278,7 @@ class PrivateSampleAccounting:
     """Complete private accounting of scoreable and excluded selected acts.
 
     This is evidence, not a selector: it cannot replace an excluded act, alter the
-    deterministic draw, or make an excluded act scoreable.
+    deterministic draw, make an excluded act scoreable, or stop its downstream reads.
     """
 
     manifest_sha256: str

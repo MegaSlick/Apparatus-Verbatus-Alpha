@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from enum import StrEnum
 from math import fsum, isfinite
 from typing import Iterable
 
-from .errors import MatrixRefusal, MeasurementRefusal, PromptFidelityRefusal
+from .encoding import is_sha256
+from .errors import MatrixRefusal, MeasurementRefusal
 from .gates import RunAuthorization, require_authorized_delivery
 from .holdout import EvaluationManifest, PrivateSampleAccounting
 from .models import (
@@ -46,7 +48,7 @@ class CandidateCell:
     opaque_act_id: str
     perlectio: Perlectio
     raw_response_text: str | None
-    score: ActScore
+    score: ActScore | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +58,52 @@ class WitnessBaseline:
     opaque_act_id: str
     public_source_index: int
     status: OutputStatus
-    score: ActScore
+    score: ActScore | None
+
+
+class FailedAttemptKind(StrEnum):
+    """A harness failure retained without inventing a Perlectio or model score."""
+
+    ADAPTER_EXCEPTION = "adapter-exception"
+    INVALID_RESPONSE = "invalid-response"
+    PROMPT_RECEIPT_MISMATCH = "prompt-receipt-mismatch"
+    DOSSIER_RECEIPT_MISMATCH = "dossier-receipt-mismatch"
+    DELIVERY_RECEIPT_MISMATCH = "delivery-receipt-mismatch"
+
+
+@dataclass(frozen=True, slots=True)
+class FailedCandidateAttempt:
+    """One planned delivery that did not yield a proved Perlectio."""
+
+    identity: ResolvedIdentity
+    opaque_act_id: str
+    condition: Condition
+    prompt_format_sha256: str
+    dossier_sha256: str
+    delivery_sha256: str
+    kind: FailedAttemptKind
+    detail: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity, ResolvedIdentity):
+            raise MatrixRefusal("failed attempt needs a checked candidate identity")
+        if not isinstance(self.opaque_act_id, str) or not self.opaque_act_id:
+            raise MatrixRefusal("failed attempt needs an opaque act ID")
+        if not isinstance(self.condition, Condition):
+            raise MatrixRefusal("failed attempt needs a declared condition")
+        if not isinstance(self.kind, FailedAttemptKind):
+            raise MatrixRefusal("failed attempt needs a named failure kind")
+        if not isinstance(self.detail, str) or not self.detail:
+            raise MatrixRefusal("failed attempt needs a private diagnostic")
+        if not all(
+            is_sha256(value)
+            for value in (
+                self.prompt_format_sha256,
+                self.dossier_sha256,
+                self.delivery_sha256,
+            )
+        ):
+            raise MatrixRefusal("failed attempt needs exact prompt, dossier, and delivery digests")
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,8 +156,12 @@ class AggregateMetrics:
         )
         if min(counts) < 0:
             raise MatrixRefusal("aggregate counts may not be negative")
-        if self.cer_reference_units <= 0 or self.wer_reference_units <= 0:
-            raise MatrixRefusal("a metric aggregate has no checked denominator")
+        if bool(self.cer_reference_units) is not bool(self.wer_reference_units):
+            raise MatrixRefusal("CER and WER checked denominators must be absent together")
+        if not self.cer_reference_units and any(
+            (self.cer_errors, self.cer_matches, self.wer_errors, self.wer_matches)
+        ):
+            raise MatrixRefusal("an unscored aggregate carries CER or WER operations")
         if self.dissent_departed > self.dissent_compared:
             raise MatrixRefusal("aggregate dissent departures exceed comparisons")
         if (
@@ -135,16 +186,16 @@ class AggregateMetrics:
             raise MatrixRefusal("elapsed and cost totals must be finite and non-negative")
 
     @property
-    def cer(self) -> float:
-        return self.cer_errors / self.cer_reference_units
+    def cer(self) -> float | None:
+        return self.cer_errors / self.cer_reference_units if self.cer_reference_units else None
 
     @property
-    def wer(self) -> float:
-        return self.wer_errors / self.wer_reference_units
+    def wer(self) -> float | None:
+        return self.wer_errors / self.wer_reference_units if self.wer_reference_units else None
 
     @property
-    def completeness(self) -> float:
-        return self.cer_matches / self.cer_reference_units
+    def completeness(self) -> float | None:
+        return self.cer_matches / self.cer_reference_units if self.cer_reference_units else None
 
     @property
     def dissent_rate(self) -> float | None:
@@ -213,6 +264,7 @@ class MeasurementRun:
     cells: tuple[CandidateCell, ...]
     witness_baselines: tuple[WitnessBaseline, ...]
     material_class: MaterialClass
+    failed_attempts: tuple[FailedCandidateAttempt, ...] = ()
     roster: CandidateRoster | None = None
     witness_configuration: WitnessConfiguration | None = None
     manifest: EvaluationManifest | None = None
@@ -259,10 +311,7 @@ class MeasurementRun:
             if self.sample_accounting is None:
                 raise MatrixRefusal("a manifest-bound run requires private sample accounting")
             self.sample_accounting.require_complete_for(self.manifest)
-            self.manifest.require_scoreable_acts(
-                (act.manifest_binding() for act in self.acts),
-                excluded_opaque_act_ids=self.sample_accounting.excluded_opaque_act_ids,
-            )
+            self.manifest.require_run_acts(act.manifest_binding() for act in self.acts)
         if self.witness_configuration is not None:
             self.witness_configuration.require_distinct_from_candidates(self.candidates)
         acts_by_id = {act.opaque_act_id: act for act in self.acts}
@@ -306,8 +355,8 @@ class MeasurementRun:
                 response, anonymous_testimonia(act), self.profile
             ):
                 raise MatrixRefusal("Perlectio dissent differs from the retained witness evidence")
-            expected_score = score_response(
-                act.ground_truth.scoreable_text,
+            expected_score = _score_for_act(
+                act,
                 status=cell.perlectio.status,
                 text=cell.raw_response_text,
                 profile=self.profile,
@@ -320,7 +369,7 @@ class MeasurementRun:
             for act in self.acts
             for condition in ALL_CONDITIONS
         }
-        actual = {
+        completed = {
             (
                 cell.perlectio.identity.candidate_key,
                 cell.opaque_act_id,
@@ -328,10 +377,26 @@ class MeasurementRun:
             )
             for cell in self.cells
         }
-        if actual != expected or len(self.cells) != len(expected):
+        failed = {
+            (item.identity.candidate_key, item.opaque_act_id, item.condition)
+            for item in self.failed_attempts
+        }
+        if completed & failed:
+            raise MatrixRefusal("a planned cell is both a Perlectio and a failed attempt")
+        if completed | failed != expected or len(self.cells) + len(self.failed_attempts) != len(
+            expected
+        ):
             raise MatrixRefusal(
-                "candidate matrix does not account for every planned cell exactly once"
+                "candidate matrix does not account for every planned read exactly once"
             )
+        for failure in self.failed_attempts:
+            act = acts_by_id.get(failure.opaque_act_id)
+            identity = identities_by_key.get(failure.identity.candidate_key)
+            if act is None or identity != failure.identity:
+                raise MatrixRefusal("failed attempt names evidence outside its run")
+            dossier = dossier_for(act, failure.condition)
+            if failure.dossier_sha256 != dossier.wire_sha256:
+                raise MatrixRefusal("failed attempt does not bind the run's exact dossier")
         expected_baselines = {
             (act.opaque_act_id, item.public_source_index)
             for act in self.acts
@@ -352,8 +417,8 @@ class MeasurementRun:
                 for item in act.testimonia
                 if item.public_source_index == baseline.public_source_index
             )
-            expected_score = score_response(
-                act.ground_truth.scoreable_text,
+            expected_score = _score_for_act(
+                act,
                 status=testimonium.status,
                 text=testimonium.text,
                 profile=self.profile,
@@ -366,6 +431,18 @@ class MeasurementRun:
     def require_publishable(self) -> None:
         """Refuse fixture/partial evidence before the public redaction boundary."""
 
+        if self.failed_attempts:
+            raise MatrixRefusal("a run with unproved or invalid candidate attempts cannot publish")
+        if any(
+            not testimonium.delivery_confirmed
+            for act in self.acts
+            for testimonium in act.testimonia
+        ):
+            raise MatrixRefusal("a run with unconfirmed Attestator deliveries cannot publish")
+        if not any(act.ground_truth.status is ReferenceStatus.CHECKED for act in self.acts):
+            raise MatrixRefusal(
+                "a publishable run requires at least one checked CER/WER denominator"
+            )
         if self.material_class is MaterialClass.SYNTHETIC:
             raise MatrixRefusal("a synthetic fixture run cannot become a public finding")
         if self.roster is None or self.witness_configuration is None or self.manifest is None:
@@ -409,6 +486,18 @@ class MeasurementRun:
             nuda = grouped[(slot, Condition.LECTIO_NUDA)].metrics
             primed = grouped[(slot, Condition.WITNESS_PRIMED)].metrics
             image_absent = grouped[(slot, Condition.IMAGE_ABSENT_CONTROL)].metrics
+            if any(
+                value is None
+                for value in (
+                    nuda.cer,
+                    nuda.wer,
+                    primed.cer,
+                    primed.wer,
+                    image_absent.cer,
+                    image_absent.wer,
+                )
+            ):
+                raise MatrixRefusal("condition deltas require checked CER and WER denominators")
             values.append(
                 CandidateConditionDeltas(
                     public_slot=slot,
@@ -445,6 +534,8 @@ class MeasurementRun:
             raise MatrixRefusal(
                 "comparison names a candidate slot not present in this full matrix"
             ) from error
+        if None in (nuda, primed, image_absent):
+            raise MatrixRefusal("pairwise deltas require checked CER denominators")
         return PairwiseConditionDeltas(
             compared_public_slot=compared_public_slot,
             base_public_slot=base_public_slot,
@@ -483,13 +574,15 @@ def _aggregate_witnesses(rows: Iterable[WitnessBaseline]) -> AggregateMetrics:
 
 
 def _aggregate_rows(
-    rows: Iterable[tuple[OutputStatus, ActScore, DissentSummary, float | None, float | None]],
+    rows: Iterable[
+        tuple[OutputStatus, ActScore | None, DissentSummary, float | None, float | None]
+    ],
 ) -> AggregateMetrics:
     values = tuple(rows)
     if not values:
         raise MatrixRefusal("cannot aggregate no rows")
     statuses = [value[0] for value in values]
-    scores = [value[1] for value in values]
+    scores = [value[1] for value in values if value[1] is not None]
     dissents = [value[2] for value in values]
     elapsed = [value[3] for value in values if value[3] is not None]
     costs = [value[4] for value in values if value[4] is not None]
@@ -521,20 +614,22 @@ def _aggregate_rows(
 def _preflight_act(
     act: EvaluationAct, profile: NormalizationProfile, *, require_human_adjudication: bool
 ) -> None:
-    """Refuse an unscoreable act before any candidate has seen any act material."""
+    """Validate an act without using its reference status to end its life."""
 
-    if act.ground_truth.status is not ReferenceStatus.CHECKED:
-        raise MatrixRefusal(
-            "evaluation act has no adjudicated checked reference; blank and unresolved ink stay "
-            "in private sample accounting rather than receiving a CER/WER row"
-        )
-    # The gap-excised text, not the raw text: an act whose readable ink normalizes
-    # away has nothing to score even though its raw text is non-blank.
-    if not isinstance(act.ground_truth.text, str) or not normalize_text(
-        act.ground_truth.scoreable_text, profile
+    if act.ground_truth.status is ReferenceStatus.CHECKED:
+        # The gap-excised text, not the raw text: an act whose readable ink
+        # normalizes away has no valid CER/WER denominator. It is still invalid
+        # as a checked reference; blank and unresolved references take the
+        # separate, unscored path below.
+        if not isinstance(act.ground_truth.text, str) or not normalize_text(
+            act.ground_truth.scoreable_text, profile
+        ):
+            raise MatrixRefusal("evaluation act has no scoreable checked text after normalization")
+    if (
+        require_human_adjudication
+        and act.ground_truth.status is ReferenceStatus.CHECKED
+        and len(act.ground_truth.independent_draft_sha256s) != 2
     ):
-        raise MatrixRefusal("evaluation act has no scoreable checked text after normalization")
-    if require_human_adjudication and len(act.ground_truth.independent_draft_sha256s) != 2:
         raise MatrixRefusal(
             "declared run reference lacks two independent transcription drafts before adjudication"
         )
@@ -542,6 +637,45 @@ def _preflight_act(
         raise MatrixRefusal("evaluation act has no image payload")
     if not act.testimonia:
         raise MatrixRefusal("evaluation act has no Testimonia")
+
+
+def _score_for_act(
+    act: EvaluationAct,
+    *,
+    status: OutputStatus,
+    text: str | None,
+    profile: NormalizationProfile,
+) -> ActScore | None:
+    """Score only against checked ink; every other reference still gets read."""
+
+    if act.ground_truth.status is not ReferenceStatus.CHECKED:
+        return None
+    return score_response(
+        act.ground_truth.scoreable_text,
+        status=status,
+        text=text,
+        profile=profile,
+    )
+
+
+def _failed_attempt(
+    identity: ResolvedIdentity,
+    *,
+    dossier,
+    request,
+    kind: FailedAttemptKind,
+    detail: str,
+) -> FailedCandidateAttempt:
+    return FailedCandidateAttempt(
+        identity=identity,
+        opaque_act_id=dossier.opaque_act_id,
+        condition=dossier.condition,
+        prompt_format_sha256=request.prompt_format_sha256,
+        dossier_sha256=dossier.wire_sha256,
+        delivery_sha256=request.delivery_sha256,
+        kind=kind,
+        detail=detail,
+    )
 
 
 def _dissent_for(
@@ -677,19 +811,13 @@ def _execute_matrix(
         if sample_accounting is None:
             raise MatrixRefusal("a manifest-bound matrix requires private sample accounting")
         sample_accounting.require_complete_for(manifest)
-        manifest.require_scoreable_acts(
-            (act.manifest_binding() for act in act_values),
-            excluded_opaque_act_ids=sample_accounting.excluded_opaque_act_ids,
-        )
+        manifest.require_run_acts(act.manifest_binding() for act in act_values)
     require_authorized_delivery(
         identities,
         act_values,
         authorization,
         profile=profile,
         manifest=manifest,
-        excluded_opaque_act_ids=(
-            sample_accounting.excluded_opaque_act_ids if sample_accounting is not None else ()
-        ),
     )
 
     prepared: dict[tuple[str, Condition, str], tuple[object, object]] = {}
@@ -705,6 +833,7 @@ def _execute_matrix(
                 )
 
     cells: list[CandidateCell] = []
+    failed_attempts: list[FailedCandidateAttempt] = []
     for act in act_values:
         comparison_testimonia = anonymous_testimonia(act)
         for condition in ALL_CONDITIONS:
@@ -731,24 +860,60 @@ def _execute_matrix(
                             observed_delivery_sha256=request.delivery_sha256,
                         )
                     else:
-                        raise MatrixRefusal(
-                            "candidate adapter failed before the harness could prove delivery; "
-                            "the matrix is invalid rather than a model score"
-                        ) from error
+                        failed_attempts.append(
+                            _failed_attempt(
+                                identity,
+                                dossier=dossier,
+                                request=request,
+                                kind=FailedAttemptKind.ADAPTER_EXCEPTION,
+                                detail=f"{type(error).__name__}: {error}",
+                            )
+                        )
+                        continue
                 if not isinstance(response, CandidateResponse):
-                    raise MatrixRefusal("candidate adapter did not return CandidateResponse")
+                    failed_attempts.append(
+                        _failed_attempt(
+                            identity,
+                            dossier=dossier,
+                            request=request,
+                            kind=FailedAttemptKind.INVALID_RESPONSE,
+                            detail="candidate adapter did not return CandidateResponse",
+                        )
+                    )
+                    continue
                 if response.observed_prompt_sha256 != request.prompt_format_sha256:
-                    raise PromptFidelityRefusal(
-                        "adapter did not observe the declared prompt-format bytes it was given"
+                    failed_attempts.append(
+                        _failed_attempt(
+                            identity,
+                            dossier=dossier,
+                            request=request,
+                            kind=FailedAttemptKind.PROMPT_RECEIPT_MISMATCH,
+                            detail="adapter did not observe the declared prompt-format bytes",
+                        )
                     )
+                    continue
                 if response.observed_dossier_sha256 != dossier.wire_sha256:
-                    raise PromptFidelityRefusal(
-                        "adapter did not observe the exact common dossier bytes it was given"
+                    failed_attempts.append(
+                        _failed_attempt(
+                            identity,
+                            dossier=dossier,
+                            request=request,
+                            kind=FailedAttemptKind.DOSSIER_RECEIPT_MISMATCH,
+                            detail="adapter did not observe the exact common dossier bytes",
+                        )
                     )
+                    continue
                 if response.observed_delivery_sha256 != request.delivery_sha256:
-                    raise PromptFidelityRefusal(
-                        "adapter did not observe the sealed prompt-and-dossier delivery envelope"
+                    failed_attempts.append(
+                        _failed_attempt(
+                            identity,
+                            dossier=dossier,
+                            request=request,
+                            kind=FailedAttemptKind.DELIVERY_RECEIPT_MISMATCH,
+                            detail="adapter did not observe the sealed delivery envelope",
+                        )
                     )
+                    continue
                 perlectio = _perlectio_for(
                     identity,
                     response,
@@ -762,8 +927,8 @@ def _execute_matrix(
                         opaque_act_id=act.opaque_act_id,
                         perlectio=perlectio,
                         raw_response_text=response.text,
-                        score=score_response(
-                            act.ground_truth.scoreable_text,
+                        score=_score_for_act(
+                            act,
                             status=response.status,
                             text=response.text,
                             profile=profile,
@@ -776,8 +941,8 @@ def _execute_matrix(
             opaque_act_id=act.opaque_act_id,
             public_source_index=testimonium.public_source_index,
             status=testimonium.status,
-            score=score_response(
-                act.ground_truth.scoreable_text,
+            score=_score_for_act(
+                act,
                 status=testimonium.status,
                 text=testimonium.text,
                 profile=profile,
@@ -793,6 +958,7 @@ def _execute_matrix(
         cells=tuple(cells),
         witness_baselines=witness_baselines,
         material_class=authorization.material_class,
+        failed_attempts=tuple(failed_attempts),
         roster=roster,
         witness_configuration=witness_configuration,
         manifest=manifest,
@@ -878,10 +1044,7 @@ def run_declared_roster_matrix(
             "real Spec 05 run must supply exactly the sealed three-candidate roster"
         )
     act_values = tuple(acts)
-    manifest.require_scoreable_acts(
-        (act.manifest_binding() for act in act_values),
-        excluded_opaque_act_ids=accounting.excluded_opaque_act_ids,
-    )
+    manifest.require_run_acts(act.manifest_binding() for act in act_values)
     return _execute_matrix(
         participants,
         act_values,

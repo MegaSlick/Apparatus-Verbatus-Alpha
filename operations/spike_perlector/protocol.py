@@ -9,6 +9,16 @@ from .errors import MatrixRefusal
 
 # Updated only in the same reviewable change as the protocol document itself.
 #
+# Re-pinned 2026-08-11 for Tyrel's two binding survival rulings: every selected
+# act is read every time, and a missing-text reference cannot end its life. The
+# protocol previously said blank and unresolved references were excluded from
+# the matrix and that one unproved adapter delivery invalidated the measurement
+# immediately. It now states the implemented contract: those acts receive every
+# planned Perlector read but no invented CER/WER denominator; failed deliveries
+# are retained while later reads continue; a Testimonium binds its exact act,
+# crop and delivery-attempt state; and incomplete delivery evidence cannot
+# publish. These are the settled survival semantics, not a new picker or score.
+#
 # Re-pinned 2026-08-11 for one correction, and the reason is recorded because a
 # re-pin is the one act this constant exists to make deliberate: the dependency
 # table attributed `uniseg` to `github.com/rivo/uniseg-python`, which is a 404, and
@@ -25,7 +35,7 @@ from .errors import MatrixRefusal
 # — the identifier is named in this document, in the public finding schema, and is
 # one of the two profiles Tyrel selects between before the evaluation manifest opens —
 # so it is his to decide and is carried to him rather than folded into this re-pin.
-PREDECLARED_PROTOCOL_SHA256 = "c33e5f775722be9965fe17c3e0bd8106d3e69c30560968ff43d40e0dee57515b"
+PREDECLARED_PROTOCOL_SHA256 = "ff01232bd764a8f213f7b7b7ae83a17e80441f85558cb818f7c4f79a0a10938f"
 
 
 def protocol_document_sha256() -> str:

@@ -314,6 +314,10 @@ def test_declared_run_refuses_a_missing_witness_stub_before_any_candidate_call()
             WitnessTestimonium(
                 private_source_id="different-source-without-stub",
                 public_source_index=2,
+                opaque_act_id="second",
+                crop_sha256=digest("synthetic-image:second"),
+                delivery_attempted=True,
+                delivery_confirmed=True,
                 text="alpha beta",
             ),
         ),
@@ -452,7 +456,7 @@ def test_declared_run_refuses_private_reference_evidence_not_bound_by_manifest()
     assert all(candidate.requests == [] for candidate in candidates)
 
 
-def test_declared_run_keeps_an_unread_selected_act_in_private_sample_accounting():
+def test_declared_run_reads_an_unresolved_selected_act_without_scoring_it():
     roster = valid_roster()
     scoreable = evaluation_act("scoreable", material_class=MaterialClass.CLEARED_PUBLIC)
     selected_but_unread = evaluation_act(
@@ -484,7 +488,7 @@ def test_declared_run_keeps_an_unread_selected_act_in_private_sample_accounting(
     candidates = tuple(FakeCandidate(resolved) for resolved in roster.identities())
     run = run_declared_roster_matrix(
         candidates,
-        (scoreable,),
+        (scoreable, selected_but_unread),
         roster=roster,
         witness_configuration=witnesses,
         manifest=manifest,
@@ -499,7 +503,13 @@ def test_declared_run_keeps_an_unread_selected_act_in_private_sample_accounting(
         ),
         sample_accounting=accounting,
     )
-    assert len(run.cells) == 9
+    assert len(run.cells) == 18
+    assert all(len(candidate.requests) == 6 for candidate in candidates)
+    assert all(
+        cell.score is None
+        for cell in run.cells
+        if cell.opaque_act_id == selected_but_unread.opaque_act_id
+    )
     assert run.sample_accounting == accounting
 
 
@@ -532,10 +542,10 @@ def test_declared_run_refuses_mixed_selected_material_classes_even_when_one_is_e
     witnesses = witness_configuration_for(scoreable)
     prompts = registry(*roster.identities())
     candidates = tuple(FakeCandidate(resolved) for resolved in roster.identities())
-    with pytest.raises(DisclosureRefusal, match="every selected manifest member"):
+    with pytest.raises(DisclosureRefusal, match="every supplied image evidence record"):
         run_declared_roster_matrix(
             candidates,
-            (scoreable,),
+            (scoreable, private_unread),
             roster=roster,
             witness_configuration=witnesses,
             manifest=manifest,

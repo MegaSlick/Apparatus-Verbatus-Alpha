@@ -55,7 +55,7 @@ Every selected act runs for every candidate under all three conditions:
 | `witness_primed` | present | every sealed Testimonium in sealed order | test whether testimony helps an ink reading |
 | `image_absent_control` | absent by type and request field | the same sealed Testimonia | test witness-only summarization |
 
-The runner constructs all dossiers and prompt requests before any candidate call. It refuses a missing prompt format, unscoreable reference, incomplete act, altered prompt-declaration snapshot, incomplete witness roster, unapproved run plan, or missing vendor approval before a partial matrix can exist. It never silently skips a cell. A response with a matching delivery receipt but missing/refused text remains a scored cell; an adapter error before delivery invalidates the measurement rather than becoming a model score.
+The runner constructs all dossiers and prompt requests before any candidate call. It refuses a missing prompt format, malformed checked reference, incomplete act, altered prompt-declaration snapshot, incomplete witness roster, unapproved run plan, or missing vendor approval before delivery begins. Every Testimonium binds the exact act and crop plus whether its Attestator delivery was attempted and confirmed. It never silently skips a cell. A response with a matching delivery receipt but missing/refused text remains a cell; an adapter error or receipt mismatch is retained as a failed attempt rather than becoming a Perlectio or model score, every later planned read is still attempted, and the run cannot publish while any attempt is unproved.
 
 Dissent is calculated only after candidate text is fixed. It counts comparable and departing Testimonia after the same normalization in every condition, including Lectio nuda; the nuda candidate still receives none of them. It neither changes text nor weights, merges, selects, or rewards a witness.
 
@@ -146,21 +146,21 @@ live adjudication procedure exists yet; whoever builds one must show adjudicator
 this reserved word so a genuine resolution that happens to equal it is never
 silently turned into a gap instead of nine characters of text.
 
-`no_readable_text` is a positive fact about a truly blank crop, never an empty string. `unresolved_gap` means ink exists but cannot be adjudicated — for the whole crop; unread ink *within* a reading is a gap, above. Neither has a CER/WER denominator, so neither gets an artificial perfect score. Both remain accounted for in `PrivateSampleAccounting` until a separately predeclared masked-alignment method exists.
+`no_readable_text` is a positive reference fact about a crop adjudicated as blank, never an empty string and never authority to end the act. `unresolved_gap` means ink exists but cannot be adjudicated — for the whole crop; unread ink *within* a reading is a gap, above. Neither has a CER/WER denominator, so neither gets an artificial perfect score. Both remain accounted for in `PrivateSampleAccounting`, and every candidate still reads each act in every condition. Their Perlectiones and Testimonia remain private evidence; only CER/WER is absent until a separately predeclared masked-alignment method exists.
 
 **What follows from that, said plainly rather than left to be discovered.** A
-selected act whose reference is `no_readable_text` is excluded from the matrix, so
-**this instrument does not measure whether a candidate invents text on a blank
-page.** That failure mode is named in ruling 3 — "we don't want it making shit up" —
-and it is real; it is simply not a measure spec 05 predeclared, and adding it would
-change the public finding's shape after the fact, which GOVERNANCE 10 does not
-allow. It is a decision for Tyrel, not for this document: either the blank-page
-control is predeclared as a measure of its own before an evaluation manifest opens,
-or the instrument goes on being honest that it does not take it.
+selected act whose reference is `no_readable_text` remains in the complete matrix.
+The instrument records every Perlectio and response state but makes no CER/WER claim
+without checked ink. This preserves evidence about candidate invention on an
+adjudicated blank crop without turning the reference adjudication into an early-life
+decision. Whether a crop is likely a true blank is settled only after the Designator's
+overlapping fallback crops have been read by every Attestator and the Perlector; that
+upstream crop-production and reading rule is outside this stage's implementation.
 
-**If he does want it, the shape is already known, and it is not "score the blank act
-into CER".** The old pipeline built this measure and its design answers the two
-questions this one would face. Read through the window at
+**What this does not change: a blank act is not scored into CER.** This protocol
+retains its readings and response states but does not invent a public fabrication
+rate after the manifest opens. A separately predeclared measure could follow the
+shape the old pipeline built. Read through the window at
 `deploy/lean/reader_quality_gate.py` (2026-08-09; understanding carried across, no
 line of it): it scores invention as a **separate, explicitly labelled block beside
 the accuracy aggregate and never inside it**, on the stated reasoning that a page
@@ -260,7 +260,7 @@ scores below 1.0 and therefore better than declining.
 | truncated | supplied partial text | truncation count; missing tail deletes |
 | no_readable_text | empty scoring hypothesis, no text on the record | explicit blank-finding count; all checked reference units delete |
 | refused, missing, unavailable, malformed | empty scoring hypothesis | named state count; all reference units delete |
-| unproved adapter delivery | none | invalidate the measurement; do not score a harness defect as a model failure |
+| unproved adapter delivery | none | retain the failed attempt, continue every later planned read, and refuse publication; do not score a harness defect as a model failure |
 
 A refusal cannot improve by disappearing. Synthetic hand-worked tests pin exact match, one substitution/deletion/insertion on `abc`, empty against `abc`, two-error WER, composed/decomposed acute, whitespace, and preservation of case/punctuation/diacritics.
 

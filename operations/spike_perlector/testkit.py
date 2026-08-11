@@ -94,11 +94,12 @@ def evaluation_act(
     material_class: MaterialClass = MaterialClass.SYNTHETIC,
 ) -> EvaluationAct:
     image_bytes = f"synthetic-image:{opaque_act_id}".encode("utf-8")
+    crop_sha256 = sha256_bytes(image_bytes)
     return EvaluationAct(
         opaque_act_id=opaque_act_id,
         image=ImageEvidence(
             opaque_page_id=f"synthetic-page:{opaque_act_id}",
-            sha256=sha256_bytes(image_bytes),
+            sha256=crop_sha256,
             source_page_sha256=digest(f"source-page:{opaque_act_id}"),
             material_class=material_class,
             payload=image_bytes,
@@ -123,6 +124,10 @@ def evaluation_act(
             Testimonium(
                 private_source_id="synthetic-source-private",
                 public_source_index=1,
+                opaque_act_id=opaque_act_id,
+                crop_sha256=crop_sha256,
+                delivery_attempted=True,
+                delivery_confirmed=True,
                 text=text,
                 status=OutputStatus.COMPLETE,
             ),

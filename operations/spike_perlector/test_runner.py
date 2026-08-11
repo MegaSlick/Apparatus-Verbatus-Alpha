@@ -23,7 +23,7 @@ from operations.spike_perlector.models import (
 )
 from operations.spike_perlector.normalization import GRAPHEMIC_V1
 from operations.spike_perlector.runner import run_matrix
-from operations.spike_perlector.testkit import evaluation_act, identity, registry
+from operations.spike_perlector.testkit import digest, evaluation_act, identity, registry
 
 
 def run_three_candidates():
@@ -273,7 +273,7 @@ def test_prompt_preflight_fails_before_any_candidate_is_called():
     assert all(not candidate.requests for candidate in candidates)
 
 
-def test_adapter_prompt_digest_mismatch_is_a_named_fidelity_refusal():
+def test_adapter_prompt_digest_mismatch_is_retained_and_later_reads_still_run():
     resolved = identity("candidate-private", 1)
     candidate = FakeCandidate(
         resolved,
@@ -283,17 +283,21 @@ def test_adapter_prompt_digest_mismatch_is_a_named_fidelity_refusal():
             )
         },
     )
-    with pytest.raises(PromptFidelityRefusal, match="did not observe"):
-        run_matrix(
-            (candidate,),
-            (evaluation_act(),),
-            prompt_registry=registry(resolved),
-            profile=GRAPHEMIC_V1,
-            authorization=RunAuthorization.synthetic_fixture(),
-        )
+    run = run_matrix(
+        (candidate,),
+        (evaluation_act(),),
+        prompt_registry=registry(resolved),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert len(candidate.requests) == len(ALL_CONDITIONS)
+    assert len(run.cells) == len(ALL_CONDITIONS) - 1
+    assert [failure.kind.value for failure in run.failed_attempts] == ["prompt-receipt-mismatch"]
+    with pytest.raises(MatrixRefusal, match="unproved or invalid candidate attempts"):
+        run.require_publishable()
 
 
-def test_adapter_delivery_envelope_mismatch_is_a_named_fidelity_refusal():
+def test_adapter_delivery_envelope_mismatch_is_retained_without_ending_the_act():
     resolved = identity("candidate-private", 1)
     candidate = FakeCandidate(
         resolved,
@@ -303,36 +307,43 @@ def test_adapter_delivery_envelope_mismatch_is_a_named_fidelity_refusal():
             )
         },
     )
-    with pytest.raises(PromptFidelityRefusal, match="delivery envelope"):
-        run_matrix(
-            (candidate,),
-            (evaluation_act(),),
-            prompt_registry=registry(resolved),
-            profile=GRAPHEMIC_V1,
-            authorization=RunAuthorization.synthetic_fixture(),
-        )
+    run = run_matrix(
+        (candidate,),
+        (evaluation_act(),),
+        prompt_registry=registry(resolved),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert len(candidate.requests) == len(ALL_CONDITIONS)
+    assert [failure.kind.value for failure in run.failed_attempts] == ["delivery-receipt-mismatch"]
 
 
-def test_adapter_failure_invalidates_the_matrix_instead_of_scoring_a_harness_defect():
+def test_adapter_failure_is_retained_while_every_planned_read_is_attempted():
     broken_identity = identity("broken-private", 1)
 
     class BrokenCandidate:
         identity = broken_identity
+        requests = []
 
-        def read(self, _request):
+        def read(self, request):
+            self.requests.append(request)
             raise RuntimeError("synthetic transport error")
 
-    with pytest.raises(MatrixRefusal, match="invalid"):
-        run_matrix(
-            (BrokenCandidate(),),
-            (evaluation_act(),),
-            prompt_registry=registry(broken_identity),
-            profile=GRAPHEMIC_V1,
-            authorization=RunAuthorization.synthetic_fixture(),
-        )
+    candidate = BrokenCandidate()
+    run = run_matrix(
+        (candidate,),
+        (evaluation_act(),),
+        prompt_registry=registry(broken_identity),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert len(candidate.requests) == len(ALL_CONDITIONS)
+    assert run.cells == ()
+    assert len(run.failed_attempts) == len(ALL_CONDITIONS)
+    assert {failure.kind.value for failure in run.failed_attempts} == {"adapter-exception"}
 
 
-def test_blank_and_unresolved_ink_are_not_empty_perfect_reference_rows():
+def test_blank_reference_is_read_in_every_condition_without_a_cer_or_wer_score():
     resolved = identity("candidate-private", 1)
     act = evaluation_act()
     blank_reference = GroundTruth(
@@ -344,15 +355,39 @@ def test_blank_and_unresolved_ink_are_not_empty_perfect_reference_rows():
     )
     unscoreable = replace(act, ground_truth=blank_reference)
     candidate = FakeCandidate(resolved)
-    with pytest.raises(MatrixRefusal, match="private sample accounting"):
-        run_matrix(
-            (candidate,),
-            (unscoreable,),
-            prompt_registry=registry(resolved),
-            profile=GRAPHEMIC_V1,
-            authorization=RunAuthorization.synthetic_fixture(),
-        )
-    assert candidate.requests == []
+    run = run_matrix(
+        (candidate,),
+        (unscoreable,),
+        prompt_registry=registry(resolved),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert len(candidate.requests) == len(ALL_CONDITIONS)
+    assert len(run.cells) == len(ALL_CONDITIONS)
+    assert all(cell.score is None for cell in run.cells)
+    assert all(baseline.score is None for baseline in run.witness_baselines)
+    assert all(aggregate.metrics.cer is None for aggregate in run.condition_aggregates())
+    with pytest.raises(MatrixRefusal, match="at least one checked CER/WER denominator"):
+        run.require_publishable()
+
+
+def test_unconfirmed_attestator_delivery_is_retained_but_cannot_publish():
+    resolved = identity("candidate-private", 1)
+    act = evaluation_act()
+    unconfirmed = replace(
+        act,
+        testimonia=(replace(act.testimonia[0], delivery_confirmed=False),),
+    )
+    run = run_matrix(
+        (FakeCandidate(resolved),),
+        (unconfirmed,),
+        prompt_registry=registry(resolved),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert len(run.cells) == len(ALL_CONDITIONS)
+    with pytest.raises(MatrixRefusal, match="unconfirmed Attestator deliveries"):
+        run.require_publishable()
 
 
 def test_condition_and_pairwise_deltas_expose_witness_only_advantage_without_verdict():
@@ -452,14 +487,30 @@ def test_each_witness_is_scored_directly_against_the_same_checked_ink():
         text="alpha beta",
         testimonia=(
             WitnessTestimonium(
-                private_source_id="w-exact", public_source_index=1, text="alpha beta"
+                private_source_id="w-exact",
+                public_source_index=1,
+                opaque_act_id="synthetic-act-1",
+                crop_sha256=digest("synthetic-image:synthetic-act-1"),
+                delivery_attempted=True,
+                delivery_confirmed=True,
+                text="alpha beta",
             ),
             WitnessTestimonium(
-                private_source_id="w-wrong", public_source_index=2, text="alpha gamma"
+                private_source_id="w-wrong",
+                public_source_index=2,
+                opaque_act_id="synthetic-act-1",
+                crop_sha256=digest("synthetic-image:synthetic-act-1"),
+                delivery_attempted=True,
+                delivery_confirmed=True,
+                text="alpha gamma",
             ),
             WitnessTestimonium(
                 private_source_id="w-silent",
                 public_source_index=3,
+                opaque_act_id="synthetic-act-1",
+                crop_sha256=digest("synthetic-image:synthetic-act-1"),
+                delivery_attempted=True,
+                delivery_confirmed=True,
                 text=None,
                 status=OutputStatus.REFUSED,
             ),

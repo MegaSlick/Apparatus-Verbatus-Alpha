@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 import operations.spike_perlector.models as models
@@ -31,8 +33,72 @@ NON_READING_STATUSES = (
 def test_testimonium_refuses_stray_text_on_a_non_reading_status(status):
     with pytest.raises(MeasurementRefusal, match="carries status, not text"):
         models.Testimonium(
-            private_source_id="w1", public_source_index=1, text="stray", status=status
+            private_source_id="w1",
+            public_source_index=1,
+            text="stray",
+            status=status,
+            opaque_act_id="act-1",
+            crop_sha256=digest("crop"),
+            delivery_attempted=True,
+            delivery_confirmed=True,
         )
+
+
+def test_testimonium_requires_exact_act_crop_and_delivery_provenance():
+    testimonium = models.Testimonium(
+        private_source_id="w1",
+        public_source_index=1,
+        text=None,
+        status=OutputStatus.UNAVAILABLE,
+        opaque_act_id="act-1",
+        crop_sha256=digest("crop"),
+        delivery_attempted=True,
+        delivery_confirmed=False,
+    )
+    assert testimonium.opaque_act_id == "act-1"
+    assert testimonium.crop_sha256 == digest("crop")
+    assert testimonium.delivery_attempted is True
+    assert testimonium.delivery_confirmed is False
+
+
+def test_testimonium_refuses_a_claim_of_confirmation_without_an_attempt():
+    with pytest.raises(MeasurementRefusal, match="confirmed without an attempted delivery"):
+        models.Testimonium(
+            private_source_id="w1",
+            public_source_index=1,
+            text=None,
+            status=OutputStatus.UNAVAILABLE,
+            opaque_act_id="act-1",
+            crop_sha256=digest("crop"),
+            delivery_attempted=False,
+            delivery_confirmed=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("changed", "message"),
+    (
+        ({"crop_sha256": digest("different-crop")}, "exact crop"),
+        (
+            {"delivery_attempted": False, "delivery_confirmed": False},
+            "every Attestator must be attempted",
+        ),
+    ),
+)
+def test_evaluation_act_refuses_testimonium_without_its_exact_attempted_crop(changed, message):
+    act = evaluation_act()
+    with pytest.raises(MatrixRefusal, match=message):
+        models.EvaluationAct(
+            opaque_act_id=act.opaque_act_id,
+            image=act.image,
+            ground_truth=act.ground_truth,
+            testimonia=(replace(act.testimonia[0], **changed),),
+        )
+
+
+def test_identity_helper_preserves_an_explicit_empty_source_for_validation():
+    with pytest.raises(MeasurementRefusal, match="source_ref must be a non-empty string"):
+        identity("empty", 1, source_ref="")
 
 
 @pytest.mark.parametrize("status", NON_READING_STATUSES)

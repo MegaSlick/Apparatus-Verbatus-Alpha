@@ -449,6 +449,10 @@ class Testimonium:
 
     private_source_id: str
     public_source_index: int
+    opaque_act_id: str
+    crop_sha256: str
+    delivery_attempted: bool
+    delivery_confirmed: bool
     text: str | None
     status: OutputStatus = OutputStatus.COMPLETE
 
@@ -460,6 +464,15 @@ class Testimonium:
             raise MeasurementRefusal("public_source_index must be an integer")
         if self.public_source_index < 1:
             raise MeasurementRefusal("public_source_index must be positive")
+        _require_nonempty(self.opaque_act_id, "Testimonium opaque_act_id")
+        if not is_sha256(self.crop_sha256):
+            raise MeasurementRefusal("Testimonium crop SHA-256 must be lowercase")
+        if type(self.delivery_attempted) is not bool or type(self.delivery_confirmed) is not bool:
+            raise MeasurementRefusal("Testimonium delivery flags must be booleans")
+        if self.delivery_confirmed and not self.delivery_attempted:
+            raise MeasurementRefusal(
+                "Testimonium delivery was confirmed without an attempted delivery"
+            )
         if not isinstance(self.status, OutputStatus):
             raise MeasurementRefusal("Testimonium status must be an OutputStatus")
         _require_status_conditioned_text(self.status, self.text, "Testimonium")
@@ -468,6 +481,10 @@ class Testimonium:
         return {
             "private_source_id": self.private_source_id,
             "public_source_index": self.public_source_index,
+            "opaque_act_id": self.opaque_act_id,
+            "crop_sha256": self.crop_sha256,
+            "delivery_attempted": self.delivery_attempted,
+            "delivery_confirmed": self.delivery_confirmed,
             "text": self.text,
             "status": self.status.value,
         }
@@ -632,6 +649,13 @@ class EvaluationAct:
         source_indices = [item.public_source_index for item in self.testimonia]
         if len(set(source_indices)) != len(source_indices):
             raise MatrixRefusal("an evaluation act repeats a public Testimonium source index")
+        for testimonium in self.testimonia:
+            if testimonium.opaque_act_id != self.opaque_act_id:
+                raise MatrixRefusal("a Testimonium names a different act")
+            if testimonium.crop_sha256 != self.image.sha256:
+                raise MatrixRefusal("a Testimonium does not bind the act's exact crop")
+            if not testimonium.delivery_attempted:
+                raise MatrixRefusal("every Attestator must be attempted for every act crop")
 
     @property
     def private_evidence_sha256s(self) -> frozenset[str]:
