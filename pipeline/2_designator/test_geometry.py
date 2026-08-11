@@ -352,12 +352,22 @@ def test_load_padding_config_refuses_a_missing_table(tmp_path):
 
 @pytest.mark.parametrize("missing_field", ["top_bp", "bottom_bp", "left_bp", "right_bp"])
 def test_load_padding_config_refuses_a_missing_field(tmp_path, missing_field):
+    """Refused for *this* missing field, and not for a different one.
+
+    Written by hand, this wrote a bare `[padding]` table with no
+    `[padding.provenance]` — which `load_padding_config` requires — so every one of
+    the four cases was refused for the absent provenance block and would have
+    passed with the missing-field check deleted entirely. Built through
+    `_write_padding_toml` it carries a valid provenance table, so the parameterized
+    field is the only thing wrong with the file, and the message is matched so the
+    refusal has to be the one this test is named for. Found by CodeRabbit.
+    """
+
     fields = dict(PADDING)
     del fields[missing_field]
-    lines = ["[padding]"] + [f"{name} = {value}" for name, value in fields.items()]
     path = tmp_path / "padding.toml"
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    with pytest.raises(ContractError):
+    _write_padding_toml(path, fields=fields)
+    with pytest.raises(ContractError, match=missing_field):
         load_padding_config(path)
 
 

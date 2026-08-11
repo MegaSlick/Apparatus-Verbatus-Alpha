@@ -15,6 +15,7 @@ declared fixture rather than by hard-coded strings scattered through seven files
 import argparse
 import sys
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Final, Protocol
 
@@ -1088,11 +1089,22 @@ def _verify_residual_traces_to_conservation(
     conservation = context.tree.read_artifact_reference(
         inputs[0], stage=DESIGNATOR, kind="conservation", subject_id=page_id
     )
-    components = conservation["payload"].get("residual_components")
+    # Every step of this lookup is checked before it is taken, and all of it lands
+    # on the one named refusal below. Read straight through, a conservation record
+    # whose payload was not a mapping, whose row was not a mapping, or whose
+    # component list was shorter than the ordinal reaches raised `AttributeError`
+    # or `IndexError` out of an accounting check — a traceback where invariant #10
+    # promises a named fatal. The negative index makes the short-list case easy to
+    # miss: `index >= len(components)` is false for every negative index, so an
+    # empty list walked past the guard and into `components[-1]`. Found by
+    # CodeRabbit.
+    payload = conservation.get("payload")
+    components = payload.get("residual_components") if isinstance(payload, Mapping) else None
     index = -ordinal - 1
     if (
         not isinstance(components, list)
-        or index >= len(components)
+        or not -len(components) <= index < len(components)
+        or not isinstance(components[index], Mapping)
         or components[index].get("bounds") != bounds
     ):
         raise FatalAccounting(
