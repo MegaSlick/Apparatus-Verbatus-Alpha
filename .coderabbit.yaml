@@ -37,10 +37,13 @@ reviews:
       mode: warning
     description:
       mode: warning
+    # Quoted, because a YAML 1.1 parser resolves bare `off` to the boolean `false`
+    # and this field wants the string. The CLI validator accepts either; PyYAML and
+    # the yamllint enabled below do not. Found by CodeRabbit on PR 23.
     docstrings:
-      mode: off
+      mode: "off"
     issue_assessment:
-      mode: off
+      mode: "off"
     custom_checks:
       - name: Carried code is named as carried
         mode: warning
@@ -121,6 +124,17 @@ reviews:
         documented step, and README.md must record that step. Flag any check that cannot
         be switched off, and any that fails open — a check that cannot run is a failure,
         not a pass (GOVERNANCE 10).
+    - path: ".claude/**"
+      instructions: >-
+        Governed. CLAUDE.md hard rule 10 bars a spawned agent from editing anything here;
+        the main session may, at Tyrel's direction and after the governed-edit procedure.
+        Do not raise the rule against a change that followed it. What is worth raising is
+        drift: a refusal quoting a CLAUDE.md section name that no longer exists, a
+        hard-rule number cited wrongly (numbers are appended, never inserted or reused),
+        or a count of what the guard refuses that disagrees with its own `CHECKS`. All
+        three have gone stale here before. `guard.py` and `test_guard.py` are the local
+        enforcement layer: a check that cannot run is a failure, not a pass, and a test
+        that passes because of the machine it ran on has proved nothing.
     - path: "**/*.py"
       instructions: >-
         This repository selects only Ruff rules `E4, E7, E9, F, I, B` in `pyproject.toml`.

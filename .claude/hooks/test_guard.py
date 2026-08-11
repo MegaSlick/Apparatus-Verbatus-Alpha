@@ -51,11 +51,11 @@ SPEC.loader.exec_module(guard)
 WORKTREE = Path(tempfile.mkdtemp(prefix="verbatus-guard-suite-"))
 (WORKTREE / ".git").mkdir()
 (WORKTREE / ".git" / "HEAD").write_text("ref: refs/heads/work/guard-suite\n", encoding="utf-8")
-atexit.register(shutil.rmtree, WORKTREE, True)
+atexit.register(shutil.rmtree, WORKTREE, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
-def _suite_worktree_is_the_project_root(monkeypatch):
+def _suite_worktree_is_the_project_root(monkeypatch) -> None:
     """Autouse, so no test can inherit the ambient root by forgetting to ask.
 
     A test needing a different root — `project`, `project_under_tmp` — requests that
@@ -171,6 +171,34 @@ class TestMain:
         (tmp_path / ".git").mkdir()
         (tmp_path / ".git" / "HEAD").write_text("9d3f2c1\n", encoding="utf-8")
         assert decide("git commit -m 'work'", tmp_path) is None
+
+    @pytest.mark.parametrize("branch, refused", [("main", True), ("work/topic", False)])
+    @pytest.mark.parametrize("spelling", ["absolute", "relative"])
+    def test_a_linked_worktree_is_read_through_its_gitdir_file(
+        self, tmp_path, branch, refused, spelling
+    ):
+        """A linked worktree's `.git` is a *file* naming the real gitdir, and HEAD lives
+        there. That is the layout `git worktree add` writes and the one a chamber uses,
+        and nothing exercised it — `checkout_on` and the suite's own `WORKTREE` both
+        build the directory spelling. A regression in this arm would read the parent
+        clone's branch, or none at all, for a checkout that is standing on main.
+
+        Both spellings, because `--relative-paths` writes a gitdir relative to the
+        checkout rather than to the process, and the guard leans on `Path.__truediv__`
+        returning an absolute right operand unchanged to read them with one expression.
+        Found by CodeRabbit on pull request 23.
+        """
+        stem = f"{spelling}-{branch.replace('/', '-')}"
+        checkout = tmp_path / f"checkout-{stem}"
+        gitdir = tmp_path / f"gitdir-{stem}"
+        checkout.mkdir()
+        gitdir.mkdir()
+        (gitdir / "HEAD").write_text(f"ref: refs/heads/{branch}\n", encoding="utf-8")
+        named = gitdir if spelling == "absolute" else Path("..") / gitdir.name
+        (checkout / ".git").write_text(f"gitdir: {named}\n", encoding="utf-8")
+
+        assert denied(decide("git commit -m 'work'", checkout)) is refused
+        assert denied(decide_write(checkout / "notes.md")) is refused
 
     def test_the_refusal_quotes_the_rule_rather_than_naming_a_number(self, tmp_path):
         # A refusal that cites "hard rule 3" and stops tells the reader nothing they
