@@ -41,7 +41,18 @@ PREDECLARED_PROTOCOL_SHA256 = "ff01232bd764a8f213f7b7b7ae83a17e80441f85558cb818f
 def protocol_document_sha256() -> str:
     """Return the digest of the committed protocol document, not a caller assertion."""
 
-    return sha256_bytes(Path(__file__).with_name("README.md").read_bytes())
+    path = Path(__file__).with_name("README.md")
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        # An absent or unreadable protocol document is the same refusal as a
+        # changed one: the run cannot show which protocol it ran under. Raised
+        # by name because every caller holds on `MatrixRefusal`, and a bare
+        # `OSError` out of a gate is not caught by any of them.
+        raise MatrixRefusal(
+            f"the committed Spec 05 protocol document cannot be read at {path.name}: {error}"
+        ) from error
+    return sha256_bytes(payload)
 
 
 def require_predeclared_protocol() -> str:
@@ -50,6 +61,9 @@ def require_predeclared_protocol() -> str:
     observed = protocol_document_sha256()
     if observed != PREDECLARED_PROTOCOL_SHA256:
         raise MatrixRefusal(
-            "the committed Spec 05 protocol document differs from its predeclared digest"
+            "the committed Spec 05 protocol document differs from its predeclared digest: "
+            f"observed {observed}, predeclared {PREDECLARED_PROTOCOL_SHA256}"
         )
-    return PREDECLARED_PROTOCOL_SHA256
+    # The measured digest, not the constant it matched. They are equal here by
+    # the check above; returning the measurement keeps the value a reading.
+    return observed

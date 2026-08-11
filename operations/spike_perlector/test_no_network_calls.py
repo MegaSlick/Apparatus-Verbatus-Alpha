@@ -55,7 +55,10 @@ def _imported_module_names(tree: ast.AST) -> set[str]:
 
 
 def test_no_file_in_this_package_imports_a_networking_module():
-    paths = sorted(PACKAGE_ROOT.glob("*.py"))
+    # Recursive: the package is flat today, so this changes nothing now. A
+    # top-level-only scan would go on reporting "no file in this package" while
+    # silently not reading a subpackage the day one is added.
+    paths = sorted(PACKAGE_ROOT.rglob("*.py"))
     assert len(paths) > 1, (
         "the no-transport scan found nothing to scan, so it proved nothing; "
         f"expected the package's own modules under {PACKAGE_ROOT}"

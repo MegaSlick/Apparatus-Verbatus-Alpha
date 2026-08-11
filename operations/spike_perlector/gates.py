@@ -718,7 +718,6 @@ def require_authorized_delivery(
     *,
     profile: NormalizationProfile,
     manifest: EvaluationManifest | None,
-    excluded_opaque_act_ids: Iterable[str] = (),
 ) -> None:
     """Check material classification and every external delivery before any call."""
 
@@ -731,10 +730,7 @@ def require_authorized_delivery(
     if authorization.material_class is not MaterialClass.SYNTHETIC:
         if manifest is None:
             raise DisclosureRefusal("real delivery requires a sealed evaluation manifest")
-        manifest.require_scoreable_acts(
-            (act.manifest_binding() for act in act_values),
-            excluded_opaque_act_ids=excluded_opaque_act_ids,
-        )
+        manifest.require_run_acts(act.manifest_binding() for act in act_values)
         manifest_classes = {member.material_class for member in manifest.members}
         if manifest_classes != {authorization.material_class}:
             raise DisclosureRefusal(

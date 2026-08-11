@@ -9,9 +9,9 @@ the protocol rather than hidden as a stronger claim.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping
 
 from .encoding import canonical_json_bytes, is_sha256, sha256_bytes
 from .errors import PromptFidelityRefusal

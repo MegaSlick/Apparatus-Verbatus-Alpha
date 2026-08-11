@@ -234,17 +234,6 @@ class EvaluationManifest:
                 "run acts are not exactly the material, classification, and evidence in the sealed manifest"
             )
 
-    def require_scoreable_acts(
-        self,
-        acts: Iterable[tuple[str, str, str, MaterialClass, ReferenceStatus, tuple[str, ...]]],
-        *,
-        excluded_opaque_act_ids: Iterable[str],
-    ) -> None:
-        """Compatibility boundary: exclusions affect scoring, never act delivery."""
-
-        frozenset(excluded_opaque_act_ids)
-        self.require_run_acts(acts)
-
 
 @dataclass(frozen=True, slots=True)
 class ReferenceExclusion:
