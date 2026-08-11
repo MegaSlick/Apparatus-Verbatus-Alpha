@@ -18,6 +18,7 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -42,6 +43,7 @@ from operations.pod.preflight import (
 )
 
 from .assembly import (
+    _load_bound_configuration,
     _prepare_log_root,
     assemble_serving_preflight_callback,
     assemble_serving_smoke_reader,
@@ -1556,8 +1558,12 @@ def _require_the_parser_actually_recurses(payload) -> None:
         json.loads(text)
     except RecursionError:
         return
-    except ValueError:
-        pass
+    except ValueError as error:
+        # A malformed payload is a defect in this test, not a capability of the
+        # interpreter. Swallowing it here would skip while asserting a fact about
+        # the parser that was never established — the exact failure this helper
+        # exists to prevent, reproduced inside the helper itself.
+        pytest.fail(f"this test's own deep-nesting payload is not valid JSON: {error}")
     pytest.skip(
         "this interpreter's JSON parser absorbs 20,000 levels, so there is no "
         "RecursionError for the named refusal to catch and this test proves nothing"
@@ -2107,6 +2113,119 @@ def test_pod_assembly_refuses_recipe_or_placement_path_substitution_before_effec
     assert http.calls == []
 
 
+def test_load_placement_table_parses_the_bytes_it_is_given_and_not_the_path(
+    tmp_path: Path,
+) -> None:
+    """The single-snapshot contract, asserted at the loader itself.
+
+    `source_bytes` exists so a caller that has already digested a file can parse
+    those exact bytes. Nothing tested that it does. This is the cheap half of the
+    guard: if the parameter is ever dropped, ignored, or reordered into a second
+    read, this fails immediately and by name rather than somewhere downstream.
+    """
+
+    root = Path(__file__).resolve().parents[2]
+    sealed = (root / "config/pod_placement.toml").read_bytes()
+    altered = sealed.replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+    assert altered != sealed, "the fixture no longer contains the batch size this test flips"
+
+    path = tmp_path / "pod_placement.toml"
+    path.write_bytes(altered)
+
+    from_bytes = load_placement_table(path, source_bytes=sealed)
+    from_path = load_placement_table(path)
+
+    assert from_bytes.choose(Decimal(24)).recipe.batch_size == 1
+    assert from_path.choose(Decimal(24)).recipe.batch_size == 9
+
+
+def test_bound_configuration_parses_the_snapshot_it_digested_not_a_second_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sealed-configuration interlock, against the substitution that beat it.
+
+    The first version of this repair read the placement file twice — once to
+    digest and once to parse — so an ordinary replacement between the two reads
+    produced a table the run never sealed while `require_loaded` compared the
+    sealed digest and passed. Nothing in the suite caught it: the existing
+    substitution test alters the file *before* the call, so both reads see the
+    same bytes and even the two-read code refuses.
+
+    This one makes the two reads distinguishable. The path yields the sealed bytes
+    once and the altered bytes to every later reader, so a second read is visible
+    in the parsed result and nowhere else.
+    """
+
+    root = Path(__file__).resolve().parents[2]
+    recipes_path = root / "config/serving_recipes.toml"
+    sealed = (root / "config/pod_placement.toml").read_bytes()
+    altered = sealed.replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+    assert altered != sealed, "the fixture no longer contains the batch size this test flips"
+
+    placement_path = tmp_path / "pod_placement.toml"
+    placement_path.write_bytes(sealed)
+
+    real_read_bytes = Path.read_bytes
+    reads: list[Path] = []
+
+    def read_bytes_that_changes_after_the_first(self: Path) -> bytes:
+        if self == placement_path:
+            reads.append(self)
+            return sealed if len(reads) == 1 else altered
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_that_changes_after_the_first)
+
+    _, placement, _ = _load_bound_configuration(
+        sealed_config_inputs=ServingConfigInputs(
+            hashlib.sha256(recipes_path.read_bytes()).hexdigest(),
+            hashlib.sha256(sealed).hexdigest(),
+        ).to_record(),
+        recipes_path=recipes_path,
+        placement_path=placement_path,
+    )
+
+    assert len(reads) == 1, f"the placement file was read {len(reads)} times, not once"
+    assert placement.choose(Decimal(24)).recipe.batch_size == 1
+
+
+def test_bound_configuration_refuses_an_unusable_placement_in_the_serving_vocabulary(
+    tmp_path: Path,
+) -> None:
+    """Every way the placement file can fail refuses as a `ServingError`.
+
+    `PlacementRefusal` is a `ValueError` and `ServingConfigurationError` is a
+    `ServingError`, so a handler written for this boundary catches one and not the
+    other. Before this test, a missing file refused in the serving vocabulary while
+    malformed TOML and a non-UTF-8 file escaped as `PlacementRefusal` — the same
+    rule enforced in two places and repaired in one, which is the shape this branch
+    has now found five times.
+    """
+
+    root = Path(__file__).resolve().parents[2]
+    recipes_path = root / "config/serving_recipes.toml"
+    sealed = (root / "config/pod_placement.toml").read_bytes()
+
+    missing = tmp_path / "absent.toml"
+    malformed = tmp_path / "malformed.toml"
+    malformed.write_bytes(b"schema = \n")
+    not_utf8 = tmp_path / "not_utf8.toml"
+    not_utf8.write_bytes(b"\xff\xfe not utf-8 at all\n")
+
+    sealed_inputs = ServingConfigInputs(
+        hashlib.sha256(recipes_path.read_bytes()).hexdigest(),
+        hashlib.sha256(sealed).hexdigest(),
+    ).to_record()
+
+    for placement_path in (missing, malformed, not_utf8):
+        with pytest.raises(ServingConfigurationError):
+            _load_bound_configuration(
+                sealed_config_inputs=sealed_inputs,
+                recipes_path=recipes_path,
+                placement_path=placement_path,
+            )
+
+
 def test_pod_assembly_requires_the_same_stage_context_as_receipt_publication(
     tmp_path: Path,
 ) -> None:
@@ -2269,6 +2388,30 @@ def test_prepare_log_root_is_owner_only_regardless_of_umask_or_prior_mode(
     mode_again = stat.S_IMODE(prepared_again.stat().st_mode)
     assert mode_again == 0o700, (
         f"expected a pre-existing directory tightened, got {oct(mode_again)}"
+    )
+
+
+def test_prepare_log_root_refuses_a_symlink_rather_than_re_moding_its_target(
+    tmp_path: Path,
+) -> None:
+    """A link pointing at a real directory is the one symlink `mkdir` forgives.
+
+    `mkdir(exist_ok=True)` refuses a file, a symlink to a file and a broken
+    symlink. It accepts a symlink to a directory, and the `chmod` that follows
+    then re-modes the target — so the run's logs land somewhere it never named,
+    under a mode set on a directory it does not own. Found by CodeRabbit.
+    """
+
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir(mode=0o755)
+    linked = tmp_path / "logs"
+    linked.symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(ServingConfigurationError, match="symbolic link"):
+        _prepare_log_root(linked)
+
+    assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o755, (
+        "the refusal must leave the link's target exactly as it found it"
     )
 
 

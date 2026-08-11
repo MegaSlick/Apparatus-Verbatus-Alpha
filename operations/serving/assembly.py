@@ -8,6 +8,7 @@ the checked-in serving configuration catalogues, while all effects remain dorman
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
@@ -15,6 +16,7 @@ from common.contracts.canonical import digest_bytes
 from operations.pod.preflight import (
     ChairCacheVerifier,
     GpuProfile,
+    PlacementRefusal,
     PlacementTable,
     PreflightRunner,
     SystemGpuProbe,
@@ -188,17 +190,31 @@ def _load_bound_configuration(
     # bytes saying 1, and this function returned it: a run bound to a placement it
     # never sealed, with every check passing. Reproduced by the Sol read of this
     # branch.
-    # `ServingConfigurationError`, not a bare `OSError`: this is the serving
-    # assembly's own boundary and every other failure here refuses in its
-    # vocabulary. The read that this repair introduced was the one path out of
-    # this function that escaped it. Also Sol's finding.
+    # `ServingConfigurationError`, not a bare `OSError` and not a bare
+    # `PlacementRefusal`: this is the serving assembly's own boundary and every
+    # other failure here refuses in its vocabulary. **Both the read and the parse
+    # are translated.** An earlier version of this comment said the read "was the
+    # one path out of this function that escaped it" — it was not. Measured
+    # against the same file three ways, a missing file refused as
+    # `ServingConfigurationError` while malformed TOML and a non-UTF-8 file
+    # refused as `PlacementRefusal`, which is a `ValueError` and not a
+    # `ServingError` — so a handler written for this boundary caught one of the
+    # three and missed two. `preflight.py:86-89` already translates this same
+    # refusal the same way, and `load_serving_recipes` on the line above
+    # translates all three of its own. This is the second site of one rule rather
+    # than a new rule, which is the shape this branch keeps finding.
     try:
         placement_bytes = Path(placement_path).read_bytes()
     except OSError as error:
         raise ServingConfigurationError(
             f"cannot read placement table {placement_path}: {error}"
         ) from error
-    placement = load_placement_table(placement_path, source_bytes=placement_bytes)
+    try:
+        placement = load_placement_table(placement_path, source_bytes=placement_bytes)
+    except PlacementRefusal as error:
+        raise ServingConfigurationError(
+            f"cannot parse placement table {placement_path}: {error}"
+        ) from error
     placement_sha256 = digest_bytes(placement_bytes)
     expected.require_loaded(
         recipes_sha256=recipes.source_sha256,
@@ -279,11 +295,39 @@ def _prepare_log_root(log_root: str | Path) -> Path:
     """
 
     prepared = Path(log_root)
+    # **A symlink to a directory is an existing directory as far as `mkdir` is
+    # concerned.** The comment below used to end "nothing further is needed to
+    # establish that this path is one", and that was the gap: `exist_ok=True`
+    # refuses a file, a symlink to a file and a broken symlink, but forgives a
+    # symlink pointing at a real directory somewhere else — and then `chmod`
+    # follows it and re-modes the target. The run's logs would be written
+    # wherever the link pointed, under a mode this function set on a directory it
+    # never named. `lstat` does not follow, so asking here is what makes "this is
+    # the directory we will write into" true rather than merely likely.
+    #
+    # The residual race is named rather than closed: between this check and the
+    # `mkdir` below, anything that can write the parent directory could swap the
+    # path. Closing that needs `O_NOFOLLOW` directory descriptors and `openat`
+    # throughout, which is disproportionate for a log directory inside the run
+    # tree on a single-user machine. Found by CodeRabbit on this branch.
+    try:
+        existing = prepared.lstat()
+    except FileNotFoundError:
+        existing = None
+    except OSError as error:
+        raise ServingConfigurationError(
+            f"cannot prepare serving log root {prepared}: {error}"
+        ) from error
+    if existing is not None and stat.S_ISLNK(existing.st_mode):
+        raise ServingConfigurationError(
+            f"serving log root {prepared} is a symbolic link, so the logs and the "
+            "owner-only mode this sets would land on a directory the run never named; "
+            "it must be a real directory"
+        )
     try:
         # exist_ok=True still raises FileExistsError -- an OSError caught below
         # -- when the path exists as a file, a symlink to one, or a broken
-        # symlink. It forgives only an existing directory, so nothing further is
-        # needed to establish that this path is one.
+        # symlink. The symlink-to-a-directory case is refused above.
         prepared.mkdir(parents=True, exist_ok=True)
         # mkdir's mode argument is subject to the ambient umask and, with
         # parents=True, is never applied to intermediate directories at all --
