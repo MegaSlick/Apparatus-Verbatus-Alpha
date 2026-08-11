@@ -312,3 +312,76 @@ def find_continuation_candidate(
     if not _intervals_overlap(_x_range(trailing), _x_range(leading), column_overlap_px):
         return None
     return {"page_a_group": trailing, "page_b_group": leading}
+
+
+# The predetermined fallback crop grid, for a page the structure pass found
+# nothing on. Tyrel ruled 2026-08-11: "If the designator sees no text it should
+# default to predetermined crops with a small margin of overlap and send the
+# crops down stream to be read by everything. If all the witnesses and the
+# perlector see no text on any of the crops then it's likely a true blank." And,
+# settling where a page that cannot be thresholded goes: "Everything gets read
+# every time nothing gets pulled out or held."
+#
+# Horizontal bands rather than a checkerboard because a register page is a
+# column of entries: a band spans the full width, so an entry is never split
+# down its middle by the grid itself. Declared here as named policy, overridable
+# by keyword, for the same reason as every default above -- not a magic number
+# buried in a stage program.
+DEFAULT_FALLBACK_BANDS: Final = 4
+DEFAULT_FALLBACK_OVERLAP_PX: Final = 8
+
+
+def fallback_tiles(
+    page_w: int,
+    page_h: int,
+    *,
+    bands: int = DEFAULT_FALLBACK_BANDS,
+    overlap_px: int = DEFAULT_FALLBACK_OVERLAP_PX,
+) -> list[ActGroup]:
+    """Predetermined overlapping crops covering the whole page, for a page with no found ink.
+
+    Every pixel of the page falls inside at least one band, and adjacent bands
+    overlap by `overlap_px`, so a line of writing sitting exactly on a band
+    boundary is whole inside one of the two rather than cut in half by both.
+
+    This is not detection and it does not pretend to be: each group carries a
+    rationale saying it is a fallback tile, so nothing downstream can mistake a
+    grid for something the structure pass found. It elects nothing and ranks
+    nothing -- GOVERNANCE 3 is about choosing among witnesses, and a fixed grid
+    computed from the page's own dimensions chooses nothing at all.
+    """
+    if page_w <= 0 or page_h <= 0:
+        raise ContractError(f"a {page_w}x{page_h} page has no area to tile")
+    if bands <= 0:
+        raise ContractError(f"a fallback grid of {bands} bands cuts nothing")
+    if overlap_px < 0:
+        raise ContractError(f"fallback overlap {overlap_px} is negative")
+
+    bands = min(bands, page_h)
+    tiles: list[ActGroup] = []
+    for index in range(bands):
+        # Integer edges computed from the index so the last band always ends
+        # exactly at the page edge -- a rounded band height would leave a strip
+        # of the page in no crop at all, which is the one thing this must not do.
+        top = (page_h * index) // bands
+        bottom = (page_h * (index + 1)) // bands
+        grown_top = max(0, top - overlap_px)
+        grown_bottom = min(page_h, bottom + overlap_px)
+        tiles.append(
+            ActGroup(
+                bounds={
+                    "x": 0,
+                    "y": grown_top,
+                    "w": page_w,
+                    "h": grown_bottom - grown_top,
+                },
+                body_members=[],
+                anchors=[],
+                rationale=(
+                    f"fallback tile {index + 1} of {bands}: the structure pass found no ink to "
+                    "group on this page, so a predetermined crop is cut and sent to be read "
+                    "rather than the page being called blank here"
+                ),
+            )
+        )
+    return tiles

@@ -49,6 +49,42 @@ SECONDARY_MARGIN: Final = 2
 DEFAULT_GAP_TOLERANCE_PX: Final = 3
 
 
+class BackgroundInferenceRefusal(ContractError):
+    """This page's background cannot be inferred, so its ink cannot be thresholded.
+
+    Its own kind, rather than a bare `ContractError`, because the caller must be
+    able to tell it apart from a corrupt decode. **A page this is raised for is
+    still cut and still read.** Tyrel, 2026-08-11: *"Everything gets read every
+    time nothing gets pulled out or held"*, and *"missing text is the worst
+    failure"*. So this refusal never removes a page from the run — it says only
+    that the modal pixel is not paper, so the caller must stop trusting it and
+    fall back to cutting predetermined crops instead. A decode error stays fatal;
+    this one changes how the page is cut, never whether it is.
+    """
+
+
+def page_mean(width: int, height: int, rows: list) -> int:
+    """The page's own mean sample, floored to an integer.
+
+    The honest fallback threshold for a page whose modal pixel is not its paper.
+    It is not a background in the sense `infer_background` means -- nothing here
+    claims to have found the paper -- it is the page's own centre, used so the
+    ink accounting has a defensible divider rather than a guess, on a page whose
+    crops are going downstream to be read either way.
+    """
+    if width <= 0 or height <= 0:
+        raise ContractError(f"a {width}x{height} page has no pixels to average")
+    if len(rows) != height:
+        raise ContractError(f"expected {height} scanlines, got {len(rows)}")
+    total = 0
+    for y in range(height):
+        row = rows[y]
+        if len(row) != width:
+            raise ContractError(f"scanline {y} has width {len(row)}, expected {width}")
+        total += sum(row)
+    return total // (width * height)
+
+
 def _ink_threshold(background: int, margin: int) -> int:
     if not (0 <= background <= 255):
         raise ContractError(f"background value {background} is not an 8-bit sample")
@@ -99,7 +135,7 @@ def infer_background(width: int, height: int, rows: list) -> int:
     counted = width * height
     total = sum(value * count for value, count in enumerate(histogram))
     if background * counted < total:
-        raise ContractError(
+        raise BackgroundInferenceRefusal(
             f"the most common pixel on this {width}x{height} page is {background}, which is "
             f"darker than its own mean of {total // counted}: the page is majority ink, so "
             "its background cannot be inferred and a blank result here would be inferred "

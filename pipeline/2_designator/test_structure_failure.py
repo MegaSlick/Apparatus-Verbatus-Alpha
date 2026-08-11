@@ -246,3 +246,131 @@ def test_nothing_downstream_reports_the_lost_page_as_a_success(structure_failure
         if entry["kind"] == "manifest-entry"
     ]
     assert len(entries) == seal["count"] == len(export["review"])
+
+
+# --- a page whose background cannot be inferred is held, never dropped ----------
+
+
+def _run_program(program: str, root):
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / program),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_page_whose_background_cannot_be_inferred_is_tiled_and_read_not_held(
+    tmp_path, monkeypatch
+):
+    """Tyrel, 2026-08-11, twice, and the second ruling overrides the first.
+
+    "I'd rather err on the side of sending a blank page downstream than pull a
+    page assuming it's blank and have it end up with text. Missing text is the
+    worst failure." Then, settling it: **"Everything gets read every time nothing
+    gets pulled out or held."**
+
+    So a page whose modal pixel is not its paper is neither dropped, nor called
+    blank, nor held for a human. It is cut into predetermined overlapping crops
+    and sent downstream, and the witnesses and the Perlector -- the strong
+    instruments -- decide whether there is text on it. This stage's one
+    threshold is the weakest instrument in the pipeline and it does not get to
+    end a page's life.
+    """
+
+    root = tmp_path / "runs"
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = _run_program(program, root)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    designator = _load_designator()
+    from common.stage import open_context, stage_parser
+
+    args = stage_parser("background refusal test").parse_args(
+        ["--run-root", str(root), "--run-id", "r", "--scenario", "happy"]
+    )
+    context = open_context(args, designator.DESIGNATOR)
+
+    real_infer = designator.structure.infer_background
+    refused_pages = []
+
+    def refuse_the_first_page(width, height, rows):
+        if not refused_pages:
+            refused_pages.append(True)
+            raise designator.structure.BackgroundInferenceRefusal(
+                "the page is majority ink, so its background cannot be inferred"
+            )
+        return real_infer(width, height, rows)
+
+    monkeypatch.setattr(designator.structure, "infer_background", refuse_the_first_page)
+
+    held = designator.initial_pass(context)
+
+    assert refused_pages, "the test never drove the refusal it is named for"
+    assert held is False, (
+        "a page that could not be thresholded must not put the run into a hold: "
+        "everything gets read, nothing gets pulled out or held"
+    )
+
+    def _artifact_payloads(kind):
+        return [
+            context.tree.read_artifact(DESIGNATOR, kind, entry["artifact_id"])["payload"]
+            for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+            if entry["kind"] == kind
+        ]
+
+    holds = _artifact_payloads("hold")
+    assert holds == [], f"nothing may be held for this page, got {holds}"
+
+    seal = _artifact_payloads("proposal-seal")[0]
+    outcomes = {row["act_key"]: row["outcome"] for row in seal["expected_acts"]}
+    assert "held" not in outcomes.values(), f"no act may be held, got {outcomes}"
+
+    regions = _artifact_payloads("region")
+    assert regions, "the page must still have been cut: crops are what reach the readers"
+
+
+def test_fallback_tiles_cover_every_row_of_the_page_and_overlap_their_neighbours():
+    """The grid's two obligations, and a strip in no crop would break the first.
+
+    Coverage, because a band of the page inside no crop is text nothing will ever
+    be shown. And overlap, so a line sitting exactly on a boundary is whole
+    inside one of the two neighbours rather than halved by both.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "grouping_fallback_under_test", ROOT / "pipeline" / "2_designator" / "grouping.py"
+    )
+    grouping = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "pipeline" / "2_designator"))
+    spec.loader.exec_module(grouping)
+
+    page_w, page_h = 100, 200
+    tiles = grouping.fallback_tiles(page_w, page_h)
+
+    covered = set()
+    for tile in tiles:
+        bounds = tile["bounds"]
+        assert bounds["x"] == 0 and bounds["w"] == page_w, "a band spans the full page width"
+        assert "fallback tile" in tile["rationale"], (
+            "a grid crop must say it is one, so nothing downstream reads it as a detection"
+        )
+        covered |= set(range(bounds["y"], bounds["y"] + bounds["h"]))
+    assert covered == set(range(page_h)), "every row of the page must fall inside some crop"
+
+    for earlier, later in zip(tiles, tiles[1:], strict=False):
+        earlier_end = earlier["bounds"]["y"] + earlier["bounds"]["h"]
+        assert later["bounds"]["y"] < earlier_end, "adjacent bands must overlap, not merely touch"

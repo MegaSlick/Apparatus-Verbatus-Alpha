@@ -715,15 +715,43 @@ def _analyze_page(cache: dict, context, ordinal: int, page_record: dict) -> dict
     never assumed, never a fixture value standing in for it.
     """
     if ordinal not in cache:
-        width, height, rows, background = page_pixels(context, page_record)
+        try:
+            width, height, rows, background = page_pixels(context, page_record)
+            background_source = "inferred-modal"
+        except structure.BackgroundInferenceRefusal:
+            # The modal pixel is not this page's paper, so it cannot be the
+            # threshold. That does not take the page out of the run: Tyrel,
+            # 2026-08-11, "everything gets read every time nothing gets pulled
+            # out or held". The page's own mean is used as an honest divider so
+            # the ink accounting has something defensible, the grid below cuts
+            # the crops regardless, and the source is recorded so nothing
+            # downstream reads this as a found background.
+            page_bytes = _read_checked_page_bytes(context, page_record)
+            width, height, rows = decode_grayscale_png(page_bytes)
+            background = structure.page_mean(width, height, rows)
+            background_source = "page-mean-fallback"
         components = structure.primary_scan(width, height, rows, background=background)
         groups = grouping.group_page(components, width, height)
+        # **A page the structure pass found nothing on is cut anyway.** Tyrel
+        # ruled 2026-08-11: "If the designator sees no text it should default to
+        # predetermined crops with a small margin of overlap and send the crops
+        # down stream to be read by everything. If all the witnesses and the
+        # perlector see no text on any of the crops then it's likely a true
+        # blank." Deciding blankness here, from one threshold on one page, is
+        # deciding it with the weakest instrument in the pipeline; the witnesses
+        # and the Perlector are the strong ones and they only get a say if the
+        # crops reach them.
+        fallback_tiled = not groups
+        if fallback_tiled:
+            groups = grouping.fallback_tiles(width, height)
         cache[ordinal] = {
             "width": width,
             "height": height,
             "rows": rows,
             "background": background,
+            "background_source": background_source,
             "groups": groups,
+            "fallback_tiled": fallback_tiled,
         }
     return cache[ordinal]
 
@@ -1136,6 +1164,11 @@ def initial_pass(context) -> bool:
     # durable `marked-out` claim behind it.
     for ordinal, page_record in pages.items():
         if ordinal not in failures:
+            # No hold is added here and none should be. `_analyze_page` handles a
+            # page it cannot threshold by cutting predetermined crops instead of
+            # by removing it -- Tyrel, 2026-08-11, "everything gets read every
+            # time nothing gets pulled out or held". A corrupt decode is still
+            # fatal, and the comment above says why.
             _analyze_page(page_cache, context, ordinal, page_record)
     publish_structure_status(context, records, pages, structure_provenance(context), failures)
 
