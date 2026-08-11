@@ -364,6 +364,30 @@ def test_every_recensor_terminal_set_combination_builds_a_matching_receipt_item(
     assert receipt["by_partition_class"][expected_class] == 1
 
 
+def test_a_receipt_item_refuses_a_partition_class_its_review_does_not_derive():
+    """Pin the refusal whose wording was repaired after CodeRabbit found it."""
+    from common.recensor_receipt import build_recensor_partition_receipt
+
+    item = dict(
+        _item_with_coverage(_valid_coverage()),
+        review_outcome="accepted",
+        partition_class="failed",
+    )
+    with pytest.raises(
+        SchemaRefusal,
+        match="names a partition class its own review outcome does not derive",
+    ):
+        build_recensor_partition_receipt(
+            run_id="r",
+            config_digest="a" * 64,
+            proposal_seal_ref={
+                "relative_path": "2_designator/artifacts/proposal-seal.json",
+                "sha256": "b" * 64,
+            },
+            items=[item],
+        )
+
+
 def test_a_review_whose_stored_coverage_disagrees_with_disk_is_refused(tmp_path):
     """`write_partition_receipt` (`pipeline/5_recensor/run.py`) recomputes each
     act's witness coverage fresh from the testimonia on disk and refuses a

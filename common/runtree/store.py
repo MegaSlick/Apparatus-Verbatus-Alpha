@@ -420,7 +420,7 @@ class RunTree:
             # Found by CodeRabbit.
             try:
                 existing = validate_recensor_partition_receipt(_read_json(target))
-            # `TypeError` among them because strict canonicalization raises it: a
+            # `TypeError` is among them because strict canonicalization raises it: a
             # receipt damaged with a float reaches `verify_self_hash` →
             # `canonical_bytes` → `_refuse_floats`, which is a `TypeError` and not a
             # `ContractError`. Without it the sentence this block exists to make
@@ -428,14 +428,12 @@ class RunTree:
             # damage, and it is the same escape route found on the stage-05 branch
             # the same night: strict canonicalization refusing outside the governed
             # vocabulary. Found by the Opus read of this branch.
-            except (
-                ContractError,
-                OSError,
-                TypeError,
-                UnicodeDecodeError,
-                ValueError,
-                RecursionError,
-            ):
+            # `_read_json` already translates `OSError`, `ValueError`, and its
+            # `UnicodeDecodeError` subclass into `SchemaRefusal`/`ContractError`.
+            # `RecursionError` remains separate because `json.loads` can raise it
+            # for a deeply nested damaged file and `_read_json` does not translate
+            # it. These are the three live classes at this boundary.
+            except (ContractError, TypeError, RecursionError):
                 existing = None
             if existing is not None and (
                 existing["run_id"] == checked["run_id"]

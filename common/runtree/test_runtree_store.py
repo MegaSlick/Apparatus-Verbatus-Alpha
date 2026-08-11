@@ -1003,7 +1003,20 @@ def test_the_run_file_is_valid_json_a_human_can_read(tmp_path):
     assert json.loads((tmp_path / "r1" / RUN_FILE).read_text(encoding="utf-8"))["run_id"] == "r1"
 
 
-def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(tmp_path):
+@pytest.mark.parametrize(
+    "damage_kind",
+    [
+        "empty",
+        "truncated-json",
+        "wrong-schema",
+        "non-utf8",
+        "float",
+        "wrong-self-hash",
+    ],
+)
+def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
+    tmp_path, damage_kind
+):
     """The receipt is derived, not evidence, so damage must not be a dead end.
 
     It is reconstructed from the immutable review and request records beside it,
@@ -1025,22 +1038,25 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(t
     target = tree.resolve(tree.recensor_partition_receipt_path())
     # Six shapes reaching four different refusal paths, not four reaching two: an
     # empty file and a truncated one both fail the JSON reader, so the first draft
-    # of this test looked broader than it was. The two float cases matter most —
-    # they reach `verify_self_hash` and are refused by strict canonicalization with
-    # a `TypeError`, which is the class that escaped the first fix.
+    # of this test looked broader than it was. The float and wrong-self-hash cases
+    # both reach `verify_self_hash`; the float is refused by strict canonicalization
+    # with the `TypeError` class that escaped the first fix, while the latter pins
+    # the validator's own integrity refusal.
     valid = json.dumps(receipt).encode("utf-8")
     float_damaged = json.loads(valid)
     float_damaged["expected_act_count"] = 1.0
-    for damage in (
-        b"",
-        b"{",
-        b'{"schema": "nonsense"}',
-        b"\xff\xfe not utf-8",
-        json.dumps(float_damaged).encode("utf-8"),
-        valid[:-1],
-    ):
-        target.write_bytes(damage)
-        assert tree.write_recensor_partition_receipt(receipt).reused is False, (
-            f"a receipt damaged as {damage!r} blocked its own replacement"
-        )
-        assert tree.read_recensor_partition_receipt()["run_id"] == "r1"
+    self_hash_damaged = json.loads(valid)
+    self_hash_damaged["self_hash"] = "0" * 64
+    damage = {
+        "empty": b"",
+        "truncated-json": b"{",
+        "wrong-schema": b'{"schema": "nonsense"}',
+        "non-utf8": b"\xff\xfe not utf-8",
+        "float": json.dumps(float_damaged).encode("utf-8"),
+        "wrong-self-hash": json.dumps(self_hash_damaged).encode("utf-8"),
+    }[damage_kind]
+    target.write_bytes(damage)
+    assert tree.write_recensor_partition_receipt(receipt).reused is False, (
+        f"a receipt damaged as {damage_kind} blocked its own replacement"
+    )
+    assert tree.read_recensor_partition_receipt()["run_id"] == "r1"
