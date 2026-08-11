@@ -133,8 +133,9 @@ def _validate_item(item: Any) -> None:
         ) from error
     if item["partition_class"] != expected_class:
         raise SchemaRefusal(
-            "Recensor partition receipt item names a partition class its own review outcome "
-            "does not derive"
+            "Recensor partition receipt item names partition_class "
+            f"{item['partition_class']!r}, but review_outcome {item['review_outcome']!r} "
+            f"derives {expected_class!r}"
         )
     _validate_reference(item["review_ref"], "review reference")
     _validate_coverage(item["coverage"])

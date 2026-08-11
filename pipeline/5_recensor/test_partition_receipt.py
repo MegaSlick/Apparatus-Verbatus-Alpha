@@ -375,7 +375,7 @@ def test_a_receipt_item_refuses_a_partition_class_its_review_does_not_derive():
     )
     with pytest.raises(
         SchemaRefusal,
-        match="names a partition class its own review outcome does not derive",
+        match=("names partition_class 'failed', but review_outcome 'accepted' derives 'completed'"),
     ):
         build_recensor_partition_receipt(
             run_id="r",
