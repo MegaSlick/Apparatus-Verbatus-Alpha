@@ -67,12 +67,18 @@ from .volume_s3 import S3VolumeTarget, VolumeSpec, VolumeTransferRefusal
 UTC = timezone.utc
 OPERATOR_CLOSE_PREFIX = "CLOSE"
 DEFAULT_FIXTURE = "synthetic-two-page-v0"
-# `FakeProvider.bill()` always backdates its cutoff by exactly one hour (see its
-# own docstring) so a frozen test clock still opens a valid, non-empty billing
-# window. This surface is fixture-only and always closes through that same
-# `bill()`, so its own billing-cutoff margin must cover that backdating
-# whenever no reviewed policy overrides it -- matching the margin
-# `operations/pod/test_pod_runtime.py` pairs with `.bill()` throughout.
+# `FakeProvider.bill()` always stamps its cutoff exactly one hour **ahead** of
+# its own clock -- `fake_provider.py`'s `cutoff_at=self.now() + timedelta(hours=1)`
+# -- so a frozen test clock still opens a valid, non-empty billing window. This
+# surface is fixture-only and always closes through that same `bill()`, so its
+# billing-cutoff margin must reach forward far enough to cover that stamp --
+# matching the margin `operations/pod/test_pod_runtime.py` pairs with `.bill()`
+# throughout.
+#
+# **This comment said "backdates" until 2026-08-11, and the direction matters.**
+# A reader who believes the cutoff is in the past concludes that a *smaller*
+# margin is the safe direction. It is the opposite, and acting on that reversed
+# belief is exactly the defect below at `_shutdown`.
 FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS = 3600
 
 
@@ -1072,10 +1078,34 @@ class OperatorSurface:
             "billing_cutoff_margin_seconds": FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS
         }
         if policy is not None and policy.configured:
+            margin = policy.billing_cutoff_margin_seconds
+            if isinstance(self.provider, OperatorFakeProvider):
+                # **The fixture's stamp sets this floor, not the policy.**
+                # `bill()` puts its cutoff an hour ahead of its own clock, so any
+                # margin short of that makes a perfectly healthy close fail its
+                # billing-evidence check. The no-policy branch above already
+                # carried the floor; the configured branch took the reviewed
+                # number raw, and the whole accepted range is 0-3600 -- so every
+                # value but exactly 3600 turned a good close red. Measured at
+                # 1800, 600 and 0, all three raised
+                # "Close could not verify both pod absence and billing evidence."
+                #
+                # Dormant only because the shipped `config/spend.toml` is
+                # `unconfigured`: the first time Tyrel fills it in with anything
+                # but 3600, his first close rehearsal is red for no real reason.
+                # `_shutdown`'s own docstring calls that "the fastest way to
+                # teach someone to ignore the one message that matters".
+                #
+                # Gated on the fixture provider rather than applied flat, so the
+                # floor disappears of its own accord when a real provider with a
+                # real cutoff arrives and the reviewed policy becomes the honest
+                # number. Today this surface is fixture-only by type, so the
+                # branch is always taken.
+                margin = max(margin, FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS)
             timings = {
                 "timeout_seconds": policy.shutdown_deadline_seconds,
                 "poll_seconds": policy.shutdown_poll_interval_seconds,
-                "billing_cutoff_margin_seconds": policy.billing_cutoff_margin_seconds,
+                "billing_cutoff_margin_seconds": margin,
             }
         return VerifiedShutdown(
             self.provider,
@@ -1297,6 +1327,24 @@ class OperatorSurface:
         tree = RunTree(run_root, run_id)
         source = tree.root
         selected = [source / "run.json", source / "7_armarium"]
+        # **A member that is neither a file nor a directory was silently dropped.**
+        # The loop below is `if is_file() ... elif is_dir()`, so an absent
+        # `run.json` matched neither arm, contributed nothing, and the receipt
+        # still recorded `"state": "complete"` -- a bundle short of the record
+        # that says what run produced it, describing itself as whole. GOVERNANCE 2
+        # is exactly this: "a partial result is visibly partial; 'complete' is
+        # refused unless everything reconciles." Both members are required, so
+        # missing one is a refusal rather than a smaller bundle.
+        missing = [entry for entry in selected if not entry.exists()]
+        if missing:
+            raise OperatorError(
+                ErrorCode.EXPORT_FAILED,
+                detail=(
+                    "the Armarium evidence bundle is missing "
+                    + ", ".join(sorted(str(entry.relative_to(source)) for entry in missing))
+                    + " and would have been written as complete without them"
+                ),
+            )
         temporary = destination.with_name(f".{destination.name}.tmp")
         try:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as bundle:

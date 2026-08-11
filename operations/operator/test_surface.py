@@ -23,6 +23,7 @@ from operations.pod.models import (
     BILLING_CUTOFF_MARGIN_ENV,
     PodCreateRequest,
     ProviderFailure,
+    SpendRefusal,
     require_utc,
 )
 from operations.pod.shutdown import CloseReport, VerifiedShutdown
@@ -36,6 +37,7 @@ from .errors import ErrorCode, OperatorError
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
 from .records import MAX_RECORD_BYTES, DescriptorStore, ReceiptStore, RecordError, sha256_file
 from .surface import (
+    FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS,
     OPERATOR_CLOSE_PREFIX,
     Faults,
     OperatorSurface,
@@ -74,7 +76,7 @@ def _request(*, name: str = "operator-test") -> PodCreateRequest:
     )
 
 
-def _spend_policy(tmp_path: Path, *, hourly: str = "1.00") -> Path:
+def _spend_policy(tmp_path: Path, *, hourly: str = "1.00", margin: int = 3600) -> Path:
     path = tmp_path / "reviewed-spend.toml"
     path.write_text(
         "\n".join(
@@ -89,7 +91,7 @@ def _spend_policy(tmp_path: Path, *, hourly: str = "1.00") -> Path:
                 "laptop_heartbeat_timeout_seconds = 60",
                 "shutdown_poll_interval_seconds = 1",
                 "shutdown_deadline_seconds = 5",
-                "billing_cutoff_margin_seconds = 3600",
+                f"billing_cutoff_margin_seconds = {margin}",
                 "",
             )
         ),
@@ -1696,6 +1698,91 @@ def test_close_timing_comes_from_the_reviewed_policy_not_from_a_constant(tmp_pat
         VerifiedShutdown(surface.provider).timeout_seconds,
         VerifiedShutdown(surface.provider).poll_seconds,
     )
+
+
+@pytest.mark.parametrize("margin", (0, 600, 1800, 3599))
+def test_a_reviewed_billing_margin_under_the_fixtures_own_cutoff_is_floored(
+    tmp_path: Path, margin: int
+) -> None:
+    """Every reviewed margin but exactly 3600 turned a healthy close red.
+
+    `FakeProvider.bill()` stamps its cutoff one hour **ahead** of its own clock,
+    so a margin shorter than that cannot reach it. The no-policy branch of
+    `_shutdown` already carried the 3600 floor; the configured branch took the
+    reviewed number raw — and 0 to 3600 is the whole accepted range, so the only
+    value that worked was the one the fixtures happen to use. Measured before the
+    fix at 1800, 600 and 0: all three raised "Close could not verify both pod
+    absence and billing evidence."
+
+    Dormant only because the shipped `config/spend.toml` is `unconfigured`, which
+    is why this asserts on `_shutdown` directly rather than driving a close: there
+    is no end-to-end path to the configured branch until that file is filled in,
+    and the first time it is, this is what would have gone wrong.
+    """
+
+    surface = _surface(tmp_path)
+    policy = load_spend_policy(_spend_policy(tmp_path, margin=margin))
+    assert policy.billing_cutoff_margin_seconds == margin, "the fixture did not take"
+
+    configured = surface._shutdown(policy)
+
+    assert configured.billing_cutoff_margin_seconds == FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS
+    # The floor raises the margin and touches nothing else the policy decides.
+    assert configured.timeout_seconds == policy.shutdown_deadline_seconds
+    assert configured.poll_seconds == policy.shutdown_poll_interval_seconds
+
+
+def test_an_evidence_bundle_short_of_run_json_refuses_rather_than_saying_complete(
+    tmp_path: Path,
+) -> None:
+    """A bundle missing the record of which run produced it is not "complete".
+
+    `_write_base_armarium_bundle` selects `run.json` and `7_armarium` and wrote
+    each with `if is_file() ... elif is_dir()`. An absent `run.json` matched
+    neither arm and was dropped with no record at all, while the export receipt
+    still said `"state": "complete"`. GOVERNANCE 2 is exactly this case: a partial
+    result is visibly partial, and "complete" is refused unless everything
+    reconciles.
+    """
+
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "run-without-its-authority"
+    root = run_root / run_id
+    (root / "7_armarium").mkdir(parents=True)
+    (root / "7_armarium" / "aggregate.json").write_text("{}", encoding="utf-8")
+    assert not (root / "run.json").exists(), "this test's premise is a missing run.json"
+
+    destination = tmp_path / "bundle.zip"
+    with pytest.raises(OperatorError) as refusal:
+        surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert "run.json" in (refusal.value.detail or "")
+    assert not destination.exists(), "a refused bundle must not leave a file behind"
+
+
+def test_the_top_of_the_reviewed_margin_range_passes_through_unchanged(tmp_path: Path) -> None:
+    """3600 is both the floor and the top of the accepted range, so nothing is raised.
+
+    `require_billing_cutoff_margin_seconds` refuses anything outside 0-3600, so
+    **no reviewed margin can exceed the fixture floor** — which means that while
+    the provider is the fixture one, the reviewed value never reaches
+    `VerifiedShutdown` at all. That is worth stating out loud rather than leaving
+    implied by a `max()`: the fixture's own one-hour-ahead stamp decides this
+    number today, and the policy will only start deciding it when a real provider
+    with a real cutoff replaces the fake. This test pins the boundary so that a
+    later widening of the accepted range is a visible change here rather than a
+    silent one.
+    """
+
+    surface = _surface(tmp_path)
+    policy = load_spend_policy(_spend_policy(tmp_path, margin=3600))
+
+    assert policy.billing_cutoff_margin_seconds == 3600
+    assert surface._shutdown(policy).billing_cutoff_margin_seconds == 3600
+
+    with pytest.raises(SpendRefusal, match="between 0 and 3600"):
+        load_spend_policy(_spend_policy(tmp_path, margin=3601))
 
 
 def test_an_unreadable_spend_policy_never_stops_a_close(tmp_path: Path) -> None:
