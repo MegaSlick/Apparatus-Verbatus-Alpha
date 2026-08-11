@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -168,8 +169,18 @@ def file_size(path: Path, chair: str, relative: str) -> int:
 
 
 def file_digest(path: Path, chair: str, relative: str) -> str:
-    """One file's digest, under the same taxonomy guarantee as `file_size`."""
-    return _guarded(chair, relative, lambda: digest_bytes(path.read_bytes()))
+    """Stream one file's SHA-256 under the same taxonomy guarantee as `file_size`.
+
+    ``hashlib.file_digest`` (Python 3.11+, PSF license) is the standard-library
+    file helper.  Model snapshots can contain multi-gigabyte weights, so reading
+    a whole file before hashing unnecessarily duplicates it in process memory.
+    """
+
+    def digest() -> str:
+        with path.open("rb") as handle:
+            return hashlib.file_digest(handle, "sha256").hexdigest()
+
+    return _guarded(chair, relative, digest)
 
 
 def _guarded(chair: str, relative: str, read):
