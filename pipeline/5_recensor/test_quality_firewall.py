@@ -32,7 +32,18 @@ from common.contracts.stages import RECENSOR
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
-RECENSOR_SOURCE = ROOT / "pipeline/5_recensor/run.py"
+RECENSOR_DIRECTORY = ROOT / "pipeline/5_recensor"
+
+# **Every non-test source file in the stage, not just `run.py`.** This firewall
+# parsed one file while the stage had grown to two, so a `publish(kind=
+# "recovery-request", ...)` that moved into `residual_ink.py` would have left the
+# gate unguarded while `_recovery_request_publications`'s own docstring went on
+# claiming it found "every call site in the stage". A structural guard that scans
+# less than it says it scans is worse than none: it reports a pass for ground it
+# never covered. Discovered by the branch's own review and carried until now.
+RECENSOR_SOURCES = sorted(
+    path for path in RECENSOR_DIRECTORY.glob("*.py") if not path.name.startswith("test_")
+)
 
 # Every name the recovery gate is allowed to consult. All of them are coverage
 # and budget facts. None of them can be derived from what a reading SAID.
@@ -60,27 +71,37 @@ _QUALITY_NAMES = {
 }
 
 
-def _module() -> ast.Module:
-    return ast.parse(RECENSOR_SOURCE.read_text(encoding="utf-8"))
+def _modules() -> list[tuple[Path, ast.Module]]:
+    """Every source file of this stage, parsed, so nothing hides in a sibling."""
+    assert RECENSOR_SOURCES, "the stage has no source files; this guard found nothing to guard"
+    return [(path, ast.parse(path.read_text(encoding="utf-8"))) for path in RECENSOR_SOURCES]
 
 
 def _names(node: ast.AST) -> set[str]:
     return {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
 
 
-def _recovery_request_publications(tree: ast.Module) -> list[ast.Call]:
-    """Every `publish(kind="recovery-request", ...)` call site in the stage."""
+def _recovery_request_publications(
+    modules: list[tuple[Path, ast.Module]],
+) -> list[tuple[Path, ast.Module, ast.Call]]:
+    """Every `publish(kind="recovery-request", ...)` call site in the stage.
+
+    Across every source file, which is what "in the stage" has to mean. Each hit
+    carries the file and tree it came from so the caller can find its enclosing
+    conditional in the right module rather than in whichever one it guessed.
+    """
     found = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        for keyword in node.keywords:
-            if (
-                keyword.arg == "kind"
-                and isinstance(keyword.value, ast.Constant)
-                and keyword.value.value == "recovery-request"
-            ):
-                found.append(node)
+    for path, tree in modules:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "kind"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == "recovery-request"
+                ):
+                    found.append((path, tree, node))
     return found
 
 
@@ -103,7 +124,11 @@ def _enclosing_if(tree: ast.Module, target: ast.Call) -> ast.If:
 
 def test_exactly_one_place_in_the_stage_can_ask_for_recovery():
     """One gate, so "the gate is coverage-only" is a statement about all of them."""
-    assert len(_recovery_request_publications(_module())) == 1
+    sites = _recovery_request_publications(_modules())
+    assert len(sites) == 1, (
+        f"expected one recovery-request site across the whole stage, found "
+        f"{[str(path.relative_to(ROOT)) for path, _, _ in sites]}"
+    )
 
 
 def test_the_recovery_gate_consults_coverage_and_budget_and_nothing_else():
@@ -113,8 +138,8 @@ def test_the_recovery_gate_consults_coverage_and_budget_and_nothing_else():
     OutcomeClass.FAILED` to this condition -- the single most natural way to
     build an accidental re-roll -- fails here, by name.
     """
-    tree = _module()
-    gate = _enclosing_if(tree, _recovery_request_publications(tree)[0])
+    _, tree, site = _recovery_request_publications(_modules())[0]
+    gate = _enclosing_if(tree, site)
     consulted = _names(gate.test)
     # Meta-invariant #88: a subset assertion is satisfied by an empty set, so an
     # `_enclosing_if` that found the wrong node would pass silently. The gate is
@@ -137,9 +162,9 @@ def test_what_the_gate_is_computed_from_is_coverage_only():
     Constraining the `if` alone would be satisfied by computing the same forbidden
     thing one line earlier and calling it a coverage name.
     """
-    tree = _module()
     assignments = [
         node
+        for _, tree in _modules()
         for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
         and any(
@@ -164,13 +189,16 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     loop countable and stops a stage from recropping its own evidence until it
     likes it. A `subprocess` import here would be the first step of undoing that.
     """
-    tree = _module()
+    # Across every source file of the stage. This scanned `run.py` alone while
+    # the stage had two, so a `subprocess` import in `residual_ink.py` would have
+    # passed a guard whose whole subject is "this stage cannot invoke anything".
     imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.add(node.module.split(".")[0])
+    for _, tree in _modules():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
     # One binding, used by both the assertion and its message. Written out twice
     # they had already drifted: the check refused `multiprocessing` and the message
     # intersected a set without it, so a Recensor that imported `multiprocessing`
