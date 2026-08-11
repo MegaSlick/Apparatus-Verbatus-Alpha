@@ -1023,7 +1023,22 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(t
     assert tree.write_recensor_partition_receipt(receipt).reused is False
 
     target = tree.resolve(tree.recensor_partition_receipt_path())
-    for damage in (b"", b"{", b'{"schema": "nonsense"}', b"\xff\xfe not utf-8"):
+    # Six shapes reaching four different refusal paths, not four reaching two: an
+    # empty file and a truncated one both fail the JSON reader, so the first draft
+    # of this test looked broader than it was. The two float cases matter most —
+    # they reach `verify_self_hash` and are refused by strict canonicalization with
+    # a `TypeError`, which is the class that escaped the first fix.
+    valid = json.dumps(receipt).encode("utf-8")
+    float_damaged = json.loads(valid)
+    float_damaged["expected_act_count"] = 1.0
+    for damage in (
+        b"",
+        b"{",
+        b'{"schema": "nonsense"}',
+        b"\xff\xfe not utf-8",
+        json.dumps(float_damaged).encode("utf-8"),
+        valid[:-1],
+    ):
         target.write_bytes(damage)
         assert tree.write_recensor_partition_receipt(receipt).reused is False, (
             f"a receipt damaged as {damage!r} blocked its own replacement"

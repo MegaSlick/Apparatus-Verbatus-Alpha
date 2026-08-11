@@ -420,7 +420,22 @@ class RunTree:
             # Found by CodeRabbit.
             try:
                 existing = validate_recensor_partition_receipt(_read_json(target))
-            except (ContractError, OSError, UnicodeDecodeError, ValueError, RecursionError):
+            # `TypeError` among them because strict canonicalization raises it: a
+            # receipt damaged with a float reaches `verify_self_hash` →
+            # `canonical_bytes` → `_refuse_floats`, which is a `TypeError` and not a
+            # `ContractError`. Without it the sentence this block exists to make
+            # true — invalid is treated as absent — was false for one whole class of
+            # damage, and it is the same escape route found on the stage-05 branch
+            # the same night: strict canonicalization refusing outside the governed
+            # vocabulary. Found by the Opus read of this branch.
+            except (
+                ContractError,
+                OSError,
+                TypeError,
+                UnicodeDecodeError,
+                ValueError,
+                RecursionError,
+            ):
                 existing = None
             if existing is not None and (
                 existing["run_id"] == checked["run_id"]
