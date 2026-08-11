@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Iterable
 
@@ -25,6 +25,30 @@ from .errors import DisclosureRefusal
 from .holdout import EvaluationManifest
 from .models import DeliveryMode, EvaluationAct, MaterialClass, ResolvedIdentity
 from .normalization import NormalizationProfile
+
+DATA_GATE_APPROVAL_SUBJECT = "spec05-data-gate-approval.v1"
+NORMALIZATION_APPROVAL_SUBJECT = "spec05-normalization-approval.v1"
+THIRD_PARTY_APPROVAL_SUBJECT = "spec05-third-party-transmission-approval.v1"
+RUN_PLAN_APPROVAL_SUBJECT = "spec05-run-plan-approval.v1"
+
+
+def _deep_freeze(value: Any) -> Any:
+    """Detach and recursively freeze JSON-shaped approval evidence."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
+
+
+def _require_approval_subject(record: Mapping[str, Any], *, expected: str, label: str) -> None:
+    """Make a generic ``other`` approval's typed purpose visible and exact."""
+
+    if record["subject_ids"] != [expected]:
+        raise DisclosureRefusal(
+            f"{label} record does not name the exact {label} purpose {expected!r}"
+        )
 
 
 def _approval_digest(record: Mapping[str, object]) -> str:
@@ -92,30 +116,32 @@ class DataGateAuthority:
     approval_reference: ApprovalRecordReference
     approval_record: Mapping[str, Any]
     approval_bytes: bytes
+    _bound_scope_sha256: str = field(init=False, repr=False)
 
     # One builder, for the reason given on NormalizationApproval._scope_record.
     @staticmethod
     def _scope_record(*, policy_content: Mapping[str, Any]) -> dict[str, object]:
         return {
-            "schema": "spec05-data-gate-approval.v1",
+            "schema": DATA_GATE_APPROVAL_SUBJECT,
             "policy_content": dict(policy_content),
         }
 
     @property
     def scope_sha256(self) -> str:
-        return self.scope_digest(policy_content=self.policy_content)
+        return self._bound_scope_sha256
 
     @classmethod
     def scope_digest(cls, *, policy_content: Mapping[str, Any]) -> str:
-        return _approval_digest(cls._scope_record(policy_content=policy_content))
+        try:
+            return _approval_digest(cls._scope_record(policy_content=policy_content))
+        except (TypeError, ValueError, RecursionError) as error:
+            raise DisclosureRefusal(
+                f"data-gate policy content cannot be canonically bound: {error}"
+            ) from error
 
     def __post_init__(self) -> None:
-        policy = MappingProxyType(dict(self.policy_content))
-        record = MappingProxyType(dict(self.approval_record))
-        object.__setattr__(self, "policy_content", policy)
-        object.__setattr__(self, "approval_record", record)
         checked = _checked_approval_record(self.approval_reference, self.approval_bytes)
-        if checked != dict(record):
+        if checked != dict(self.approval_record):
             raise DisclosureRefusal(
                 "data-gate authority record differs from its checked approval bytes"
             )
@@ -123,8 +149,22 @@ class DataGateAuthority:
             raise DisclosureRefusal(
                 "data-gate authority record must use the recorded approval action"
             )
-        if checked["target_version_hash"] != self.scope_digest(policy_content=policy):
+        _require_approval_subject(
+            checked, expected=DATA_GATE_APPROVAL_SUBJECT, label="data-gate approval"
+        )
+        scope_sha256 = self.scope_digest(policy_content=self.policy_content)
+        if checked["target_version_hash"] != scope_sha256:
             raise DisclosureRefusal("data-gate approval is stale for the supplied policy")
+        try:
+            policy = _deep_freeze(dict(self.policy_content))
+            record = _deep_freeze(checked)
+        except RecursionError as error:
+            raise DisclosureRefusal(
+                f"data-gate policy content cannot be canonically bound: {error}"
+            ) from error
+        object.__setattr__(self, "policy_content", policy)
+        object.__setattr__(self, "approval_record", record)
+        object.__setattr__(self, "_bound_scope_sha256", scope_sha256)
 
     @classmethod
     def load(
@@ -154,24 +194,12 @@ class DataGateAuthority:
             raise DisclosureRefusal(
                 f"current data-gate approval is unavailable: {error}"
             ) from error
-        try:
-            return cls(
-                policy_content=policy_content,
-                approval_reference=approval_reference,
-                approval_record=record,
-                approval_bytes=payload,
-            )
-        except TypeError as error:
-            # Strict canonicalization refuses a float or a non-string key by raising
-            # `TypeError`, and the construction that triggers it sat outside the
-            # `try` above — so non-canonical policy content left this gate as a bare
-            # Python exception rather than a `DisclosureRefusal`. The refusal was
-            # restored by `96e1f59`; the *governed* refusal was not. A caller
-            # catching `DisclosureRefusal` to hold would not have caught this at all.
-            # Found by the Opus read of this branch.
-            raise DisclosureRefusal(
-                f"data-gate policy content cannot be canonically bound: {error}"
-            ) from error
+        return cls(
+            policy_content=policy_content,
+            approval_reference=approval_reference,
+            approval_record=record,
+            approval_bytes=payload,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +218,7 @@ class NormalizationApproval:
     @staticmethod
     def _scope_record(*, profile_id: str, profile_sha256: str) -> dict[str, str]:
         return {
-            "schema": "spec05-normalization-approval.v1",
+            "schema": NORMALIZATION_APPROVAL_SUBJECT,
             "profile_id": profile_id,
             "profile_sha256": profile_sha256,
         }
@@ -219,6 +247,9 @@ class NormalizationApproval:
             raise DisclosureRefusal(
                 "normalization approval record must use the recorded approval action"
             )
+        _require_approval_subject(
+            checked, expected=NORMALIZATION_APPROVAL_SUBJECT, label="normalization approval"
+        )
         if checked["target_version_hash"] != self.scope_sha256:
             raise DisclosureRefusal(
                 "normalization approval record does not bind this exact profile"
@@ -286,7 +317,7 @@ class ThirdPartyTransmissionApproval:
         manifest_sha256: str,
     ) -> dict[str, object]:
         return {
-            "schema": "spec05-third-party-transmission-approval.v1",
+            "schema": THIRD_PARTY_APPROVAL_SUBJECT,
             "vendor": vendor,
             "candidate_artifact_digest": candidate_artifact_digest,
             "page_ids": sorted(page_ids),
@@ -340,6 +371,11 @@ class ThirdPartyTransmissionApproval:
             raise DisclosureRefusal(
                 "third-party approval record must use the recorded approval action"
             )
+        _require_approval_subject(
+            checked,
+            expected=THIRD_PARTY_APPROVAL_SUBJECT,
+            label="third-party approval",
+        )
         if checked["target_version_hash"] != self.scope_sha256:
             raise DisclosureRefusal(
                 "third-party approval record does not bind this exact vendor, pages, candidate, and manifest"
@@ -417,7 +453,7 @@ class RunPlanApproval:
         private_sample_accounting_sha256: str,
     ) -> dict[str, str]:
         return {
-            "schema": "spec05-run-plan-approval.v1",
+            "schema": RUN_PLAN_APPROVAL_SUBJECT,
             "protocol_sha256": protocol_sha256,
             "manifest_sha256": manifest_sha256,
             "candidate_roster_sha256": candidate_roster_sha256,
@@ -495,6 +531,9 @@ class RunPlanApproval:
             raise DisclosureRefusal(
                 "run-plan approval record must use the recorded approval action"
             )
+        _require_approval_subject(
+            checked, expected=RUN_PLAN_APPROVAL_SUBJECT, label="run-plan approval"
+        )
         if checked["target_version_hash"] != self.scope_sha256:
             raise DisclosureRefusal("run-plan approval record does not bind its declared scope")
 

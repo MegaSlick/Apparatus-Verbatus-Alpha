@@ -7,7 +7,13 @@ import json
 from common.contracts.approval import ApprovalRecordReference, build_approval_record
 
 from .encoding import sha256_bytes
-from .gates import NormalizationApproval, RunAuthorization, RunPlanApproval
+from .gates import (
+    NORMALIZATION_APPROVAL_SUBJECT,
+    RUN_PLAN_APPROVAL_SUBJECT,
+    NormalizationApproval,
+    RunAuthorization,
+    RunPlanApproval,
+)
 from .holdout import (
     SPEC05_SELECTION_SEED,
     FrameMember,
@@ -160,11 +166,13 @@ def manifest_for(*acts: EvaluationAct):
     )
 
 
-def _test_approval_reference(target_version_hash: str) -> tuple[ApprovalRecordReference, bytes]:
+def _test_approval_reference(
+    target_version_hash: str, *, subject_id: str
+) -> tuple[ApprovalRecordReference, bytes]:
     """Return a test-only generic approval artifact for one sealed target hash."""
 
     record = build_approval_record(
-        subject_ids=["synthetic-spec05-normalization-test"],
+        subject_ids=[subject_id],
         action="other",
         reason="synthetic test fixture; no evaluation material or decision",
         target_version_hash=target_version_hash,
@@ -182,7 +190,8 @@ def normalization_approval_for(profile) -> NormalizationApproval:
     reference, payload = _test_approval_reference(
         NormalizationApproval.scope_digest(
             profile_id=profile.profile_id, profile_sha256=profile.digest
-        )
+        ),
+        subject_id=NORMALIZATION_APPROVAL_SUBJECT,
     )
     return NormalizationApproval.load(
         profile_id=profile.profile_id,
@@ -215,7 +224,9 @@ def run_plan_approval_for(
         "budget_evidence_sha256": digest("synthetic-spec05-budget-evidence"),
         "private_sample_accounting_sha256": accounting.digest,
     }
-    reference, payload = _test_approval_reference(RunPlanApproval.scope_digest(**values))
+    reference, payload = _test_approval_reference(
+        RunPlanApproval.scope_digest(**values), subject_id=RUN_PLAN_APPROVAL_SUBJECT
+    )
     return RunPlanApproval.load(
         **values,
         approval_reference=reference,
