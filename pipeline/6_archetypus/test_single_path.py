@@ -377,3 +377,43 @@ def test_one_testimonium_cannot_be_repeated_to_make_the_basis_look_larger(tmp_pa
     result = _archetypus_after(tmp_path, repeat)
     assert result.returncode == 2, result.stderr
     assert "repeats Testimonium basis" in result.stderr
+
+
+def test_two_groups_naming_one_crop_path_collapse_to_a_single_input():
+    """`3618414` claimed removing this deduplication fails a test. It did not.
+
+    That commit's closing line said "every simplification above was
+    mutation-checked afterwards: deleting the read-back delegation, the
+    readable-span rule, the deduplication, or the witness-roster branch each
+    fails a test." Measured on 2026-08-11 by replacing `_direct_inputs`'s
+    dedup-by-path with a plain concatenation: `pytest pipeline/6_archetypus
+    pipeline/orchestrator` stayed **entirely green**. The claim was false and the
+    guard did not exist.
+
+    What it guards is real. Blobs are content-addressed, so a recovery crop whose
+    pixels are identical to its proposal crop is literally the same file under
+    the same path -- and `build_envelope` refuses one path listed twice. Without
+    the collapse, that ordinary and correct situation would abort the stage.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "archetypus_direct_inputs_under_test", ROOT / "pipeline" / "6_archetypus" / "run.py"
+    )
+    archetypus = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "pipeline" / "6_archetypus"))
+    spec.loader.exec_module(archetypus)
+
+    shared = {"relative_path": "2_designator/blobs/ab/cdef", "sha256": "a" * 64}
+    other = {"relative_path": "4_perlector/artifacts/reading.json", "sha256": "b" * 64}
+
+    combined = archetypus._direct_inputs([shared, other], [shared])
+
+    paths = [reference["relative_path"] for reference in combined]
+    assert len(paths) == len(set(paths)), (
+        f"one crop path reached the envelope twice: {paths}; build_envelope refuses that, "
+        "so a recovery crop identical to its proposal crop would abort the stage"
+    )
+    assert set(paths) == {shared["relative_path"], other["relative_path"]}, (
+        "collapsing duplicates must not drop a distinct input"
+    )
