@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.canonical import digest_of, self_hash, verify_self_hash
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import FatalAccounting, SchemaRefusal
 
 
 def _load_archetypus():
@@ -314,3 +314,79 @@ def test_record_validation_refuses_a_no_readable_text_record_carrying_an_annotat
                 annotations=[note],
             )
         )
+
+
+# --- The guard that decides whether an unresolved reading can establish text ----
+
+
+_READING_REF = {"relative_path": "4_perlector/artifacts/x.json", "sha256": "0" * 64}
+
+
+def _perlectio(outcome: str) -> dict:
+    return {
+        "stage": archetypus.PERLECTOR,
+        "kind": "perlectio",
+        "outcome": outcome,
+        "payload": {"text": "some established characters"},
+    }
+
+
+def _accepted_review() -> dict:
+    """A review that passes every guard *before* the completed-class check.
+
+    Built deliberately so the refusal under test is the one being reached: with a
+    weaker review the earlier "accepts only the exact Perlectio a Recensor
+    accepted" refusal fires first and the test passes without ever touching the
+    guard it names. That happened on the first draft of this test.
+    """
+    return {
+        "stage": archetypus.RECENSOR,
+        "kind": "review",
+        "outcome": "accepted",
+        "inputs": [_READING_REF],
+        "payload": {"perlectio_ref": _READING_REF, "decision": "accepted"},
+    }
+
+
+# Every non-`read` member of the Perlector's own closed vocabulary. `held-for-review`
+# is deliberately absent: it is not one of this stage's outcomes at all, so it is
+# refused a step earlier by the invariant-#10 check and would have made this test
+# pass without reaching the guard it names.
+@pytest.mark.parametrize("outcome", ["no-readable-text", "failed", "truncated", "not-run"])
+def test_only_a_completed_reading_may_establish_text(outcome):
+    """The one guard standing between an unresolved reading and the established text.
+
+    Measured untested by mutation during the final read of this branch: removing
+    it broke nothing in a 1,761-test suite. It is also the guard that makes the
+    stage-08/stage-10 field-name seam harmless — stage 08 writes gaps only under
+    `no-readable-text`, which classes as unresolved, and *this* is what refuses
+    it. A protection nothing exercises is a protection nobody would notice
+    losing, and this one is load-bearing for a claim made to Tyrel about two
+    other branches.
+    """
+    with pytest.raises(FatalAccounting, match="may only come"):
+        archetypus.accepted_primed_perlectio(
+            None,
+            _accepted_review(),
+            _perlectio(outcome),
+            _READING_REF,
+            "act_0000000000000001",
+        )
+
+
+def test_a_completed_reading_is_not_refused_by_that_guard():
+    """Invariant #14: the refusal must not have been bought by refusing good input.
+
+    A `read` outcome passes the completed-class check — it fails later, on the
+    parts of the boundary this test does not supply, which is what proves the
+    guard above is the thing being exercised rather than some earlier refusal.
+    """
+    with pytest.raises(Exception) as caught:
+        archetypus.accepted_primed_perlectio(
+            None,
+            _accepted_review(),
+            _perlectio("read"),
+            _READING_REF,
+            "act_0000000000000001",
+        )
+    assert "may only come" not in str(caught.value)
