@@ -286,8 +286,18 @@ def _means_absent(error: BaseException) -> bool:
     response = getattr(error, "response", None)
     if not isinstance(response, Mapping):
         return False
-    code = str((response.get("Error") or {}).get("Code", ""))
-    status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    # Each nested value checked for being a mapping, not merely truthy. `or {}`
+    # substitutes for `None` and for anything falsey, and passes a *string* or a
+    # list straight through to `.get`, which raises `AttributeError` — out of the
+    # one function whose whole job is to classify an exception. A classifier that
+    # raises while classifying fails in the direction this docstring says it must
+    # not: the caller never reaches its fail-closed answer at all. The response
+    # comes from a remote server, so its shape is not ours to assume.
+    # Found by CodeRabbit.
+    error_detail = response.get("Error")
+    metadata = response.get("ResponseMetadata")
+    code = str((error_detail if isinstance(error_detail, Mapping) else {}).get("Code", ""))
+    status = (metadata if isinstance(metadata, Mapping) else {}).get("HTTPStatusCode")
     # A bare 404 is the shape botocore uses for HeadObject. If a server supplies
     # a contradictory named error (for example AccessDenied with a 404 status),
     # preserve the failure instead of treating it as permission to overwrite.

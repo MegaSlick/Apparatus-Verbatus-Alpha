@@ -84,9 +84,22 @@ def sha256_file(path: Path) -> str:
 
 
 def _bounded_bytes(path: Path, subject: str) -> bytes:
-    """Read a whole record, or refuse a file too large to be one of ours."""
+    """Read a whole record, or refuse a file too large to be one of ours.
 
-    with path.open("rb") as handle:
+    Opened the same way `sha256_file` above opens one, and for the reason its
+    docstring already gives: non-blocking, and refused unless the *open
+    descriptor* says it is a regular file rather than the name, which can change
+    between the check and the open. A FIFO left at a path a receipt records
+    blocks on the open itself, and `status` hangs forever having printed nothing.
+
+    That protection was written once and applied to one of the two readers. This
+    is the other one. Found by CodeRabbit.
+    """
+
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError(errno.EINVAL, "a record needs a regular file", str(path))
         data = handle.read(MAX_RECORD_BYTES + 1)
     if len(data) > MAX_RECORD_BYTES:
         raise RecordError(f"{subject} is larger than {MAX_RECORD_BYTES} bytes and was not read")

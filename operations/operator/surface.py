@@ -735,7 +735,14 @@ class OperatorSurface:
                 f"{expected} act(s) accounted for.",
             )
             return RunOutcome(state, run_root, run_id, aggregate, export_payload)
-        reasons = aggregate.get("reasons", [])
+        # A list, or none at all. `aggregate` is read from an artifact on disk, so
+        # `reasons` is externally supplied: a string there would iterate character
+        # by character and present one "Hold reason:" line per letter, and a
+        # mapping would present its keys. Either turns a decision notification —
+        # the one that reaches his phone — into nonsense at exactly the moment a
+        # person is being asked to decide something. Found by CodeRabbit.
+        reasons = aggregate.get("reasons")
+        reasons = reasons if isinstance(reasons, list) else []
         self.present("Run is held. It was not called complete.")
         for reason in reasons:
             self.present(f"Hold reason: {reason}")
