@@ -54,22 +54,33 @@ class ServingSmokeReader:
         *,
         calibration_for: CalibrationFor | None = None,
         placement_table: PlacementTable | None = None,
+        gpu_profile: GpuProfile | None = None,
     ) -> None:
         self.manager = manager
         self.smoke_call = smoke_call
         self.calibration_for = calibration_for
         self.placement_table = placement_table
+        # `operations.pod.preflight.SmokeReader.read` does not carry the measured
+        # profile as of spec 04's landed shape, so it travels bound to the reader
+        # instead of per call. `assemble_serving_preflight_callback` sets this the
+        # moment its own probe measures one, right before `PreflightRunner.run`.
+        self.gpu_profile = gpu_profile
 
     def read(
         self,
         identity: ChairIdentity,
         fixture: Path,
         placement: PlacementTier,
-        gpu_profile: GpuProfile,
     ) -> SmokeResult:
         """Start → prove → smoke → stop one named chair for this measured tier."""
 
+        gpu_profile = self.gpu_profile
         if self.placement_table is not None:
+            if gpu_profile is None:
+                raise ServingConfigurationError(
+                    "serving smoke reader has a run-sealed placement table but no bound "
+                    "measured GPU profile to check the smoke placement against"
+                )
             try:
                 sealed_placement = self.placement_table.choose(gpu_profile.vram_gib)
             except PlacementRefusal as error:
@@ -87,7 +98,7 @@ class ServingSmokeReader:
             # will actually launch. A fixture row carries no flags to check and
             # is refused by name inside `manager.start` below, through the
             # registry's own no-substitution door.
-            if serving_profile.dtype != gpu_profile.dtype:
+            if gpu_profile is not None and serving_profile.dtype != gpu_profile.dtype:
                 raise ServingConfigurationError(
                     "serving profile dtype "
                     f"{serving_profile.dtype!r} differs from preflight's measured dtype "

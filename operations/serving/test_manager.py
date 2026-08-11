@@ -1967,8 +1967,9 @@ def test_pod_assembly_factory_builds_the_lifecycle_smoke_reader_without_effects(
         detector_device="cpu",
         recipe=PlacementRecipe("0.99", 9999, 9999, 99),
     )
+    reader.gpu_profile = measured_gpu()
     with pytest.raises(ServingConfigurationError, match="run-sealed placement table"):
-        reader.read(chair, tmp_path / "unused.png", forged_placement, measured_gpu())
+        reader.read(chair, tmp_path / "unused.png", forged_placement)
     assert launcher.calls == []
     assert http.calls == []
 
@@ -2535,8 +2536,8 @@ def test_serving_smoke_reader_uses_the_owned_service_and_always_stops(tmp_path: 
             utilization=(UtilizationSample("71", "31"),),
         )
 
-    reader = ServingSmokeReader(manager, smoke)
-    result = reader.read(chair, fixture, placement, measured_gpu())
+    reader = ServingSmokeReader(manager, smoke, gpu_profile=measured_gpu())
+    result = reader.read(chair, fixture, placement)
     assert seen == ["answer:reader-api"]
     assert result.receipt["service_receipt"]["chair"] == "reader"  # type: ignore[index]
     assert result.receipt["receipt_reference"] == {
@@ -2587,12 +2588,13 @@ def test_serving_smoke_reader_refuses_a_nominally_green_result_without_service_r
     reader = ServingSmokeReader(
         manager,
         lambda *args: SmokeResult(True, True, True, {"claimed": "green"}, ()),
+        gpu_profile=measured_gpu(),
     )
 
     with pytest.raises(
         ServingConfigurationError, match="without a final completed fixture-bound request"
     ):
-        reader.read(chair, fixture, placement, measured_gpu())
+        reader.read(chair, fixture, placement)
     assert launcher.processes[0].terminate_calls == 1
 
 
@@ -2630,7 +2632,9 @@ def test_serving_smoke_reader_refuses_a_text_only_request_as_golden_page_evidenc
     with pytest.raises(
         ServingConfigurationError, match="without a final completed fixture-bound request"
     ):
-        ServingSmokeReader(manager, text_only).read(chair, fixture, placement, measured_gpu())
+        ServingSmokeReader(manager, text_only, gpu_profile=measured_gpu()).read(
+            chair, fixture, placement
+        )
     assert launcher.processes[0].terminate_calls == 1
 
 
@@ -2802,8 +2806,8 @@ def test_serving_smoke_reader_refuses_green_result_after_a_later_text_request(
     with pytest.raises(
         ServingConfigurationError, match="without a final completed fixture-bound request"
     ):
-        ServingSmokeReader(manager, discarded_fixture_response).read(
-            chair, fixture, placement, measured_gpu()
+        ServingSmokeReader(manager, discarded_fixture_response, gpu_profile=measured_gpu()).read(
+            chair, fixture, placement
         )
     assert launcher.processes[0].terminate_calls == 1
 
@@ -2838,8 +2842,8 @@ def test_serving_smoke_reader_requires_the_exact_fixture_response_token(tmp_path
         return SmokeResult(True, True, True, {"fixture_response_sha256": "0" * 64}, ())
 
     with pytest.raises(ServingConfigurationError, match="does not name the exact fixture response"):
-        ServingSmokeReader(manager, wrong_response_token).read(
-            chair, fixture, placement, measured_gpu()
+        ServingSmokeReader(manager, wrong_response_token, gpu_profile=measured_gpu()).read(
+            chair, fixture, placement
         )
     assert launcher.processes[0].terminate_calls == 1
 
@@ -2881,9 +2885,10 @@ def test_smoke_reader_refuses_image_calibration_when_local_fixture_bytes_drift(
         manager,
         lambda *args: pytest.fail("a drifted calibration must not launch"),
         calibration_for=lambda supplied_identity, supplied_fixture: calibration,
+        gpu_profile=measured_gpu(),
     )
     with pytest.raises(AdapterActivityError, match="does not match the local golden-page"):
-        reader.read(adapter, fixture, placement, measured_gpu())
+        reader.read(adapter, fixture, placement)
     assert launcher.calls == []
 
 
@@ -2910,11 +2915,13 @@ def test_smoke_reader_refuses_a_profile_dtype_not_assessed_by_preflight(tmp_path
     fixture = tmp_path / "golden-page.png"
     fixture.write_bytes(b"fixture page")
     reader = ServingSmokeReader(
-        manager, lambda *args: pytest.fail("dtype mismatch must not launch")
+        manager,
+        lambda *args: pytest.fail("dtype mismatch must not launch"),
+        gpu_profile=measured_gpu("float16"),
     )
 
     with pytest.raises(ServingConfigurationError, match="differs from preflight's measured dtype"):
-        reader.read(chair, fixture, placement, measured_gpu("float16"))
+        reader.read(chair, fixture, placement)
     assert launcher.calls == []
 
 
@@ -2954,10 +2961,12 @@ def test_smoke_reader_refuses_profile_capacity_above_measured_placement(
     )
     fixture = tmp_path / "golden-page.png"
     fixture.write_bytes(b"fixture page")
-    reader = ServingSmokeReader(manager, lambda *args: pytest.fail("overage must not launch"))
+    reader = ServingSmokeReader(
+        manager, lambda *args: pytest.fail("overage must not launch"), gpu_profile=measured_gpu()
+    )
 
     with pytest.raises(ServingConfigurationError, match="exceeds measured placement limits"):
-        reader.read(chair, fixture, placement, measured_gpu())
+        reader.read(chair, fixture, placement)
     assert launcher.calls == []
 
 
@@ -2998,10 +3007,12 @@ def test_the_placement_pixel_cap_is_a_longest_edge_and_max_pixels_is_a_count(
         profiles=(within,),
         model_ids=("reader-api",),
     )
-    reader = ServingSmokeReader(manager, lambda *args: pytest.fail("stop before the launch"))
+    reader = ServingSmokeReader(
+        manager, lambda *args: pytest.fail("stop before the launch"), gpu_profile=measured_gpu()
+    )
     # It gets past the capacity check and into the lifecycle, which is the point.
     with pytest.raises(BaseException) as refused:
-        reader.read(chair, fixture, placement, measured_gpu())
+        reader.read(chair, fixture, placement)
     assert "exceeds measured placement limits" not in str(refused.value)
 
     manager, _, _, launcher, _, _ = manager_for(
@@ -3010,9 +3021,11 @@ def test_the_placement_pixel_cap_is_a_longest_edge_and_max_pixels_is_a_count(
         profiles=(over,),
         model_ids=("reader-api",),
     )
-    reader = ServingSmokeReader(manager, lambda *args: pytest.fail("overage must not launch"))
+    reader = ServingSmokeReader(
+        manager, lambda *args: pytest.fail("overage must not launch"), gpu_profile=measured_gpu()
+    )
     with pytest.raises(ServingConfigurationError, match="max_pixels"):
-        reader.read(chair, fixture, placement, measured_gpu())
+        reader.read(chair, fixture, placement)
     assert launcher.calls == []
 
 

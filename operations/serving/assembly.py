@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
+from common.contracts.canonical import digest_bytes
 from operations.pod.preflight import (
     ChairCacheVerifier,
     GpuProfile,
@@ -157,7 +158,13 @@ def assemble_serving_preflight_callback(
     def run_preflight() -> dict[str, object]:
         prepared_log_root = _prepare_log_root(log_root)
         probe = gpu_probe or SystemGpuProbe(disk_path=prepared_log_root)
-        return runner.run(probe.profile(dtype)).to_record()
+        profile = probe.profile(dtype)
+        # `operations.pod.preflight.SmokeReader.read` carries no profile parameter
+        # in spec 04's landed shape, so the reader holds the measured profile
+        # itself; bind it the moment it exists, immediately before the one run
+        # that will read it.
+        reader.gpu_profile = profile
+        return runner.run(profile).to_record()
 
     return run_preflight
 
@@ -173,9 +180,14 @@ def _load_bound_configuration(
     expected = ServingConfigInputs.from_record(sealed_config_inputs)
     recipes = load_serving_recipes(recipes_path)
     placement = load_placement_table(placement_path)
+    # `PlacementTable` carries no `source_sha256` in spec 04's landed shape (it
+    # parses the table without keeping the bytes it came from), so this reads
+    # the same file a second time rather than the placement loader's own already
+    # consumed handle.
+    placement_sha256 = digest_bytes(Path(placement_path).read_bytes())
     expected.require_loaded(
         recipes_sha256=recipes.source_sha256,
-        placement_sha256=placement.source_sha256,
+        placement_sha256=placement_sha256,
     )
     return recipes, placement, expected
 
