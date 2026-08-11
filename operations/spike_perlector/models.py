@@ -7,10 +7,11 @@ public history finding; ``redaction.py`` is the only public projection boundary.
 from __future__ import annotations
 
 import math
-import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
+
+from uniseg.graphemecluster import GCB, grapheme_cluster_break
 
 from .encoding import canonical_json_bytes, is_sha256, sha256_bytes
 from .errors import MatrixRefusal, MeasurementRefusal
@@ -74,7 +75,10 @@ class ReferenceStatus(StrEnum):
 # combining marks segments in 5.9s and 8,000 in 23.5s, so MAX_TEXT_LENGTH alone
 # would let 20 KB of vendor output cost minutes of CPU per scored cell. Real
 # diplomatic transcription never stacks more than a handful of marks on one
-# character; polytonic Greek reaches three.
+# character; polytonic Greek reaches three. The property table must be the same
+# pinned Unicode-16 table that performs segmentation: Python 3.13 and 3.14 ship
+# different ``unicodedata`` versions and otherwise disagree about newly assigned
+# combining marks such as U+0897.
 MAX_COMBINING_RUN = 30
 
 
@@ -98,7 +102,7 @@ def require_measurable_text(value: str, field: str) -> None:
         ) from error
     run = 0
     for character in value:
-        if unicodedata.category(character).startswith("M"):
+        if grapheme_cluster_break(character) in (GCB.EXTEND, GCB.PACINGMARK):
             run += 1
             if run > MAX_COMBINING_RUN:
                 raise MeasurementRefusal(

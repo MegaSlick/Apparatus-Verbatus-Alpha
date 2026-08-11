@@ -171,6 +171,21 @@ def test_a_stack_of_combining_marks_is_bounded_where_segmentation_is_quadratic()
         response("a" + "́" * (models.MAX_COMBINING_RUN + 1))
 
 
+def test_combining_mark_bound_uses_the_pinned_unicode_table_across_python_versions():
+    """U+0897 is a Unicode-16 combining mark but unassigned in Python 3.13's UCD."""
+
+    with pytest.raises(MeasurementRefusal, match="combining marks"):
+        CandidateResponse(
+            status=OutputStatus.COMPLETE,
+            text="a" + chr(0x0897) * (models.MAX_COMBINING_RUN + 1),
+            elapsed_ms=None,
+            cost_usd=None,
+            observed_prompt_sha256=digest("prompt"),
+            observed_dossier_sha256=digest("dossier"),
+            observed_delivery_sha256=digest("delivery"),
+        )
+
+
 def test_dossier_refuses_a_condition_that_is_not_a_condition():
     """Condition is a StrEnum, so a plain matching string passes an `in` check
 
@@ -307,6 +322,6 @@ def test_a_perlectio_testimonia_count_must_be_a_count_before_it_is_read_as_a_fla
 
 
 def test_a_real_testimonia_count_is_still_accepted():
-    """Invariant #14, the other direction."""
+    """Invariant #14: a valid count is retained unchanged, not only accepted."""
 
-    _witness_primed_perlectio(testimonia_count=3)
+    assert _witness_primed_perlectio(testimonia_count=3).testimonia_count == 3
