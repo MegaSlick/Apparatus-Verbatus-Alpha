@@ -450,7 +450,9 @@ def test_an_out_of_page_secondary_candidate_is_refused_as_a_contract_error(tmp_p
         return [{"bounds": {"x": width - 1, "y": height - 1, "w": 5, "h": 5}, "pixel_count": 25}]
 
     monkeypatch.setattr(designator.structure, "secondary_scan", out_of_page_candidate)
-    with pytest.raises(ContractError):
+    with pytest.raises(
+        ContractError, match=r"secondary candidate bounds .* falls outside its 200x260 pixel space"
+    ):
         designator.initial_pass(context)
 
 

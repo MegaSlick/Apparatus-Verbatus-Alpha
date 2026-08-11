@@ -91,17 +91,37 @@ def test_two_declared_failures_for_one_page_refuse_rather_than_pick_one():
 
 
 @pytest.mark.parametrize(
-    "row",
+    ("row", "refusal"),
     [
-        {"scenario": "s", "page_ordinal": 1},
-        {"scenario": "s", "page_ordinal": 1, "reason_code": "why", "extra": 1},
-        {"scenario": "s", "page_ordinal": "1", "reason_code": "why"},
-        {"scenario": "s", "page_ordinal": 1, "reason_code": ""},
+        # Four malformed rows, three different refusals. Unpinned, this test
+        # passed if *any* of them fired for *any* row -- so the closed-contract
+        # check and the page-ordinal check could have swapped places, or one
+        # could have stopped firing entirely, without the test noticing.
+        (
+            # A *missing* `reason_code` trips the closed-contract check, not the
+            # reason-code check: the contract is a key set, and an absent key
+            # makes the set differ just as a surplus one does. Pinning these
+            # caught me assuming the opposite.
+            {"scenario": "s", "page_ordinal": 1},
+            r"a declared structure failure has fields outside its closed contract",
+        ),
+        (
+            {"scenario": "s", "page_ordinal": 1, "reason_code": "why", "extra": 1},
+            r"a declared structure failure has fields outside its closed contract",
+        ),
+        (
+            {"scenario": "s", "page_ordinal": "1", "reason_code": "why"},
+            r"a declared structure failure names no integer page ordinal",
+        ),
+        (
+            {"scenario": "s", "page_ordinal": 1, "reason_code": ""},
+            r"a declared structure failure names no reason code",
+        ),
     ],
 )
-def test_a_malformed_declared_failure_is_refused(row):
+def test_a_malformed_declared_failure_is_refused(row, refusal):
     designator = _load_designator()
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=refusal):
         designator.structure_failures(_Context({"structure_failure": [row]}, "s"), {1: {}})
 
 

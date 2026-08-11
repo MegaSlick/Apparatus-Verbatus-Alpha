@@ -83,12 +83,16 @@ def test_padding_clamps_on_one_edge_only_when_only_one_edge_is_tight():
     ],
 )
 def test_padding_refuses_degenerate_or_out_of_page_bounds(bounds, page_w, page_h):
-    with pytest.raises(ContractError):
+    with pytest.raises(
+        ContractError, match=r"structural bounds .* falls outside its 100x100 pixel space"
+    ):
         apply_padding(bounds, page_w, page_h, PADDING)
 
 
 def test_padding_refuses_a_non_positive_page():
-    with pytest.raises(ContractError):
+    with pytest.raises(
+        ContractError, match=r"page 0x100 does not have positive integer dimensions"
+    ):
         apply_padding({"x": 0, "y": 0, "w": 10, "h": 10}, 0, 100, PADDING)
 
 
@@ -196,16 +200,29 @@ def test_from_model_space_refuses_another_pages_scale_even_when_the_rectangle_wo
 
 
 @pytest.mark.parametrize(
-    "bounds",
+    ("bounds", "refusal"),
     [
-        {"x": -1, "y": 0, "w": 2, "h": 2},
-        {"x": 0, "y": 0, "w": 0, "h": 2},
-        {"x": 99, "y": 0, "w": 2, "h": 2},
-        {"x": 0, "y": 0, "w": True, "h": 2},
+        # Three of these leave the page; the fourth is a *different* refusal
+        # entirely -- `True` is an `int` in Python, so a bare
+        # `pytest.raises(ContractError)` here passed on the geometry check and on
+        # the type check alike and could not tell which one it had exercised.
+        (
+            {"x": -1, "y": 0, "w": 2, "h": 2},
+            r"source bounds .* falls outside its 100x100 pixel space",
+        ),
+        (
+            {"x": 0, "y": 0, "w": 0, "h": 2},
+            r"source bounds .* falls outside its 100x100 pixel space",
+        ),
+        (
+            {"x": 99, "y": 0, "w": 2, "h": 2},
+            r"source bounds .* falls outside its 100x100 pixel space",
+        ),
+        ({"x": 0, "y": 0, "w": True, "h": 2}, r"source bounds has a non-integer coordinate"),
     ],
 )
-def test_to_model_space_refuses_invalid_source_rectangles(bounds):
-    with pytest.raises(ContractError):
+def test_to_model_space_refuses_invalid_source_rectangles(bounds, refusal):
+    with pytest.raises(ContractError, match=refusal):
         to_model_space(bounds, 100, 100, 50, 50)
 
 
@@ -219,13 +236,25 @@ def test_from_model_space_refuses_a_rectangle_outside_the_recorded_model_space()
 
 
 def test_from_model_space_refuses_a_malformed_scale():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"scale\.x .* is not a positive integer ratio"):
         from_model_space({"x": 0, "y": 0, "w": 10, "h": 10}, {"x": {}, "y": {}}, 100, 100)
 
 
-@pytest.mark.parametrize("page", [(True, 100), (100, 1.5), ("100", 100)])
-def test_model_space_conversion_refuses_non_integer_dimensions(page):
-    with pytest.raises(ContractError):
+@pytest.mark.parametrize(
+    ("page", "refusal"),
+    [
+        # Each case must name the dimension it refused. `("100", 100)` is worth
+        # reading twice: a string page width renders into the message as a bare
+        # `100`, so its refusal reads "page 100x100 does not have positive
+        # integer dimensions" -- correct, and indistinguishable from a valid page
+        # by eye. That is precisely why the expectation is pinned per case.
+        ((True, 100), r"page Truex100 does not have positive integer dimensions"),
+        ((100, 1.5), r"page 100x1\.5 does not have positive integer dimensions"),
+        (("100", 100), r"page 100x100 does not have positive integer dimensions"),
+    ],
+)
+def test_model_space_conversion_refuses_non_integer_dimensions(page, refusal):
+    with pytest.raises(ContractError, match=refusal):
         to_model_space({"x": 0, "y": 0, "w": 1, "h": 1}, page[0], page[1], 50, 50)
 
 
@@ -339,14 +368,14 @@ def test_load_padding_config_reads_the_shipped_defaults():
 
 
 def test_load_padding_config_refuses_a_missing_file(tmp_path):
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"the padding configuration at .* could not be read"):
         load_padding_config(tmp_path / "does-not-exist.toml")
 
 
 def test_load_padding_config_refuses_a_missing_table(tmp_path):
     path = tmp_path / "padding.toml"
     path.write_text("not_padding = 1\n", encoding="utf-8")
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"the padding configuration has no \[padding\] table"):
         load_padding_config(path)
 
 

@@ -218,7 +218,7 @@ def test_a_fainter_margin_finds_more_residual_than_the_primary_default():
 
 
 def test_refuses_a_negative_review_priority_threshold():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"review priority threshold -1 is negative"):
         reconcile(
             10,
             10,
@@ -230,7 +230,7 @@ def test_refuses_a_negative_review_priority_threshold():
 
 
 def test_refuses_a_non_positive_claimed_rectangle():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"claimed bounds .* are not a positive rectangle"):
         reconcile(
             10,
             10,

@@ -56,7 +56,9 @@ def test_shortfall_bp_is_round_half_up_integer_arithmetic_not_bankers_rounding()
 
 
 def test_a_non_positive_detected_dimension_is_refused():
-    with pytest.raises(ContractError):
+    with pytest.raises(
+        ContractError, match=r"a detected rectangle .* has no positive area to divide by"
+    ):
         _edge_shortfall_bp(
             {"x": 0, "y": 0, "w": 0, "h": 10}, {"x": 0, "y": 0, "w": 1, "h": 1}, "left"
         )
@@ -81,13 +83,13 @@ def test_p50_of_a_single_value_is_that_value():
 
 
 def test_percentile_of_empty_sample_is_refused():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"cannot take a percentile of zero samples"):
         _nearest_rank_percentile([], 75)
 
 
 @pytest.mark.parametrize("percentile", [0, 101, -5])
 def test_percentile_outside_valid_range_is_refused(percentile):
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"percentile -?\d+ is not in"):
         _nearest_rank_percentile([1, 2, 3], percentile)
 
 
@@ -114,7 +116,7 @@ def test_at_or_above_preferred_names_no_shortfall():
 
 
 def test_calibrate_padding_refuses_zero_samples():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"cannot calibrate padding from zero gold samples"):
         calibrate_padding([], corpus="test", sample_unit="test-record")
 
 

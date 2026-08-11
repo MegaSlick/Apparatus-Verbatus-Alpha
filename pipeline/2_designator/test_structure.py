@@ -233,7 +233,7 @@ def test_infer_background_works_for_a_non_default_paper_colour():
 
 
 def test_infer_background_refuses_a_mismatched_scanline_shape():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"expected 3 scanlines, got 2"):
         infer_background(10, 3, blank_rows(10, 2))
 
 
@@ -242,34 +242,34 @@ def test_infer_background_refuses_a_mismatched_scanline_shape():
 
 @pytest.mark.parametrize("width,height", [(0, 10), (10, 0), (-1, 10)])
 def test_refuses_non_positive_dimensions(width, height):
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"a -?\d+x\d+ page has no pixels to scan"):
         scan_ink_components(width, height, [], background=BACKGROUND, margin=PRIMARY_MARGIN)
 
 
 def test_refuses_a_scanline_count_that_does_not_match_height():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"expected 5 scanlines, got 3"):
         scan_ink_components(10, 5, blank_rows(10, 3), background=BACKGROUND, margin=PRIMARY_MARGIN)
 
 
 def test_refuses_a_scanline_whose_width_does_not_match():
     rows = blank_rows(10, 3)
     rows[1] = bytearray([BACKGROUND] * 5)
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"scanline 1 has width 5, expected 10"):
         scan_ink_components(10, 3, rows, background=BACKGROUND, margin=PRIMARY_MARGIN)
 
 
 def test_refuses_a_background_outside_the_8_bit_range():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"background value 300 is not an 8-bit sample"):
         scan_ink_components(5, 5, blank_rows(5, 5), background=300, margin=PRIMARY_MARGIN)
 
 
 def test_refuses_a_negative_margin():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"sensitivity margin -1 is negative"):
         scan_ink_components(5, 5, blank_rows(5, 5), background=BACKGROUND, margin=-1)
 
 
 def test_refuses_a_negative_gap_tolerance():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"gap tolerance -1 is negative"):
         scan_ink_components(
             5,
             5,

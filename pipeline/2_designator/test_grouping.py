@@ -54,12 +54,12 @@ def test_assign_columns_splits_by_centre_x():
 
 
 def test_assign_columns_refuses_a_non_positive_page_width():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"page width 0 is not positive"):
         assign_columns([], 0)
 
 
 def test_assign_columns_refuses_a_margin_fraction_outside_zero_one():
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"margin fraction 1\.0 is not between 0 and 1"):
         assign_columns([], PAGE_W, margin_fraction=1.0)
 
 
@@ -346,5 +346,5 @@ def test_no_continuation_when_either_page_marked_out_nothing():
 
 @pytest.mark.parametrize("page_w,page_h", [(0, 100), (100, 0), (-1, 100)])
 def test_group_page_refuses_a_non_positive_page(page_w, page_h):
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError, match=r"a -?\d+x\d+ page has no area to group within"):
         group_page([component(0, 0, 5, 5)], page_w, page_h)
