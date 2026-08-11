@@ -300,7 +300,15 @@ authenticated() {
     mount_asked=$(auth_dir "$vendor_asked") || return 2
     check_asked=$(auth_check "$vendor_asked") || return 2
     has_volume "$volume_asked" || return 1
-    answer=$(docker run --rm --volume "${volume_asked}:${mount_asked}" "$IMAGE" \
+    # `CLAUDE_CONFIG_DIR` belongs here too, and its absence was the sharpest gap in the
+    # first cut of this fix: `cmd_login` calls this function *to verify the sign-in that
+    # just completed*, and `require_signed_in` calls it on every `new`. Without the
+    # variable this throwaway container holds the credential with no configuration beside
+    # it — the exact condition the header above names as fatal. If `claude auth status`
+    # ever refreshes a near-expiry token, the check verifying a sign-in would be the thing
+    # that destroyed it, and the symptom would once again look like an expiry.
+    answer=$(docker run --rm --volume "${volume_asked}:${mount_asked}" \
+        --env "CLAUDE_CONFIG_DIR=${mount_asked}" "$IMAGE" \
         sh -c "${check_asked} >/dev/null 2>&1; printf 'ac-auth:%s' \$?" 2>/dev/null) || return 2
     case "$answer" in
         ac-auth:0) return 0 ;;
@@ -394,22 +402,33 @@ cmd_login() {
     # `.credentials.json` into the volume and `.claude.json` into a container marked
     # `--rm`, so the half the refresh needs was thrown away the moment the sign-in
     # succeeded. Wrapping the CLI keeps both halves. See `HOME_CONFIG_KEPT` above.
+    # `CLAUDE_CONFIG_DIR` points the CLI's whole configuration at the mounted volume,
+    # so the booth's `--rm` can no longer throw away the half a refresh needs. See the
+    # dispatch path for the probe that established this.
     case "$vendor" in
-        claude) login_cmd=$(wrap_home_config "$tool") ;;
-        *) login_cmd="$tool" ;;
+        claude)
+            login_cmd="$tool"
+            login_env="--env CLAUDE_CONFIG_DIR=${mount}" ;;
+        *)
+            login_cmd="$tool"
+            login_env="" ;;
     esac
 
     login_status=0
     if [ -t 0 ]; then
+        # shellcheck disable=SC2086
         docker run --rm --interactive --tty \
             --volume "${volume}:${mount}" \
+            $login_env \
             "$IMAGE" \
             sh -c "$login_cmd" || login_status=$?
     else
         note "(no terminal here — running without one; follow the URL or code below)"
         note ""
+        # shellcheck disable=SC2086
         docker run --rm --interactive \
             --volume "${volume}:${mount}" \
+            $login_env \
             "$IMAGE" \
             sh -c "$login_cmd" || login_status=$?
     fi
@@ -804,6 +823,7 @@ cmd_new() {
         --volume "${outdir}:/out" \
         --volume "${specs_stage}:/specs" \
         $auth_mounts $window_mount $window_masks \
+        --env "CLAUDE_CONFIG_DIR=${AUTH_DIR_CLAUDE}" \
         --workdir /work \
         "$IMAGE" \
         sleep infinity >/dev/null || {
@@ -892,6 +912,19 @@ AUTOCLAVE_SETUP
     # `settings.local.json` takes precedence and is gitignored, so the tracked tree
     # stays clean and `collect` still sees an untouched checkout.
     docker exec "$(container_of "$task")" sh -c '
+        # Without `set -eu` this body ends on the copy at the bottom, so a failed trust
+        # update is masked by a copy that then succeeds: the chamber comes up with no
+        # trust flag, the CLI blocks on a dialog nobody is there to answer, and the die
+        # at the end of this command never fires. The block at AUTOCLAVE_SETUP has had
+        # this line since it was written; this one never did, and the locked trust
+        # update below has just added a new way to fail — a held lock. Found by
+        # CodeRabbit on PR 22.
+        #
+        # Nothing here is expected to fail. The one guarded failure, the copy below,
+        # already ends in `false` deliberately, and the only variable in this block is
+        # read as "${ac_tmp:-}" so `set -u` has nothing to catch.
+        set -eu
+
         printf "%s\n" \
             "{" \
             "  \"env\": {" \
@@ -925,15 +958,84 @@ AUTOCLAVE_SETUP
             cat /home/agent/.claude/home-config.json > /home/agent/.claude.json
         fi
         [ -f /home/agent/.claude.json ] || printf "%s\n" "{}" > /home/agent/.claude.json
+        # The trust flag goes where `CLAUDE_CONFIG_DIR` makes the CLI actually look —
+        # inside the mounted directory. Written to the path beside it, as it was, the
+        # flag is set in a file nothing reads and the trust dialog blocks a detached
+        # chamber with no one there to answer it.
+        # **Published by temp-then-rename, because this file is now shared and live.**
+        # `/home/agent/.claude` is the credential volume every Claude chamber mounts, and
+        # `CLAUDE_CONFIG_DIR` has just made `.claude.json` the configuration the CLI
+        # refreshes against rather than a throwaway. A plain read-modify-write here races
+        # two ways: a refresh from a concurrent chamber landing between the read and the
+        # write is discarded, and a reader can see a truncated file. The doctrine at the
+        # top of this file says exactly that about this volume, and the first cut of this
+        # fix broke it on the one file it had just made load-bearing.
+        #
+        # No apostrophe may appear in this block, as the warning above it says. The first
+        # cut of this comment used one and silently swallowed every function defined after
+        # it — the same failure that warning was written about, in the block it guards.
+        # Guarded on the directory existing rather than creating it, the same way the
+        # save below is. A chamber built without a vendor — the default, and most of
+        # them — has no mounted directory here, and there is no trust flag worth writing
+        # into a path the CLI will never read.
+        #
+        # **Locked, and written only when the flag is actually missing.** Temp-then-rename
+        # stopped the torn read. It did nothing about the lost update, which is the harder
+        # half of the same finding. Two writers can still race on this file: another
+        # chamber running this same block, and the Claude CLI in any running chamber
+        # refreshing the file for real.
+        #
+        # `flock` closes the first of those completely — the read, the edit and the rename
+        # all happen while the lock is held, and this block is the only read-modify-write
+        # this script performs on that file. The seed and save beside it publish a
+        # *different* file, whole, by rename, so there is nothing there to serialise with.
+        #
+        # It cannot close the second, and nothing in this tree can: the CLI takes no lock
+        # we can name, so a refresh landing between our read and our rename is still
+        # discarded. What shrinks that window is the other half of this change. The flag
+        # is per project, the project path is the same in every chamber, and the file
+        # lives on the volume — so once it is true it stays true, and every later chamber
+        # reads it, sees it, and writes nothing at all. The exposure is one write per
+        # volume, at the moment that volume is newest and least likely to be in use by a
+        # running chamber. That is not zero and this comment does not claim it is.
+        #
+        # The wait is bounded and loud rather than indefinite. A chamber creation that
+        # hangs forever on a lock somebody wedged is worse than one that says why it
+        # stopped, and there is nobody in here to notice the difference.
         python3 - <<"PY"
-import json, pathlib
-p = pathlib.Path("/home/agent/.claude.json")
-try:
-    config = json.loads(p.read_text() or "{}")
-except ValueError:
-    config = {}
-config.setdefault("projects", {}).setdefault("/work", {})["hasTrustDialogAccepted"] = True
-p.write_text(json.dumps(config, indent=2))
+import fcntl, json, os, pathlib, tempfile, time
+d = pathlib.Path("/home/agent/.claude")
+if d.is_dir():
+    p = d / ".claude.json"
+    with open(d / ".claude.json.autoclave.lock", "a+") as guard:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("another chamber held the shared config lock for 30s")
+                time.sleep(0.05)
+        try:
+            config = json.loads(p.read_text() or "{}")
+        except (ValueError, OSError):
+            config = {}
+        work = config.setdefault("projects", {}).setdefault("/work", {})
+        if work.get("hasTrustDialogAccepted") is not True:
+            work["hasTrustDialogAccepted"] = True
+            # Temp-then-rename on the real shared filesystem, for the reason the shell
+            # helpers at the top of this file give: a container pid is not unique across
+            # chambers, and rename is atomic only within one filesystem.
+            fd, tmp = tempfile.mkstemp(dir=str(d), prefix=".claude.json.tmp.")
+            try:
+                with os.fdopen(fd, "w") as handle:
+                    handle.write(json.dumps(config, indent=2))
+                os.replace(tmp, p)
+            except BaseException:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+                raise
 PY
         # Only where the volume is actually mounted. A chamber created without a vendor
         # — the default, and most of them — has no mounted directory to keep it in, and
@@ -1136,9 +1238,20 @@ cmd_dispatch() {
     # and dispatched after one, so the configuration the CLI is about to refresh against
     # has to be the current one rather than whatever existed when the chamber was built.
     dispatch_status=0
+    # **Superseded by `CLAUDE_CONFIG_DIR`, and no longer allowed to be fatal.** The seed
+    # copies into `/home/agent/.claude.json`, which the CLI no longer reads: its
+    # configuration now lives inside the mount. So this copy protects nothing, and its
+    # old `die` — "dispatching without it is what silently blanks the sign-in" — would
+    # kill a whole dispatch over a file that has no bearing on the sign-in. The claim was
+    # true when it was written and is false now.
+    #
+    # It is left in place rather than deleted only because removing it also deletes two
+    # test classes, and a partial removal is worse than a clean one. **That removal is
+    # the named follow-up**, agreed with CodeRabbit and the pre-push review, both of
+    # which found this independently.
     if [ "$vendor" = claude ]; then
         docker exec "$(container_of "$task")" sh -c "$HOME_CONFIG_SEED" ||
-            die "the CLI configuration could not be seeded from the credential volume, and dispatching without it is what silently blanks the sign-in"
+            note "note: the superseded configuration copy failed; harmless under CLAUDE_CONFIG_DIR"
     fi
 
     case "$vendor" in
@@ -1175,8 +1288,24 @@ cmd_dispatch() {
             # chamber is already the bound on how long anything may run.
             #
             # Codex needs no counterpart: it streams and has no such ceiling.
+            # **`CLAUDE_CONFIG_DIR` is what actually fixes the two-file split**, and it
+            # replaces the copy-in/copy-out above rather than joining it. The CLI keeps
+            # `.claude.json`, `backups/`, `projects/` and `sessions/` inside this
+            # directory instead of beside it — probed on 2026-08-10 against CLI 2.1.226
+            # in this image, not taken from documentation. Pointed at the mounted volume,
+            # every file a refresh touches is persistent by construction, which is why
+            # Codex never had this bug: its whole configuration was already inside its
+            # own mount.
+            #
+            # Before this, the refresh had **never once succeeded** in the credential
+            # volume: `.credentials.json` still carried the mtime of the last manual
+            # sign-in, and `backups/.claude.json.backup.*` held 50-byte stubs — the CLI
+            # backing up the empty configuration it had just been handed. Seven sign-ins
+            # in a week, each dying at its first refresh, roughly eight hours in, while
+            # the refresh token itself stayed valid for weeks.
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
                 -e CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+                -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
                 "$(container_of "$task")" sh -c '
                 cd /work
                 claude --dangerously-skip-permissions \

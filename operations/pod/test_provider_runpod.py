@@ -1,0 +1,610 @@
+"""The RunPod REST v1 adapter is exercised through a fake transport only.
+
+Every payload below is built from the shapes RunPod's own documentation
+publishes for `rest.runpod.io/v1` (fetched 2026-08-09; the URLs are named in
+`provider_runpod.py`'s module docstring). No live call has been made, so these
+tests prove the adapter's *handling* of a documented shape, never that the
+provider actually answers that way — that is the first authorised live run's
+job, and this file does not pretend otherwise.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+import pytest
+
+from .models import (
+    BILLING_CUTOFF_MARGIN_ENV,
+    BillingState,
+    PodCreateRequest,
+    Presence,
+    ProviderFailure,
+)
+from .provider_runpod import (
+    _MAX_RESPONSE_BYTES,
+    HttpResponse,
+    RunPodProvider,
+    UrllibRunPodTransport,
+    _bounded_read,
+    timer_context_from_environment,
+)
+
+UTC = timezone.utc
+NOW = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
+TOKEN = "a" * 32
+
+
+class ScriptedTransport:
+    def __init__(self, responses: list[HttpResponse]) -> None:
+        self.responses = responses
+        self.calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def request(
+        self, method: str, path: str, body: dict[str, object] | None = None
+    ) -> HttpResponse:
+        self.calls.append((method, path, body))
+        return self.responses.pop(0)
+
+
+def request(**overrides: object) -> PodCreateRequest:
+    fields: dict[str, object] = {
+        "name": "safe-pod",
+        "gpu_type": "NVIDIA RTX 6000 Ada Generation",
+        "image": "registry.example/verbatus@sha256:" + "a" * 64,
+        "template": "template-immutable-reference",
+        "volume_id": "volume-1",
+        "volume_mount_path": "/workspace/private",
+        "docker_start_cmd": (
+            "python",
+            "-m",
+            "operations.pod.pod_timer",
+            "--timer-factory",
+            "operations.pod.provider_runpod:timer_context_from_environment",
+            "--bootstrap-command-json",
+            # PLACEHOLDER: bootstrap.py has no __main__ and exits 0 immediately.
+            # Not a template for a real request file -- see test_pod_runtime.py's
+            # request() fixture.
+            '["python","-m","operations.pod.bootstrap"]',
+            "--report-path",
+            f"/workspace/private/pod-runtime-report-{TOKEN}.json",
+        ),
+        "hard_deadline": NOW + timedelta(hours=1),
+        "repository_commit": "b" * 40,
+        "metadata": {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"},
+    }
+    fields.update(overrides)
+    return PodCreateRequest(**fields)  # type: ignore[arg-type]
+
+
+def provider(transport: ScriptedTransport) -> RunPodProvider:
+    return RunPodProvider(
+        transport,
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        now=lambda: NOW,
+    )
+
+
+def pod_payload(**overrides: object) -> dict[str, object]:
+    """One documented v1 Pod object, as POST/GET return it."""
+
+    payload: dict[str, object] = {
+        "id": "pod-1",
+        "name": "safe-pod",
+        "desiredStatus": "RUNNING",
+        "costPerHr": 0.77,
+        "interruptible": False,
+        "image": "registry.example/verbatus@sha256:" + "a" * 64,
+        "templateId": "template-immutable-reference",
+        "volumeMountPath": "/workspace/private",
+        "dockerStartCmd": list(request().docker_start_cmd),
+        "networkVolume": {"id": "volume-1"},
+        "machine": {"gpuTypeId": "NVIDIA RTX 6000 Ada Generation"},
+        "env": {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"},
+        "lastStartedAt": "2026-08-08T11:59:00Z",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def billing_row(**overrides: object) -> dict[str, object]:
+    """One documented v1 billing record: a bare-array row, no metadata envelope."""
+
+    row: dict[str, object] = {
+        "podId": "pod-1",
+        "amount": "1.23",
+        "time": "2026-08-08T12:00:00Z",
+        "timeBilledMs": 3_600_000,
+        "gpuTypeId": "NVIDIA RTX 6000 Ada Generation",
+        "diskSpaceBilledGb": 50,
+    }
+    row.update(overrides)
+    return row
+
+
+def json_response(value: object, status: int = 200) -> HttpResponse:
+    return HttpResponse(status, json.dumps(value).encode())
+
+
+# -- estimate and the price sheet -----------------------------------------
+
+
+def test_estimate_uses_explicit_price_resolvers_not_a_provider_page() -> None:
+    estimate = provider(ScriptedTransport([])).estimate(request())
+
+    assert estimate.pod_hourly_usd == Decimal("0.77")
+    assert estimate.volume_hourly_usd == Decimal("0.05")
+
+
+# -- create, and the launch token that keeps an ambiguous POST recoverable --
+
+
+def test_create_correlates_the_launch_token_before_it_posts() -> None:
+    transport = ScriptedTransport([json_response([]), json_response(pod_payload(), 201)])
+
+    record = provider(transport).create(request())
+
+    assert record.pod_id == "pod-1"
+    assert [(method, path) for method, path, _ in transport.calls] == [
+        ("GET", "/pods?includeMachine=true&includeNetworkVolume=true"),
+        ("POST", "/pods"),
+    ]
+    body = transport.calls[1][2]
+    assert body is not None
+    assert body["interruptible"] is False
+    assert body["networkVolumeId"] == "volume-1"
+    assert body["volumeMountPath"] == "/workspace/private"
+    assert body["gpuTypeIds"] == ["NVIDIA RTX 6000 Ada Generation"]
+    assert body["env"] == {"VERBATUS_LAUNCH_TOKEN": TOKEN, BILLING_CUTOFF_MARGIN_ENV: "3600"}
+
+
+def test_create_returns_the_existing_token_pod_without_posting_again() -> None:
+    transport = ScriptedTransport([json_response([pod_payload()])])
+
+    record = provider(transport).create(request())
+
+    assert record.pod_id == "pod-1"
+    assert [method for method, _, _ in transport.calls] == ["GET"]
+
+
+def test_recovery_only_create_never_posts_and_says_so_when_nothing_matched() -> None:
+    transport = ScriptedTransport([json_response([])])
+
+    with pytest.raises(ProviderFailure, match="no create request was issued"):
+        provider(transport).create(request().recovery_request())
+
+    assert [method for method, _, _ in transport.calls] == ["GET"]
+
+
+def test_a_name_match_whose_env_is_absent_refuses_rather_than_matching_on_name() -> None:
+    transport = ScriptedTransport([json_response([{"id": "pod-9", "name": "safe-pod"}])])
+
+    with pytest.raises(ProviderFailure, match="returned no env"):
+        provider(transport).create(request())
+
+    assert [method for method, _, _ in transport.calls] == ["GET"]
+
+
+def test_two_pods_carrying_one_launch_token_refuse_rather_than_choose() -> None:
+    transport = ScriptedTransport([json_response([pod_payload(), pod_payload(id="pod-2")])])
+
+    with pytest.raises(ProviderFailure, match="more than one pod carrying this exact launch token"):
+        provider(transport).create(request())
+
+
+def test_create_without_a_launch_token_refuses_before_any_request() -> None:
+    transport = ScriptedTransport([])
+
+    with pytest.raises(ProviderFailure, match="VERBATUS_LAUNCH_TOKEN"):
+        provider(transport).create(request(metadata={}))
+
+    assert transport.calls == []
+
+
+# -- the effective runtime contract the pod actually got -------------------
+
+
+def test_the_runtime_contract_reports_what_the_provider_says_it_created() -> None:
+    transport = ScriptedTransport([json_response([]), json_response(pod_payload(), 201)])
+
+    record = provider(transport).create(request())
+
+    assert record.runtime_contract is not None
+    assert record.runtime_contract.matches(request())
+
+
+def test_an_interruptible_pod_is_refused_rather_than_recorded() -> None:
+    transport = ScriptedTransport(
+        [json_response([]), json_response(pod_payload(interruptible=True), 201)]
+    )
+
+    with pytest.raises(ProviderFailure, match="silent-loss machine"):
+        provider(transport).create(request())
+
+
+def test_a_missing_interruptible_field_is_never_read_as_on_demand() -> None:
+    payload = pod_payload()
+    del payload["interruptible"]
+    transport = ScriptedTransport([json_response([]), json_response(payload, 201)])
+
+    with pytest.raises(ProviderFailure, match="on-demand cannot be assumed"):
+        provider(transport).create(request())
+
+
+def test_a_pod_with_no_attached_volume_is_refused() -> None:
+    payload = pod_payload()
+    del payload["networkVolume"]
+    transport = ScriptedTransport([json_response([]), json_response(payload, 201)])
+
+    with pytest.raises(ProviderFailure, match="no attached network volume"):
+        provider(transport).create(request())
+
+
+# -- adopt ----------------------------------------------------------------
+
+
+def test_adopt_reads_the_exact_pod_and_carries_its_runtime_contract() -> None:
+    transport = ScriptedTransport([json_response(pod_payload())])
+
+    record = provider(transport).adopt("pod-1")
+
+    assert record.pod_id == "pod-1"
+    assert record.runtime_contract is not None
+    assert record.estimate.pod_hourly_usd == Decimal("0.77")
+    assert [(method, path) for method, path, _ in transport.calls] == [
+        ("GET", "/pods/pod-1?includeMachine=true&includeNetworkVolume=true")
+    ]
+
+
+def test_adopting_an_absent_pod_refuses_rather_than_inventing_a_record() -> None:
+    transport = ScriptedTransport([HttpResponse(404, b"{}")])
+
+    with pytest.raises(ProviderFailure, match="reports it absent"):
+        provider(transport).adopt("pod-1")
+
+
+@pytest.mark.parametrize("desired_status", ["EXITED", "TERMINATED"])
+def test_adopting_a_non_running_pod_is_refused_with_its_status_named(desired_status: str) -> None:
+    """desiredStatus is validated then must actually gate adoption (audit-d Finding 13).
+
+    A pod that is EXITED or TERMINATED can still answer 200 on GET; walking it
+    through the full paid-gate would manufacture a lease and controller
+    receipt for a pod that will never run.
+    """
+
+    transport = ScriptedTransport([json_response(pod_payload(desiredStatus=desired_status))])
+
+    with pytest.raises(ProviderFailure, match=f"desiredStatus is {desired_status!r}, not RUNNING"):
+        provider(transport).adopt("pod-1")
+
+
+@pytest.mark.parametrize("pod_id", [".", "..", "pod\nheader", "pod/child", "pod?query"])
+def test_provider_refuses_unsafe_pod_ids_before_transport(pod_id: str) -> None:
+    transport = ScriptedTransport([])
+
+    with pytest.raises(ProviderFailure, match="unsafe for a path"):
+        provider(transport).adopt(pod_id)
+    assert transport.calls == []
+
+
+# -- status, list absence, terminate ---------------------------------------
+
+
+def test_status_list_absence_and_terminate_use_documented_v1_paths_and_shapes() -> None:
+    transport = ScriptedTransport(
+        [HttpResponse(404, b"{}"), json_response([{"id": "other-pod"}]), HttpResponse(204, b"")]
+    )
+    runpod = provider(transport)
+
+    status = runpod.status("pod-1")
+    listed = runpod.verify_absent("pod-1")
+    runpod.terminate("pod-1")
+
+    assert status.presence is Presence.ABSENT
+    assert status.http_status == 404
+    assert listed.presence is Presence.ABSENT
+    assert [(method, path) for method, path, _ in transport.calls] == [
+        ("GET", "/pods/pod-1"),
+        ("GET", "/pods?includeMachine=true&includeNetworkVolume=true"),
+        ("DELETE", "/pods/pod-1"),
+    ]
+
+
+def test_pod_timer_reuses_the_prearmed_launch_lease_identity() -> None:
+    context = timer_context_from_environment(
+        {
+            "RUNPOD_POD_ID": "pod-1",
+            "RUNPOD_API_KEY": "test-" + "capability",
+            "VERBATUS_VOLUME_ID": "volume-1",
+            "VERBATUS_HARD_DEADLINE": "2026-08-08T13:00:00Z",
+            "VERBATUS_REQUESTED_AT": "2026-08-08T12:00:00Z",
+            "VERBATUS_POD_HOURLY_USD": "0.77",
+            "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
+            BILLING_CUTOFF_MARGIN_ENV: "3600",
+            "VERBATUS_LAUNCH_TOKEN": TOKEN,
+        }
+    )
+
+    assert context.timer.lease.lease_id == TOKEN
+    assert context.timer.lease.launch_token == TOKEN
+    assert context.timer.shutdown.billing_cutoff_margin_seconds == 3600
+
+
+@pytest.mark.parametrize("margin", ["3601", "01"])
+def test_pod_timer_refuses_an_unbounded_or_noncanonical_sealed_cutoff_margin(
+    margin: str,
+) -> None:
+    environment = {
+        "RUNPOD_POD_ID": "pod-1",
+        "RUNPOD_API_KEY": "test-" + "capability",
+        "VERBATUS_VOLUME_ID": "volume-1",
+        "VERBATUS_HARD_DEADLINE": "2026-08-08T13:00:00Z",
+        "VERBATUS_REQUESTED_AT": "2026-08-08T12:00:00Z",
+        "VERBATUS_POD_HOURLY_USD": "0.77",
+        "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
+        BILLING_CUTOFF_MARGIN_ENV: margin,
+        "VERBATUS_LAUNCH_TOKEN": TOKEN,
+    }
+
+    with pytest.raises(ProviderFailure, match="VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS"):
+        timer_context_from_environment(environment)
+
+
+def test_a_present_pod_reports_present_with_its_200() -> None:
+    transport = ScriptedTransport([json_response(pod_payload())])
+
+    status = provider(transport).status("pod-1")
+
+    assert status.presence is Presence.PRESENT
+    assert status.http_status == 200
+
+
+def test_terminate_treats_a_404_as_an_idempotent_repeat_not_an_error() -> None:
+    transport = ScriptedTransport([HttpResponse(404, b"{}")])
+
+    provider(transport).terminate("pod-1")
+
+    assert [(method, path) for method, path, _ in transport.calls] == [("DELETE", "/pods/pod-1")]
+    assert transport.responses == []
+
+
+def test_terminate_refuses_an_undocumented_status_rather_than_assuming_success() -> None:
+    transport = ScriptedTransport([HttpResponse(500, b"upstream fell over")])
+
+    with pytest.raises(ProviderFailure, match="terminate returned HTTP 500"):
+        provider(transport).terminate("pod-1")
+
+
+def test_the_adapter_refuses_a_v2_shaped_pod_list_rather_than_reading_absence() -> None:
+    transport = ScriptedTransport([json_response({"pods": []})])
+
+    with pytest.raises(ProviderFailure, match="not the documented bare array"):
+        provider(transport).verify_absent("pod-1")
+
+
+@pytest.mark.parametrize("pods", [[{}], ["not-a-pod"]])
+def test_malformed_list_entries_refuse_rather_than_read_as_absence(pods: list[object]) -> None:
+    transport = ScriptedTransport([json_response(pods)])
+
+    with pytest.raises(ProviderFailure, match="pod-list entry"):
+        provider(transport).verify_absent("pod-1")
+
+
+# -- billing ---------------------------------------------------------------
+
+
+def test_billing_captures_exact_pod_amounts_from_the_bare_v1_array() -> None:
+    transport = ScriptedTransport([json_response([billing_row()])])
+
+    capture = provider(transport).capture_cost("pod-1", NOW, NOW + timedelta(minutes=1))
+
+    assert capture.state is BillingState.CAPTURED
+    assert capture.total_usd == Decimal("1.23")
+    assert capture.window_start_at == NOW
+    assert capture.cutoff_at == NOW + timedelta(minutes=1)
+    path = transport.calls[0][1]
+    assert path.startswith("/billing/pods?podId=pod-1")
+    assert "bucketSize=hour" in path
+    assert "grouping=podId" in path
+
+
+def test_an_empty_billing_response_is_unavailable_never_zero() -> None:
+    transport = ScriptedTransport([json_response([])])
+
+    capture = provider(transport).capture_cost("pod-1", NOW, NOW + timedelta(minutes=1))
+
+    assert capture.state is BillingState.UNAVAILABLE
+    assert capture.total_usd is None
+    assert "zero was not inferred" in capture.reason
+
+
+@pytest.mark.parametrize(
+    ("row", "reason"),
+    [
+        (
+            {"amount": "5.00", "time": "2026-08-08T12:00:00Z", "timeBilledMs": 1},
+            "does not name the requested pod",
+        ),
+        (billing_row(podId="other-pod"), "does not name the requested pod"),
+        (billing_row(amount="not-money"), "structurally unverifiable"),
+        (billing_row(timeBilledMs="lots"), "invalid timeBilledMs"),
+        (billing_row(time="2026-08-01T00:00:00Z"), "outside the requested window"),
+        (billing_row(time="2026-08-09T00:00:00Z"), "outside the requested window"),
+    ],
+)
+def test_unbindable_billing_rows_are_unavailable_not_verified(
+    row: dict[str, object], reason: str
+) -> None:
+    transport = ScriptedTransport([json_response([row])])
+
+    capture = provider(transport).capture_cost("pod-1", NOW, NOW + timedelta(minutes=1))
+
+    assert capture.state is BillingState.UNAVAILABLE
+    assert capture.total_usd is None
+    assert reason in capture.reason
+
+
+def test_the_hour_bucket_containing_creation_is_allowed_to_start_before_the_window() -> None:
+    """One bucket of slack, and no more: a bucket start is not a window start."""
+
+    started = NOW + timedelta(minutes=30)
+    transport = ScriptedTransport([json_response([billing_row()])])
+
+    capture = provider(transport).capture_cost("pod-1", started, started + timedelta(minutes=1))
+
+    assert capture.state is BillingState.CAPTURED
+
+
+def test_a_v2_shaped_billing_envelope_refuses_rather_than_totalling_nothing() -> None:
+    transport = ScriptedTransport([json_response({"records": [], "metadata": {}})])
+
+    with pytest.raises(ProviderFailure, match="not the documented bare array"):
+        provider(transport).capture_cost("pod-1", NOW, NOW + timedelta(minutes=1))
+
+
+def test_a_non_200_billing_response_refuses_rather_than_reporting_no_cost() -> None:
+    transport = ScriptedTransport([HttpResponse(503, b"try later")])
+
+    with pytest.raises(ProviderFailure, match="billing returned HTTP 503"):
+        provider(transport).capture_cost("pod-1", NOW, NOW + timedelta(minutes=1))
+
+
+# -- the seam boundary -----------------------------------------------------
+
+
+def test_provider_endpoint_vocabulary_is_isolated_to_the_runpod_adapter() -> None:
+    from pathlib import Path
+
+    pod_root = Path(__file__).resolve().parent
+    sources = [source for source in pod_root.glob("*.py") if not source.name.startswith("test_")]
+
+    for marker in ("rest.runpod.io", "api.runpod.io", "RUNPOD_"):
+        occurrences = [source for source in sources if marker in source.read_text(encoding="utf-8")]
+        assert occurrences == [pod_root / "provider_runpod.py"], marker
+
+
+# -- response-size bound ----------------------------------------------------
+
+
+class _OversizedStream:
+    def read(self, amount: int) -> bytes:
+        return b"x" * amount
+
+
+class _ExactSizedStream:
+    """Exactly the cap, then EOF, serving no more than the bytes it was asked for.
+
+    It used to answer every ``read`` with the full cap regardless of ``amount``,
+    which no stream does and which a reader accumulating short reads correctly
+    reads as an over-cap body.  The case under test is unchanged: a response of
+    exactly ``_MAX_RESPONSE_BYTES`` is allowed through.
+    """
+
+    def __init__(self) -> None:
+        self.remaining = _MAX_RESPONSE_BYTES
+
+    def read(self, amount: int) -> bytes:
+        served = min(amount, self.remaining)
+        self.remaining -= served
+        return b"y" * served
+
+
+class _ShortReadStream:
+    """Serves one small chunk per call, as ``read(amt)`` is documented to be free to."""
+
+    def __init__(self, body: bytes, *, chunk: int) -> None:
+        self.body = body
+        self.chunk = chunk
+        self.offset = 0
+        self.calls = 0
+
+    def read(self, amount: int) -> bytes:
+        self.calls += 1
+        served = self.body[self.offset : self.offset + min(amount, self.chunk)]
+        self.offset += len(served)
+        return served
+
+
+def test_bounded_read_refuses_a_response_over_the_size_cap() -> None:
+    with pytest.raises(ProviderFailure, match="exceeded"):
+        _bounded_read(_OversizedStream())  # type: ignore[arg-type]
+
+
+def test_bounded_read_allows_a_response_exactly_at_the_size_cap() -> None:
+    body = _bounded_read(_ExactSizedStream())  # type: ignore[arg-type]
+    assert len(body) == _MAX_RESPONSE_BYTES
+
+
+def test_bounded_read_accumulates_a_short_read_instead_of_truncating_it() -> None:
+    """``HTTPResponse.read(amt)`` returns *up to* ``amt`` bytes.
+
+    A single read that stops early would hand `_json` a truncated billing
+    response, which is then refused as malformed -- a money-path answer lost to
+    a transport detail rather than to anything RunPod said.
+    """
+
+    payload = json.dumps([{"id": "pod-1", "amount": "0.42"}]).encode("utf-8")
+    stream = _ShortReadStream(payload, chunk=7)
+
+    body = _bounded_read(stream)  # type: ignore[arg-type]
+
+    assert body == payload
+    assert stream.calls > 1, "the fake never short-read, so the accumulation was not exercised"
+
+
+# -- the live transport's own behaviour ------------------------------------
+#
+# The one thing in this file that cannot be proven through the fake transport:
+# the leak is in urllib, underneath the seam. Two loopback servers, no network.
+
+
+def test_the_live_transport_does_not_hand_the_bearer_token_to_a_redirect() -> None:
+    """urllib re-sends Authorization across a redirect, cross-host included."""
+
+    import http.server
+    import threading
+
+    seen: dict[str, str | None] = {}
+
+    class Target(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen["authorization"] = self.headers.get("Authorization")
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    class Redirector(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{target.server_address[1]}/stolen")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+    redirector = http.server.HTTPServer(("127.0.0.1", 0), Redirector)
+    for server in (target, redirector):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        transport = UrllibRunPodTransport(
+            "test-capability-value",
+            timeout_seconds=5.0,
+            root=f"http://127.0.0.1:{redirector.server_address[1]}",
+        )
+        with pytest.raises(ProviderFailure, match="redirect was not followed"):
+            transport.request("GET", "/pods")
+    finally:
+        for server in (target, redirector):
+            server.shutdown()
+            server.server_close()
+
+    assert "authorization" not in seen

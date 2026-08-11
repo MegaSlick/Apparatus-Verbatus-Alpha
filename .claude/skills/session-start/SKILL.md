@@ -123,6 +123,14 @@ started it, so the state of his machine is never changed silently. If Colima is 
 installed at all, say so and carry on: it is only needed when something is dispatched,
 and `operations/autoclave/README.md` says how to install it.
 
+**If this session will dispatch anything, read `operations/autoclave/agent-brief.md`
+itself.** `Tyrel ruled (2026-08-10)`: *"If a session requires agents then it reads the
+file. That's the rule."* It is the standing instruction every chamber boots with, so a
+brief written without having read it can contradict it — that day a session forbade a
+chamber from consulting a provider's documentation this file had already told it to
+consult, and wrote that into two briefs. The comparison below is a separate check, about
+the image rather than the instruction: **passing it is not having read the file.**
+
 **Then check the chamber image is not older than what it bakes in.** The image carries
 the agent's standing instructions and its pinned dependencies, copied in at build time,
 so a stale image runs instructions this repository no longer holds — and nothing about it
