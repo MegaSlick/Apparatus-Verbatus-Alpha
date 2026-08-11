@@ -973,8 +973,15 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
             raise FatalAccounting(
                 f"proposed act {act_id} does not account for its declared continuation"
             )
+    # Sorted, because `_verify_residual_act_rows` raises on the *first* row that
+    # fails and a set of strings has no stable order: CPython randomises string
+    # hashing per process, so a seal carrying more than one bad extra row named a
+    # different act in the refusal on every run. The refusal was always correct
+    # and always fired; which act it accused was a coin flip, which is the kind of
+    # evidence nobody can act on twice. Found by the Opus read of this branch,
+    # which demonstrated five different orders over six keys in five runs.
     _verify_residual_act_rows(
-        context, {act_id: observed[act_id] for act_id in set(observed) - set(expected)}
+        context, {act_id: observed[act_id] for act_id in sorted(set(observed) - set(expected))}
     )
 
 
@@ -1091,13 +1098,22 @@ def _verify_residual_traces_to_conservation(
     )
     # Every step of this lookup is checked before it is taken, and all of it lands
     # on the one named refusal below. Read straight through, a conservation record
-    # whose payload was not a mapping, whose row was not a mapping, or whose
-    # component list was shorter than the ordinal reaches raised `AttributeError`
-    # or `IndexError` out of an accounting check — a traceback where invariant #10
-    # promises a named fatal. The negative index makes the short-list case easy to
-    # miss: `index >= len(components)` is false for every negative index, so an
-    # empty list walked past the guard and into `components[-1]`. Found by
-    # CodeRabbit.
+    # whose payload was not a mapping or whose indexed row was not a mapping raised
+    # `AttributeError` out of an accounting check — a traceback where invariant #10
+    # promises a named fatal.
+    #
+    # **The lower bound is for a corrupted ordinal, not a short list**, and the
+    # distinction cost a vacuous test before it was understood. `residual_act_ordinal`
+    # is `-(index + 1)` over a non-negative index, so `index = -ordinal - 1` recovers
+    # a non-negative index for every *well-formed* record and `index >= len(components)`
+    # bounds it correctly. A hold whose sealed `ordinal` has been corrupted to a
+    # positive value is the reachable case: it makes `index` negative, which
+    # `index >= len(...)` never catches, and `components[-3]` on a short list is an
+    # `IndexError`. Reaching it in a test needs the ordinal itself corrupted after
+    # minting — the minting helper cannot produce one, because it calls
+    # `residual_act_ordinal`, which refuses. Left uncovered and named rather than
+    # covered by a test that passes against the unfixed code, which is what a first
+    # attempt at one did. Found by CodeRabbit; the reachability corrected here.
     payload = conservation.get("payload")
     components = payload.get("residual_components") if isinstance(payload, Mapping) else None
     index = -ordinal - 1
