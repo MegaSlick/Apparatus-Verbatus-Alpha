@@ -1284,6 +1284,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         except ContractError as error:
             # A damaged existing channel cannot be repaired by adding a replacement
             # attempt. It is an UNKNOWN tally and holds the folder as it stands.
+            #
+            # Except an accounting imbalance, which is not a damaged channel and is
+            # not repairable by holding: `FatalAccounting` is a `ContractError`, and
+            # `preflight_appendable_ordinals` reaches the same readers that raise it.
+            # `attempt_tally` above happens to screen it first today, but by the
+            # order these two calls sit in rather than by any stated invariant — and
+            # a hold that depends on call ordering is one refactor from silence.
+            # Third instance of this in the file; the other two are at :641 and in
+            # `attempt_tally`. Found by the Opus read of this branch.
+            if isinstance(error, FatalAccounting):
+                raise
             print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
             return EXIT_HELD
         recorded, isolated_crop_failure = attempt_pass(context, acts, ordinal)

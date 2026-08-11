@@ -1177,7 +1177,9 @@ def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_cras
         encoding="utf-8",
     )
 
-    with pytest.raises(SchemaRefusal):
+    # Both refusals named, rather than any `SchemaRefusal` at all: the point is
+    # that one of two known doors closes, not that something somewhere objected.
+    with pytest.raises(SchemaRefusal, match="could not be read as an artifact|missing required"):
         tree.build_manifest(DESIGNATOR)
 
 
@@ -1215,6 +1217,23 @@ def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_no
         json.dumps(tampered).replace('"__DEEP__"', deep_text),
         encoding="utf-8",
     )
+
+    # **This test would go vacuous rather than red on an interpreter whose walk
+    # absorbs 2,000 levels**, because the deliberately wrong `self_hash` earns the
+    # same refusal whether or not the deep walk was ever the thing that failed. A
+    # test that stops testing without saying so is worse than one that breaks, and
+    # a skip is visible where a silent pass is not (GOVERNANCE 2). So the premise
+    # is asserted first, against the same walk the code uses. Found by the Opus
+    # read of this branch.
+    try:
+        canonical_bytes(json.loads(deep_text))
+    except RecursionError:
+        pass
+    else:
+        pytest.skip(
+            f"this interpreter's canonical walk absorbs {nesting} levels, so the "
+            "guarded path is unreachable here and this test proves nothing"
+        )
 
     with pytest.raises(SchemaRefusal, match="fails its self-hash"):
         tree.build_manifest(DESIGNATOR)
