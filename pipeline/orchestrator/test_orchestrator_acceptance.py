@@ -35,6 +35,7 @@ from common.contracts.stages import (
     RECENSOR,
     STAGE_DIRECTORIES,
 )
+from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import load_fixture, run_config_bindings
 
@@ -115,9 +116,11 @@ FIXTURE = "synthetic-two-page-v0"
 # citation the code never reads moves every downstream artifact digest. File
 # counts and scenario behaviour are unchanged.
 #
-# Recomputed against the real orchestrator for this merge.
-HAPPY_RUN_TREE_DIGEST = "8a7624d6c4f62b834a3c02b27dbb174be054464d83b0ff5ff35a0768cb5a2d25"
-REVIEW_RUN_TREE_DIGEST = "a1f58df6a7f968d4597705830aa7ea5dae6d0ee71717b6e784c4da9d5546ae28"
+# Recomputed against the real orchestrator for this merge. PNG entries bind to
+# decoded pixels and dimensions rather than one zlib build's compressed bytes;
+# every non-image entry remains byte-bound.
+HAPPY_RUN_TREE_DIGEST = "08786d35d16d2188172a4e18b4cea223ec68851c800eaa01abacc42bae685894"
+REVIEW_RUN_TREE_DIGEST = "b19676833ebb8292983041b5d91a10e5ee0ee382d8cd0c50ea1a0b826f8e4f15"
 
 
 def orchestrate(
@@ -199,9 +202,61 @@ def snapshot(root: Path) -> dict[str, str]:
     }
 
 
-def snapshot_digest(root: Path) -> str:
-    """The canonical pin for the full relative run-tree inventory."""
-    return digest_of(snapshot(root))
+def semantic_snapshot(root: Path) -> dict[str, str]:
+    """Run-tree inventory with PNG containers reduced to their pixel content.
+
+    Artifact and configuration files remain byte-bound. PNG blobs are different:
+    their compressed IDAT bytes depend on the zlib implementation that encoded
+    them, while this acceptance pin is meant to identify the run described by the
+    data. Bind the decoded dimensions and grayscale samples, not one compressor's
+    representation of them. The ordinary ``snapshot`` stays byte-exact for all
+    resume and no-write assertions.
+    """
+    inventory = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        relative = str(path.relative_to(root))
+        if data.startswith(PNG_SIGNATURE):
+            width, height, rows = decode_grayscale_png(data)
+            inventory[relative] = digest_of(
+                {
+                    "width": width,
+                    "height": height,
+                    "pixel_sha256": digest_bytes(b"".join(rows)),
+                }
+            )
+        else:
+            inventory[relative] = digest_bytes(data)
+    return inventory
+
+
+def semantic_snapshot_digest(root: Path) -> str:
+    """The canonical content pin for the full relative run-tree inventory."""
+    return digest_of(semantic_snapshot(root))
+
+
+def test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes(tmp_path, monkeypatch):
+    """A different valid DEFLATE stream must not rename the measured run."""
+    import common.imaging as imaging
+
+    image_path = tmp_path / "blob-with-no-extension"
+    rows = [bytearray([0, 127, 255]), bytearray([255, 127, 0])]
+    image_path.write_bytes(imaging.encode_grayscale_png(3, 2, rows))
+    raw_before = snapshot(tmp_path)
+    semantic_before = semantic_snapshot_digest(tmp_path)
+
+    compress = imaging.zlib.compress
+    monkeypatch.setattr(
+        imaging.zlib,
+        "compress",
+        lambda data, level: compress(data, level=0),
+    )
+    image_path.write_bytes(imaging.encode_grayscale_png(3, 2, rows))
+
+    assert snapshot(tmp_path) != raw_before
+    assert semantic_snapshot_digest(tmp_path) == semantic_before
 
 
 def export_of(tree: RunTree) -> dict:
@@ -1089,12 +1144,12 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     before = snapshot(root)
 
     assert len(before) == 43
-    assert digest_of(before) == HAPPY_RUN_TREE_DIGEST
+    assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
 
     assert after == before
-    assert snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
+    assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
 
 
 def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
@@ -1106,10 +1161,10 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     before = snapshot(root)
 
     assert len(before) == 47
-    assert digest_of(before) == REVIEW_RUN_TREE_DIGEST
+    assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
-    assert snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
+    assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
 
 
 # --- 3. An incompatible run id fails before writing ----------------------------
