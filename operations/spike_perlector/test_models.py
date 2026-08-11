@@ -44,7 +44,15 @@ def test_testimonium_refuses_stray_text_on_a_non_reading_status(status):
         )
 
 
-def test_testimonium_requires_exact_act_crop_and_delivery_provenance():
+def test_a_testimonium_retains_the_act_crop_and_delivery_provenance_it_was_given():
+    """Named for what it checks: retention, not a requirement.
+
+    Its previous name promised that a Testimonium *requires* its exact act crop
+    and delivery provenance, and the body asserted only that four supplied
+    values came back unchanged — it stayed green with every crop and delivery
+    rule deleted. Those rules are covered below and at the act level.
+    """
+
     testimonium = models.Testimonium(
         private_source_id="w1",
         public_source_index=1,

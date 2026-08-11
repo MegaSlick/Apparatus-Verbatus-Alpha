@@ -92,6 +92,7 @@ def evaluation_act(
     gaps: tuple[GapSpan, ...] = (),
     testimonia: tuple[Testimonium, ...] | None = None,
     material_class: MaterialClass = MaterialClass.SYNTHETIC,
+    independent_draft_sha256s: tuple[str, ...] | None = None,
 ) -> EvaluationAct:
     image_bytes = f"synthetic-image:{opaque_act_id}".encode("utf-8")
     crop_sha256 = sha256_bytes(image_bytes)
@@ -108,9 +109,19 @@ def evaluation_act(
             text=text,
             adjudication_digest=digest(f"adjudication:{opaque_act_id}"),
             reference_revision="synthetic-reference-v1",
+            # Overridable, and `is None` so an explicit empty tuple survives:
+            # every fixture act carried exactly two drafts, so no test in this
+            # cohort could reach the runner's refusal of a checked reference
+            # adjudicated from any other number. That refusal is what stops one
+            # person's guess becoming an established reading, and it could have
+            # been deleted with the suite still green.
             independent_draft_sha256s=(
-                digest(f"draft-a:{opaque_act_id}"),
-                digest(f"draft-b:{opaque_act_id}"),
+                (
+                    digest(f"draft-a:{opaque_act_id}"),
+                    digest(f"draft-b:{opaque_act_id}"),
+                )
+                if independent_draft_sha256s is None
+                else independent_draft_sha256s
             ),
             gaps=gaps,
         ),
@@ -217,7 +228,11 @@ def run_plan_approval_for(
 ) -> RunPlanApproval:
     """Build a test-only artifact shaped like Tyrel's real declared run-plan approval."""
 
-    accounting = sample_accounting or PrivateSampleAccounting.all_scoreable(manifest)
+    accounting = (
+        PrivateSampleAccounting.all_scoreable(manifest)
+        if sample_accounting is None
+        else sample_accounting
+    )
     values = {
         "protocol_sha256": manifest.protocol_sha256,
         "manifest_sha256": manifest.manifest_sha256,

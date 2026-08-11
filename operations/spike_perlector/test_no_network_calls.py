@@ -99,13 +99,14 @@ def test_no_file_in_this_package_imports_a_networking_module():
     )
     offenders: dict[str, set[str]] = {}
     for path in paths:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        imported = _imported_module_names(tree)
-        hit = {
-            name
-            for name in imported
-            if name in FORBIDDEN_MODULES or name.split(".")[0] in FORBIDDEN_MODULES
-        }
+        # The same helper the spelling tests above exercise, not a second copy
+        # of the rule. A duplicated filter meant those tests could go green on a
+        # rule this scan never used, while the import they were taught to catch
+        # sat in a shipped module.
+        hit = _offending_imports(path.read_text(encoding="utf-8"))
         if hit:
-            offenders[path.name] = hit
+            # Relative to the package, not the bare filename: the scan recurses,
+            # so `sub/runner.py` and `runner.py` would share one key and the
+            # second would silently overwrite the first.
+            offenders[str(path.relative_to(PACKAGE_ROOT))] = hit
     assert not offenders, f"a transport import was found where none may exist: {offenders}"

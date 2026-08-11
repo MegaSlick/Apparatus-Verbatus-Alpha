@@ -11,6 +11,8 @@ import hashlib
 import json
 from typing import Any
 
+from .errors import MeasurementRefusal
+
 
 def canonical_json_bytes(value: Any) -> bytes:
     """Encode a candidate dossier in a deterministic, permissive JSON envelope.
@@ -21,13 +23,22 @@ def canonical_json_bytes(value: Any) -> bytes:
     claim that arbitrary caller content was bound without conversion.
     """
 
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        # `TypeError` for an unsupported value or a mixed key type, `ValueError`
+        # for a non-finite float under `allow_nan=False`. Raised by name because
+        # this helper sits under every digest and wire-generation path, and a
+        # bare exception there names no record and is caught by no caller.
+        raise MeasurementRefusal(
+            f"a record could not be canonically encoded for digesting: {error}"
+        ) from error
 
 
 def sha256_bytes(value: bytes) -> str:

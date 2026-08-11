@@ -226,7 +226,7 @@ class GapSpan:
         return {"start": self.start, "end": self.end}
 
 
-def _validated_gaps(text: str, gaps: tuple[GapSpan, ...]) -> None:
+def _refuse_invalid_gaps(text: str, gaps: tuple[GapSpan, ...]) -> None:
     previous_end = 0
     for gap in gaps:
         if gap.start < previous_end:
@@ -371,7 +371,7 @@ class GroundTruth:
                     f"a ground-truth text of {len(self.text or '')} characters exceeds the "
                     f"{MAX_TEXT_LENGTH}-character bound for one act"
                 )
-            _validated_gaps(self.text or "", self.gaps)
+            _refuse_invalid_gaps(self.text or "", self.gaps)
             if not excise_gaps(self.text or "", self.gaps).strip():
                 raise MeasurementRefusal(
                     "a checked reference whose every character is inside a gap has no ink "

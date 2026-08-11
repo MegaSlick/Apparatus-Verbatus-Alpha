@@ -442,7 +442,10 @@ def test_declared_run_refuses_private_reference_evidence_not_bound_by_manifest()
     manifest = manifest_for(checked_act)
     prompts = registry(*roster.identities())
     candidates = tuple(FakeCandidate(resolved) for resolved in roster.identities())
-    with pytest.raises(HoldoutRefusal, match="evidence"):
+    with pytest.raises(
+        HoldoutRefusal,
+        match="run acts are not exactly the material, classification, and evidence in the sealed manifest",
+    ):
         run_declared_roster_matrix(
             candidates,
             (altered_act,),
@@ -454,6 +457,51 @@ def test_declared_run_refuses_private_reference_evidence_not_bound_by_manifest()
             authorization=_cleared_public_authorization(manifest, roster, witnesses, prompts),
         )
     assert all(candidate.requests == [] for candidate in candidates)
+
+
+def test_a_declared_run_refuses_a_checked_reference_nobody_independently_drafted():
+    """Nothing could reach this refusal, because every fixture act had two drafts.
+
+    `GroundTruth` refuses one draft outright, so the runner's own check is
+    reachable only with none — which the model does allow, for a fixture. The
+    rule it enforces is that two people transcribed an act independently before
+    any machine reading is compared against it: the guard against one person's
+    guess becoming the established reading for a parish. It could have been
+    deleted with the whole suite still green.
+    """
+
+    roster = valid_roster()
+    undrafted = evaluation_act(
+        "undrafted",
+        material_class=MaterialClass.CLEARED_PUBLIC,
+        independent_draft_sha256s=(),
+    )
+    witnesses = witness_configuration_for(undrafted)
+    manifest = manifest_for(undrafted)
+    accounting = PrivateSampleAccounting.all_scoreable(manifest)
+    prompts = registry(*roster.identities())
+    candidates = tuple(FakeCandidate(resolved) for resolved in roster.identities())
+    with pytest.raises(
+        MatrixRefusal,
+        match="lacks two independent transcription drafts before adjudication",
+    ):
+        run_declared_roster_matrix(
+            candidates,
+            (undrafted,),
+            roster=roster,
+            witness_configuration=witnesses,
+            manifest=manifest,
+            prompt_registry=prompts,
+            profile=GRAPHEMIC_V1,
+            authorization=_cleared_public_authorization(
+                manifest,
+                roster,
+                witnesses,
+                prompts,
+                sample_accounting=accounting,
+            ),
+            sample_accounting=accounting,
+        )
 
 
 def test_declared_run_reads_an_unresolved_selected_act_without_scoring_it():

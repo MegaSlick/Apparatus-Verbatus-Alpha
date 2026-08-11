@@ -2,7 +2,7 @@ import pytest
 
 from operations.spike_perlector.errors import PromptFidelityRefusal
 from operations.spike_perlector.models import Condition, dossier_for
-from operations.spike_perlector.prompting import PromptRegistry
+from operations.spike_perlector.prompting import PromptFormat, PromptRegistry
 from operations.spike_perlector.testkit import evaluation_act, identity, prompt_format, registry
 
 
@@ -22,7 +22,7 @@ def test_prompt_digest_tampering_is_refused():
     candidate = identity("synthetic-a", 1)
     raw = b"exact"
     with pytest.raises(PromptFidelityRefusal, match="do not match"):
-        prompt_format(candidate, raw).__class__(
+        PromptFormat(
             candidate_key=candidate.candidate_key,
             source_ref=candidate.source_ref,
             revision=candidate.revision,

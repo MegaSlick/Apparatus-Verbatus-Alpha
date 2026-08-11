@@ -81,7 +81,11 @@ def test_held_out_guard_refuses_unlineaged_later_material_and_neighbouring_crop(
     guard = HeldOutUseGuard(manifest)
     with pytest.raises(HoldoutRefusal, match="unlineaged"):
         guard.require_allowed((digest("other-page"),), use=MaterialUse.BENCH)
-    with pytest.raises(HoldoutRefusal):
+    # Pinned to the overlap message, as the assertion above it already is.
+    # `require_allowed` refuses every prohibited use whatever the digests, so a
+    # bare `HoldoutRefusal` passed even with the overlap comparison deleted —
+    # the one guard this test exists to hold.
+    with pytest.raises(HoldoutRefusal, match="overlaps the held-out evaluation material"):
         guard.require_allowed((selected.crop_sha256,), use=MaterialUse.DRESS_REHEARSAL)
 
 

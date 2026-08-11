@@ -449,12 +449,23 @@ class MeasurementRun:
             raise MatrixRefusal("only a sealed declared-roster run can become a public finding")
         if self.sample_accounting is None:
             raise MatrixRefusal("only a declared run with private sample accounting can publish")
-        if any(
-            cell.perlectio.elapsed_ms is None or cell.perlectio.cost_usd is None
+        # A `malformed` cell is a predeclared response state (README section 7),
+        # and it carries no wall time or cost because there was no measurable
+        # response to time. Requiring them of it refused the whole run with a
+        # message about timers, sending the reader after a broken clock when the
+        # real cause was one unreadable model answer.
+        unmeasured = [
+            cell
             for cell in self.cells
-        ):
+            if cell.perlectio.status is not OutputStatus.MALFORMED
+            and (cell.perlectio.elapsed_ms is None or cell.perlectio.cost_usd is None)
+        ]
+        if unmeasured:
             raise MatrixRefusal(
-                "a publishable run must measure wall time and cost for every candidate cell"
+                "a publishable run must measure wall time and cost for every candidate cell; "
+                f"{len(unmeasured)} cell(s) reported neither, the first being public slot "
+                f"{unmeasured[0].perlectio.identity.public_slot} on "
+                f"{unmeasured[0].perlectio.condition.value}"
             )
         self.roster.validate()
 
@@ -1039,7 +1050,11 @@ def run_declared_roster_matrix(
             "declared run manifest does not bind the exact predeclared Spec 05 protocol"
         )
     canonical_profile = require_canonical_profile(profile)
-    accounting = sample_accounting or PrivateSampleAccounting.all_scoreable(manifest)
+    accounting = (
+        PrivateSampleAccounting.all_scoreable(manifest)
+        if sample_accounting is None
+        else sample_accounting
+    )
     accounting.require_complete_for(manifest)
     authorization.require_declared_run_plan(
         protocol_sha256=manifest.protocol_sha256,

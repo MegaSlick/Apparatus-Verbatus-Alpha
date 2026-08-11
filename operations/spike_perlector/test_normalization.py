@@ -13,6 +13,20 @@ def test_nfc_whitespace_and_named_presentation_variants_are_canonicalized():
     assert normalize_text("e\u0301\tA\u2019B\u2011C\n", GRAPHEMIC_V1) == "é A'B-C"
 
 
+def test_a_mapped_long_s_recomposes_so_one_character_is_not_two_readings():
+    """The mappings run after the first NFC, so the output needed a second one.
+
+    `ſ` + U+0301 has no precomposed form, so NFC leaves it decomposed. Mapping
+    the long-s then yielded `s` + U+0301 while the same character written
+    precomposed stayed U+015B. Two correct readings of one character compared as
+    a substitution, and CER charged the candidate for reading it right.
+    """
+
+    from_long_s = normalize_text("ſ́", GRAPHEMIC_V1)
+    precomposed = normalize_text("ś", GRAPHEMIC_V1)
+    assert from_long_s == precomposed == "ś"
+
+
 def test_only_listed_presentation_ligatures_expand():
     assert normalize_text("\ufb01 \u0153 \u00e6", GRAPHEMIC_V1) == "fi œ æ"
 

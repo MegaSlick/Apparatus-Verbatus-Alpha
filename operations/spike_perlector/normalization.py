@@ -134,7 +134,13 @@ def normalize_text(text: str, profile: NormalizationProfile) -> str:
     normalized = normalized.translate(_PRESENTATION_TRANSLATION)
     if profile.map_long_s:
         normalized = normalized.replace("ſ", "s")
-    return normalized
+    # NFC again, because the mappings above run after the first one and can
+    # leave a composable sequence behind. `ſ` + U+0301 has no precomposed form,
+    # so the first NFC leaves it decomposed; mapping the long-s then yields
+    # `s` + U+0301, which does compose to `ś`. Without this line the same ink
+    # normalizes to different bytes depending on which spelling it arrived in,
+    # and two correct readings of one character score as a substitution.
+    return unicodedata.normalize("NFC", normalized)
 
 
 def character_units(text: str, profile: NormalizationProfile) -> tuple[str, ...]:
