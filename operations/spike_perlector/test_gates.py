@@ -9,7 +9,6 @@ import pytest
 from common.contracts.approval import (
     ApprovalRecordReference,
     build_approval_record,
-    data_gate_policy_hash,
 )
 from operations.spike_perlector.errors import DisclosureRefusal, MatrixRefusal
 from operations.spike_perlector.fakes import FakeCandidate
@@ -55,7 +54,7 @@ def private_roster() -> CandidateRoster:
 
 def checked_data_gate_authority() -> DataGateAuthority:
     reference, payload = approval_reference_for(
-        action="data-gate", target_version_hash=data_gate_policy_hash(POLICY)
+        action="other", target_version_hash=DataGateAuthority.scope_digest(policy_content=POLICY)
     )
     return DataGateAuthority.load(
         policy_content=POLICY,

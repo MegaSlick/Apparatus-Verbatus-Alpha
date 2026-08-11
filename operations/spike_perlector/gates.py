@@ -16,8 +16,6 @@ from typing import Any, Iterable
 
 from common.contracts.approval import (
     ApprovalRecordReference,
-    data_gate_policy_hash,
-    require_current_data_gate_approval,
     validate_approval_record,
 )
 
@@ -59,15 +57,38 @@ def _checked_approval_record(reference: ApprovalRecordReference, payload: bytes)
 class DataGateAuthority:
     """A data-gate record that has been checked through its approval reference.
 
-    The factory performs the repository's existing content-address, self-hash,
-    action, and current-policy checks.  The immutable object retains the exact
-    checked record rather than a caller-provided digest string.
+    Binds its own content-addressed scope, the same way ``NormalizationApproval``,
+    ``ThirdPartyTransmissionApproval`` and ``RunPlanApproval`` below do: the shared
+    approval-record contract's own ``data-gate`` action existed for a different
+    question (whether real images ever reach git) and was retired for it (Tyrel,
+    2026-08-09); this module's question — whether private-register material may be
+    disclosed under a checked, current, content-addressed policy — is unrelated and
+    still stands, now carried entirely by this class rather than by a shared action.
+
+    The immutable object retains the exact checked record rather than a
+    caller-provided digest string.
     """
 
     policy_content: Mapping[str, Any]
     approval_reference: ApprovalRecordReference
     approval_record: Mapping[str, Any]
     approval_bytes: bytes
+
+    # One builder, for the reason given on NormalizationApproval._scope_record.
+    @staticmethod
+    def _scope_record(*, policy_content: Mapping[str, Any]) -> dict[str, object]:
+        return {
+            "schema": "spec05-data-gate-approval.v1",
+            "policy_content": dict(policy_content),
+        }
+
+    @property
+    def scope_sha256(self) -> str:
+        return self.scope_digest(policy_content=self.policy_content)
+
+    @classmethod
+    def scope_digest(cls, *, policy_content: Mapping[str, Any]) -> str:
+        return _approval_digest(cls._scope_record(policy_content=policy_content))
 
     def __post_init__(self) -> None:
         policy = MappingProxyType(dict(self.policy_content))
@@ -79,9 +100,11 @@ class DataGateAuthority:
             raise DisclosureRefusal(
                 "data-gate authority record differs from its checked approval bytes"
             )
-        if checked["action"] != "data-gate":
-            raise DisclosureRefusal("run authority does not contain a data-gate approval")
-        if checked["target_version_hash"] != data_gate_policy_hash(dict(policy)):
+        if checked["action"] != "other":
+            raise DisclosureRefusal(
+                "data-gate authority record must use the recorded approval action"
+            )
+        if checked["target_version_hash"] != self.scope_digest(policy_content=policy):
             raise DisclosureRefusal("data-gate approval is stale for the supplied policy")
 
     @classmethod
@@ -96,9 +119,7 @@ class DataGateAuthority:
 
         try:
             payload = read_bytes(approval_reference.relative_path)
-            record = require_current_data_gate_approval(
-                dict(policy_content), approval_reference, lambda _path: payload
-            )
+            record = _checked_approval_record(approval_reference, payload)
         except Exception as error:
             raise DisclosureRefusal(
                 f"current data-gate approval is unavailable: {error}"
@@ -613,7 +634,7 @@ def require_authorized_delivery(
     else:
         manifest_sha256 = None
     if authorization.material_class is MaterialClass.PRIVATE_REGISTER:
-        # DataGateAuthority was validated via the common approval contract on load.
+        # DataGateAuthority was validated on load, like every other approval field.
         if authorization.data_gate_authority is None:  # defensive for type checkers and audits
             raise DisclosureRefusal("private register delivery has no data-gate authority")
 
