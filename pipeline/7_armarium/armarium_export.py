@@ -8,8 +8,18 @@ reads a witness, Perlectio, or alternate text-shaped field.
 
 The package has one required first member, ``EXPORT_MANIFEST.json``.  Companion
 formats are selected by the run-sealed ``formats.toml`` configuration.  ZIP is
-stored (not compressed) with fixed metadata, so an identical sealed projection
-produces identical bytes and can safely be content-addressed in the run tree.
+stored (not compressed) with fixed metadata, so the container adds no
+nondeterminism of its own.
+
+**That is not the same as identical bytes, and this docstring used to claim it
+was.**  The bundle embeds a SQLite database, and bytes 96-99 of every SQLite file
+are ``SQLITE_VERSION_NUMBER`` for the library that last wrote it
+(https://www.sqlite.org/fileformat.html#the_database_header).  So an identical
+sealed projection produces identical bytes *for a given SQLite build*, and
+different bytes across builds: measured at 3.46.1 in a Linux chamber against
+3.53.4 on the maintainer's machine, with the same rows, schema and page size.
+Content-addressing it in the run tree therefore binds the toolchain as well as
+the data, which is carried to Tyrel rather than settled here.
 """
 
 from __future__ import annotations

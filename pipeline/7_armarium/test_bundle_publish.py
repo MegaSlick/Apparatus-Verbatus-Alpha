@@ -182,12 +182,21 @@ def test_a_published_bundle_directory_carries_the_operators_umask_not_mkdtemps(h
     a bundle that was published. The mode is set from the umask before the
     rename, the way `mkdir` would have done it. Found by CodeRabbit.
     """
-    out = tmp_path / "bundle-out"
-    result = _publish(happy_run, "r", out)
-    assert result.returncode == 0, result.stderr
-
-    umask = os.umask(0)
-    os.umask(umask)
-    expected = 0o777 & ~umask
-    mode = stat.S_IMODE(out.stat().st_mode)
-    assert mode == expected, f"published at {mode:o}, not the umask-derived {expected:o}"
+    # **The umask is set here rather than read.** Computing the expectation the
+    # same way the code does made this test conditional on the machine running
+    # it: `mkdtemp` always creates at 0o700, so an operator whose umask is 0o077
+    # expects exactly 0o700 and the test passes against the *unfixed* code. It
+    # only ever failed correctly at a permissive umask. Measured on the branch:
+    # umask 022 and 002 catch the defect, umask 077 does not. Pinning 0o022 makes
+    # the expected 0o755 a fact about the fix rather than about the machine.
+    # Found by the Opus read of this branch, which is the second test of mine
+    # tonight that passed for a reason other than its own title.
+    previous = os.umask(0o022)
+    try:
+        out = tmp_path / "bundle-out"
+        result = _publish(happy_run, "r", out)
+        assert result.returncode == 0, result.stderr
+        mode = stat.S_IMODE(out.stat().st_mode)
+        assert mode == 0o755, f"published at {mode:o}, not 0o755 under a 0o022 umask"
+    finally:
+        os.umask(previous)
