@@ -1212,3 +1212,40 @@ def test_resealed_malformed_content_health_makes_the_tally_unknown(tmp_path):
     assert tally["state"] == "UNKNOWN"
     assert tally["count"] is None
     assert tally["hold"] is True
+
+
+# --- Invariant #10 is fatal, and a hold is not the same fact ---------------------
+
+
+def test_an_accounting_imbalance_is_fatal_and_never_becomes_a_hold(tmp_path, monkeypatch):
+    """`FatalAccounting` must not be caught here and turned into UNKNOWN + hold.
+
+    The two states say different things. A hold says *the count is unknown* and a
+    caller may wait for it to become known. An accounting imbalance says *the
+    partition itself is broken* — a unit in no terminal set, or in more than one —
+    and `FatalAccounting`'s own docstring is the rule: "nothing may catch this and
+    carry on". `attempt_tally` calls `latest_attempt`, which raises it in five
+    places, from inside a block whose broadest handler caught every `ContractError`.
+    So the fatal case reported as merely unknown, and a caller that holds on an
+    unknown count would have waited politely for a broken partition to resolve
+    itself. Found by CodeRabbit reviewing the rebased branch.
+    """
+
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    result = invoke_stage(
+        run_root,
+        "retention",
+        "happy",
+        "pipeline/3_attestatores/run.py",
+        attempt_ordinal=1,
+    )
+    assert result.returncode == 0, result.stderr
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+    def imbalanced(*_args, **_kwargs):
+        raise attestatores.FatalAccounting("a unit is in no terminal set")
+
+    monkeypatch.setattr(attestatores, "latest_attempt", imbalanced)
+
+    with pytest.raises(attestatores.FatalAccounting, match="no terminal set"):
+        attestatores.attempt_tally(tree)

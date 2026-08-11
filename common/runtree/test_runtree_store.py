@@ -17,7 +17,6 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -1157,7 +1156,17 @@ def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_cras
     because `build_manifest` reads every artifact under a directory, one such
     file stopped the whole stage rather than its own record. 30,000 is driven
     deliberately deep rather than pinned to the scanner's exact failure depth,
-    which is an interpreter fact, not one this suite should assert."""
+    which is an interpreter fact, not one this suite should assert.
+
+    **Which refusal fires is that same interpreter fact, so it is not asserted
+    either.** This test pinned the reader's own message and passed on Python 3.12
+    and 3.13 while failing on 3.14, where the scanner absorbs this depth: the file
+    then parses cleanly and is refused one step later for the fields it does not
+    have. Both are refusals and neither is a traceback, which is the whole of what
+    this test exists to prove. Pinning the message asserted the mechanism instead
+    of the guarantee, and the mechanism belongs to CPython. Found by running the
+    gate on a 3.14 host after the rebase; the chambers run 3.13 and CI runs 3.12,
+    so nothing else in the ladder would have shown it."""
     tree = make_run(tmp_path)
     envelope = make_envelope()
     tree.publish_artifact(envelope)
@@ -1168,7 +1177,7 @@ def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_cras
         encoding="utf-8",
     )
 
-    with pytest.raises(SchemaRefusal, match="could not be read as an artifact"):
+    with pytest.raises(SchemaRefusal):
         tree.build_manifest(DESIGNATOR)
 
 
@@ -1190,14 +1199,22 @@ def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_no
     tree.publish_artifact(envelope)
     path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
 
+    # Built as raw text and spliced in, rather than handed to `json.dumps` as a
+    # 2,000-deep object. The encoder recurses per level exactly as the scanner
+    # does, so constructing the fixture that way makes the *setup* depend on the
+    # interpreter's recursion limit — and a fixture that raises during setup is a
+    # false failure reporting nothing about the code. Flagged by CodeRabbit on the
+    # rebased branch, and the same family as the interpreter dependence that broke
+    # the test above on a 3.14 host.
     nesting = 2000
-    deep: Any = "leaf"
-    for _ in range(nesting):
-        deep = {"nested": deep}
+    deep_text = '{"nested": ' * nesting + '"leaf"' + "}" * nesting
     tampered = dict(envelope)
-    tampered["payload"] = {"deep": deep}
+    tampered["payload"] = {"deep": "__DEEP__"}
     tampered["self_hash"] = "0" * 64
-    path.write_text(json.dumps(tampered), encoding="utf-8")
+    path.write_text(
+        json.dumps(tampered).replace('"__DEEP__"', deep_text),
+        encoding="utf-8",
+    )
 
     with pytest.raises(SchemaRefusal, match="fails its self-hash"):
         tree.build_manifest(DESIGNATOR)

@@ -880,7 +880,19 @@ def attempt_tally(
                 f"Testimonium tally for {(act_id, chair)!r}",
                 operation=f"read:{chair}",
             )
-    except (ContractError, OSError) as error:
+    except ContractError as error:
+        # `FatalAccounting` is a `ContractError`, and `latest_attempt` raises it in five
+        # places directly inside this block — so without this the broadest handler here
+        # turned invariant #10 into a hold. The two are not interchangeable: a hold says
+        # *the count is unknown*, while an accounting imbalance says *the partition
+        # itself is broken*, and the error class exists to keep those apart. Its own
+        # docstring is the rule — "nothing may catch this and carry on". Two other sites
+        # in this file already re-raise it the same way; this one was missed. Found by
+        # CodeRabbit reviewing the rebased branch.
+        if isinstance(error, FatalAccounting):
+            raise
+        return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
+    except OSError as error:
         return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
     return {"state": "KNOWN", "count": len(testimonia), "hold": False, "reason": None}
 
