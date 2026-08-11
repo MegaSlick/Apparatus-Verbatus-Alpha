@@ -1541,6 +1541,35 @@ def test_kill_reaches_a_child_that_ignores_sigterm(tmp_path: Path) -> None:
             process.kill()
 
 
+def _require_the_parser_actually_recurses(payload) -> None:
+    """Assert the premise these deep-nesting tests rest on, before trusting them.
+
+    They prove that a `RecursionError` from `json` is turned into a named refusal
+    rather than escaping. On an interpreter whose parser absorbs this depth there
+    is no `RecursionError` to turn into anything, the refusal correctly does not
+    fire, and the test fails while the code is perfectly right — which is what
+    happened on Python 3.14 while the same commit passed on 3.13 and in CI on
+    3.12. A skip naming the reason is honest; a failure blaming the code is not.
+    """
+    text = payload.decode("utf-8") if isinstance(payload, bytes) else payload
+    try:
+        json.loads(text)
+    except RecursionError:
+        return
+    except ValueError:
+        pass
+    pytest.skip(
+        "this interpreter's JSON parser absorbs 20,000 levels, so there is no "
+        "RecursionError for the named refusal to catch and this test proves nothing"
+    )
+
+
+@pytest.mark.skipif(
+    not Path("/proc").is_dir(),
+    reason="distinguishing a signalled grandchild from a zombie needs /proc, which "
+    "macOS does not have; this test asserts nothing here and failed at its own "
+    "precondition rather than saying so",
+)
 def test_terminate_reaches_a_grandchild_in_the_same_owned_session(tmp_path: Path) -> None:
     """``os.killpg`` against the launch's own session, not just the direct child.
 
@@ -2315,6 +2344,7 @@ def test_a_deeply_nested_response_is_a_named_refusal_not_a_recursion_error() -> 
     """
 
     nested = b'{"data":' + b"[" * 20_000 + b"]" * 20_000 + b"}"
+    _require_the_parser_actually_recurses(nested)
     with pytest.raises(ReadinessError, match="VLLM_MODELS_RESPONSE_INVALID"):
         parse_model_ids(HttpResponse(200, nested))
     with pytest.raises(ReadinessError, match="VLLM_PROBE_RESPONSE_INVALID"):
@@ -2345,6 +2375,7 @@ def test_seal_json_object_refuses_deep_or_cyclic_input_as_a_named_error() -> Non
 
 def test_readiness_probe_refuses_a_deeply_nested_request_json_as_a_named_error() -> None:
     deep_request_json = '{"messages":' + "[" * 20_000 + "]" * 20_000 + "}"
+    _require_the_parser_actually_recurses(deep_request_json)
     with pytest.raises(ServingConfigurationError, match="not JSON"):
         recipes(
             profile_row(

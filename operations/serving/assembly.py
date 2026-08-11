@@ -179,12 +179,27 @@ def _load_bound_configuration(
 
     expected = ServingConfigInputs.from_record(sealed_config_inputs)
     recipes = load_serving_recipes(recipes_path)
-    placement = load_placement_table(placement_path)
-    # `PlacementTable` carries no `source_sha256` in spec 04's landed shape (it
-    # parses the table without keeping the bytes it came from), so this reads
-    # the same file a second time rather than the placement loader's own already
-    # consumed handle.
-    placement_sha256 = digest_bytes(Path(placement_path).read_bytes())
+    # **One read, digested and parsed.** `PlacementTable` carries no
+    # `source_sha256` in spec 04's landed shape, and the first version of this
+    # repair covered that by reading the file a second time to digest it — which
+    # means the parsed table and the digest need not describe the same bytes at
+    # all. An ordinary replacement between the two reads produced a table whose
+    # `generic-24gb` batch size was 9 while the digest attested to the sealed
+    # bytes saying 1, and this function returned it: a run bound to a placement it
+    # never sealed, with every check passing. Reproduced by the Sol read of this
+    # branch.
+    # `ServingConfigurationError`, not a bare `OSError`: this is the serving
+    # assembly's own boundary and every other failure here refuses in its
+    # vocabulary. The read that this repair introduced was the one path out of
+    # this function that escaped it. Also Sol's finding.
+    try:
+        placement_bytes = Path(placement_path).read_bytes()
+    except OSError as error:
+        raise ServingConfigurationError(
+            f"cannot read placement table {placement_path}: {error}"
+        ) from error
+    placement = load_placement_table(placement_path, source_bytes=placement_bytes)
+    placement_sha256 = digest_bytes(placement_bytes)
     expected.require_loaded(
         recipes_sha256=recipes.source_sha256,
         placement_sha256=placement_sha256,
