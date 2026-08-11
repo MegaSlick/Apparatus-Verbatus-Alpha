@@ -58,7 +58,9 @@ def write_public_finding(
     # at that path if the process died or the disk filled mid-write — and every
     # later call then refused it as already published, so the half-written
     # finding could never be repaired by the writer that made it.
-    scratch = target.with_name(f".{target.name}.partial")
+    # Per-process, so two writers attempting the same day cannot share a scratch
+    # file — one would otherwise unlink the other's mid-write in the `finally`.
+    scratch = target.with_name(f".{target.name}.{os.getpid()}.partial")
     try:
         with scratch.open("wb") as handle:
             handle.write(payload)

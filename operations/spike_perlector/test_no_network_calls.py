@@ -52,7 +52,10 @@ FORBIDDEN_MODULES = {
     "websocket",
     "grpc",
     "grpclib",
-    "asyncio.streams",
+    # The whole module, not only `asyncio.streams`: `open_connection`,
+    # `start_server` and the loop's own `create_connection` are all transport,
+    # and nothing in this package has any use for asyncio at all.
+    "asyncio",
     "telnetlib",
     "poplib",
     "imaplib",
