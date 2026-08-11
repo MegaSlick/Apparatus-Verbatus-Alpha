@@ -63,7 +63,13 @@ class CandidateRoster:
         """Refuse the structurally disqualified witness model and duplicate identities."""
 
         identities = self.identities()
-        if self.stock_base.source_ref != STOCK_BASE_SOURCE:
+        # Normalized, like every other source comparison in this method and for
+        # the reason `repository_of` gives: a `source_ref` is typed by hand, so
+        # the settled stock base arrives as `"Qwen/Qwen3.5-9B "`,
+        # `"qwen/qwen3.5-9b"` or `"Qwen/Qwen3.5-9B@main"`. A raw compare refused
+        # the correct model for a trailing space while the checks below it, on
+        # the same field, accepted it.
+        if repository_of(self.stock_base.source_ref) != repository_of(STOCK_BASE_SOURCE):
             raise CandidateRosterRefusal(
                 f"stock base must be the settled {STOCK_BASE_SOURCE!r} candidate"
             )

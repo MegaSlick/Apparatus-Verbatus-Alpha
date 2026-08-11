@@ -10,6 +10,7 @@ boundary.
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime
 from pathlib import Path
 
@@ -50,9 +51,22 @@ def write_public_finding(
         raise PublicSafetyRefusal(
             f"the public finding history at {history_directory} is not a directory"
         ) from error
+    if target.exists():
+        raise PublicSafetyRefusal("public finding already exists; history is write-once")
+    # Written beside the target and moved into place, so the dated path only ever
+    # holds a complete finding. A direct `open("xb")` left a truncated JSON file
+    # at that path if the process died or the disk filled mid-write — and every
+    # later call then refused it as already published, so the half-written
+    # finding could never be repaired by the writer that made it.
+    scratch = target.with_name(f".{target.name}.partial")
     try:
-        with target.open("xb") as handle:
+        with scratch.open("wb") as handle:
             handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(scratch, target)
     except FileExistsError as error:
         raise PublicSafetyRefusal("public finding already exists; history is write-once") from error
+    finally:
+        scratch.unlink(missing_ok=True)
     return target

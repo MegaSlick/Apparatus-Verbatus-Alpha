@@ -43,7 +43,22 @@ class FakeCandidate:
             text=reply.text,
             elapsed_ms=reply.elapsed_ms,
             cost_usd=reply.cost_usd,
-            observed_prompt_sha256=reply.prompt_digest_override or request.prompt_format_sha256,
-            observed_dossier_sha256=reply.dossier_digest_override or request.dossier.wire_sha256,
-            observed_delivery_sha256=reply.delivery_digest_override or request.delivery_sha256,
+            # `is None`, not `or`: an override of `""` is falsy, so `or` handed
+            # back the correct digest and a test written to prove the runner
+            # refuses a blank observed receipt was proving the opposite.
+            observed_prompt_sha256=(
+                request.prompt_format_sha256
+                if reply.prompt_digest_override is None
+                else reply.prompt_digest_override
+            ),
+            observed_dossier_sha256=(
+                request.dossier.wire_sha256
+                if reply.dossier_digest_override is None
+                else reply.dossier_digest_override
+            ),
+            observed_delivery_sha256=(
+                request.delivery_sha256
+                if reply.delivery_digest_override is None
+                else reply.delivery_digest_override
+            ),
         )

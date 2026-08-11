@@ -250,12 +250,30 @@ def test_no_readable_text_is_explicit_and_never_complete_empty_text():
         )
 
 
-def test_measurement_run_replays_scores_instead_of_trusting_a_second_constructor():
+def test_a_cell_whose_act_id_disagrees_with_its_perlectio_is_refused():
+    """Named for the check it reaches. It stops at the act-id comparison and
+    never gets as far as the score replay, which has its own test below."""
+
     run, _, _ = run_three_candidates()
     first = run.cells[0]
     forged = replace(first, opaque_act_id=run.acts[0].opaque_act_id + "-other")
     with pytest.raises(MatrixRefusal, match="different acts"):
         replace(run, cells=(forged, *run.cells[1:]))
+
+
+def test_measurement_run_replays_scores_instead_of_trusting_a_second_constructor():
+    """The guard that stops a run carrying a CER no scoring pass produced.
+
+    Nothing reached it: the only test naming the replay tripped the act-id check
+    three lines earlier, so this refusal could have been deleted with the suite
+    green and a tampered score would have travelled as measured evidence.
+    """
+
+    run, _, _ = run_three_candidates()
+    first = run.cells[0]
+    tampered = replace(first, score=replace(first.score, normalized_hypothesis_sha256="0" * 64))
+    with pytest.raises(MatrixRefusal, match="score differs from its retained evidence"):
+        replace(run, cells=(tampered, *run.cells[1:]))
 
 
 def test_prompt_preflight_fails_before_any_candidate_is_called():

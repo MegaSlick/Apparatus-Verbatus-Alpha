@@ -279,6 +279,24 @@ def test_supported_history_writer_validates_and_never_overwrites(tmp_path):
         )
 
 
+def test_a_history_path_that_is_a_file_is_named_as_such_not_as_a_prior_finding(tmp_path):
+    """`tmp_path` is always a directory, so nothing covered the repaired path.
+
+    With `mkdir` inside the write-once guard, pointing the writer at a file
+    reported "public finding already exists". An operator reads that as work
+    already done and stops looking, and no finding was ever written.
+    """
+
+    not_a_directory = tmp_path / "history"
+    not_a_directory.write_bytes(b"this is a file")
+    with pytest.raises(PublicSafetyRefusal, match="not a directory"):
+        write_public_finding(
+            declared_fixture_run(),
+            history_directory=not_a_directory,
+            finding_date=date(2026, 8, 8),
+        )
+
+
 def test_history_writer_refuses_a_datetime_because_it_is_not_date_only(tmp_path):
     """``datetime`` subclasses ``date``; accepting one would defeat write-once-per-day."""
 

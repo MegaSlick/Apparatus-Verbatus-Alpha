@@ -27,6 +27,18 @@ def test_a_mapped_long_s_recomposes_so_one_character_is_not_two_readings():
     assert from_long_s == precomposed == "ś"
 
 
+def test_the_profile_record_names_the_two_pass_rule_the_code_actually_applies():
+    """The record is what the profile digest is taken over.
+
+    While it read `"NFC"` and the code ran NFC, then its mappings, then NFC
+    again, two runs normalizing by different rules produced the same profile
+    digest and nothing downstream could tell them apart.
+    """
+
+    assert GRAPHEMIC_V1.record()["unicode_normalization"] == "NFC-then-mappings-then-NFC"
+    assert GRAPHEMIC_V1.digest != ALLOGRAPHIC_V1.digest
+
+
 def test_only_listed_presentation_ligatures_expand():
     assert normalize_text("\ufb01 \u0153 \u00e6", GRAPHEMIC_V1) == "fi œ æ"
 

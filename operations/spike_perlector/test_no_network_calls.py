@@ -41,6 +41,23 @@ FORBIDDEN_MODULES = {
     # An import scan that only names network libraries is defeated by
     # `subprocess.run(["curl", ...])`. Nothing here needs to start a process.
     "subprocess",
+    # The clients a list of the obvious four leaves out. `urllib3` and `httpcore`
+    # are the transports under `requests` and `httpx` and can be imported
+    # directly; `websockets` and `grpc` are neither. Naming only the famous
+    # names let this guard report a clean package while a dossier left it.
+    "urllib3",
+    "httpcore",
+    "h11",
+    "websockets",
+    "websocket",
+    "grpc",
+    "grpclib",
+    "asyncio.streams",
+    "telnetlib",
+    "poplib",
+    "imaplib",
+    "xmlrpc",
+    "ssl",
 }
 
 PACKAGE_ROOT = Path(__file__).resolve().parent

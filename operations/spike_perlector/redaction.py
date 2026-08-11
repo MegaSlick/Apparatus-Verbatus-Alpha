@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .errors import PublicSafetyRefusal
+from .errors import MeasurementRefusal, PublicSafetyRefusal
 from .models import Condition
 from .normalization import PROFILES
 from .protocol import PREDECLARED_PROTOCOL_SHA256
@@ -140,7 +140,12 @@ def project_public_finding(run: MeasurementRun) -> dict[str, Any]:
 
     try:
         run.require_publishable()
-    except Exception as error:
+    except MeasurementRefusal as error:
+        # Only the instrument's own refusals. `MatrixRefusal` and
+        # `CandidateRosterRefusal` both inherit from it, so the eligibility
+        # checks are still covered — while catching `Exception` turned an
+        # `AttributeError` in the publish path into a confident-sounding
+        # "not eligible for public evidence" and hid the defect.
         raise PublicSafetyRefusal(f"run is not eligible for public evidence: {error}") from error
     if run.manifest is None:  # pragma: no cover - protected by require_publishable
         raise PublicSafetyRefusal("public finding has no sealed manifest")

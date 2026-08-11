@@ -535,12 +535,23 @@ class HeldOutUseGuard:
 class BoundEvaluationMaterial:
     """A selected payload whose act lineage survives an in-framework transformation."""
 
-    __slots__ = ("_payload", "_capability", "opaque_act_id")
+    __slots__ = ("_payload", "_capability", "_opaque_act_id")
 
     def __init__(self, payload: bytes | str, opaque_act_id: str, capability: object) -> None:
         self._payload = payload
-        self.opaque_act_id = opaque_act_id
+        self._opaque_act_id = opaque_act_id
         self._capability = capability
+
+    @property
+    def opaque_act_id(self) -> str:
+        """Read-only: the lineage this class exists to carry.
+
+        It was a plain writable attribute while `_payload` and `_capability` sat
+        behind underscores — so the one field the class protects was the one a
+        caller could reassign, pointing a bound payload at a different act.
+        """
+
+        return self._opaque_act_id
 
     def transform(
         self, transformer: Callable[[bytes | str], bytes | str]

@@ -64,7 +64,13 @@ class NormalizationProfile:
     def record(self) -> dict[str, object]:
         return {
             "profile_id": self.profile_id,
-            "unicode_normalization": "NFC",
+            # Names the rule the code actually applies, not just its first step.
+            # `normalize_text` runs NFC, then the whitespace, ligature, long-s and
+            # presentation mappings, then NFC again — because a mapping can leave a
+            # composable sequence behind. While this read "NFC", two runs
+            # normalizing by different rules produced the same profile digest and
+            # nothing downstream could tell them apart.
+            "unicode_normalization": "NFC-then-mappings-then-NFC",
             "whitespace": "unicode-to-single-ascii-space-then-trim",
             "presentation_map": "apostrophe-hyphen-and-listed-compatibility-ligatures-v2",
             "map_long_s": self.map_long_s,

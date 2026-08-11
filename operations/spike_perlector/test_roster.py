@@ -111,7 +111,9 @@ def test_execution_boundary_also_refuses_teklia_without_a_roster_wrapper():
         )
 
 
-def test_declared_run_entry_requires_the_full_sealed_three_candidate_roster():
+def test_declared_run_entry_accepts_the_full_sealed_three_candidate_roster():
+    """The happy path. Named for what it does; the refusal has its own test below."""
+
     roster = valid_roster()
     candidates = tuple(FakeCandidate(resolved) for resolved in roster.identities())
     act = evaluation_act(material_class=MaterialClass.CLEARED_PUBLIC)
@@ -129,6 +131,33 @@ def test_declared_run_entry_requires_the_full_sealed_three_candidate_roster():
         authorization=_cleared_public_authorization(manifest, roster, witnesses, prompts),
     )
     assert len(run.cells) == 9
+
+
+def test_declared_run_entry_refuses_fewer_than_the_sealed_three_candidates():
+    """The refusal the test above was named for but never reached.
+
+    Its body supplied the whole roster and asserted success, so the
+    three-candidate requirement could have been deleted with the suite green and
+    a declared run could have gone ahead against two of the three sealed models.
+    """
+
+    roster = valid_roster()
+    two_of_three = tuple(FakeCandidate(resolved) for resolved in roster.identities())[:2]
+    act = evaluation_act(material_class=MaterialClass.CLEARED_PUBLIC)
+    witnesses = witness_configuration_for(act)
+    manifest = manifest_for(act)
+    prompts = registry(*roster.identities())
+    with pytest.raises(MatrixRefusal, match="exactly the sealed three-candidate roster"):
+        run_declared_roster_matrix(
+            two_of_three,
+            (act,),
+            roster=roster,
+            witness_configuration=witnesses,
+            manifest=manifest,
+            prompt_registry=prompts,
+            profile=GRAPHEMIC_V1,
+            authorization=_cleared_public_authorization(manifest, roster, witnesses, prompts),
+        )
 
 
 class _ForgedIdentity:

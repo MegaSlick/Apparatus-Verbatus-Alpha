@@ -13,11 +13,14 @@ from common.contracts.approval import (
 from operations.spike_perlector.errors import DisclosureRefusal, MatrixRefusal
 from operations.spike_perlector.fakes import FakeCandidate
 from operations.spike_perlector.gates import (
+    DATA_GATE_APPROVAL_SUBJECT,
+    NORMALIZATION_APPROVAL_SUBJECT,
     DataGateAuthority,
     NormalizationApproval,
     RunAuthorization,
     RunPlanApproval,
     ThirdPartyTransmissionApproval,
+    _approval_digest,
 )
 from operations.spike_perlector.models import DeliveryMode, MaterialClass
 from operations.spike_perlector.normalization import GRAPHEMIC_V1
@@ -545,7 +548,15 @@ def test_a_record_whose_action_is_not_the_recorded_one_refuses():
     ),
 )
 def test_a_sibling_scope_digest_cannot_satisfy_the_data_gate(sibling):
-    """The schema tag is what separates the four scopes; prove it does."""
+    """A sibling scope's digest cannot satisfy this gate.
+
+    The docstring used to say the schema tag is what separates the four scopes
+    and that this proves it. It does not: each scope record carries different
+    field names, so the digests differ whether or not the tag is there, and the
+    assertion below passes with every `"schema"` key deleted. The tag is pinned
+    separately by the test underneath. The refusal exercised here is real; only
+    the stated reason was wrong.
+    """
 
     assert sibling != DataGateAuthority.scope_digest(policy_content=POLICY)
     reference, payload = approval_reference_for(action="other", target_version_hash=sibling)
@@ -555,6 +566,20 @@ def test_a_sibling_scope_digest_cannot_satisfy_the_data_gate(sibling):
             approval_reference=reference,
             read_bytes=lambda _path: payload,
         )
+
+
+def test_the_schema_tag_alone_separates_two_otherwise_identical_scopes():
+    """Pins the claim the test above used to make and could not support.
+
+    Two scope records identical but for their `"schema"` value must digest
+    differently, or the tag is decoration and two scopes with the same fields
+    would alias.
+    """
+
+    shared = {"policy_content": dict(POLICY)}
+    first = _approval_digest({"schema": DATA_GATE_APPROVAL_SUBJECT, **shared})
+    second = _approval_digest({"schema": NORMALIZATION_APPROVAL_SUBJECT, **shared})
+    assert first != second
 
 
 def test_policy_content_that_cannot_be_canonicalized_refuses_rather_than_aliasing():

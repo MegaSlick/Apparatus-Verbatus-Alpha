@@ -73,8 +73,16 @@ def _approval_digest(record: Mapping[str, object]) -> str:
     return digest_of(dict(record))
 
 
-def _checked_approval_record(reference: ApprovalRecordReference, payload: bytes) -> dict[str, Any]:
-    """Verify one generic Tyrel approval artifact from its exact stored bytes."""
+def _require_content_addressed_reference(reference: ApprovalRecordReference) -> str:
+    """Refuse a reference before anything opens the path it names.
+
+    Every ``load()`` hands ``relative_path`` to a caller-supplied ``read_bytes``.
+    The shape check used to happen afterwards, inside the record verification, so
+    a reference naming ``../`` was *read* first and only then refused. A reader
+    that is not itself confined to the approved root would have opened a file
+    outside it before this gate had an opinion. The digest comparison would still
+    have refused the content — but the read had already happened.
+    """
 
     if not isinstance(reference, ApprovalRecordReference):
         raise DisclosureRefusal("approval authority requires a checked approval reference")
@@ -84,6 +92,13 @@ def _checked_approval_record(reference: ApprovalRecordReference, payload: bytes)
         or reference.relative_path != f"receipts/sha256/{reference_digest}.json"
     ):
         raise DisclosureRefusal("approval authority has an invalid content-addressed reference")
+    return reference_digest
+
+
+def _checked_approval_record(reference: ApprovalRecordReference, payload: bytes) -> dict[str, Any]:
+    """Verify one generic Tyrel approval artifact from its exact stored bytes."""
+
+    reference_digest = _require_content_addressed_reference(reference)
     if not isinstance(payload, bytes) or sha256_bytes(payload) != reference_digest:
         raise DisclosureRefusal("approval bytes do not match their content-addressed reference")
     try:
@@ -187,6 +202,9 @@ class DataGateAuthority:
                 "approval-record artifact"
             )
 
+        # Before the read, not after it: the path this names is about to be
+        # opened by a caller-supplied reader.
+        _require_content_addressed_reference(approval_reference)
         try:
             payload = read_bytes(approval_reference.relative_path)
             record = _checked_approval_record(approval_reference, payload)
@@ -276,6 +294,9 @@ class NormalizationApproval:
                 "approval-record artifact"
             )
 
+        # Before the read, not after it: the path this names is about to be
+        # opened by a caller-supplied reader.
+        _require_content_addressed_reference(approval_reference)
         try:
             payload = read_bytes(approval_reference.relative_path)
             record = _checked_approval_record(approval_reference, payload)
@@ -361,6 +382,11 @@ class ThirdPartyTransmissionApproval:
             not isinstance(page_id, str) or not page_id for page_id in self.page_ids
         ):
             raise DisclosureRefusal("third-party approval must name exact pages")
+        # Coerced, not merely annotated. `load()` forwards whatever the caller
+        # supplies and the membership checks accept a plain `set`, so a caller
+        # holding that set could add a page after the approval was checked and
+        # widen the approved scope of a transmission that had already passed.
+        object.__setattr__(self, "page_ids", frozenset(self.page_ids))
         checked = _checked_approval_record(self.approval_reference, self.approval_bytes)
         if checked != dict(self.approval_record):
             raise DisclosureRefusal("third-party approval record differs from its checked bytes")
@@ -403,6 +429,9 @@ class ThirdPartyTransmissionApproval:
                 "approval-record artifact"
             )
 
+        # Before the read, not after it: the path this names is about to be
+        # opened by a caller-supplied reader.
+        _require_content_addressed_reference(approval_reference)
         try:
             payload = read_bytes(approval_reference.relative_path)
             record = _checked_approval_record(approval_reference, payload)
@@ -562,6 +591,9 @@ class RunPlanApproval:
                 "run-plan approval is missing; this run requires a current approval-record artifact"
             )
 
+        # Before the read, not after it: the path this names is about to be
+        # opened by a caller-supplied reader.
+        _require_content_addressed_reference(approval_reference)
         try:
             payload = read_bytes(approval_reference.relative_path)
             record = _checked_approval_record(approval_reference, payload)

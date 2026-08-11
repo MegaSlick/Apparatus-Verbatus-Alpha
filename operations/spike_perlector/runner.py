@@ -461,11 +461,23 @@ class MeasurementRun:
             and (cell.perlectio.elapsed_ms is None or cell.perlectio.cost_usd is None)
         ]
         if unmeasured:
+            first = unmeasured[0]
+            # Name which of the two is actually missing. "reported neither" was
+            # wrong whenever an adapter recorded wall time but no cost, and it
+            # sent the reader looking for the wrong absent measurement.
+            absent = " and ".join(
+                name
+                for name, value in (
+                    ("wall time", first.perlectio.elapsed_ms),
+                    ("cost", first.perlectio.cost_usd),
+                )
+                if value is None
+            )
             raise MatrixRefusal(
                 "a publishable run must measure wall time and cost for every candidate cell; "
-                f"{len(unmeasured)} cell(s) reported neither, the first being public slot "
-                f"{unmeasured[0].perlectio.identity.public_slot} on "
-                f"{unmeasured[0].perlectio.condition.value}"
+                f"{len(unmeasured)} cell(s) did not, the first being public slot "
+                f"{first.perlectio.identity.public_slot} on "
+                f"{first.perlectio.condition.value}, which reported no {absent}"
             )
         self.roster.validate()
 
