@@ -297,6 +297,67 @@ def test_adapter_prompt_digest_mismatch_is_retained_and_later_reads_still_run():
         run.require_publishable()
 
 
+def test_a_condition_whose_only_read_failed_refuses_deltas_by_name_not_by_key_error():
+    """Retaining a failed attempt removes that condition's aggregate entirely.
+
+    `condition_aggregates` groups `self.cells`, and a condition whose every read
+    became a `FailedCandidateAttempt` contributes none — so the group is absent
+    rather than empty, and the subscript raised a bare `KeyError` out of a method
+    whose callers hold on `MatrixRefusal`.
+    """
+
+    resolved = identity("candidate-private", 1)
+    candidate = FakeCandidate(
+        resolved,
+        replies={
+            ("synthetic-act-1", Condition.WITNESS_PRIMED): FakeReply(
+                OutputStatus.COMPLETE, "alpha beta", prompt_digest_override="0" * 64
+            )
+        },
+    )
+    run = run_matrix(
+        (candidate,),
+        (evaluation_act(),),
+        prompt_registry=registry(resolved),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    with pytest.raises(MatrixRefusal, match="missing witness_primed"):
+        run.condition_deltas()
+
+
+def test_pairwise_deltas_refuse_an_unscored_denominator_instead_of_subtracting_none():
+    """`None - None` is a `TypeError`, and the `KeyError` handler never caught it.
+
+    The denominator refusal existed but sat *after* the subtraction, so it could
+    not be reached. A blank reference makes every `cer` `None`, which is exactly
+    the state this branch newly made reachable.
+    """
+
+    base = identity("base-private", 1)
+    compared = identity("compared-private", 2)
+    act = evaluation_act()
+    blank = replace(
+        act,
+        ground_truth=GroundTruth(
+            status=ReferenceStatus.NO_READABLE_TEXT,
+            text=None,
+            gaps=(),
+            adjudication_digest=act.ground_truth.adjudication_digest,
+            reference_revision=act.ground_truth.reference_revision,
+        ),
+    )
+    run = run_matrix(
+        (FakeCandidate(base), FakeCandidate(compared)),
+        (blank,),
+        prompt_registry=registry(base, compared),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    with pytest.raises(MatrixRefusal, match="pairwise deltas require checked CER denominators"):
+        run.compare_to_base(compared_public_slot=2, base_public_slot=1)
+
+
 def test_adapter_delivery_envelope_mismatch_is_retained_without_ending_the_act():
     resolved = identity("candidate-private", 1)
     candidate = FakeCandidate(

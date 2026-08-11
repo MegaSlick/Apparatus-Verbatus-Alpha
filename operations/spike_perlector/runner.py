@@ -483,6 +483,18 @@ class MeasurementRun:
         grouped = _condition_index(aggregates)
         values: list[CandidateConditionDeltas] = []
         for slot in sorted({aggregate.public_slot for aggregate in aggregates}):
+            # A condition whose every planned read became a failed attempt
+            # contributes no cells, so `condition_aggregates` emits no group for
+            # it at all and the subscript below would raise a bare `KeyError`
+            # out of a method whose callers hold on `MatrixRefusal`.
+            missing = [
+                condition for condition in ALL_CONDITIONS if (slot, condition) not in grouped
+            ]
+            if missing:
+                raise MatrixRefusal(
+                    f"condition deltas need every condition for public slot {slot}; this "
+                    f"matrix is missing {', '.join(sorted(item.value for item in missing))}"
+                )
             nuda = grouped[(slot, Condition.LECTIO_NUDA)].metrics
             primed = grouped[(slot, Condition.WITNESS_PRIMED)].metrics
             image_absent = grouped[(slot, Condition.IMAGE_ABSENT_CONTROL)].metrics
@@ -517,25 +529,30 @@ class MeasurementRun:
         if compared_public_slot == base_public_slot:
             raise MatrixRefusal("a comparative delta requires two different candidate slots")
         grouped = _condition_index(self.condition_aggregates())
+        # Read every operand before subtracting any of them. An unscored
+        # aggregate's `cer` is `None`, and `None - None` raises `TypeError`,
+        # which the `KeyError` handler below does not catch — so subtracting
+        # first put this method's own denominator refusal out of reach.
         try:
-            nuda = (
-                grouped[(base_public_slot, Condition.LECTIO_NUDA)].metrics.cer
-                - grouped[(compared_public_slot, Condition.LECTIO_NUDA)].metrics.cer
-            )
-            primed = (
-                grouped[(base_public_slot, Condition.WITNESS_PRIMED)].metrics.cer
-                - grouped[(compared_public_slot, Condition.WITNESS_PRIMED)].metrics.cer
-            )
-            image_absent = (
-                grouped[(base_public_slot, Condition.IMAGE_ABSENT_CONTROL)].metrics.cer
-                - grouped[(compared_public_slot, Condition.IMAGE_ABSENT_CONTROL)].metrics.cer
-            )
+            operands = {
+                condition: (
+                    grouped[(base_public_slot, condition)].metrics.cer,
+                    grouped[(compared_public_slot, condition)].metrics.cer,
+                )
+                for condition in ALL_CONDITIONS
+            }
         except KeyError as error:
             raise MatrixRefusal(
                 "comparison names a candidate slot not present in this full matrix"
             ) from error
-        if None in (nuda, primed, image_absent):
+        if any(value is None for pair in operands.values() for value in pair):
             raise MatrixRefusal("pairwise deltas require checked CER denominators")
+        nuda = operands[Condition.LECTIO_NUDA][0] - operands[Condition.LECTIO_NUDA][1]
+        primed = operands[Condition.WITNESS_PRIMED][0] - operands[Condition.WITNESS_PRIMED][1]
+        image_absent = (
+            operands[Condition.IMAGE_ABSENT_CONTROL][0]
+            - operands[Condition.IMAGE_ABSENT_CONTROL][1]
+        )
         return PairwiseConditionDeltas(
             compared_public_slot=compared_public_slot,
             base_public_slot=base_public_slot,

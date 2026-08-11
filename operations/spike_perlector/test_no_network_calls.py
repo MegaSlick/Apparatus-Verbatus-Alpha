@@ -22,6 +22,8 @@ this test is a regression guard, not a complete capability proof.
 import ast
 from pathlib import Path
 
+import pytest
+
 FORBIDDEN_MODULES = {
     "requests",
     "httpx",
@@ -51,7 +53,39 @@ def _imported_module_names(tree: ast.AST) -> set[str]:
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             names.add(node.module)
+            # `from http import client` records only `http`, which is not in the
+            # blocklist — `http.client` is. Recording the qualified target too is
+            # what closes that spelling; `import http.client` was always caught.
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
     return names
+
+
+def _offending_imports(source: str) -> set[str]:
+    imported = _imported_module_names(ast.parse(source))
+    return {
+        name
+        for name in imported
+        if name in FORBIDDEN_MODULES or name.split(".")[0] in FORBIDDEN_MODULES
+    }
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import http.client",
+        "from http.client import HTTPConnection",
+        # The spelling that escaped: `node.module` alone is `http`, and the
+        # blocklist names `http.client`, so neither the exact nor the
+        # first-segment test matched and the scan reported a clean file.
+        "from http import client",
+    ),
+)
+def test_the_transport_scan_catches_every_spelling_of_one_forbidden_import(source):
+    assert _offending_imports(source)
+
+
+def test_the_transport_scan_still_passes_an_ordinary_import():
+    assert not _offending_imports("from dataclasses import dataclass\nimport json")
 
 
 def test_no_file_in_this_package_imports_a_networking_module():
