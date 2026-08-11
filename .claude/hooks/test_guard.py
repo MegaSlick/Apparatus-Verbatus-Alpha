@@ -13,8 +13,10 @@ invisible. Every case there is a command that must pass without a word.
 
 from __future__ import annotations
 
+import atexit
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,16 +34,46 @@ guard = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(guard)
 
 
+# **The suite has its own checkout, and it never stands on `main`.**
+#
+# Every case below that asserts the guard stays *silent* used to run against `ROOT`,
+# the real repository — so the answer depended on the branch this checkout happened to
+# be on. A developer machine is always on a work branch, so they passed; GitHub checks
+# out `main`, so the guard refused all of them under hard rule 3 and eleven tests failed.
+# CI had failed on every push to `main` since 2026-08-05 while every pull request passed,
+# which is a check passing for an environmental reason — the thing this repository
+# exists to notice.
+#
+# `WORKTREE` is what a test means when it says "somewhere in a repository". It is also
+# the project root for the whole module, so a relative path and `project_root()` agree
+# about where the root is. The two tests that genuinely read *this* repository's files —
+# the settings the guard is wired into, and README.md's Controls section — keep `ROOT`.
+WORKTREE = Path(tempfile.mkdtemp(prefix="verbatus-guard-suite-"))
+(WORKTREE / ".git").mkdir()
+(WORKTREE / ".git" / "HEAD").write_text("ref: refs/heads/work/guard-suite\n", encoding="utf-8")
+atexit.register(shutil.rmtree, WORKTREE, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _suite_worktree_is_the_project_root(monkeypatch) -> None:
+    """Autouse, so no test can inherit the ambient root by forgetting to ask.
+
+    A test needing a different root — `project`, `project_under_tmp` — requests that
+    fixture and its `setenv` lands after this one.
+    """
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(WORKTREE))
+
+
 # ------------------------------------------------------------------- test helpers
 
 
-def decide(command: str, cwd: Path | str = ROOT):
+def decide(command: str, cwd: Path | str = WORKTREE):
     return guard.evaluate(
         {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
     )
 
 
-def decide_write(path: Path | str, content: str = "hello", cwd: Path | str = ROOT):
+def decide_write(path: Path | str, content: str = "hello", cwd: Path | str = WORKTREE):
     return guard.evaluate(
         {
             "tool_name": "Write",
@@ -140,6 +172,34 @@ class TestMain:
         (tmp_path / ".git" / "HEAD").write_text("9d3f2c1\n", encoding="utf-8")
         assert decide("git commit -m 'work'", tmp_path) is None
 
+    @pytest.mark.parametrize("branch, refused", [("main", True), ("work/topic", False)])
+    @pytest.mark.parametrize("spelling", ["absolute", "relative"])
+    def test_a_linked_worktree_is_read_through_its_gitdir_file(
+        self, tmp_path, branch, refused, spelling
+    ):
+        """A linked worktree's `.git` is a *file* naming the real gitdir, and HEAD lives
+        there. That is the layout `git worktree add` writes and the one a chamber uses,
+        and nothing exercised it — `checkout_on` and the suite's own `WORKTREE` both
+        build the directory spelling. A regression in this arm would read the parent
+        clone's branch, or none at all, for a checkout that is standing on main.
+
+        Both spellings, because `--relative-paths` writes a gitdir relative to the
+        checkout rather than to the process, and the guard leans on `Path.__truediv__`
+        returning an absolute right operand unchanged to read them with one expression.
+        Found by CodeRabbit on pull request 23.
+        """
+        stem = f"{spelling}-{branch.replace('/', '-')}"
+        checkout = tmp_path / f"checkout-{stem}"
+        gitdir = tmp_path / f"gitdir-{stem}"
+        checkout.mkdir()
+        gitdir.mkdir()
+        (gitdir / "HEAD").write_text(f"ref: refs/heads/{branch}\n", encoding="utf-8")
+        named = gitdir if spelling == "absolute" else Path("..") / gitdir.name
+        (checkout / ".git").write_text(f"gitdir: {named}\n", encoding="utf-8")
+
+        assert denied(decide("git commit -m 'work'", checkout)) is refused
+        assert denied(decide_write(checkout / "notes.md")) is refused
+
     def test_the_refusal_quotes_the_rule_rather_than_naming_a_number(self, tmp_path):
         # A refusal that cites "hard rule 3" and stops tells the reader nothing they
         # can argue with. This one has to be readable on sight.
@@ -157,6 +217,27 @@ class TestMain:
             "git merge-base main HEAD",
         ):
             assert decide(command, directory) is None, command
+
+
+class TestTheSuiteDoesNotDependOnThisCheckoutsBranch:
+    """CI was red on `main` for six days while every pull request was green.
+
+    Nothing was wrong with the guard. Every case asserting it stays silent ran against
+    the real checkout, and GitHub checks out `main` there — so hard rule 3 refused all
+    of them. Locally the same cases passed because a session is always on a work branch,
+    which is a check passing for an environmental reason rather than a correct one.
+    """
+
+    def test_the_suites_own_checkout_is_never_main(self):
+        assert guard.checkout_branch(WORKTREE) == "refs/heads/work/guard-suite"
+
+    def test_the_failure_reproduces_when_the_checkout_stands_on_main(self, tmp_path):
+        # Both halves in one case, because the point is the difference between them.
+        # The command is the same; only the checkout under it changes. The denial is
+        # the guard working — it is only a bug when a "must stay silent" case is run
+        # against whichever branch the machine happens to be sitting on.
+        assert decide("git commit --amend --no-edit") is None
+        assert denied(decide("git commit --amend --no-edit", checkout_on(tmp_path, "main")))
 
 
 # ----------------------------------------------- 2. deleting outside the drawers
@@ -435,7 +516,7 @@ def decide_as_agent(tool: str, tool_input: dict, agent: str = "general-purpose")
         {
             "tool_name": tool,
             "tool_input": tool_input,
-            "cwd": str(ROOT),
+            "cwd": str(WORKTREE),
             "agent_type": agent,
             "agent_id": "agent-123",
         }
@@ -451,14 +532,14 @@ class TestAgentGovernance:
     """
 
     def test_an_agent_may_not_write_a_governing_document(self):
-        assert denied(decide_as_agent("Write", {"file_path": str(ROOT / "CLAUDE.md")}))
-        assert denied(decide_as_agent("Edit", {"file_path": str(ROOT / "GOVERNANCE.md")}))
+        assert denied(decide_as_agent("Write", {"file_path": str(WORKTREE / "CLAUDE.md")}))
+        assert denied(decide_as_agent("Edit", {"file_path": str(WORKTREE / "GOVERNANCE.md")}))
 
     def test_an_agent_may_not_write_under_dot_claude(self):
         for path in ("settings.json", "hooks/guard.py", "agents/scout.md"):
-            assert denied(decide_as_agent("Write", {"file_path": str(ROOT / ".claude" / path)})), (
-                path
-            )
+            assert denied(
+                decide_as_agent("Write", {"file_path": str(WORKTREE / ".claude" / path)})
+            ), path
 
     def test_an_agent_may_not_reach_them_through_a_shell_either(self):
         # Explore and Plan hold Bash. Withholding Edit does not make a role read-only.
@@ -475,7 +556,7 @@ class TestAgentGovernance:
         2026-08-02. `.claude/agents/README.md` stays refused, by the `.claude/` arm
         rather than by its name. Found by CodeRabbit on pull request 15.
         """
-        assert denied(decide_as_agent("Edit", {"file_path": str(ROOT / "README.md")}))
+        assert denied(decide_as_agent("Edit", {"file_path": str(WORKTREE / "README.md")}))
         assert denied(decide_as_agent("Edit", {"file_path": "README.md"}))
         assert denied(decide_as_agent("Edit", {"file_path": "./README.md"}))
         assert denied(decide_as_agent("Edit", {"file_path": ".claude/agents/README.md"}))
@@ -498,7 +579,9 @@ class TestAgentGovernance:
 
     def test_an_agent_may_write_anything_else(self):
         # The point is a bound, not a cage. Ordinary work is untouched.
-        assert decide_as_agent("Write", {"file_path": str(ROOT / "operations" / "x.py")}) is None
+        assert (
+            decide_as_agent("Write", {"file_path": str(WORKTREE / "operations" / "x.py")}) is None
+        )
         assert decide_as_agent("Bash", {"command": "pytest -q"}) is None
         assert decide_as_agent("Bash", {"command": "grep -rn TODO CLAUDE.md"}) is None
 
@@ -529,11 +612,11 @@ class TestAgentGovernance:
 
     def test_the_main_session_is_not_touched_by_this(self):
         # Named explicitly: the asymmetry is the design, not a leak.
-        assert decide_write(ROOT / "CLAUDE.md") is None
+        assert decide_write(WORKTREE / "CLAUDE.md") is None
         assert decide("echo x > CLAUDE.md") is None
 
     def test_the_refusal_tells_the_agent_what_to_do_instead(self):
-        decision = decide_as_agent("Write", {"file_path": str(ROOT / "CLAUDE.md")})
+        decision = decide_as_agent("Write", {"file_path": str(WORKTREE / "CLAUDE.md")})
         assert "propose exact wording" in decision[1].lower()
 
 
@@ -698,8 +781,8 @@ class TestSilence:
         # It no longer asks. CLAUDE.md hard rule 10 governs this, and the session has
         # read it; a prompt on every edit to a document the session edits legitimately
         # is what trained the reflex. The git hooks still police what lands.
-        assert decide_write(ROOT / "CLAUDE.md") is None
-        assert decide_write(ROOT / ".claude" / "settings.json") is None
+        assert decide_write(WORKTREE / "CLAUDE.md") is None
+        assert decide_write(WORKTREE / ".claude" / "settings.json") is None
 
     def test_a_heredoc_body_is_data_rather_than_a_command(self, tmp_path):
         # Writing a document that quotes a dangerous command must not read as one.

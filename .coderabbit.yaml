@@ -1,0 +1,190 @@
+language: en-GB
+
+# Capped at 250 characters by the schema, so what this project *is* lives in the
+# repository-wide path instruction below rather than here.
+tone_instructions: >-
+  Read by a manager who does not write code, on work that is entirely AI-generated. Name
+  the concrete failure a defect causes, not the category it belongs to. A finding that
+  cannot say what breaks is not a finding.
+
+reviews:
+  # Default is `chill`. This repository wants everything and filters afterwards.
+  profile: assertive
+
+  # `request_changes_workflow: false` — CodeRabbit must never be able to block a merge.
+  # Tyrel decides what merges (CLAUDE.md hard rule 1).
+  request_changes_workflow: false
+
+  high_level_summary: true
+  sequence_diagrams: true
+  estimate_code_review_effort: true
+  related_prs: true
+  suggested_labels: true
+  auto_apply_labels: false
+  poem: false
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    # Default is 5. A stage branch carries 17-39 commits, so the default silently
+    # stops reviewing partway through exactly the pull requests that need it most.
+    auto_pause_after_reviewed_commits: 0
+
+  pre_merge_checks:
+    # Every mode stays `warning`. `error` requires resolution before merging, and a
+    # check that can hold his merge button is enforcement he cannot undo.
+    title:
+      mode: warning
+    description:
+      mode: warning
+    # Quoted, because a YAML 1.1 parser resolves bare `off` to the boolean `false`
+    # and this field wants the string. The CLI validator accepts either; PyYAML and
+    # the yamllint enabled below do not. Found by CodeRabbit on PR 23.
+    docstrings:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
+    custom_checks:
+      - name: Carried code is named as carried
+        mode: warning
+        instructions: >-
+          CLAUDE.md, "Quarantine": code from the old pipeline is written new here, not
+          copied. Adapted, renamed and reformatted count as copied. Where a line is
+          carried across anyway it must be named as carried in both the commit message
+          and the report, and third-party code must record its source and licence.
+          Flag any addition that reads as lifted from elsewhere without that naming.
+          Do not flag ordinary new code merely because it resembles a common pattern.
+      - name: No witness picker
+        mode: warning
+        instructions: >-
+          GOVERNANCE 3 and CLAUDE.md hard rule 8 forbid anything that selects among
+          witnesses — under any name: choosing, ranking to pick, voting, best-of,
+          confidence-thresholding down to one, or discarding a witness as bad. Witnesses
+          are clues, never options; the Perlector reads and never picks. No witness is
+          ever thrown away, however corrupt, absent or confidently wrong. Flag any code
+          that reduces a set of witnesses to a chosen one, and say which rule it meets.
+      - name: Nothing is lost silently
+        mode: warning
+        instructions: >-
+          GOVERNANCE 2 and CLAUDE.md hard rule 7. Flag a swallowed exception, a bare
+          `except: pass`, a discarded write failure, a default substituted for missing
+          evidence, or any state, receipt or status field that reads as success when the
+          evidence behind it is absent or unverified. A missed act is worse than a poorly
+          read act: an honest failure is correct, a quiet one is not.
+
+  finishing_touches:
+    docstrings:
+      enabled: true
+    unit_tests:
+      enabled: true
+    # Off by default; this repository wants the simplification pass offered.
+    simplify:
+      enabled: true
+    autofix:
+      enabled: true
+    fix_ci:
+      enabled: true
+
+  path_instructions:
+    - path: "**"
+      instructions: >-
+        What this project reads, because it decides how expensive a defect is. The
+        material is Quebec parish registers and fur-trade-era records from public sources
+        such as FamilySearch and public archives. The corpus is deliberately
+        heterogeneous — handwriting across centuries, typed transcriptions and printed
+        books together — and that is on purpose, not an oversight to be cleaned up. Runs
+        cover whole parishes, approaching the population of a small town, and the
+        established readings feed kinship reconstruction across generations. So a fault
+        that drops, skips or silently substitutes one act is not a small bug: it removes
+        a person from a family, and nothing downstream can tell that it happened. Weigh
+        anything that loses, reorders or quietly defaults a record accordingly. Several
+        vision models report on each act as witnesses; a trained reader establishes the
+        text. Witnesses are clues, never options — code that picks among them is a
+        defect however well it scores.
+    - path: "operations/pod/**"
+      instructions: >-
+        This is the money path: it creates, adopts, guards and shuts down GPU pods that
+        bill by the hour, and a fault here costs real money or loses a run. Hold it to a
+        higher bar than the rest of the tree. A failure must be reported as the thing it
+        actually is — a durable-store fault must not surface as an arming fault, and a
+        request fault must not surface as a lease fault. Unbounded waits on a billing pod
+        are defects. `assert` on this path is acceptable only where the invariant is
+        already enforced by a `raise` that survives `python -O`, and the comment beside it
+        must name that `raise`.
+    - path: "operations/autoclave/**"
+      instructions: >-
+        The chamber launcher. Anything writing to `/home/agent/.claude` touches a volume
+        every chamber of that vendor shares, so concurrent-writer and lost-update hazards
+        are real rather than theoretical. Every `sh -c` body must fail loudly: check that
+        it sets `set -eu`, because these bodies end on a copy and a failure that is not
+        fatal is masked by the copy that follows it.
+    - path: ".githooks/**"
+      instructions: >-
+        Local enforcement. CLAUDE.md hard rule 11: every guard must be removable in one
+        documented step, and README.md must record that step. Flag any check that cannot
+        be switched off, and any that fails open — a check that cannot run is a failure,
+        not a pass (GOVERNANCE 10).
+    - path: ".claude/**"
+      instructions: >-
+        Governed. CLAUDE.md hard rule 10 bars a spawned agent from editing anything here;
+        the main session may, at Tyrel's direction and after the governed-edit procedure.
+        Do not raise the rule against a change that followed it. What is worth raising is
+        drift: a refusal quoting a CLAUDE.md section name that no longer exists, a
+        hard-rule number cited wrongly (numbers are appended, never inserted or reused),
+        or a count of what the guard refuses that disagrees with its own `CHECKS`. All
+        three have gone stale here before. `guard.py` and `test_guard.py` are the local
+        enforcement layer: a check that cannot run is a failure, not a pass, and a test
+        that passes because of the machine it ran on has proved nothing.
+    - path: "**/*.py"
+      instructions: >-
+        This repository selects only Ruff rules `E4, E7, E9, F, I, B` in `pyproject.toml`.
+        Do not raise `S`, `RUF` or other unselected rules as findings, and do not propose
+        `# noqa` for a rule that is not run here. Test drivers passing a fixed argv to
+        `subprocess` are not command injection.
+    - path: "**/test_*.py"
+      instructions: >-
+        Every test here is AI-written and none has been mutation-tested. Ask whether a
+        test would actually fail if the behaviour it names regressed, and say so when it
+        would not. A test asserting on a string that the implementation also produces is
+        not evidence.
+
+  tools:
+    ruff:
+      enabled: true
+    shellcheck:
+      enabled: true
+    gitleaks:
+      enabled: true
+    markdownlint:
+      enabled: true
+    actionlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    ast-grep:
+      essential_rules: true
+
+knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+    # The whole point: every review reads the rules it is reviewing against, instead of
+    # re-deriving them from the diff. These are the documents that bind.
+    filePatterns:
+      - "GOVERNANCE.md"
+      - "GOALS.md"
+      - "ARCHITECTURE.md"
+      - "GLOSSARY.md"
+      - "CLAUDE.md"
+      - "README.md"
+      - "**/README.md"
+  learnings:
+    # Private repository, so `auto` would file learnings at organisation scope. This
+    # project's conclusions belong to this project.
+    scope: local
+  pull_requests:
+    scope: local
+  issues:
+    scope: local
