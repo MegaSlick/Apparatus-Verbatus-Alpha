@@ -328,3 +328,19 @@ def test_disagreement_spans_still_answers_the_empty_case_the_protocol_pins():
     assert disagreement_spans("", "abc") == ((0, 0),)
     assert disagreement_spans("abc", "") == ((0, 3),)
     assert disagreement_spans("", "") == ()
+
+
+@pytest.mark.parametrize(
+    ("unmeasurable", "message"),
+    (
+        ("alpha " + chr(0xD800) + " beta", "unpaired surrogate"),
+        ("a" + "\u0301" * 31, "more than 30 combining marks"),
+    ),
+)
+def test_disagreement_spans_refuses_unmeasurable_bare_text(unmeasurable, message):
+    """The direct aligner enforces every text bound the protocol claims."""
+
+    with pytest.raises(AdjudicationRefusal, match=message):
+        disagreement_spans(unmeasurable, "ordinary text")
+    with pytest.raises(AdjudicationRefusal, match=message):
+        disagreement_spans("ordinary text", unmeasurable)

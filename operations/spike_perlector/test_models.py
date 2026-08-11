@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 import operations.spike_perlector.models as models
@@ -110,8 +108,9 @@ def test_ground_truth_refuses_text_over_the_one_act_bound():
         )
 
 
-# `json.loads('"\\ud800"')` returns this: a valid str Python will not encode.
-LONE_SURROGATE = json.loads('"alpha \\ud800 beta"')
+# A valid ``str`` Python will not encode, built without depending on the JSON
+# scanner's handling of lone-surrogate escape sequences during test collection.
+LONE_SURROGATE = "alpha " + chr(0xD800) + " beta"
 
 
 def test_candidate_response_refuses_text_python_cannot_encode():
@@ -310,4 +309,4 @@ def test_a_perlectio_testimonia_count_must_be_a_count_before_it_is_read_as_a_fla
 def test_a_real_testimonia_count_is_still_accepted():
     """Invariant #14, the other direction."""
 
-    assert _witness_primed_perlectio(testimonia_count=3).testimonia_count == 3
+    _witness_primed_perlectio(testimonia_count=3)

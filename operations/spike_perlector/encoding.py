@@ -13,7 +13,13 @@ from typing import Any
 
 
 def canonical_json_bytes(value: Any) -> bytes:
-    """Encode JSON deterministically without silently converting unsupported values."""
+    """Encode a candidate dossier in a deterministic, permissive JSON envelope.
+
+    This follows ``json.dumps`` for supported values, including finite floats and
+    integer keys converted to strings. Approval scopes use the strict repository
+    canonicalizer in ``gates._approval_digest``; this helper must not be used to
+    claim that arbitrary caller content was bound without conversion.
+    """
 
     return json.dumps(
         value,

@@ -93,14 +93,11 @@ def _opcodes(first: str, second: str) -> list[tuple[str, int, int, int, int]]:
     """
 
     for name, text in (("first", first), ("second", second)):
-        # A type check rather than `require_measurable_text`, which refuses the
-        # empty string: the protocol pins "empty against `abc`" as a case this
-        # function must answer, so emptiness is valid input here. What is not
-        # valid is something that merely answers to `len()` — bytes, a list —
-        # which would reach `SequenceMatcher` and be aligned as a sequence of
-        # something other than characters, producing offsets into a text that
-        # does not exist. `disagreement_spans` takes bare strings from an
-        # adjudicator, so this is the boundary. Found by CodeRabbit.
+        # `disagreement_spans` takes bare strings from an adjudicator, so this
+        # function is the boundary for both type and measurable-text checks. Empty
+        # strings remain valid: `require_measurable_text` refuses unpaired
+        # surrogates and excessive combining-mark runs but does not require text to
+        # be non-empty.
         if not isinstance(text, str):
             raise AdjudicationRefusal(
                 f"the {name} draft is {type(text).__name__}, not the text this aligns"
@@ -111,6 +108,10 @@ def _opcodes(first: str, second: str) -> list[tuple[str, int, int, int, int]]:
                 f"{MAX_TEXT_LENGTH}-character bound for one act's "
                 "diplomatic transcription"
             )
+        try:
+            require_measurable_text(text, f"the {name} draft")
+        except MeasurementRefusal as error:
+            raise AdjudicationRefusal(str(error)) from error
     return SequenceMatcher(None, first, second, autojunk=False).get_opcodes()
 
 
