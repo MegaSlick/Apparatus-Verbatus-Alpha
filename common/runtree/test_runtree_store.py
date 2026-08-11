@@ -1001,3 +1001,31 @@ def test_an_existing_target_is_still_a_reuse_check_not_a_hard_link_complaint(tmp
 def test_the_run_file_is_valid_json_a_human_can_read(tmp_path):
     make_run(tmp_path)
     assert json.loads((tmp_path / "r1" / RUN_FILE).read_text(encoding="utf-8"))["run_id"] == "r1"
+
+
+def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(tmp_path):
+    """The receipt is derived, not evidence, so damage must not be a dead end.
+
+    It is reconstructed from the immutable review and request records beside it,
+    and it is explicitly replaced in place rather than published as an immutable
+    artifact. Validating the *existing* file before writing the new one meant a
+    torn write, a truncated file, or a receipt from an older schema left the run
+    permanently unable to record a partition it could recompute perfectly well.
+    GOVERNANCE 4 protects evidence; this is not evidence, and the refusal
+    protected nothing while blocking recovery.
+
+    The refusal that *does* matter — a valid receipt disagreeing about the sealed
+    proposal-act denominator — is pinned by the test above and is unaffected.
+    Found by CodeRabbit.
+    """
+    tree = make_run(tmp_path)
+    receipt = make_recensor_partition_receipt()
+    assert tree.write_recensor_partition_receipt(receipt).reused is False
+
+    target = tree.resolve(tree.recensor_partition_receipt_path())
+    for damage in (b"", b"{", b'{"schema": "nonsense"}', b"\xff\xfe not utf-8"):
+        target.write_bytes(damage)
+        assert tree.write_recensor_partition_receipt(receipt).reused is False, (
+            f"a receipt damaged as {damage!r} blocked its own replacement"
+        )
+        assert tree.read_recensor_partition_receipt()["run_id"] == "r1"

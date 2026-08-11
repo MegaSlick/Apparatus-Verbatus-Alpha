@@ -57,7 +57,12 @@ from common.contracts.canonical import (
     verify_self_hash,
 )
 from common.contracts.envelope import validate_envelope, validate_input_refs, verify_input_bytes
-from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
+from common.contracts.errors import (
+    ApprovalRefusal,
+    ContractError,
+    IncompatibleReuse,
+    SchemaRefusal,
+)
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import writing_directory
 
@@ -401,8 +406,23 @@ class RunTree:
         target = self.resolve(relative)
         data = canonical_bytes(checked)
         if target.exists():
-            existing = validate_recensor_partition_receipt(_read_json(target))
-            if (
+            # An unreadable or invalid receipt is treated as absent, not as a
+            # reason to refuse the valid one being written. This record is
+            # **derived** — the paragraph above says so, and the immutable review
+            # and request evidence it is reconstructed from sits beside it
+            # untouched — so a torn write, a truncated file or a receipt from an
+            # older schema left the run permanently unable to record a partition
+            # it could recompute perfectly well. GOVERNANCE 4 protects evidence;
+            # this is not evidence, and refusing here protected nothing while
+            # blocking recovery. The `expected_act_count` refusal below still
+            # applies whenever the existing receipt *is* valid, because that is a
+            # real disagreement about a sealed denominator rather than damage.
+            # Found by CodeRabbit.
+            try:
+                existing = validate_recensor_partition_receipt(_read_json(target))
+            except (ContractError, OSError, UnicodeDecodeError, ValueError, RecursionError):
+                existing = None
+            if existing is not None and (
                 existing["run_id"] == checked["run_id"]
                 and existing["config_digest"] == checked["config_digest"]
                 and existing["expected_act_count"] != checked["expected_act_count"]

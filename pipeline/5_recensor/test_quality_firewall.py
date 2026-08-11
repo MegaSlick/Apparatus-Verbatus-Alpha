@@ -171,9 +171,15 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
             imported.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
-    assert not imported & {"subprocess", "os", "importlib", "multiprocessing"}, (
-        f"the Recensor imports {sorted(imported & {'subprocess', 'os', 'importlib'})}; it "
-        "appends recovery requests and never invokes the stage that answers one"
+    # One binding, used by both the assertion and its message. Written out twice
+    # they had already drifted: the check refused `multiprocessing` and the message
+    # intersected a set without it, so a Recensor that imported `multiprocessing`
+    # would have failed reporting an empty list of offending modules — the failure
+    # naming nothing it failed on. Found by CodeRabbit.
+    banned = {"subprocess", "os", "importlib", "multiprocessing"}
+    assert not imported & banned, (
+        f"the Recensor imports {sorted(imported & banned)}; it appends recovery "
+        "requests and never invokes the stage that answers one"
     )
 
 
