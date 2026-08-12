@@ -108,6 +108,26 @@ def _recovery_request_publications(
     return found
 
 
+# Every module that would give this stage a way to run something. Named once,
+# used by the real scan and by the synthetic cases that prove the set is
+# load-bearing rather than decorative.
+INVOCATION_MODULES = frozenset(
+    {"subprocess", "os", "importlib", "multiprocessing", "runpy", "pty", "asyncio"}
+)
+
+
+def _top_level_imports(trees) -> set[str]:
+    """The top-level module name of every `import x` and `from x import y`."""
+    imported: set[str] = set()
+    for tree in trees:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+    return imported
+
+
 def _enclosing_ifs(tree: ast.Module, target: ast.Call) -> list[ast.If]:
     """Every `if` whose body contains this call, innermost first.
 
@@ -208,13 +228,7 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     # Across every source file of the stage. This scanned `run.py` alone while
     # the stage had two, so a `subprocess` import in `residual_ink.py` would have
     # passed a guard whose whole subject is "this stage cannot invoke anything".
-    imported = set()
-    for _, tree in _modules():
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name.split(".")[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module.split(".")[0])
+    imported = _top_level_imports(tree for _, tree in _modules())
     # One binding, used by both the assertion and its message. Written out twice
     # they had already drifted: the check refused `multiprocessing` and the message
     # intersected a set without it, so a Recensor that imported `multiprocessing`
@@ -241,11 +255,65 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     # `__import__(name)` from a computed string, or an attribute reached
     # through an already-imported module — is outside what a static scan of
     # import statements can see. Both findings above were CodeRabbit's.
-    banned = {"subprocess", "os", "importlib", "multiprocessing", "runpy", "pty", "asyncio"}
-    assert not imported & banned, (
-        f"the Recensor imports {sorted(imported & banned)}; it appends recovery "
+    assert not imported & INVOCATION_MODULES, (
+        f"the Recensor imports {sorted(imported & INVOCATION_MODULES)}; it appends recovery "
         "requests and never invokes the stage that answers one"
     )
+
+
+def test_the_banned_set_still_names_every_module_it_is_supposed_to():
+    """Pins the set's CONTENTS against an independent literal.
+
+    The parametrized test below cannot do this and it is worth saying why, because
+    the first attempt at this got it wrong: parametrizing over
+    `INVOCATION_MODULES` means deleting a member deletes its own test case, so the
+    suite goes green with one fewer test and nothing fails. Caught by mutating
+    `asyncio` out of the set and watching 12 tests pass. The duplication here is
+    deliberate and is the entire mechanism -- **adding** a module is a one-place
+    edit, **removing** one has to be argued in two places, which is the friction a
+    re-invocation firewall should have.
+    """
+    assert INVOCATION_MODULES == {
+        "subprocess",  # the direct route
+        "os",  # os.system, os.exec*, os.popen
+        "importlib",  # import_module then call into it
+        "multiprocessing",  # spawns interpreters
+        "runpy",  # run_path re-invokes a stage in-process, importing nothing else
+        "pty",  # reaches a shell the way subprocess does
+        "asyncio",  # create_subprocess_exec, and the word "subprocess" never appears
+    }
+
+
+@pytest.mark.parametrize("module", sorted(INVOCATION_MODULES))
+def test_every_banned_module_is_actually_caught_when_a_source_file_imports_it(module):
+    """The test above is vacuous on its own: the Recensor imports none of these,
+    so emptying `INVOCATION_MODULES` entirely would leave it passing. Meta-
+    invariant #88 -- an intersection assertion is satisfied by an empty set.
+
+    This drives the same extraction over synthetic sources that really do import
+    each banned module, both plainly and as `from x import y`, so removing a
+    member from the set (or breaking the extraction) fails here by name. Without
+    it, a later edit could drop `asyncio` and a subsequent
+    `asyncio.create_subprocess_exec(...)` could re-roll a reading with nothing
+    failing. Found by CodeRabbit.
+    """
+    plain = _top_level_imports([ast.parse(f"import {module}\n")])
+    assert module in plain, f"a source file importing {module} was not seen at all"
+    assert plain & INVOCATION_MODULES, f"{module} is not refused by INVOCATION_MODULES"
+
+    submodule = _top_level_imports([ast.parse(f"from {module}.sub import thing\n")])
+    assert submodule & INVOCATION_MODULES, (
+        f"`from {module}.sub import thing` slipped past the top-level extraction"
+    )
+
+
+def test_an_unrelated_import_is_not_refused():
+    """The other half of meta-invariant #88: a check that refuses everything is
+    as useless as one that refuses nothing, and would make the test above pass
+    for the wrong reason."""
+    imported = _top_level_imports([ast.parse("import json\nfrom pathlib import Path\n")])
+    assert imported == {"json", "pathlib"}
+    assert not imported & INVOCATION_MODULES
 
 
 # --- The behavioural half: a real quality failure reaches review, not rework ----
