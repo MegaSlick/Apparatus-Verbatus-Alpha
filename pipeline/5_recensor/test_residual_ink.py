@@ -99,9 +99,20 @@ def test_the_fast_counts_agree_with_a_straightforward_implementation():
         # A background-dominant page most of the time (the real shape), and
         # occasionally an arbitrary one, so the mode's tie-breaking is exercised.
         if case % 5:
+            # The two values `>=` and `>` disagree about, derived from the
+            # constant rather than written as a literal: a literal stops being
+            # the boundary the moment the constant moves, and this test is what
+            # is supposed to catch a threshold flipped from `>=` to `>` --
+            # which would drop one pixel value per page out of `total_ink` and
+            # `outside_ink` together, lowering `fraction_outside` and leaving a
+            # page with a missed act unflagged. Found by CodeRabbit.
+            on_boundary = BACKGROUND - MINIMUM_CONTRAST_BELOW_BACKGROUND
+            just_inside = on_boundary + 1
             rows = [
                 bytearray(
-                    rng.choice((BACKGROUND, BACKGROUND, BACKGROUND, INK, BACKGROUND - 40, 0, 255))
+                    rng.choice(
+                        (BACKGROUND, BACKGROUND, BACKGROUND, INK, on_boundary, just_inside, 0, 255)
+                    )
                     for _ in range(width)
                 )
                 for _ in range(height)

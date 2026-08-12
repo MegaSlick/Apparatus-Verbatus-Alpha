@@ -225,11 +225,23 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     # stage in this very process, importing nothing banned, and the guard would
     # have reported a pass over exactly the re-roll GOVERNANCE 11 forbids and
     # this file exists to make impossible. `pty` reaches a shell the same way
-    # `subprocess` does; `asyncio` deliberately is NOT here, because its
-    # subprocess routes all land on `subprocess` itself and banning the whole
-    # module would refuse ordinary concurrency that invokes nothing.
-    # Found by CodeRabbit.
-    banned = {"subprocess", "os", "importlib", "multiprocessing", "runpy", "pty"}
+    # `subprocess` does.
+    #
+    # `asyncio` is here on the second look. It was left off on the reasoning
+    # that its subprocess routes all land on `subprocess` itself — true of what
+    # CPython executes, and irrelevant to what this test reads. This walks the
+    # stage's own `import` statements and never follows a transitive import, so
+    # `import asyncio` followed by `asyncio.create_subprocess_exec(...)` puts
+    # the word `subprocess` nowhere in this stage's source and passes. The
+    # Recensor is synchronous and imports none of these; if it ever genuinely
+    # needs `asyncio`, that is a decision to take deliberately rather than a
+    # hole to leave open now.
+    #
+    # **This guard covers direct imports only.** A dynamic route —
+    # `__import__(name)` from a computed string, or an attribute reached
+    # through an already-imported module — is outside what a static scan of
+    # import statements can see. Both findings above were CodeRabbit's.
+    banned = {"subprocess", "os", "importlib", "multiprocessing", "runpy", "pty", "asyncio"}
     assert not imported & banned, (
         f"the Recensor imports {sorted(imported & banned)}; it appends recovery "
         "requests and never invokes the stage that answers one"
