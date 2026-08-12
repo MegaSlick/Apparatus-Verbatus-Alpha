@@ -68,92 +68,6 @@ AUTH_VOL_CODEX="verbatus-ac-auth-codex"
 AUTH_DIR_CLAUDE="/home/agent/.claude"
 AUTH_DIR_CODEX="/home/agent/.codex"
 
-# **Claude keeps its configuration in two places and only one of them was mounted.**
-# `.credentials.json` lives inside the mounted directory named above, so it survived
-# every container. `.claude.json` lives beside that directory rather than in it — one
-# level *up*, outside the mount — and this script created a fresh empty one in every
-# chamber. Both paths below are the container's own; nothing here reads this host. The
-# CLI needs
-# both to refresh an OAuth token: with the credential present and the config blank the
-# refresh fails and the CLI **blanks the token fields in place**, leaving a record whose
-# `refreshTokenExpiresAt` is still weeks away and whose tokens are empty strings.
-#
-# That is not an expiry and it is not a lost volume. It is why the sign-in worked for a
-# few hours and then died, twice, on 2026-08-05 and 2026-08-06 — the access token lasts
-# until its first refresh, and the first refresh is where it goes. The 50-byte
-# `backups/.claude.json.backup.*` files in the volume are the CLI dutifully backing up
-# the empty stub this script had just made.
-#
-# So the file is kept inside the volume and copied in and out around anything that runs
-# a Claude CLI. Copying rather than symlinking on purpose: the CLI writes this file
-# atomically — temp file, then rename over — and a rename replaces a symlink with a
-# regular file, which would put the whole thing back exactly as it was while looking
-# fixed. Codex needs none of this: everything it writes is already inside its own
-# mounted directory, which is why only one vendor ever had this problem.
-HOME_CONFIG_LIVE="/home/agent/.claude.json"
-HOME_CONFIG_KEPT="${AUTH_DIR_CLAUDE}/home-config.json"
-
-# The seed aborts its shell on a failed copy rather than letting the second line
-# report success over a partial file — a chamber running the CLI against a torn
-# configuration is the original bug wearing a new face. The save publishes by
-# copy-to-temp-then-rename so a reader never sees a half-written file even when two
-# chambers save at once: rename is atomic on one filesystem, so the last complete
-# snapshot wins and no interleaving produces a torn one.
-#
-# **The temp name comes from `mktemp`, not from the shell pid, and that correction
-# is measured.** This once used `.tmp.$$` on the stated grounds that a container
-# shell pid is unique per chamber. It is not: each container has its own pid
-# namespace, and two chambers exec'd into on this machine both reported pid 8. The
-# kept file is on a volume shared by every chamber of that vendor, so both saves
-# would have written one temp path at once and published the interleaving — the
-# exact tear the rename exists to prevent, in the mechanism built to prevent it.
-# `mktemp` creates the file on the real shared filesystem, so uniqueness is decided
-# where the collision would happen. The save ends in `false` rather than `exit` when the
-# copy fails, because `wrap_home_config` below needs to see the failure and still
-# report the CLI's own status; a bare `sh -c` caller sees the non-zero either way.
-#
-# The seed reads with `cat` rather than `cp`, and that is the pair to the rename
-# above rather than a matter of taste. GNU `cp` stats its source before opening it
-# and refuses when the two differ: "skipping file ..., as it was replaced while
-# being copied", exit 1. The save's rename is exactly that replacement, so one
-# chamber publishing its sign-in killed another chamber's seed — and the seed's
-# `|| exit 1` then killed that whole dispatch before the CLI ran. CI found it; a
-# two-CPU runner reproduces it in about one attempt in twenty, and concurrent
-# Claude chambers are the standing review roster rather than a corner case.
-# `cat` opens the file once and reads the inode it opened, so a rename underneath
-# is invisible to it: the seed gets the complete snapshot from one side of the
-# rename or the other, which is the same guarantee the readers get.
-HOME_CONFIG_SEED="if [ -f '${HOME_CONFIG_KEPT}' ]; then cat '${HOME_CONFIG_KEPT}' > '${HOME_CONFIG_LIVE}' || exit 1; fi
-if [ ! -f '${HOME_CONFIG_LIVE}' ]; then printf '%s\\n' '{}' > '${HOME_CONFIG_LIVE}'; fi"
-HOME_CONFIG_SAVE="if [ -f '${HOME_CONFIG_LIVE}' ] && [ -d '${AUTH_DIR_CLAUDE}' ]; then { ac_home_config_tmp=\$(mktemp '${HOME_CONFIG_KEPT}.tmp.XXXXXX') && cp '${HOME_CONFIG_LIVE}' \"\$ac_home_config_tmp\" && mv -f \"\$ac_home_config_tmp\" '${HOME_CONFIG_KEPT}'; } || { rm -f \"\${ac_home_config_tmp:-}\"; false; }; fi"
-
-# Run one command between a seed and a save, and hand back the command's own exit
-# status rather than the copy's. A save that quietly became the exit code would report
-# a failed sign-in as success.
-#
-# The single quotes on the two `ac_home_config_rc` lines are the whole point and not an
-# oversight: this function builds a script for the *container's* shell, so the variable
-# must survive as text and be expanded in there. Expanding it here would bake in this
-# shell's exit status, which is a different number about a different command.
-# A save that fails after a successful command is surfaced as the wrapper's own
-# failure — a sign-in that worked but was not persisted will die at the next
-# refresh, and reporting success there is how this bug stayed invisible twice. A
-# failed command keeps its own status regardless; the save still ran first.
-# shellcheck disable=SC2016
-wrap_home_config() {
-    printf '%s\n' \
-        "$HOME_CONFIG_SEED" \
-        "$1" \
-        'ac_home_config_rc=$?' \
-        "$HOME_CONFIG_SAVE" \
-        'ac_home_config_save_rc=$?' \
-        'if [ "$ac_home_config_rc" -eq 0 ] && [ "$ac_home_config_save_rc" -ne 0 ]; then' \
-        '    echo "the command finished but its configuration could not be saved to the volume; the next chamber may find this sign-in blank" >&2' \
-        '    exit "$ac_home_config_save_rc"' \
-        'fi' \
-        'exit $ac_home_config_rc'
-}
-
 die() { printf 'autoclave: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
 
@@ -233,7 +147,12 @@ cmd_doctor() {
         else
             asked=0; authenticated "$vendor" "$volume" || asked=$?
             case "$asked" in
-                0) echo "signed in (${volume})" ;;
+                0)
+                    if [ "$vendor" = claude ]; then
+                        echo "signed in (${volume}); access is refreshed at dispatch"
+                    else
+                        echo "signed in (${volume})"
+                    fi ;;
                 1) echo "not signed in — the volume exists but ${vendor} says no; run: $0 login ${vendor}" ;;
                 *) echo "unknown — the volume exists but ${vendor} could not be asked" ;;
             esac
@@ -398,13 +317,8 @@ cmd_login() {
     # happened either way, and a vendor CLI that failed is the clearest evidence there
     # is of what happened.
     #
-    # **The booth is where the two-file split bit hardest.** A Claude sign-in writes
-    # `.credentials.json` into the volume and `.claude.json` into a container marked
-    # `--rm`, so the half the refresh needs was thrown away the moment the sign-in
-    # succeeded. Wrapping the CLI keeps both halves. See `HOME_CONFIG_KEPT` above.
-    # `CLAUDE_CONFIG_DIR` points the CLI's whole configuration at the mounted volume,
-    # so the booth's `--rm` can no longer throw away the half a refresh needs. See the
-    # dispatch path for the probe that established this.
+    # Claude receives CLAUDE_CONFIG_DIR so every configuration file lands in the
+    # mounted volume and survives this temporary login container.
     case "$vendor" in
         claude)
             login_cmd="$tool"
@@ -887,7 +801,7 @@ cmd_new() {
         git config user.email 'autoclave@localhost'
         # **The hooks are switched on in here.** `core.hooksPath` is local to a clone
         # and never travels, so a fresh chamber had every git-hook rule off — silently,
-        # which is the state `CLAUDE.md`'s "What may be missing or wrong" warns about.
+        # which violates the repository branch and attribution rules.
         # The one that matters most here is `commit-msg`: without it nothing asked a
         # chamber commit for the `Co-Authored-By` line naming the model that wrote it,
         # and an agent could hand back forty unattributed commits before anyone looked.
@@ -912,17 +826,7 @@ AUTOCLAVE_SETUP
     # `settings.local.json` takes precedence and is gitignored, so the tracked tree
     # stays clean and `collect` still sees an untouched checkout.
     docker exec "$(container_of "$task")" sh -c '
-        # Without `set -eu` this body ends on the copy at the bottom, so a failed trust
-        # update is masked by a copy that then succeeds: the chamber comes up with no
-        # trust flag, the CLI blocks on a dialog nobody is there to answer, and the die
-        # at the end of this command never fires. The block at AUTOCLAVE_SETUP has had
-        # this line since it was written; this one never did, and the locked trust
-        # update below has just added a new way to fail — a held lock. Found by
-        # CodeRabbit on PR 22.
-        #
-        # Nothing here is expected to fail. The one guarded failure, the copy below,
-        # already ends in `false` deliberately, and the only variable in this block is
-        # read as "${ac_tmp:-}" so `set -u` has nothing to catch.
+        # Fail chamber creation if either the local settings or trust update fails.
         set -eu
 
         printf "%s\n" \
@@ -941,23 +845,10 @@ AUTOCLAVE_SETUP
         # has carried its own `trust_level = "trusted"` since sign-in, so this is the
         # Claude half of a thing already true for the other vendor.
         #
-        # Seeded from the volume rather than created blank, and written back after, so
-        # the configuration written at sign-in reaches the CLI and the trust flag set
-        # below outlives this chamber. `HOME_CONFIG_KEPT` at the top of this file says
-        # why the file has to make that trip at all.
-        #
         # No apostrophe may appear anywhere in this block. It is one long single-quoted
         # argument, so a word like "the sign-in-s own config" ends the string in the
         # middle of a comment and silently swallows every function defined after it —
         # which is exactly what it did, once, while this fix was being written.
-        # Read with cat rather than cp: the kept file is on a volume every chamber of
-        # this vendor shares, and a save publishes it by rename. GNU cp refuses a
-        # source replaced under it and exits non-zero, which the die below turns into
-        # a dead chamber. cat opens the file once and is blind to the rename.
-        if [ -f /home/agent/.claude/home-config.json ]; then
-            cat /home/agent/.claude/home-config.json > /home/agent/.claude.json
-        fi
-        [ -f /home/agent/.claude.json ] || printf "%s\n" "{}" > /home/agent/.claude.json
         # The trust flag goes where `CLAUDE_CONFIG_DIR` makes the CLI actually look —
         # inside the mounted directory. Written to the path beside it, as it was, the
         # flag is set in a file nothing reads and the trust dialog blocks a detached
@@ -967,9 +858,8 @@ AUTOCLAVE_SETUP
         # `CLAUDE_CONFIG_DIR` has just made `.claude.json` the configuration the CLI
         # refreshes against rather than a throwaway. A plain read-modify-write here races
         # two ways: a refresh from a concurrent chamber landing between the read and the
-        # write is discarded, and a reader can see a truncated file. The doctrine at the
-        # top of this file says exactly that about this volume, and the first cut of this
-        # fix broke it on the one file it had just made load-bearing.
+        # write is discarded, and a reader can see a truncated file. The first cut of
+        # this fix broke it on the one file it had just made load-bearing.
         #
         # No apostrophe may appear in this block, as the warning above it says. The first
         # cut of this comment used one and silently swallowed every function defined after
@@ -987,8 +877,7 @@ AUTOCLAVE_SETUP
         #
         # `flock` closes the first of those completely — the read, the edit and the rename
         # all happen while the lock is held, and this block is the only read-modify-write
-        # this script performs on that file. The seed and save beside it publish a
-        # *different* file, whole, by rename, so there is nothing there to serialise with.
+        # this script performs on that file.
         #
         # It cannot close the second, and nothing in this tree can: the CLI takes no lock
         # we can name, so a refresh landing between our read and our rename is still
@@ -1017,16 +906,13 @@ if d.is_dir():
                 if time.monotonic() >= deadline:
                     raise RuntimeError("another chamber held the shared config lock for 30s")
                 time.sleep(0.05)
-        try:
-            config = json.loads(p.read_text() or "{}")
-        except (ValueError, OSError):
-            config = {}
+        contents = p.read_text() if p.exists() else ""
+        config = json.loads(contents) if contents.strip() else {}
         work = config.setdefault("projects", {}).setdefault("/work", {})
         if work.get("hasTrustDialogAccepted") is not True:
             work["hasTrustDialogAccepted"] = True
-            # Temp-then-rename on the real shared filesystem, for the reason the shell
-            # helpers at the top of this file give: a container pid is not unique across
-            # chambers, and rename is atomic only within one filesystem.
+            # A container pid is not unique across chambers, and rename is atomic only
+            # within one filesystem; use a unique temp in the destination directory.
             fd, tmp = tempfile.mkstemp(dir=str(d), prefix=".claude.json.tmp.")
             try:
                 with os.fdopen(fd, "w") as handle:
@@ -1037,21 +923,6 @@ if d.is_dir():
                     os.unlink(tmp)
                 raise
 PY
-        # Only where the volume is actually mounted. A chamber created without a vendor
-        # — the default, and most of them — has no mounted directory to keep it in, and
-        # an unguarded copy there would fail and take the whole chamber down with it.
-        #
-        # Published by copy-to-temp-then-rename, the same way the dispatch and login
-        # wrapper publishes it, and for the same reason: this writes to the shared
-        # volume, so a reader in another chamber must never see it half written. The
-        # temp name comes from mktemp because a container shell pid is not unique
-        # across chambers - two of them report the same number.
-        if [ -d /home/agent/.claude ]; then
-            { ac_tmp=$(mktemp /home/agent/.claude/home-config.json.tmp.XXXXXX) &&
-                cp /home/agent/.claude.json "$ac_tmp" &&
-                mv -f "$ac_tmp" /home/agent/.claude/home-config.json
-            } || { rm -f "${ac_tmp:-}"; false; }
-        fi
     ' || die "chamber started but the agent configuration could not be written"
 
     note "chamber '${task}' is up"
@@ -1106,9 +977,8 @@ cmd_dispatch() {
     esac
     [ -f "$brief" ] || die "no brief at '$brief'"
     [ -n "$model" ] || die "dispatch needs a model — see .claude/agents/README.md for which"
-    # Validated rather than trusted, exactly as `operations/codex/seat.sh` validates the
-    # same field. It reaches the container as an environment variable and never as
-    # interpolated text, but a value beginning with `-` would still arrive as a flag.
+    # It reaches the container as an environment variable and never as interpolated
+    # text, but a value beginning with `-` would still arrive as a flag.
     case "$model" in
         -*|*[!A-Za-z0-9._-]*) die "'$model' is not a plain model name" ;;
     esac
@@ -1231,28 +1101,9 @@ cmd_dispatch() {
     #
     # The two vendors spell effort differently and neither spelling is guessable.
     # `claude` takes `--effort <level>`. `codex exec` has no effort flag at all — it
-    # is a config override, `-c model_reasoning_effort=<level>`, which is how
-    # `operations/codex/seat.sh` has always done it. Verified against `--help` on
-    # both CLIs rather than assumed.
-    # Seeded again here, not only at `new`: a chamber can be created before a sign-in
-    # and dispatched after one, so the configuration the CLI is about to refresh against
-    # has to be the current one rather than whatever existed when the chamber was built.
+    # is a config override, `-c model_reasoning_effort=<level>`. Verified against
+    # `--help` on both CLIs rather than assumed.
     dispatch_status=0
-    # **Superseded by `CLAUDE_CONFIG_DIR`, and no longer allowed to be fatal.** The seed
-    # copies into `/home/agent/.claude.json`, which the CLI no longer reads: its
-    # configuration now lives inside the mount. So this copy protects nothing, and its
-    # old `die` — "dispatching without it is what silently blanks the sign-in" — would
-    # kill a whole dispatch over a file that has no bearing on the sign-in. The claim was
-    # true when it was written and is false now.
-    #
-    # It is left in place rather than deleted only because removing it also deletes two
-    # test classes, and a partial removal is worse than a clean one. **That removal is
-    # the named follow-up**, agreed with CodeRabbit and the pre-push review, both of
-    # which found this independently.
-    if [ "$vendor" = claude ]; then
-        docker exec "$(container_of "$task")" sh -c "$HOME_CONFIG_SEED" ||
-            note "note: the superseded configuration copy failed; harmless under CLAUDE_CONFIG_DIR"
-    fi
 
     case "$vendor" in
         claude)
@@ -1263,7 +1114,7 @@ cmd_dispatch() {
             #
             # **`--append-system-prompt-file` is how the chamber's limits reach a
             # Claude agent, and it is the only channel `/work/CLAUDE.md` cannot
-            # outrank.** The four in-tree copies of the brief are files the agent has
+            # outrank.** The in-tree copies of the brief are files the agent has
             # to choose to read, and `/work/CLAUDE.md` — this repository's own rules,
             # written for the host — loads automatically beside them. A seat that read
             # both applied the host's rules to itself and refused to orchestrate.
@@ -1303,6 +1154,15 @@ cmd_dispatch() {
             # backing up the empty configuration it had just been handed. Seven sign-ins
             # in a week, each dying at its first refresh, roughly eight hours in, while
             # the refresh token itself stayed valid for weeks.
+            #
+            # Print mode still does not perform that refresh. Do it inside the chamber,
+            # against the mounted volume, before every Claude dispatch. Failure remains
+            # nonfatal here so a transient refresh problem cannot discard an access token
+            # that may still work; the CLI answer immediately below remains authoritative.
+            docker exec -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
+                "$(container_of "$task")" \
+                python3 /opt/autoclave/refresh_claude_token.py ||
+                note "the pre-dispatch Claude token refresh failed; continuing to the CLI"
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
                 -e CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
                 -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
@@ -1314,13 +1174,7 @@ cmd_dispatch() {
                     --effort "$AC_EFFORT" \
                     -p < /out/brief.md
             ' || dispatch_status=$?
-            # **The save runs whether the dispatch succeeded or not**, and that is the
-            # point: a refresh that rewrote the configuration and then failed at
-            # something else still rewrote the configuration. Losing it is what killed
-            # the sign-in twice. `HOME_CONFIG_KEPT` at the top of this file has the
-            # whole account.
-            docker exec "$(container_of "$task")" sh -c "$HOME_CONFIG_SAVE" ||
-                note "warning: the CLI configuration could not be written back to the credential volume; a later chamber may find this sign-in blank" ;;
+            ;;
         codex)
             # stdin is a finite regular file, which is what the old `< /dev/null`
             # protected against: `codex exec` waits forever on an open stdin when
@@ -1359,6 +1213,7 @@ cmd_dispatch() {
     [ "$dispatch_status" -eq 0 ] || note "  the CLI exited ${dispatch_status} — read the output above before trusting anything below"
     note "  what it wrote:  $0 collect ${task}"
     note "  what it said:   $0 report ${task}"
+    return "$dispatch_status"
 }
 
 cmd_collect() {
@@ -1479,8 +1334,7 @@ cmd_report() {
     # /out is the one host path the agent can write, so everything read back from it
     # is untrusted input. A symlink left there points `cat` at any file this user can
     # read — an SSH key, `private/` — and prints it straight into the session. `[ -e ]`
-    # follows links, so `[ -L ]` is tested first and separately; the same guard
-    # `capture-seat-report.sh` already carries, which is where this was found missing.
+    # follows links, so `[ -L ]` is tested first and separately.
     #
     # The test above and a `cat` below are two operations on a path a running agent
     # can change in between, and the agent is running: it can pass the test as a file

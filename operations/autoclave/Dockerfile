@@ -70,32 +70,12 @@ RUN mkdir -p /src /work /out && chown -R "${UID}:${GID}" /work /out
 RUN mkdir -p /home/agent/.claude /home/agent/.codex \
  && chown -R "${UID}:${GID}" /home/agent
 
-# The standing brief for any session that starts in here. Copied to /work by the
-# launcher after the clone, so an agent reads it as the project's own CLAUDE.md
-# would be read. Kept at a fixed path so the launcher never guesses.
-COPY operations/autoclave/agent-brief.md /opt/autoclave/CLAUDE.md
-# Also at the filesystem root. An agent CLI reads CLAUDE.md from its working
-# directory upward, so a copy at `/` is picked up as an ancestor instruction
-# alongside the repository's own at /work/CLAUDE.md — the agent gets both the
-# chamber's limits and the project's rules without either overwriting the other.
-# Written here as root, before the USER switch, because `/` is not writable after.
-COPY operations/autoclave/agent-brief.md /CLAUDE.md
-# **And under the name the other vendor reads.** Claude Code looks for `CLAUDE.md`;
-# Codex looks for `AGENTS.md`. Only the first existed, so every Codex agent
-# dispatched into a chamber may have been working with no standing limits at all
-# beyond whatever its prompt happened to say — including the audit and review seats
-# run on 2026-08-02. Mirroring the same file under both names is the catch-all:
-# whichever CLI is dispatched, it finds the brief under the name it already looks
-# for, and neither has to be told. The file says it exists under both names, so a
-# reader who finds one does not go hunting for a different one.
-COPY operations/autoclave/agent-brief.md /AGENTS.md
-
 # The tests need pytest and ruff. Installed into a venv on the PATH, so an agent
 # runs `python3 -m pytest` exactly as the git hooks do on the host.
 COPY requirements-dev.txt /opt/autoclave/requirements-dev.txt
 # Build context is the repository root, so both COPY paths are written from
 # there. `.dockerignore` at that root denies everything and re-admits exactly
-# these two files — `private/` holds the notification topic and must never
+# these files — `private/` holds the notification topic and must never
 # enter a build context, and a deny-all list is the only form that stays true
 # when someone adds a new secret drawer later.
 RUN python3 -m venv /opt/venv \
@@ -110,6 +90,18 @@ ENV PATH="/opt/venv/bin:${PATH}"
 # before handing work back, was silently off. Found by dispatching, not by reading.
 RUN printf 'PATH="/opt/venv/bin:$PATH"\nexport PATH\n' \
       > /etc/profile.d/10-autoclave-venv.sh
+
+# Frequently edited harness inputs come after the dependency layer so changing a brief
+# or the refresh helper does not reinstall the full Python toolchain.
+COPY operations/autoclave/refresh_claude_token.py /opt/autoclave/refresh_claude_token.py
+# Fail the build if a future `latest` Claude CLI changes the public OAuth client id that
+# the refresh endpoint expects. A broken image is cheaper than another eight-hour 401.
+RUN grep -a -q '9d1c250a-e61b-44d9-88ed-5944d1962f5e' \
+      /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+COPY operations/autoclave/agent-brief.md /opt/autoclave/CLAUDE.md
+# Claude discovers this ancestor file from /work. Codex receives a worktree copy from
+# the launcher because its discovery starts in the working directory.
+COPY operations/autoclave/agent-brief.md /CLAUDE.md
 
 # Git refuses to operate in a directory owned by another uid. The clone is made
 # by this user, but /src arrives owned by the host's, so mark both safe.

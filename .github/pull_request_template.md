@@ -14,8 +14,10 @@
 ## Rebuild record, when applicable
 
 <!-- Name the coherent legacy system read before this was written. For every rebuilt
-     piece: the old path read, the new path written, and what was left behind. For every
-     deferred item: what it was, why it stayed, and what would change that decision. -->
+     piece: the old path read, the new path written, and what was deliberately left
+     behind. Identify carried implementation in both the commit message and report,
+     including its third-party source and confirmation that the licence permits use here.
+     Record engineering decisions and reasons. -->
 
 ## How to undo it
 
@@ -28,9 +30,10 @@
 ---
 
 - [ ] Written new — anything carried from the reference or a third party is named as
-      carried, with its licence where one applies
+      carried, with its source and a licence that permits use here
 - [ ] Legacy system understood before its pieces were rebuilt
-- [ ] Rebuilt and deferred paths recorded, including reconsideration conditions
+- [ ] Engineering findings were fixed, declined, or decided; no ordinary engineering
+      questions or TODOs were handed to the reviewer
 - [ ] Checked against GOALS.md and GOVERNANCE.md
 - [ ] If this adds stage code, it includes an executable import-boundary test
 - [ ] No status, dates, pod IDs or hashes added to a rules document

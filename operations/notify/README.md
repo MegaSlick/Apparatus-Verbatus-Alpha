@@ -1,8 +1,7 @@
 # Notifications — how a message reaches his phone
 
-**Which four moments may be sent, and what each means, is in CLAUDE.md under Reporting.**
-That is the rule and it is not restated here. This file is the mechanism: how to send
-one, what a failure means, and the secret it must never expose.
+This file owns the notification mechanism and event meanings. `CLAUDE.md` only routes
+sessions here when a notification is needed.
 
 ## Sending one
 
@@ -13,13 +12,10 @@ sh operations/notify/notify.sh <start|milestone|decision|done> "<one line>"
 The message must be a single non-empty line. A newline or a null in it is refused rather
 than truncated, so a multi-line message never arrives as a misleading fragment.
 
-**Main session only. A subagent never notifies.** Nothing in the script enforces that —
-it is a rule, and it holds because it is written in CLAUDE.md.
+**Main session only. A subagent never notifies.** Nothing in the script enforces that;
+this file owns the rule.
 
 ## What each event does
-
-**What each event means is CLAUDE.md's to say, not this file's** — the table below carries
-only what the script does with it and who is allowed to send it.
 
 | Event | Title on the phone | Priority | Sent by |
 |---|---|---|---|

@@ -24,8 +24,6 @@ scripts=".githooks/applypatch-msg
 .githooks/pre-merge-commit
 .githooks/pre-push
 operations/autoclave/autoclave.sh
-operations/codex/capture-seat-report.sh
-operations/codex/seat.sh
 operations/notify/notify.sh"
 
 # Repository ingress rejects control characters in paths, so this intentional

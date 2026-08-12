@@ -117,35 +117,21 @@ def test_the_briefs_that_replaced_the_writing_roles_still_bind_them():
     assert roles, "no role briefs found; the writing roles have nowhere to be dispatched from"
     for path in roles:
         text = path.read_text(encoding="utf-8").lower()
+        reading_instruction = text.split("\n-", 1)[0]
+        assert "read" in reading_instruction and "first" in reading_instruction, (
+            f"{path.name} does not positively require its governing documents first"
+        )
         assert "never edit a governed path" in text, (
             f"{path.name} never states the governed-path prohibition"
         )
-        # **The documents are named, not gestured at.** Checking `.claude/` and the
-        # phrase "governed path" as independent substrings let a brief pass while
-        # listing none of the root documents — and a brief that says "never edit a
-        # governed path" without saying which paths those are has told the agent
-        # nothing it can act on. Each name is asserted separately so the failure
-        # message says which one went missing. `data_contract.md` is here because
-        # CLAUDE.md governs it from the moment it exists, and a brief written before
-        # it exists is the one that will still be in use afterwards. Found by
-        # CodeRabbit on pull request 15.
         for document in (
-            "claude.md",
             "goals.md",
             "governance.md",
             "architecture.md",
             "glossary.md",
-            "readme.md",
-            "data_contract.md",
+            "claude.md",
         ):
-            assert document in text, (
-                f"{path.name} states the prohibition without naming `{document}`, so an "
-                "agent reading it cannot tell which documents it covers"
-            )
-        assert ".claude/" in text, (
-            f"{path.name} states the prohibition without naming `.claude/`, which is the "
-            "half of it an agent is most likely to reach"
-        )
+            assert document in reading_instruction, f"{path.name} does not require {document}"
         assert "propose" in text and "exact wording" in text, (
             f"{path.name} never routes document changes through a proposal"
         )

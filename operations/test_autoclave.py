@@ -856,6 +856,36 @@ class TestDispatch:
         assert len(carrying) == 1 and carrying[0][0] == "exec"
         assert not Path(env["FAKE_HOST_VENDOR_LOG"]).exists(), "a vendor CLI ran on the host"
 
+    def test_a_vendor_failure_is_the_dispatch_exit_status(self, tmp_path):
+        script = elsewhere(tmp_path)
+        brief = tmp_path / "brief.md"
+        brief.write_text("bounded task\n")
+        (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
+        env, _log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_CONTAINER_EXISTS": "1",
+                "FAKE_CHAMBER_VENDOR": "codex",
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_EXEC_STATUS": "7",
+            }
+        )
+
+        result = run(
+            "dispatch",
+            "task-x",
+            "codex",
+            str(brief),
+            "gpt-5.6-luna",
+            "medium",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+
+        assert result.returncode == 7
+        assert "the CLI exited 7" in result.stdout
+
     def test_a_model_is_required(self):
         """An omitted model runs the vendor's default, and `codex doctor` reports that
         default is `gpt-5.6-sol` — the most expensive seat OpenAI sells. Every chamber
@@ -874,26 +904,36 @@ class TestDispatch:
         ],
     )
     def test_the_model_and_effort_are_validated(self, model, effort, expected):
-        """Validated rather than trusted, exactly as `operations/codex/seat.sh`
-        validates the same fields. Both reach the container as environment variables
-        and never as interpolated text, but a value beginning with `-` would still
-        arrive at the CLI as a flag."""
+        """Both reach the container as environment variables, but a value beginning
+        with `-` would still arrive at the CLI as a flag."""
         result = run("dispatch", "task-x", "claude", str(ROOT / "README.md"), model, effort)
         assert result.returncode != 0
         assert expected in result.stderr
 
-    def test_validation_precedes_any_docker_call(self):
+    def test_validation_precedes_any_docker_call(self, tmp_path):
         """A typo in a model name should cost a line of output, not a container's
         startup and a confusing failure from a vendor CLI two layers down."""
-        result = run("dispatch", "task-x", "claude", str(ROOT / "README.md"), "-evil")
-        assert "docker" not in result.stderr.lower()
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        result = run(
+            "dispatch",
+            "task-x",
+            "claude",
+            str(ROOT / "README.md"),
+            "-evil",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+        assert result.returncode != 0
+        assert "not a plain model name" in result.stderr
+        assert docker_calls(log) == []
 
     def test_both_vendors_receive_model_and_effort_in_their_own_spelling(self):
         """The two CLIs spell effort differently and neither spelling is guessable.
         `claude` takes `--effort <level>`; `codex exec` has no effort flag at all and
-        needs the config override `-c model_reasoning_effort=`, which is how
-        `operations/codex/seat.sh` has always done it. Checked against `--help` on
-        both rather than assumed."""
+        needs the config override `-c model_reasoning_effort=`. Checked against
+        `--help` on both rather than assumed."""
         joined = " ".join(code_lines())
         assert '--model "$AC_MODEL"' in joined and '--effort "$AC_EFFORT"' in joined
         assert '-m "$AC_MODEL"' in joined
@@ -1878,24 +1918,25 @@ class TestSignInIsAsked:
         assert asked, "dispatch never asked the CLI inside the chamber"
 
 
-class TestTheConfigurationThatLivesOutsideTheMount:
-    """Claude keeps its credential inside the mounted directory and its configuration
-    beside it, and the CLI needs both to refresh an OAuth token.
+class TestClaudeConfigurationUsesTheMountedVolume:
+    """Claude keeps all refresh state inside the mounted credential directory."""
 
-    Only the credential half was ever persisted, so every container got a blank
-    configuration next to a real credential, the first refresh failed, and the CLI
-    blanked the token fields in place — twice, on 2026-08-05 and 2026-08-06, each time
-    a few hours after a sign-in that had visibly worked. These tests are the outcome
-    half of that fix: the file has to make the trip in both directions, or the sign-in
-    dies again and the evidence looks exactly like an expiry.
-    """
+    def test_the_login_booth_points_configuration_at_the_volume(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_AUTH_VALID"] = "1"
 
-    def _dispatch_claude(self, tmp_path):
+        result = run("login", "claude", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        login = next(call for call in docker_calls(log) if "claude auth login" in " ".join(call))
+        assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in login
+
+    def test_dispatch_points_configuration_at_the_volume(self, tmp_path):
         script = elsewhere(tmp_path)
         brief = tmp_path / "brief.md"
         brief.write_text("bounded task\n")
-        drawer = tmp_path / "workbench" / "autoclave" / "task-x"
-        drawer.mkdir(parents=True)
+        (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
         env, log = fake_docker(tmp_path)
         env.update(
             {
@@ -1905,433 +1946,37 @@ class TestTheConfigurationThatLivesOutsideTheMount:
                 "FAKE_EXEC_STATUS": "0",
             }
         )
+
         result = run(
             "dispatch",
             "task-x",
             "claude",
             str(brief),
             "sonnet",
-            "ultracode",
+            "medium",
             env=env,
             script=script,
             cwd=tmp_path,
         )
-        return result, docker_calls(log)
 
-    def test_dispatch_seeds_the_configuration_before_the_cli_and_saves_it_after(self, tmp_path):
-        """Both directions, and in that order. Seeding alone would hand the CLI a
-        current configuration and then throw away whatever the refresh wrote to it,
-        which is the failure being fixed rather than a smaller version of it."""
-        result, calls = self._dispatch_claude(tmp_path)
         assert result.returncode == 0, result.stderr
+        calls = [call for call in docker_calls(log) if call[:1] == ["exec"]]
+        cli = next(call for call in calls if "--append-system-prompt-file" in " ".join(call))
+        refresh_call = next(call for call in calls if "refresh_claude_token.py" in " ".join(call))
+        assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in cli
+        assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in refresh_call
+        assert calls.index(refresh_call) < calls.index(cli)
 
-        def index_of(fragment):
-            # Quotes stripped before matching: the launcher single-quotes both paths
-            # inside the snippet, and a test that depended on that spelling would fail
-            # the day someone reformatted the shell without changing what it does.
-            for position, call in enumerate(calls):
-                if call[:1] == ["exec"] and fragment in " ".join(call).replace("'", ""):
-                    return position
-            return None
-
-        # `cat` rather than `cp`, because the kept file is shared and a concurrent
-        # chamber's publishing rename makes GNU cp refuse the copy outright.
-        seed = index_of("cat /home/agent/.claude/home-config.json > /home/agent/.claude.json")
-        # The save publishes copy-to-temp-then-rename into a name mktemp chose, so the
-        # fragment matches the copy out of the live path rather than any temp spelling.
-        save = index_of('cp /home/agent/.claude.json "$ac_home_config_tmp"')
-        cli = index_of("--append-system-prompt-file")
-        assert seed is not None, "dispatch never seeded the configuration from the volume"
-        assert save is not None, "dispatch never wrote the configuration back to the volume"
-        assert cli is not None, "dispatch never ran the CLI"
-        assert seed < cli < save, f"wrong order: seed={seed} cli={cli} save={save}"
-
-    def test_a_codex_dispatch_touches_none_of_it(self, tmp_path):
-        """Codex keeps everything inside its own mounted directory, so this whole
-        mechanism is Claude's alone. A launcher that copied Claude's files around a
-        Codex chamber would be doing something nobody could explain."""
-        script = elsewhere(tmp_path)
-        brief = tmp_path / "brief.md"
-        brief.write_text("bounded task\n")
-        (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
-        env, log = fake_docker(tmp_path)
-        env.update(
-            {
-                "FAKE_CONTAINER_EXISTS": "1",
-                "FAKE_CHAMBER_VENDOR": "codex",
-                "FAKE_AUTH_VALID": "1",
-                "FAKE_EXEC_STATUS": "0",
-            }
+    def test_the_refresh_helper_reaches_the_image(self):
+        helper = ROOT / "operations" / "autoclave" / "refresh_claude_token.py"
+        assert helper.is_file()
+        assert (
+            "refresh_claude_token.py"
+            in (ROOT / "operations" / "autoclave" / "Dockerfile").read_text()
         )
-        result = run(
-            "dispatch",
-            "task-x",
-            "codex",
-            str(brief),
-            "gpt-5.6-luna",
-            "high",
-            env=env,
-            script=script,
-            cwd=tmp_path,
+        assert (
+            "!operations/autoclave/refresh_claude_token.py" in (ROOT / ".dockerignore").read_text()
         )
-        assert result.returncode == 0, result.stderr
-        assert not [c for c in docker_calls(log) if "home-config.json" in " ".join(c)]
-
-    def test_the_save_does_not_depend_on_the_cli_succeeding(self):
-        """A refresh that rewrote the configuration and *then* failed at something else
-        still rewrote the configuration. Skipping the save on a non-zero exit would
-        throw away exactly the write that matters most.
-
-        **This is a reading, not an outcome**, and it is the honest limit of the stub:
-        it has one exec status for every exec, so making the CLI fail also fails the
-        sign-in check that runs before it and the dispatch never reaches the CLI at
-        all. What can be asserted is that the launcher captures the status into a
-        variable instead of branching on it — which is what keeps the save
-        unconditional.
-        """
-        source = SCRIPT.read_text()
-        assert "|| dispatch_status=$?" in source, (
-            "the CLI status is no longer captured, so the save may have become conditional on it"
-        )
-
-    def test_the_shared_temp_name_does_not_come_from_the_shell_pid(self):
-        """`.tmp.$$` was not unique across chambers, and the whole atomic publication
-        rested on believing it was.
-
-        The kept file lives on a volume every chamber of that vendor shares, so two
-        saves at once must not choose one temp path. The old spelling took the temp
-        name from the container shell pid, on the stated grounds that a pid is per
-        container. It is: each container has its own pid namespace, which is exactly
-        why the numbers repeat — two chambers exec'd into on this machine both
-        reported **pid 8**. Both saves would have written one path and published the
-        interleaving, in the mechanism built to prevent interleaving.
-
-        **This reads the source rather than racing two pid namespaces**, which a unit
-        test cannot create. `mktemp` decides uniqueness on the shared filesystem,
-        where the collision would actually happen.
-        """
-        source = SCRIPT.read_text()
-        save = next(line for line in source.splitlines() if line.startswith("HOME_CONFIG_SAVE="))
-        assert "mktemp" in save, "the save no longer takes its temp name from mktemp"
-        assert "$$" not in save, (
-            "the save is back to naming its temp file after the shell pid, which "
-            "repeats across containers sharing one volume"
-        )
-
-    def test_chamber_creation_writes_the_shared_file_as_carefully_as_dispatch_does(self):
-        """Chamber creation has its own copy of the seed and the save, and it was the
-        half that got missed.
-
-        It seeded with `cp` — dying on a source another chamber republished, and the
-        `die` beside it takes the whole chamber down — and it saved by copying
-        straight onto the shared file, with no temp and no rename, so a chamber
-        starting up could hand another chamber a half-written configuration. Both are
-        the failures the dispatch path was already fixed for; a second copy of a
-        mechanism is a second place for it to be wrong.
-        """
-        source = SCRIPT.read_text()
-        assert "cat /home/agent/.claude/home-config.json > /home/agent/.claude.json" in source, (
-            "chamber creation no longer seeds with a single open"
-        )
-        assert "cp /home/agent/.claude.json /home/agent/.claude/home-config.json\n" not in source, (
-            "chamber creation copies straight onto the shared file again, with no "
-            "temp and no rename"
-        )
-        assert "mktemp /home/agent/.claude/home-config.json.tmp.XXXXXX" in source, (
-            "chamber creation no longer publishes through a mktemp temp file"
-        )
-
-    def test_the_login_booth_keeps_the_configuration_it_writes(self):
-        """The booth is `--rm`, so a sign-in wrote the credential into the volume and
-        the configuration into a container that was thrown away seconds later. That is
-        why the sign-in worked and then died a few hours on.
-
-        **This test used to assert the copy wrapper, and the copy wrapper did not
-        work.** Measured 2026-08-10: `.credentials.json` in the live volume still
-        carried the mtime of the last manual sign-in and had never once been rewritten,
-        while `backups/.claude.json.backup.*` held 50-byte stubs — the CLI backing up
-        the empty configuration it had just been handed. Seven sign-ins in a week, each
-        dying at its first refresh. The wrapper was tested for emitting the right calls
-        and never for the outcome it existed to produce, so a green suite reported a
-        protection that was not there.
-
-        What actually fixes it is `CLAUDE_CONFIG_DIR`: the CLI keeps `.claude.json`
-        beside the credential *inside* the mount instead of one level up, so there is
-        nothing left to copy and nothing left to lose. Probed against CLI 2.1.226 in
-        this image, then confirmed end to end — the expired credential refreshed itself
-        and the volume's `.credentials.json` was rewritten for the first time.
-        """
-        source = SCRIPT.read_text()
-        assert "CLAUDE_CONFIG_DIR=${mount}" in source, (
-            "the login booth no longer points the CLI's configuration at the mounted "
-            "volume, so the sign-in half a refresh needs dies with the --rm container"
-        )
-
-    def test_the_dispatch_points_the_cli_configuration_at_the_volume(self):
-        """The other half. A sign-in that persists is worth nothing if the chamber that
-        runs the CLI writes its refreshed token somewhere the next chamber cannot see."""
-        source = SCRIPT.read_text()
-        assert 'CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE"' in source, (
-            "dispatch no longer sets CLAUDE_CONFIG_DIR, so a refreshed token lands in "
-            "the container and is destroyed with it"
-        )
-
-    def test_the_trust_flag_is_written_where_the_cli_reads_it(self):
-        """`CLAUDE_CONFIG_DIR` moves the file the trust flag belongs in. Written to the
-        old path beside it, the flag is set in a file nothing reads and the trust dialog
-        blocks a detached chamber with nobody there to answer it."""
-        source = SCRIPT.read_text()
-        assert 'd = pathlib.Path("/home/agent/.claude")' in source, (
-            "the trust flag is no longer written into the directory CLAUDE_CONFIG_DIR points at"
-        )
-
-    def test_nothing_symlinks_the_configuration_into_the_volume(self):
-        """A symlink is the obvious one-line fix and it is wrong: the CLI writes this
-        file atomically, and a rename replaces a symlink with a regular file — putting
-        the split back while looking fixed."""
-        for line in code_lines():
-            if "home-config.json" in line:
-                assert "ln -s" not in line, f"symlinked instead of copied: {line.strip()}"
-
-
-class TestTheWrapperAgainstARealFilesystem:
-    """The wrapped seed-command-save script, executed for real against a sandbox.
-
-    The class above proves the launcher *emits* the right calls in the right order;
-    the Docker stand-in cannot prove the calls *work*, because it never executes the
-    shell it records (CodeRabbit on PR 19, three findings). These tests extract the
-    genuine snippet-and-wrapper block from the script's own bytes, retarget its two
-    absolute container paths into a temporary directory, and run what
-    `wrap_home_config` actually generates — so a copy that fails, a partial file, or
-    a swallowed status shows up as an outcome here rather than in a dead chamber.
-    The login booth runs this exact wrapper (`login_cmd=$(wrap_home_config ...)`),
-    so this is its execution coverage too.
-    """
-
-    def _wrapper_script(self, tmp_path, command):
-        """Extract the real block from the script, retargeted into tmp_path."""
-        source = SCRIPT.read_text()
-        start = source.index("HOME_CONFIG_LIVE=")
-        end = source.index("\n}", source.index("wrap_home_config()")) + 2
-        block = source[start:end]
-        live = tmp_path / "home" / ".claude.json"
-        kept_dir = tmp_path / "home" / ".claude"
-        (tmp_path / "home").mkdir(exist_ok=True)
-        kept_dir.mkdir(exist_ok=True)
-        block = block.replace("/home/agent/.claude.json", str(live))
-        block = f'AUTH_DIR_CLAUDE="{kept_dir}"\n' + block
-        driver = block + f'\nwrap_home_config "{command}"\n'
-        generated = subprocess.run(
-            ["sh", "-c", driver], capture_output=True, text=True, check=True
-        ).stdout
-        return generated, live, kept_dir / "home-config.json"
-
-    def _run(self, generated, env=None):
-        return subprocess.run(["sh", "-c", generated], capture_output=True, text=True, env=env)
-
-    def _stub_on_path(self, tmp_path, name, body):
-        """Put an executable `name` on PATH ahead of the real one, and hand back the
-        environment that finds it. The wrapper calls its tools by bare name, so this
-        reaches exactly the call under test and nothing else."""
-        bindir = tmp_path / "bin"
-        bindir.mkdir(exist_ok=True)
-        stub = bindir / name
-        stub.write_text(body)
-        stub.chmod(0o755)
-        env = dict(os.environ)
-        env["PATH"] = f"{bindir}:{env.get('PATH', '')}"
-        return env
-
-    def _cat_that_fails_reading(self, tmp_path, doomed_glob):
-        """A `cat` stand-in that fails only when reading `doomed_glob`.
-
-        The seed reads with `cat`, so this is what stands in front of it. It writes
-        a partial payload to stdout before failing, because a read that dies partway
-        does — the shell has already truncated the destination by then, so the live
-        file is left short, which is the state the seed's abort exists to refuse.
-        """
-        real_cat = shutil.which("cat")
-        assert real_cat, "no cat on PATH to stand in front of"
-        return self._stub_on_path(
-            tmp_path,
-            "cat",
-            "#!/bin/sh\n"
-            f'case "${{1:-}}" in {doomed_glob})\n'
-            "    printf partial\n"
-            "    exit 1 ;;\n"
-            "esac\n"
-            f'exec {real_cat} "$@"\n',
-        )
-
-    def _cp_that_fails_writing_to(self, tmp_path, doomed_glob):
-        """A `cp` stand-in on PATH that fails only when writing to `doomed_glob`.
-
-        The wrapper's save calls `cp` by bare name, so interposing on
-        PATH reaches exactly the copy under test and nothing else. Denying access by
-        `chmod` looked equivalent and is not: under an effective UID of 0 — which is
-        every chamber, and some CI runners — root reads a `0o000` file and writes into
-        a `0o555` directory, so the copy succeeds and the test passes for the wrong
-        reason, or fails for one. Found by CodeRabbit on PR 19.
-
-        It leaves a partial file at the destination before failing, because a real
-        `cp` that dies mid-write does. Exiting without writing anything left the
-        caller's cleanup untested: there was no temp file to remove, so an assertion
-        that none survives passed on a launcher that never removed one. Only the last
-        argument is matched, which is `cp`'s destination — the second CodeRabbit
-        finding on this helper, PR 19.
-        """
-        real_cp = shutil.which("cp")
-        assert real_cp, "no cp on PATH to stand in front of"
-        return self._stub_on_path(
-            tmp_path,
-            "cp",
-            "#!/bin/sh\n"
-            'target=""\n'
-            'for arg in "$@"; do target="$arg"; done\n'
-            f'case "$target" in {doomed_glob})\n'
-            '    printf partial > "$target"\n'
-            "    exit 1 ;;\n"
-            "esac\n"
-            f'exec {real_cp} "$@"\n',
-        )
-
-    def test_content_travels_both_directions_and_survives(self, tmp_path):
-        """The volume's snapshot reaches the live path, the command's rewrite reaches
-        the volume, and a command that succeeded exits zero. Outcome, not call order.
-
-        The command observes the live file *before* rewriting it, so the seed leg is
-        genuinely asserted. Rewriting first would let this pass on the save alone even
-        if the seed stopped copying entirely — CodeRabbit on PR 19.
-        """
-        observed = tmp_path / "observed.json"
-        live_path = tmp_path / "home" / ".claude.json"
-        generated, live, kept = self._wrapper_script(
-            tmp_path, f"cp {live_path} {observed} && printf refreshed > {live_path}"
-        )
-        kept.write_text('{"from":"volume"}')
-        result = self._run(generated)
-        assert result.returncode == 0, result.stderr
-        assert observed.read_text() == '{"from":"volume"}', (
-            "the volume's snapshot never reached the live path"
-        )
-        assert live.read_text() == "refreshed"
-        assert kept.read_text() == "refreshed", "the command's rewrite never reached the volume"
-
-    def test_a_failed_command_still_saves_and_keeps_its_own_status(self, tmp_path):
-        """The refresh that rewrites the file and then fails at something else is the
-        exact case that killed the sign-in — the rewrite must be saved anyway, and the
-        command's status must come back untouched."""
-        # A subshell, deliberately: a real CLI that fails *returns* non-zero to the
-        # wrapper. A bare `exit 7` here would terminate the generated script itself,
-        # which no external command can do.
-        generated, live, kept = self._wrapper_script(
-            tmp_path, f"(printf rewritten > {tmp_path}/home/.claude.json; exit 7)"
-        )
-        kept.write_text('{"stale":true}')
-        result = self._run(generated)
-        assert result.returncode == 7, "the command's own status was not preserved"
-        assert kept.read_text() == "rewritten", "a failed command's rewrite was thrown away"
-
-    def test_a_save_failure_after_success_is_not_reported_as_success(self, tmp_path):
-        """A sign-in that worked but was not persisted dies at the next refresh, and
-        zero here is how that stayed invisible twice. Only the save's copy is made to
-        fail — it writes to the pid-suffixed temp beside the kept file."""
-        generated, live, kept = self._wrapper_script(tmp_path, "true")
-        kept.write_text("{}")
-        env = self._cp_that_fails_writing_to(tmp_path, f"{kept}.tmp.*")
-        result = self._run(generated, env=env)
-        assert result.returncode != 0, "a lost save was reported as a successful sign-in"
-        assert "could not be saved" in result.stderr
-        assert kept.read_text() == "{}", "a failed save left the volume's copy disturbed"
-        assert not list(kept.parent.glob("home-config.json.tmp.*")), (
-            "a failed save left its temp file behind"
-        )
-
-    def test_a_failed_seed_stops_before_the_command_runs(self, tmp_path):
-        """Running the CLI against a configuration that failed to copy is the original
-        bug with extra steps. Only the seed's read is made to fail — it is the one
-        reading the kept file — and the command must never run."""
-        marker = tmp_path / "command-ran"
-        generated, live, kept = self._wrapper_script(tmp_path, f"touch {marker}")
-        kept.write_text("{}")
-        env = self._cat_that_fails_reading(tmp_path, str(kept))
-        result = self._run(generated, env=env)
-        assert result.returncode != 0, "a failed seed was not surfaced"
-        assert not marker.exists(), "the command ran against a configuration that failed to seed"
-
-    def test_the_seed_never_reads_the_kept_file_with_cp(self, tmp_path):
-        """One chamber publishing its sign-in must not kill another chamber's start.
-
-        The save replaces the kept file's inode by rename. GNU `cp` refuses a source
-        that changed under it — *"skipping file ..., as it was replaced while being
-        copied"*, exit 1 — and the seed's `|| exit 1` turned that into a dispatch
-        that died before the CLI ran. Two Claude chambers at once is the standing
-        review roster, so this sat on the path of ordinary work. CI failed on it and
-        a two-CPU Linux runner reproduced it in about one attempt in twenty, each
-        attempt racing twenty writers.
-
-        **This asserts the tool, not the race, and that is deliberate.** The window
-        cp fails in is between its `stat` of the source and its `open` of it —
-        microseconds, hit roughly once per four hundred seeds. A test that runs the
-        race is a test that passes almost every time on the broken code, which is
-        worse than no test. `cat` opens the file once and reads the inode it opened,
-        so a rename underneath it is invisible; that property is the fix, and this
-        is what fails the moment someone spells it `cp` again.
-        """
-        generated, live, kept = self._wrapper_script(tmp_path, "true")
-        assert f"cat '{kept}'" in generated, "the seed no longer reads with a single open"
-        assert f"cp '{kept}'" not in generated, (
-            "the seed reads the shared kept file with cp, which dies when another "
-            "chamber republishes it mid-copy"
-        )
-        assert "|| exit 1" in generated, "the seed no longer aborts on a failed read"
-
-    def test_concurrent_saves_never_leave_a_torn_file(self, tmp_path):
-        """Two chambers saving at once was CodeRabbit's serialization finding. The
-        launcher's answer is atomic publication — copy to a pid-suffixed temp, then
-        rename — so a reader sees a complete snapshot from one writer or the other,
-        never an interleaving. Proven by racing real writers and checking every
-        observation is one of the two whole payloads.
-
-        **Every writer gets its own live path, because a real chamber has one.** The
-        live file is inside the container; the kept file is the shared volume, so the
-        volume is the only object two chambers ever contend for. An earlier version
-        of this test pointed ten writers at a single live path, and CI caught what
-        that produced: one writer's save read that path while another writer's seed
-        was truncating it, and the short copy was then published whole. A real tear,
-        but one the test manufactured and the launcher cannot suffer.
-        """
-        payload_a = "A" * 200_000
-        payload_b = "B" * 200_000
-        base_script, live, kept = self._wrapper_script(tmp_path, "true")
-        scripts = []
-        for index in range(20):
-            mine = tmp_path / "home" / f".claude.json-{index}"
-            mine.write_text(payload_a if index % 2 == 0 else payload_b)
-            scripts.append(base_script.replace(str(live), str(mine)))
-        procs = [
-            subprocess.Popen(["sh", "-c", s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            for s in scripts
-        ]
-        seen = set()
-        while any(p.poll() is None for p in procs):
-            try:
-                seen.add(kept.read_text())
-            except OSError:
-                pass  # not published yet; nothing to observe
-        statuses = [p.wait() for p in procs]
-        try:
-            seen.add(kept.read_text())
-        except OSError:
-            pass
-        # Whole payloads, not a first-byte-and-length signature: a 200,000-byte file
-        # of interleaved As and Bs matched that signature exactly, so the check could
-        # not fail on the thing it was written to catch. CodeRabbit on PR 19.
-        torn = {f"{s[:1]}...{s[-1:]} len={len(s)}" for s in seen if s not in {payload_a, payload_b}}
-        assert not torn, f"a reader observed a torn snapshot: {torn}"
-        # An empty `seen` would otherwise pass this test after every writer failed.
-        assert statuses == [0] * len(procs), f"a writer failed: {statuses}"
-        assert seen, "no snapshot was ever observed, so nothing was proven"
 
 
 class TestTheTrustFlagAgainstARealFilesystem:
@@ -2356,6 +2001,47 @@ class TestTheTrustFlagAgainstARealFilesystem:
 
     def _run(self, block):
         return subprocess.run(["sh", "-c", block], capture_output=True, text=True)
+
+    def test_the_enclosing_configuration_body_succeeds_as_shell(self, tmp_path):
+        source = SCRIPT.read_text()
+        marker = 'docker exec "$(container_of "$task")" sh -c \'\n'
+        start = source.index(marker) + len(marker)
+        body = source[start : source.index("\n    ' || die", start)]
+        work_config = tmp_path / "work" / ".claude"
+        shared_config = tmp_path / "shared" / ".claude"
+        work_config.mkdir(parents=True)
+        shared_config.mkdir(parents=True)
+        body = body.replace("/work/.claude", str(work_config)).replace(
+            "/home/agent/.claude", str(shared_config)
+        )
+
+        result = self._run(body)
+
+        assert result.returncode == 0, result.stderr
+        settings = json.loads((work_config / "settings.local.json").read_text())
+        assert settings["env"]["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] == "64"
+        trust = json.loads((shared_config / ".claude.json").read_text())
+        assert trust["projects"]["/work"]["hasTrustDialogAccepted"] is True
+
+    def test_the_enclosing_body_stops_when_local_settings_cannot_be_written(self, tmp_path):
+        source = SCRIPT.read_text()
+        marker = 'docker exec "$(container_of "$task")" sh -c \'\n'
+        start = source.index(marker) + len(marker)
+        body = source[start : source.index("\n    ' || die", start)]
+        work = tmp_path / "work"
+        work.mkdir()
+        blocked_config = work / ".claude"
+        blocked_config.write_text("not a directory")
+        shared_config = tmp_path / "shared" / ".claude"
+        shared_config.mkdir(parents=True)
+        body = body.replace("/work/.claude", str(blocked_config)).replace(
+            "/home/agent/.claude", str(shared_config)
+        )
+
+        result = self._run(body)
+
+        assert result.returncode != 0
+        assert not (shared_config / ".claude.json").exists()
 
     def test_the_flag_is_written_once_and_not_rewritten_afterwards(self, tmp_path):
         """Once the flag is on the volume it stays there, so no later chamber has any
@@ -2387,6 +2073,27 @@ class TestTheTrustFlagAgainstARealFilesystem:
         assert merged["oauthAccount"] == {"emailAddress": "kept"}
         assert merged["projects"]["/other"] == {"x": 1}
         assert merged["projects"]["/work"]["hasTrustDialogAccepted"] is True
+
+    def test_an_invalid_shared_config_is_not_replaced_with_an_empty_one(self, tmp_path):
+        block, directory = self._block(tmp_path)
+        config = directory / ".claude.json"
+        config.write_text("not json")
+
+        result = self._run(block)
+
+        assert result.returncode != 0
+        assert config.read_text() == "not json"
+
+    def test_an_empty_shared_config_is_initialized(self, tmp_path):
+        block, directory = self._block(tmp_path)
+        config = directory / ".claude.json"
+        config.write_text("")
+
+        result = self._run(block)
+
+        assert result.returncode == 0, result.stderr
+        initialized = json.loads(config.read_text())
+        assert initialized["projects"]["/work"]["hasTrustDialogAccepted"] is True
 
     def test_an_interleaved_update_under_the_same_lock_is_not_lost(self, tmp_path):
         """The interleaving regression CodeRabbit asked for.
@@ -2449,67 +2156,6 @@ class TestTheTrustFlagAgainstARealFilesystem:
         block = source[start : source.index("\nPY\n", start)]
         assert "LOCK_NB" in block and "time.monotonic()" in block, (
             "the trust update waits on the shared lock without a deadline"
-        )
-
-
-class TestTheEnclosingShellBodyDoesNotMaskAFailure:
-    """The launcher command around the trust update, not just the heredoc inside it.
-
-    Every test above extracts the python block alone, so none of them could see the
-    shell it runs in. That shell had no `set -eu`, and it ends on a copy — so a trust
-    update that failed was masked by a copy that then succeeded, the command exited
-    zero, and the die beside it never fired. A chamber would have come up with no
-    trust flag at all, where the CLI blocks on a dialog nobody is there to answer.
-    Found by CodeRabbit on PR 22, on the change that added a new way to fail here.
-    """
-
-    def _shell_body(self, tmp_path):
-        """Extract the whole `sh -c` body, retargeted into tmp_path."""
-        source = SCRIPT.read_text()
-        end = source.index(
-            '\' || die "chamber started but the agent configuration could not be written"'
-        )
-        opening = "sh -c '"
-        start = source.rindex(opening, 0, end) + len(opening)
-        home = tmp_path / ".claude"
-        home.mkdir()
-        work = tmp_path / "work" / ".claude"
-        work.mkdir(parents=True)
-        body = source[start:end]
-        body = body.replace("/home/agent/.claude", str(home))
-        return body.replace("/work/.claude", str(work)), home
-
-    def _run(self, body):
-        return subprocess.run(["sh", "-c", body], capture_output=True, text=True)
-
-    def test_the_body_still_succeeds_when_nothing_fails(self, tmp_path):
-        """The control. Without it the test below could pass on a retargeting typo."""
-        body, home = self._shell_body(tmp_path)
-
-        result = self._run(body)
-
-        assert result.returncode == 0, result.stderr
-        config = json.loads((home / ".claude.json").read_text())
-        assert config["projects"]["/work"]["hasTrustDialogAccepted"] is True
-        assert (home / "home-config.json").exists(), "the copy at the end of the body never ran"
-
-    def test_a_failed_trust_update_is_fatal_rather_than_copied_over(self, tmp_path):
-        """The regression itself.
-
-        The lock path is a directory, so the trust update raises where it opens it.
-        Everything after that point would otherwise run and succeed, and the last of
-        it — the copy onto the shared volume — would decide the exit status. Checked
-        by hand against a copy of the body with `set -eu` removed: there the command
-        exits 0 and `home-config.json` is written, which is the masking this catches.
-        """
-        body, home = self._shell_body(tmp_path)
-        (home / ".claude.json.autoclave.lock").mkdir()
-
-        result = self._run(body)
-
-        assert result.returncode != 0, "a failed trust update was masked by the copy after it"
-        assert not (home / "home-config.json").exists(), (
-            "the body carried on past the failure instead of stopping at it"
         )
 
 

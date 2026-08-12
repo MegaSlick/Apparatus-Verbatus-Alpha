@@ -33,8 +33,8 @@ block() {
 [ -f "$ingress" ] ||
   block "$ingress is missing; outgoing history cannot be checked."
 
-# Who reviewed a commit is read from its `Reviewed-by:` trailers. The reviewer-pass
-# skill owns the trailer rules and README.md's "Who wrote this" holds why. This
+# Who reviewed a commit is read from its `Reviewed-by:` trailers. README.md's
+# "Who wrote this" owns the convention and its reason. This
 # comment named a CLAUDE.md heading that never existed; a citation nothing checks
 # is a citation that rots, which is why the governed-edit skill sweeps for them.
 #
