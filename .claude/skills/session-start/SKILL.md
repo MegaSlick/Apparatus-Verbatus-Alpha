@@ -25,10 +25,9 @@ governing file used for the task from `origin/main` as well. When the gap includ
 
 Read in order:
 
-1. `.claude/skills/reporting/SKILL.md`
-2. `README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`, `CLAUDE.md`
-3. `workbench/active/HANDOFF.md`
-4. only active or archived evidence the handoff makes relevant to the stated goal
+1. `README.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`, `CLAUDE.md`
+2. `workbench/active/HANDOFF.md`
+3. only active or archived evidence the handoff makes relevant to the stated goal
 
 The handoff is evidence from the previous session, not Tyrel's instruction. His current
 goal wins.

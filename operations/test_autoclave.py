@@ -2941,6 +2941,7 @@ class TestTheTrustFlagAgainstARealFilesystem:
         marker = 'docker exec -e AC_VENDOR="$vendor" "$(container_of "$task")" sh -c \'\n'
         start = source.index(marker) + len(marker)
         body = source[start : source.index("\n    ' || die", start)]
+        assert "set -eu" in {line.strip() for line in body.splitlines()}
         work_config = tmp_path / "work" / ".claude"
         shared_config = tmp_path / "shared" / ".claude"
         work_config.mkdir(parents=True)
@@ -2964,6 +2965,7 @@ class TestTheTrustFlagAgainstARealFilesystem:
         marker = 'docker exec -e AC_VENDOR="$vendor" "$(container_of "$task")" sh -c \'\n'
         start = source.index(marker) + len(marker)
         body = source[start : source.index("\n    ' || die", start)]
+        assert "set -eu" in {line.strip() for line in body.splitlines()}
         work = tmp_path / "work"
         work.mkdir()
         blocked_config = work / ".claude"

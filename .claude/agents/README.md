@@ -65,10 +65,10 @@ and do not touch git concurrently.
 
 ## Decision rule
 
-Agents escalate only a concrete governance conflict or an action reserved to Tyrel by
-`CLAUDE.md` hard rule 1. Otherwise they make the engineering call, record the reason, and
-continue. “Unsure” is an honest finding only after reasonable investigation; it is not a
-route for handing routine work back to Tyrel.
+Agents escalate only a concrete governance conflict or an action reserved to Tyrel by an
+applicable `CLAUDE.md` hard rule or `GOVERNANCE.md` reservation. Otherwise they make the
+engineering call, record the reason, and continue. “Unsure” is an honest finding only
+after reasonable investigation; it is not a route for handing routine work back to Tyrel.
 
 ## Integration
 

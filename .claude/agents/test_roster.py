@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,16 @@ def listed(value: str) -> set[str]:
 def writes(path: Path) -> bool:
     # Bash counts: a role holding only a shell can still edit any file through it.
     return bool(listed(frontmatter(path)["tools"]) & {"Write", "Edit", "NotebookEdit", "Bash"})
+
+
+def affirmative_governing_read_directive(text: str) -> str | None:
+    introduction = " ".join(text.split("\n-", 1)[0].split())
+    match = re.search(
+        r"(?:^|[.!?]\s+)read\s+(.+?)\s+(?:from|in)\s+`?/work`?\s+first\.",
+        introduction,
+        re.I,
+    )
+    return None if match is None else match.group(0).lstrip(".!? ")
 
 
 def test_the_roster_is_not_empty():
@@ -117,8 +128,8 @@ def test_the_briefs_that_replaced_the_writing_roles_still_bind_them():
     assert roles, "no role briefs found; the writing roles have nowhere to be dispatched from"
     for path in roles:
         text = path.read_text(encoding="utf-8").lower()
-        reading_instruction = text.split("\n-", 1)[0]
-        assert "read" in reading_instruction and "first" in reading_instruction, (
+        reading_instruction = affirmative_governing_read_directive(text)
+        assert reading_instruction is not None, (
             f"{path.name} does not positively require its governing documents first"
         )
         assert "never edit a governed path" in text, (
@@ -135,6 +146,15 @@ def test_the_briefs_that_replaced_the_writing_roles_still_bind_them():
         assert "propose" in text and "exact wording" in text, (
             f"{path.name} never routes document changes through a proposal"
         )
+
+
+def test_negative_wording_is_not_a_governing_read_directive():
+    assert (
+        affirmative_governing_read_directive(
+            "# Builder\n\nDo not read README.md and the governing documents first."
+        )
+        is None
+    )
 
 
 def test_judgement_roles_keep_their_effort_floors():
