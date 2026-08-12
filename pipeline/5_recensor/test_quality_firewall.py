@@ -108,18 +108,29 @@ def _recovery_request_publications(
     return found
 
 
-def _enclosing_if(tree: ast.Module, target: ast.Call) -> ast.If:
-    """The innermost `if` whose body contains this call."""
-    enclosing = None
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.If):
-            continue
-        if any(
+def _enclosing_ifs(tree: ast.Module, target: ast.Call) -> list[ast.If]:
+    """Every `if` whose body contains this call, innermost first.
+
+    Not only the innermost: a gate wrapped in a second, outer conditional is
+    still a gate on the request, and a forbidden name added to that outer
+    `if` would let a reading-quality fact decide whether recovery is even
+    considered -- exactly the accidental re-roll this firewall exists to
+    catch -- while looking clean to a check that only read the inner one.
+    """
+    enclosing = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and any(
             target is descendant for statement in node.body for descendant in ast.walk(statement)
-        ):
-            enclosing = node
-    assert enclosing is not None, "the recovery request is not inside any conditional at all"
-    return enclosing
+        )
+    ]
+    assert enclosing, "the recovery request is not inside any conditional at all"
+    # `ast.walk` is breadth-first, so a shallower (more outer) enclosing `if`
+    # is found before a deeper one; reversed so callers that want "just the
+    # gate" via `enclosing[0]` still get the innermost, as `_enclosing_if`
+    # used to return unconditionally.
+    return list(reversed(enclosing))
 
 
 # --- The structural half: the module boundary spec 09 asks for -----------------
@@ -142,14 +153,16 @@ def test_the_recovery_gate_consults_coverage_and_budget_and_nothing_else():
     build an accidental re-roll -- fails here, by name.
     """
     _, tree, site = _recovery_request_publications(_modules())[0]
-    gate = _enclosing_if(tree, site)
-    consulted = _names(gate.test)
+    gates = _enclosing_ifs(tree, site)
+    # Every enclosing conditional, not only the innermost -- a forbidden name in
+    # an outer `if` gates the request exactly as one in the inner `if` would.
+    consulted = set().union(*(_names(gate.test) for gate in gates))
     # Meta-invariant #88: a subset assertion is satisfied by an empty set, so an
-    # `_enclosing_if` that found the wrong node would pass silently. The gate is
-    # known to consult these two, and saying so is what stops this passing
+    # `_enclosing_ifs` that found the wrong node(s) would pass silently. The gate
+    # is known to consult these two, and saying so is what stops this passing
     # vacuously.
     assert {"wants_recovery", "continuation_shortfall"} <= consulted, (
-        f"the conditional found guarding the recovery request consults {sorted(consulted)}, "
+        f"the conditional(s) found guarding the recovery request consult {sorted(consulted)}, "
         "which is not the coverage gate; this test located the wrong node"
     )
     assert consulted <= _COVERAGE_AND_BUDGET_NAMES, (

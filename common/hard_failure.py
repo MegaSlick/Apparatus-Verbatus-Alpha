@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify
 from common.contracts.stages import STAGES
 
@@ -111,7 +111,19 @@ def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH
         stage, outcome = entry["stage"], entry["outcome"]
         if stage not in STAGES:
             raise ContractError(f"a hard-failure [[kind]] names unknown stage {stage!r}")
-        if classify(stage, outcome) is not OutcomeClass.FAILED:
+        try:
+            failed = classify(stage, outcome) is OutcomeClass.FAILED
+        except FatalAccounting as error:
+            # `classify` raises `FatalAccounting` for an outcome outside its
+            # stage's closed vocabulary at all -- deliberately not catchable
+            # as an ordinary refusal, because during a live run "in no
+            # terminal set" is invariant #10's fatal imbalance. This is
+            # config validation before any run exists: a misspelled outcome
+            # here is a typo in a file, exactly like this loader's other
+            # `[[kind]]` refusals a few lines either side of it, and should
+            # surface the same way they do.
+            raise ContractError(str(error)) from error
+        if not failed:
             raise ContractError(
                 f"a hard-failure [[kind]] names ({stage!r}, {outcome!r}), which does not "
                 "classify FAILED; this cap counts failures, not ordinary holds or acceptances"
