@@ -72,6 +72,41 @@ AUTH_DIR_CLAUDE="/home/agent/.claude"
 AUTH_DIR_CODEX="/home/agent/.codex"
 CLAUDE_LOCK="${AUTH_DIR_CLAUDE}/.credentials.autoclave.lock"
 
+# One task is one lifecycle.  A launcher command may read a chamber state and then
+# act on it; another command for that same task cannot be allowed to change that
+# state between those two operations.  `mkdir` is the portable atomic primitive
+# available to POSIX sh. The directory is resolved beside git's common directory,
+# so linked worktrees share it while the chamber cannot reach it.
+LIFECYCLE_LOCK=""
+LIFECYCLE_SNAPSHOT=""
+LIFECYCLE_INCOMING=""
+
+lifecycle_cleanup() {
+    trap - 0 1 2 15
+    [ -z "$LIFECYCLE_INCOMING" ] ||
+        git -C "$REPO_ROOT" update-ref --no-deref -d "$LIFECYCLE_INCOMING" >/dev/null 2>&1 || :
+    [ -z "$LIFECYCLE_SNAPSHOT" ] || rm -f "$LIFECYCLE_SNAPSHOT" || :
+    [ -z "$LIFECYCLE_LOCK" ] || rmdir "$LIFECYCLE_LOCK" 2>/dev/null || :
+    LIFECYCLE_INCOMING=""
+    LIFECYCLE_SNAPSHOT=""
+    LIFECYCLE_LOCK=""
+}
+
+acquire_lifecycle_lock() {
+    lifecycle_task="$1"
+    lifecycle_common=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir) ||
+        die "could not locate this repository's common git directory"
+    lifecycle_root=$(dirname "$lifecycle_common")
+    lifecycle_dir="${lifecycle_root}/workbench/autoclave/.locks"
+    mkdir -p "$lifecycle_dir" ||
+        die "could not create the task lock directory ${lifecycle_dir}"
+    LIFECYCLE_LOCK="${lifecycle_dir}/${lifecycle_task}.lock"
+    mkdir "$LIFECYCLE_LOCK" 2>/dev/null ||
+        die "task '${lifecycle_task}' is already active: ${LIFECYCLE_LOCK}. If no launcher is running, remove the stale lock with: rmdir ${LIFECYCLE_LOCK}"
+    trap 'lifecycle_cleanup' 0
+    trap 'lifecycle_cleanup; exit 1' 1 2 15
+}
+
 die() { printf 'autoclave: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
 
@@ -200,7 +235,7 @@ auth_dir() {
 # to print here — the caller discards their output and keeps only the status.
 auth_check() {
     case "$1" in
-        claude) printf '%s' "flock -w 60 ${CLAUDE_LOCK} claude auth status" ;;
+        claude) printf '%s' "claude auth status" ;;
         codex)  printf '%s' "codex login status" ;;
         *) return 1 ;;
     esac
@@ -429,6 +464,7 @@ cmd_new() {
         claude|codex|none) : ;;
         *) die "new takes 'claude', 'codex' or nothing as its vendor" ;;
     esac
+    acquire_lifecycle_lock "$task"
 
     # Resolve the base to a commit on the host, so the chamber is pinned to an exact
     # tree rather than to whatever a name meant at clone time. It is git-only, so it
@@ -852,7 +888,7 @@ AUTOCLAVE_SETUP
     #
     # `settings.local.json` takes precedence and is gitignored, so the tracked tree
     # stays clean and `collect` still sees an untouched checkout.
-    docker exec "$(container_of "$task")" sh -c '
+    docker exec -e AC_VENDOR="$vendor" "$(container_of "$task")" sh -c '
         # Fail chamber creation if either the local settings or trust update fails.
         set -eu
 
@@ -862,6 +898,8 @@ AUTOCLAVE_SETUP
             "    \"CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH\": \"64\"" \
             "  }" \
             "}" > /work/.claude/settings.local.json
+
+        [ "$AC_VENDOR" = claude ] || exit 0
 
         # **The workspace is trusted, because the chamber *is* the trust boundary.**
         # Without this Claude Code prints "this workspace has not been trusted" and
@@ -988,6 +1026,7 @@ cmd_dispatch() {
         claude|codex) : ;;
         *) die "dispatch takes 'claude' or 'codex'" ;;
     esac
+    acquire_lifecycle_lock "$task"
     [ -f "$brief" ] || die "no brief at '$brief'"
     [ -n "$model" ] || die "dispatch needs a model — see .claude/agents/README.md for which"
     # It reaches the container as an environment variable and never as interpolated
@@ -1178,7 +1217,6 @@ cmd_dispatch() {
                 -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
                 "$(container_of "$task")" sh -c '
                 cd /work
-                flock -w 60 /home/agent/.claude/.credentials.autoclave.lock \
                 claude --dangerously-skip-permissions \
                     --append-system-prompt-file /opt/autoclave/CLAUDE.md \
                     --model "$AC_MODEL" \
@@ -1228,7 +1266,9 @@ cmd_dispatch() {
 }
 
 cmd_collect() {
-    task="${1:-}"; check_task "$task"; need_docker
+    task="${1:-}"; check_task "$task"
+    acquire_lifecycle_lock "$task"
+    need_docker
     running "$task" || die "chamber '$task' is not running"
 
     branch="agent/${task}"
@@ -1241,10 +1281,6 @@ cmd_collect() {
 
     git_common=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir) ||
         die "could not locate this repository's common git directory; nothing was collected"
-    collect_lock="${git_common}/autoclave-collect.${task}.lock"
-    mkdir "$collect_lock" 2>/dev/null ||
-        die "another collection for '${task}' is already running; nothing was collected"
-    trap 'rmdir "$collect_lock" 2>/dev/null || :' 0 1 2 15
 
     # **Work that was never added counts as uncommitted.** A bundle carries commits, so
     # anything still loose in the chamber's tree is left behind — and `rm` then destroys
@@ -1289,12 +1325,11 @@ cmd_collect() {
     [ -f "$bundle_out" ] || die "bundle did not appear at ${bundle_out}"
     bundle_snapshot=$(mktemp "${git_common}/autoclave-bundle.${task}.XXXXXX") ||
         die "could not create a host-owned bundle snapshot; nothing was fetched"
+    LIFECYCLE_SNAPSHOT="$bundle_snapshot"
     if ! python3 "$SAFE_FILE" read "$bundle_out" > "$bundle_snapshot"; then
-        rm -f "$bundle_snapshot"
         die "could not safely snapshot bundle slot ${bundle_out}; nothing was fetched"
     fi
     if ! git -C "$REPO_ROOT" bundle verify "$bundle_snapshot" >/dev/null 2>&1; then
-        rm -f "$bundle_snapshot"
         die "what is at ${bundle_out} is not a git bundle. Nothing was fetched. Look at it before anything else — the chamber writes that path and this is what it left there"
     fi
 
@@ -1302,14 +1337,12 @@ cmd_collect() {
     incoming="refs/autoclave/incoming/${task}-${nonce}"
     if git -C "$REPO_ROOT" show-ref --verify --quiet "$incoming" ||
        git -C "$REPO_ROOT" symbolic-ref -q "$incoming" >/dev/null 2>&1; then
-        rm -f "$bundle_snapshot"
         die "the invocation-unique incoming ref already exists; nothing was fetched"
     fi
+    LIFECYCLE_INCOMING="$incoming"
     if ! git -C "$REPO_ROOT" fetch --quiet "$bundle_snapshot" "+${branch}:${incoming}"; then
-        rm -f "$bundle_snapshot"
         die "bundle fetched no ref — inspect it with: git bundle list-heads ${bundle_out}"
     fi
-    rm -f "$bundle_snapshot"
     incoming_tip=$(git -C "$REPO_ROOT" rev-parse "$incoming")
 
     # A chamber starts at this exact base and must add commits above it. Rewriting the
@@ -1317,43 +1350,57 @@ cmd_collect() {
     # rediscover the new commits by subject. Refuse that shape before it can replace a
     # useful local agent branch. The temporary ref is removed on both paths.
     if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$chamber_base" "$incoming_tip"; then
-        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
         die "the returned branch rewrote its chamber base instead of extending it. The chamber still holds the work; add new commits above ${chamber_base} and collect again"
     fi
 
     branch_ref="refs/heads/${branch}"
     if git -C "$REPO_ROOT" symbolic-ref -q "$branch_ref" >/dev/null 2>&1; then
-        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
         die "local ${branch} is a symbolic ref; nothing was replaced"
     fi
     # `update-ref` can move a checked-out branch even though its worktree has files
     # from the old commit. Refuse rather than changing a branch another worktree uses.
     worktrees=$(git -C "$REPO_ROOT" worktree list --porcelain) || {
-        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
         die "could not inspect worktree occupancy; nothing was replaced"
     }
     if printf '%s\n' "$worktrees" | grep -Fqx "branch ${branch_ref}"; then
-        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
-        die "local ${branch} is checked out in a worktree; nothing was replaced"
+        die "local ${branch} is occupied (checked out in a worktree); nothing was replaced"
     fi
     old_tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$branch_ref") || old_tip=""
     if [ -n "$old_tip" ] &&
        ! git -C "$REPO_ROOT" merge-base --is-ancestor "$old_tip" "$incoming_tip"; then
-        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
         die "local ${branch} contains work the returned branch does not extend; nothing was replaced"
     fi
-    current_tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$branch_ref") || current_tip=""
-    if [ "$current_tip" != "$old_tip" ]; then
-        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
-        die "local ${branch} moved during collection; nothing was replaced"
+    # `update-ref` alone does not know about worktrees, so make the occupancy check
+    # immediately before the conditional update as well as above.  The old value is
+    # the compare-and-swap: a concurrent ref movement now refuses rather than being
+    # overwritten by a force-update.
+    worktrees=$(git -C "$REPO_ROOT" worktree list --porcelain) ||
+        die "could not inspect worktree occupancy; nothing was replaced"
+    if printf '%s\n' "$worktrees" | grep -Fqx "branch ${branch_ref}"; then
+        die "local ${branch} is occupied (checked out in a worktree); nothing was replaced"
     fi
-    if ! git -C "$REPO_ROOT" branch -f "$branch" "$incoming_tip"; then
-        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
-        die "local ${branch} became occupied or could not be updated; nothing was replaced"
+    if [ -n "$old_tip" ]; then
+        git -C "$REPO_ROOT" update-ref --no-deref "$branch_ref" "$incoming_tip" "$old_tip" ||
+            die "local ${branch} moved during collection; nothing was replaced (git error above)"
+    else
+        git -C "$REPO_ROOT" update-ref --no-deref "$branch_ref" "$incoming_tip" "0000000000000000000000000000000000000000" ||
+            die "local ${branch} moved during collection; nothing was replaced (git error above)"
     fi
-    git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
-    rmdir "$collect_lock"
-    trap - 0 1 2 15
+    # A worktree can be added after the last occupancy read.  Restore only if the
+    # value is still ours: this is another CAS, so this cleanup never overwrites a
+    # newer operator change merely to repair the race it detected.
+    worktrees=$(git -C "$REPO_ROOT" worktree list --porcelain) ||
+        die "local ${branch} was updated, but worktree occupancy could not be rechecked; inspect it before changing anything"
+    if printf '%s\n' "$worktrees" | grep -Fqx "branch ${branch_ref}"; then
+        if [ -n "$old_tip" ]; then
+            git -C "$REPO_ROOT" update-ref --no-deref "$branch_ref" "$old_tip" "$incoming_tip" ||
+                die "local ${branch} became occupied and could not be safely restored; inspect it before changing anything"
+        else
+            git -C "$REPO_ROOT" update-ref --no-deref -d "$branch_ref" "$incoming_tip" ||
+                die "local ${branch} became occupied and could not be safely restored; inspect it before changing anything"
+        fi
+        die "local ${branch} became occupied during collection; its previous value was restored"
+    fi
 
     # An agent that committed nothing leaves its branch pointing at the base, and the
     # bundle for that branch builds and fetches perfectly. Saying "collected" over it
@@ -1442,6 +1489,7 @@ cmd_rm() {
         ''|force) : ;;
         *) die "rm takes a task and, at most, the word 'force'" ;;
     esac
+    acquire_lifecycle_lock "$task"
     need_docker
     exists "$task" || die "no chamber '$task'"
 

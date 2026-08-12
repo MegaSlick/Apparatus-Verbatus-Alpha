@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import signal
 import sys
@@ -56,6 +57,27 @@ def publish(path: Path, document: dict[str, object]) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def lifetime_milliseconds(value: object) -> int | None:
+    """Return a positive, finite response lifetime as whole milliseconds.
+
+    JSON booleans are Python integers, so they need an explicit refusal. Converting
+    through float lets one rule reject NaN, infinities, and integers too large for a
+    usable timestamp without treating an endpoint response as a programming error.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        seconds = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(seconds) or seconds <= 0:
+        return None
+    milliseconds = seconds * 1000
+    if not math.isfinite(milliseconds):
+        return None
+    return int(milliseconds)
 
 
 def refresh() -> int:
@@ -127,24 +149,40 @@ def refresh() -> int:
         # otherwise complete credential update.
         signal.setitimer(signal.ITIMER_REAL, 0)
 
+        if not isinstance(payload, dict):
+            print("refresh: token endpoint returned an invalid response", file=sys.stderr)
+            return 1
+
+        # Validate every response field that can affect the stored credential before
+        # changing the in-memory document. A refusal must leave both the old access
+        # token and the old refresh state intact, not merely avoid a later publish.
         access_token = payload.get("access_token")
         if not isinstance(access_token, str) or not access_token:
             print("refresh: token endpoint returned no access token", file=sys.stderr)
             return 1
+        rotated = payload.get("refresh_token")
+        if rotated is not None and (not isinstance(rotated, str) or not rotated):
+            print("refresh: token endpoint returned an invalid refresh token", file=sys.stderr)
+            return 1
+        access_lifetime = lifetime_milliseconds(payload.get("expires_in"))
+        if access_lifetime is None:
+            print("refresh: token endpoint returned an invalid lifetime", file=sys.stderr)
+            return 1
+        refresh_lifetime = payload.get("refresh_token_expires_in")
+        refresh_lifetime_ms = (
+            None if refresh_lifetime is None else lifetime_milliseconds(refresh_lifetime)
+        )
+        if refresh_lifetime is not None and refresh_lifetime_ms is None:
+            print("refresh: token endpoint returned an invalid refresh lifetime", file=sys.stderr)
+            return 1
 
         now_ms = int(time.time() * 1000)
         oauth["accessToken"] = access_token
-        rotated = payload.get("refresh_token")
-        if isinstance(rotated, str) and rotated:
+        if rotated is not None:
             oauth["refreshToken"] = rotated
-        expires_in = payload.get("expires_in")
-        if not isinstance(expires_in, int) or expires_in <= 0:
-            print("refresh: token endpoint returned an invalid lifetime", file=sys.stderr)
-            return 1
-        oauth["expiresAt"] = now_ms + expires_in * 1000
-        refresh_lifetime = payload.get("refresh_token_expires_in")
-        if isinstance(refresh_lifetime, int):
-            oauth["refreshTokenExpiresAt"] = now_ms + refresh_lifetime * 1000
+        oauth["expiresAt"] = now_ms + access_lifetime
+        if refresh_lifetime_ms is not None:
+            oauth["refreshTokenExpiresAt"] = now_ms + refresh_lifetime_ms
 
         try:
             publish(path, document)

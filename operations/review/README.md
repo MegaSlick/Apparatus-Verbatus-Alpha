@@ -12,15 +12,17 @@ python3 operations/review/candidate.py receipt \
 ```
 
 Each reviewer reads the committed diff with `GIT_NO_REPLACE_OBJECTS=1` from the printed base
-through the candidate and
-writes exact `Candidate: <full SHA>` and `Base: <full SHA>` lines. `receipt` refuses a
-moved `HEAD`, dirty tree, empty report, symlink, wrong SHA, or either missing identity. It writes a local
-JSON receipt under `workbench/raw/reviews/<candidate>/` binding the reviewer, candidate,
-base, report path, report digest, and candidate tree.
+through the candidate and writes exact `Candidate: <full SHA>` and `Base: <full SHA>` lines.
+`receipt` refuses a moved `HEAD`, dirty tree, empty report, symlink, wrong SHA, or either
+missing identity. It also distinguishes an unknown/non-commit base from a base that exists
+but is not an ancestor of the candidate. It snapshots the safely-read report bytes and writes
+the snapshot plus its JSON receipt under `workbench/raw/reviews/<candidate>/` with durable,
+no-replace publication; the receipt points at that retained snapshot, not the mutable source
+path.
 
-Fixing a finding creates a new candidate. Every earlier receipt is then stale; run the
-required independent reviews again. Run the final gate while `HEAD` is that reviewed
+Fixing a finding creates a new candidate. Every earlier receipt is then stale; repeat the
+reviews warranted by the change's risk. Run the final gate while `HEAD` is that reviewed
 candidate, and push that exact commit without amending it. Review reports are local evidence
 and stay out of Git. A `Reviewed-by:` trailer may be added only after that reviewer reports;
 because amending changes the commit SHA, the amended result is a new candidate and must pass
-the required reviews itself before push.
+the proportionate, risk-warranted review again before push.

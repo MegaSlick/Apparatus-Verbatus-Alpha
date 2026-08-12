@@ -96,9 +96,11 @@ RUN printf 'PATH="/opt/venv/bin:$PATH"\nexport PATH\n' \
 # Frequently edited harness inputs come after the dependency layer so changing a brief
 # or the refresh helper does not reinstall the full Python toolchain.
 COPY operations/autoclave/refresh_claude_token.py /opt/autoclave/refresh_claude_token.py
-# Fail the build if a future `latest` Claude CLI changes the public OAuth client id that
-# the refresh endpoint expects. A broken image is cheaper than another eight-hour 401.
+# Fail the build if a future `latest` Claude CLI changes either public OAuth constant
+# the refresh helper sends. A broken image is cheaper than another eight-hour 401.
 RUN grep -a -q '9d1c250a-e61b-44d9-88ed-5944d1962f5e' \
+      /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
+ && grep -a -q 'https://platform.claude.com/v1/oauth/token' \
       /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
 COPY operations/autoclave/agent-brief.md /opt/autoclave/CLAUDE.md
 # Claude discovers this ancestor file from /work. Codex receives a worktree copy from

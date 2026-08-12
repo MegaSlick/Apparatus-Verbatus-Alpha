@@ -129,6 +129,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 args = sys.argv[1:]
 with open(os.environ["FAKE_DOCKER_LOG"], "a") as stream:
@@ -141,6 +142,16 @@ def setting(name, default=""):
 
 def vendor_status(command):
     return "auth status" in command or "login status" in command
+
+
+hold_on = setting("FAKE_HOLD_ON")
+if hold_on and hold_on in " ".join(args):
+    ready = setting("FAKE_HOLD_READY")
+    if ready:
+        open(ready, "w").close()
+    release = setting("FAKE_HOLD_RELEASE")
+    while release and not os.path.exists(release):
+        time.sleep(0.01)
 
 
 def answer_vendor_status():
@@ -156,6 +167,8 @@ def answer_vendor_status():
 if args[:1] == ["info"]:
     raise SystemExit(0)
 if args[:2] == ["image", "inspect"]:
+    if setting("FAKE_IMAGE_EXISTS", "1") != "1":
+        raise SystemExit(1)
     if "verbatus.harness-fingerprint" in " ".join(args):
         print(setting("FAKE_IMAGE_FINGERPRINT"))
     raise SystemExit(0)
@@ -1058,6 +1071,109 @@ def test_build_refuses_when_buildx_is_unavailable(tmp_path):
     assert not any(call[:2] == ["buildx", "build"] for call in docker_calls(log))
 
 
+def test_fingerprint_names_a_missing_image_input(tmp_path):
+    elsewhere(tmp_path)
+    (tmp_path / ".dockerignore").unlink()
+
+    result = subprocess.run(
+        ["python3", str(tmp_path / "operations" / "autoclave" / "fingerprint.py")],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "cannot read an image input" in result.stderr
+
+
+def test_a_second_dispatch_for_the_same_task_is_refused_while_the_first_runs(tmp_path):
+    script = elsewhere(tmp_path)
+    brief = tmp_path / "brief.md"
+    brief.write_text("bounded task\n")
+    (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
+    env, _log = fake_docker(tmp_path)
+    ready = tmp_path / "dispatch-is-holding"
+    release = tmp_path / "release-dispatch"
+    env.update(
+        {
+            "FAKE_CONTAINER_EXISTS": "1",
+            "FAKE_CHAMBER_VENDOR": "codex",
+            "FAKE_AUTH_VALID": "1",
+            "FAKE_EXEC_STATUS": "0",
+            "FAKE_HOLD_ON": "codex exec",
+            "FAKE_HOLD_READY": str(ready),
+            "FAKE_HOLD_RELEASE": str(release),
+        }
+    )
+    first = subprocess.Popen(
+        ["sh", str(script), "dispatch", "task-x", "codex", str(brief), "gpt-5.6-luna", "low"],
+        cwd=tmp_path,
+        env={**os.environ, **env},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists():
+            assert time.monotonic() < deadline, "the first dispatch never reached the CLI"
+            assert first.poll() is None
+            time.sleep(0.01)
+        second = run(
+            "dispatch",
+            "task-x",
+            "codex",
+            str(brief),
+            "gpt-5.6-luna",
+            "low",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+        assert second.returncode != 0
+        assert "task-x.lock" in second.stderr
+    finally:
+        release.touch()
+        first.wait(timeout=30)
+
+
+def test_a_signal_releases_the_task_lock(tmp_path):
+    script = elsewhere(tmp_path)
+    brief = tmp_path / "brief.md"
+    brief.write_text("bounded task\n")
+    (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
+    env, _log = fake_docker(tmp_path)
+    ready = tmp_path / "signal-ready"
+    release = tmp_path / "signal-release"
+    env.update(
+        {
+            "FAKE_CONTAINER_EXISTS": "1",
+            "FAKE_CHAMBER_VENDOR": "codex",
+            "FAKE_AUTH_VALID": "1",
+            "FAKE_HOLD_ON": "codex exec",
+            "FAKE_HOLD_READY": str(ready),
+            "FAKE_HOLD_RELEASE": str(release),
+        }
+    )
+    process = subprocess.Popen(
+        ["sh", str(script), "dispatch", "task-x", "codex", str(brief), "gpt-5.6-luna", "low"],
+        cwd=tmp_path,
+        env={**os.environ, **env},
+    )
+    deadline = time.monotonic() + 10
+    while not ready.exists():
+        assert time.monotonic() < deadline
+        assert process.poll() is None
+        time.sleep(0.01)
+    try:
+        process.terminate()
+        release.touch()
+        assert process.wait(timeout=30) != 0
+    finally:
+        release.touch()
+    assert not (tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock").exists()
+
+
 class TestWhatComesBackAndWhatIsDestroyed:
     """`collect` and `rm`, against a real clone standing in for the chamber's tree.
 
@@ -1270,14 +1386,14 @@ class TestWhatComesBackAndWhatIsDestroyed:
 
     def test_collect_serializes_the_same_task(self, tmp_path):
         script, _clone, _drawer, env, _log = self.chamber(tmp_path)
-        common = Path(git(tmp_path, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-        lock = common / "autoclave-collect.task-x.lock"
-        lock.mkdir()
+        lock = tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock"
+        lock.mkdir(parents=True)
 
         result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
 
         assert result.returncode != 0
-        assert "already running" in result.stderr
+        assert str(lock) in result.stderr
+        assert f"rmdir {lock}" in result.stderr
 
     def test_collect_refuses_a_worktree_that_appears_after_the_occupancy_check(self, tmp_path):
         script, _clone, _drawer, env, _log = self.chamber(tmp_path)
@@ -1292,7 +1408,7 @@ class TestWhatComesBackAndWhatIsDestroyed:
             "import os, subprocess, sys\n"
             "args = sys.argv[1:]\n"
             "result = subprocess.run([os.environ['REAL_GIT'], *args])\n"
-            "if result.returncode == 0 and 'worktree' in args and 'list' in args:\n"
+            "if result.returncode == 0 and 'worktree' in args and 'list' in args and not os.path.exists(os.environ['RACE_LINKED']):\n"
             "    subprocess.run([os.environ['REAL_GIT'], '-C', os.environ['RACE_ROOT'], "
             "'worktree', 'add', '--quiet', os.environ['RACE_LINKED'], 'agent/task-x'], check=True)\n"
             "raise SystemExit(result.returncode)\n"
@@ -1306,6 +1422,87 @@ class TestWhatComesBackAndWhatIsDestroyed:
             assert "occupied" in result.stderr
             assert git(tmp_path, "rev-parse", "agent/task-x") == base
             assert git(linked, "status", "--porcelain") == ""
+        finally:
+            if linked.exists():
+                subprocess.run(
+                    [real_git, "-C", str(tmp_path), "worktree", "remove", "--force", str(linked)],
+                    check=True,
+                )
+
+    def test_collect_refuses_a_ref_move_between_its_read_and_cas(self, tmp_path):
+        """The final update must compare the value it inspected, not force it."""
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        moved = tmp_path / "ref-moved"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *args])\n"
+            "marker = pathlib.Path(os.environ['RACE_MOVED'])\n"
+            "if result.returncode == 0 and 'worktree' in args and 'list' in args:\n"
+            "    count = int(marker.read_text()) + 1 if marker.exists() else 1\n"
+            "    marker.write_text(str(count))\n"
+            "    if count != 2:\n"
+            "        raise SystemExit(result.returncode)\n"
+            "    root = os.environ['RACE_ROOT']\n"
+            "    pathlib.Path(root, 'host-race.txt').write_text('new host work\\n')\n"
+            "    subprocess.run([os.environ['REAL_GIT'], '-C', root, 'add', 'host-race.txt'], check=True)\n"
+            "    subprocess.run([os.environ['REAL_GIT'], '-C', root, 'commit', '--quiet', '-m', 'host race\\n\\nCo-Authored-By: Test <test@example.invalid>'], check=True)\n"
+            "    subprocess.run([os.environ['REAL_GIT'], '-C', root, 'update-ref', 'refs/heads/agent/task-x', 'HEAD'], check=True)\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update({"REAL_GIT": real_git, "RACE_ROOT": str(tmp_path), "RACE_MOVED": str(moved)})
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "moved during collection" in result.stderr
+        assert moved.exists()
+        assert git(tmp_path, "rev-parse", "agent/task-x") == git(tmp_path, "rev-parse", "HEAD")
+
+    def test_collect_rolls_back_if_a_worktree_appears_after_the_cas(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "post-cas-worktree"
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        count = tmp_path / "worktree-list-count"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *args])\n"
+            "counter = pathlib.Path(os.environ['RACE_COUNT'])\n"
+            "if result.returncode == 0 and 'worktree' in args and 'list' in args:\n"
+            "    n = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+            "    counter.write_text(str(n))\n"
+            "    if n == 2:\n"
+            "        subprocess.run([os.environ['REAL_GIT'], '-C', os.environ['RACE_ROOT'], 'worktree', 'add', '--quiet', os.environ['RACE_LINKED'], 'agent/task-x'], check=True)\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update(
+            {
+                "REAL_GIT": real_git,
+                "RACE_ROOT": str(tmp_path),
+                "RACE_LINKED": str(linked),
+                "RACE_COUNT": str(count),
+            }
+        )
+        try:
+            result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert result.returncode != 0
+            assert "previous value was restored" in result.stderr
+            assert git(tmp_path, "rev-parse", "agent/task-x") == base
         finally:
             if linked.exists():
                 subprocess.run(
@@ -1884,6 +2081,32 @@ class TestMakingAChamber:
         )
         assert ref.returncode != 0
 
+    def test_new_refuses_before_a_snapshot_when_the_image_is_missing(self, tmp_path):
+        script = self.dirty_repo(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_IMAGE_EXISTS"] = "0"
+
+        result = run("new", "no-image", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "image not built" in result.stderr
+        assert not any("--detach" in call for call in docker_calls(log))
+        assert (
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(tmp_path),
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "refs/heads/autoclave/snapshot-no-image",
+                ],
+                capture_output=True,
+            ).returncode
+            != 0
+        )
+
     def test_a_stale_image_fingerprint_refuses_the_chamber(self, tmp_path):
         """An edit to any baked input does nothing at all until the image is rebuilt.
 
@@ -1911,6 +2134,60 @@ class TestMakingAChamber:
         result = run("new", "some-task", env=env, script=script, cwd=tmp_path)
         assert result.returncode == 0, result.stderr
         assert any("--detach" in call for call in docker_calls(log)), "no chamber created"
+
+    def test_new_skips_the_claude_trust_initializer_for_codex(self, tmp_path):
+        script = self.dirty_repo(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_VOLUMES": "verbatus-ac-auth-codex",
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_SETUP_STATUS": "0",
+                "FAKE_EXEC_STATUS": "0",
+            }
+        )
+
+        result = run("new", "codex-seat", "HEAD", "codex", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        config = next(call for call in docker_calls(log) if "AC_VENDOR=codex" in call)
+        assert "AC_VENDOR=codex" in config
+        assert '[ "$AC_VENDOR" = claude ] || exit 0' in script.read_text()
+
+    def test_a_second_new_for_the_same_task_is_refused_while_the_first_is_live(self, tmp_path):
+        script = self.dirty_repo(tmp_path)
+        env, _log = fake_docker(tmp_path)
+        ready = tmp_path / "new-is-holding"
+        release = tmp_path / "release-new"
+        env.update(
+            {
+                "FAKE_HOLD_ON": "--detach",
+                "FAKE_HOLD_READY": str(ready),
+                "FAKE_HOLD_RELEASE": str(release),
+                "FAKE_SETUP_STATUS": "0",
+            }
+        )
+        first = subprocess.Popen(
+            ["sh", str(script), "new", "same-task"],
+            cwd=tmp_path,
+            env={**os.environ, **env},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while not ready.exists():
+                assert time.monotonic() < deadline, "the first new never reached docker run"
+                assert first.poll() is None
+                time.sleep(0.01)
+            second = run("new", "same-task", env=env, script=script, cwd=tmp_path)
+            assert second.returncode != 0
+            assert "same-task.lock" in second.stderr
+            assert "rmdir" in second.stderr
+        finally:
+            release.touch()
+            first.wait(timeout=30)
 
     def test_the_snapshot_carries_the_whole_working_tree_and_touches_no_index(self, tmp_path):
         """Staged, unstaged, deleted and untracked, and nothing that is ignored.
@@ -2142,6 +2419,17 @@ class TestSignInIsAsked:
             "a completed first sign-in was deleted on the way out"
         )
 
+    def test_a_first_time_claude_login_keeps_the_empty_volume_it_created(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_AUTH_VALID"] = "1"
+
+        result = run("login", "claude", env=env, script=script)
+
+        assert result.returncode == 0, result.stderr
+        assert ["volume", "create", "verbatus-ac-auth-claude"] in docker_calls(log)
+        assert not any(call[:2] == ["volume", "rm"] for call in docker_calls(log))
+
     def test_a_check_that_could_not_run_never_costs_a_sign_in(self, tmp_path):
         """ "The vendor says no" and "the container never started" are different
         answers, and only one of them may be destructive.
@@ -2323,9 +2611,10 @@ class TestClaudeConfigurationUsesTheMountedVolume:
         cli = next(call for call in calls if "--append-system-prompt-file" in " ".join(call))
         refresh_call = next(call for call in calls if "refresh_claude_token.py" in " ".join(call))
         assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in cli
-        assert ".credentials.autoclave.lock" in " ".join(cli)
+        assert ".credentials.autoclave.lock" not in " ".join(cli)
         assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in refresh_call
         status_call = next(call for call in calls if "auth status" in " ".join(call))
+        assert ".credentials.autoclave.lock" not in " ".join(status_call)
         assert calls.index(refresh_call) < calls.index(status_call)
         assert calls.index(refresh_call) < calls.index(cli)
 
@@ -2374,11 +2663,14 @@ class TestClaudeConfigurationUsesTheMountedVolume:
         helper = (ROOT / "operations" / "autoclave" / "refresh_claude_token.py").read_text()
         dockerfile = (ROOT / "operations" / "autoclave" / "Dockerfile").read_text()
         client_id = re.search(r'^CLIENT_ID = "([^"]+)"$', helper, re.MULTILINE)
+        token_url = re.search(r'^TOKEN_URL = "([^"]+)"$', helper, re.MULTILINE)
         image_check = re.search(r"grep -a -q '([^']+)'", dockerfile)
 
         assert client_id, "refresh helper defines no public client id"
+        assert token_url, "refresh helper defines no token endpoint"
         assert image_check, "image does not verify its Claude CLI client id"
         assert image_check.group(1) == client_id.group(1)
+        assert token_url.group(1) in dockerfile, "image does not verify the helper token endpoint"
 
 
 class TestTheTrustFlagAgainstARealFilesystem:
@@ -2406,15 +2698,17 @@ class TestTheTrustFlagAgainstARealFilesystem:
 
     def test_the_enclosing_configuration_body_succeeds_as_shell(self, tmp_path):
         source = SCRIPT.read_text()
-        marker = 'docker exec "$(container_of "$task")" sh -c \'\n'
+        marker = 'docker exec -e AC_VENDOR="$vendor" "$(container_of "$task")" sh -c \'\n'
         start = source.index(marker) + len(marker)
         body = source[start : source.index("\n    ' || die", start)]
         work_config = tmp_path / "work" / ".claude"
         shared_config = tmp_path / "shared" / ".claude"
         work_config.mkdir(parents=True)
         shared_config.mkdir(parents=True)
-        body = body.replace("/work/.claude", str(work_config)).replace(
-            "/home/agent/.claude", str(shared_config)
+        body = (
+            body.replace('[ "$AC_VENDOR" = claude ] || exit 0', ":")
+            .replace("/work/.claude", str(work_config))
+            .replace("/home/agent/.claude", str(shared_config))
         )
 
         result = self._run(body)
@@ -2427,7 +2721,7 @@ class TestTheTrustFlagAgainstARealFilesystem:
 
     def test_the_enclosing_body_stops_when_local_settings_cannot_be_written(self, tmp_path):
         source = SCRIPT.read_text()
-        marker = 'docker exec "$(container_of "$task")" sh -c \'\n'
+        marker = 'docker exec -e AC_VENDOR="$vendor" "$(container_of "$task")" sh -c \'\n'
         start = source.index(marker) + len(marker)
         body = source[start : source.index("\n    ' || die", start)]
         work = tmp_path / "work"
@@ -2436,8 +2730,10 @@ class TestTheTrustFlagAgainstARealFilesystem:
         blocked_config.write_text("not a directory")
         shared_config = tmp_path / "shared" / ".claude"
         shared_config.mkdir(parents=True)
-        body = body.replace("/work/.claude", str(blocked_config)).replace(
-            "/home/agent/.claude", str(shared_config)
+        body = (
+            body.replace('[ "$AC_VENDOR" = claude ] || exit 0', ":")
+            .replace("/work/.claude", str(blocked_config))
+            .replace("/home/agent/.claude", str(shared_config))
         )
 
         result = self._run(body)

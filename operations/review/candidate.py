@@ -11,6 +11,7 @@ import re
 import stat
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 GIT_ENV = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
@@ -65,20 +66,20 @@ def resolve_base(root: Path, base: str) -> str:
         raise ValueError(f"base {base!r} is unknown or is not a commit: {detail}") from error
 
 
-def read_report(report: Path) -> bytes:
-    """Read one regular, non-symlink report through the descriptor we validate."""
+def read_regular_file(path: Path, noun: str) -> bytes:
+    """Read one regular, non-symlink file through the descriptor we validate."""
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:
-        raise ValueError("safe report reads require O_NOFOLLOW support")
+        raise ValueError(f"safe {noun} reads require O_NOFOLLOW support")
     flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
     try:
-        descriptor = os.open(report, flags)
+        descriptor = os.open(path, flags)
     except OSError as error:
-        raise ValueError(f"the review report cannot be opened safely: {error}") from error
+        raise ValueError(f"the {noun} cannot be opened safely: {error}") from error
     try:
         mode = os.fstat(descriptor).st_mode
         if not stat.S_ISREG(mode):
-            raise ValueError("the review report is not a regular file")
+            raise ValueError(f"the {noun} is not a regular file")
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
             return handle.read()
     finally:
@@ -93,13 +94,58 @@ def report_names(data: bytes, label: str, identity: str) -> bool:
     return re.search(expression, data) is not None
 
 
+def fsync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def publish_immutable(path: Path, data: bytes, noun: str) -> None:
+    """Durably publish bytes once, or prove the existing immutable copy matches."""
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise ValueError(f"safe {noun} publication requires O_NOFOLLOW support")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow
+    descriptor: int | None = None
+    created = False
+    try:
+        descriptor = os.open(temporary, flags, 0o600)
+        created = True
+        with os.fdopen(descriptor, "wb", closefd=False) as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.close(descriptor)
+        descriptor = None
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if read_regular_file(path, noun) != data:
+                raise ValueError(f"an immutable {noun} already exists at {path}") from None
+        fsync_directory(path.parent)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if created:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+            else:
+                fsync_directory(path.parent)
+
+
 def receipt(
     root: Path, candidate: str, base: str, reviewer: str, report: Path
 ) -> tuple[Path, dict[str, str]]:
     candidate_sha, tree = clean_candidate(root, candidate)
     base_sha = resolve_base(root, base)
     require_ancestor(root, base_sha, candidate_sha)
-    data = read_report(report)
+    data = read_regular_file(report, "review report")
     if not data.strip():
         raise ValueError("the review report is empty")
     if not report_names(data, "Candidate", candidate_sha):
@@ -110,28 +156,20 @@ def receipt(
     if not slug:
         raise ValueError("the reviewer name has no usable characters")
     report_sha256 = hashlib.sha256(data).hexdigest()
+    directory = root / "workbench" / "raw" / "reviews" / candidate_sha
+    snapshot = directory / f"{slug}-{report_sha256}.md"
     record = {
         "reviewer": reviewer,
         "candidate": candidate_sha,
         "base": base_sha,
         "tree": tree,
-        "report": str(report.absolute()),
+        "report": str(snapshot.absolute()),
         "report_sha256": report_sha256,
     }
-    output = root / "workbench" / "raw" / "reviews" / candidate_sha / f"{slug}-{report_sha256}.json"
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output = directory / f"{slug}-{report_sha256}.json"
     encoded = (json.dumps(record, indent=2) + "\n").encode()
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(output, flags, 0o600)
-    except FileExistsError:
-        if read_report(output) != encoded:
-            raise ValueError(f"an immutable receipt already exists at {output}") from None
-    else:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
+    publish_immutable(snapshot, data, "review-report snapshot")
+    publish_immutable(output, encoded, "review receipt")
     return output, record
 
 
@@ -164,7 +202,11 @@ def main() -> int:
                 arguments.report,
             )
             print(json.dumps({"receipt": str(output), **record}, indent=2))
-    except (OSError, subprocess.CalledProcessError, ValueError) as error:
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.strip() or f"git exited {error.returncode}"
+        print(f"candidate: git command failed: {detail}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as error:
         print(f"candidate: {error}", file=sys.stderr)
         return 1
     return 0

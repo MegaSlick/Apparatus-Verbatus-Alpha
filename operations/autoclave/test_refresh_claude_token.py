@@ -6,13 +6,14 @@ import stat
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from operations.autoclave import refresh_claude_token as refresh
 
 
 def write_credential(tmp_path, monkeypatch, *, expires_at: int):
     config = tmp_path / ".claude"
-    config.mkdir()
+    config.mkdir(parents=True)
     path = config / ".credentials.json"
     path.write_text(
         json.dumps(
@@ -147,6 +148,105 @@ def test_an_unrotated_refresh_token_is_preserved_and_expiries_are_updated(tmp_pa
     assert oauth["refreshToken"] == "old-refresh"
     assert oauth["expiresAt"] == (now_seconds + 3_600) * 1000
     assert oauth["refreshTokenExpiresAt"] == (now_seconds + 86_400) * 1000
+
+
+def test_finite_float_lifetimes_are_accepted(tmp_path, monkeypatch):
+    now_seconds = 1_700_000_000
+    path = write_credential(tmp_path, monkeypatch, expires_at=1)
+
+    class Response(io.StringIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    monkeypatch.setattr(refresh.time, "time", lambda: now_seconds)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: Response(
+            json.dumps(
+                {
+                    "access_token": "new-access",
+                    "expires_in": 3_600.5,
+                    "refresh_token_expires_in": 86_400.25,
+                }
+            )
+        ),
+    )
+
+    assert refresh.main() == 0
+
+    oauth = json.loads(path.read_text(encoding="utf-8"))["claudeAiOauth"]
+    assert oauth["expiresAt"] == now_seconds * 1000 + 3_600_500
+    assert oauth["refreshTokenExpiresAt"] == now_seconds * 1000 + 86_400_250
+
+
+def test_invalid_response_lifetimes_do_not_mutate_or_publish_a_credential(tmp_path, monkeypatch):
+    class Response(io.StringIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    for index, invalid in enumerate((True, False, 0, -1, float("nan"), float("inf"))):
+        path = write_credential(tmp_path / str(index), monkeypatch, expires_at=1)
+        before = path.read_bytes()
+        published = []
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *_args, value=invalid, **_kwargs: Response(
+                json.dumps({"access_token": "new-access", "expires_in": value})
+            ),
+        )
+        monkeypatch.setattr(
+            refresh,
+            "publish",
+            lambda *_args, sink=published: sink.append(True),
+        )
+
+        assert refresh.main() == 1
+        assert path.read_bytes() == before
+        assert published == []
+
+
+def test_invalid_optional_refresh_lifetime_preserves_the_existing_credential(tmp_path, monkeypatch):
+    path = write_credential(tmp_path, monkeypatch, expires_at=1)
+    before = path.read_bytes()
+
+    class Response(io.StringIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: Response(
+            json.dumps(
+                {
+                    "access_token": "new-access",
+                    "expires_in": 3_600,
+                    "refresh_token_expires_in": True,
+                }
+            )
+        ),
+    )
+
+    assert refresh.main() == 1
+    assert path.read_bytes() == before
+
+
+def test_dockerfile_pins_both_oauth_constants_from_the_refresh_helper():
+    dockerfile = Path(__file__).with_name("Dockerfile").read_text(encoding="utf-8")
+
+    assert f"grep -a -q '{refresh.CLIENT_ID}'" in dockerfile
+    assert f"grep -a -q '{refresh.TOKEN_URL}'" in dockerfile
 
 
 def test_the_deadline_is_disarmed_after_response_parsing_before_publication(tmp_path, monkeypatch):
