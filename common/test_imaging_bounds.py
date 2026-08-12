@@ -38,14 +38,20 @@ def sound_page(width: int = 8, height: int = 4) -> bytes:
     return encode_grayscale_png(width, height, [bytearray([200] * width) for _ in range(height)])
 
 
-def repack(width: int, height: int, raw: bytes) -> bytes:
-    """A structurally valid PNG whose IDAT holds exactly `raw`, uncompressed."""
+def repack(width: int, height: int, raw: bytes, color_type: int = 0) -> bytes:
+    """A structurally valid PNG whose IDAT holds exactly `raw`, uncompressed.
+
+    `color_type` defaults to 0 (grayscale), what this module's own codec
+    writes. Pass 2 for RGB to reach the Pillow fallback paths, which refuse on
+    the declared IHDR dimensions before decoding, so an oversized page can be
+    declared here without ever being materialised.
+    """
     import struct
 
     def chunk(tag: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
 
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)
     return (
         PNG_SIGNATURE
         + chunk(b"IHDR", ihdr)
@@ -139,15 +145,21 @@ def test_crop_refuses_a_declared_size_past_the_bound_on_its_pillow_fallback_path
     RGB rather than this module's own grayscale encoding, so `decode_grayscale_png`
     refuses for a reason unrelated to size and this exercises the Pillow fallback,
     not the native path `test_a_declared_size_past_the_pixel_bound_is_refused_
-    before_any_decompression` already covers."""
+    before_any_decompression` already covers.
+
+    The oversized page is *declared*, never materialised: a real
+    100,500,000-pixel RGB image is over 300 MB of source pixels, and a CI worker
+    can die building the fixture before the assertion it exists for ever runs.
+    `_crop_decoded_page` refuses on `image.width * image.height` before
+    `image.load()`, so a compact IDAT under a large IHDR reaches the same
+    refusal by the same route. Found by CodeRabbit."""
     # 100,500,000 pixels: over MAX_PIXELS, under Pillow's own 2x raise ceiling
     width, height = 10_050, 10_000
     assert MAX_PIXELS < width * height < 2 * MAX_PIXELS
-    source = BytesIO()
-    Image.new("RGB", (width, height), (1, 2, 3)).save(source, format="PNG")
+    source = repack(width, height, b"", color_type=2)
 
     with pytest.raises(ValueError, match="pixel bound"):
-        crop_png(source.getvalue(), {"x": 0, "y": 0, "w": 4, "h": 4})
+        crop_png(source, {"x": 0, "y": 0, "w": 4, "h": 4})
 
 
 def test_crop_converts_an_admitted_cmyk_jpeg_to_a_png_compatible_display_mode():

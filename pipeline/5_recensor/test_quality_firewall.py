@@ -220,7 +220,16 @@ def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     # intersected a set without it, so a Recensor that imported `multiprocessing`
     # would have failed reporting an empty list of offending modules — the failure
     # naming nothing it failed on. Found by CodeRabbit.
-    banned = {"subprocess", "os", "importlib", "multiprocessing"}
+    # `runpy` is on this list because it needs none of the others: one
+    # `runpy.run_path("pipeline/4_perlector/run.py")` re-invokes the reading
+    # stage in this very process, importing nothing banned, and the guard would
+    # have reported a pass over exactly the re-roll GOVERNANCE 11 forbids and
+    # this file exists to make impossible. `pty` reaches a shell the same way
+    # `subprocess` does; `asyncio` deliberately is NOT here, because its
+    # subprocess routes all land on `subprocess` itself and banning the whole
+    # module would refuse ordinary concurrency that invokes nothing.
+    # Found by CodeRabbit.
+    banned = {"subprocess", "os", "importlib", "multiprocessing", "runpy", "pty"}
     assert not imported & banned, (
         f"the Recensor imports {sorted(imported & banned)}; it appends recovery "
         "requests and never invokes the stage that answers one"

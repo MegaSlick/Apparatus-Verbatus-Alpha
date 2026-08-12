@@ -152,40 +152,78 @@ def _validate_coverage(coverage: Any) -> None:
     }
     if not isinstance(coverage, dict) or set(coverage) != required:
         raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
-    integers = ("configured", "floor", "unresolved_chairs")
-    if any(
-        not isinstance(coverage[field], int)
-        or isinstance(coverage[field], bool)
-        or coverage[field] < 0
-        for field in integers
-    ):
-        raise SchemaRefusal("Recensor partition receipt has invalid witness coverage counts")
+    # One fault, one message. These were a single `or` chain of about a dozen
+    # independent checks all raising the same sentence, so a refusal on a real
+    # run told an operator only that "some number in the witness coverage is
+    # wrong" and left them to find which by reading this function and comparing
+    # counts by hand. The receipt exists so that "complete" is a *refutable*
+    # claim; a refusal that cannot name what it refused makes the refutation
+    # harder than the claim. Each branch below now names its own disagreement
+    # and quotes the numbers that disagree. Order is preserved from the old
+    # chain, so a receipt that is malformed in several ways at once still
+    # refuses on the same one it always did. Found by CodeRabbit.
+    for field in ("configured", "floor", "unresolved_chairs"):
+        value = coverage[field]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise SchemaRefusal(
+                f"Recensor partition receipt has invalid witness coverage counts: {field!r} "
+                f"is {value!r}, not a non-negative integer"
+            )
     by_outcome = coverage["by_outcome"]
     by_class = coverage["by_class"]
-    if (
-        not isinstance(by_outcome, dict)
-        or not all(
-            isinstance(outcome, str)
-            and outcome
-            and isinstance(count, int)
-            and not isinstance(count, bool)
-            and count >= 0
-            for outcome, count in by_outcome.items()
-        )
-        or not isinstance(by_class, dict)
-        or set(by_class) != set(_PARTITION_KEYS)
-        or any(
-            not isinstance(count, int) or isinstance(count, bool) or count < 0
-            for count in by_class.values()
-        )
-        or sum(by_outcome.values()) != coverage["configured"]
-        or sum(by_class.values()) != coverage["configured"]
-        or coverage["unresolved_chairs"] != by_class[OutcomeClass.UNRESOLVED.value]
-        or not isinstance(coverage["under_witnessed"], bool)
-        or coverage["under_witnessed"]
-        != (by_class[OutcomeClass.COMPLETED.value] < coverage["floor"])
+    if not isinstance(by_outcome, dict) or not all(
+        isinstance(outcome, str)
+        and outcome
+        and isinstance(count, int)
+        and not isinstance(count, bool)
+        and count >= 0
+        for outcome, count in by_outcome.items()
     ):
-        raise SchemaRefusal("Recensor partition receipt witness coverage does not reconcile")
+        raise SchemaRefusal(
+            "Recensor partition receipt's by_outcome is not a mapping of non-empty witness "
+            "outcome names to non-negative integer counts"
+        )
+    if not isinstance(by_class, dict) or set(by_class) != set(_PARTITION_KEYS):
+        raise SchemaRefusal(
+            "Recensor partition receipt's by_class does not name exactly the partition "
+            f"classes {sorted(_PARTITION_KEYS)}"
+        )
+    if any(
+        not isinstance(count, int) or isinstance(count, bool) or count < 0
+        for count in by_class.values()
+    ):
+        raise SchemaRefusal(
+            f"Recensor partition receipt's by_class {by_class} holds a count that is not a "
+            "non-negative integer"
+        )
+    if sum(by_outcome.values()) != coverage["configured"]:
+        raise SchemaRefusal(
+            f"Recensor partition receipt's by_outcome totals {sum(by_outcome.values())} "
+            f"against {coverage['configured']} configured chair(s); every configured chair "
+            "gets exactly one outcome"
+        )
+    if sum(by_class.values()) != coverage["configured"]:
+        raise SchemaRefusal(
+            f"Recensor partition receipt's by_class totals {sum(by_class.values())} against "
+            f"{coverage['configured']} configured chair(s)"
+        )
+    if coverage["unresolved_chairs"] != by_class[OutcomeClass.UNRESOLVED.value]:
+        raise SchemaRefusal(
+            f"Recensor partition receipt names {coverage['unresolved_chairs']} unresolved "
+            f"chair(s) while its own by_class counts "
+            f"{by_class[OutcomeClass.UNRESOLVED.value]}"
+        )
+    if not isinstance(coverage["under_witnessed"], bool):
+        raise SchemaRefusal(
+            f"Recensor partition receipt's under_witnessed is {coverage['under_witnessed']!r}, "
+            "not a boolean"
+        )
+    if coverage["under_witnessed"] != (by_class[OutcomeClass.COMPLETED.value] < coverage["floor"]):
+        raise SchemaRefusal(
+            f"Recensor partition receipt claims under_witnessed="
+            f"{coverage['under_witnessed']}, but {by_class[OutcomeClass.COMPLETED.value]} "
+            f"completed read(s) against a floor of {coverage['floor']} says otherwise"
+        )
     # Rederived from the outcome counts rather than compared field by field: the
     # per-class summary is the receipt's own arithmetic, and a receipt whose
     # summary does not fall out of its own numbers is not evidence of anything.
@@ -198,7 +236,10 @@ def _validate_coverage(coverage: Any) -> None:
                 "Recensor partition receipt has an unknown witness outcome"
             ) from error
     if by_class != derived_by_class:
-        raise SchemaRefusal("Recensor partition receipt witness coverage does not reconcile")
+        raise SchemaRefusal(
+            f"Recensor partition receipt's by_class {by_class} does not fall out of its own "
+            f"per-outcome counts, which classify as {derived_by_class}"
+        )
 
 
 def _validate_reference(reference: Any, what: str) -> None:

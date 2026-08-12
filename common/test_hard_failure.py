@@ -437,6 +437,31 @@ def test_a_door_refusal_with_no_reason_field_does_not_crash_the_reason_match(tmp
     assert tally["count"] == 0
 
 
+def test_a_door_refusal_whose_reason_code_merely_starts_the_same_does_not_count(tmp_path):
+    """`corrupted` is not `corrupt`. The reason match is exact, not a prefix.
+
+    The existing near-miss coverage uses `unrecognized-format`, which shares no
+    prefix with either hard reason -- so it would still pass if the comparison
+    were ever loosened to `startswith`. A loosened match widens what the cap
+    counts, and three ordinary door refusals would then halt a whole run at the
+    next stage boundary on routine noise. Found by CodeRabbit.
+    """
+    tree = make_run(tmp_path)
+    publish(
+        tree,
+        stage=DOOR,
+        kind="admission",
+        subject="source-0000000000000001",
+        outcome="refused",
+        adapter_revision="fake-door-v0",
+        reason="corrupted: a reason code that merely starts like a hard one",
+    )
+    policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
+    tally = tally_hard_failures(tree, policy)
+    assert tally["count"] == 0
+    assert tally["by_kind"]["door:refused:corrupt"] == []
+
+
 def test_two_door_refusals_for_the_two_hard_reasons_are_two_distinct_incidents(tmp_path):
     tree = make_run(tmp_path)
     publish(

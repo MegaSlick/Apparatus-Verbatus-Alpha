@@ -240,21 +240,37 @@ def test_self_consistent_coverage_builds_a_receipt_cleanly():
     assert receipt["items"][0]["coverage"] == _valid_coverage()
 
 
+# Each of these three drives a genuinely different coverage fault, and each
+# now pins the message for *its* fault rather than one sentence all three
+# shared. While that sentence was common to every branch, any one of these
+# tests would have passed on the wrong refusal firing -- which is the same
+# false-green shape the receipt itself exists to refuse.
 def test_a_by_class_that_disagrees_with_by_outcome_is_refused():
-    coverage = dict(_valid_coverage(), by_class={"completed": 3, "unresolved": 0, "failed": 0})
-    with pytest.raises(SchemaRefusal, match="does not reconcile"):
+    # Self-consistent in every OTHER respect -- it totals `configured`, its
+    # unresolved count matches `unresolved_chairs`, and `under_witnessed` still
+    # follows from its completed count against the floor -- so the only thing
+    # wrong with it is that classifying `by_outcome` derives
+    # {completed: 2, unresolved: 1, failed: 0} instead. The earlier fixture here
+    # tripped the `unresolved_chairs` check first and never reached this one,
+    # which nobody could see while both raised the same sentence.
+    coverage = dict(
+        _valid_coverage(),
+        by_class={"completed": 2, "unresolved": 0, "failed": 1},
+        unresolved_chairs=0,
+    )
+    with pytest.raises(SchemaRefusal, match="does not fall out of its own per-outcome counts"):
         _build_with_coverage(coverage)
 
 
 def test_an_under_witnessed_flag_disagreeing_with_the_floor_formula_is_refused():
     coverage = dict(_valid_coverage(), under_witnessed=False)  # 2 completed < floor 3 is True
-    with pytest.raises(SchemaRefusal, match="does not reconcile"):
+    with pytest.raises(SchemaRefusal, match="claims under_witnessed=False"):
         _build_with_coverage(coverage)
 
 
 def test_an_unresolved_chairs_count_disagreeing_with_by_class_is_refused():
     coverage = dict(_valid_coverage(), unresolved_chairs=0)  # by_class["unresolved"] is 1
-    with pytest.raises(SchemaRefusal, match="does not reconcile"):
+    with pytest.raises(SchemaRefusal, match="unresolved chair\\(s\\) while its own by_class"):
         _build_with_coverage(coverage)
 
 

@@ -10,6 +10,7 @@ scenario the Designator can genuinely miss something on, which the walking
 skeleton's synthetic proposer does not yet support (see HANDOFF.md).
 """
 
+import random
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from residual_ink import (  # noqa: E402
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
     MINIMUM_FRACTION_OUTSIDE_COVERAGE,
     MINIMUM_INK_PIXELS,
+    SUBSTANTIAL_INK_PIXELS,
     page_residual_ink,
     residual_ink,
 )
@@ -40,6 +42,92 @@ def paint(rows: list[bytearray], x: int, y: int, w: int, h: int, value: int = IN
         row = rows[y + row_offset]
         for col_offset in range(w):
             row[x + col_offset] = value
+
+
+def _straightforward_counts(
+    width: int, height: int, rows: list[bytearray], covered: list[dict]
+) -> tuple[int, int, int]:
+    """`(background, total_ink, outside_ink)` the obvious, per-pixel way.
+
+    The reference the module's C-level implementation is checked against. This
+    is deliberately the slow, plainly-correct version -- one interpreted
+    comparison per pixel, a full 256-bucket histogram list, `list.index(max())`
+    for the mode -- exactly what `residual_ink` did before `bytes.translate`,
+    `Counter` and `int.bit_count` replaced those loops for real-page speed.
+    """
+    histogram = [0] * 256
+    for row in rows:
+        for value in row:
+            histogram[value] += 1
+    background = histogram.index(max(histogram))
+
+    mask = bytearray(width * height)
+    for bounds in covered:
+        x0 = max(0, min(bounds["x"], width))
+        y0 = max(0, min(bounds["y"], height))
+        x1 = max(x0, min(bounds["x"] + bounds["w"], width))
+        y1 = max(y0, min(bounds["y"] + bounds["h"], height))
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                mask[y * width + x] = 1
+
+    total_ink = outside_ink = 0
+    for y, row in enumerate(rows):
+        for x, value in enumerate(row):
+            if background - value < MINIMUM_CONTRAST_BELOW_BACKGROUND:
+                continue
+            total_ink += 1
+            if not mask[y * width + x]:
+                outside_ink += 1
+    return background, total_ink, outside_ink
+
+
+def test_the_fast_counts_agree_with_a_straightforward_implementation():
+    """The optimized counters must be a pure speed change, never a measurement one.
+
+    `residual_ink` feeds a completeness guard: if these counts drift, a page
+    with real uncovered ink can report clean, which is GOALS 1's worst failure
+    arriving through an optimization nobody re-measured. Driven over pseudo-
+    random pages -- fixed seed, so a failure reproduces exactly -- including
+    overlapping and out-of-bounds covered regions, ink at the exact contrast
+    boundary, and pages with no ink at all.
+    """
+    rng = random.Random(20260811)
+    for case in range(60):
+        width = rng.randint(1, 40)
+        height = rng.randint(1, 40)
+        # A background-dominant page most of the time (the real shape), and
+        # occasionally an arbitrary one, so the mode's tie-breaking is exercised.
+        if case % 5:
+            rows = [
+                bytearray(
+                    rng.choice((BACKGROUND, BACKGROUND, BACKGROUND, INK, BACKGROUND - 40, 0, 255))
+                    for _ in range(width)
+                )
+                for _ in range(height)
+            ]
+        else:
+            rows = [bytearray(rng.randrange(256) for _ in range(width)) for _ in range(height)]
+
+        covered = [
+            {
+                "x": rng.randint(-5, width),
+                "y": rng.randint(-5, height),
+                "w": rng.randint(0, width + 5),
+                "h": rng.randint(0, height + 5),
+            }
+            for _ in range(rng.randint(0, 4))
+        ]
+
+        expected_background, expected_total, expected_outside = _straightforward_counts(
+            width, height, [bytearray(row) for row in rows], covered
+        )
+        result = residual_ink(width, height, [bytearray(row) for row in rows], covered)
+
+        context = f"case {case}: {width}x{height}, covered={covered}"
+        assert result["background_level"] == expected_background, context
+        assert result["total_ink_pixels"] == expected_total, context
+        assert result["outside_ink_pixels"] == expected_outside, context
 
 
 def test_ink_fully_inside_the_covered_region_is_not_flagged():
@@ -96,6 +184,29 @@ def test_a_small_fraction_of_heavily_covered_ink_is_not_flagged():
     assert result["outside_ink_pixels"] == outside
     assert result["fraction_outside"] < MINIMUM_FRACTION_OUTSIDE_COVERAGE
     assert result["flagged"] is False
+
+
+def test_a_substantial_absolute_miss_is_flagged_even_where_the_fraction_gate_would_not():
+    """The dense-page hole the fraction gate alone leaves open.
+
+    A page carrying abundant, correctly-covered ink can leave plainly-real text
+    outside every cut region and still sit under the 2% fraction threshold --
+    a missed act reported as a clean page, GOALS 1's worst failure. The
+    absolute gate is what catches it.
+    """
+    # Ink stays a minority of the page (202,000 of 960,000), so the background
+    # inference is not itself confused -- this test is about the fraction gate's
+    # dense-page hole, not about `_background_level`'s own majority-ink limit.
+    rows = canvas(1200, 800)
+    paint(rows, 0, 0, 400, 500)  # 200,000 covered ink pixels
+    outside = SUBSTANTIAL_INK_PIXELS  # plainly real text, but only ~1% of the total
+    paint(rows, 0, 600, outside // 4, 4)
+    result = residual_ink(1200, 800, rows, covered=[{"x": 0, "y": 0, "w": 400, "h": 500}])
+
+    assert result["outside_ink_pixels"] == outside
+    # Under the fraction gate, which alone would have called this page clean.
+    assert result["fraction_outside"] < MINIMUM_FRACTION_OUTSIDE_COVERAGE
+    assert result["flagged"] is True
 
 
 def test_a_large_enough_fraction_outside_coverage_is_flagged_even_with_other_ink_covered():

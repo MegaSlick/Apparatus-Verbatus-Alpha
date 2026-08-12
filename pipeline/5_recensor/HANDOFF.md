@@ -33,8 +33,16 @@ seal's claim against this link: a claim the evidence does not confirm is held
 for review (a continuation shortfall); the seal denying a continuation its own
 evidence already proves is fatal accounting, because silently agreeing with an
 under-claiming seal would let it override this stage's own authority over the
-fact. Every review payload — including a Designator-held act's, with an empty
-link — carries this fact under `payload["continuation"]`.
+fact. Every review payload — including a Designator-held act's — carries this
+fact under `payload["continuation"]`, derived from whatever regions were
+actually cut rather than hardcoded. A Designator hold has two shapes
+(`pipeline/2_designator/run.py::initial_pass`): the act's own page never
+sealed, so no region of it is cut and the link really is empty; or the page
+sealed and the near-side region **was** cut while a declared continuation's
+page did not, in which case the link carries that region's real page and
+region ids. Reporting the second shape as empty is what
+`fbf2374` fixed — it dropped a flagged page's only evidence whenever the held
+act was the one act touching it.
 
 ## `kind="review"`
 

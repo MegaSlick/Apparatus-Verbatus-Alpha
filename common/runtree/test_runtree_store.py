@@ -1018,6 +1018,7 @@ def test_the_run_file_is_valid_json_a_human_can_read(tmp_path):
         "non-utf8",
         "float",
         "wrong-self-hash",
+        "deeply-nested",
     ],
 )
 def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
@@ -1060,6 +1061,14 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
         "non-utf8": b"\xff\xfe not utf-8",
         "float": json.dumps(float_damaged).encode("utf-8"),
         "wrong-self-hash": json.dumps(self_hash_damaged).encode("utf-8"),
+        # The `RecursionError` branch of the writer's except clause, which
+        # nothing else drives. `json.loads` really does raise it rather than a
+        # `ValueError` at this depth (measured here: 100,000 levels still parse,
+        # 200,000 raise), which is precisely why `_read_json` cannot translate
+        # it and why it is named separately in that clause. Without this case
+        # that branch was untested and could have been deleted green.
+        # Found by CodeRabbit.
+        "deeply-nested": (b"[" * 200_000) + (b"]" * 200_000),
     }[damage_kind]
     target.write_bytes(damage)
     assert tree.write_recensor_partition_receipt(receipt).reused is False, (

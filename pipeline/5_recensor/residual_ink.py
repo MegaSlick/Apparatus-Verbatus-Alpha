@@ -34,6 +34,7 @@ examined its pixels, so there is nothing to read a region's absence against.
 That gap is named, not papered over, in `pipeline/5_recensor/HANDOFF.md`.
 """
 
+from collections import Counter
 from typing import Any
 
 from common.imaging import Bounds, grayscale_rows
@@ -65,6 +66,33 @@ MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
 #: currently cut for it before the page is flagged.
 MINIMUM_FRACTION_OUTSIDE_COVERAGE = 0.02
 
+#: Enough outside-coverage ink to flag a page on its own, whatever fraction of
+#: that page's total ink it is. The fraction gate alone has a hole at the dense
+#: end: a page carrying 500,000 ink pixels can leave 9,000 of them — several
+#: words, plainly real text — outside every cut region and still sit under 2%.
+#: That is a missed act reported as a clean page, which is GOALS 1's worst
+#: failure ("a missed act is worse than a poorly read act") and Tyrel's own
+#: 2026-08-11 ruling ("Missing text is the worst failure"). Set well above any
+#: plausible non-text artifact — a heavy fold shadow or a punch hole runs to
+#: hundreds of pixels, not thousands — and deliberately below one line of
+#: 300-DPI text (roughly 8,000 ink pixels), because flagging costs a human
+#: glance at a page and missing an act costs the act.
+SUBSTANTIAL_INK_PIXELS = 2_000
+
+
+def _ink_table(background: int) -> bytes:
+    """A 256-entry translation table mapping every pixel value to 1 (ink) or 0.
+
+    Precomputed once per page so the per-pixel ink test becomes a single
+    C-level `bytes.translate` over each row rather than an interpreted
+    comparison per pixel. The predicate is exactly the one the old loop
+    applied: ink is a value at least `MINIMUM_CONTRAST_BELOW_BACKGROUND`
+    levels below this page's own inferred background.
+    """
+    return bytes(
+        1 if background - value >= MINIMUM_CONTRAST_BELOW_BACKGROUND else 0 for value in range(256)
+    )
+
 
 def _background_level(rows: list[bytearray]) -> int:
     """The page's own most common pixel value: the inferred paper tone.
@@ -77,11 +105,17 @@ def _background_level(rows: list[bytearray]) -> int:
     calling ink the background. True of every register page this project has
     described so far; worth revisiting if a real corpus contradicts it.
     """
-    histogram = [0] * 256
+    # `Counter.update` over each row counts in C rather than one interpreted
+    # loop iteration per pixel; on a 300-DPI page that is ~8.4 million
+    # iterations saved per page, and this check runs on every page of every
+    # run. `max(range(256), ...)` reproduces `list.index(max(...))`'s tie-break
+    # exactly -- both scan upward from 0 and return the lowest value holding
+    # the maximum count, which matters because a page with two equally common
+    # tones must infer the same background as it always did.
+    histogram: Counter[int] = Counter()
     for row in rows:
-        for value in row:
-            histogram[value] += 1
-    return histogram.index(max(histogram))
+        histogram.update(row)
+    return max(range(256), key=lambda value: histogram.get(value, 0))
 
 
 def residual_ink(
@@ -113,19 +147,34 @@ def residual_ink(
         for y in range(y0, y1):
             covered_mask[y * width + x0 : y * width + x1] = span
 
+    # Both counts per row in C rather than per pixel in interpreted Python.
+    # `translate` maps each pixel to 1 (ink) or 0; `count` totals them. For the
+    # outside count, every byte of both the ink row and the mask row is 0 or 1,
+    # so `ink & ~covered` is a per-byte "ink here, covered nowhere" and
+    # `bit_count` totals exactly those positions -- the same predicate the
+    # per-pixel branch applied, without materialising an intermediate list.
+    # Equivalence against the straightforward implementation is pinned by
+    # `test_the_fast_counts_agree_with_a_straightforward_implementation`.
+    ink_table = _ink_table(background)
     total_ink = 0
     outside_ink = 0
     for y, row in enumerate(rows):
         row_offset = y * width
-        for x, value in enumerate(row):
-            if background - value < MINIMUM_CONTRAST_BELOW_BACKGROUND:
-                continue
-            total_ink += 1
-            if not covered_mask[row_offset + x]:
-                outside_ink += 1
+        ink_row = row.translate(ink_table)
+        total_ink += ink_row.count(1)
+        covered_row = covered_mask[row_offset : row_offset + width]
+        outside_ink += (
+            int.from_bytes(ink_row, "big") & ~int.from_bytes(covered_row, "big")
+        ).bit_count()
 
     fraction_outside = (outside_ink / total_ink) if total_ink else 0.0
-    flagged = (
+    # Either gate flags on its own. The fraction gate catches a miss that is
+    # large *relative to* what the page carries; the absolute gate catches one
+    # that is large *full stop*, which on a dense page the fraction gate alone
+    # would let through (see `SUBSTANTIAL_INK_PIXELS`). This can only ever add
+    # a flag, never remove one — every page flagged before this second gate
+    # existed is still flagged by the first.
+    flagged = outside_ink >= SUBSTANTIAL_INK_PIXELS or (
         outside_ink >= MINIMUM_INK_PIXELS and fraction_outside >= MINIMUM_FRACTION_OUTSIDE_COVERAGE
     )
     return {

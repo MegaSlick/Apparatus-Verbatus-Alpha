@@ -37,6 +37,7 @@ it needs.
 import errno
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Final
@@ -433,8 +434,26 @@ class RunTree:
             # `RecursionError` remains separate because `json.loads` can raise it
             # for a deeply nested damaged file and `_read_json` does not translate
             # it. These are the three live classes at this boundary.
-            except (ContractError, TypeError, RecursionError):
+            except (ContractError, TypeError, RecursionError) as error:
                 existing = None
+                # Treated as absent, but never *silently* absent. A torn or
+                # truncated receipt means a process died mid-write or the disk
+                # misbehaved — a fact about this run's health, visible at
+                # exactly this moment and nowhere afterwards, because the next
+                # line overwrites it. Discarding it without a word would leave
+                # an auditor a clean receipt and no reason to look further,
+                # which is the shape GOVERNANCE 2 forbids. The path is a
+                # run-tree relative path, never a submitted filename, so this
+                # channel is open to it (`common/exemplar_boundary.py` records
+                # why that distinction matters). Found by CodeRabbit.
+                print(
+                    f"warning: the existing Recensor partition receipt at {relative} could "
+                    f"not be read as a valid receipt and is being replaced "
+                    f"({type(error).__name__}: {error}). This means a previous write did "
+                    f"not complete; the receipt is derived and is being rebuilt, but the "
+                    f"interruption itself is worth investigating.",
+                    file=sys.stderr,
+                )
             if existing is not None and (
                 existing["run_id"] == checked["run_id"]
                 and existing["config_digest"] == checked["config_digest"]
@@ -446,8 +465,14 @@ class RunTree:
                     "the same run authority; the proposal-act denominator is sealed once and "
                     "cannot legitimately differ between two passes over the same run"
                 )
-            if target.read_bytes() == data:
-                return PublishResult(relative, reused=True)
+            try:
+                if target.read_bytes() == data:
+                    return PublishResult(relative, reused=True)
+            except FileNotFoundError:
+                # Gone between `exists()` above and here. Nothing to reuse and
+                # nothing to refuse: fall through and publish it, which is what
+                # `_publish_bytes` does at the same seam. Found by CodeRabbit.
+                pass
         target.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(target, data)
         return PublishResult(relative, reused=False)
