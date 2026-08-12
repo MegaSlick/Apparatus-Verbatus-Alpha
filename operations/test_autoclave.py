@@ -1781,6 +1781,19 @@ class TestTheUntrustedDrawer:
         assert result.returncode != 0
         assert victim.read_text() == "keep\n"
 
+    def test_writing_a_slot_from_itself_preserves_the_brief(self, tmp_path):
+        slot = tmp_path / "brief.md"
+        slot.write_text("bounded task\n")
+
+        result = subprocess.run(
+            ["python3", str(SAFE_FILE), "write", str(slot), str(slot)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert slot.read_text() == "bounded task\n"
+
 
 class TestMakingAChamber:
     """`new` writes to the host repository, and every write must be undoable."""

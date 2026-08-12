@@ -72,8 +72,16 @@ def main() -> int:
         if command == "write" and len(sys.argv) == 4:
             with (
                 open(source, "rb") as reading,
-                open_regular(Path(sys.argv[3]), os.O_WRONLY | os.O_CREAT | os.O_TRUNC) as writing,
+                open_regular(Path(sys.argv[3]), os.O_WRONLY | os.O_CREAT) as writing,
             ):
+                # The launcher prints the drawer's brief path, so using that path as
+                # the next dispatch input is an ordinary workflow. Opening it again
+                # with O_TRUNC would empty the inode underneath the already-open read
+                # descriptor. Compare the opened objects, not their path spellings;
+                # aliases and hard links are the same case.
+                if os.path.samestat(os.fstat(reading.fileno()), os.fstat(writing.fileno())):
+                    return 0
+                os.ftruncate(writing.fileno(), 0)
                 shutil.copyfileobj(reading, writing)
             return 0
         if command == "bundle" and len(sys.argv) == 4:
