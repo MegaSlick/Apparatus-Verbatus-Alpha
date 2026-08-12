@@ -59,7 +59,9 @@ If work continues, stay on its branch. If the task is finished and
 its pull request is verified merged, park on a fresh `work/boot-<date>-<time>` branch from
 `origin/main`. Delete a finished local branch only after the pull request reports
 `MERGED` and its `headRefOid` equals the exact branch tip; pin that oid in the delete.
-Otherwise keep the branch and say why.
+For a local ref, use `git update-ref -d refs/heads/<branch> <headRefOid>`: Git deletes only
+if the ref still holds that object, so a concurrent move becomes a refusal. Never
+substitute an unchecked `git branch -D`. Otherwise keep the branch and say why.
 
 ## 5. Leave machine state explicit
 

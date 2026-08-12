@@ -36,6 +36,18 @@ Model and effort are dispatch arguments; record what actually answered. A substi
 reported, never silently treated as the requested seat. The launcher validates the
 reachable model/effort pairs before it touches Docker.
 
+The launcher's reachable effort values are:
+
+| Vendor/model | Allowed effort |
+|---|---|
+| Claude, any model | `low medium high xhigh max ultracode` |
+| Codex `gpt-5.3-codex-spark` | `low medium high xhigh` |
+| Codex `gpt-5.6-sol` or `gpt-5.6-terra` | `none low medium high xhigh max ultra` |
+| other Codex models | `none low medium high xhigh max` |
+
+This is dispatch validation, not a model recommendation. Update the table and launcher in
+the same change when a live CLI probe shows the accepted values changed.
+
 ## Prompting
 
 Every prompt names:
@@ -45,7 +57,9 @@ Every prompt names:
 - stop conditions;
 - any real mechanical time limit.
 
-Do not invent deadlines. Ask reviewers for every finding and filter afterward. A chamber
+Do not invent deadlines. Ask reviewers for every finding. The main session records each
+finding as fixed, accepted, or declined with a reason; it does not silently discard findings
+below a presentation threshold. A chamber
 may orchestrate internally for a large task, but its sub-agents use disjoint result paths
 and do not touch git concurrently.
 

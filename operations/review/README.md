@@ -11,8 +11,8 @@ python3 operations/review/candidate.py receipt \
 ```
 
 Each reviewer reads the committed diff from the printed base through the candidate and
-writes a report naming both full SHAs. `receipt` refuses a moved `HEAD`, dirty tree, empty
-report, symlink, wrong SHA, or report that does not name the candidate. It writes a local
+writes exact `Candidate: <full SHA>` and `Base: <full SHA>` lines. `receipt` refuses a
+moved `HEAD`, dirty tree, empty report, symlink, wrong SHA, or either missing identity. It writes a local
 JSON receipt under `workbench/raw/reviews/<candidate>/` binding the reviewer, candidate,
 base, report path, report digest, and candidate tree.
 

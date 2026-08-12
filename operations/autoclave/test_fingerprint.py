@@ -1,4 +1,4 @@
-from pathlib import Path
+import hashlib
 
 from operations.autoclave.fingerprint import INPUTS, digest
 
@@ -24,4 +24,12 @@ def test_paths_are_part_of_the_fingerprint(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"same bytes")
 
-    assert digest(tmp_path) != digest(Path(__file__).parents[2])
+    expected = hashlib.sha256()
+    for relative in INPUTS:
+        data = (tmp_path / relative).read_bytes()
+        expected.update(relative.encode("utf-8"))
+        expected.update(b"\0")
+        expected.update(len(data).to_bytes(8, "big"))
+        expected.update(data)
+
+    assert digest(tmp_path) == expected.hexdigest()

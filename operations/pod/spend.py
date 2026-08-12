@@ -22,8 +22,8 @@ CONFIRMATION_PREFIX = "I CONFIRM PAID POD"
 """The fixed opening of the typed phrase; the rest is derived from the price.
 
 A constant phrase can be typed from memory without referring to one action.
-CLAUDE.md's hard rule 1 says that a clear answer authorises *that action and nothing
-adjacent*, so this phrase names the action, subject, and both displayed hourly
+CLAUDE.md's hard rule 1 reserves paid actions to Tyrel and requires the exact action to
+be named, so this phrase names the action, subject, and both displayed hourly
 rates. It binds the acknowledgement to one preview; it is not proof of Tyrel's
 permission and does not claim automation cannot derive the phrase.
 """

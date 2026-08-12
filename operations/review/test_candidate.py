@@ -1,6 +1,8 @@
 import json
 import subprocess
 
+import pytest
+
 from operations.review.candidate import prepare, receipt
 
 
@@ -51,7 +53,7 @@ def test_receipt_binds_the_report_and_refuses_a_moved_head(tmp_path):
     base, candidate = repository(tmp_path)
     report = tmp_path / "workbench" / "raw" / "review.md"
     report.parent.mkdir(parents=True)
-    report.write_text(f"Reviewed candidate {candidate}\nNo findings.\n")
+    report.write_text(f"Candidate: {candidate}\nBase: {base}\nNo findings.\n")
     output, record = receipt(tmp_path, candidate, base, "Independent Sol", report)
     assert json.loads(output.read_text()) == record
     assert record["candidate"] == candidate
@@ -70,13 +72,41 @@ def test_receipt_requires_the_full_candidate_sha_in_the_report(tmp_path):
     base, candidate = repository(tmp_path)
     report = tmp_path / "workbench" / "raw" / "review.md"
     report.parent.mkdir(parents=True)
-    report.write_text(f"Reviewed {candidate[:8]}\n")
-    try:
+    report.write_text(f"Candidate: {candidate[:8]}\nBase: {base}\n")
+    with pytest.raises(ValueError, match="exact full Candidate SHA"):
         receipt(tmp_path, candidate, base, "CodeRabbit", report)
-    except ValueError as error:
-        assert "full candidate SHA" in str(error)
-    else:
-        raise AssertionError("a report naming only a short SHA was accepted")
+
+
+def test_receipt_requires_the_exact_full_base_sha_in_the_report(tmp_path):
+    base, candidate = repository(tmp_path)
+    report = tmp_path / "workbench" / "raw" / "review.md"
+    report.parent.mkdir(parents=True)
+    report.write_text(f"Candidate: {candidate}\nBase: {base[:8]}\n")
+
+    with pytest.raises(ValueError, match="exact full Base SHA"):
+        receipt(tmp_path, candidate, base, "CodeRabbit", report)
+
+
+def test_receipt_refuses_a_symlinked_report(tmp_path):
+    base, candidate = repository(tmp_path)
+    report = tmp_path / "workbench" / "raw" / "review.md"
+    report.parent.mkdir(parents=True)
+    target = report.with_name("actual-review.md")
+    target.write_text(f"Candidate: {candidate}\nBase: {base}\n")
+    report.symlink_to(target)
+
+    with pytest.raises(ValueError, match="cannot be opened safely"):
+        receipt(tmp_path, candidate, base, "Independent Sol", report)
+
+
+def test_receipt_refuses_an_empty_report(tmp_path):
+    base, candidate = repository(tmp_path)
+    report = tmp_path / "workbench" / "raw" / "review.md"
+    report.parent.mkdir(parents=True)
+    report.write_bytes(b" \n\t")
+
+    with pytest.raises(ValueError, match="empty"):
+        receipt(tmp_path, candidate, base, "Independent Sol", report)
 
 
 def test_receipt_refuses_a_base_outside_the_candidate_history(tmp_path):
@@ -89,11 +119,17 @@ def test_receipt_refuses_a_base_outside_the_candidate_history(tmp_path):
     git(tmp_path, "switch", "--quiet", "work/test")
     report = tmp_path / "workbench" / "raw" / "review.md"
     report.parent.mkdir(parents=True)
-    report.write_text(f"Reviewed candidate {candidate} from base {base}\n")
+    report.write_text(f"Candidate: {candidate}\nBase: {unrelated}\n")
 
-    try:
+    with pytest.raises(ValueError, match="is not an ancestor"):
         receipt(tmp_path, candidate, unrelated, "Independent Sol", report)
-    except subprocess.CalledProcessError:
-        pass
-    else:
-        raise AssertionError("a receipt accepted a base outside candidate history")
+
+
+def test_receipt_distinguishes_an_unknown_base(tmp_path):
+    base, candidate = repository(tmp_path)
+    report = tmp_path / "workbench" / "raw" / "review.md"
+    report.parent.mkdir(parents=True)
+    report.write_text(f"Candidate: {candidate}\nBase: {base}\n")
+
+    with pytest.raises(ValueError, match="unknown or is not a commit"):
+        receipt(tmp_path, candidate, "does-not-exist", "Independent Sol", report)

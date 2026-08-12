@@ -116,6 +116,12 @@ def refresh() -> int:
             print(f"refresh: token endpoint failed ({type(error).__name__})", file=sys.stderr)
             return 1
 
+        # The deadline bounds waiting on the remote endpoint, not local publication.
+        # Once the complete response is parsed, disarm it before touching the rotated
+        # state: a late SIGALRM between validation and os.replace must not interrupt an
+        # otherwise complete credential update.
+        signal.setitimer(signal.ITIMER_REAL, 0)
+
         access_token = payload.get("access_token")
         if not isinstance(access_token, str) or not access_token:
             print("refresh: token endpoint returned no access token", file=sys.stderr)

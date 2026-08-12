@@ -40,8 +40,12 @@ git config --get core.hooksPath
 git log -3 --oneline --decorate
 ```
 
-If the hooks path is not `.githooks`, run `sh .githooks/install.sh`. Name the current
-branch and verify it was created for this session's task. Its namespace matches the work:
+If the hooks path is not `.githooks`, run `sh .githooks/install.sh`, then run
+`git config --get core.hooksPath` again and stop if it still does not report `.githooks`.
+An installer returning zero is not proof that the checkout will use the hooks.
+
+Name the current branch and verify it was created for this session's task. Its namespace
+matches the work:
 `work/<topic>` for normal work, `audit/<topic>` for findings, or `infra/<topic>` for
 structural work. When on `main` or detached, create a new branch in that namespace before
 editing. Never switch to or modify an existing unowned branch, especially with

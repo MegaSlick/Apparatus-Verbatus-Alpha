@@ -150,7 +150,7 @@ cmd_doctor() {
             case "$asked" in
                 0)
                     if [ "$vendor" = claude ]; then
-                        echo "signed in (${volume}); access is refreshed at dispatch"
+                        echo "signed in (${volume}); access is refreshed before chamber auth checks"
                     else
                         echo "signed in (${volume})"
                     fi ;;
@@ -240,6 +240,27 @@ authenticated() {
         ac-auth:*) return 1 ;;
         *) return 2 ;;
     esac
+}
+
+# Claude's print-mode dispatch does not renew an expired access token itself.  Refresh
+# before asking its CLI for status: a status from the freshly rotated credential is the
+# answer that decides whether a chamber may be created.  A refresh failure is not that
+# answer — the existing access token may still work — so the status check immediately
+# afterwards remains authoritative.
+refresh_claude_volume() {
+    volume_asked="$1"
+    docker run --rm --volume "${volume_asked}:${AUTH_DIR_CLAUDE}" \
+        --env "CLAUDE_CONFIG_DIR=${AUTH_DIR_CLAUDE}" "$IMAGE" \
+        python3 /opt/autoclave/refresh_claude_token.py ||
+        note "the Claude token refresh failed; checking the CLI status anyway"
+}
+
+refresh_claude_chamber() {
+    task_asked="$1"
+    docker exec -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
+        "$(container_of "$task_asked")" \
+        python3 /opt/autoclave/refresh_claude_token.py ||
+        note "the Claude token refresh failed; checking the CLI status anyway"
 }
 
 cmd_login() {
@@ -381,6 +402,7 @@ cmd_login() {
 # is the shape of the defect it exists to catch. The tri-state handling that would
 # otherwise be duplicated into both lives here instead.
 require_signed_in() {
+    [ "$1" != claude ] || refresh_claude_volume "$2"
     asked=0; authenticated "$1" "$2" || asked=$?
     [ "$asked" -eq 1 ] && die "'$1' is not signed in — run: $0 login $1"
     [ "$asked" -eq 0 ] ||
@@ -985,8 +1007,8 @@ cmd_dispatch() {
     esac
     # **Effort is judged against the vendor and the model, not against a vocabulary.**
     # `none minimal low medium high xhigh max` is the union of what the two vendors
-    # accept, and no vendor accepts all seven. `.claude/agents/README.md` measured
-    # which, under "Reachability, which is not negotiable": `minimal` is rejected by
+    # accept, and no vendor accepts all seven. `.claude/agents/README.md` records
+    # the corresponding dispatch table: `minimal` is rejected by
     # every Codex model; `gpt-5.3-codex-spark` also rejects `none` and `max`, leaving it
     # `low`–`xhigh`; Claude accepts `low`, `medium`, `high`, `xhigh`, `max` and nothing
     # else. Checking the union let a value that file records as unreachable through the
@@ -1054,7 +1076,9 @@ cmd_dispatch() {
     # rewrote the configuration directory it shares with every later chamber of the
     # same vendor. Asking inside the chamber, through the mount the CLI will actually
     # read, is the only test that covers all three. It costs one `docker exec` against
-    # a container that is already running.
+    # a container that is already running. Claude is refreshed first because its print
+    # mode does not do that itself; status after the refresh remains the authority.
+    [ "$vendor" != claude ] || refresh_claude_chamber "$task"
     check=$(auth_check "$vendor")
     docker exec "$(container_of "$task")" sh -c "$check" >/dev/null 2>&1 || die \
         "'$vendor' is not signed in inside chamber '$task' — sign in with '$0 login $vendor', then rebuild the chamber ('$0 rm $task' and '$0 new $task <base> $vendor'), because a mount cannot be added to a running container"
@@ -1156,14 +1180,6 @@ cmd_dispatch() {
             # in a week, each dying at its first refresh, roughly eight hours in, while
             # the refresh token itself stayed valid for weeks.
             #
-            # Print mode still does not perform that refresh. Do it inside the chamber,
-            # against the mounted volume, before every Claude dispatch. Failure remains
-            # nonfatal here so a transient refresh problem cannot discard an access token
-            # that may still work; the CLI answer immediately below remains authoritative.
-            docker exec -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
-                "$(container_of "$task")" \
-                python3 /opt/autoclave/refresh_claude_token.py ||
-                note "the pre-dispatch Claude token refresh failed; continuing to the CLI"
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
                 -e CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
                 -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
@@ -1262,18 +1278,33 @@ cmd_collect() {
     # private repository's branch arrived on `agent/<task>` and `collect` said
     # `1 commit(s)`.
     #
-    # `git bundle verify` reads the bundle header and refuses anything else, including
-    # that file, and it runs before `fetch` gets a path at all. A symlink is covered by
-    # the same call for the same reason: whatever it points at still has to be a
-    # bundle. The `[ -L ]` test in front says which of the two it was.
+    # Verifying the slot and then fetching the same path is still two reads of a live
+    # agent-controlled name. The agent can replace a verified bundle between them.
+    # `safe_file.py` opens that name once without following a symlink; its bytes go
+    # into a host-owned file under git's common directory. Verification and fetch use
+    # that one snapshot only. A linked worktree has `.git` as a file, hence
+    # `--git-common-dir` rather than spelling `${REPO_ROOT}/.git`.
     [ -L "$bundle_out" ] && die "bundle slot ${bundle_out} is a symlink — refusing to read through it"
     [ -f "$bundle_out" ] || die "bundle did not appear at ${bundle_out}"
-    git -C "$REPO_ROOT" bundle verify "$bundle_out" >/dev/null 2>&1 \
-        || die "what is at ${bundle_out} is not a git bundle. Nothing was fetched. Look at it before anything else — the chamber writes that path and this is what it left there"
+    git_common=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir) ||
+        die "could not locate this repository's common git directory; nothing was fetched"
+    bundle_snapshot=$(mktemp "${git_common}/autoclave-bundle.${task}.XXXXXX") ||
+        die "could not create a host-owned bundle snapshot; nothing was fetched"
+    if ! python3 "$SAFE_FILE" read "$bundle_out" > "$bundle_snapshot"; then
+        rm -f "$bundle_snapshot"
+        die "could not safely snapshot bundle slot ${bundle_out}; nothing was fetched"
+    fi
+    if ! git -C "$REPO_ROOT" bundle verify "$bundle_snapshot" >/dev/null 2>&1; then
+        rm -f "$bundle_snapshot"
+        die "what is at ${bundle_out} is not a git bundle. Nothing was fetched. Look at it before anything else — the chamber writes that path and this is what it left there"
+    fi
 
     incoming="refs/autoclave/incoming/${task}"
-    git -C "$REPO_ROOT" fetch --quiet "$bundle_out" "+${branch}:${incoming}" \
-        || die "bundle fetched no ref — inspect it with: git bundle list-heads ${bundle_out}"
+    if ! git -C "$REPO_ROOT" fetch --quiet "$bundle_snapshot" "+${branch}:${incoming}"; then
+        rm -f "$bundle_snapshot"
+        die "bundle fetched no ref — inspect it with: git bundle list-heads ${bundle_out}"
+    fi
+    rm -f "$bundle_snapshot"
     incoming_tip=$(git -C "$REPO_ROOT" rev-parse "$incoming")
 
     # A chamber starts at this exact base and must add commits above it. Rewriting the
@@ -1286,6 +1317,12 @@ cmd_collect() {
     fi
 
     branch_ref="refs/heads/${branch}"
+    # `update-ref` can move a checked-out branch even though its worktree has files
+    # from the old commit. Refuse rather than changing a branch another worktree uses.
+    if git -C "$REPO_ROOT" worktree list --porcelain | grep -Fqx "branch ${branch_ref}"; then
+        git -C "$REPO_ROOT" update-ref -d "$incoming"
+        die "local ${branch} is checked out in a worktree; nothing was replaced"
+    fi
     old_tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$branch_ref") || old_tip=""
     if [ -n "$old_tip" ] &&
        ! git -C "$REPO_ROOT" merge-base --is-ancestor "$old_tip" "$incoming_tip"; then

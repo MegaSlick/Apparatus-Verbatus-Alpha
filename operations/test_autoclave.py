@@ -69,12 +69,12 @@ def elsewhere(tmp_path):
     directory.mkdir(parents=True)
     copy = directory / SCRIPT.name
     shutil.copy2(SCRIPT, copy)
-    if SAFE_FILE.is_file():
-        shutil.copy2(SAFE_FILE, directory / SAFE_FILE.name)
+    assert SAFE_FILE.is_file(), f"required launcher input is missing: {SAFE_FILE}"
+    shutil.copy2(SAFE_FILE, directory / SAFE_FILE.name)
     # `new` compares this file against what the image carries, so a throwaway
     # repository without it would fail every chamber creation for the wrong reason.
-    if BRIEF.is_file():
-        shutil.copy2(BRIEF, directory / BRIEF.name)
+    assert BRIEF.is_file(), f"required launcher input is missing: {BRIEF}"
+    shutil.copy2(BRIEF, directory / BRIEF.name)
     for source, destination in (
         (FINGERPRINT, directory / FINGERPRINT.name),
         (ROOT / "operations" / "autoclave" / "Dockerfile", directory / "Dockerfile"),
@@ -85,7 +85,8 @@ def elsewhere(tmp_path):
         (ROOT / "requirements-dev.txt", tmp_path / "requirements-dev.txt"),
         (ROOT / ".dockerignore", tmp_path / ".dockerignore"),
     ):
-        if source != destination and source.is_file():
+        assert source.is_file(), f"required launcher input is missing: {source}"
+        if source != destination:
             shutil.copy2(source, destination)
     subprocess.run(["git", "init", "--quiet", "-b", "work/test", str(tmp_path)], check=True)
     # An identity in the repository's own config rather than on a command line: `new`
@@ -158,6 +159,8 @@ if args[:2] == ["image", "inspect"]:
     if "verbatus.harness-fingerprint" in " ".join(args):
         print(setting("FAKE_IMAGE_FINGERPRINT"))
     raise SystemExit(0)
+if args[:2] == ["buildx", "version"]:
+    raise SystemExit(int(setting("FAKE_BUILDX_STATUS", "0")))
 def volumes():
     # Preset volumes plus any this run has created and not removed. Without the
     # second half, `login`'s first-time path could never be reached: it creates the
@@ -197,14 +200,6 @@ if args[:1] == ["inspect"]:
 if args[:1] == ["run"]:
     if "--detach" in args:
         raise SystemExit(int(setting("FAKE_RUN_STATUS", "0")))
-    if args[-2:] == ["cat", "/CLAUDE.md"]:
-        # `new` reads the brief back out of the image to check it is not older than
-        # the checkout. FAKE_IMAGE_BRIEF is what the image is pretending to carry.
-        baked = setting("FAKE_IMAGE_BRIEF")
-        if baked and os.path.exists(baked):
-            sys.stdout.write(open(baked).read())
-            raise SystemExit(0)
-        raise SystemExit(1)
     if vendor_status(args[-1]):
         answer_vendor_status()
     raise SystemExit(int(setting("FAKE_LOGIN_STATUS", "0")))
@@ -216,6 +211,8 @@ if args[:1] == ["exec"]:
     command = args[-1]
     if vendor_status(command):
         raise SystemExit(0 if setting("FAKE_AUTH_VALID") == "1" else 1)
+    if "refresh_claude_token.py" in command:
+        raise SystemExit(int(setting("FAKE_REFRESH_STATUS", "0")))
     chamber = setting("FAKE_CHAMBER_WORK")
     if chamber and "cd /work" in command:
         command = command.replace("cd /work", "cd " + chamber)
@@ -706,7 +703,7 @@ class TestLogin:
 class TestDispatch:
     """Running an agent inside a chamber, against a brief written to a file."""
 
-    # `.claude/agents/README.md`, "Reachability, which is not negotiable": `minimal` is
+    # `.claude/agents/README.md`'s dispatch table records that `minimal` is
     # rejected by every Codex model; `gpt-5.3-codex-spark` also rejects `none` and
     # `max`; Claude accepts `low`, `medium`, `high`, `xhigh`, `max` and nothing else.
     # The launcher used to accept the union of all three for every vendor, and the test
@@ -1033,7 +1030,26 @@ def test_build_requires_buildx_and_loads_a_fingerprinted_image(tmp_path):
         for index, value in enumerate(build[:-1])
         if value == "--build-arg" and build[index + 1].startswith("HARNESS_FINGERPRINT=")
     )
-    assert len(argument.partition("=")[2]) == 64
+    expected = subprocess.run(
+        ["python3", str(tmp_path / "operations" / "autoclave" / "fingerprint.py")],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    ).stdout.strip()
+    assert argument.partition("=")[2] == expected
+
+
+def test_build_refuses_when_buildx_is_unavailable(tmp_path):
+    script = elsewhere(tmp_path)
+    env, log = fake_docker(tmp_path)
+    env["FAKE_BUILDX_STATUS"] = "1"
+
+    result = run("build", env=env, script=script, cwd=tmp_path)
+
+    assert result.returncode != 0
+    assert "Buildx is required" in result.stderr
+    assert not any(call[:2] == ["buildx", "build"] for call in docker_calls(log))
 
 
 class TestWhatComesBackAndWhatIsDestroyed:
@@ -1200,6 +1216,40 @@ class TestWhatComesBackAndWhatIsDestroyed:
             != 0
         )
 
+    def test_collect_does_not_move_an_agent_branch_checked_out_elsewhere(self, tmp_path):
+        """A checked-out branch is another worktree, not merely a ref.
+
+        This is deliberately a fast-forward: divergence must not be the thing that
+        protects a worktree whose branch collection is about to update.
+        """
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "other-worktree"
+        git(tmp_path, "worktree", "add", "--quiet", str(linked), "agent/task-x")
+        try:
+            result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert result.returncode != 0
+            assert "checked out in a worktree" in result.stderr
+            assert git(tmp_path, "rev-parse", "agent/task-x") == base
+            assert (
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(tmp_path),
+                        "rev-parse",
+                        "--verify",
+                        "refs/autoclave/incoming/task-x",
+                    ],
+                    capture_output=True,
+                ).returncode
+                != 0
+            )
+        finally:
+            git(tmp_path, "worktree", "remove", "--force", str(linked))
+
     def test_an_empty_branch_collects_and_says_it_is_empty(self, tmp_path):
         """The report is worth keeping, so this succeeds — loudly. Reporting success
         on nothing is the one thing this tool must not do."""
@@ -1360,6 +1410,50 @@ class TestWhatComesBackAndWhatIsDestroyed:
             capture_output=True,
         )
         assert arrived.returncode != 0, "a ref arrived from somebody else's repository"
+
+    def test_collect_fetches_snapshot_when_slot_changes_after_verify(self, tmp_path):
+        """A post-verify slot swap cannot change the bundle that fetches.
+
+        The git wrapper replaces the agent-controlled `/out` slot immediately after
+        the host verifies its snapshot. Fetching the original slot would import the
+        private gitfile; fetching the snapshot returns the chamber branch.
+        """
+        script, clone, drawer, env, _log = self.chamber(tmp_path)
+        private = tmp_path / "somebody-elses-repo"
+        subprocess.run(["git", "init", "--quiet", str(private)], check=True)
+        git(private, "config", "user.name", "v")
+        git(private, "config", "user.email", "v@v")
+        (private / "PRIVATE.txt").write_text("SENTINEL-PRIVATE\n")
+        git(private, "add", "PRIVATE.txt")
+        git(private, "commit", "--quiet", "-m", "private\n\nCo-Authored-By: m <m@x>")
+        git(private, "branch", "--move", "agent/task-x")
+
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, subprocess, sys\n"
+            "from pathlib import Path\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *sys.argv[1:]])\n"
+            "if result.returncode == 0 and 'bundle' in sys.argv and 'verify' in sys.argv:\n"
+            "    Path(os.environ['SWAP_AFTER_VERIFY']).write_text(os.environ['SWAP_CONTENT'])\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update(
+            {
+                "REAL_GIT": real_git,
+                "SWAP_AFTER_VERIFY": str(drawer / "task-x.bundle"),
+                "SWAP_CONTENT": f"gitdir: {private}/.git\n",
+            }
+        )
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        assert git(tmp_path, "rev-parse", "agent/task-x") == git(clone, "rev-parse", "agent/task-x")
+        assert (drawer / "task-x.bundle").read_text() == f"gitdir: {private}/.git\n"
 
     def test_collect_judges_attribution_the_way_the_hook_does(self, tmp_path):
         """A substring search disagreed with `commit-msg` in the direction that
@@ -1996,6 +2090,27 @@ class TestSignInIsAsked:
         )
         assert not any("verbatus.vendor=claude" in call for call in docker_calls(log))
 
+    def test_new_refreshes_claude_before_its_authoritative_status_check(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_REFRESH_STATUS": "1",
+                "FAKE_VOLUMES": "verbatus-ac-auth-claude",
+                "FAKE_SETUP_STATUS": "0",
+                "FAKE_EXEC_STATUS": "0",
+            }
+        )
+
+        result = run("new", "refresh-first", "HEAD", "claude", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        calls = docker_calls(log)
+        refresh_call = next(call for call in calls if "refresh_claude_token.py" in " ".join(call))
+        status_call = next(call for call in calls if "auth status" in " ".join(call))
+        assert calls.index(refresh_call) < calls.index(status_call)
+
     def test_dispatch_asks_inside_the_chamber_not_of_the_label(self, tmp_path):
         """A chamber outlives the check `new` made: a token expires, a vendor forces
         a re-auth, an earlier agent rewrites the shared configuration directory. The
@@ -2057,6 +2172,7 @@ class TestClaudeConfigurationUsesTheMountedVolume:
                 "FAKE_CONTAINER_EXISTS": "1",
                 "FAKE_CHAMBER_VENDOR": "claude",
                 "FAKE_AUTH_VALID": "1",
+                "FAKE_REFRESH_STATUS": "1",
                 "FAKE_EXEC_STATUS": "0",
             }
         )
@@ -2079,6 +2195,8 @@ class TestClaudeConfigurationUsesTheMountedVolume:
         refresh_call = next(call for call in calls if "refresh_claude_token.py" in " ".join(call))
         assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in cli
         assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in refresh_call
+        status_call = next(call for call in calls if "auth status" in " ".join(call))
+        assert calls.index(refresh_call) < calls.index(status_call)
         assert calls.index(refresh_call) < calls.index(cli)
 
     def test_the_refresh_helper_reaches_the_image(self):
@@ -2091,6 +2209,16 @@ class TestClaudeConfigurationUsesTheMountedVolume:
         assert (
             "!operations/autoclave/refresh_claude_token.py" in (ROOT / ".dockerignore").read_text()
         )
+
+    def test_the_image_and_refresh_helper_name_the_same_claude_client_id(self):
+        helper = (ROOT / "operations" / "autoclave" / "refresh_claude_token.py").read_text()
+        dockerfile = (ROOT / "operations" / "autoclave" / "Dockerfile").read_text()
+        client_id = re.search(r'^CLIENT_ID = "([^"]+)"$', helper, re.MULTILINE)
+        image_check = re.search(r"grep -a -q '([^']+)'", dockerfile)
+
+        assert client_id, "refresh helper defines no public client id"
+        assert image_check, "image does not verify its Claude CLI client id"
+        assert image_check.group(1) == client_id.group(1)
 
 
 class TestTheTrustFlagAgainstARealFilesystem:

@@ -113,8 +113,8 @@ def test_no_witness_outcome_terminates_an_act():
     among witnesses. If any witness outcome ever mapped to a terminal category,
     chair results would decide an act's fate: a picker wearing an accounting name.
 
-    CLAUDE.md hard rule 8: "Do not build a picker... the one an agent rebuilds by
-    accident." This test is where that accident would be caught.
+    CLAUDE.md hard rule 8 forbids building a picker. This test is where an accidental
+    outcome-based picker would be caught.
     """
     terminating = [
         outcome

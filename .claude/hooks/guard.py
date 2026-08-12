@@ -517,7 +517,7 @@ def landing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
         ):
             return "deny", (
                 f"That pushes at main, and hard rule {RULE_THREE} Work reaches main by "
-                "pull request or not at all (hard rule 3, Branches)."
+                "main is read-only locally; work reaches it through a pull request (hard rule 3)."
             )
     return None
 

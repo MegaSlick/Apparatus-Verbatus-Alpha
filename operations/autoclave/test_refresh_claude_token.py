@@ -114,6 +114,75 @@ def test_an_expired_access_token_is_atomically_replaced_with_both_rotated_tokens
     assert list(path.parent.glob(".credentials.tmp.*")) == []
 
 
+def test_an_unrotated_refresh_token_is_preserved_and_expiries_are_updated(tmp_path, monkeypatch):
+    now_seconds = 1_700_000_000
+    path = write_credential(tmp_path, monkeypatch, expires_at=1)
+
+    class Response(io.StringIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    monkeypatch.setattr(refresh.time, "time", lambda: now_seconds)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: Response(
+            json.dumps(
+                {
+                    "access_token": "new-access",
+                    "expires_in": 3_600,
+                    "refresh_token_expires_in": 86_400,
+                }
+            )
+        ),
+    )
+
+    assert refresh.main() == 0
+
+    oauth = json.loads(path.read_text(encoding="utf-8"))["claudeAiOauth"]
+    assert oauth["accessToken"] == "new-access"
+    assert oauth["refreshToken"] == "old-refresh"
+    assert oauth["expiresAt"] == (now_seconds + 3_600) * 1000
+    assert oauth["refreshTokenExpiresAt"] == (now_seconds + 86_400) * 1000
+
+
+def test_the_deadline_is_disarmed_after_response_parsing_before_publication(tmp_path, monkeypatch):
+    write_credential(tmp_path, monkeypatch, expires_at=1)
+    events = []
+    original_publish = refresh.publish
+
+    class Response(io.StringIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    def record_timer(_which, seconds):
+        if seconds == 0:
+            events.append("disarm")
+
+    def record_publish(*args):
+        events.append("publish")
+        return original_publish(*args)
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: Response(
+            json.dumps({"access_token": "new-access", "expires_in": 3_600})
+        ),
+    )
+    monkeypatch.setattr(refresh.signal, "setitimer", record_timer)
+    monkeypatch.setattr(refresh, "publish", record_publish)
+
+    assert refresh.main() == 0
+    assert events.index("disarm") < events.index("publish")
+
+
 def test_a_failed_refresh_preserves_the_existing_credential(tmp_path, monkeypatch, capsys):
     path = write_credential(tmp_path, monkeypatch, expires_at=1)
     before = path.read_bytes()

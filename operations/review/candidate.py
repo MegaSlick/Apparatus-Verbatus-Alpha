@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -27,7 +28,7 @@ def clean_candidate(root: Path, candidate: str) -> tuple[str, str]:
     expected = git(root, "rev-parse", f"{candidate}^{{commit}}")
     if resolved != expected:
         raise ValueError(f"HEAD is {resolved}, not candidate {expected}")
-    dirty = git(root, "status", "--porcelain")
+    dirty = git(root, "status", "--porcelain", "--untracked-files=all")
     if dirty:
         raise ValueError("the candidate tree is dirty")
     return resolved, git(root, "rev-parse", f"{resolved}^{{tree}}")
@@ -35,36 +36,72 @@ def clean_candidate(root: Path, candidate: str) -> tuple[str, str]:
 
 def prepare(root: Path, base: str) -> dict[str, str]:
     candidate, tree = clean_candidate(root, "HEAD")
-    base_sha = git(root, "rev-parse", f"{base}^{{commit}}")
-    subprocess.run(
-        ["git", "-C", str(root), "merge-base", "--is-ancestor", base_sha, candidate],
-        check=True,
-        capture_output=True,
-    )
+    base_sha = resolve_base(root, base)
+    require_ancestor(root, base_sha, candidate)
     return {"candidate": candidate, "base": base_sha, "tree": tree}
 
 
 def require_ancestor(root: Path, base: str, candidate: str) -> None:
-    subprocess.run(
+    result = subprocess.run(
         ["git", "-C", str(root), "merge-base", "--is-ancestor", base, candidate],
-        check=True,
         capture_output=True,
     )
+    if result.returncode == 1:
+        raise ValueError(f"base {base} is not an ancestor of candidate {candidate}")
+    if result.returncode:
+        detail = result.stderr.strip() or f"git exited {result.returncode}"
+        raise ValueError(f"could not verify base {base} against candidate {candidate}: {detail}")
+
+
+def resolve_base(root: Path, base: str) -> str:
+    try:
+        return git(root, "rev-parse", f"{base}^{{commit}}")
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.strip() or f"git exited {error.returncode}"
+        raise ValueError(f"base {base!r} is unknown or is not a commit: {detail}") from error
+
+
+def read_report(report: Path) -> bytes:
+    """Read one regular, non-symlink report through the descriptor we validate."""
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise ValueError("safe report reads require O_NOFOLLOW support")
+    flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(report, flags)
+    except OSError as error:
+        raise ValueError(f"the review report cannot be opened safely: {error}") from error
+    try:
+        mode = os.fstat(descriptor).st_mode
+        if not stat.S_ISREG(mode):
+            raise ValueError("the review report is not a regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            return handle.read()
+    finally:
+        os.close(descriptor)
+
+
+def report_names(data: bytes, label: str, identity: str) -> bool:
+    """Require a labelled, complete identity rather than a SHA substring."""
+    expression = (
+        rb"(?m)^" + re.escape(label.encode()) + rb":[ \t]*" + identity.encode() + rb"[ \t]*$"
+    )
+    return re.search(expression, data) is not None
 
 
 def receipt(
     root: Path, candidate: str, base: str, reviewer: str, report: Path
 ) -> tuple[Path, dict[str, str]]:
     candidate_sha, tree = clean_candidate(root, candidate)
-    base_sha = git(root, "rev-parse", f"{base}^{{commit}}")
+    base_sha = resolve_base(root, base)
     require_ancestor(root, base_sha, candidate_sha)
-    if report.is_symlink() or not report.is_file():
-        raise ValueError("the review report is not a regular file")
-    data = report.read_bytes()
+    data = read_report(report)
     if not data.strip():
         raise ValueError("the review report is empty")
-    if candidate_sha.encode() not in data:
-        raise ValueError("the review report does not name the full candidate SHA")
+    if not report_names(data, "Candidate", candidate_sha):
+        raise ValueError("the review report must name the exact full Candidate SHA")
+    if not report_names(data, "Base", base_sha):
+        raise ValueError("the review report must name the exact full Base SHA")
     slug = re.sub(r"[^a-z0-9]+", "-", reviewer.lower()).strip("-")
     if not slug:
         raise ValueError("the reviewer name has no usable characters")
@@ -74,7 +111,7 @@ def receipt(
         "candidate": candidate_sha,
         "base": base_sha,
         "tree": tree,
-        "report": str(report.resolve()),
+        "report": str(report.absolute()),
         "report_sha256": report_sha256,
     }
     output = (

@@ -31,6 +31,11 @@
 
 <!-- Full candidate SHA reviewed; reviewers and receipt paths. The PR tip must match it. -->
 
+## Review findings
+
+<!-- List every finding from the named review reports and mark it fixed, accepted, or
+     declined with a short reason. Do not omit low-severity findings silently. -->
+
 ---
 
 - [ ] Written new — anything carried from the reference or a third party is named as
