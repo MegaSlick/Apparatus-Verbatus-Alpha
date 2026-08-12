@@ -88,11 +88,14 @@ but say when they happen. Never push directly to `main`; never force-push work y
 exclusively own. Tyrel alone merges.
 
 Review is proportional to risk. Before the first push, run the local gate and use fresh,
-independent review where a defect would be expensive or quiet. Pre-push CodeRabbit uses the
-CLI against `origin/main`; after the push, wait for the automatic GitHub review before
-replying. Fix or decline every real finding with a reason. Record a reviewing agent with a
-`Reviewed-by:` trailer naming the model that answered. A pull request records decisions and
-rationale; it does not carry open engineering questions to Tyrel.
+independent review where a defect would be expensive or quiet. Consequential review targets
+one clean candidate commit through `operations/review/README.md`, never a moving index. A
+fix creates a new candidate and invalidates earlier reviews; the pushed tip is the exact
+candidate the final reviewers read. Pre-push CodeRabbit uses the CLI against `origin/main`;
+after the push, wait for the automatic GitHub review before replying. Fix or decline every
+real finding with a reason. Record a reviewing agent with a `Reviewed-by:` trailer naming
+the model that answered. A pull request records decisions and rationale; it does not carry
+open engineering questions to Tyrel.
 
 Local hooks refuse direct-main pushes and scan outgoing history for credentials and large
 payloads. The Claude guard also blocks disabling those hooks. `--no-verify` and

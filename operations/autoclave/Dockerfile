@@ -122,6 +122,13 @@ USER ${UID}:${GID}
 ENV HOME=/home/agent
 WORKDIR /work
 
+# The launcher computes this from every repository input that defines the image and
+# refuses to create a chamber when the checkout and label differ. The label is metadata,
+# not a claim that Docker rebuilt each layer; BuildKit owns layer invalidation.
+ARG HARNESS_FINGERPRINT
+RUN test -n "${HARNESS_FINGERPRINT}"
+LABEL verbatus.harness-fingerprint="${HARNESS_FINGERPRINT}"
+
 # No entrypoint that runs an agent. The launcher decides what starts, so the
 # same image serves a writer, a reader, or a person opening a shell to look.
 CMD ["/bin/bash"]

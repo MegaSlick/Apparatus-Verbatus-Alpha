@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "operations" / "autoclave" / "autoclave.sh"
 SAFE_FILE = ROOT / "operations" / "autoclave" / "safe_file.py"
 BRIEF = ROOT / "operations" / "autoclave" / "agent-brief.md"
+FINGERPRINT = ROOT / "operations" / "autoclave" / "fingerprint.py"
 
 
 def run(*args, cwd=None, env=None, script=SCRIPT):
@@ -74,6 +75,18 @@ def elsewhere(tmp_path):
     # repository without it would fail every chamber creation for the wrong reason.
     if BRIEF.is_file():
         shutil.copy2(BRIEF, directory / BRIEF.name)
+    for source, destination in (
+        (FINGERPRINT, directory / FINGERPRINT.name),
+        (ROOT / "operations" / "autoclave" / "Dockerfile", directory / "Dockerfile"),
+        (
+            ROOT / "operations" / "autoclave" / "refresh_claude_token.py",
+            directory / "refresh_claude_token.py",
+        ),
+        (ROOT / "requirements-dev.txt", tmp_path / "requirements-dev.txt"),
+        (ROOT / ".dockerignore", tmp_path / ".dockerignore"),
+    ):
+        if source != destination and source.is_file():
+            shutil.copy2(source, destination)
     subprocess.run(["git", "init", "--quiet", "-b", "work/test", str(tmp_path)], check=True)
     # An identity in the repository's own config rather than on a command line: `new`
     # writes its snapshot with `git commit-tree`, which needs one and is not this
@@ -89,7 +102,7 @@ def elsewhere(tmp_path):
     # to skip, and the trailer is here so this still commits on a machine where one is
     # set globally. A test reaching for that flag to make itself work is a test
     # teaching the flag.
-    git(tmp_path, "add", "operations")
+    git(tmp_path, "add", "operations", "requirements-dev.txt", ".dockerignore")
     git(
         tmp_path,
         "commit",
@@ -139,7 +152,11 @@ def answer_vendor_status():
     raise SystemExit(0)
 
 
-if args[:1] == ["info"] or args[:2] == ["image", "inspect"]:
+if args[:1] == ["info"]:
+    raise SystemExit(0)
+if args[:2] == ["image", "inspect"]:
+    if "verbatus.harness-fingerprint" in " ".join(args):
+        print(setting("FAKE_IMAGE_FINGERPRINT"))
     raise SystemExit(0)
 def volumes():
     # Preset volumes plus any this run has created and not removed. Without the
@@ -241,13 +258,17 @@ def fake_docker(tmp_path):
         stub.write_text(f"#!/bin/sh\nprintf '%s\\n' {vendor} >> '{host_vendor_log}'\nexit 99\n")
         stub.chmod(0o755)
     log = tmp_path / "docker.jsonl"
-    # What the stub says the image's baked brief is. Defaults to the same file the
-    # launcher will compare it against, so the staleness check passes everywhere
-    # except in the one test that deliberately makes them differ.
-    staged_brief = tmp_path / "operations" / "autoclave" / BRIEF.name
+    fingerprint_root = tmp_path if (tmp_path / ".dockerignore").is_file() else ROOT
+    fingerprint = subprocess.run(
+        ["python3", str(fingerprint_root / "operations" / "autoclave" / "fingerprint.py")],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=fingerprint_root,
+    ).stdout.strip()
     return {
         "PATH": f"{bindir}:{os.environ['PATH']}",
-        "FAKE_IMAGE_BRIEF": str(staged_brief if staged_brief.is_file() else BRIEF),
+        "FAKE_IMAGE_FINGERPRINT": fingerprint,
         "FAKE_DOCKER_LOG": str(log),
         "FAKE_HOST_VENDOR_LOG": str(host_vendor_log),
         "FAKE_SETUP_SCRIPT": str(tmp_path / "setup.sh"),
@@ -996,6 +1017,25 @@ def test_doctor_reports_sign_in_state_for_both_vendors():
     assert "auth codex" in result.stdout
 
 
+def test_build_requires_buildx_and_loads_a_fingerprinted_image(tmp_path):
+    script = elsewhere(tmp_path)
+    env, log = fake_docker(tmp_path)
+
+    result = run("build", env=env, script=script, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    calls = docker_calls(log)
+    assert ["buildx", "version"] in calls
+    build = next(call for call in calls if call[:2] == ["buildx", "build"])
+    assert "--load" in build
+    argument = next(
+        build[index + 1]
+        for index, value in enumerate(build[:-1])
+        if value == "--build-arg" and build[index + 1].startswith("HARNESS_FINGERPRINT=")
+    )
+    assert len(argument.partition("=")[2]) == 64
+
+
 class TestWhatComesBackAndWhatIsDestroyed:
     """`collect` and `rm`, against a real clone standing in for the chamber's tree.
 
@@ -1083,6 +1123,82 @@ class TestWhatComesBackAndWhatIsDestroyed:
         assert git(tmp_path, "rev-parse", "agent/task-x") == git(clone, "rev-parse", "agent/task-x")
         assert "1 commit(s)" in result.stdout
         assert "UNATTRIBUTED" not in result.stdout
+
+    def test_collect_refuses_a_branch_that_rewrote_its_requested_base(self, tmp_path):
+        script, clone, _drawer, env, _log = self.chamber(tmp_path)
+        git(clone, "switch", "--orphan", "rewritten")
+        (clone / "tracked.txt").write_text("rewritten history\n")
+        git(clone, "add", "tracked.txt")
+        git(
+            clone,
+            "commit",
+            "--quiet",
+            "-m",
+            "rewritten\n\nCo-Authored-By: Test Model <model@example.invalid>",
+        )
+        git(clone, "branch", "-D", "agent/task-x")
+        git(clone, "branch", "-m", "agent/task-x")
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "rewrote its chamber base" in result.stderr
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "rev-parse", "--verify", "agent/task-x"],
+                capture_output=True,
+            ).returncode
+            != 0
+        )
+        assert (
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(tmp_path),
+                    "rev-parse",
+                    "--verify",
+                    "refs/autoclave/incoming/task-x",
+                ],
+                capture_output=True,
+            ).returncode
+            != 0
+        )
+
+    def test_collect_does_not_replace_divergent_local_agent_work(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        git(tmp_path, "switch", "--quiet", "-c", "agent/task-x")
+        (tmp_path / "host-only.txt").write_text("keep this branch\n")
+        git(tmp_path, "add", "host-only.txt")
+        git(
+            tmp_path,
+            "commit",
+            "--quiet",
+            "-m",
+            "host work\n\nCo-Authored-By: Test Model <model@example.invalid>",
+        )
+        local_tip = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "switch", "--quiet", "work/test")
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "contains work" in result.stderr
+        assert git(tmp_path, "rev-parse", "agent/task-x") == local_tip
+        assert (
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(tmp_path),
+                    "rev-parse",
+                    "--verify",
+                    "refs/autoclave/incoming/task-x",
+                ],
+                capture_output=True,
+            ).returncode
+            != 0
+        )
 
     def test_an_empty_branch_collects_and_says_it_is_empty(self, tmp_path):
         """The report is worth keeping, so this succeeds — loudly. Reporting success
@@ -1574,8 +1690,8 @@ class TestMakingAChamber:
         )
         assert ref.returncode != 0
 
-    def test_a_stale_baked_brief_refuses_the_chamber(self, tmp_path):
-        """An edit to `agent-brief.md` does nothing at all until the image is rebuilt.
+    def test_a_stale_image_fingerprint_refuses_the_chamber(self, tmp_path):
+        """An edit to any baked input does nothing at all until the image is rebuilt.
 
         It happened on 2026-08-02: the brief was edited and a chamber created in the
         same session ran the previous one, and the only symptom was an agent behaving
@@ -1586,12 +1702,10 @@ class TestMakingAChamber:
         """
         script = self.dirty_repo(tmp_path)
         env, _log = fake_docker(tmp_path)
-        older = tmp_path / "older-brief.md"
-        older.write_text("# You are in the autoclave\n\nAn earlier edition.\n")
-        env["FAKE_IMAGE_BRIEF"] = str(older)
+        env["FAKE_IMAGE_FINGERPRINT"] = "0" * 64
         result = run("new", "some-task", env=env, script=script, cwd=tmp_path)
-        assert result.returncode != 0, "a chamber was built on a stale brief"
-        assert "agent-brief.md" in result.stderr, result.stderr
+        assert result.returncode != 0, "a chamber was built from stale harness inputs"
+        assert "harness inputs" in result.stderr, result.stderr
         assert "build" in result.stderr, result.stderr
 
     def test_a_matching_baked_brief_lets_the_chamber_through(self, tmp_path):

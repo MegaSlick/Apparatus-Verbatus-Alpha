@@ -31,6 +31,8 @@ rules remain at `/work/CLAUDE.md`.
 - Use maintained libraries under a permitting licence; cite the source and licence.
 - Commit only task files to `agent/<task>`, with a `Co-Authored-By` trailer naming the
   model that wrote them. Never `git add -A`.
+- The branch already begins at the exact requested base. Add new commits above it; never
+  rebase, amend, squash, or otherwise rewrite inherited commits.
 - Write a requested report to `/out/report.md` so it survives the dispatch.
 
 ## What you may not do

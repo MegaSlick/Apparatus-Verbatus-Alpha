@@ -45,6 +45,7 @@ REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 # The one thing in `/out` that a POSIX shell cannot do for itself: open a path once,
 # refusing to follow a symlink at the end of it. See the file's own header.
 SAFE_FILE="${REPO_ROOT}/operations/autoclave/safe_file.py"
+FINGERPRINT="${REPO_ROOT}/operations/autoclave/fingerprint.py"
 
 # Output lives in the gitignored workbench: it is a note, not a document, and it
 # must never appear in `git status`. One drawer per task, kept after the chamber
@@ -162,13 +163,18 @@ cmd_doctor() {
 
 cmd_build() {
     need_docker
+    docker buildx version >/dev/null 2>&1 ||
+        die "Docker Buildx is required — install it with: brew install docker-buildx"
+    harness_fingerprint=$(python3 "$FINGERPRINT") ||
+        die "cannot fingerprint the chamber image inputs"
     # Context is the repository root so the Dockerfile can reach
     # requirements-dev.txt; .dockerignore there denies everything else.
     # The uid and gid are the caller's, so bundles land owned by the host user.
-    docker build \
+    docker buildx build --load \
         --file "${REPO_ROOT}/operations/autoclave/Dockerfile" \
         --build-arg "UID=$(id -u)" \
         --build-arg "GID=$(id -g)" \
+        --build-arg "HARNESS_FINGERPRINT=${harness_fingerprint}" \
         --tag "$IMAGE" \
         "${REPO_ROOT}"
     note ""
@@ -451,22 +457,17 @@ cmd_new() {
     docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
     exists "$task" && die "chamber '$task' already exists — use 'rm $task' first"
 
-    # **The brief is baked into the image, so editing it does nothing until a
-    # rebuild.** On 2026-08-02 `agent-brief.md` was edited and a chamber created in the
-    # same session ran the *old* brief; the only symptom was an agent behaving as
-    # though the new paragraph had never been written, which is indistinguishable from
-    # an agent ignoring it. Nothing can be corrected at run time either: all three
-    # copies sit at root-owned paths and the container runs as a non-root user.
-    #
-    # Refused rather than warned. A warning on a command whose next step is a dispatch
-    # that may run for an hour is a warning nobody reads in time, and the fix is one
-    # command. Compared by content, not by timestamp — a fresh checkout sets every
-    # mtime to now, so a time comparison would refuse every chamber on a new clone.
-    image_brief=$(docker run --rm "$IMAGE" cat /CLAUDE.md 2>/dev/null) ||
-        die "the image carries no chamber brief at /CLAUDE.md — rebuild it: $0 build"
-    if [ "$image_brief" != "$(cat "${REPO_ROOT}/operations/autoclave/agent-brief.md")" ]; then
-        die "the image's chamber brief is not this checkout's operations/autoclave/agent-brief.md. Any chamber made now would run the older one. Rebuild: $0 build"
-    fi
+    # Every input that defines the image is content-addressed together. Comparing the
+    # label rather than mtimes works after a fresh checkout and catches a locally edited
+    # Dockerfile, requirements file, brief, refresh helper, build-context policy, or the
+    # fingerprint implementation itself. Refuse before creating a snapshot or container.
+    expected_fingerprint=$(python3 "$FINGERPRINT") ||
+        die "cannot fingerprint the chamber image inputs"
+    image_fingerprint=$(docker image inspect --format \
+        '{{index .Config.Labels "verbatus.harness-fingerprint"}}' "$IMAGE" 2>/dev/null) ||
+        image_fingerprint=""
+    [ "$image_fingerprint" = "$expected_fingerprint" ] ||
+        die "the chamber image does not match this checkout's complete harness inputs. Rebuild: $0 build"
 
     # **A named vendor whose sign-in is not real is refused here.** It used to be
     # tolerated: the mount was skipped and the chamber was still labelled for that
@@ -1270,8 +1271,40 @@ cmd_collect() {
     git -C "$REPO_ROOT" bundle verify "$bundle_out" >/dev/null 2>&1 \
         || die "what is at ${bundle_out} is not a git bundle. Nothing was fetched. Look at it before anything else — the chamber writes that path and this is what it left there"
 
-    git -C "$REPO_ROOT" fetch --quiet "$bundle_out" "${branch}:${branch}" \
+    incoming="refs/autoclave/incoming/${task}"
+    git -C "$REPO_ROOT" fetch --quiet "$bundle_out" "+${branch}:${incoming}" \
         || die "bundle fetched no ref — inspect it with: git bundle list-heads ${bundle_out}"
+    incoming_tip=$(git -C "$REPO_ROOT" rev-parse "$incoming")
+
+    # A chamber starts at this exact base and must add commits above it. Rewriting the
+    # inherited history creates an unrelated look-alike branch whose integration has to
+    # rediscover the new commits by subject. Refuse that shape before it can replace a
+    # useful local agent branch. The temporary ref is removed on both paths.
+    if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$chamber_base" "$incoming_tip"; then
+        git -C "$REPO_ROOT" update-ref -d "$incoming"
+        die "the returned branch rewrote its chamber base instead of extending it. The chamber still holds the work; add new commits above ${chamber_base} and collect again"
+    fi
+
+    branch_ref="refs/heads/${branch}"
+    old_tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$branch_ref") || old_tip=""
+    if [ -n "$old_tip" ] &&
+       ! git -C "$REPO_ROOT" merge-base --is-ancestor "$old_tip" "$incoming_tip"; then
+        git -C "$REPO_ROOT" update-ref -d "$incoming"
+        die "local ${branch} contains work the returned branch does not extend; nothing was replaced"
+    fi
+    if [ -n "$old_tip" ]; then
+        if ! git -C "$REPO_ROOT" update-ref "$branch_ref" "$incoming_tip" "$old_tip"; then
+            git -C "$REPO_ROOT" update-ref -d "$incoming"
+            die "local ${branch} moved during collection; nothing was replaced"
+        fi
+    else
+        if ! git -C "$REPO_ROOT" update-ref "$branch_ref" "$incoming_tip" \
+            0000000000000000000000000000000000000000; then
+            git -C "$REPO_ROOT" update-ref -d "$incoming"
+            die "local ${branch} appeared during collection; nothing was replaced"
+        fi
+    fi
+    git -C "$REPO_ROOT" update-ref -d "$incoming"
 
     # An agent that committed nothing leaves its branch pointing at the base, and the
     # bundle for that branch builds and fetches perfectly. Saying "collected" over it

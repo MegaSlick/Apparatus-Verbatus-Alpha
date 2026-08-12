@@ -27,6 +27,10 @@
 
 <!-- Tests, a check that runs, or an honest "nothing yet — this is scaffolding". -->
 
+## Review candidate
+
+<!-- Full candidate SHA reviewed; reviewers and receipt paths. The PR tip must match it. -->
+
 ---
 
 - [ ] Written new — anything carried from the reference or a third party is named as

@@ -58,9 +58,8 @@ Print the versions of relevant tools. If agents will be dispatched:
 1. read `.claude/agents/README.md`, `operations/autoclave/README.md`, and
    `operations/autoclave/agent-brief.md`;
 2. run `colima status || colima start`, saying if the VM was started;
-3. compare the chamber image build time with `agent-brief.md`, `refresh_claude_token.py`,
-   the Dockerfile, and `requirements-dev.txt`; rebuild only when an input is newer or
-   locally modified.
+3. rely on `autoclave.sh new` to compare the image's complete harness fingerprint with the
+   checkout; rebuild when it refuses a mismatch.
 
 Do not start the container engine or audit every installed package for a direct task that
 does not use them.

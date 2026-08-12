@@ -63,6 +63,10 @@ run proportionate checks before integrating. Agent agreement is evidence, not au
 Use several seats when they test genuinely independent hypotheses, not to satisfy a fixed
 roster.
 
+For consequential review, follow `operations/review/README.md`: every reviewer receives
+the same full base and candidate SHAs, names the full candidate SHA in its report, and
+reviews only that committed diff. Any fix invalidates every receipt for the older candidate.
+
 Built-in host agents receive this preamble:
 
 > You are working in Apparatus Verbatus. Read `GOALS.md`, `GOVERNANCE.md`,

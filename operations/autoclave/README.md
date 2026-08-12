@@ -26,7 +26,7 @@ egress, or the shared credential volume. Keep briefs bounded.
 ## Setup
 
 ```sh
-brew install colima docker
+brew install colima docker docker-buildx
 colima start --cpu 6 --memory 12 --disk 60
 sh operations/autoclave/autoclave.sh build
 sh operations/autoclave/autoclave.sh login claude
@@ -58,9 +58,10 @@ credential mount cannot be added later. `dispatch` requires a model; effort defa
 `medium` and is validated for that vendor/model. The brief travels through `/out/brief.md`,
 not a process argument.
 
-The agent commits to `agent/<task>`. `collect` requires a clean chamber tree, validates the
-bundle, fetches that branch into the host repository, and never merges it. Re-author or
-squash the chamber commits so Tyrel is author and the actual model remains in
+The agent commits above the exact requested base on `agent/<task>` and never rewrites
+inherited commits. `collect` requires a clean chamber tree, validates the bundle and its
+ancestry, fetches that branch into the host repository, and never merges it. Re-author or
+squash only the new chamber commits so Tyrel is author and the actual model remains in
 `Co-Authored-By` trailers.
 
 `rm` refuses uncommitted or uncollected work. `rm <task> force` intentionally discards it;
@@ -73,10 +74,10 @@ places it at `/work/AGENTS.md` and `/work/AUTOCLAVE.md`. Claude receives the sam
 appended system prompt. This lets both supported CLIs see the chamber boundary while
 `/work/CLAUDE.md` supplies repository rules.
 
-Before dispatch, compare the image build time with `agent-brief.md`,
-`refresh_claude_token.py`, the Dockerfile, and `requirements-dev.txt`. Rebuild when an
-input is newer or locally modified. A chamber is pinned to the instructions and code
-present when it was created; recreate it when either must change.
+The build labels the image with one SHA-256 fingerprint covering `.dockerignore`, the
+Dockerfile, requirements, agent brief, refresh helper, and fingerprint implementation.
+`new` refuses an image whose label differs from the current checkout. A chamber is pinned
+to the instructions and code present when it was created; recreate it when either changes.
 
 ## Image
 
@@ -85,7 +86,9 @@ a compiler, and both agent CLIs. The Docker build context denies everything and 
 only `requirements-dev.txt`, `agent-brief.md`, and the token refresh helper, keeping secret
 drawers outside the build daemon.
 
-The build installs both CLIs from their `latest` package tag. A rebuild can therefore
+The build requires Docker Buildx, uses BuildKit, and loads the result into the local engine.
+It never falls back to the deprecated legacy builder that accumulated one dangling image
+chain per rebuild. Both CLIs still install from their `latest` package tag, so a rebuild can
 change agent behavior even when repository inputs did not. Record a rebuild and use
 `doctor` afterward.
 
