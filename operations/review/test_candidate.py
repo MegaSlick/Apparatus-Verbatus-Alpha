@@ -49,6 +49,32 @@ def test_prepare_refuses_a_moving_index(tmp_path):
         raise AssertionError("a dirty candidate was prepared")
 
 
+def test_prepare_ignores_local_replace_refs(tmp_path):
+    base, candidate = repository(tmp_path)
+    canonical_tree = git(tmp_path, "rev-parse", f"{candidate}^{{tree}}")
+    (tmp_path / "file.txt").write_text("replacement\n")
+    git(tmp_path, "add", "file.txt")
+    replacement_tree = git(tmp_path, "write-tree")
+    replacement = subprocess.run(
+        ["git", "-C", str(tmp_path), "commit-tree", replacement_tree, "-p", base],
+        input="replacement view\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git(tmp_path, "replace", candidate, replacement)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "reset", "--quiet", "--hard", candidate],
+        check=True,
+        env={**__import__("os").environ, "GIT_NO_REPLACE_OBJECTS": "1"},
+    )
+
+    manifest = prepare(tmp_path, base)
+
+    assert manifest["candidate"] == candidate
+    assert manifest["tree"] == canonical_tree
+
+
 def test_receipt_binds_the_report_and_refuses_a_moved_head(tmp_path):
     base, candidate = repository(tmp_path)
     report = tmp_path / "workbench" / "raw" / "review.md"
@@ -133,3 +159,40 @@ def test_receipt_distinguishes_an_unknown_base(tmp_path):
 
     with pytest.raises(ValueError, match="unknown or is not a commit"):
         receipt(tmp_path, candidate, "does-not-exist", "Independent Sol", report)
+
+
+def test_receipt_is_idempotent_but_cannot_replace_existing_evidence(tmp_path):
+    base, candidate = repository(tmp_path)
+    first = tmp_path / "workbench" / "raw" / "first.md"
+    second = first.with_name("second.md")
+    first.parent.mkdir(parents=True)
+    body = f"Candidate: {candidate}\nBase: {base}\nNo findings.\n"
+    first.write_text(body)
+    second.write_text(body)
+
+    output, original = receipt(tmp_path, candidate, base, "Independent Sol", first)
+    repeated, record = receipt(tmp_path, candidate, base, "Independent Sol", first)
+    assert repeated == output and record == original
+
+    with pytest.raises(ValueError, match="immutable receipt already exists"):
+        receipt(tmp_path, candidate, base, "Independent Sol", second)
+    assert json.loads(output.read_text()) == original
+
+
+def test_receipt_refuses_a_preexisting_symlink_at_its_final_name(tmp_path):
+    base, candidate = repository(tmp_path)
+    report = tmp_path / "workbench" / "raw" / "review.md"
+    report.parent.mkdir(parents=True)
+    report.write_text(f"Candidate: {candidate}\nBase: {base}\n")
+    digest = __import__("hashlib").sha256(report.read_bytes()).hexdigest()
+    output = (
+        tmp_path / "workbench" / "raw" / "reviews" / candidate / f"independent-sol-{digest}.json"
+    )
+    output.parent.mkdir(parents=True)
+    victim = output.with_name("victim")
+    victim.write_text("keep\n")
+    output.symlink_to(victim)
+
+    with pytest.raises(ValueError, match="opened safely"):
+        receipt(tmp_path, candidate, base, "Independent Sol", report)
+    assert victim.read_text() == "keep\n"

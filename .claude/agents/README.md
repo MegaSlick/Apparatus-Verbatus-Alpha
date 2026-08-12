@@ -58,7 +58,7 @@ Every prompt names:
 - any real mechanical time limit.
 
 Do not invent deadlines. Ask reviewers for every finding. The main session records each
-finding as fixed, accepted, or declined with a reason; it does not silently discard findings
+finding as fixed or declined with a reason; it does not silently discard findings
 below a presentation threshold. A chamber
 may orchestrate internally for a large task, but its sub-agents use disjoint result paths
 and do not touch git concurrently.

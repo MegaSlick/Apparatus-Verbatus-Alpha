@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+GIT_ENV = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
+
 
 def git(root: Path, *arguments: str) -> str:
     return subprocess.run(
@@ -20,6 +22,7 @@ def git(root: Path, *arguments: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        env=GIT_ENV,
     ).stdout.strip()
 
 
@@ -45,6 +48,7 @@ def require_ancestor(root: Path, base: str, candidate: str) -> None:
     result = subprocess.run(
         ["git", "-C", str(root), "merge-base", "--is-ancestor", base, candidate],
         capture_output=True,
+        env=GIT_ENV,
     )
     if result.returncode == 1:
         raise ValueError(f"base {base} is not an ancestor of candidate {candidate}")
@@ -114,13 +118,20 @@ def receipt(
         "report": str(report.absolute()),
         "report_sha256": report_sha256,
     }
-    output = (
-        root / "workbench" / "raw" / "reviews" / candidate_sha / f"{slug}-{report_sha256[:12]}.json"
-    )
+    output = root / "workbench" / "raw" / "reviews" / candidate_sha / f"{slug}-{report_sha256}.json"
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, output)
+    encoded = (json.dumps(record, indent=2) + "\n").encode()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(output, flags, 0o600)
+    except FileExistsError:
+        if read_report(output) != encoded:
+            raise ValueError(f"an immutable receipt already exists at {output}") from None
+    else:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
     return output, record
 
 

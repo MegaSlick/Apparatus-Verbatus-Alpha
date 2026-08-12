@@ -39,8 +39,8 @@ rules remain at `/work/CLAUDE.md`.
 
 - Never write `/src`, push, merge, open a pull request, notify anyone, or start anything
   that bills.
-- Never edit a governed path: the root governing documents or anything under `.claude/`.
-  Propose exact wording in the report.
+- Never edit a governed path listed under `Where notes go` in `/work/CLAUDE.md`. Propose
+  exact wording in the report.
 - Never route around a blocked external action, missing credential, or concrete governance
   conflict. Report it and stop that part of the task.
 - Never copy old code silently. Reason first, then inspect `/window`; carry bytes only when

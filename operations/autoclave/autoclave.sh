@@ -29,6 +29,8 @@
 #
 # POSIX sh: this runs on the host, and the host's shell is not guaranteed.
 set -eu
+GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_REPLACE_OBJECTS
 
 IMAGE_NAME="verbatus-autoclave"
 IMAGE_TAG="dev"
@@ -68,6 +70,7 @@ AUTH_VOL_CLAUDE="verbatus-ac-auth-claude"
 AUTH_VOL_CODEX="verbatus-ac-auth-codex"
 AUTH_DIR_CLAUDE="/home/agent/.claude"
 AUTH_DIR_CODEX="/home/agent/.codex"
+CLAUDE_LOCK="${AUTH_DIR_CLAUDE}/.credentials.autoclave.lock"
 
 die() { printf 'autoclave: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -197,7 +200,7 @@ auth_dir() {
 # to print here — the caller discards their output and keeps only the status.
 auth_check() {
     case "$1" in
-        claude) printf '%s' "claude auth status" ;;
+        claude) printf '%s' "flock -w 60 ${CLAUDE_LOCK} claude auth status" ;;
         codex)  printf '%s' "codex login status" ;;
         *) return 1 ;;
     esac
@@ -243,24 +246,21 @@ authenticated() {
 }
 
 # Claude's print-mode dispatch does not renew an expired access token itself.  Refresh
-# before asking its CLI for status: a status from the freshly rotated credential is the
-# answer that decides whether a chamber may be created.  A refresh failure is not that
-# answer — the existing access token may still work — so the status check immediately
-# afterwards remains authoritative.
+# before asking its CLI for status. The CLI reports an expired credential as logged in,
+# so the helper must succeed; status then remains a second check of the resulting layout.
 refresh_claude_volume() {
     volume_asked="$1"
+    has_volume "$volume_asked" || return 1
     docker run --rm --volume "${volume_asked}:${AUTH_DIR_CLAUDE}" \
         --env "CLAUDE_CONFIG_DIR=${AUTH_DIR_CLAUDE}" "$IMAGE" \
-        python3 /opt/autoclave/refresh_claude_token.py ||
-        note "the Claude token refresh failed; checking the CLI status anyway"
+        python3 /opt/autoclave/refresh_claude_token.py
 }
 
 refresh_claude_chamber() {
     task_asked="$1"
     docker exec -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
         "$(container_of "$task_asked")" \
-        python3 /opt/autoclave/refresh_claude_token.py ||
-        note "the Claude token refresh failed; checking the CLI status anyway"
+        python3 /opt/autoclave/refresh_claude_token.py
 }
 
 cmd_login() {
@@ -348,7 +348,7 @@ cmd_login() {
     # mounted volume and survives this temporary login container.
     case "$vendor" in
         claude)
-            login_cmd="$tool"
+            login_cmd="flock -w 60 ${CLAUDE_LOCK} $tool"
             login_env="--env CLAUDE_CONFIG_DIR=${mount}" ;;
         *)
             login_cmd="$tool"
@@ -402,7 +402,11 @@ cmd_login() {
 # is the shape of the defect it exists to catch. The tri-state handling that would
 # otherwise be duplicated into both lives here instead.
 require_signed_in() {
-    [ "$1" != claude ] || refresh_claude_volume "$2"
+    if [ "$1" = claude ]; then
+        has_volume "$2" || die "'claude' is not signed in — run: $0 login claude"
+        refresh_claude_volume "$2" ||
+            die "Claude could not validate or refresh its credential — run: $0 login claude"
+    fi
     asked=0; authenticated "$1" "$2" || asked=$?
     [ "$asked" -eq 1 ] && die "'$1' is not signed in — run: $0 login $1"
     [ "$asked" -eq 0 ] ||
@@ -489,7 +493,7 @@ cmd_new() {
         '{{index .Config.Labels "verbatus.harness-fingerprint"}}' "$IMAGE" 2>/dev/null) ||
         image_fingerprint=""
     [ "$image_fingerprint" = "$expected_fingerprint" ] ||
-        die "the chamber image does not match this checkout's complete harness inputs. Rebuild: $0 build"
+        die "the chamber image does not match this checkout's repository harness inputs. Rebuild: $0 build"
 
     # **A named vendor whose sign-in is not real is refused here.** It used to be
     # tolerated: the mount was skipped and the chamber was still labelled for that
@@ -893,23 +897,9 @@ AUTOCLAVE_SETUP
         # into a path the CLI will never read.
         #
         # **Locked, and written only when the flag is actually missing.** Temp-then-rename
-        # stopped the torn read. It did nothing about the lost update, which is the harder
-        # half of the same finding. Two writers can still race on this file: another
-        # chamber running this same block, and the Claude CLI in any running chamber
-        # refreshing the file for real.
-        #
-        # `flock` closes the first of those completely — the read, the edit and the rename
-        # all happen while the lock is held, and this block is the only read-modify-write
-        # this script performs on that file.
-        #
-        # It cannot close the second, and nothing in this tree can: the CLI takes no lock
-        # we can name, so a refresh landing between our read and our rename is still
-        # discarded. What shrinks that window is the other half of this change. The flag
-        # is per project, the project path is the same in every chamber, and the file
-        # lives on the volume — so once it is true it stays true, and every later chamber
-        # reads it, sees it, and writes nothing at all. The exposure is one write per
-        # volume, at the moment that volume is newest and least likely to be in use by a
-        # running chamber. That is not zero and this comment does not claim it is.
+        # stopped the torn read but not a lost update. Every Claude auth check, login,
+        # refresh, dispatch, and this trust initializer now joins the same volume lock,
+        # so the complete read-edit-rename is serialized with every known writer.
         #
         # The wait is bounded and loud rather than indefinite. A chamber creation that
         # hangs forever on a lock somebody wedged is worse than one that says why it
@@ -919,7 +909,7 @@ import fcntl, json, os, pathlib, tempfile, time
 d = pathlib.Path("/home/agent/.claude")
 if d.is_dir():
     p = d / ".claude.json"
-    with open(d / ".claude.json.autoclave.lock", "a+") as guard:
+    with open(d / ".credentials.autoclave.lock", "a+") as guard:
         deadline = time.monotonic() + 30
         while True:
             try:
@@ -1077,8 +1067,11 @@ cmd_dispatch() {
     # same vendor. Asking inside the chamber, through the mount the CLI will actually
     # read, is the only test that covers all three. It costs one `docker exec` against
     # a container that is already running. Claude is refreshed first because its print
-    # mode does not do that itself; status after the refresh remains the authority.
-    [ "$vendor" != claude ] || refresh_claude_chamber "$task"
+    # mode does not do that itself and auth status alone accepts expired credentials.
+    if [ "$vendor" = claude ]; then
+        refresh_claude_chamber "$task" ||
+            die "Claude could not validate or refresh its credential — run: $0 login claude"
+    fi
     check=$(auth_check "$vendor")
     docker exec "$(container_of "$task")" sh -c "$check" >/dev/null 2>&1 || die \
         "'$vendor' is not signed in inside chamber '$task' — sign in with '$0 login $vendor', then rebuild the chamber ('$0 rm $task' and '$0 new $task <base> $vendor'), because a mount cannot be added to a running container"
@@ -1185,6 +1178,7 @@ cmd_dispatch() {
                 -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
                 "$(container_of "$task")" sh -c '
                 cd /work
+                flock -w 60 /home/agent/.claude/.credentials.autoclave.lock \
                 claude --dangerously-skip-permissions \
                     --append-system-prompt-file /opt/autoclave/CLAUDE.md \
                     --model "$AC_MODEL" \
@@ -1245,6 +1239,13 @@ cmd_collect() {
         "$(container_of "$task")" 2>/dev/null) || chamber_base=""
     [ -n "$chamber_base" ] || die "chamber '$task' records no base, so nothing here can say what it added"
 
+    git_common=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir) ||
+        die "could not locate this repository's common git directory; nothing was collected"
+    collect_lock="${git_common}/autoclave-collect.${task}.lock"
+    mkdir "$collect_lock" 2>/dev/null ||
+        die "another collection for '${task}' is already running; nothing was collected"
+    trap 'rmdir "$collect_lock" 2>/dev/null || :' 0 1 2 15
+
     # **Work that was never added counts as uncommitted.** A bundle carries commits, so
     # anything still loose in the chamber's tree is left behind — and `rm` then destroys
     # the only copy of it. `git diff` and `git diff --cached` between them see modified
@@ -1266,7 +1267,7 @@ cmd_collect() {
             printf '%s\n' \"\$loose\" >&2
             exit 1
         fi
-        git bundle create ${bundle_in} '${branch}' >/dev/null
+        python3 /src/operations/autoclave/safe_file.py bundle ${bundle_in} '${branch}'
     " || die "nothing collected from '$task' — the tree is not clean, or the bundle could not be written; its own message is above. A branch carrying no commits is not this failure: that collects, and says so."
 
     # **This slot is the agent's too, and `[ -f ]` is not enough.** Three reviews
@@ -1286,8 +1287,6 @@ cmd_collect() {
     # `--git-common-dir` rather than spelling `${REPO_ROOT}/.git`.
     [ -L "$bundle_out" ] && die "bundle slot ${bundle_out} is a symlink — refusing to read through it"
     [ -f "$bundle_out" ] || die "bundle did not appear at ${bundle_out}"
-    git_common=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir) ||
-        die "could not locate this repository's common git directory; nothing was fetched"
     bundle_snapshot=$(mktemp "${git_common}/autoclave-bundle.${task}.XXXXXX") ||
         die "could not create a host-owned bundle snapshot; nothing was fetched"
     if ! python3 "$SAFE_FILE" read "$bundle_out" > "$bundle_snapshot"; then
@@ -1299,7 +1298,13 @@ cmd_collect() {
         die "what is at ${bundle_out} is not a git bundle. Nothing was fetched. Look at it before anything else — the chamber writes that path and this is what it left there"
     fi
 
-    incoming="refs/autoclave/incoming/${task}"
+    nonce=${bundle_snapshot##*.}
+    incoming="refs/autoclave/incoming/${task}-${nonce}"
+    if git -C "$REPO_ROOT" show-ref --verify --quiet "$incoming" ||
+       git -C "$REPO_ROOT" symbolic-ref -q "$incoming" >/dev/null 2>&1; then
+        rm -f "$bundle_snapshot"
+        die "the invocation-unique incoming ref already exists; nothing was fetched"
+    fi
     if ! git -C "$REPO_ROOT" fetch --quiet "$bundle_snapshot" "+${branch}:${incoming}"; then
         rm -f "$bundle_snapshot"
         die "bundle fetched no ref — inspect it with: git bundle list-heads ${bundle_out}"
@@ -1312,36 +1317,43 @@ cmd_collect() {
     # rediscover the new commits by subject. Refuse that shape before it can replace a
     # useful local agent branch. The temporary ref is removed on both paths.
     if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$chamber_base" "$incoming_tip"; then
-        git -C "$REPO_ROOT" update-ref -d "$incoming"
+        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
         die "the returned branch rewrote its chamber base instead of extending it. The chamber still holds the work; add new commits above ${chamber_base} and collect again"
     fi
 
     branch_ref="refs/heads/${branch}"
+    if git -C "$REPO_ROOT" symbolic-ref -q "$branch_ref" >/dev/null 2>&1; then
+        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
+        die "local ${branch} is a symbolic ref; nothing was replaced"
+    fi
     # `update-ref` can move a checked-out branch even though its worktree has files
     # from the old commit. Refuse rather than changing a branch another worktree uses.
-    if git -C "$REPO_ROOT" worktree list --porcelain | grep -Fqx "branch ${branch_ref}"; then
-        git -C "$REPO_ROOT" update-ref -d "$incoming"
+    worktrees=$(git -C "$REPO_ROOT" worktree list --porcelain) || {
+        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
+        die "could not inspect worktree occupancy; nothing was replaced"
+    }
+    if printf '%s\n' "$worktrees" | grep -Fqx "branch ${branch_ref}"; then
+        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
         die "local ${branch} is checked out in a worktree; nothing was replaced"
     fi
     old_tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$branch_ref") || old_tip=""
     if [ -n "$old_tip" ] &&
        ! git -C "$REPO_ROOT" merge-base --is-ancestor "$old_tip" "$incoming_tip"; then
-        git -C "$REPO_ROOT" update-ref -d "$incoming"
+        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
         die "local ${branch} contains work the returned branch does not extend; nothing was replaced"
     fi
-    if [ -n "$old_tip" ]; then
-        if ! git -C "$REPO_ROOT" update-ref "$branch_ref" "$incoming_tip" "$old_tip"; then
-            git -C "$REPO_ROOT" update-ref -d "$incoming"
-            die "local ${branch} moved during collection; nothing was replaced"
-        fi
-    else
-        if ! git -C "$REPO_ROOT" update-ref "$branch_ref" "$incoming_tip" \
-            0000000000000000000000000000000000000000; then
-            git -C "$REPO_ROOT" update-ref -d "$incoming"
-            die "local ${branch} appeared during collection; nothing was replaced"
-        fi
+    current_tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$branch_ref") || current_tip=""
+    if [ "$current_tip" != "$old_tip" ]; then
+        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
+        die "local ${branch} moved during collection; nothing was replaced"
     fi
-    git -C "$REPO_ROOT" update-ref -d "$incoming"
+    if ! git -C "$REPO_ROOT" branch -f "$branch" "$incoming_tip"; then
+        git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
+        die "local ${branch} became occupied or could not be updated; nothing was replaced"
+    fi
+    git -C "$REPO_ROOT" update-ref --no-deref -d "$incoming"
+    rmdir "$collect_lock"
+    trap - 0 1 2 15
 
     # An agent that committed nothing leaves its branch pointing at the base, and the
     # bundle for that branch builds and fetches perfectly. Saying "collected" over it

@@ -200,6 +200,8 @@ if args[:1] == ["inspect"]:
 if args[:1] == ["run"]:
     if "--detach" in args:
         raise SystemExit(int(setting("FAKE_RUN_STATUS", "0")))
+    if "refresh_claude_token.py" in " ".join(args):
+        raise SystemExit(int(setting("FAKE_REFRESH_STATUS", "0")))
     if vendor_status(args[-1]):
         answer_vendor_status()
     raise SystemExit(int(setting("FAKE_LOGIN_STATUS", "0")))
@@ -216,6 +218,9 @@ if args[:1] == ["exec"]:
     chamber = setting("FAKE_CHAMBER_WORK")
     if chamber and "cd /work" in command:
         command = command.replace("cd /work", "cd " + chamber)
+        command = command.replace(
+            "/src/operations/autoclave/safe_file.py", setting("FAKE_SAFE_FILE")
+        )
         outdir = setting("FAKE_OUT_DIR")
         if outdir:
             command = command.replace("/out/", outdir + "/")
@@ -224,7 +229,7 @@ if args[:1] == ["exec"]:
         # host is about to read. That is the race `collect` has to survive, and it
         # cannot be staged from outside the container any other way.
         planted = setting("FAKE_PLANT_AFTER_EXEC")
-        if planted and "bundle create" in command:
+        if planted and ("bundle create" in command or "safe_file.py bundle" in command):
             target, _, content = planted.partition("=")
             with open(target, "w") as slot:
                 slot.write(content)
@@ -269,6 +274,7 @@ def fake_docker(tmp_path):
         "FAKE_DOCKER_LOG": str(log),
         "FAKE_HOST_VENDOR_LOG": str(host_vendor_log),
         "FAKE_SETUP_SCRIPT": str(tmp_path / "setup.sh"),
+        "FAKE_SAFE_FILE": str(tmp_path / "operations" / "autoclave" / "safe_file.py"),
         "FAKE_VOLUME_LEDGER": str(tmp_path / "volumes.log"),
     }, log
 
@@ -1250,6 +1256,63 @@ class TestWhatComesBackAndWhatIsDestroyed:
         finally:
             git(tmp_path, "worktree", "remove", "--force", str(linked))
 
+    def test_collect_refuses_a_symbolic_agent_branch_without_moving_its_target(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        target = git(tmp_path, "rev-parse", "refs/heads/work/test")
+        git(tmp_path, "symbolic-ref", "refs/heads/agent/task-x", "refs/heads/work/test")
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "symbolic ref" in result.stderr
+        assert git(tmp_path, "rev-parse", "refs/heads/work/test") == target
+        assert git(tmp_path, "symbolic-ref", "refs/heads/agent/task-x") == "refs/heads/work/test"
+
+    def test_collect_serializes_the_same_task(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        common = Path(git(tmp_path, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        lock = common / "autoclave-collect.task-x.lock"
+        lock.mkdir()
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "already running" in result.stderr
+
+    def test_collect_refuses_a_worktree_that_appears_after_the_occupancy_check(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "racing-worktree"
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *args])\n"
+            "if result.returncode == 0 and 'worktree' in args and 'list' in args:\n"
+            "    subprocess.run([os.environ['REAL_GIT'], '-C', os.environ['RACE_ROOT'], "
+            "'worktree', 'add', '--quiet', os.environ['RACE_LINKED'], 'agent/task-x'], check=True)\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update({"REAL_GIT": real_git, "RACE_ROOT": str(tmp_path), "RACE_LINKED": str(linked)})
+        try:
+            result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert result.returncode != 0
+            assert "occupied" in result.stderr
+            assert git(tmp_path, "rev-parse", "agent/task-x") == base
+            assert git(linked, "status", "--porcelain") == ""
+        finally:
+            if linked.exists():
+                subprocess.run(
+                    [real_git, "-C", str(tmp_path), "worktree", "remove", "--force", str(linked)],
+                    check=True,
+                )
+
     def test_an_empty_branch_collects_and_says_it_is_empty(self, tmp_path):
         """The report is worth keeping, so this succeeds — loudly. Reporting success
         on nothing is the one thing this tool must not do."""
@@ -1694,6 +1757,30 @@ class TestTheUntrustedDrawer:
         assert write.returncode == 0, write.stderr
         assert destination.read_text() == "bounded task\n"
 
+    def test_bundle_creation_does_not_follow_an_output_symlink(self, tmp_path):
+        repository = tmp_path / "repository"
+        repository.mkdir()
+        git(repository, "init", "--quiet", "-b", "work/test")
+        git(repository, "config", "user.name", "Test")
+        git(repository, "config", "user.email", "test@example.invalid")
+        (repository / "file").write_text("content\n")
+        git(repository, "add", "file")
+        git(repository, "commit", "--quiet", "-m", "base")
+        victim = tmp_path / "victim"
+        victim.write_text("keep\n")
+        slot = tmp_path / "bundle"
+        slot.symlink_to(victim)
+
+        result = subprocess.run(
+            ["python3", str(SAFE_FILE), "bundle", str(slot), "HEAD"],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0
+        assert victim.read_text() == "keep\n"
+
 
 class TestMakingAChamber:
     """`new` writes to the host repository, and every write must be undoable."""
@@ -2096,7 +2183,7 @@ class TestSignInIsAsked:
         env.update(
             {
                 "FAKE_AUTH_VALID": "1",
-                "FAKE_REFRESH_STATUS": "1",
+                "FAKE_REFRESH_STATUS": "0",
                 "FAKE_VOLUMES": "verbatus-ac-auth-claude",
                 "FAKE_SETUP_STATUS": "0",
                 "FAKE_EXEC_STATUS": "0",
@@ -2110,6 +2197,34 @@ class TestSignInIsAsked:
         refresh_call = next(call for call in calls if "refresh_claude_token.py" in " ".join(call))
         status_call = next(call for call in calls if "auth status" in " ".join(call))
         assert calls.index(refresh_call) < calls.index(status_call)
+
+    def test_new_does_not_create_an_empty_claude_volume_while_refusing(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_AUTH_VALID"] = "1"
+
+        result = run("new", "no-volume", "HEAD", "claude", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "not signed in" in result.stderr
+        assert not any("refresh_claude_token.py" in " ".join(call) for call in docker_calls(log))
+
+    def test_new_blocks_when_refresh_fails_even_if_auth_status_would_pass(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_REFRESH_STATUS": "1",
+                "FAKE_VOLUMES": "verbatus-ac-auth-claude",
+            }
+        )
+
+        result = run("new", "dead-token", "HEAD", "claude", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "could not validate or refresh" in result.stderr
+        assert not any("auth status" in " ".join(call) for call in docker_calls(log))
 
     def test_dispatch_asks_inside_the_chamber_not_of_the_label(self, tmp_path):
         """A chamber outlives the check `new` made: a token expires, a vendor forces
@@ -2160,6 +2275,7 @@ class TestClaudeConfigurationUsesTheMountedVolume:
         assert result.returncode == 0, result.stderr
         login = next(call for call in docker_calls(log) if "claude auth login" in " ".join(call))
         assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in login
+        assert ".credentials.autoclave.lock" in " ".join(login)
 
     def test_dispatch_points_configuration_at_the_volume(self, tmp_path):
         script = elsewhere(tmp_path)
@@ -2172,7 +2288,7 @@ class TestClaudeConfigurationUsesTheMountedVolume:
                 "FAKE_CONTAINER_EXISTS": "1",
                 "FAKE_CHAMBER_VENDOR": "claude",
                 "FAKE_AUTH_VALID": "1",
-                "FAKE_REFRESH_STATUS": "1",
+                "FAKE_REFRESH_STATUS": "0",
                 "FAKE_EXEC_STATUS": "0",
             }
         )
@@ -2194,10 +2310,41 @@ class TestClaudeConfigurationUsesTheMountedVolume:
         cli = next(call for call in calls if "--append-system-prompt-file" in " ".join(call))
         refresh_call = next(call for call in calls if "refresh_claude_token.py" in " ".join(call))
         assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in cli
+        assert ".credentials.autoclave.lock" in " ".join(cli)
         assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in refresh_call
         status_call = next(call for call in calls if "auth status" in " ".join(call))
         assert calls.index(refresh_call) < calls.index(status_call)
         assert calls.index(refresh_call) < calls.index(cli)
+
+    def test_dispatch_blocks_when_refresh_fails_even_if_auth_status_would_pass(self, tmp_path):
+        script = elsewhere(tmp_path)
+        brief = tmp_path / "brief.md"
+        brief.write_text("bounded task\n")
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_CONTAINER_EXISTS": "1",
+                "FAKE_CHAMBER_VENDOR": "claude",
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_REFRESH_STATUS": "1",
+            }
+        )
+
+        result = run(
+            "dispatch",
+            "task-x",
+            "claude",
+            str(brief),
+            "sonnet",
+            "medium",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+
+        assert result.returncode != 0
+        assert "could not validate or refresh" in result.stderr
+        assert not any("auth status" in " ".join(call) for call in docker_calls(log))
 
     def test_the_refresh_helper_reaches_the_image(self):
         helper = ROOT / "operations" / "autoclave" / "refresh_claude_token.py"
@@ -2345,10 +2492,8 @@ class TestTheTrustFlagAgainstARealFilesystem:
         key exists and republishes it without — a lost update. Under the lock it
         waits, reads what the competitor wrote, and both survive.
 
-        What this cannot prove is the half that stays open: the Claude CLI takes no
-        lock this script can name, so a real refresh landing inside the window is
-        still discarded. That is why the write above happens at most once per volume,
-        and why the comment in the launcher says so rather than claiming a fix.
+        Every Claude CLI and refresh-helper call now takes the same volume lock, so this
+        pins the lock shared by the trust initializer too.
         """
         block, directory = self._block(tmp_path)
         config = directory / ".claude.json"
@@ -2358,7 +2503,7 @@ class TestTheTrustFlagAgainstARealFilesystem:
         competitor.write_text(
             "import fcntl, json, os, pathlib, tempfile, time\n"
             f"d = pathlib.Path({str(directory)!r})\n"
-            'guard = open(d / ".claude.json.autoclave.lock", "a+")\n'
+            'guard = open(d / ".credentials.autoclave.lock", "a+")\n'
             "fcntl.flock(guard.fileno(), fcntl.LOCK_EX)\n"
             'p = d / ".claude.json"\n'
             # Read first, publish last, and only then let the launcher start: that is

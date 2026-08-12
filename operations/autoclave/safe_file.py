@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -57,6 +58,9 @@ def main() -> int:
     with `O_NOFOLLOW`; the source is a path the session chose and is opened normally.
     Refusing to follow a link there would break the ordinary way of pointing at a
     standing brief, and would refuse it with a message naming the wrong file.
+
+    `bundle SLOT REF` opens the untrusted output slot once and gives that descriptor to
+    `git bundle create - REF`, so Git never resolves the slot path itself.
     """
     try:
         command = sys.argv[1]
@@ -72,13 +76,24 @@ def main() -> int:
             ):
                 shutil.copyfileobj(reading, writing)
             return 0
-    except (IndexError, OSError) as failure:
+        if command == "bundle" and len(sys.argv) == 4:
+            with open_regular(source, os.O_WRONLY | os.O_CREAT | os.O_TRUNC) as writing:
+                subprocess.run(
+                    ["git", "bundle", "create", "-", sys.argv[3]],
+                    stdout=writing,
+                    check=True,
+                )
+            return 0
+    except (IndexError, OSError, subprocess.CalledProcessError) as failure:
         # The message names the path and the errno and nothing else. A refusal that
         # quoted what it found would print the very bytes the refusal exists to
         # withhold.
         print(f"safe-file: {failure}", file=sys.stderr)
         return 1
-    print("usage: safe_file.py read SLOT | write SOURCE SLOT", file=sys.stderr)
+    print(
+        "usage: safe_file.py read SLOT | write SOURCE SLOT | bundle SLOT REF",
+        file=sys.stderr,
+    )
     return 2
 
 

@@ -516,8 +516,8 @@ def landing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
             if not token.startswith("-")
         ):
             return "deny", (
-                f"That pushes at main, and hard rule {RULE_THREE} Work reaches main by "
-                "main is read-only locally; work reaches it through a pull request (hard rule 3)."
+                f"That pushes at main, and hard rule {RULE_THREE} "
+                "Main is read-only locally; work reaches it through a pull request."
             )
     return None
 

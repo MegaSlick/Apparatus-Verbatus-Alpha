@@ -29,12 +29,13 @@
 
 ## Review candidate
 
-<!-- Full candidate SHA reviewed; reviewers and receipt paths. The PR tip must match it. -->
+<!-- Full Candidate and Base SHAs reviewed; reviewers and receipt paths. The PR tip must match
+     Candidate and the diff must begin at Base. -->
 
 ## Review findings
 
-<!-- List every finding from the named review reports and mark it fixed, accepted, or
-     declined with a short reason. Do not omit low-severity findings silently. -->
+<!-- List every finding from the named review reports and mark it fixed or declined with a
+     short reason. Do not omit low-severity findings silently. -->
 
 ---
 

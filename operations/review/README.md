@@ -4,13 +4,15 @@ A consequential review targets one clean commit, not a moving index. The candida
 the reviewed object; a report that cannot name it is advice, not review evidence.
 
 ```sh
+export GIT_NO_REPLACE_OBJECTS=1
 python3 operations/review/candidate.py prepare --base origin/main
 # give the printed candidate and base SHAs to every reviewer
 python3 operations/review/candidate.py receipt \
   --candidate <sha> --base <sha> --reviewer <name> --report <path>
 ```
 
-Each reviewer reads the committed diff from the printed base through the candidate and
+Each reviewer reads the committed diff with `GIT_NO_REPLACE_OBJECTS=1` from the printed base
+through the candidate and
 writes exact `Candidate: <full SHA>` and `Base: <full SHA>` lines. `receipt` refuses a
 moved `HEAD`, dirty tree, empty report, symlink, wrong SHA, or either missing identity. It writes a local
 JSON receipt under `workbench/raw/reviews/<candidate>/` binding the reviewer, candidate,

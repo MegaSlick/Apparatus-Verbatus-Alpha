@@ -18,6 +18,7 @@ FROM node:22-trixie-slim
 # ripgrep      — the agents reach for it; without it they fall back to slow greps.
 # less         — git's pager. Without it `git log` dies in a way that reads as a
 #                repository fault rather than a missing binary.
+# util-linux   — `flock`, shared by every Claude writer against its credential volume.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       git \
@@ -29,6 +30,7 @@ RUN apt-get update \
       curl \
       ripgrep \
       less \
+      util-linux \
  && rm -rf /var/lib/apt/lists/*
 
 # Both vendors, because a task may be given to either and the image must not
