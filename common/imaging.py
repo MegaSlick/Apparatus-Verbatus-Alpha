@@ -51,6 +51,17 @@ MAX_PIXELS = 100_000_000
 # speaks, with a message naming the page rather than a library's internal limit.
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
+
+def _refuse_past_pixel_bound(width: int, height: int) -> None:
+    """The one place `MAX_PIXELS` is enforced against a pair of dimensions —
+    four call sites (the native path, both Pillow-fallback decode paths, and
+    the CMYK/mode-conversion crop) needed the identical check and message."""
+    if width * height > MAX_PIXELS:
+        raise ValueError(
+            f"a {width}x{height} page is past this pipeline's {MAX_PIXELS}-pixel bound"
+        )
+
+
 # Pillow's bomb error descends from `Exception`, not `ValueError`, so neither
 # decoding path below caught it and it escaped past this module's stated contract
 # that an undecodable page raises `ValueError`.
@@ -159,6 +170,18 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     if not seen_ihdr or width is None or height is None:
         raise ValueError("unsupported PNG: missing IHDR")
 
+    # Bounded before `expected` is even computed, not only before the
+    # decompression that follows it. `stride * height` below is itself an
+    # attacker-declared number: an IHDR naming an enormous width/height turns
+    # it into a multi-gigabyte `max_length` that a small, highly compressible
+    # IDAT can actually fill, which is the same decompression-bomb shape the
+    # length check after decompression exists to catch, just reached by
+    # inflating the bound rather than the output. The Pillow-fallback paths
+    # below (`dimensions`, `grayscale_rows`) already refuse past this same
+    # ceiling before decoding; this native path claimed the identical bound
+    # in its own module comment but never enforced it.
+    _refuse_past_pixel_bound(width, height)
+
     # Bound the decompression before it happens, not after. `zlib.decompress` on
     # attacker-shaped input will materialize whatever the stream expands to, so a
     # few hundred bytes of IDAT can become gigabytes in memory and the length
@@ -223,15 +246,46 @@ def dimensions(png_bytes: bytes) -> tuple[int, int]:
     except ValueError:
         try:
             with Image.open(BytesIO(png_bytes)) as image:
-                if image.width * image.height > MAX_PIXELS:
-                    raise ValueError(
-                        f"a {image.width}x{image.height} page is past this pipeline's "
-                        f"{MAX_PIXELS}-pixel bound"
-                    )
+                _refuse_past_pixel_bound(image.width, image.height)
                 image.load()
                 return image.width, image.height
         except (*_DECODE_FAILURES, ValueError) as error:
             raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
+
+
+def grayscale_rows(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
+    """Every pixel of a sealed page as 8-bit grayscale intensity, 0 (black) to
+    255 (white) -- the one place outside `decode_grayscale_png` that reads pixel
+    VALUES rather than only dimensions (`dimensions`) or a cropped rectangle of
+    them (`crop_png`).
+
+    The fast path is this module's own lossless codec, so a synthetic fixture
+    page decodes through exactly the same reader that verifies its crops. Real
+    imagery -- anything this module's own encoder never wrote -- falls back to
+    Pillow's own grayscale conversion, under the same `MAX_PIXELS` bound and the
+    same decode failures as `dimensions`. A third hand-rolled decode-and-fallback
+    pair here, beside the two `dimensions` and `crop_png` already carry, is
+    exactly the drift this module exists to prevent.
+    """
+    try:
+        return decode_grayscale_png(png_bytes)
+    except ValueError:
+        pass
+    try:
+        with Image.open(BytesIO(png_bytes)) as image:
+            _refuse_past_pixel_bound(image.width, image.height)
+            image.load()
+            grayscale = image if image.mode == "L" else image.convert("L")
+            width, height = grayscale.width, grayscale.height
+            data = grayscale.tobytes()
+    except (*_DECODE_FAILURES, ValueError) as error:
+        raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
+    stride = width
+    return (
+        width,
+        height,
+        [bytearray(data[row * stride : (row + 1) * stride]) for row in range(height)],
+    )
 
 
 def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> bytes:
@@ -244,6 +298,7 @@ def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> byte
     """
     try:
         with Image.open(BytesIO(png_bytes)) as image:
+            _refuse_past_pixel_bound(image.width, image.height)
             image.load()
             if x < 0 or y < 0 or x + w > image.width or y + h > image.height:
                 raise ValueError(

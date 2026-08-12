@@ -803,6 +803,7 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         POLICY,
         settings,
         door.load_recovery_policy(),
+        door.load_hard_failure_policy(),
     )
     altered_pdf_recipe = dict(door.pdf_render.renderer_recipe(settings), dpi=301)
     monkeypatch.setattr(door.pdf_render, "renderer_recipe", lambda _settings: altered_pdf_recipe)
@@ -812,6 +813,7 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         POLICY,
         settings,
         door.load_recovery_policy(),
+        door.load_hard_failure_policy(),
     )
 
     assert baseline["config_digest"] != changed["config_digest"]
@@ -839,6 +841,7 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         POLICY,
         settings,
         door.load_recovery_policy(),
+        door.load_hard_failure_policy(),
     )
     assert baseline["adapter_recipes"]["door"] == door.REAL_DOOR_ADAPTER_REVISION
     assert baseline["adapter_recipes"]["door"] != "fake-door-v0"
@@ -850,7 +853,58 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         POLICY,
         settings,
         door.load_recovery_policy(),
+        door.load_hard_failure_policy(),
     )
+    assert baseline["config_digest"] != changed["config_digest"]
+
+
+def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_written():
+    """The run-level cap is run-bound configuration, exactly as recovery is.
+
+    A closed list of what counts as a hard failure decides whether a run may keep
+    invoking stages. Editing that list mid-run and reinterpreting failures already
+    on disk is the same class of mistake as editing the recovery budget mid-run,
+    so it is sealed into `config_digest` and a changed policy is a different run.
+    """
+
+    class Models:
+        witness_chairs = ("attestator_1",)
+        adapter_recipes = {"door": "synthetic-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+    ledger = {
+        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    settings = door.render_config.load_pdf_render_settings(
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    )
+    recovery = door.load_recovery_policy()
+    baseline = door._real_bindings(
+        Models(),
+        ledger,
+        POLICY,
+        settings,
+        recovery,
+        door.load_hard_failure_policy(),
+    )
+    changed = door._real_bindings(
+        Models(),
+        ledger,
+        POLICY,
+        settings,
+        recovery,
+        {
+            "config_sha256": "d" * 64,
+            "threshold": 2,
+            "kinds": [("perlector", "failed")],
+            "reason_kinds": [],
+        },
+    )
+
     assert baseline["config_digest"] != changed["config_digest"]
 
 

@@ -64,9 +64,12 @@ evidence.
 `--operation recover --act <id> --recovery-request <id>` is the only recovery
 entry point. The request must be the exact current, digest-checked Recensor
 request for that act, its next ordinal, its Perlectio evidence, and the
-run-bound `config/recovery.toml` policy. A command without that request does not
-cut a crop. The orchestrator, not this stage, decides whether such a request is
-outstanding and invokes this program.
+run-bound `config/recovery.toml` policy, including its reconciled total and
+per-kind budget counters. This stage fulfils `fallback-recrop` only; it refuses a
+`page-level-reread` rather than treating it as another crop, because a different
+recovery kind names a different owning stage and not a substitute crop. A command
+without that exact request does not cut a crop. The orchestrator, not this stage,
+decides whether such a request is outstanding and invokes this program.
 
 ## Consumers
 

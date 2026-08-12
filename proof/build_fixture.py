@@ -86,7 +86,20 @@ PAGE_REFUSALS = (
     {"scenario": "refused-page", "ordinal": 2},
     {"scenario": "refused-first-page", "ordinal": 1},
 )
-WITNESS_EMPTY = ({"scenario": "genuinely-empty-witness", "act_key": "a1", "chair": "attestator_3"},)
+WITNESS_EMPTY = (
+    {"scenario": "genuinely-empty-witness", "act_key": "a1", "chair": "attestator_3"},
+    # All three configured chairs, so the Recensor's blank corroboration has a
+    # genuine unanimous absence to confirm -- not merely one dissenting-from-
+    # nothing chair beside two that never ran.
+    {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_1"},
+    {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_2"},
+    {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_3"},
+    # Two of three: the third chair is left to report its ordinary declared
+    # testimony (real text), so blank corroboration must refuse -- a single
+    # dissenting witness beside an identical Perlector `no-readable-text`.
+    {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_1"},
+    {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_2"},
+)
 _UNMATCHABLE_SHA256 = "0" * 64
 
 
@@ -265,6 +278,16 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "recover_acts = []",
         "hold_acts = []",
         "",
+        "[[scenario]]",
+        'name = "confirmed-blank"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "[[scenario]]",
+        'name = "blank-with-dissent"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
         "# A reading that did not succeed. `truncated` is a failed-class Perlector",
         "# outcome that still carries text, which is the combination that matters: the",
         "# Recensor used to ask only whether a reading existed, and the Archetypus",
@@ -276,6 +299,25 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         'scenario = "truncated-reading"',
         'act_key = "a1"',
         'outcome = "truncated"',
+        "",
+        "# The Perlector's own direct finding of no readable text. Under",
+        "# `confirmed-blank` every configured chair also independently reports",
+        "# `genuinely-empty` (see WITNESS_EMPTY below), so the Recensor's blank",
+        "# corroboration has unanimous evidence and may seal `confirmed-blank`.",
+        "# Under `blank-with-dissent` only two of three chairs agree -- the third",
+        "# reads real text -- so the identical Perlector finding must instead be",
+        "# held for review: a single dissenting witness is exactly the",
+        "# disagreement GOALS 1 says may never be silently resolved.",
+        "",
+        "[[reading_failure]]",
+        'scenario = "confirmed-blank"',
+        'act_key = "a1"',
+        'outcome = "no-readable-text"',
+        "",
+        "[[reading_failure]]",
+        'scenario = "blank-with-dissent"',
+        'act_key = "a1"',
+        'outcome = "no-readable-text"',
         "",
         "# A chair whose attempt failed, exercising the witness `failed` state that Sol's",
         "# finding B-2 added to the closed vocabulary. It makes act a2 under-witnessed",

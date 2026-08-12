@@ -35,6 +35,7 @@ from common.contracts.stages import (
     RECENSOR,
     STAGE_DIRECTORIES,
 )
+from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import load_fixture, run_config_bindings
 
@@ -86,8 +87,46 @@ FIXTURE = "synthetic-two-page-v0"
 # run-level threshold at more than two). A stale question standing in a merged config is
 # how a settled decision gets re-litigated, so the prose was corrected and these two pins
 # moved with it. Nothing about the pipeline's behaviour changed.
-HAPPY_RUN_TREE_DIGEST = "bb76b02db65475659388d97e1863d88b05a8a68a3f44da99b62a4f6093b5130b"
-REVIEW_RUN_TREE_DIGEST = "a83a0c69cf85bfbdd8147b38ed6051ef26bc6b60966c8739aa5d5d25e3a0f059"
+#
+# Moved for the System 09 (Recensor) merge — 42 → 43 and 46 → 47 — for four
+# deliberate, recorded changes, not behavioural drift in the pinned scenarios:
+#
+#   - Every Recensor `review` payload now carries `continuation` (the Recensor's own
+#     authoritative continuation link, derived from region evidence rather than
+#     trusted from the Designator's `has_continuation` seal flag) and `page_coverage`
+#     (the residual-ink finding for every page this act's regions were cut from).
+#   - Every `recovery-request` payload now names its `recovery_kind` and that kind's
+#     own budget counters, so a page-level allowance can never be spent as a crop.
+#   - `config/recovery.toml`'s prose changed, and the new `config/hard_failure.toml`
+#     is now sealed into `config_digest` alongside it — the run-level cap is
+#     run-bound configuration exactly as the recovery budget is.
+#   - The one extra file in each tree is the scoped Recensor partition receipt at
+#     `run-health/recensor-partition-receipt.json`, recomputed from the artifacts on
+#     disk rather than from any stage manifest.
+#
+# Moved twice more within the same build, with neither file count changing: a
+# `config/hard_failure.toml` prose correction (the ruled threshold is exact, not a
+# tunable ceiling) moved its sealed config digest, and the `recovery-requested`
+# review shape gained the `page_coverage` field every other shape already carried
+# (the happy scenario requests no recovery, so only the review pin moved).
+#
+# Moved once more for the audit-repair pass that removed two dead `/out/report.md`
+# citations from `config/hard_failure.toml`'s comments (audit-c.md F1, audit-d.md
+# F7): the config digest covers the file's bytes including its prose, so even a
+# citation the code never reads moves every downstream artifact digest. File
+# counts and scenario behaviour are unchanged.
+#
+# Recomputed against the real orchestrator for this merge. PNG entries bind to
+# decoded pixels and dimensions rather than one zlib build's compressed bytes;
+# every non-image entry remains byte-bound.
+#
+# Moved once more, same pattern as the two entries above: a stage-09 pre-push
+# CodeRabbit pass dropped a `door.py:278-300` line-number citation from
+# `config/hard_failure.toml`'s comments (a stable reference stays; a line range
+# that drifts as the file is edited does not). File counts and scenario
+# behaviour are unchanged; only the sealed config digest moved.
+HAPPY_RUN_TREE_DIGEST = "2b9924f8e5fa39f1d7b352f96a0343033ed6bd78272bd7cc5e83f2f1e668c5c7"
+REVIEW_RUN_TREE_DIGEST = "584145ebdddc0561f3cd1beb17d9bbffeb87bd9e7a672b78d11c1028e6557133"
 
 
 def orchestrate(
@@ -97,6 +136,7 @@ def orchestrate(
     *,
     models_config: Path | None = None,
     recovery_config: Path | None = None,
+    hard_failure_config: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
     command = [
@@ -115,6 +155,8 @@ def orchestrate(
         command.extend(("--models-config", str(models_config)))
     if recovery_config is not None:
         command.extend(("--recovery-config", str(recovery_config)))
+    if hard_failure_config is not None:
+        command.extend(("--hard-failure-config", str(hard_failure_config)))
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -166,9 +208,61 @@ def snapshot(root: Path) -> dict[str, str]:
     }
 
 
-def snapshot_digest(root: Path) -> str:
-    """The canonical pin for the full relative run-tree inventory."""
-    return digest_of(snapshot(root))
+def semantic_snapshot(root: Path) -> dict[str, str]:
+    """Run-tree inventory with PNG containers reduced to their pixel content.
+
+    Artifact and configuration files remain byte-bound. PNG blobs are different:
+    their compressed IDAT bytes depend on the zlib implementation that encoded
+    them, while this acceptance pin is meant to identify the run described by the
+    data. Bind the decoded dimensions and grayscale samples, not one compressor's
+    representation of them. The ordinary ``snapshot`` stays byte-exact for all
+    resume and no-write assertions.
+    """
+    inventory = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        relative = str(path.relative_to(root))
+        if data.startswith(PNG_SIGNATURE):
+            width, height, rows = decode_grayscale_png(data)
+            inventory[relative] = digest_of(
+                {
+                    "width": width,
+                    "height": height,
+                    "pixel_sha256": digest_bytes(b"".join(rows)),
+                }
+            )
+        else:
+            inventory[relative] = digest_bytes(data)
+    return inventory
+
+
+def semantic_snapshot_digest(root: Path) -> str:
+    """The canonical content pin for the full relative run-tree inventory."""
+    return digest_of(semantic_snapshot(root))
+
+
+def test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes(tmp_path, monkeypatch):
+    """A different valid DEFLATE stream must not rename the measured run."""
+    import common.imaging as imaging
+
+    image_path = tmp_path / "blob-with-no-extension"
+    rows = [bytearray([0, 127, 255]), bytearray([255, 127, 0])]
+    image_path.write_bytes(imaging.encode_grayscale_png(3, 2, rows))
+    raw_before = snapshot(tmp_path)
+    semantic_before = semantic_snapshot_digest(tmp_path)
+
+    compress = imaging.zlib.compress
+    monkeypatch.setattr(
+        imaging.zlib,
+        "compress",
+        lambda data, *args, **kwargs: compress(data, level=0),
+    )
+    image_path.write_bytes(imaging.encode_grayscale_png(3, 2, rows))
+
+    assert snapshot(tmp_path) != raw_before
+    assert semantic_snapshot_digest(tmp_path) == semantic_before
 
 
 def export_of(tree: RunTree) -> dict:
@@ -1055,13 +1149,13 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    assert len(before) == 42
-    assert digest_of(before) == HAPPY_RUN_TREE_DIGEST
+    assert len(before) == 43
+    assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
 
     assert after == before
-    assert snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
+    assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
 
 
 def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
@@ -1072,11 +1166,11 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    assert len(before) == 46
-    assert digest_of(before) == REVIEW_RUN_TREE_DIGEST
+    assert len(before) == 47
+    assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
-    assert snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
+    assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
 
 
 # --- 3. An incompatible run id fails before writing ----------------------------
@@ -1411,6 +1505,33 @@ def test_recovery_policy_is_a_run_bound_configuration_not_a_late_local_default(t
         encoding="utf-8",
     )
     result = orchestrate(root, "r", "happy", recovery_config=policy)
+    assert result.returncode == 2
+    assert "different config_digest" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_hard_failure_policy_is_a_run_bound_configuration_not_a_late_local_default(tmp_path):
+    """A revised closed list cannot reinterpret an already-sealed run's failures.
+
+    The run-level cap decides whether a run may keep invoking stages at all, so a
+    later edit to what counts as a hard failure is exactly as run-shaping as an
+    edit to the recovery budget beside it — and refuses the sealed run for the
+    same reason, before any stage reads a failure under a list it did not run
+    under.
+    """
+    root = tmp_path / "runs"
+    policy = tmp_path / "hard_failure.toml"
+    policy.write_text(
+        (ROOT / "config/hard_failure.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    assert orchestrate(root, "r", "happy", hard_failure_config=policy).returncode == 0
+    before = snapshot(root)
+
+    policy.write_text(
+        'threshold = 2\n\n[[kind]]\nstage = "perlector"\noutcome = "failed"\n',
+        encoding="utf-8",
+    )
+    result = orchestrate(root, "r", "happy", hard_failure_config=policy)
     assert result.returncode == 2
     assert "different config_digest" in result.stderr
     assert snapshot(root) == before

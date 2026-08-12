@@ -37,6 +37,7 @@ it needs.
 import errno
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Final
@@ -57,7 +58,12 @@ from common.contracts.canonical import (
     verify_self_hash,
 )
 from common.contracts.envelope import validate_envelope, validate_input_refs, verify_input_bytes
-from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
+from common.contracts.errors import (
+    ApprovalRefusal,
+    ContractError,
+    IncompatibleReuse,
+    SchemaRefusal,
+)
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import writing_directory
 
@@ -66,6 +72,7 @@ MANIFEST_FILE: Final = "manifest.json"
 ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
 RECEIPTS_DIR: Final = "receipts/sha256"
+RECENSOR_PARTITION_RECEIPT_FILE: Final = "run-health/recensor-partition-receipt.json"
 
 # The facts a run id is bound to. Changing any of them means this is a different
 # run wearing an old name, and reuse is refused rather than resumed.
@@ -286,6 +293,10 @@ class RunTree:
             raise SchemaRefusal(f"receipt digest {digest!r} is not a lowercase sha256")
         return f"{RECEIPTS_DIR}/{digest}.json"
 
+    def recensor_partition_receipt_path(self) -> str:
+        """The current derived partition receipt at the Recensor boundary."""
+        return RECENSOR_PARTITION_RECEIPT_FILE
+
     def resolve(self, relative_path: str) -> Path:
         """A path inside this run tree, refusing anything that leaves it.
 
@@ -354,6 +365,131 @@ class RunTree:
         digest = digest_bytes(data)
         result = self._publish_bytes(self.receipt_path(digest), data)
         return ApprovalRecordReference(result.relative_path, digest), result
+
+    def write_recensor_partition_receipt(self, record: dict[str, Any]) -> PublishResult:
+        """Atomically replace the derived current Recensor partition receipt.
+
+        Unlike an artifact, the receipt legitimately changes after a bounded
+        recovery: the immutable review and request evidence stays beside it, while
+        this one record describes the current partition reconstructed from that
+        evidence. It is therefore replaced in place rather than published as a new
+        immutable object — and it is still inside `inventory_scope()`, because a
+        record a reviewer recomputes denominators from may not be a file nothing
+        accounts for.
+
+        This is a replace, not a compare-and-swap: two Recensor passes racing on
+        one shared run tree could write in either order and the last one wins.
+        The race is bounded here rather than fixed. The proposal-act denominator
+        `expected_act_count` recomputes is sealed by the Designator before the
+        Recensor ever runs, so it cannot legitimately differ between two honest
+        passes over the same run; a write that would change it is a different,
+        inconsistent claim about the same sealed denominator, and is refused.
+
+        What a race can still do — replace a receipt from a later, more-resolved
+        pass with one from an earlier pass over the same denominator — cannot
+        manufacture the failure GOVERNANCE 2 and ARCHITECTURE invariant 6 forbid.
+        Every review this receipt cites is itself immutable and append-only, and
+        an act's classification only ever moves toward resolution
+        (`common/contracts/outcomes.py` has no transition back from a
+        COMPLETED-class review), so an honestly computed receipt can under-state
+        a run's completeness but never claim completeness the on-disk reviews do
+        not independently back. A stale write is a confusing audit artifact, not
+        a false "complete". Two Recensor passes must still not run concurrently
+        against one run tree; nothing here makes that safe, only makes one
+        particular inconsistency loud instead of silent.
+        """
+        from common.recensor_receipt import validate_recensor_partition_receipt
+
+        checked = validate_recensor_partition_receipt(record)
+        if checked["run_id"] != self.run_id or checked["config_digest"] != self._run_authority():
+            raise SchemaRefusal("Recensor partition receipt does not belong to this run authority")
+        relative = self.recensor_partition_receipt_path()
+        target = self.resolve(relative)
+        data = canonical_bytes(checked)
+        if target.exists():
+            # An unreadable or invalid receipt is treated as absent, not as a
+            # reason to refuse the valid one being written. This record is
+            # **derived** — the paragraph above says so, and the immutable review
+            # and request evidence it is reconstructed from sits beside it
+            # untouched — so a torn write, a truncated file or a receipt from an
+            # older schema left the run permanently unable to record a partition
+            # it could recompute perfectly well. GOVERNANCE 4 protects evidence;
+            # this is not evidence, and refusing here protected nothing while
+            # blocking recovery. The `expected_act_count` refusal below still
+            # applies whenever the existing receipt *is* valid, because that is a
+            # real disagreement about a sealed denominator rather than damage.
+            # Found by CodeRabbit.
+            try:
+                existing = validate_recensor_partition_receipt(_read_json(target))
+            # `TypeError` is among them because strict canonicalization raises it: a
+            # receipt damaged with a float reaches `verify_self_hash` →
+            # `canonical_bytes` → `_refuse_floats`, which is a `TypeError` and not a
+            # `ContractError`. Without it the sentence this block exists to make
+            # true — invalid is treated as absent — was false for one whole class of
+            # damage, and it is the same escape route found on the stage-05 branch
+            # the same night: strict canonicalization refusing outside the governed
+            # vocabulary. Found by the Opus read of this branch.
+            # `_read_json` already translates `OSError`, `ValueError`, and its
+            # `UnicodeDecodeError` subclass into `SchemaRefusal`/`ContractError`.
+            # `RecursionError` remains separate because `json.loads` can raise it
+            # for a deeply nested damaged file and `_read_json` does not translate
+            # it. These are the three live classes at this boundary.
+            except (ContractError, TypeError, RecursionError) as error:
+                existing = None
+                # Treated as absent, but never *silently* absent. A torn or
+                # truncated receipt means a process died mid-write or the disk
+                # misbehaved — a fact about this run's health, visible at
+                # exactly this moment and nowhere afterwards, because the next
+                # line overwrites it. Discarding it without a word would leave
+                # an auditor a clean receipt and no reason to look further,
+                # which is the shape GOVERNANCE 2 forbids. The path is a
+                # run-tree relative path, never a submitted filename, so this
+                # channel is open to it (`common/exemplar_boundary.py` records
+                # why that distinction matters). Found by CodeRabbit.
+                print(
+                    f"warning: the existing Recensor partition receipt at {relative} could "
+                    f"not be read as a valid receipt and is being replaced "
+                    f"({type(error).__name__}: {error}). This means a previous write did "
+                    f"not complete; the receipt is derived and is being rebuilt, but the "
+                    f"interruption itself is worth investigating.",
+                    file=sys.stderr,
+                )
+            if existing is not None and (
+                existing["run_id"] == checked["run_id"]
+                and existing["config_digest"] == checked["config_digest"]
+                and existing["expected_act_count"] != checked["expected_act_count"]
+            ):
+                raise SchemaRefusal(
+                    "Recensor partition receipt would change its expected_act_count from "
+                    f"{existing['expected_act_count']} to {checked['expected_act_count']} under "
+                    "the same run authority; the proposal-act denominator is sealed once and "
+                    "cannot legitimately differ between two passes over the same run"
+                )
+            try:
+                if target.read_bytes() == data:
+                    return PublishResult(relative, reused=True)
+            except FileNotFoundError:
+                # Gone between `exists()` above and here. Nothing to reuse and
+                # nothing to refuse: fall through and publish it, which is what
+                # `_publish_bytes` does at the same seam. Found by CodeRabbit.
+                pass
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(target, data)
+        return PublishResult(relative, reused=False)
+
+    def read_recensor_partition_receipt(self) -> dict[str, Any]:
+        """Read the current derived receipt only when it binds to this run."""
+        from common.recensor_receipt import validate_recensor_partition_receipt
+
+        path = self.resolve(self.recensor_partition_receipt_path())
+        try:
+            record = _read_json(path)
+        except OSError as error:  # pragma: no cover - _read_json already refuses
+            raise SchemaRefusal(f"Recensor partition receipt could not be read: {error}") from error
+        checked = validate_recensor_partition_receipt(record)
+        if checked["run_id"] != self.run_id or checked["config_digest"] != self._run_authority():
+            raise SchemaRefusal("Recensor partition receipt does not belong to this run authority")
+        return checked
 
     def read_run_receipt(self, reference: RunReceiptReference | dict[str, str]) -> dict[str, Any]:
         """Read a receipt only when both its reference and bytes still verify.
@@ -689,7 +825,7 @@ class RunTree:
         the scope fails a static drift test, loudly, naming the path. The test
         beside this module reads the writers from source and compares.
         """
-        prefixes = [RUN_FILE, f"{RECEIPTS_DIR}/"]
+        prefixes = [RUN_FILE, f"{RECEIPTS_DIR}/", RECENSOR_PARTITION_RECEIPT_FILE]
         for directory in sorted(set(_all_writing_directories())):
             prefixes.append(f"{directory}/{ARTIFACTS_DIR}/")
             prefixes.append(f"{directory}/{BLOBS_DIR}/")

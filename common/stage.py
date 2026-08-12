@@ -27,7 +27,14 @@ from common.contracts.errors import ContractError, FatalAccounting, Incompatible
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.outcomes import classify
 from common.contracts.stages import DESIGNATOR, PERLECTOR, RECENSOR
-from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH, load_recovery_policy
+from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
+from common.recovery import (
+    DEFAULT_RECOVERY_CONFIG_PATH,
+    RECOVERY_KINDS,
+    load_recovery_policy,
+    reconcile_recovery_requests,
+    recovery_kind_budget,
+)
 from common.runtree.store import PublishResult, RunTree
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
@@ -37,6 +44,13 @@ from common.runtree.store import PublishResult, RunTree
 EXIT_COMPLETE = 0
 EXIT_FATAL = 2
 EXIT_HELD = 3
+
+# Never a stage's own exit code, only the orchestrator's: only that process
+# decides whether to invoke another stage, so only it can halt a run for the
+# run-level hard-failure cap. Defined beside the three above, not in the
+# orchestrator module, so nothing can silently pick a fourth value that
+# collides with one of these.
+EXIT_RUN_HALTED = 4
 
 DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "pdf_render.toml"
 
@@ -220,6 +234,7 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--models-config", default="config/models.toml")
     parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
+    parser.add_argument("--hard-failure-config", default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH))
     parser.add_argument("--pdf-target-dpi", type=int, default=None)
     parser.add_argument("--operation", default="initial")
     parser.add_argument("--act", default=None, help="one act id, for a recovery operation")
@@ -259,6 +274,7 @@ def run_config_bindings(
     pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
+    hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -266,7 +282,8 @@ def run_config_bindings(
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
     behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    and recovery policy. The synthetic fixture declares byte-backed pages only, so
+    recovery policy, and the run-level hard-failure policy. The synthetic fixture
+    declares byte-backed pages only, so
     it does not claim to bind the real Door's PDFium/Pillow/libheif execution
     recipe; ``door._real_bindings`` binds that recipe on actual ingress.
 
@@ -285,6 +302,7 @@ def run_config_bindings(
             f"the PDF render configuration binding at {pdf_render_config_path} could not be read"
         ) from error
     recovery_policy = load_recovery_policy(recovery_config_path)
+    hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
@@ -295,6 +313,7 @@ def run_config_bindings(
                 "pdf_render_config_sha256": pdf_render_config_digest,
                 "pdf_target_dpi_override": pdf_target_dpi,
                 "recovery_policy": recovery_policy,
+                "hard_failure_policy": hard_failure_policy,
             }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
@@ -762,6 +781,7 @@ def open_context(
         pdf_render_config_path=args.pdf_render_config,
         pdf_target_dpi=args.pdf_target_dpi,
         recovery_config_path=args.recovery_config,
+        hard_failure_config_path=args.hard_failure_config,
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
@@ -895,8 +915,9 @@ def current_recovery_request(
     use this one check so a direct Designator invocation cannot bypass the
     orchestrator's view of the recovery loop.
     """
+    recensor_artifacts = tree.build_manifest(RECENSOR)["artifacts"]
     reviews = []
-    for entry in tree.build_manifest(RECENSOR)["artifacts"]:
+    for entry in recensor_artifacts:
         if entry["kind"] == "review" and entry["subject_id"] == act_id:
             reviews.append(tree.read_artifact(RECENSOR, "review", entry["artifact_id"]))
     review = latest_attempt(reviews, f"Recensor review of {act_id}", operation="recense")
@@ -955,6 +976,41 @@ def current_recovery_request(
         raise ContractError(
             f"recovery-requested review of {act_id} does not match its exact request, "
             "Perlectio, and policy"
+        )
+    recovery_kind = request_payload.get("recovery_kind")
+    if (
+        not isinstance(recovery_kind, str)
+        or recovery_kind not in RECOVERY_KINDS
+        or review_payload.get("recovery_kind") != recovery_kind
+    ):
+        raise ContractError(
+            f"recovery-requested review of {act_id} does not carry one exact recovery kind"
+        )
+    # The Recensor performs the fuller request/recrop/reread reconciliation, but a
+    # non-Recensor consumer reads a current request directly, so its counters are
+    # rebuilt here too: the self-hash proves the payload was not edited after
+    # publication, not that its numbers ever agreed with the requests before it.
+    reconcile_recovery_requests(
+        [
+            tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
+            for entry in recensor_artifacts
+            if entry["kind"] == "recovery-request" and entry["subject_id"] == act_id
+        ],
+        act_id,
+        recovery_policy,
+    )
+    kind_allowed = recovery_kind_budget(recovery_policy, recovery_kind)
+    kind_used = request_payload.get("kind_budget_used")
+    if (
+        request_payload.get("kind_budget_allowed") != kind_allowed
+        or not isinstance(kind_used, int)
+        or isinstance(kind_used, bool)
+        or kind_used < 0
+        or kind_used >= kind_allowed
+    ):
+        raise ContractError(
+            f"recovery-requested review of {act_id} does not carry a usable {recovery_kind!r} "
+            "budget boundary"
         )
     tree.read_artifact_reference(
         reading_ref,

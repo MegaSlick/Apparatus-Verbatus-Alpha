@@ -28,6 +28,7 @@ from common.imaging import (
     decode_grayscale_png,
     dimensions,
     encode_grayscale_png,
+    grayscale_rows,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,14 +38,20 @@ def sound_page(width: int = 8, height: int = 4) -> bytes:
     return encode_grayscale_png(width, height, [bytearray([200] * width) for _ in range(height)])
 
 
-def repack(width: int, height: int, raw: bytes) -> bytes:
-    """A structurally valid PNG whose IDAT holds exactly `raw`, uncompressed."""
+def repack(width: int, height: int, raw: bytes, color_type: int = 0) -> bytes:
+    """A structurally valid PNG whose IDAT holds exactly `raw`, uncompressed.
+
+    `color_type` defaults to 0 (grayscale), what this module's own codec
+    writes. Pass 2 for RGB to reach the Pillow fallback paths, which refuse on
+    the declared IHDR dimensions before decoding, so an oversized page can be
+    declared here without ever being materialised.
+    """
     import struct
 
     def chunk(tag: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
 
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)
     return (
         PNG_SIGNATURE
         + chunk(b"IHDR", ihdr)
@@ -69,6 +76,21 @@ def test_a_decompression_bomb_is_refused_without_materializing_it():
     with pytest.raises(ValueError) as caught:
         decode_grayscale_png(bomb)
     assert "expands past" in str(caught.value)
+
+
+def test_a_declared_size_past_the_pixel_bound_is_refused_before_any_decompression():
+    """`MAX_PIXELS` bounds the IHDR's own declared width/height, not only what
+    the IDAT expands to relative to them. Before this check, a declared size
+    alone past the ceiling decoded cleanly -- the module's own comment claimed
+    the same bound the Pillow-fallback paths (`dimensions`, `grayscale_rows`)
+    already enforce, but this native path never checked it, so a compact,
+    highly compressible IDAT matching a huge declared size paid full
+    decompression cost with no refusal at all."""
+    width, height = 20_000, 6_000  # 120,000,000 declared pixels, over MAX_PIXELS
+    assert width * height > MAX_PIXELS
+    over_the_limit = repack(width, height, b"never reached")
+    with pytest.raises(ValueError, match="pixel bound"):
+        decode_grayscale_png(over_the_limit)
 
 
 def test_a_truncated_stream_that_reaches_the_expected_length_is_refused():
@@ -109,6 +131,35 @@ def test_undecodable_input_is_refused_rather_than_guessed_at():
 def test_crop_refuses_what_the_decoder_refuses():
     with pytest.raises(ValueError):
         crop_png(b"not a png", {"x": 0, "y": 0, "w": 1, "h": 1})
+
+
+def test_crop_refuses_a_declared_size_past_the_bound_on_its_pillow_fallback_path():
+    """`crop_png` falls back to `_crop_decoded_page` for anything this module's own
+    native codec cannot decode (RGB, CMYK, 16-bit, ...). That fallback called
+    `Image.open` + `image.load()` with no `MAX_PIXELS` check of its own, so a
+    declared size between `MAX_PIXELS` and Pillow's own 2x hard-raise ceiling
+    decoded and materialized cleanly with nothing but a non-fatal
+    `DecompressionBombWarning` -- exactly the gap `dimensions` and
+    `grayscale_rows` were already closed for on the same bytes.
+
+    RGB rather than this module's own grayscale encoding, so `decode_grayscale_png`
+    refuses for a reason unrelated to size and this exercises the Pillow fallback,
+    not the native path `test_a_declared_size_past_the_pixel_bound_is_refused_
+    before_any_decompression` already covers.
+
+    The oversized page is *declared*, never materialised: a real
+    100,500,000-pixel RGB image is over 300 MB of source pixels, and a CI worker
+    can die building the fixture before the assertion it exists for ever runs.
+    `_crop_decoded_page` refuses on `image.width * image.height` before
+    `image.load()`, so a compact IDAT under a large IHDR reaches the same
+    refusal by the same route. Found by CodeRabbit."""
+    # 100,500,000 pixels: over MAX_PIXELS, under Pillow's own 2x raise ceiling
+    width, height = 10_050, 10_000
+    assert MAX_PIXELS < width * height < 2 * MAX_PIXELS
+    source = repack(width, height, b"", color_type=2)
+
+    with pytest.raises(ValueError, match="pixel bound"):
+        crop_png(source, {"x": 0, "y": 0, "w": 4, "h": 4})
 
 
 def test_crop_converts_an_admitted_cmyk_jpeg_to_a_png_compatible_display_mode():
@@ -209,6 +260,67 @@ def test_a_decompression_bomb_is_refused_as_a_value_error_not_a_pillow_exception
             crop_png(data, {"x": 0, "y": 0, "w": 1, "h": 1})
     finally:
         Image.MAX_IMAGE_PIXELS = original
+
+
+# --- grayscale_rows: the one place outside decode_grayscale_png that reads ------
+# --- pixel VALUES rather than only dimensions or a cropped rectangle ------------
+
+
+def test_grayscale_rows_decodes_the_fast_native_path():
+    rows_in = [bytearray([10, 20, 30, 40]), bytearray([200, 210, 220, 230])]
+    width, height, rows = grayscale_rows(encode_grayscale_png(4, 2, rows_in))
+    assert (width, height) == (4, 2)
+    assert [list(row) for row in rows] == [list(row) for row in rows_in]
+
+
+def test_grayscale_rows_falls_back_to_pillow_for_a_page_this_codec_cannot_decode():
+    """An RGB page is not this module's own 8-bit-grayscale format, so it takes
+    the Pillow fallback -- exactly the branch `dimensions` and `crop_png` also
+    fall back through, proven here against actual pixel VALUES rather than only
+    a size."""
+    source = BytesIO()
+    page = Image.new("RGB", (2, 1))
+    page.putdata([(0, 0, 0), (255, 255, 255)])
+    page.save(source, format="PNG")
+
+    width, height, rows = grayscale_rows(source.getvalue())
+    assert (width, height) == (2, 1)
+    assert list(rows[0]) == [0, 255]
+
+
+def test_grayscale_rows_refuses_a_decompression_bomb_without_materializing_it():
+    huge = BytesIO()
+    Image.new("RGB", (2, 2)).save(huge, format="PNG")
+    data = huge.getvalue()
+
+    original = Image.MAX_IMAGE_PIXELS
+    try:
+        Image.MAX_IMAGE_PIXELS = 1
+        with pytest.raises(ValueError):
+            grayscale_rows(data)
+    finally:
+        Image.MAX_IMAGE_PIXELS = original
+
+
+def test_grayscale_rows_refuses_a_declared_size_bomb_regardless_of_which_path_observes_it():
+    """`residual_ink.py` is a new caller of `grayscale_rows` in this diff, so the
+    same declared-size bomb `decode_grayscale_png` refuses must not reach
+    `residual_ink`'s own pixel loops either -- from either of `grayscale_rows`'s
+    two internal paths. Not "on its native path" specifically: `grayscale_rows`
+    catches any `ValueError` from the native decode, including this one, and
+    retries through the Pillow fallback -- so this fixture's bound refusal is
+    actually observed there, not on the native path that raised it first."""
+    width, height = 20_000, 6_000
+    assert width * height > MAX_PIXELS
+    over_the_limit = repack(width, height, b"never reached")
+    with pytest.raises(ValueError, match="pixel bound"):
+        grayscale_rows(over_the_limit)
+
+
+def test_grayscale_rows_refuses_undecodable_input_rather_than_guessing():
+    for bad in (b"", b"not an image", PNG_SIGNATURE):
+        with pytest.raises(ValueError):
+            grayscale_rows(bad)
 
 
 def test_this_modules_pixel_bound_matches_the_door_that_admits_the_pages():

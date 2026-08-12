@@ -1,0 +1,131 @@
+# The run-level hard-failure cap. Distinct from `recovery.toml`'s per-act
+# recovery budget: that file bounds how often ONE act may ask for rework; this
+# one bounds how many accounted hard failures ONE RUN may carry before it needs
+# Tyrel rather than another automatic stage invocation.
+#
+# Tyrel's ruling, 2026-08-05 (quoted so a later reader does not have to go
+# looking): "2 hard failures continues till the next checkpoint (if errors
+# happened in chandra stage it finishes that section but pauses) and this is
+# per run... if we have more then 2 failures within a 1000 page run that to me
+# is a failure that needs fixing." One is a fluke, two is an early warning,
+# more than two stops the run at the next stage boundary -- the section already
+# in flight finishes; nothing already running is torn down mid-stage.
+#
+# `threshold` is the count a run may reach without halting; the cap trips at
+# threshold + 1. This is the ruled value, not a tunable ceiling: two continues
+# as an early warning and the third stops.
+threshold = 2
+
+# PROPOSED, NOT YET APPROVED. The closed list below is this build's proposal
+# for what counts as a "hard failure" for this cap, argued in the comment block
+# below. Tyrel's ruling settles the threshold and the existence of the cap; it
+# deliberately does not settle which kinds of stage outcome should trip it --
+# that is left to this build to propose and to him to bless or amend. Treat
+# every entry as a recommendation, not a ruling, until he says so.
+#
+# SHARPENED AGAINST THE OLD PIPELINE'S OWN MEASURED DEFINITION (window pass,
+# 2026-08-05). The old repository's `page_health.py`
+# recorded Tyrel's 2026-07-25 ruling verbatim: a hard failure is "a corrupt or
+# unrenderable image, or a page so damaged it must be re-run" -- and named two
+# things a hard failure explicitly is NOT: "a blank page is NOT a hard failure,
+# and neither is a tough page the [recovery] ladder is built to rescue." Its
+# three HARD classes were render-unreadable, an unparseable terminal result,
+# and an exception escaping the read path -- all code/infrastructure signals.
+# Its SOFT classes -- read-failed-after-every-retry ("a tough page") and
+# truncated ("a dense page, not a damaged one") -- were structurally barred
+# from the cap. Independently, this matches the general circuit-breaker
+# literature: a systemic-breakage gate should trip on infrastructure signals,
+# never on ordinary per-item content variance a bounded retry already handles.
+#
+# `(perlector, truncated)` is REMOVED for exactly this reason. ARCHITECTURE's
+# "truncation is a failure, not an output" is true and is honoured -- a
+# truncated Perlectio never completes its act (`common/contracts/outcomes.py`
+# classifies it FAILED at the per-act level, and the Recensor holds it) -- but
+# that is a question about ONE reading, not about whether the RUN is going
+# wrong. A page with an unusually long entry (a marriage record with many
+# witnesses, a lengthy marginal note) will truncate routinely in real parish
+# registers; folding that into a 2-failure early-warning cap would trip it on
+# ordinary document variance and defeat the cap's purpose. `(perlector, failed)`
+# is KEPT, but the mapping is not yet certain: spec 08 (the Perlector) is being
+# built by another lane in parallel with this pass, and pipeline/4_perlector/
+# run.py is still the walking-skeleton stub -- nothing in the shipped code yet
+# says whether a real `failed` outcome will mean "an exception escaped the read
+# path" (the old pipeline's HARD_GENERATE_EXCEPTION, genuinely hard) or "the
+# model answered badly after every retry" (the old pipeline's SOFT_READ_FAILED,
+# a tough page, genuinely soft). Kept as hard conservatively; revisit once
+# spec 08 gives `failed` a real trigger.
+#
+# `(door, refused, reason="corrupt")` and `(door, refused, reason="unreadable")`
+# are ADDED. `pipeline/1_exemplar/admission.py`'s closed `RefusalReason`
+# vocabulary already separates exactly the old pipeline's hard/soft split by
+# name: `corrupt` and `unreadable` are raised only when real bytes fail
+# structural decode or a PDF/TIFF page fails to render inside `door.py`'s
+# per-page `container_page_index` path -- this is
+# "a corrupt or unrenderable image" almost verbatim, at the same per-page
+# granularity the old pipeline measured 218 silent losses at. The other five
+# reasons are deliberately NOT added: `empty`/`too-large` are policy bounds,
+# not document damage; `unrecognized-format` is routine bulk-upload noise (a
+# non-image file that should never have been submitted); `unsupported-variant`
+# is a decoder GAP ("visible work for the pipeline", per admission.py's own
+# docstring), not a broken document. This is also the reasoning the previous
+# pass's blanket exclusion of every `(door, refused)` was reaching for --
+# reading its own citation of "ruling 2" against `pipeline/1_exemplar/
+# image_formats.py` and `door.py` finds that ruling is the corrupt-vs-
+# unsupported CLASSIFICATION rule (spec 03), not a ruling about what the
+# run-level cap should count; the "would stop every real corpus within
+# minutes" concern is real for the whole unqualified set but this reason-scoped
+# pair is precisely the subset that should NOT be excused by it. Whether
+# `(door, refused, reason="digest-mismatch")` belongs here too is a closer
+# call -- it is an integrity signal, not literally "corrupt or unrenderable" --
+# and is left to Tyrel rather than decided here.
+#
+# `(exemplar, refused)` stays excluded. In the current architecture Exemplar's
+# own page-refusal is only ever a pass-through of the Door's refusal for the
+# same page (`pipeline/1_exemplar/run.py`'s `outcome="refused"` branch copies
+# the admission it read) -- there is no independent Exemplar-side render
+# failure today, so counting it would double-count exactly the `(door,
+# refused, reason=...)` incidents above.
+#
+# (recensor, held-for-review) and (recensor, recovery-requested) are
+# UNRESOLVED, not FAILED, and are the ordinary, expected shape of a run that is
+# working correctly -- holding for a human or asking for bounded rework is the
+# system succeeding at its job, not failing at it. Witness (attestatores)
+# outcomes are deliberately left out even though `failed`/`dead` classify FAILED:
+# no witness outcome ever terminates an act on its own (the transition table
+# maps every one of them to `None`), coverage shortfall already forces the run
+# `partial` and visible, and folding witness noise into this same cap would
+# conflate "one dead chair" with "the reading pipeline is broken", which is a
+# different question. Propose adding them later if repeated witness death
+# turns out to be a real early-warning signal in alpha.
+#
+# (designator, failed) and (archetypus, refused) are named even though neither
+# stage emits them today (the Designator emits only `proposed`/`held`, the
+# Archetypus only `established`) -- the outcome algebra already reserves both as
+# FAILED-classified members of their stage's closed vocabulary, and this policy
+# is ready for the day a stage actually uses them without needing a second edit.
+
+[[kind]]
+stage = "perlector"
+outcome = "failed"
+
+[[kind]]
+stage = "door"
+outcome = "refused"
+reason = "corrupt"
+
+[[kind]]
+stage = "door"
+outcome = "refused"
+reason = "unreadable"
+
+[[kind]]
+stage = "designator"
+outcome = "failed"
+
+[[kind]]
+stage = "recensor"
+outcome = "failed"
+
+[[kind]]
+stage = "archetypus"
+outcome = "refused"

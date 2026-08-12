@@ -28,6 +28,7 @@ from common.contracts.envelope import build_envelope
 from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR
+from common.recensor_receipt import build_recensor_partition_receipt
 from common.runtree import store as runtree_store
 from common.runtree.store import RECEIPTS_DIR, RUN_FILE, RunTree
 
@@ -104,6 +105,96 @@ def make_approval_record(**overrides):
     )
     record.update(overrides)
     return record
+
+
+def make_recensor_partition_receipt():
+    return build_recensor_partition_receipt(
+        run_id="r1",
+        config_digest=CONFIG_DIGEST,
+        proposal_seal_ref={
+            "relative_path": "2_designator/artifacts/proposal-seal.json",
+            "sha256": "a" * 64,
+        },
+        items=[
+            {
+                "act_id": "act-1",
+                "act_key": "a1",
+                "designator_outcome": "proposed",
+                "review_ref": {
+                    "relative_path": "5_recensor/artifacts/review.json",
+                    "sha256": "b" * 64,
+                },
+                "review_outcome": "accepted",
+                "partition_class": "completed",
+                "coverage": {
+                    "configured": 3,
+                    "floor": 3,
+                    "by_outcome": {"read": 3},
+                    "by_class": {"completed": 3, "unresolved": 0, "failed": 0},
+                    "under_witnessed": False,
+                    "unresolved_chairs": 0,
+                },
+            }
+        ],
+    )
+
+
+# --- The Recensor partition receipt: replace in place, but never a shrinking
+# --- denominator under the same run authority ----------------------------------
+
+
+def test_a_write_that_would_shrink_the_expected_act_count_is_refused(tmp_path):
+    """The proposal-act denominator is sealed once by the Designator; two honest
+    Recensor passes over the same run can never legitimately disagree about how
+    many acts it names. A write that would shrink it is not a fresher partition
+    superseding a stale one -- it is a different, inconsistent claim about the
+    same sealed denominator, and is refused rather than silently accepted as
+    whichever write happened to land last."""
+    tree = make_run(tmp_path)
+    two_items = make_recensor_partition_receipt()
+    second_item = dict(two_items["items"][0], act_id="act-2", act_key="a2")
+    two_items = build_recensor_partition_receipt(
+        run_id=two_items["run_id"],
+        config_digest=two_items["config_digest"],
+        proposal_seal_ref=two_items["proposal_seal_ref"],
+        items=[two_items["items"][0], second_item],
+    )
+    tree.write_recensor_partition_receipt(two_items)
+
+    with pytest.raises(SchemaRefusal, match="expected_act_count"):
+        tree.write_recensor_partition_receipt(make_recensor_partition_receipt())
+
+    # The two-item receipt already on disk survives the refused write untouched.
+    assert tree.read_recensor_partition_receipt()["expected_act_count"] == 2
+
+
+def test_a_write_that_grows_the_expected_act_count_is_also_refused(tmp_path):
+    """Grown or shrunk, either direction disagrees with an already-sealed
+    denominator, so neither is treated as the fresher one."""
+    tree = make_run(tmp_path)
+    tree.write_recensor_partition_receipt(make_recensor_partition_receipt())
+
+    two_items = make_recensor_partition_receipt()
+    second_item = dict(two_items["items"][0], act_id="act-2", act_key="a2")
+    grown = build_recensor_partition_receipt(
+        run_id=two_items["run_id"],
+        config_digest=two_items["config_digest"],
+        proposal_seal_ref=two_items["proposal_seal_ref"],
+        items=[two_items["items"][0], second_item],
+    )
+    with pytest.raises(SchemaRefusal, match="expected_act_count"):
+        tree.write_recensor_partition_receipt(grown)
+
+
+def test_repeating_an_identical_receipt_is_reused_not_refused(tmp_path):
+    """The unchanged-denominator guard must not itself turn an idempotent
+    replay -- the ordinary case of resuming or re-running a finished pass --
+    into a refusal."""
+    tree = make_run(tmp_path)
+    receipt = make_recensor_partition_receipt()
+    tree.write_recensor_partition_receipt(receipt)
+    result = tree.write_recensor_partition_receipt(receipt)
+    assert result.reused is True
 
 
 # --- The run authority ---------------------------------------------------------
@@ -774,9 +865,9 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
     fails a static drift test, loudly, naming the path.
 
     Driven against real writes rather than a list of strings, so a new writer that
-    forgot to extend the scope is caught by what it actually does. Spec 03 adds a
-    sixth real write — the approval record — and it is exercised here for the same
-    reason as the other five, by writing one.
+    forgot to extend the scope is caught by what it actually does. Spec 03 adds
+    the approval record and System 09 adds the Recensor partition receipt; each is
+    exercised here through its real writer rather than a guessed path.
     """
     tree = make_run(tmp_path)
     scope = tree.inventory_scope()
@@ -787,8 +878,17 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
     written.append(tree.write_manifest(DESIGNATOR).relative_path)
     written.append(tree.write_run_receipt(make_receipt())[0].relative_path)
     written.append(tree.write_approval_record(make_approval_record())[0].relative_path)
+    written.append(
+        tree.write_recensor_partition_receipt(make_recensor_partition_receipt()).relative_path
+    )
+    # Not just "in scope" like every other entry below -- the receipt is a
+    # replace-in-place write, so its exact published location is worth
+    # pinning against the module's own named constant rather than only its
+    # source text (which `test_no_store_writer_reaches_a_path_the_inventory_
+    # scope_cannot_name` checks separately, for a different reason).
+    assert written[-1] == runtree_store.RECENSOR_PARTITION_RECEIPT_FILE
 
-    assert len(written) == 6
+    assert len(written) == 7
     for path in written:
         assert any(path == prefix or path.startswith(prefix) for prefix in scope), (
             f"{path} is written by the store but falls outside the inventory scope"
@@ -798,8 +898,8 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
 def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
     """The static half of harvest #13, read from source rather than from a fixture.
 
-    The runtime test above proves the six writers we know about stay in scope. It
-    cannot prove that a *seventh* writer added later was exercised at all — an
+    The runtime test above proves the writers we know about stay in scope. It
+    cannot prove that a later writer was exercised at all — an
     un-called writer leaves no trace to check. So this reads every immutable
     publication in `RunTree` and requires it to route through one of the path
     constructors `inventory_scope()` is derived from. A new writer that invents a
@@ -814,6 +914,14 @@ def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
         f"a store writer publishes through unknown path constructor(s) {sorted(constructors)}; "
         "inventory_scope() is derived from artifact_path/blob_path/manifest_path/receipt_path "
         "and cannot name a fifth"
+    )
+    receipt_writer = inspect.getsource(runtree_store.RunTree.write_recensor_partition_receipt)
+    assert (
+        "recensor_partition_receipt_path" in receipt_writer and "_atomic_write" in receipt_writer
+    ), (
+        "the mutable Recensor partition receipt must use its named run-health path and atomic "
+        "publication; a replace-in-place writer is invisible to the _publish_bytes scan above, "
+        "so this is the only thing that keeps it from becoming a hidden unscoped write"
     )
     assert passed_through <= indirect, (
         "a store writer publishes bytes at a path that did not come from "
@@ -899,3 +1007,71 @@ def test_an_existing_target_is_still_a_reuse_check_not_a_hard_link_complaint(tmp
 def test_the_run_file_is_valid_json_a_human_can_read(tmp_path):
     make_run(tmp_path)
     assert json.loads((tmp_path / "r1" / RUN_FILE).read_text(encoding="utf-8"))["run_id"] == "r1"
+
+
+@pytest.mark.parametrize(
+    "damage_kind",
+    [
+        "empty",
+        "truncated-json",
+        "wrong-schema",
+        "non-utf8",
+        "float",
+        "wrong-self-hash",
+        "deeply-nested",
+    ],
+)
+def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
+    tmp_path, damage_kind
+):
+    """The receipt is derived, not evidence, so damage must not be a dead end.
+
+    It is reconstructed from the immutable review and request records beside it,
+    and it is explicitly replaced in place rather than published as an immutable
+    artifact. Validating the *existing* file before writing the new one meant a
+    torn write, a truncated file, or a receipt from an older schema left the run
+    permanently unable to record a partition it could recompute perfectly well.
+    GOVERNANCE 4 protects evidence; this is not evidence, and the refusal
+    protected nothing while blocking recovery.
+
+    The refusal that *does* matter — a valid receipt disagreeing about the sealed
+    proposal-act denominator — is pinned by the test above and is unaffected.
+    Found by CodeRabbit.
+    """
+    tree = make_run(tmp_path)
+    receipt = make_recensor_partition_receipt()
+    assert tree.write_recensor_partition_receipt(receipt).reused is False
+
+    target = tree.resolve(tree.recensor_partition_receipt_path())
+    # Six shapes reaching four different refusal paths, not four reaching two: an
+    # empty file and a truncated one both fail the JSON reader, so the first draft
+    # of this test looked broader than it was. The float and wrong-self-hash cases
+    # both reach `verify_self_hash`; the float is refused by strict canonicalization
+    # with the `TypeError` class that escaped the first fix, while the latter pins
+    # the validator's own integrity refusal.
+    valid = json.dumps(receipt).encode("utf-8")
+    float_damaged = json.loads(valid)
+    float_damaged["expected_act_count"] = 1.0
+    self_hash_damaged = json.loads(valid)
+    self_hash_damaged["self_hash"] = "0" * 64
+    damage = {
+        "empty": b"",
+        "truncated-json": b"{",
+        "wrong-schema": b'{"schema": "nonsense"}',
+        "non-utf8": b"\xff\xfe not utf-8",
+        "float": json.dumps(float_damaged).encode("utf-8"),
+        "wrong-self-hash": json.dumps(self_hash_damaged).encode("utf-8"),
+        # The `RecursionError` branch of the writer's except clause, which
+        # nothing else drives. `json.loads` really does raise it rather than a
+        # `ValueError` at this depth (measured here: 100,000 levels still parse,
+        # 200,000 raise), which is precisely why `_read_json` cannot translate
+        # it and why it is named separately in that clause. Without this case
+        # that branch was untested and could have been deleted green.
+        # Found by CodeRabbit.
+        "deeply-nested": (b"[" * 200_000) + (b"]" * 200_000),
+    }[damage_kind]
+    target.write_bytes(damage)
+    assert tree.write_recensor_partition_receipt(receipt).reused is False, (
+        f"a receipt damaged as {damage_kind} blocked its own replacement"
+    )
+    assert tree.read_recensor_partition_receipt()["run_id"] == "r1"
