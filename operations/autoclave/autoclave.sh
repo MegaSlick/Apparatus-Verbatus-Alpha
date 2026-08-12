@@ -264,6 +264,11 @@ auth_check() {
 authenticated() {
     vendor_asked="$1"
     volume_asked="$2"
+    # `login` has already inspected an immutable ID before it opens its booth. Keep
+    # every container in that one operation on the exact same image: a tag can move
+    # between the interactive CLI and the status check. Other callers deliberately
+    # keep the current tagged image behaviour.
+    image_asked="${3:-$IMAGE}"
     mount_asked=$(auth_dir "$vendor_asked") || return 2
     check_asked=$(auth_check "$vendor_asked") || return 2
     has_volume "$volume_asked" || return 1
@@ -275,7 +280,7 @@ authenticated() {
     # ever refreshes a near-expiry token, the check verifying a sign-in would be the thing
     # that destroyed it, and the symptom would once again look like an expiry.
     answer=$(docker run --rm --volume "${volume_asked}:${mount_asked}" \
-        --env "CLAUDE_CONFIG_DIR=${mount_asked}" "$IMAGE" \
+        --env "CLAUDE_CONFIG_DIR=${mount_asked}" "$image_asked" \
         sh -c "${check_asked} >/dev/null 2>&1; printf 'ac-auth:%s' \$?" 2>/dev/null) || return 2
     case "$answer" in
         ac-auth:0) return 0 ;;
@@ -402,7 +407,7 @@ cmd_login() {
         docker run --rm --interactive --tty \
             --volume "${volume}:${mount}" \
             $login_env \
-            "$IMAGE" \
+            "$image_id" \
             sh -c "$login_cmd" || login_status=$?
     else
         note "(no terminal here — running without one; follow the URL or code below)"
@@ -411,7 +416,7 @@ cmd_login() {
         docker run --rm --interactive \
             --volume "${volume}:${mount}" \
             $login_env \
-            "$IMAGE" \
+            "$image_id" \
             sh -c "$login_cmd" || login_status=$?
     fi
 
@@ -420,7 +425,7 @@ cmd_login() {
     # `ls -A` on the mount, and both CLIs write configuration into that directory
     # before, during and after any sign-in — so it reported success for an attempt
     # that was cancelled at the vendor's own page. Ask the vendor instead.
-    asked=0; authenticated "$vendor" "$volume" || asked=$?
+    asked=0; authenticated "$vendor" "$volume" "$image_id" || asked=$?
     if [ "$asked" -eq 2 ]; then
         # The question could not be put. Whatever the volume now holds is not this
         # script's to throw away on the strength of an answer nobody got.

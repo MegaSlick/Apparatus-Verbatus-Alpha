@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
 import stat
@@ -7,6 +8,8 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+import pytest
 
 from operations.autoclave import refresh_claude_token as refresh
 
@@ -238,9 +241,11 @@ def test_a_vendor_write_in_the_publication_window_is_restored(tmp_path, monkeypa
     path = write_credential(tmp_path, monkeypatch, expires_at=1)
     original_exchange = refresh.exchange_paths
     interleaved = False
+    exchanges = []
 
     def exchange(first, second):
         nonlocal interleaved
+        exchanges.append((first, second))
         if not interleaved:
             document = json.loads(path.read_text())
             document["vendorWrite"] = "kept"
@@ -261,6 +266,45 @@ def test_a_vendor_write_in_the_publication_window_is_restored(tmp_path, monkeypa
     document = json.loads(path.read_text())
     assert document["vendorWrite"] == "kept"
     assert document["claudeAiOauth"]["accessToken"] == "old-access"
+    assert len(exchanges) == 2, "the second exchange restored the concurrent credential"
+
+
+def test_a_failed_restoring_exchange_preserves_the_displaced_concurrent_credential(
+    tmp_path, monkeypatch
+):
+    path = write_credential(tmp_path, monkeypatch, expires_at=1)
+    original = path.read_bytes()
+    replacement = json.loads(original)
+    replacement["claudeAiOauth"]["accessToken"] = "new-access"
+    original_exchange = refresh.exchange_paths
+    exchanges = []
+
+    def exchange(first, second):
+        exchanges.append((first, second))
+        if len(exchanges) == 1:
+            concurrent = json.loads(path.read_text(encoding="utf-8"))
+            concurrent["vendorWrite"] = "kept"
+            path.write_text(json.dumps(concurrent), encoding="utf-8")
+            original_exchange(first, second)
+        else:
+            raise OSError(errno.EIO, "restoring exchange failed")
+
+    monkeypatch.setattr(refresh, "exchange_paths", exchange)
+
+    with pytest.raises(refresh.RestoreConcurrentCredential) as raised:
+        refresh.publish(path, replacement, original)
+
+    assert len(exchanges) == 2, "the first exchange and failed restoration stayed distinct"
+    preserved = raised.value.preserved
+    assert str(preserved) in str(raised.value)
+    assert path.exists(), "the published credential must remain a complete file"
+    assert (
+        json.loads(path.read_text(encoding="utf-8"))["claudeAiOauth"]["accessToken"] == "new-access"
+    )
+    assert preserved.exists(), "the concurrent credential was lost during cleanup"
+    displaced = json.loads(preserved.read_text(encoding="utf-8"))
+    assert displaced["vendorWrite"] == "kept"
+    assert displaced["claudeAiOauth"]["accessToken"] == "old-access"
 
 
 def test_dockerfile_pins_both_oauth_constants_from_the_refresh_helper():

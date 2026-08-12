@@ -38,6 +38,18 @@ class ConcurrentCredential(Exception):
     pass
 
 
+class RestoreConcurrentCredential(Exception):
+    """A concurrent credential could not be restored after publication began."""
+
+    def __init__(self, preserved: Path, cause: OSError):
+        self.preserved = preserved
+        self.cause = cause
+        super().__init__(
+            "credential changed concurrently and restoration failed; "
+            f"the displaced credential was preserved at {preserved} ({type(cause).__name__})"
+        )
+
+
 def credential_path() -> Path:
     config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR", "/home/agent/.claude"))
     return config_dir / ".credentials.json"
@@ -63,6 +75,7 @@ def exchange_paths(first: Path, second: Path) -> None:
 
 def publish(path: Path, document: dict[str, object], expected: bytes) -> None:
     descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=".credentials.tmp.")
+    preserve_temporary = False
     try:
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -72,7 +85,15 @@ def publish(path: Path, document: dict[str, object], expected: bytes) -> None:
         exchange_paths(Path(temporary), path)
         displaced = Path(temporary).read_bytes()
         if displaced != expected:
-            exchange_paths(Path(temporary), path)
+            try:
+                exchange_paths(Path(temporary), path)
+            except OSError as error:
+                # The first exchange already put the new credential at `path`; the
+                # temporary therefore holds the concurrent writer's complete value.
+                # It is the only recoverable copy of that value, so never clean it
+                # up when the restorative exchange fails.
+                preserve_temporary = True
+                raise RestoreConcurrentCredential(Path(temporary), error) from error
             raise ConcurrentCredential
         os.unlink(temporary)
         directory = os.open(path.parent, os.O_RDONLY)
@@ -81,6 +102,8 @@ def publish(path: Path, document: dict[str, object], expected: bytes) -> None:
         finally:
             os.close(directory)
     except BaseException:
+        if preserve_temporary:
+            raise
         try:
             os.unlink(temporary)
         except FileNotFoundError:
@@ -221,6 +244,9 @@ def refresh() -> int:
 
         try:
             publish(path, document, original)
+        except RestoreConcurrentCredential as error:
+            print(f"refresh: {error}", file=sys.stderr)
+            return 2
         except ConcurrentCredential:
             print(
                 "refresh: credential changed concurrently; rotated tokens were not published — "

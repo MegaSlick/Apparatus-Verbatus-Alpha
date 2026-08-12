@@ -2592,6 +2592,49 @@ class TestSignInIsAsked:
         assert "reports itself signed in" in result.stdout
         assert not any(call[:2] == ["volume", "rm"] for call in docker_calls(log))
 
+    def test_login_uses_its_inspected_image_id_for_the_booth_and_status_check(self, tmp_path):
+        """A tag may move while an operator completes a login, so pin this operation."""
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        image_id = "sha256:" + "a" * 64
+        env.update({"FAKE_AUTH_VALID": "1", "FAKE_IMAGE_ID": image_id})
+
+        result = run("login", "codex", env=env, script=script)
+
+        assert result.returncode == 0, result.stderr
+        login = next(call for call in docker_calls(log) if "codex login" in " ".join(call))
+        status = next(call for call in docker_calls(log) if "login status" in " ".join(call))
+        assert image_id in login
+        assert image_id in status
+        assert "verbatus-autoclave:latest" not in login
+        assert "verbatus-autoclave:latest" not in status
+
+    def test_a_tty_login_uses_the_same_inspected_image_id(self, tmp_path):
+        """The interactive branch must not fall back to the mutable tag either."""
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        image_id = "sha256:" + "b" * 64
+        env.update({"FAKE_AUTH_VALID": "1", "FAKE_IMAGE_ID": image_id})
+        master, slave = os.openpty()
+        try:
+            process = subprocess.Popen(
+                ["sh", str(script), "login", "codex"],
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                cwd=ROOT,
+                env={**os.environ, **env},
+            )
+            assert process.wait(timeout=15) == 0
+        finally:
+            os.close(slave)
+            os.close(master)
+
+        login = next(call for call in docker_calls(log) if "codex login" in " ".join(call))
+        assert "--tty" in login
+        assert image_id in login
+        assert "verbatus-autoclave:latest" not in login
+
     def test_a_first_time_login_keeps_the_volume_it_created(self, tmp_path):
         """The path that matters, and the one nothing covered.
 
