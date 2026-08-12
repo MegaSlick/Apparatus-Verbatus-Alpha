@@ -63,10 +63,10 @@ def test_an_expired_access_token_is_atomically_replaced_with_both_rotated_tokens
 ):
     path = write_credential(tmp_path, monkeypatch, expires_at=1)
     observed = {}
-    real_replace = refresh.os.replace
+    real_exchange = refresh.exchange_paths
 
-    def observe_replace(source, destination):
-        observed["replace"] = (source, destination)
+    def observe_exchange(source, destination):
+        observed["exchange"] = (source, destination)
         # Until the single publication boundary, readers still see the complete old
         # credential and the temporary holds the complete new one.
         assert json.loads(path.read_text(encoding="utf-8"))["claudeAiOauth"]["accessToken"] == (
@@ -76,7 +76,7 @@ def test_an_expired_access_token_is_atomically_replaced_with_both_rotated_tokens
             json.loads(open(source, encoding="utf-8").read())["claudeAiOauth"]["accessToken"]
             == "new-access"
         )
-        real_replace(source, destination)
+        real_exchange(source, destination)
 
     def endpoint(request, *, timeout):
         observed["timeout"] = timeout
@@ -95,7 +95,7 @@ def test_an_expired_access_token_is_atomically_replaced_with_both_rotated_tokens
         )
 
     monkeypatch.setattr(urllib.request, "urlopen", endpoint)
-    monkeypatch.setattr(refresh.os, "replace", observe_replace)
+    monkeypatch.setattr(refresh, "exchange_paths", observe_exchange)
     assert refresh.main() == 0
 
     oauth = json.loads(path.read_text(encoding="utf-8"))["claudeAiOauth"]
@@ -112,7 +112,7 @@ def test_an_expired_access_token_is_atomically_replaced_with_both_rotated_tokens
     assert observed["url"] == "https://platform.claude.com/v1/oauth/token"
     assert observed["timeout"] == 45
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert observed["replace"][1] == path
+    assert observed["exchange"][1] == path
     output = capsys.readouterr().out
     assert "new-access" not in output and "new-refresh" not in output
     assert list(path.parent.glob(".credentials.tmp.*")) == []
