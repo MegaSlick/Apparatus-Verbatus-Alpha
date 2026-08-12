@@ -173,7 +173,9 @@ if args[:1] == ["info"]:
 if args[:2] == ["image", "inspect"]:
     if setting("FAKE_IMAGE_EXISTS", "1") != "1":
         raise SystemExit(1)
-    if "verbatus.harness-fingerprint" in " ".join(args):
+    if "{{.Id}}" in " ".join(args):
+        print(setting("FAKE_IMAGE_ID", "sha256:" + "1" * 64))
+    elif "verbatus.harness-fingerprint" in " ".join(args):
         print(setting("FAKE_IMAGE_FINGERPRINT"))
     raise SystemExit(0)
 if args[:2] == ["buildx", "version"]:
@@ -1773,6 +1775,30 @@ class TestWhatComesBackAndWhatIsDestroyed:
         assert result.returncode == 0, result.stderr
         assert ["rm", "--force", "verbatus-ac-task-x"] in docker_calls(log)
 
+    def test_rm_keeps_a_recoverable_bundle_after_the_collected_ref_is_pruned(self, tmp_path):
+        script, clone, drawer, env, log = self.chamber(tmp_path)
+        tip = git(clone, "rev-parse", "agent/task-x")
+        collected = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+        assert collected.returncode == 0, collected.stderr
+        retained = tmp_path / "workbench" / "autoclave" / ".collected" / "task-x" / tip
+        assert retained.is_file()
+
+        git(tmp_path, "branch", "-D", "agent/task-x")
+        (drawer / "task-x.bundle").unlink()
+        git(tmp_path, "reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
+        git(tmp_path, "gc", "--prune=now")
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "cat-file", "-e", f"{tip}^{{commit}}"]
+            ).returncode
+            != 0
+        )
+
+        result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        assert ["rm", "--force", "verbatus-ac-task-x"] in docker_calls(log)
+
     def test_rm_refuses_a_chamber_it_cannot_read(self, tmp_path):
         """ "A check that cannot run is a failure, not a pass" — `.githooks/commit-msg`
         says it in those words, and the arm that says it here had no test. Swallowing
@@ -2281,7 +2307,9 @@ class TestMakingAChamber:
         env["FAKE_EXEC_STATUS"] = "0"
         result = run("new", "some-task", env=env, script=script, cwd=tmp_path)
         assert result.returncode == 0, result.stderr
-        assert any("--detach" in call for call in docker_calls(log)), "no chamber created"
+        creation = next(call for call in docker_calls(log) if "--detach" in call)
+        assert "sha256:" + "1" * 64 in creation
+        assert "verbatus-autoclave:dev" not in creation
 
     def test_new_skips_the_claude_trust_initializer_for_codex(self, tmp_path):
         script = self.dirty_repo(tmp_path)

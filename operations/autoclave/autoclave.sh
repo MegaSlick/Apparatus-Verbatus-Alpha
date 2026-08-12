@@ -344,7 +344,9 @@ cmd_login() {
         *) die "login mode is 'browser' or 'device'" ;;
     esac
     need_docker
-    docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
+    image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null) ||
+        die "image not built — run: $0 build"
+    [ -n "$image_id" ] || die "image '$IMAGE' has no immutable image ID"
 
     # **Whether this call created the volume decides whether this call may take it
     # away.** An empty volume that was already here is somebody else's business.
@@ -520,7 +522,9 @@ cmd_new() {
     # commit standing — and `rm` refuses a task with no container, so the one command
     # that deletes that ref could not be reached to do it.
     need_docker
-    docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
+    image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null) ||
+        die "image not built — run: $0 build"
+    [ -n "$image_id" ] || die "image '$IMAGE' has no immutable image ID"
     exists "$task" && die "chamber '$task' already exists — use 'rm $task' first"
 
     # Every input that defines the image is content-addressed together. Comparing the
@@ -530,7 +534,7 @@ cmd_new() {
     expected_fingerprint=$(python3 "$FINGERPRINT") ||
         die "cannot fingerprint the chamber image inputs"
     image_fingerprint=$(docker image inspect --format \
-        '{{index .Config.Labels "verbatus.harness-fingerprint"}}' "$IMAGE" 2>/dev/null) ||
+        '{{index .Config.Labels "verbatus.harness-fingerprint"}}' "$image_id" 2>/dev/null) ||
         image_fingerprint=""
     [ "$image_fingerprint" = "$expected_fingerprint" ] ||
         die "the chamber image does not match this checkout's repository harness inputs. Rebuild: $0 build"
@@ -806,7 +810,7 @@ cmd_new() {
         $auth_mounts $window_mount $window_masks \
         --env "CLAUDE_CONFIG_DIR=${AUTH_DIR_CLAUDE}" \
         --workdir /work \
-        "$IMAGE" \
+        "$image_id" \
         sleep infinity >/dev/null || {
         # The one failure past the snapshot that can leave a ref standing. `rm`
         # refuses a task with no container, so nothing else would ever delete it.
@@ -1433,8 +1437,9 @@ cmd_collect() {
     collected_marker=$(collected_marker_of "$task" "$incoming_tip")
     mkdir -p "$(dirname "$collected_marker")" ||
         die "local ${branch} was updated, but its collection marker could not be created"
-    (umask 077; : > "$collected_marker") ||
-        die "local ${branch} was updated, but its collection marker could not be written"
+    python3 "$SAFE_FILE" retain "$bundle_snapshot" "$collected_marker" ||
+        die "local ${branch} was updated, but its recoverable collection bundle could not be retained"
+    LIFECYCLE_SNAPSHOT=""
 
     # An agent that committed nothing leaves its branch pointing at the base, and the
     # bundle for that branch builds and fetches perfectly. Saying "collected" over it
@@ -1591,7 +1596,11 @@ cmd_rm() {
             fi
             collected_marker=$(collected_marker_of "$task" "$tip")
             if [ ! -L "$collected_marker" ] && [ -f "$collected_marker" ]; then
-                continue
+                marker_head=$(git -C "$REPO_ROOT" bundle list-heads "$collected_marker" \
+                    "refs/heads/agent/${task}" 2>/dev/null) || marker_head=""
+                if [ "$marker_head" = "${tip} refs/heads/agent/${task}" ]; then
+                    continue
+                fi
             fi
             die "chamber '$task' holds a commit this repository does not have a durably collected copy of (${tip}). Run '$0 collect $task' — and if it is on a branch other than agent/${task}, move or merge it there first, because that is the only branch collection bundles. Or destroy it with: $0 rm $task force"
         done

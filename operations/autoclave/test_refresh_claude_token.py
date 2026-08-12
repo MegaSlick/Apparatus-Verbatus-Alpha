@@ -234,6 +234,35 @@ def test_a_concurrent_vendor_write_is_not_overwritten(tmp_path, monkeypatch):
     assert document["claudeAiOauth"]["accessToken"] == "old-access"
 
 
+def test_a_vendor_write_in_the_publication_window_is_restored(tmp_path, monkeypatch):
+    path = write_credential(tmp_path, monkeypatch, expires_at=1)
+    original_exchange = refresh.exchange_paths
+    interleaved = False
+
+    def exchange(first, second):
+        nonlocal interleaved
+        if not interleaved:
+            document = json.loads(path.read_text())
+            document["vendorWrite"] = "kept"
+            path.write_text(json.dumps(document))
+            interleaved = True
+        original_exchange(first, second)
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: Response(
+            json.dumps({"access_token": "new-access", "expires_in": 3_600})
+        ),
+    )
+    monkeypatch.setattr(refresh, "exchange_paths", exchange)
+
+    assert refresh.main() == 1
+    document = json.loads(path.read_text())
+    assert document["vendorWrite"] == "kept"
+    assert document["claudeAiOauth"]["accessToken"] == "old-access"
+
+
 def test_dockerfile_pins_both_oauth_constants_from_the_refresh_helper():
     dockerfile = Path(__file__).with_name("Dockerfile").read_text(encoding="utf-8")
 

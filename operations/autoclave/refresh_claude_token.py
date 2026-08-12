@@ -9,6 +9,8 @@ No token is printed or handled on the host.
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import fcntl
 import json
 import math
@@ -32,12 +34,34 @@ class RefreshDeadline(Exception):
     pass
 
 
+class ConcurrentCredential(Exception):
+    pass
+
+
 def credential_path() -> Path:
     config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR", "/home/agent/.claude"))
     return config_dir / ".credentials.json"
 
 
-def publish(path: Path, document: dict[str, object]) -> None:
+def exchange_paths(first: Path, second: Path) -> None:
+    """Atomically exchange two existing paths on Linux or macOS."""
+    library = ctypes.CDLL(None, use_errno=True)
+    first_bytes = os.fsencode(first)
+    second_bytes = os.fsencode(second)
+    if sys.platform.startswith("linux"):
+        renameat2 = library.renameat2
+        result = renameat2(-100, first_bytes, -100, second_bytes, 2)
+    elif sys.platform == "darwin":
+        renamex_np = library.renamex_np
+        result = renamex_np(first_bytes, second_bytes, 2)
+    else:
+        raise OSError(errno.ENOTSUP, "atomic path exchange is unsupported")
+    if result != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def publish(path: Path, document: dict[str, object], expected: bytes) -> None:
     descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=".credentials.tmp.")
     try:
         os.fchmod(descriptor, 0o600)
@@ -45,7 +69,12 @@ def publish(path: Path, document: dict[str, object]) -> None:
             json.dump(document, handle)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        exchange_paths(Path(temporary), path)
+        displaced = Path(temporary).read_bytes()
+        if displaced != expected:
+            exchange_paths(Path(temporary), path)
+            raise ConcurrentCredential
+        os.unlink(temporary)
         directory = os.open(path.parent, os.O_RDONLY)
         try:
             os.fsync(directory)
@@ -90,11 +119,15 @@ def refresh() -> int:
         return 2
 
     with lock:
+        lock_deadline = time.monotonic() + DEADLINE_SECONDS
         while True:
             try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
+                if time.monotonic() >= lock_deadline:
+                    print("refresh: credential lock wait exceeded 60 seconds", file=sys.stderr)
+                    return 1
                 time.sleep(0.05)
         try:
             original = path.read_bytes()
@@ -187,14 +220,10 @@ def refresh() -> int:
             oauth["refreshTokenExpiresAt"] = now_ms + refresh_lifetime_ms
 
         try:
-            # The vendor CLI does not participate in this helper's lock. Refuse a
-            # known interleaving rather than overwriting credential state it changed
-            # while the endpoint request was in flight. A change after this comparison
-            # remains an accepted limitation of sharing one vendor configuration.
-            if path.read_bytes() != original:
-                print("refresh: credential changed concurrently; retrying is safe", file=sys.stderr)
-                return 1
-            publish(path, document)
+            publish(path, document, original)
+        except ConcurrentCredential:
+            print("refresh: credential changed concurrently; retrying is safe", file=sys.stderr)
+            return 1
         except OSError as error:
             print(
                 f"refresh: cannot publish the credential ({type(error).__name__})", file=sys.stderr

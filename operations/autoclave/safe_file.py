@@ -117,6 +117,15 @@ def main() -> int:
                     check=True,
                 )
             return 0
+        if command == "retain" and len(sys.argv) == 4:
+            destination = Path(sys.argv[3])
+            os.replace(source, destination)
+            directory = os.open(destination.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            return 0
         if command == "worktree" and len(sys.argv) == 5:
             mode = sys.argv[4]
             if mode not in {"occupied", "tree"}:
@@ -147,6 +156,7 @@ def main() -> int:
         return 1
     print(
         "usage: safe_file.py read SLOT | write SOURCE SLOT | bundle SLOT REF | "
+        "retain SOURCE DESTINATION | "
         "worktree ROOT REF occupied|tree",
         file=sys.stderr,
     )
