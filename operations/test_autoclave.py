@@ -1532,6 +1532,51 @@ class TestWhatComesBackAndWhatIsDestroyed:
                     check=True,
                 )
 
+    def test_collect_rolls_back_a_newline_named_worktree_started_before_the_cas(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "pre-cas\nworktree"
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        count = tmp_path / "newline-worktree-list-count"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *args])\n"
+            "counter = pathlib.Path(os.environ['RACE_COUNT'])\n"
+            "if result.returncode == 0 and 'worktree' in args and 'list' in args:\n"
+            "    n = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+            "    counter.write_text(str(n))\n"
+            "    if n == 2:\n"
+            "        subprocess.run([os.environ['REAL_GIT'], '-C', os.environ['RACE_ROOT'], 'worktree', 'add', '--quiet', os.environ['RACE_LINKED'], 'agent/task-x'], check=True)\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update(
+            {
+                "REAL_GIT": real_git,
+                "RACE_ROOT": str(tmp_path),
+                "RACE_LINKED": str(linked),
+                "RACE_COUNT": str(count),
+            }
+        )
+        try:
+            result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert result.returncode != 0
+            assert "previous value was restored" in result.stderr
+            assert git(tmp_path, "rev-parse", "agent/task-x") == base
+            assert git(linked, "status", "--porcelain") == ""
+        finally:
+            if linked.exists():
+                subprocess.run(
+                    [real_git, "-C", str(tmp_path), "worktree", "remove", "--force", str(linked)],
+                    check=True,
+                )
+
     def test_collect_keeps_a_clean_worktree_created_after_the_cas(self, tmp_path):
         script, clone, _drawer, env, _log = self.chamber(tmp_path)
         base = git(tmp_path, "rev-parse", "HEAD")

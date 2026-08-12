@@ -107,17 +107,6 @@ acquire_lifecycle_lock() {
     trap 'lifecycle_cleanup; exit 1' 1 2 15
 }
 
-# Print the path for a branch named in `git worktree list --porcelain`, or nothing
-# when no worktree owns it. Collection uses the worktree index tree—not its symbolic
-# HEAD—to distinguish a checkout made before its ref update from one made after it.
-worktree_path_for_ref() {
-    worktree_ref="$1"
-    awk -v wanted="$worktree_ref" '
-        $1 == "worktree" { sub(/^worktree /, ""); path = $0 }
-        $1 == "branch" && $2 == wanted { print path; exit }
-    '
-}
-
 collected_marker_of() {
     printf '%s/.collected/%s/%s' "$OUT_ROOT" "$1" "$2"
 }
@@ -1379,11 +1368,12 @@ cmd_collect() {
     fi
     # `update-ref` can move a checked-out branch even though its worktree has files
     # from the old commit. Refuse rather than changing a branch another worktree uses.
-    worktrees=$(git -C "$REPO_ROOT" worktree list --porcelain) || {
+    occupancy=$(python3 "$SAFE_FILE" worktree "$REPO_ROOT" "$branch_ref" occupied) || {
         die "could not inspect worktree occupancy; nothing was replaced"
     }
-    occupied_path=$(printf '%s\n' "$worktrees" | worktree_path_for_ref "$branch_ref")
-    if [ -n "$occupied_path" ]; then
+    [ "$occupancy" = absent ] || [ "$occupancy" = occupied ] ||
+        die "worktree occupancy returned an invalid result; nothing was replaced"
+    if [ "$occupancy" = occupied ]; then
         die "local ${branch} is occupied (checked out in a worktree); nothing was replaced"
     fi
     old_tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$branch_ref") || old_tip=""
@@ -1395,10 +1385,11 @@ cmd_collect() {
     # immediately before the conditional update as well as above.  The old value is
     # the compare-and-swap: a concurrent ref movement now refuses rather than being
     # overwritten by a force-update.
-    worktrees=$(git -C "$REPO_ROOT" worktree list --porcelain) ||
+    occupancy=$(python3 "$SAFE_FILE" worktree "$REPO_ROOT" "$branch_ref" occupied) ||
         die "could not inspect worktree occupancy; nothing was replaced"
-    occupied_path=$(printf '%s\n' "$worktrees" | worktree_path_for_ref "$branch_ref")
-    if [ -n "$occupied_path" ]; then
+    [ "$occupancy" = absent ] || [ "$occupancy" = occupied ] ||
+        die "worktree occupancy returned an invalid result; nothing was replaced"
+    if [ "$occupancy" = occupied ]; then
         die "local ${branch} is occupied (checked out in a worktree); nothing was replaced"
     fi
     if [ -n "$old_tip" ]; then
@@ -1412,12 +1403,12 @@ cmd_collect() {
     # incoming tip after our CAS, branch and worktree already agree and collection is
     # safe. If it checked out the old tip before the CAS completed, restore the branch
     # with another CAS so its index and files remain clean too.
-    worktrees=$(git -C "$REPO_ROOT" worktree list --porcelain) ||
+    worktree_state=$(python3 "$SAFE_FILE" worktree "$REPO_ROOT" "$branch_ref" tree) ||
         die "local ${branch} was updated, but worktree occupancy could not be rechecked; inspect it before changing anything"
-    occupied_path=$(printf '%s\n' "$worktrees" | worktree_path_for_ref "$branch_ref")
-    if [ -n "$occupied_path" ]; then
-        occupied_tree=$(git -C "$occupied_path" write-tree) ||
-            die "local ${branch} was updated, but the new worktree index could not be read; inspect it before changing anything"
+    if [ "$worktree_state" != absent ]; then
+        occupied_tree=${worktree_state#tree:}
+        [ "tree:${occupied_tree}" = "$worktree_state" ] ||
+            die "local ${branch} was updated, but worktree state was invalid; inspect it before changing anything"
         incoming_tree=$(git -C "$REPO_ROOT" rev-parse "${incoming_tip}^{tree}") ||
             die "local ${branch} was updated, but its incoming tree could not be resolved"
         old_tree=""

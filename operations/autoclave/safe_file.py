@@ -19,11 +19,32 @@ wrong, in a sentence an operator can act on; this says *no* whatever happens.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 from pathlib import Path
+
+
+def worktree_path_for_ref(root: Path, ref: str) -> Path | None:
+    """Return an exact checked-out path without line-delimiting Git path bytes."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "worktree", "list", "--porcelain", "-z"],
+        stdout=subprocess.PIPE,
+        check=True,
+    )
+    wanted = os.fsencode(ref)
+    matches: list[Path] = []
+    for record in result.stdout.split(b"\0\0"):
+        fields = record.split(b"\0")
+        path = next((field[9:] for field in fields if field.startswith(b"worktree ")), None)
+        branch = next((field[7:] for field in fields if field.startswith(b"branch ")), None)
+        if branch == wanted and path is not None:
+            matches.append(Path(os.fsdecode(path)))
+    if len(matches) > 1:
+        raise OSError(f"{ref} is checked out in more than one worktree")
+    return matches[0] if matches else None
 
 
 def open_regular(path: Path, flags: int, mode: int = 0o600):
@@ -49,7 +70,7 @@ def open_regular(path: Path, flags: int, mode: int = 0o600):
 
 
 def main() -> int:
-    """Two commands, and which end is untrusted differs between them.
+    """Move untrusted bytes, or inspect worktree occupancy without flattening paths.
 
     `read SLOT` reads *out of* `/out`: the slot is the agent's and is opened with
     `O_NOFOLLOW`.
@@ -61,6 +82,10 @@ def main() -> int:
 
     `bundle SLOT REF` opens the untrusted output slot once and gives that descriptor to
     `git bundle create - REF`, so Git never resolves the slot path itself.
+
+    `worktree ROOT REF occupied|tree` parses Git's NUL-delimited worktree records.
+    It emits only a fixed word or object ID, so even a path containing a newline never
+    crosses the shell boundary.
     """
     try:
         command = sys.argv[1]
@@ -92,6 +117,28 @@ def main() -> int:
                     check=True,
                 )
             return 0
+        if command == "worktree" and len(sys.argv) == 5:
+            mode = sys.argv[4]
+            if mode not in {"occupied", "tree"}:
+                raise OSError(f"unknown worktree mode: {mode}")
+            path = worktree_path_for_ref(source, sys.argv[3])
+            if path is None:
+                print("absent")
+                return 0
+            if mode == "occupied":
+                print("occupied")
+                return 0
+            if mode == "tree":
+                tree = subprocess.run(
+                    ["git", "-C", str(path), "write-tree"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", tree) is None:
+                    raise OSError("git write-tree returned an invalid object ID")
+                print(f"tree:{tree}")
+                return 0
     except (IndexError, OSError, subprocess.CalledProcessError) as failure:
         # The message names the path and the errno and nothing else. A refusal that
         # quoted what it found would print the very bytes the refusal exists to
@@ -99,7 +146,8 @@ def main() -> int:
         print(f"safe-file: {failure}", file=sys.stderr)
         return 1
     print(
-        "usage: safe_file.py read SLOT | write SOURCE SLOT | bundle SLOT REF",
+        "usage: safe_file.py read SLOT | write SOURCE SLOT | bundle SLOT REF | "
+        "worktree ROOT REF occupied|tree",
         file=sys.stderr,
     )
     return 2
