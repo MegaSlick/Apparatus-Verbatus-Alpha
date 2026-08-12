@@ -11,6 +11,14 @@ from pathlib import Path
 from operations.autoclave import refresh_claude_token as refresh
 
 
+class Response(io.StringIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+
 def write_credential(tmp_path, monkeypatch, *, expires_at: int):
     config = tmp_path / ".claude"
     config.mkdir(parents=True)
@@ -70,15 +78,9 @@ def test_an_expired_access_token_is_atomically_replaced_with_both_rotated_tokens
         )
         real_replace(source, destination)
 
-    class Response(io.StringIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            self.close()
-
     def endpoint(request, *, timeout):
         observed["timeout"] = timeout
+        observed["url"] = request.full_url
         observed["headers"] = dict(request.header_items())
         observed["request"] = json.loads(request.data)
         return Response(
@@ -107,6 +109,7 @@ def test_an_expired_access_token_is_atomically_replaced_with_both_rotated_tokens
         "client_id": refresh.CLIENT_ID,
     }
     assert observed["headers"]["User-agent"]
+    assert observed["url"] == "https://platform.claude.com/v1/oauth/token"
     assert observed["timeout"] == 45
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert observed["replace"][1] == path
@@ -118,13 +121,6 @@ def test_an_expired_access_token_is_atomically_replaced_with_both_rotated_tokens
 def test_an_unrotated_refresh_token_is_preserved_and_expiries_are_updated(tmp_path, monkeypatch):
     now_seconds = 1_700_000_000
     path = write_credential(tmp_path, monkeypatch, expires_at=1)
-
-    class Response(io.StringIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            self.close()
 
     monkeypatch.setattr(refresh.time, "time", lambda: now_seconds)
     monkeypatch.setattr(
@@ -154,13 +150,6 @@ def test_finite_float_lifetimes_are_accepted(tmp_path, monkeypatch):
     now_seconds = 1_700_000_000
     path = write_credential(tmp_path, monkeypatch, expires_at=1)
 
-    class Response(io.StringIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            self.close()
-
     monkeypatch.setattr(refresh.time, "time", lambda: now_seconds)
     monkeypatch.setattr(
         urllib.request,
@@ -184,14 +173,7 @@ def test_finite_float_lifetimes_are_accepted(tmp_path, monkeypatch):
 
 
 def test_invalid_response_lifetimes_do_not_mutate_or_publish_a_credential(tmp_path, monkeypatch):
-    class Response(io.StringIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            self.close()
-
-    for index, invalid in enumerate((True, False, 0, -1, float("nan"), float("inf"))):
+    for index, invalid in enumerate((True, False, 0, -1, 0.0001, float("nan"), float("inf"))):
         path = write_credential(tmp_path / str(index), monkeypatch, expires_at=1)
         before = path.read_bytes()
         published = []
@@ -217,13 +199,6 @@ def test_invalid_optional_refresh_lifetime_preserves_the_existing_credential(tmp
     path = write_credential(tmp_path, monkeypatch, expires_at=1)
     before = path.read_bytes()
 
-    class Response(io.StringIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            self.close()
-
     monkeypatch.setattr(
         urllib.request,
         "urlopen",
@@ -242,6 +217,23 @@ def test_invalid_optional_refresh_lifetime_preserves_the_existing_credential(tmp
     assert path.read_bytes() == before
 
 
+def test_a_concurrent_vendor_write_is_not_overwritten(tmp_path, monkeypatch):
+    path = write_credential(tmp_path, monkeypatch, expires_at=1)
+
+    def endpoint(*_args, **_kwargs):
+        document = json.loads(path.read_text())
+        document["vendorWrite"] = "kept"
+        path.write_text(json.dumps(document))
+        return Response(json.dumps({"access_token": "new-access", "expires_in": 3_600}))
+
+    monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+
+    assert refresh.main() == 1
+    document = json.loads(path.read_text())
+    assert document["vendorWrite"] == "kept"
+    assert document["claudeAiOauth"]["accessToken"] == "old-access"
+
+
 def test_dockerfile_pins_both_oauth_constants_from_the_refresh_helper():
     dockerfile = Path(__file__).with_name("Dockerfile").read_text(encoding="utf-8")
 
@@ -253,13 +245,6 @@ def test_the_deadline_is_disarmed_after_response_parsing_before_publication(tmp_
     write_credential(tmp_path, monkeypatch, expires_at=1)
     events = []
     original_publish = refresh.publish
-
-    class Response(io.StringIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            self.close()
 
     def record_timer(_which, seconds):
         if seconds == 0:
@@ -328,13 +313,6 @@ def test_a_missing_refresh_token_never_reaches_the_endpoint(tmp_path, monkeypatc
 def test_an_invalid_access_lifetime_is_not_published(tmp_path, monkeypatch, capsys):
     path = write_credential(tmp_path, monkeypatch, expires_at=1)
     before = path.read_bytes()
-
-    class Response(io.StringIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            self.close()
 
     monkeypatch.setattr(
         urllib.request,

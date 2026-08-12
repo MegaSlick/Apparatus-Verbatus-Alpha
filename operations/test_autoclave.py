@@ -1137,6 +1137,23 @@ def test_a_second_dispatch_for_the_same_task_is_refused_while_the_first_runs(tmp
         first.wait(timeout=30)
 
 
+@pytest.mark.parametrize(
+    ("command", "arguments"),
+    (("shell", ("task-x",)), ("exec", ("task-x", "true"))),
+)
+def test_manual_access_joins_the_task_lifecycle_lock(tmp_path, command, arguments):
+    script = elsewhere(tmp_path)
+    env, log = fake_docker(tmp_path)
+    lock = tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock"
+    lock.mkdir(parents=True)
+
+    result = run(command, *arguments, env=env, script=script, cwd=tmp_path)
+
+    assert result.returncode != 0
+    assert str(lock) in result.stderr
+    assert not any(call[:1] == ["exec"] for call in docker_calls(log))
+
+
 def test_a_signal_releases_the_task_lock(tmp_path):
     script = elsewhere(tmp_path)
     brief = tmp_path / "brief.md"
@@ -1466,7 +1483,7 @@ class TestWhatComesBackAndWhatIsDestroyed:
         assert moved.exists()
         assert git(tmp_path, "rev-parse", "agent/task-x") == git(tmp_path, "rev-parse", "HEAD")
 
-    def test_collect_rolls_back_if_a_worktree_appears_after_the_cas(self, tmp_path):
+    def test_collect_rolls_back_if_a_worktree_started_before_the_cas(self, tmp_path):
         script, _clone, _drawer, env, _log = self.chamber(tmp_path)
         base = git(tmp_path, "rev-parse", "HEAD")
         git(tmp_path, "branch", "agent/task-x", base)
@@ -1503,12 +1520,94 @@ class TestWhatComesBackAndWhatIsDestroyed:
             assert result.returncode != 0
             assert "previous value was restored" in result.stderr
             assert git(tmp_path, "rev-parse", "agent/task-x") == base
+            assert git(linked, "status", "--porcelain") == ""
         finally:
             if linked.exists():
                 subprocess.run(
                     [real_git, "-C", str(tmp_path), "worktree", "remove", "--force", str(linked)],
                     check=True,
                 )
+
+    def test_collect_keeps_a_clean_worktree_created_after_the_cas(self, tmp_path):
+        script, clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        incoming = git(clone, "rev-parse", "agent/task-x")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "after-cas-worktree"
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        count = tmp_path / "worktree-list-count"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "counter = pathlib.Path(os.environ['RACE_COUNT'])\n"
+            "if 'worktree' in args and 'list' in args:\n"
+            "    n = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+            "    counter.write_text(str(n))\n"
+            "    if n == 3:\n"
+            "        subprocess.run([os.environ['REAL_GIT'], '-C', os.environ['RACE_ROOT'], 'worktree', 'add', '--quiet', os.environ['RACE_LINKED'], 'agent/task-x'], check=True)\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *args])\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update(
+            {
+                "REAL_GIT": real_git,
+                "RACE_ROOT": str(tmp_path),
+                "RACE_LINKED": str(linked),
+                "RACE_COUNT": str(count),
+            }
+        )
+        try:
+            result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert result.returncode == 0, result.stderr
+            assert git(tmp_path, "rev-parse", "agent/task-x") == incoming
+            assert git(linked, "status", "--porcelain") == ""
+        finally:
+            if linked.exists():
+                subprocess.run(
+                    [real_git, "-C", str(tmp_path), "worktree", "remove", "--force", str(linked)],
+                    check=True,
+                )
+
+    def test_failed_collect_does_not_make_an_unreachable_object_safe_to_remove(self, tmp_path):
+        script, _clone, drawer, env, log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "occupied-worktree"
+        real_git = shutil.which("git")
+        assert real_git is not None
+        subprocess.run(
+            [
+                real_git,
+                "-C",
+                str(tmp_path),
+                "worktree",
+                "add",
+                "--quiet",
+                str(linked),
+                "agent/task-x",
+            ],
+            check=True,
+        )
+        try:
+            collected = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+            assert collected.returncode != 0
+            (drawer / "task-x.bundle").unlink()
+
+            removed = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert removed.returncode != 0
+            assert "not have a durably collected copy" in removed.stderr
+            assert not any(call[:2] == ["rm", "--force"] for call in docker_calls(log))
+        finally:
+            subprocess.run(
+                [real_git, "-C", str(tmp_path), "worktree", "remove", "--force", str(linked)],
+                check=True,
+            )
 
     def test_an_empty_branch_collects_and_says_it_is_empty(self, tmp_path):
         """The report is worth keeping, so this succeeds — loudly. Reporting success
@@ -2509,6 +2608,7 @@ class TestSignInIsAsked:
         assert result.returncode != 0
         assert "not signed in" in result.stderr
         assert not any("refresh_claude_token.py" in " ".join(call) for call in docker_calls(log))
+        assert ["volume", "create", "verbatus-ac-auth-claude"] not in docker_calls(log)
 
     def test_new_blocks_when_refresh_fails_even_if_auth_status_would_pass(self, tmp_path):
         script = elsewhere(tmp_path)
@@ -2801,8 +2901,8 @@ class TestTheTrustFlagAgainstARealFilesystem:
         key exists and republishes it without — a lost update. Under the lock it
         waits, reads what the competitor wrote, and both survive.
 
-        Every Claude CLI and refresh-helper call now takes the same volume lock, so this
-        pins the lock shared by the trust initializer too.
+        The login booth and refresh helper take this volume lock; dispatch and status do
+        not. This pins the lock shared by the trust initializer and refresh helper.
         """
         block, directory = self._block(tmp_path)
         config = directory / ".claude.json"

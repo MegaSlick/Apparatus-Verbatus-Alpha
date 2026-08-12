@@ -107,6 +107,21 @@ acquire_lifecycle_lock() {
     trap 'lifecycle_cleanup; exit 1' 1 2 15
 }
 
+# Print the path for a branch named in `git worktree list --porcelain`, or nothing
+# when no worktree owns it. Collection uses the worktree index tree—not its symbolic
+# HEAD—to distinguish a checkout made before its ref update from one made after it.
+worktree_path_for_ref() {
+    worktree_ref="$1"
+    awk -v wanted="$worktree_ref" '
+        $1 == "worktree" { sub(/^worktree /, ""); path = $0 }
+        $1 == "branch" && $2 == wanted { print path; exit }
+    '
+}
+
+collected_marker_of() {
+    printf '%s/.collected/%s/%s' "$OUT_ROOT" "$1" "$2"
+}
+
 die() { printf 'autoclave: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
 
@@ -935,9 +950,11 @@ AUTOCLAVE_SETUP
         # into a path the CLI will never read.
         #
         # **Locked, and written only when the flag is actually missing.** Temp-then-rename
-        # stopped the torn read but not a lost update. Every Claude auth check, login,
-        # refresh, dispatch, and this trust initializer now joins the same volume lock,
-        # so the complete read-edit-rename is serialized with every known writer.
+        # stopped the torn read but not a lost update. The login booth, refresh helper,
+        # and this trust initializer join the same volume lock. Status and model runs do
+        # not: locking a whole inference run serialized every Claude chamber. The CLI is
+        # therefore an external writer; refresh detects a change before publication, but
+        # no lock invented here can make a vendor process participate in that protocol.
         #
         # The wait is bounded and loud rather than indefinite. A chamber creation that
         # hangs forever on a lock somebody wedged is worse than one that says why it
@@ -986,7 +1003,9 @@ PY
 }
 
 cmd_shell() {
-    task="${1:-}"; check_task "$task"; need_docker
+    task="${1:-}"; check_task "$task"
+    acquire_lifecycle_lock "$task"
+    need_docker
     running "$task" || die "chamber '$task' is not running"
     docker exec -it "$(container_of "$task")" /bin/bash
 }
@@ -994,6 +1013,7 @@ cmd_shell() {
 cmd_exec() {
     task="${1:-}"; check_task "$task"; shift
     [ "$#" -gt 0 ] || die "a command is required"
+    acquire_lifecycle_lock "$task"
     need_docker
     running "$task" || die "chamber '$task' is not running"
     docker exec "$(container_of "$task")" "$@"
@@ -1362,7 +1382,8 @@ cmd_collect() {
     worktrees=$(git -C "$REPO_ROOT" worktree list --porcelain) || {
         die "could not inspect worktree occupancy; nothing was replaced"
     }
-    if printf '%s\n' "$worktrees" | grep -Fqx "branch ${branch_ref}"; then
+    occupied_path=$(printf '%s\n' "$worktrees" | worktree_path_for_ref "$branch_ref")
+    if [ -n "$occupied_path" ]; then
         die "local ${branch} is occupied (checked out in a worktree); nothing was replaced"
     fi
     old_tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$branch_ref") || old_tip=""
@@ -1376,7 +1397,8 @@ cmd_collect() {
     # overwritten by a force-update.
     worktrees=$(git -C "$REPO_ROOT" worktree list --porcelain) ||
         die "could not inspect worktree occupancy; nothing was replaced"
-    if printf '%s\n' "$worktrees" | grep -Fqx "branch ${branch_ref}"; then
+    occupied_path=$(printf '%s\n' "$worktrees" | worktree_path_for_ref "$branch_ref")
+    if [ -n "$occupied_path" ]; then
         die "local ${branch} is occupied (checked out in a worktree); nothing was replaced"
     fi
     if [ -n "$old_tip" ]; then
@@ -1386,21 +1408,42 @@ cmd_collect() {
         git -C "$REPO_ROOT" update-ref --no-deref "$branch_ref" "$incoming_tip" "0000000000000000000000000000000000000000" ||
             die "local ${branch} moved during collection; nothing was replaced (git error above)"
     fi
-    # A worktree can be added after the last occupancy read.  Restore only if the
-    # value is still ours: this is another CAS, so this cleanup never overwrites a
-    # newer operator change merely to repair the race it detected.
+    # A worktree can be added after the last occupancy read. If it checked out the
+    # incoming tip after our CAS, branch and worktree already agree and collection is
+    # safe. If it checked out the old tip before the CAS completed, restore the branch
+    # with another CAS so its index and files remain clean too.
     worktrees=$(git -C "$REPO_ROOT" worktree list --porcelain) ||
         die "local ${branch} was updated, but worktree occupancy could not be rechecked; inspect it before changing anything"
-    if printf '%s\n' "$worktrees" | grep -Fqx "branch ${branch_ref}"; then
+    occupied_path=$(printf '%s\n' "$worktrees" | worktree_path_for_ref "$branch_ref")
+    if [ -n "$occupied_path" ]; then
+        occupied_tree=$(git -C "$occupied_path" write-tree) ||
+            die "local ${branch} was updated, but the new worktree index could not be read; inspect it before changing anything"
+        incoming_tree=$(git -C "$REPO_ROOT" rev-parse "${incoming_tip}^{tree}") ||
+            die "local ${branch} was updated, but its incoming tree could not be resolved"
+        old_tree=""
         if [ -n "$old_tip" ]; then
+            old_tree=$(git -C "$REPO_ROOT" rev-parse "${old_tip}^{tree}") ||
+                die "local ${branch} was updated, but its previous tree could not be resolved"
+        fi
+        if [ "$occupied_tree" = "$incoming_tree" ]; then
+            : # The worktree began after the CAS and already agrees with the branch.
+        elif [ -n "$old_tip" ] && [ "$occupied_tree" = "$old_tree" ]; then
             git -C "$REPO_ROOT" update-ref --no-deref "$branch_ref" "$old_tip" "$incoming_tip" ||
                 die "local ${branch} became occupied and could not be safely restored; inspect it before changing anything"
+            die "local ${branch} became occupied during collection; its previous value was restored"
         else
-            git -C "$REPO_ROOT" update-ref --no-deref -d "$branch_ref" "$incoming_tip" ||
-                die "local ${branch} became occupied and could not be safely restored; inspect it before changing anything"
+            die "local ${branch} was updated, but the new worktree index matches neither its previous nor incoming tree; inspect it before changing anything"
         fi
-        die "local ${branch} became occupied during collection; its previous value was restored"
     fi
+
+    # A later re-author may move the branch away from this exact chamber tip. Record
+    # successful publication outside the chamber-writable drawer so `rm` can distinguish
+    # durable collection from an object imported by a collection that later refused.
+    collected_marker=$(collected_marker_of "$task" "$incoming_tip")
+    mkdir -p "$(dirname "$collected_marker")" ||
+        die "local ${branch} was updated, but its collection marker could not be created"
+    (umask 077; : > "$collected_marker") ||
+        die "local ${branch} was updated, but its collection marker could not be written"
 
     # An agent that committed nothing leaves its branch pointing at the base, and the
     # bundle for that branch builds and fetches perfectly. Saying "collected" over it
@@ -1542,21 +1585,24 @@ cmd_rm() {
             printf '%s\n' "$chamber_tips" >&2
             die "cannot read the branches in '$task' (above), so nothing here can say whether it holds work. Destroy it unread with: $0 rm $task force"
         fi
-        # **Does this repository have the object** — not "is the tip the same SHA".
-        # Equality deadlocked the moment the host branch moved, which is what
-        # `collect` itself tells the operator to do next: amend the trailers in, and
-        # `rm` then refused for ever while `collect` refused to re-fetch a rewind, so
-        # the only spelling left was the destructive one. Presence is the question
-        # that was always meant: a commit whose object is here was collected, however
-        # the branch has moved since.
+        # Mere object presence is not collection: a refused `collect` has already
+        # fetched the object before its incoming ref is removed. Require a durable ref,
+        # or the host-only marker written only after destination publication succeeded.
         chamber_base=$(docker inspect \
             --format '{{index .Config.Labels "verbatus.base"}}' \
             "$(container_of "$task")" 2>/dev/null) || chamber_base=""
         for tip in $chamber_tips; do
             [ -n "$tip" ] || continue
             [ "$tip" = "$chamber_base" ] && continue
-            git -C "$REPO_ROOT" cat-file -e "${tip}^{commit}" 2>/dev/null && continue
-            die "chamber '$task' holds a commit this repository does not have (${tip}). Run '$0 collect $task' — and if it is on a branch other than agent/${task}, move or merge it there first, because that is the only branch collection bundles. Or destroy it with: $0 rm $task force"
+            if git -C "$REPO_ROOT" for-each-ref --contains "$tip" --format='%(refname)' \
+                refs/heads refs/tags refs/remotes 2>/dev/null | grep -q .; then
+                continue
+            fi
+            collected_marker=$(collected_marker_of "$task" "$tip")
+            if [ ! -L "$collected_marker" ] && [ -f "$collected_marker" ]; then
+                continue
+            fi
+            die "chamber '$task' holds a commit this repository does not have a durably collected copy of (${tip}). Run '$0 collect $task' — and if it is on a branch other than agent/${task}, move or merge it there first, because that is the only branch collection bundles. Or destroy it with: $0 rm $task force"
         done
     fi
 

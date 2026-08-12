@@ -49,6 +49,7 @@ def require_ancestor(root: Path, base: str, candidate: str) -> None:
     result = subprocess.run(
         ["git", "-C", str(root), "merge-base", "--is-ancestor", base, candidate],
         capture_output=True,
+        text=True,
         env=GIT_ENV,
     )
     if result.returncode == 1:

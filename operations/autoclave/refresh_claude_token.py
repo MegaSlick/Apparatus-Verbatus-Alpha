@@ -77,7 +77,8 @@ def lifetime_milliseconds(value: object) -> int | None:
     milliseconds = seconds * 1000
     if not math.isfinite(milliseconds):
         return None
-    return int(milliseconds)
+    whole_milliseconds = int(milliseconds)
+    return whole_milliseconds if whole_milliseconds >= 1 else None
 
 
 def refresh() -> int:
@@ -96,7 +97,8 @@ def refresh() -> int:
             except BlockingIOError:
                 time.sleep(0.05)
         try:
-            document = json.loads(path.read_text(encoding="utf-8"))
+            original = path.read_bytes()
+            document = json.loads(original)
             oauth = document["claudeAiOauth"]
             if not isinstance(oauth, dict):
                 raise TypeError("claudeAiOauth is not an object")
@@ -185,6 +187,13 @@ def refresh() -> int:
             oauth["refreshTokenExpiresAt"] = now_ms + refresh_lifetime_ms
 
         try:
+            # The vendor CLI does not participate in this helper's lock. Refuse a
+            # known interleaving rather than overwriting credential state it changed
+            # while the endpoint request was in flight. A change after this comparison
+            # remains an accepted limitation of sharing one vendor configuration.
+            if path.read_bytes() != original:
+                print("refresh: credential changed concurrently; retrying is safe", file=sys.stderr)
+                return 1
             publish(path, document)
         except OSError as error:
             print(
