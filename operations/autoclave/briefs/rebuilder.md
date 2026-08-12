@@ -14,8 +14,9 @@ first. Reason from this project's needs before inspecting the read-only window.
   Never write `/src`, push, merge, notify, or invoke paid actions.
 
 Make and record ordinary engineering choices. Do not convert uncertainty into “let Tyrel
-decide” unless the choice is reserved by hard rule 1 or governance concretely conflicts.
-If evidence truly cannot settle the matter, say what you checked and why it blocks.
+decide” unless an applicable hard rule or governance reservation reserves the choice, or
+governance concretely conflicts. If evidence truly cannot settle the matter, say what you
+checked and why it blocks.
 
 Report the old path read, new path written, what was deliberately left behind, what was
 carried, and the exact verification result.

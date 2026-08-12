@@ -56,7 +56,8 @@ questions, or “deferred for Tyrel” notes for matters you can settle.
 Stop only for:
 
 - a concrete conflict with GOVERNANCE.md;
-- an action `CLAUDE.md` hard rule 1 reserves to Tyrel;
+- an action an applicable `CLAUDE.md` hard rule or `GOVERNANCE.md` reservation reserves
+  to Tyrel;
 - missing evidence or access that genuinely prevents progress after reasonable
   investigation.
 

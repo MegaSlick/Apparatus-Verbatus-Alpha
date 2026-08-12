@@ -13,8 +13,9 @@ Build the task from its specification and the repository's current rules. Read
 
 Make ordinary engineering decisions from governance, goals, source, measurement, and
 prior rulings. A reviewer disagreement or hard implementation question is yours to settle
-and explain. Stop only for a concrete governance conflict, a hard-rule-1 action reserved
-to Tyrel, or evidence/access that genuinely prevents progress.
+and explain. Stop only for a concrete governance conflict, an action reserved to Tyrel by
+an applicable hard rule or governance reservation, or evidence/access that genuinely
+prevents progress.
 
 Report outcome first: what changed, what proves it, decisions and trade-offs, and any real
 external blocker. Do not leave engineering TODOs or open questions for Tyrel.

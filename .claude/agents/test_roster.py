@@ -151,7 +151,7 @@ def test_the_briefs_that_replaced_the_writing_roles_still_bind_them():
 def test_negative_wording_is_not_a_governing_read_directive():
     assert (
         affirmative_governing_read_directive(
-            "# Builder\n\nDo not read README.md and the governing documents first."
+            "# Builder\n\nDo not read README.md and the governing documents from /work first."
         )
         is None
     )

@@ -2606,8 +2606,8 @@ class TestSignInIsAsked:
         status = next(call for call in docker_calls(log) if "login status" in " ".join(call))
         assert image_id in login
         assert image_id in status
-        assert "verbatus-autoclave:latest" not in login
-        assert "verbatus-autoclave:latest" not in status
+        assert "verbatus-autoclave:dev" not in login
+        assert "verbatus-autoclave:dev" not in status
 
     def test_a_tty_login_uses_the_same_inspected_image_id(self, tmp_path):
         """The interactive branch must not fall back to the mutable tag either."""
@@ -2633,7 +2633,7 @@ class TestSignInIsAsked:
         login = next(call for call in docker_calls(log) if "codex login" in " ".join(call))
         assert "--tty" in login
         assert image_id in login
-        assert "verbatus-autoclave:latest" not in login
+        assert "verbatus-autoclave:dev" not in login
 
     def test_a_first_time_login_keeps_the_volume_it_created(self, tmp_path):
         """The path that matters, and the one nothing covered.
