@@ -87,7 +87,7 @@ def main() -> int:
         if command == "bundle" and len(sys.argv) == 4:
             with open_regular(source, os.O_WRONLY | os.O_CREAT | os.O_TRUNC) as writing:
                 subprocess.run(
-                    ["git", "bundle", "create", "-", sys.argv[3]],
+                    ["git", "bundle", "create", "-", "--end-of-options", sys.argv[3]],
                     stdout=writing,
                     check=True,
                 )

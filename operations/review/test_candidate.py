@@ -97,6 +97,7 @@ def test_receipt_binds_the_report_and_refuses_a_moved_head(tmp_path):
     assert len(record["report_sha256"]) == 64
     snapshot = tmp_path / record["report"]
     assert snapshot.read_bytes() == report.read_bytes()
+    assert record["report_sha256"] == hashlib.sha256(snapshot.read_bytes()).hexdigest()
 
     report.unlink()
     assert snapshot.read_text() == f"Candidate: {candidate}\nBase: {base}\nNo findings.\n"

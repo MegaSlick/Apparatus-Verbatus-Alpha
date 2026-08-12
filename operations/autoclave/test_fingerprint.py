@@ -3,6 +3,17 @@ import hashlib
 from operations.autoclave.fingerprint import INPUTS, digest
 
 
+def test_the_declared_inputs_cover_every_baked_file():
+    assert set(INPUTS) == {
+        ".dockerignore",
+        "operations/autoclave/Dockerfile",
+        "operations/autoclave/agent-brief.md",
+        "operations/autoclave/fingerprint.py",
+        "operations/autoclave/refresh_claude_token.py",
+        "requirements-dev.txt",
+    }
+
+
 def test_every_declared_input_changes_the_fingerprint(tmp_path):
     for relative in INPUTS:
         path = tmp_path / relative

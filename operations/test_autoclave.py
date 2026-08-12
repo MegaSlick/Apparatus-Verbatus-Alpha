@@ -150,7 +150,11 @@ if hold_on and hold_on in " ".join(args):
     if ready:
         open(ready, "w").close()
     release = setting("FAKE_HOLD_RELEASE")
+    deadline = time.monotonic() + 60
     while release and not os.path.exists(release):
+        if time.monotonic() >= deadline:
+            sys.stderr.write(f"fake docker: hold was never released: {release}\\n")
+            raise SystemExit(126)
         time.sleep(0.01)
 
 
