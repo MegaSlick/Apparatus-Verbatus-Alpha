@@ -1,16 +1,25 @@
 import hashlib
+import re
+from pathlib import Path
 
 from operations.autoclave.fingerprint import INPUTS, digest
 
 
 def test_the_declared_inputs_cover_every_baked_file():
-    assert set(INPUTS) == {
+    root = Path(__file__).parents[2]
+    dockerfile = (root / "operations/autoclave/Dockerfile").read_text()
+    copied = set(re.findall(r"(?m)^COPY\s+(\S+)\s+\S+\s*$", dockerfile))
+    admitted = {
+        line[1:]
+        for line in (root / ".dockerignore").read_text().splitlines()
+        if line.startswith("!") and not line.endswith("/")
+    }
+
+    assert copied == admitted
+    assert set(INPUTS) == copied | {
         ".dockerignore",
         "operations/autoclave/Dockerfile",
-        "operations/autoclave/agent-brief.md",
         "operations/autoclave/fingerprint.py",
-        "operations/autoclave/refresh_claude_token.py",
-        "requirements-dev.txt",
     }
 
 

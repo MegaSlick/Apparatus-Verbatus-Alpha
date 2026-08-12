@@ -222,7 +222,11 @@ def refresh() -> int:
         try:
             publish(path, document, original)
         except ConcurrentCredential:
-            print("refresh: credential changed concurrently; retrying is safe", file=sys.stderr)
+            print(
+                "refresh: credential changed concurrently; rotated tokens were not published — "
+                "retry, and sign in again if the refresh token was invalidated",
+                file=sys.stderr,
+            )
             return 1
         except OSError as error:
             print(
