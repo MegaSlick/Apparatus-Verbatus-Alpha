@@ -120,6 +120,8 @@ def main() -> int:
             return 0
         if command == "retain" and len(sys.argv) == 4:
             destination = Path(sys.argv[3])
+            with open_regular(source, os.O_RDONLY) as retained:
+                os.fsync(retained.fileno())
             os.replace(source, destination)
             directory = os.open(destination.parent, os.O_RDONLY)
             try:
