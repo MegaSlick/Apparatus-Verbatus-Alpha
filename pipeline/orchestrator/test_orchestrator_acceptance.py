@@ -119,8 +119,14 @@ FIXTURE = "synthetic-two-page-v0"
 # Recomputed against the real orchestrator for this merge. PNG entries bind to
 # decoded pixels and dimensions rather than one zlib build's compressed bytes;
 # every non-image entry remains byte-bound.
-HAPPY_RUN_TREE_DIGEST = "08786d35d16d2188172a4e18b4cea223ec68851c800eaa01abacc42bae685894"
-REVIEW_RUN_TREE_DIGEST = "b19676833ebb8292983041b5d91a10e5ee0ee382d8cd0c50ea1a0b826f8e4f15"
+#
+# Moved once more, same pattern as the two entries above: a stage-09 pre-push
+# CodeRabbit pass dropped a `door.py:278-300` line-number citation from
+# `config/hard_failure.toml`'s comments (a stable reference stays; a line range
+# that drifts as the file is edited does not). File counts and scenario
+# behaviour are unchanged; only the sealed config digest moved.
+HAPPY_RUN_TREE_DIGEST = "2b9924f8e5fa39f1d7b352f96a0343033ed6bd78272bd7cc5e83f2f1e668c5c7"
+REVIEW_RUN_TREE_DIGEST = "584145ebdddc0561f3cd1beb17d9bbffeb87bd9e7a672b78d11c1028e6557133"
 
 
 def orchestrate(

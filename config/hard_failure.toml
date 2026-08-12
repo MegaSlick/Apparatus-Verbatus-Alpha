@@ -60,7 +60,7 @@ threshold = 2
 # vocabulary already separates exactly the old pipeline's hard/soft split by
 # name: `corrupt` and `unreadable` are raised only when real bytes fail
 # structural decode or a PDF/TIFF page fails to render inside `door.py`'s
-# per-page `container_page_index` path (see `door.py:278-300`) -- this is
+# per-page `container_page_index` path -- this is
 # "a corrupt or unrenderable image" almost verbatim, at the same per-page
 # granularity the old pipeline measured 218 silent losses at. The other five
 # reasons are deliberately NOT added: `empty`/`too-large` are policy bounds,

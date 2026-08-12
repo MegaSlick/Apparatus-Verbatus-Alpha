@@ -290,11 +290,14 @@ def test_grayscale_rows_refuses_a_decompression_bomb_without_materializing_it():
         Image.MAX_IMAGE_PIXELS = original
 
 
-def test_grayscale_rows_refuses_a_declared_size_past_the_bound_on_its_native_path():
-    """`grayscale_rows` tries the native codec first, and `residual_ink.py` is a
-    new caller of it in this diff -- the same declared-size bomb the native
-    `decode_grayscale_png` path now refuses must not reach `residual_ink`'s own
-    pixel loops either."""
+def test_grayscale_rows_refuses_a_declared_size_bomb_regardless_of_which_path_observes_it():
+    """`residual_ink.py` is a new caller of `grayscale_rows` in this diff, so the
+    same declared-size bomb `decode_grayscale_png` refuses must not reach
+    `residual_ink`'s own pixel loops either -- from either of `grayscale_rows`'s
+    two internal paths. Not "on its native path" specifically: `grayscale_rows`
+    catches any `ValueError` from the native decode, including this one, and
+    retries through the Pillow fallback -- so this fixture's bound refusal is
+    actually observed there, not on the native path that raised it first."""
     width, height = 20_000, 6_000
     assert width * height > MAX_PIXELS
     over_the_limit = repack(width, height, b"never reached")

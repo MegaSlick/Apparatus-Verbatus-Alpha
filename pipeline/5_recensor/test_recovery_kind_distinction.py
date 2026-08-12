@@ -106,14 +106,16 @@ def test_the_real_recovery_request_names_fallback_recrop(tmp_path):
 # under test rather than something a cross-referenced digest catches first ----
 
 
-def _publish_recovery_request(tree: RunTree, act_id: str, payload_overrides: dict) -> None:
+def _publish_recovery_request(
+    tree: RunTree, act_id: str, payload_overrides: dict, ordinal: int = 1
+) -> None:
     payload = {
         "act_key": "a1",
-        "attempt_ordinal": 1,
+        "attempt_ordinal": ordinal,
         "recovery_kind": FALLBACK_RECROP,
         "reason": "test fixture",
         "budget_allowed": BUDGET["allowed"],
-        "budget_used": 0,
+        "budget_used": ordinal - 1,
         "kind_budget_allowed": 1,
         "kind_budget_used": 0,
         "coverage": {},
@@ -127,7 +129,7 @@ def _publish_recovery_request(tree: RunTree, act_id: str, payload_overrides: dic
     envelope = build_envelope(
         run_id=tree.run_id,
         artifact_id=artifact_id(
-            RECENSOR, "recovery-request", act_id, attempt_id(act_id, "recover", 1)
+            RECENSOR, "recovery-request", act_id, attempt_id(act_id, "recover", ordinal)
         ),
         subject_id=act_id,
         stage=RECENSOR,
@@ -137,7 +139,7 @@ def _publish_recovery_request(tree: RunTree, act_id: str, payload_overrides: dic
         adapter_revision="fake-recensor-v0",
         inputs=[],
         payload=payload,
-        attempt=attempt_id(act_id, "recover", 1),
+        attempt=attempt_id(act_id, "recover", ordinal),
     )
     tree.publish_artifact(envelope)
     tree.write_manifest(RECENSOR)
@@ -225,9 +227,46 @@ def test_recovery_state_accepts_both_real_kinds(tmp_path):
     tree.publish_artifact(review_envelope)
     tree.write_manifest(RECENSOR)
 
+    # A second, distinct kind at the next ordinal -- "both real kinds" means
+    # both, not one accepted and the other's bucket merely asserted empty.
+    _publish_recovery_request(
+        tree,
+        act_id,
+        {"recovery_kind": FALLBACK_RECROP, "perlectio_ref": perlectio_ref},
+        ordinal=2,
+    )
+    second_request_ref = _MiniContext(tree).artifact_ref(
+        RECENSOR,
+        "recovery-request",
+        artifact_id(RECENSOR, "recovery-request", act_id, attempt_id(act_id, "recover", 2)),
+    )
+    second_review_envelope = build_envelope(
+        run_id=tree.run_id,
+        artifact_id=artifact_id(RECENSOR, "review", act_id, attempt_id(act_id, "recense", 2)),
+        subject_id=act_id,
+        stage=RECENSOR,
+        kind="review",
+        outcome="recovery-requested",
+        config_digest=CONFIG_DIGEST,
+        adapter_revision="fake-recensor-v0",
+        inputs=[second_request_ref],
+        payload={
+            "act_key": "a1",
+            "attempt_ordinal": 2,
+            "recovery_kind": FALLBACK_RECROP,
+            "coverage": {},
+            "perlectio_ref": perlectio_ref,
+            "recovery_request_ref": second_request_ref,
+            "recovery_policy": BUDGET,
+        },
+        attempt=attempt_id(act_id, "recense", 2),
+    )
+    tree.publish_artifact(second_review_envelope)
+    tree.write_manifest(RECENSOR)
+
     state = recensor.recovery_state(_MiniContext(tree), act_id, BUDGET)
     assert len(state["requests_by_kind"][PAGE_LEVEL_REREAD]) == 1
-    assert len(state["requests_by_kind"][FALLBACK_RECROP]) == 0
+    assert len(state["requests_by_kind"][FALLBACK_RECROP]) == 1
 
 
 # --- The Designator: refuses to answer a request meant for another stage ------
