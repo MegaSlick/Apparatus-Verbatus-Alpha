@@ -24,6 +24,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -126,6 +127,33 @@ def main() -> int:
             finally:
                 os.close(directory)
             return 0
+        if command == "bundle-tip" and len(sys.argv) == 5:
+            reference = sys.argv[3]
+            expected = sys.argv[4]
+            with tempfile.TemporaryDirectory(prefix="autoclave-bundle-check.") as repository:
+                subprocess.run(["git", "-C", repository, "init", "--bare", "--quiet"], check=True)
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        repository,
+                        "fetch",
+                        "--quiet",
+                        str(source),
+                        f"{reference}:refs/autoclave/verified",
+                    ],
+                    check=True,
+                )
+                actual = subprocess.run(
+                    ["git", "-C", repository, "rev-parse", "refs/autoclave/verified"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                if actual != expected:
+                    raise OSError("retained bundle resolved to the wrong commit")
+            print("recoverable")
+            return 0
         if command == "worktree" and len(sys.argv) == 5:
             mode = sys.argv[4]
             if mode not in {"occupied", "tree"}:
@@ -157,6 +185,7 @@ def main() -> int:
     print(
         "usage: safe_file.py read SLOT | write SOURCE SLOT | bundle SLOT REF | "
         "retain SOURCE DESTINATION | "
+        "bundle-tip BUNDLE REF EXPECTED | "
         "worktree ROOT REF occupied|tree",
         file=sys.stderr,
     )

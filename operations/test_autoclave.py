@@ -1799,6 +1799,26 @@ class TestWhatComesBackAndWhatIsDestroyed:
         assert result.returncode == 0, result.stderr
         assert ["rm", "--force", "verbatus-ac-task-x"] in docker_calls(log)
 
+    def test_rm_refuses_a_retained_bundle_whose_pack_was_truncated(self, tmp_path):
+        script, clone, drawer, env, log = self.chamber(tmp_path)
+        tip = git(clone, "rev-parse", "agent/task-x")
+        collected = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+        assert collected.returncode == 0, collected.stderr
+        retained = tmp_path / "workbench" / "autoclave" / ".collected" / "task-x" / tip
+
+        git(tmp_path, "branch", "-D", "agent/task-x")
+        (drawer / "task-x.bundle").unlink()
+        git(tmp_path, "reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
+        git(tmp_path, "gc", "--prune=now")
+        data = retained.read_bytes()
+        retained.write_bytes(data[: data.index(b"PACK") + 20])
+
+        result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "durably collected copy" in result.stderr
+        assert not any(call[:2] == ["rm", "--force"] for call in docker_calls(log))
+
     def test_rm_refuses_a_chamber_it_cannot_read(self, tmp_path):
         """ "A check that cannot run is a failure, not a pass" — `.githooks/commit-msg`
         says it in those words, and the arm that says it here had no test. Swallowing

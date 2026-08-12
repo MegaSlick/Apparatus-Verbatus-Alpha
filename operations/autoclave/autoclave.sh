@@ -1596,9 +1596,9 @@ cmd_rm() {
             fi
             collected_marker=$(collected_marker_of "$task" "$tip")
             if [ ! -L "$collected_marker" ] && [ -f "$collected_marker" ]; then
-                marker_head=$(git -C "$REPO_ROOT" bundle list-heads "$collected_marker" \
-                    "refs/heads/agent/${task}" 2>/dev/null) || marker_head=""
-                if [ "$marker_head" = "${tip} refs/heads/agent/${task}" ]; then
+                recoverable=$(python3 "$SAFE_FILE" bundle-tip "$collected_marker" \
+                    "refs/heads/agent/${task}" "$tip" 2>/dev/null) || recoverable=""
+                if [ "$recoverable" = recoverable ]; then
                     continue
                 fi
             fi
