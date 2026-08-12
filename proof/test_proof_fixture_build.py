@@ -287,6 +287,11 @@ def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
     ]
     for row in rows:
         assert row["chair"] in configured_witness_chairs(models_config)
+    # attestator_3 is absent from blank-with-dissent's witness_empty rows above,
+    # which is what makes it the dissenting chair -- but absence alone would
+    # equally describe a chair whose declared testimony was itself blank. The
+    # dissent this scenario exists to exercise requires real, non-empty text.
+    assert TESTIMONY["a1"]["attestator_3"].strip()
 
 
 def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleton):
@@ -300,6 +305,14 @@ def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleto
         assert classify(PERLECTOR, row["outcome"]) is not OutcomeClass.COMPLETED
 
     by_scenario = {row["scenario"]: row["outcome"] for row in failures}
+    # The exact scenario-to-outcome mapping, before classifying it: a fixture
+    # that quietly swapped which scenario carries which outcome could still
+    # pass the classification asserts below by accident.
+    assert by_scenario == {
+        "truncated-reading": "truncated",
+        "confirmed-blank": "no-readable-text",
+        "blank-with-dissent": "no-readable-text",
+    }
     # `truncated` is FAILED-class and still carries text -- the hazard the
     # Archetypus's own guard (spec 09) exists to refuse.
     assert classify(PERLECTOR, by_scenario["truncated-reading"]) is OutcomeClass.FAILED

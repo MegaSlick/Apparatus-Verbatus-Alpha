@@ -251,7 +251,7 @@ def test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes(tmp_path
     monkeypatch.setattr(
         imaging.zlib,
         "compress",
-        lambda data, level: compress(data, level=0),
+        lambda data, *args, **kwargs: compress(data, level=0),
     )
     image_path.write_bytes(imaging.encode_grayscale_png(3, 2, rows))
 

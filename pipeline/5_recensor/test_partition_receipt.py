@@ -110,6 +110,11 @@ def test_recovery_replaces_the_current_partition_snapshot_without_erasing_histor
     assert accepted["review_ref"] != requested["review_ref"]
     assert before["self_hash"] != after["self_hash"]
 
+    # The receipt is the one record replaced in place. The evidence it was
+    # derived from is append-only (GOVERNANCE 4) and must still be on disk, or
+    # the round that produced the recrop could no longer be reconstructed.
+    assert tree.resolve(requested["review_ref"]["relative_path"]).exists()
+
 
 def test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_denominator(tmp_path):
     root = tmp_path / "runs"

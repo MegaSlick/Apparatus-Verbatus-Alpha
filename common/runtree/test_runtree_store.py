@@ -881,6 +881,12 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
     written.append(
         tree.write_recensor_partition_receipt(make_recensor_partition_receipt()).relative_path
     )
+    # Not just "in scope" like every other entry below -- the receipt is a
+    # replace-in-place write, so its exact published location is worth
+    # pinning against the module's own named constant rather than only its
+    # source text (which `test_no_store_writer_reaches_a_path_the_inventory_
+    # scope_cannot_name` checks separately, for a different reason).
+    assert written[-1] == runtree_store.RECENSOR_PARTITION_RECEIPT_FILE
 
     assert len(written) == 7
     for path in written:

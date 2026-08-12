@@ -111,6 +111,20 @@ def test_an_unclassified_outcome_pair_is_refused(tmp_path):
         load_hard_failure_policy(path)
 
 
+def test_a_misspelled_outcome_names_itself_in_the_refusal(tmp_path):
+    """A typo'd outcome is not a member of the stage's outcome algebra at all --
+    a different refusal than a real outcome classifying the wrong way -- and the
+    message should let a config author spot their own typo rather than just
+    learn something was rejected."""
+    path = write_policy(
+        tmp_path, 'threshold = 2\n[[kind]]\nstage = "perlector"\noutcome = "faild"\n'
+    )
+    with pytest.raises(ContractError, match="in no terminal set") as caught:
+        load_hard_failure_policy(path)
+    assert "perlector" in str(caught.value)
+    assert "faild" in str(caught.value)
+
+
 def test_an_unresolved_outcome_pair_is_refused(tmp_path):
     """`held-for-review` is exactly the ordinary, working shape of this pipeline;
     configuring it into a systemic-breakage cap would stop every real run."""
@@ -409,6 +423,15 @@ def test_a_door_refusal_with_no_reason_field_does_not_crash_the_reason_match(tmp
         outcome="refused",
         adapter_revision="fake-door-v0",
     )
+    publish(
+        tree,
+        stage=DOOR,
+        kind="admission",
+        subject="source-0000000000000002",
+        outcome="refused",
+        adapter_revision="fake-door-v0",
+        reason=12,
+    )
     policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
     tally = tally_hard_failures(tree, policy)
     assert tally["count"] == 0
@@ -478,10 +501,12 @@ def test_the_same_stage_and_outcome_with_and_without_reason_are_not_duplicates(t
     path = write_policy(
         tmp_path,
         "threshold = 2\n"
+        '[[kind]]\nstage = "door"\noutcome = "refused"\n'
         '[[kind]]\nstage = "door"\noutcome = "refused"\nreason = "corrupt"\n'
         '[[kind]]\nstage = "door"\noutcome = "refused"\nreason = "unreadable"\n',
     )
     policy = load_hard_failure_policy(path)
+    assert policy["kinds"] == [("door", "refused")]
     assert policy["reason_kinds"] == [
         ("door", "refused", "corrupt"),
         ("door", "refused", "unreadable"),

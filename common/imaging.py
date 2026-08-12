@@ -51,6 +51,17 @@ MAX_PIXELS = 100_000_000
 # speaks, with a message naming the page rather than a library's internal limit.
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
+
+def _refuse_past_pixel_bound(width: int, height: int) -> None:
+    """The one place `MAX_PIXELS` is enforced against a pair of dimensions —
+    four call sites (the native path, both Pillow-fallback decode paths, and
+    the CMYK/mode-conversion crop) needed the identical check and message."""
+    if width * height > MAX_PIXELS:
+        raise ValueError(
+            f"a {width}x{height} page is past this pipeline's {MAX_PIXELS}-pixel bound"
+        )
+
+
 # Pillow's bomb error descends from `Exception`, not `ValueError`, so neither
 # decoding path below caught it and it escaped past this module's stated contract
 # that an undecodable page raises `ValueError`.
@@ -169,10 +180,7 @@ def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     # below (`dimensions`, `grayscale_rows`) already refuse past this same
     # ceiling before decoding; this native path claimed the identical bound
     # in its own module comment but never enforced it.
-    if width * height > MAX_PIXELS:
-        raise ValueError(
-            f"a {width}x{height} page is past this pipeline's {MAX_PIXELS}-pixel bound"
-        )
+    _refuse_past_pixel_bound(width, height)
 
     # Bound the decompression before it happens, not after. `zlib.decompress` on
     # attacker-shaped input will materialize whatever the stream expands to, so a
@@ -238,11 +246,7 @@ def dimensions(png_bytes: bytes) -> tuple[int, int]:
     except ValueError:
         try:
             with Image.open(BytesIO(png_bytes)) as image:
-                if image.width * image.height > MAX_PIXELS:
-                    raise ValueError(
-                        f"a {image.width}x{image.height} page is past this pipeline's "
-                        f"{MAX_PIXELS}-pixel bound"
-                    )
+                _refuse_past_pixel_bound(image.width, image.height)
                 image.load()
                 return image.width, image.height
         except (*_DECODE_FAILURES, ValueError) as error:
@@ -269,11 +273,7 @@ def grayscale_rows(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
         pass
     try:
         with Image.open(BytesIO(png_bytes)) as image:
-            if image.width * image.height > MAX_PIXELS:
-                raise ValueError(
-                    f"a {image.width}x{image.height} page is past this pipeline's "
-                    f"{MAX_PIXELS}-pixel bound"
-                )
+            _refuse_past_pixel_bound(image.width, image.height)
             image.load()
             grayscale = image if image.mode == "L" else image.convert("L")
             width, height = grayscale.width, grayscale.height
@@ -298,11 +298,7 @@ def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> byte
     """
     try:
         with Image.open(BytesIO(png_bytes)) as image:
-            if image.width * image.height > MAX_PIXELS:
-                raise ValueError(
-                    f"a {image.width}x{image.height} page is past this pipeline's "
-                    f"{MAX_PIXELS}-pixel bound"
-                )
+            _refuse_past_pixel_bound(image.width, image.height)
             image.load()
             if x < 0 or y < 0 or x + w > image.width or y + h > image.height:
                 raise ValueError(

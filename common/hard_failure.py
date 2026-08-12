@@ -168,11 +168,25 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
     # round. Two entries already share the door today. Caching also gives every
     # kind in one tally the same snapshot of the tree.
     manifests: dict[str, list[dict[str, Any]]] = {}
+    reasons_seen: dict[tuple[str, str, str], str | None] = {}
 
     def artifacts(stage: str) -> list[dict[str, Any]]:
         if stage not in manifests:
             manifests[stage] = tree.build_manifest(stage)["artifacts"]
         return manifests[stage]
+
+    def reason_of(stage: str, entry: dict[str, Any]) -> str | None:
+        # A reason-scoped policy can name several reasons on the same
+        # (stage, outcome) pair (`door:refused:corrupt` and `:unreadable`
+        # today), and each pass over `artifacts(stage)` would otherwise
+        # re-read every one of that stage's artifacts from disk once per
+        # reason. Cached per artifact instead, so each is read at most once
+        # regardless of how many reason_kinds entries name its stage.
+        key = (stage, entry["kind"], entry["artifact_id"])
+        if key not in reasons_seen:
+            record = tree.read_artifact(stage, entry["kind"], entry["artifact_id"])
+            reasons_seen[key] = _reason_code(record["payload"].get("reason"))
+        return reasons_seen[key]
 
     by_kind: dict[str, list[str]] = {}
     subjects: set[tuple[str, str]] = set()
@@ -188,13 +202,7 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
             {
                 entry["subject_id"]
                 for entry in artifacts(stage)
-                if entry["outcome"] == outcome
-                and _reason_code(
-                    tree.read_artifact(stage, entry["kind"], entry["artifact_id"])["payload"].get(
-                        "reason"
-                    )
-                )
-                == reason
+                if entry["outcome"] == outcome and reason_of(stage, entry) == reason
             }
         )
         by_kind[f"{stage}:{outcome}:{reason}"] = matches

@@ -186,14 +186,19 @@ def test_an_excluded_chair_cannot_stand_in_for_a_witness_that_never_read(tmp_pat
 
 
 def test_an_unresolved_chair_never_corroborates_blank():
-    coverage = {"under_witnessed": False, "unresolved_chairs": 1}
+    # `floor` present, not merely omitted: this must fail on the
+    # `unresolved_chairs` check specifically, not pass by accident because a
+    # missing key was never read -- if the checks are ever reordered, this
+    # should raise a clear `KeyError` rather than silently start asserting
+    # the wrong branch.
+    coverage = {"under_witnessed": False, "unresolved_chairs": 1, "floor": 2}
     outcomes = {"attestator_1": "genuinely-empty", "attestator_2": "not-run"}
     assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) is None
 
 
 def test_testimonia_from_original_regions_cannot_confirm_a_recovery_region_blank():
     """Recovery ink is witness-uncovered; inherited testimony did not see it."""
-    coverage = {"under_witnessed": False, "unresolved_chairs": 0}
+    coverage = {"under_witnessed": False, "unresolved_chairs": 0, "floor": 3}
     outcomes = {
         "attestator_1": "genuinely-empty",
         "attestator_2": "genuinely-empty",

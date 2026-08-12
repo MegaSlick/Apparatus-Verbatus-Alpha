@@ -41,8 +41,11 @@ RECENSOR_DIRECTORY = ROOT / "pipeline/5_recensor"
 # claiming it found "every call site in the stage". A structural guard that scans
 # less than it says it scans is worse than none: it reports a pass for ground it
 # never covered. Discovered by the branch's own review and carried until now.
+#
+# `rglob`, not `glob`: a guard that scans one directory while the stage has
+# grown a subpackage would repeat the exact same failure one level deeper.
 RECENSOR_SOURCES = sorted(
-    path for path in RECENSOR_DIRECTORY.glob("*.py") if not path.name.startswith("test_")
+    path for path in RECENSOR_DIRECTORY.rglob("*.py") if not path.name.startswith("test_")
 )
 
 # Every name the recovery gate is allowed to consult. All of them are coverage

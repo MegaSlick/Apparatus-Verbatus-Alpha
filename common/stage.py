@@ -915,8 +915,9 @@ def current_recovery_request(
     use this one check so a direct Designator invocation cannot bypass the
     orchestrator's view of the recovery loop.
     """
+    recensor_artifacts = tree.build_manifest(RECENSOR)["artifacts"]
     reviews = []
-    for entry in tree.build_manifest(RECENSOR)["artifacts"]:
+    for entry in recensor_artifacts:
         if entry["kind"] == "review" and entry["subject_id"] == act_id:
             reviews.append(tree.read_artifact(RECENSOR, "review", entry["artifact_id"]))
     review = latest_attempt(reviews, f"Recensor review of {act_id}", operation="recense")
@@ -992,7 +993,7 @@ def current_recovery_request(
     reconcile_recovery_requests(
         [
             tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
-            for entry in tree.build_manifest(RECENSOR)["artifacts"]
+            for entry in recensor_artifacts
             if entry["kind"] == "recovery-request" and entry["subject_id"] == act_id
         ],
         act_id,
