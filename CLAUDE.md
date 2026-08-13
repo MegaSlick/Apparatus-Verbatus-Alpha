@@ -74,6 +74,11 @@ cannot push, returns a branch, and may not edit governed paths. Read its diff an
 load-bearing claims before integrating it. Use agents for bounded work that benefits from
 independent context; do not create ceremony merely to satisfy a roster.
 
+Default seats are Sonnet and Terra at medium; Opus and Sol at high for audit and
+correction work. A Fable seat, and the `ultracode`/`ultra` effort levels, are dispatched
+only when Tyrel asks in the session. `.claude/agents/README.md` carries the full seat
+table and the ruling's provenance.
+
 ## Quarantine
 
 Understanding crosses from the old system; bytes cross only when they are the best option,
