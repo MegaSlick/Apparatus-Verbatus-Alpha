@@ -390,10 +390,15 @@ def test_two_groups_naming_one_crop_path_collapse_to_a_single_input():
     pipeline/orchestrator` stayed **entirely green**. The claim was false and the
     guard did not exist.
 
-    What it guards is real. Blobs are content-addressed, so a recovery crop whose
-    pixels are identical to its proposal crop is literally the same file under
-    the same path -- and `build_envelope` refuses one path listed twice. Without
-    the collapse, that ordinary and correct situation would abort the stage.
+    What it guards is narrower than first claimed, and the function's own
+    docstring says so: `_crop_references` already refuses two *regions* naming
+    one crop path before this function runs, so the identical-pixels recovery
+    crop aborts the stage either way and the dedup cannot rescue it. What the
+    collapse actually covers is the cross-group case -- a review or Perlectio
+    reference coinciding with a crop path -- which the run tree's layout makes
+    structurally impossible today. The dedup is the cheap defensive form of
+    that layout guarantee, and this test pins the collapse plus the
+    no-distinct-input-dropped half so the defence cannot rot unnoticed.
     """
     import importlib.util
 
@@ -411,8 +416,8 @@ def test_two_groups_naming_one_crop_path_collapse_to_a_single_input():
 
     paths = [reference["relative_path"] for reference in combined]
     assert len(paths) == len(set(paths)), (
-        f"one crop path reached the envelope twice: {paths}; build_envelope refuses that, "
-        "so a recovery crop identical to its proposal crop would abort the stage"
+        f"one crop path reached the envelope twice: {paths}; build_envelope refuses "
+        "a path listed twice, so the defensive collapse must hold"
     )
     assert set(paths) == {shared["relative_path"], other["relative_path"]}, (
         "collapsing duplicates must not drop a distinct input"
