@@ -399,6 +399,10 @@ def test_published_perlectio_binds_page_context_and_its_source_as_direct_inputs(
     assert readings, "the fixture must publish a Perlectio before input lineage can be tested"
     for entry in readings:
         reading = tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        assert reading["payload"]["dossier"]["page_renders"], (
+            "a reading must carry page context; an empty list would make every "
+            "assertion below vacuous"
+        )
         for page_render in reading["payload"]["dossier"]["page_renders"]:
             assert page_render["source"] in reading["inputs"]
             assert {

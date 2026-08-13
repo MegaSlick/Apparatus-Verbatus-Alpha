@@ -53,4 +53,9 @@ def witness_label(chair: str, *, regime: str, run_id: str, config_digest: str) -
         raise ValueError(f"witness regime {regime!r} is not one of {sorted(REGIMES)}")
     if regime == NAMED:
         return chair
-    return pseudonym_for(chair, run_id=run_id, config_digest=config_digest)
+    if regime == BLINDED:
+        return pseudonym_for(chair, run_id=run_id, config_digest=config_digest)
+    raise ValueError(
+        f"witness regime {regime!r} is declared in common.stage but this module has no "
+        "label rule for it; a new regime must be handled here, never blinded by default"
+    )

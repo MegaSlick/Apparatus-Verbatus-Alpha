@@ -122,8 +122,10 @@ happen.
 Perlector-owned declaration (not part of `common/chairs`/`ChairIdentity`),
 mapping each configured chair to a factual, non-evaluative training-domain
 sentence. Every configured witness must have an entry: `common/stage.py`
-refuses a missing, misshapen or unaddressed entry at run creation, before any
-stage writes, and the dossier build refuses again by name when it loads the
+refuses at run creation — before any stage writes — an entry that is missing,
+unaddressed (a chair the roster does not configure), or whose
+`training_domain` is not a non-blank string. The full per-entry schema is
+still the dossier build's, which refuses by name when it loads the
 declaration.
 
 ### `dissent` — derived comparison views, never raw-string voting

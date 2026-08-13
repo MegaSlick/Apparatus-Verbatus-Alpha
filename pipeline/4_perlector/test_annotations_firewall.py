@@ -113,10 +113,10 @@ def test_the_firewall_refuses_a_fake_seat_that_fills_a_gap_from_testimony():
 
 
 def test_the_firewall_check_is_not_vacuous():
-    """Prove the guard can go red: remove the `start != end` check and confirm
-    the attack above would otherwise pass silently. This reimplements
-    `validate_gaps` with that one check deleted, rather than monkeypatching
-    the module, so the rest of the schema's behaviour is still exercised."""
+    """Prove the guard is the only thing refusing the attack: the same gap
+    satisfies every other schema rule — declared position, both bounds inside
+    the text — and is refused solely because it names legible witness text as
+    a gap."""
     witness_variant = "Tyrel"
     text = f"the child of {witness_variant}, baptised"
     gap = {
@@ -125,19 +125,9 @@ def test_the_firewall_check_is_not_vacuous():
         "end": text.index(witness_variant) + len(witness_variant),
         "witness_evidence": [EVIDENCE],
     }
-
-    def validate_gaps_without_the_firewall_check(gaps, text):
-        for candidate in gaps:
-            # Every check except `start != end` -- proving the omission, not
-            # merely asserting it.
-            assert candidate["position"] in annotations.GAP_POSITIONS
-            assert 0 <= candidate["start"] <= len(text)
-            assert 0 <= candidate["end"] <= len(text)
-        return gaps
-
-    # With the firewall check removed, the attack is accepted.
-    assert validate_gaps_without_the_firewall_check([gap], text) == [gap]
-    # With it present (the real function), the identical input is refused.
+    # The premise, asserted rather than narrated: every other rule is satisfied.
+    assert gap["position"] in annotations.GAP_POSITIONS
+    assert 0 <= gap["start"] <= len(text) and 0 <= gap["end"] <= len(text)
     with pytest.raises(SchemaRefusal, match="establishment firewall"):
         annotations.validate_gaps([gap], text)
 

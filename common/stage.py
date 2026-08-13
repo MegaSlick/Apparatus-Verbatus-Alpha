@@ -384,7 +384,7 @@ def run_config_bindings(
     # draws an unapproved sample has decided something nobody asked it to. The
     # reference is sealed beside the rate, so a run cannot later claim an
     # approval it was not started under.
-    if nuda_per_mille and not nuda_approval_ref:
+    if nuda_per_mille and not nuda_approval_ref.strip():
         raise ContractError(
             f"a Lectio nuda rate of {nuda_per_mille}/1000 needs Tyrel's predeclared sampling "
             "design reference in --nuda-approval-ref; an unapproved instrument sample is a "
@@ -424,7 +424,11 @@ def run_config_bindings(
         # Shape, not just presence: `attestator_1 = "typed by mistake"` passed
         # the presence check and then cost the whole pre-Perlector leg before
         # `dossier.load_witness_context` refused it.
-        if not isinstance(entry, dict) or not str(entry.get("training_domain", "")).strip():
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("training_domain"), str)
+            or not entry["training_domain"].strip()
+        ):
             raise ContractError(
                 f"the witness-context entry for {chair!r} in {witness_context_config_path} "
                 "is not a table with a non-blank training_domain"

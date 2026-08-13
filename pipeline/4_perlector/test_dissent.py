@@ -6,10 +6,10 @@ metric; a raw-string cross-check beside the normalized one; an honest
 import time
 import unicodedata
 
-from common.contracts.errors import SchemaRefusal
-
 import dissent
 import pytest
+
+from common.contracts.errors import SchemaRefusal
 
 
 def test_comparison_view_collapses_whitespace_and_reports_what_it_dropped():

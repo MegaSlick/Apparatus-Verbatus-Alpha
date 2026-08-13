@@ -71,7 +71,7 @@ def sampling_design(*, nuda_per_mille: int, approval_ref: str) -> dict[str, obje
     rule and the approval travel on every record drawn under them.
     """
     validate_nuda_per_mille(nuda_per_mille)
-    if not approval_ref:
+    if not isinstance(approval_ref, str) or not approval_ref.strip():
         raise ValueError("a Lectio nuda was drawn with no predeclared approval reference")
     return {
         "nuda_per_mille": nuda_per_mille,
