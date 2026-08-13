@@ -27,7 +27,7 @@ from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR, PERLECTOR
-from common.imaging import crop_png, dimensions
+from common.imaging import crop_png, dimensions, encode_grayscale_png_deterministic
 from common.stage import WITNESS_READING_OUTCOMES
 
 # A fixed bound, not configuration: the dossier's job is to hand the reader a
@@ -130,9 +130,23 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
                 resample=Image.Resampling.LANCZOS,
             )
             resampler = "pillow-lanczos"
-        output = BytesIO()
-        rendered.save(output, format="PNG", optimize=False, compress_level=9)
-        return output.getvalue(), {
+        # The project's own deterministic encoder, never Pillow's: Pillow's
+        # wheels bundle their own zlib, so `rendered.save(...)` produces
+        # different bytes on Linux than on macOS — and a run-time blob's bytes
+        # name its content-addressed path and every artifact digest downstream.
+        # Found by PR #31's CI, whose Linux runner re-derived both acceptance
+        # pins to values no macOS machine could reproduce.
+        grayscale = rendered.convert("L")
+        samples = grayscale.tobytes()
+        deterministic = encode_grayscale_png_deterministic(
+            grayscale.width,
+            grayscale.height,
+            [
+                bytearray(samples[row * grayscale.width : (row + 1) * grayscale.width])
+                for row in range(grayscale.height)
+            ],
+        )
+        return deterministic, {
             "operation": "downscale-for-page-context",
             "source_dimensions": {"w": width, "h": height},
             "target_dimensions": {"w": rendered.width, "h": rendered.height},

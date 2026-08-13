@@ -211,8 +211,17 @@ FIXTURE = "synthetic-two-page-v0"
 # hashing mode+raw bytes, so one image could carry two identities), and the
 # real-submission door digest gained the four spec-08 settings. Counts
 # unchanged; digests re-measured.
-HAPPY_RUN_TREE_DIGEST = "1d078ab169229de4e75cedfb13adb0e3e4b07edbc6533e5ff0eb93bad6f07d6a"
-REVIEW_RUN_TREE_DIGEST = "dec0ba67630ebbccaa42937245441b664e8888e353aeff5ab8659fe434a58cec"
+#
+# And once more after PR #31's CI failed on exactly the hazard this block
+# documents: the page-render blobs were written by Pillow, whose Linux wheels
+# bundle a different zlib than macOS ships, so the blob bytes — and the
+# content-addressed digests sealed into every downstream artifact — differed
+# per platform. The render now goes through
+# `common.imaging.encode_grayscale_png_deterministic` (filter 0, stored-block
+# DEFLATE, every byte fixed by the spec), so these two values are the same on
+# every machine that can run the suite. Counts unchanged; digests re-measured.
+HAPPY_RUN_TREE_DIGEST = "4a99aad0dacb4015e023633f2308d414d541a9f4901bdba43178c1e3f781e0cb"
+REVIEW_RUN_TREE_DIGEST = "2495d250b8a3a8041498be9be9476a3cb76a426929568989c01921a2c4ad4158"
 
 
 def orchestrate(

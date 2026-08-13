@@ -121,6 +121,35 @@ def _build(context, act_id, act_key, regions, testimonia, *, regime="named", wit
     )
 
 
+def test_a_page_render_blob_is_reproducible_by_the_projects_own_encoder(evidence):
+    """PR #31's CI failure, pinned: Pillow's bundled zlib differs per wheel, so a
+    Pillow-saved render renames its content-addressed path on another platform.
+    The blob must decode with the project's minimal filter-0 decoder and
+    re-encode byte-identically through the deterministic encoder -- if either
+    half fails, some library's compression choices have re-entered the file."""
+    from common.imaging import decode_grayscale_png, encode_grayscale_png_deterministic
+
+    context, act_id, act_key, regions, testimonia = evidence
+    page_ids = {region["transform"]["source_page_id"] for region in regions}
+    renders = [
+        dossier.build_page_render(
+            context,
+            source_page_id=page_id,
+            source_page_ordinal=next(
+                region["transform"]["source_page_ordinal"]
+                for region in regions
+                if region["transform"]["source_page_id"] == page_id
+            ),
+        )
+        for page_id in sorted(page_ids)
+    ]
+    assert renders, "an act with no page renders would make this test vacuous"
+    for render in renders:
+        blob = context.tree.read_bytes(render["image_path"])
+        width, height, rows = decode_grayscale_png(blob)
+        assert encode_grayscale_png_deterministic(width, height, rows) == blob
+
+
 def test_dossier_is_deterministic_and_shuffle_invariant(evidence):
     context, act_id, act_key, regions, testimonia = evidence
     forward = _build(context, act_id, act_key, regions, testimonia)
