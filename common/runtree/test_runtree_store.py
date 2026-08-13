@@ -938,7 +938,7 @@ def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
     )
 
 
-def test_a_rebuildable_index_is_atomic_and_separate_from_immutable_artifacts(tmp_path):
+def test_a_rebuildable_index_may_be_replaced_while_artifacts_may_not(tmp_path):
     """An index may be rewritten; the artifacts it summarizes may not."""
     tree = make_run(tmp_path)
     first = {"schema": "test-index", "rows": [{"act_id": "a1"}]}
@@ -955,6 +955,16 @@ def test_a_derived_index_that_is_not_an_object_is_refused(tmp_path):
     tree = make_run(tmp_path)
     with pytest.raises(SchemaRefusal, match="must be an object"):
         tree.write_index(DESIGNATOR, ["not", "an", "object"])
+
+
+def test_a_stored_index_that_is_not_an_object_is_refused_on_the_way_out(tmp_path):
+    """The read half of the same refusal: a hand-edited index.json holding a
+    JSON array is refused, not handed to a consumer as an index."""
+    tree = make_run(tmp_path)
+    tree.write_index(DESIGNATOR, {"schema": "test-index", "rows": []})
+    tree.resolve(tree.index_path(DESIGNATOR)).write_bytes(b'["not","an","object"]')
+    with pytest.raises(SchemaRefusal, match="not an object"):
+        tree.read_index(DESIGNATOR)
 
 
 def test_the_inventory_scope_covers_every_producer(tmp_path):

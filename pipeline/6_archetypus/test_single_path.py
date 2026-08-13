@@ -406,7 +406,6 @@ def test_two_groups_naming_one_crop_path_collapse_to_a_single_input():
         "archetypus_direct_inputs_under_test", ROOT / "pipeline" / "6_archetypus" / "run.py"
     )
     archetypus = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(ROOT / "pipeline" / "6_archetypus"))
     spec.loader.exec_module(archetypus)
 
     shared = {"relative_path": "2_designator/blobs/ab/cdef", "sha256": "a" * 64}

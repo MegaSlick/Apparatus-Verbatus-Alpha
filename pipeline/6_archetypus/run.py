@@ -761,7 +761,15 @@ def _direct_inputs(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
     by_path: dict[str, dict[str, str]] = {}
     for group in groups:
         for reference in group:
-            by_path[reference["relative_path"]] = reference
+            path = reference["relative_path"]
+            existing = by_path.get(path)
+            if existing is not None and existing["sha256"] != reference["sha256"]:
+                raise FatalAccounting(
+                    f"two direct inputs name {path!r} with different digests; one path "
+                    "cannot hold two sets of bytes, and collapsing them would seal a "
+                    "record whose inputs the Armarium cannot reconcile"
+                )
+            by_path[path] = reference
     return list(by_path.values())
 
 
@@ -859,10 +867,24 @@ def accepted_act_ids(context) -> set[str]:
     what the *Recensor* accepted, and an index checked only against the list the
     writer just built would agree with itself about an act it had skipped.
     """
+    # One walk of the Recensor manifest, not one per act: `final_review` per
+    # act re-walks and re-verifies the whole stage, an O(acts^2) finishing
+    # step a whole parish would pay for. `latest_attempt` per act keeps every
+    # refusal — a missing, duplicate or non-contiguous attempt still fails.
+    by_subject: dict[str, list[dict]] = {}
+    for entry in context.tree.build_manifest(RECENSOR)["artifacts"]:
+        if entry["kind"] != "review":
+            continue
+        record = context.tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        by_subject.setdefault(entry["subject_id"], []).append(record)
     accepted: set[str] = set()
     for act in expected_acts(context):
-        if final_review(context, act["act_id"])["outcome"] == "accepted":
-            accepted.add(act["act_id"])
+        act_id = act["act_id"]
+        review = latest_attempt(
+            by_subject.get(act_id, []), f"review of {act_id}", operation="recense"
+        )
+        if review["outcome"] == "accepted":
+            accepted.add(act_id)
     return accepted
 
 

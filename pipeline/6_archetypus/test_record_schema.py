@@ -18,6 +18,8 @@ import pytest
 
 from common.contracts.canonical import digest_of, self_hash, verify_self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
+from common.contracts.outcomes import VOCABULARIES
+from common.contracts.stages import PERLECTOR
 
 
 def _load_archetypus():
@@ -352,7 +354,10 @@ def _accepted_review() -> dict:
 # is deliberately absent: it is not one of this stage's outcomes at all, so it is
 # refused a step earlier by the invariant-#10 check and would have made this test
 # pass without reaching the guard it names.
-@pytest.mark.parametrize("outcome", ["no-readable-text", "failed", "truncated", "not-run"])
+@pytest.mark.parametrize(
+    "outcome",
+    sorted(outcome for outcome in VOCABULARIES[PERLECTOR] if outcome != "read"),
+)
 def test_only_a_completed_reading_may_establish_text(outcome):
     """The one guard standing between an unresolved reading and the established text.
 
