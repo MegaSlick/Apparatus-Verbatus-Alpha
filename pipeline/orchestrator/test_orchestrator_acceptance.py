@@ -125,8 +125,103 @@ FIXTURE = "synthetic-two-page-v0"
 # `config/hard_failure.toml`'s comments (a stable reference stays; a line range
 # that drifts as the file is edited does not). File counts and scenario
 # behaviour are unchanged; only the sealed config digest moved.
-HAPPY_RUN_TREE_DIGEST = "2b9924f8e5fa39f1d7b352f96a0343033ed6bd78272bd7cc5e83f2f1e668c5c7"
-REVIEW_RUN_TREE_DIGEST = "584145ebdddc0561f3cd1beb17d9bbffeb87bd9e7a672b78d11c1028e6557133"
+#
+# Re-pinned for System 08 (the Perlector build): `run_config_bindings` now folds spec
+# 08's run-level witness-context regime, its Lectio-nuda sampling rate, and the digest
+# of the new `config/witness_context.toml` declaration into `config_digest` -- the same
+# pattern `pdf_target_dpi_override` already used, extended to the two new sealed facts a
+# Perlector run carries. That changes every artifact's `config_digest` under both
+# scenarios even at the unchanged defaults (`named`, `0`), which is the deliberate
+# record change this comment's own rule anticipates. The Perlector also now writes one
+# downscaled page-render blob per distinct page an act's regions touch (the dossier's
+# page-render reference, spec 08) -- two additional files under both scenarios, since
+# both `happy` and `review` touch the same two synthetic pages. File counts move from
+# 42 to 44 (happy) and 46 to 48 (review); nothing else about either scenario's shape
+# changed.
+#
+# Re-pinned again in the same build for `proof/build_fixture.py`: two new declared
+# scenarios (`engine-truncated-reading`, `no-readable-text-reading`), a second
+# `reading_failure` row, and the new `stop_reason` table the truncation detector reads.
+# `config_digest` seals the entire parsed fixture dict, not only the scenario a run
+# actually chose (`common/stage.py::run_config_bindings`'s `"fixture": fixture`
+# binding), so declaring data for scenarios neither `happy` nor `review` uses still
+# moves both pins. File counts are unchanged again; only the sealed configuration text
+# is bigger.
+#
+# And re-pinned once more when the two independent builds of System 08 were merged.
+# Every payload change is additive and none of them moves a file: each Perlectio now
+# carries the declared prompt it was produced through, span-level dissent beside the
+# per-chair booleans, and gap evidence naming the Testimonium it came from; the
+# page-context render caps its long edge instead of dividing by two and records its
+# whole transform; `nuda_approval_ref` joined the sealed configuration. File counts
+# stay at 44 and 48 -- the same two page-context blobs, different bytes inside the
+# records that reference them.
+#
+# Re-pinned by the merge audit after restoring the named dossier's model identity
+# and resolved provenance, and after binding each page-context render plus its
+# sealed source page into the Perlectio's direct inputs. File counts remain 44 and
+# 48; the changed bytes are the evidence the reading now honestly retains.
+#
+# Re-pinned again by the D-7 fix: `prompts.prompt_evidence` now folds a digest of
+# the builder's own source (`builder_sha256`) into every prompt record, so a
+# later edit to a recipe's builder changes what the record claims about itself
+# instead of silently invalidating an old one nothing could detect. File counts
+# remain 44 and 48; only the prompt record's bytes changed.
+# **These two pins are platform-dependent as of this branch, and that is a finding
+# rather than a property of this test.** Diagnosed 2026-08-11 after they failed on
+# macOS while passing in a Linux chamber and in CI, on the identical commit:
+#
+#   - the divergence begins at the Perlector and everything downstream inherits it;
+#     stages 1-3 are byte-identical;
+#   - it is `dossier.page_renders[0].image_sha256`, a PNG this branch newly binds
+#     into the Perlectio's sealed inputs — `main` has no `page_renders` at all;
+#   - the two renders' **pixels are identical** (same `Image.tobytes()` digest);
+#     only the PNG container differs, 364 bytes against 366, because the macOS and
+#     Linux Pillow wheels carry different zlib builds. Same Pillow 12.3.0 both sides.
+#
+# So ARCHITECTURE invariant 3 holds — the image shown to a model *is* reproducible
+# from the Exemplar and the recorded transforms — while the run tree's sealed
+# identity is not, because it binds the encoded container rather than the image.
+# Two platforms reading the same Exemplar produce different Archetypus and Armarium
+# digests, and a run verified across platforms would refuse legitimate reuse.
+#
+# **Deliberately not re-pinned.** Re-pinning for macOS would break CI, and picking
+# either platform's bytes decides by accident a question that should be decided on
+# purpose: whether a run's identity binds pixels or bytes. Carried to Tyrel in
+# workbench/raw/stage-prs/THE_ONE_DECISION.md.
+#
+# Re-pinned for the rebase of the System 08 build onto the merged System 09 tree:
+# both movements above are now in one tree, so the counts are 45 (happy) and 49
+# (review) -- main's Recensor partition receipt plus this branch's two page-render
+# blobs per scenario -- and both digests were recomputed from real orchestrator
+# runs on the merged tree under `semantic_snapshot_digest` (decoded pixels for
+# PNG entries, bytes for everything else). The Perlector's Pillow-written
+# page-render blobs decode through Pillow in that helper; the project's minimal
+# filter-0 decoder still covers every fixture page.
+#
+# Moved once more by the pre-push CodeRabbit round: the Lectio nuda dossier's
+# region rows no longer carry `witness_covered` (coverage is witness-derived and
+# the baseline saw no witnesses), `builder_sha256` binds the whole prompt module
+# rather than one function's source, and the witness-context declaration gate
+# tightened. File counts are unchanged at 45 and 47+2; both digests re-measured
+# from real orchestrator runs.
+#
+# And once more for the second re-review round: both snapshot decoder paths now
+# reduce a PNG to the same grayscale-sample digest (the Pillow fallback was
+# hashing mode+raw bytes, so one image could carry two identities), and the
+# real-submission door digest gained the four spec-08 settings. Counts
+# unchanged; digests re-measured.
+#
+# And once more after PR #31's CI failed on exactly the hazard this block
+# documents: the page-render blobs were written by Pillow, whose Linux wheels
+# bundle a different zlib than macOS ships, so the blob bytes — and the
+# content-addressed digests sealed into every downstream artifact — differed
+# per platform. The render now goes through
+# `common.imaging.encode_grayscale_png_deterministic` (filter 0, stored-block
+# DEFLATE, every byte fixed by the spec), so these two values are the same on
+# every machine that can run the suite. Counts unchanged; digests re-measured.
+HAPPY_RUN_TREE_DIGEST = "4a99aad0dacb4015e023633f2308d414d541a9f4901bdba43178c1e3f781e0cb"
+REVIEW_RUN_TREE_DIGEST = "2495d250b8a3a8041498be9be9476a3cb76a426929568989c01921a2c4ad4158"
 
 
 def orchestrate(
@@ -137,6 +232,8 @@ def orchestrate(
     models_config: Path | None = None,
     recovery_config: Path | None = None,
     hard_failure_config: Path | None = None,
+    nuda_per_mille: int | None = None,
+    nuda_approval_ref: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
     command = [
@@ -157,6 +254,10 @@ def orchestrate(
         command.extend(("--recovery-config", str(recovery_config)))
     if hard_failure_config is not None:
         command.extend(("--hard-failure-config", str(hard_failure_config)))
+    if nuda_per_mille is not None:
+        command.extend(("--nuda-per-mille", str(nuda_per_mille)))
+    if nuda_approval_ref is not None:
+        command.extend(("--nuda-approval-ref", nuda_approval_ref))
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -225,12 +326,27 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
         data = path.read_bytes()
         relative = str(path.relative_to(root))
         if data.startswith(PNG_SIGNATURE):
-            width, height, rows = decode_grayscale_png(data)
+            try:
+                width, height, rows = decode_grayscale_png(data)
+                pixel_digest = digest_bytes(b"".join(rows))
+            except ValueError:
+                # The Perlector's page-render blobs are written by Pillow, whose
+                # adaptive PNG filters the project's own minimal decoder refuses
+                # by design. The pin still binds pixels, not compressor bytes —
+                # only the decoder differs.
+                from io import BytesIO
+
+                from PIL import Image
+
+                with Image.open(BytesIO(data)) as image:
+                    grayscale = image.convert("L")
+                    width, height = grayscale.size
+                    pixel_digest = digest_bytes(grayscale.tobytes())
             inventory[relative] = digest_of(
                 {
                     "width": width,
                     "height": height,
-                    "pixel_sha256": digest_bytes(b"".join(rows)),
+                    "pixel_sha256": pixel_digest,
                 }
             )
         else:
@@ -1149,13 +1265,41 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    assert len(before) == 43
+    assert len(before) == 45
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
 
     assert after == before
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
+
+
+def test_repeating_the_identical_command_with_nuda_enabled_leaves_every_byte_unchanged(tmp_path):
+    """The byte-identical-rerun property above is only ever exercised at the
+    default --nuda-per-mille 0. Lectio nuda's sampling rule is a deterministic
+    hash threshold over (run_id, act_id), never `random` -- this is the test
+    that actually drives two runs of the identical command with nuda turned on
+    and proves the property still holds rather than trusting the docstring's
+    word for it (audit finding: coverage gap, `nuda.py`)."""
+    root = tmp_path / "runs"
+    assert (
+        orchestrate(
+            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda"
+        ).returncode
+        == 0
+    )
+    before = snapshot(root)
+    assert any("lectio-nuda" in path for path in before), "the run must actually have sampled nuda"
+
+    assert (
+        orchestrate(
+            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda"
+        ).returncode
+        == 0
+    )
+    after = snapshot(root)
+
+    assert after == before
 
 
 def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
@@ -1166,7 +1310,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    assert len(before) == 47
+    assert len(before) == 49
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
@@ -1293,6 +1437,21 @@ def test_recovery_ink_is_recorded_as_witness_uncovered(review_run):
     )
     coverage = [basis["witness_covered"] for basis in latest["payload"]["basis"]["regions"]]
     assert coverage == [True, False]
+
+    # D-15: spec 08 test 1 asks for "a recovery dossier marks witness-uncovered
+    # ink" -- the dossier is what a reader is actually shown, not `basis`, and
+    # nothing asserted this surface before. Both derive from the same
+    # `witnessed_region_ids` set, so they must agree per region.
+    dossier_coverage = {
+        region["region_id"]: region["witness_covered"]
+        for region in latest["payload"]["dossier"]["regions"]
+    }
+    basis_coverage = {
+        region["region_id"]: region["witness_covered"]
+        for region in latest["payload"]["basis"]["regions"]
+    }
+    assert dossier_coverage == basis_coverage
+    assert sorted(dossier_coverage.values()) == [False, True]
 
 
 def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):

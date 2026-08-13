@@ -16,7 +16,7 @@ import argparse
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Final, Protocol
 
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails
 from common.chairs.protocol import ChairProtocol
@@ -53,6 +53,19 @@ EXIT_HELD = 3
 EXIT_RUN_HALTED = 4
 
 DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "pdf_render.toml"
+DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "witness_context.toml"
+)
+
+# Spec 08's run-level blind/named toggle, from Tyrel's 2026-07-30 ruling
+# (courtroom_doctrine.md, formalized in spec_08 — not ARCHITECTURE.md, which
+# does not define this regime). Named here once, so the CLI flag, the
+# config-digest binding, every stage's shared parser and the Perlectio schema
+# agree on the closed set: a value added in one place and missed in another
+# would let a run start under a regime every Perlectio it produced is then
+# refused for. It is provenance, so invariant #42 governs it.
+WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
+MAX_NUDA_PER_MILLE: Final = 1000
 
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
@@ -88,17 +101,6 @@ _PROVENANCE_FIELDS = frozenset(
         "witness_regime",
     }
 )
-
-# Tyrel's 2026-07-30 ruling (courtroom_doctrine.md's "Rulings received" section,
-# formalized in the unbuilt spec_08_perlector.md — not ARCHITECTURE.md, which
-# does not define this regime): witness identity
-# travels under a run-level named/blinded toggle, "every Perlectio recording its
-# regime". The Perlector writes it; until this check, nothing read it back, so a
-# Perlectio claiming an impossible regime — or a typo — travelled sealed. Binding
-# it to an actual run-level toggle is Spec 08's work; refusing a value that
-# cannot be true is this system's, because it is provenance and #42 governs
-# provenance.
-_WITNESS_REGIMES = frozenset({"named", "blinded"})
 
 
 class StageChairProtocol(ChairProtocol, Protocol):
@@ -148,6 +150,36 @@ class StageContext:
     @property
     def witness_floor(self) -> int:
         return self.registry.config.witness_floor
+
+    @property
+    def witness_context(self) -> str:
+        """The sealed named/blinded regime this run's Perlector reads under.
+
+        Read straight off this process's own parsed CLI flag rather than off
+        `run.json`: the flag is what `run_config_bindings` folded into
+        `config_digest`, and `open_context`'s existing IncompatibleReuse check
+        already refuses a resumed run supplied a different value, so there is
+        no separate run-authority copy for this property to disagree with.
+        """
+        return self.args.witness_context
+
+    @property
+    def witness_context_config_path(self) -> str:
+        return self.args.witness_context_config
+
+    @property
+    def nuda_per_mille(self) -> int:
+        """The sealed Lectio nuda sampling rate, in thousandths. See `witness_context`."""
+        return self.args.nuda_per_mille
+
+    @property
+    def nuda_approval_ref(self) -> str:
+        """Tyrel's reference for the sampling design this run draws nuda under.
+
+        Empty when nothing is sampled. `run_config_bindings` refuses a non-zero
+        rate that carries none, so a populated rate always has one.
+        """
+        return self.args.nuda_approval_ref
 
     def publish(
         self,
@@ -236,6 +268,31 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
     parser.add_argument("--hard-failure-config", default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH))
     parser.add_argument("--pdf-target-dpi", type=int, default=None)
+    parser.add_argument(
+        "--witness-context",
+        default="named",
+        choices=WITNESS_CONTEXT_REGIMES,
+        help="the run-level named/blinded toggle a Perlectio's dossier is built under (spec 08)",
+    )
+    parser.add_argument(
+        "--witness-context-config",
+        default=str(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH),
+        help="the Perlector-owned factual witness-context declaration this run seals",
+    )
+    parser.add_argument(
+        "--nuda-per-mille",
+        type=int,
+        default=0,
+        help="the sealed Lectio nuda sampling rate, in thousandths (0 disables it)",
+    )
+    parser.add_argument(
+        "--nuda-approval-ref",
+        default="",
+        help=(
+            "Tyrel's reference for the predeclared Lectio nuda sampling design; "
+            "required whenever --nuda-per-mille is not 0"
+        ),
+    )
     parser.add_argument("--operation", default="initial")
     parser.add_argument("--act", default=None, help="one act id, for a recovery operation")
     parser.add_argument(
@@ -266,6 +323,103 @@ def load_fixture(fixture_root: str) -> dict[str, Any]:
     return fixture
 
 
+def validate_witness_context_bindings(
+    models,
+    *,
+    witness_context: str,
+    witness_context_config_path: str | Path,
+    nuda_per_mille: int,
+    nuda_approval_ref: str,
+) -> str:
+    """Refuse a bad spec-08 binding before a run tree exists, on every path.
+
+    One function on purpose: the fixture path (`run_config_bindings`) and the
+    real-submission path (`door._real_bindings`) must refuse the same things,
+    or a defect the fixture path catches at run creation costs a real corpus
+    the whole pre-Perlector leg before the Perlector finally refuses it.
+    Returns the declaration's sha256, which both paths seal.
+    """
+    if witness_context not in WITNESS_CONTEXT_REGIMES:
+        raise ContractError(
+            f"witness_context {witness_context!r} is not one of {WITNESS_CONTEXT_REGIMES}"
+        )
+    if (
+        not isinstance(nuda_per_mille, int)
+        or isinstance(nuda_per_mille, bool)
+        or not (0 <= nuda_per_mille <= MAX_NUDA_PER_MILLE)
+    ):
+        raise ContractError(
+            f"nuda_per_mille must be an integer in [0, {MAX_NUDA_PER_MILLE}], got {nuda_per_mille!r}"
+        )
+    if not isinstance(nuda_approval_ref, str):
+        raise ContractError("nuda_approval_ref must be a string")
+    # Spec 08: Lectio nuda "runs on a predeclared, Tyrel-approved sampling
+    # design... fixed before the run". Hard rule 1 is what makes that a refusal
+    # rather than a note: the sampling design is his to approve, and a run that
+    # draws an unapproved sample has decided something nobody asked it to. The
+    # reference is sealed beside the rate, so a run cannot later claim an
+    # approval it was not started under.
+    if nuda_per_mille and not nuda_approval_ref.strip():
+        raise ContractError(
+            f"a Lectio nuda rate of {nuda_per_mille}/1000 needs Tyrel's predeclared sampling "
+            "design reference in --nuda-approval-ref; an unapproved instrument sample is a "
+            "decision this pipeline does not get to make for him"
+        )
+    try:
+        witness_context_config_bytes = Path(witness_context_config_path).read_bytes()
+    except OSError as error:
+        raise ContractError(
+            f"the witness-context declaration at {witness_context_config_path} could not be read"
+        ) from error
+    witness_context_config_digest = digest_bytes(witness_context_config_bytes)
+    # Coverage, not just readability, checked here rather than left to the
+    # Perlector: this function already holds `models.witness_chairs` and
+    # already reads this file's bytes for the digest above, so a chair with no
+    # declared entry can refuse before the run tree exists rather than after
+    # the Exemplar, Designator and the entire Attestatores leg have already
+    # run against every witness model on every act — the expensive part of a
+    # live pod run, spent on what is usually a config typo. The Perlector's own
+    # `dossier.load_witness_context` still does the full per-entry schema
+    # validation when it actually loads this file to build a dossier; this is
+    # only the cheap presence check that can run this early.
+    try:
+        witness_context_table = tomllib.loads(witness_context_config_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise ContractError(
+            f"the witness-context declaration at {witness_context_config_path} could not be "
+            f"parsed: {error}"
+        ) from error
+    missing = [chair for chair in models.witness_chairs if chair not in witness_context_table]
+    if missing:
+        raise ContractError(
+            f"chair {missing[0]!r} has no declared entry in {witness_context_config_path}; "
+            "every configured witness must carry a factual dossier context, or none is described"
+        )
+    for chair, entry in sorted(witness_context_table.items()):
+        # Shape, not just presence: `attestator_1 = "typed by mistake"` passed
+        # the presence check and then cost the whole pre-Perlector leg before
+        # `dossier.load_witness_context` refused it.
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"training_domain"}
+            or not isinstance(entry.get("training_domain"), str)
+            or not entry["training_domain"].strip()
+        ):
+            raise ContractError(
+                f"the witness-context entry for {chair!r} in {witness_context_config_path} "
+                "is not a closed table with only a non-blank training_domain"
+            )
+    unaddressed = [
+        chair for chair in witness_context_table if chair not in set(models.witness_chairs)
+    ]
+    if unaddressed:
+        raise ContractError(
+            f"{witness_context_config_path} declares {unaddressed[0]!r}, which is not a "
+            "configured witness chair; a misspelt chair here would silently lose its witness"
+        )
+    return witness_context_config_digest
+
+
 def run_config_bindings(
     models: ModelsConfig,
     fixture: dict[str, Any],
@@ -275,6 +429,10 @@ def run_config_bindings(
     pdf_target_dpi: int | None = None,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
     hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
+    witness_context: str = "named",
+    witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
+    nuda_per_mille: int = 0,
+    nuda_approval_ref: str = "",
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -303,6 +461,13 @@ def run_config_bindings(
         ) from error
     recovery_policy = load_recovery_policy(recovery_config_path)
     hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
+    witness_context_config_digest = validate_witness_context_bindings(
+        models,
+        witness_context=witness_context,
+        witness_context_config_path=witness_context_config_path,
+        nuda_per_mille=nuda_per_mille,
+        nuda_approval_ref=nuda_approval_ref,
+    )
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
@@ -314,6 +479,17 @@ def run_config_bindings(
                 "pdf_target_dpi_override": pdf_target_dpi,
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
+                # Spec 08's run-level toggle and its sampling design. Sealed
+                # here exactly like `pdf_target_dpi_override` above: a stage
+                # never stores its own copy of "what regime did this run use",
+                # it re-derives the same config_digest from its own CLI flags
+                # and `open_context`'s existing IncompatibleReuse check refuses
+                # a resumed run that supplies a different value than the one
+                # the tree was sealed under.
+                "witness_context_regime": witness_context,
+                "witness_context_declaration_sha256": witness_context_config_digest,
+                "nuda_per_mille": nuda_per_mille,
+                "nuda_approval_ref": nuda_approval_ref,
             }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
@@ -458,10 +634,10 @@ def validate_serving_provenance(
     # schema, not a separate question.
     regime = provenance.get("witness_regime")
     if producer_stage == PERLECTOR:
-        if regime not in _WITNESS_REGIMES:
+        if regime not in WITNESS_CONTEXT_REGIMES:
             raise SchemaRefusal(
                 f"a Perlectio records the witness regime it ran under; this one carries "
-                f"{regime!r}, which is not one of {sorted(_WITNESS_REGIMES)}"
+                f"{regime!r}, which is not one of {sorted(WITNESS_CONTEXT_REGIMES)}"
             )
     elif "witness_regime" in provenance:
         raise SchemaRefusal(
@@ -782,6 +958,10 @@ def open_context(
         pdf_target_dpi=args.pdf_target_dpi,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
+        witness_context=args.witness_context,
+        witness_context_config_path=args.witness_context_config,
+        nuda_per_mille=args.nuda_per_mille,
+        nuda_approval_ref=args.nuda_approval_ref,
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()

@@ -24,7 +24,7 @@ decoder.
 import struct
 import zlib
 from io import BytesIO
-from typing import TypedDict
+from typing import Final, TypedDict
 
 import pillow_heif
 from PIL import Image, UnidentifiedImageError
@@ -120,6 +120,66 @@ def encode_grayscale_png(width: int, height: int, rows: list[bytearray]) -> byte
         raw.append(_FILTER_NONE)
         raw.extend(row)
     idat = zlib.compress(bytes(raw), level=9)
+    return PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
+
+
+_STORED_BLOCK_MAX: Final = 65535
+
+
+def _deterministic_stored_deflate(data: bytes) -> bytes:
+    """A zlib stream whose every byte is fixed by RFC 1950/1951, not by a library.
+
+    Stored (uncompressed) blocks only: the 0x78 0x01 header, then per block one
+    flag byte (BFINAL in bit 0, BTYPE=00), LEN and NLEN little-endian, the raw
+    bytes, and the adler32 of the whole payload. No compressor makes a choice
+    anywhere in this framing, so two zlib builds cannot produce two streams.
+    """
+    out = bytearray(b"\x78\x01")
+    if not data:
+        out += b"\x01\x00\x00\xff\xff"
+    else:
+        for offset in range(0, len(data), _STORED_BLOCK_MAX):
+            block = data[offset : offset + _STORED_BLOCK_MAX]
+            final = 1 if offset + _STORED_BLOCK_MAX >= len(data) else 0
+            out.append(final)
+            out += struct.pack("<HH", len(block), len(block) ^ 0xFFFF)
+            out += block
+    out += struct.pack(">I", zlib.adler32(data) & 0xFFFFFFFF)
+    return bytes(out)
+
+
+def encode_grayscale_png_deterministic(width: int, height: int, rows: list[bytearray]) -> bytes:
+    """`encode_grayscale_png`, but byte-identical on every platform.
+
+    The ordinary encoder's output is pure only for a given zlib build — Pillow's
+    Linux wheels bundle a different zlib than macOS ships, and a run-time blob
+    whose bytes depend on the wheel renames its content-addressed path and every
+    artifact digest downstream of it. Evidence written *during* a run therefore
+    uses this encoder: filter 0 and a stored-block DEFLATE stream, every byte
+    fixed by the PNG and DEFLATE specifications. The cost is size — stored
+    blocks do not compress — which is acceptable for bounded page-context
+    renders and wrong for checked-in fixtures, so both encoders exist.
+    """
+    if len(rows) != height:
+        raise ValueError(f"expected {height} scanlines, got {len(rows)}")
+    if any(len(row) != width for row in rows):
+        raise ValueError("a scanline is not the declared width")
+
+    ihdr = struct.pack(
+        ">IIBBBBB",
+        width,
+        height,
+        _BIT_DEPTH,
+        _COLOR_TYPE_GRAYSCALE,
+        0,  # compression method
+        0,  # filter method
+        0,  # interlace method
+    )
+    raw = bytearray()
+    for row in rows:
+        raw.append(_FILTER_NONE)
+        raw.extend(row)
+    idat = _deterministic_stored_deflate(bytes(raw))
     return PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
 
 

@@ -55,9 +55,11 @@ from common.recovery import (  # noqa: E402
 )
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
+    DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_HELD,
     EXIT_RUN_HALTED,
+    WITNESS_CONTEXT_REGIMES,
     current_recovery_request,
     latest_attempt,
     load_fixture,
@@ -106,6 +108,16 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     ]
     if args.pdf_target_dpi is not None:
         command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
+    command += [
+        "--witness-context",
+        args.witness_context,
+        "--witness-context-config",
+        str(args.witness_context_config),
+        "--nuda-per-mille",
+        str(args.nuda_per_mille),
+        "--nuda-approval-ref",
+        str(args.nuda_approval_ref),
+    ]
     for key, value in extra.items():
         command += [f"--{key.replace('_', '-')}", str(value)]
 
@@ -185,6 +197,28 @@ def main() -> int:
         "--hard-failure-config",
         default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH),
         help="the run-level hard-failure cap this orchestrator checkpoints against",
+    )
+    parser.add_argument(
+        "--witness-context",
+        default="named",
+        choices=WITNESS_CONTEXT_REGIMES,
+        help="the run-level named/blinded toggle the Perlector's dossier is built under",
+    )
+    parser.add_argument(
+        "--witness-context-config",
+        default=str(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH),
+        help="the Perlector-owned factual witness-context declaration this run seals",
+    )
+    parser.add_argument(
+        "--nuda-per-mille",
+        type=int,
+        default=0,
+        help="the sealed Lectio nuda sampling rate, in thousandths (0 disables it)",
+    )
+    parser.add_argument(
+        "--nuda-approval-ref",
+        default="",
+        help="Tyrel's reference for the predeclared Lectio nuda sampling design",
     )
     args = parser.parse_args()
 

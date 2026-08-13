@@ -783,7 +783,10 @@ def test_a_row_with_no_non_negative_byte_count_is_a_contract_error(bad_bytes):
 
 def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_written(monkeypatch):
     class Models:
-        witness_chairs = ("attestator_1",)
+        # The full configured roster: `_real_bindings` now validates the real
+        # witness-context declaration, which describes these three chairs, and
+        # a narrower stub roster would refuse the declaration as unaddressed.
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
         adapter_recipes = {"door": "synthetic-door-v0"}
 
         @staticmethod
@@ -821,7 +824,10 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
 
 def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(monkeypatch):
     class Models:
-        witness_chairs = ("attestator_1",)
+        # The full configured roster: `_real_bindings` now validates the real
+        # witness-context declaration, which describes these three chairs, and
+        # a narrower stub roster would refuse the declaration as unaddressed.
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
         adapter_recipes = {"door": "fake-door-v0"}
 
         @staticmethod
@@ -868,7 +874,10 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
     """
 
     class Models:
-        witness_chairs = ("attestator_1",)
+        # The full configured roster: `_real_bindings` now validates the real
+        # witness-context declaration, which describes these three chairs, and
+        # a narrower stub roster would refuse the declaration as unaddressed.
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
         adapter_recipes = {"door": "synthetic-door-v0"}
 
         @staticmethod

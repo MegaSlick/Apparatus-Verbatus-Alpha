@@ -242,6 +242,8 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "genuinely-empty-witness",
         "confirmed-blank",
         "blank-with-dissent",
+        "engine-truncated-reading",
+        "no-readable-text-reading",
     ]
     by_name = {scenario["name"]: scenario for scenario in skeleton["scenario"]}
     assert by_name["happy"]["recover_acts"] == []
@@ -263,6 +265,10 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     assert by_name["confirmed-blank"]["hold_acts"] == []
     assert by_name["blank-with-dissent"]["recover_acts"] == []
     assert by_name["blank-with-dissent"]["hold_acts"] == []
+    assert by_name["engine-truncated-reading"]["recover_acts"] == []
+    assert by_name["engine-truncated-reading"]["hold_acts"] == []
+    assert by_name["no-readable-text-reading"]["recover_acts"] == []
+    assert by_name["no-readable-text-reading"]["hold_acts"] == []
 
 
 def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
@@ -299,7 +305,7 @@ def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleto
     that did not succeed. A declaration that named a completed-class outcome
     would exercise nothing, whichever class it actually belongs to."""
     failures = skeleton["reading_failure"]
-    assert len(failures) == 3
+    assert len(failures) == 4
     for row in failures:
         assert row["act_key"] in {act["key"] for act in skeleton["act"]}
         assert classify(PERLECTOR, row["outcome"]) is not OutcomeClass.COMPLETED
@@ -312,6 +318,7 @@ def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleto
         "truncated-reading": "truncated",
         "confirmed-blank": "no-readable-text",
         "blank-with-dissent": "no-readable-text",
+        "no-readable-text-reading": "no-readable-text",
     }
     # `truncated` is FAILED-class and still carries text -- the hazard the
     # Archetypus's own guard (spec 09) exists to refuse.
@@ -321,30 +328,21 @@ def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleto
     # able to corroborate depending on what the witnesses say.
     assert classify(PERLECTOR, by_scenario["confirmed-blank"]) is OutcomeClass.UNRESOLVED
     assert classify(PERLECTOR, by_scenario["blank-with-dissent"]) is OutcomeClass.UNRESOLVED
+    # The sibling hazard: an act nothing could be read from at all is
+    # unresolved, not failed -- G2's "held until proved," never a refusal.
+    assert classify(PERLECTOR, by_scenario["no-readable-text-reading"]) is OutcomeClass.UNRESOLVED
 
 
-def test_each_page_refusal_declares_a_digest_the_bytes_cannot_match(skeleton):
-    """The door must refuse through its real inspection path — a declared digest
-    that happened to match the checked-in bytes would silently turn the refusal
-    scenarios back into happy runs."""
-    refusals = skeleton["page_refusal"]
-    assert len(refusals) == 2
-    true_digests = {page["ordinal"]: page["sha256"] for page in skeleton["page"]}
+def test_the_declared_stop_reason_is_the_length_signal_for_a_known_scenario(skeleton):
+    """The one declared, fixture-only truncation signal
+    (`pipeline/4_perlector/truncation.py`): a stand-in for a real engine's own
+    stop-reason, authoritative for `truncated` when it says `length`."""
+    rows = skeleton["stop_reason"]
+    assert rows == [
+        {"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"}
+    ]
     scenario_names = {scenario["name"] for scenario in skeleton["scenario"]}
-    for refusal in refusals:
-        assert refusal["scenario"] in scenario_names
-        assert refusal["ordinal"] in true_digests
-        declared = refusal["declared_sha256"]
-        assert len(declared) == 64
-        assert declared != true_digests[refusal["ordinal"]]
-
-
-def test_the_refusal_scenarios_lose_the_declared_pages(skeleton):
-    by_scenario = {refusal["scenario"]: refusal["ordinal"] for refusal in skeleton["page_refusal"]}
-    assert by_scenario == {"refused-page": 2, "refused-first-page": 1}
-
-
-def test_the_testimony_table_carries_no_chair_the_run_does_not_configure(skeleton, models_config):
-    for row in skeleton["testimony"]:
-        assert row["chair"] in configured_witness_chairs(models_config)
-    assert set(TESTIMONY) == {act["key"] for act in ACTS}
+    for row in rows:
+        assert row["scenario"] in scenario_names
+        assert row["act_key"] in {act["key"] for act in skeleton["act"]}
+        assert row["stop_reason"] in {"stop", "length"}

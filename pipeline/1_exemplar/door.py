@@ -86,6 +86,7 @@ from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
+    DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     StageContext,
     adapter_recipe_for,
@@ -94,6 +95,7 @@ from common.stage import (  # noqa: E402
     run_stage,
     scenario_for,
     stage_parser,
+    validate_witness_context_bindings,
 )
 from operations.submit import gate, inventory  # noqa: E402
 from operations.submit import submit as submission_ledger  # noqa: E402
@@ -1030,6 +1032,10 @@ def fixture_submission(args, registry) -> int:
         pdf_target_dpi=args.pdf_target_dpi,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
+        witness_context=args.witness_context,
+        witness_context_config_path=args.witness_context_config,
+        nuda_per_mille=args.nuda_per_mille,
+        nuda_approval_ref=args.nuda_approval_ref,
     )
 
     # The door creates the run: it is the first thing that knows what arrived, so
@@ -1167,6 +1173,10 @@ def real_submission(args, registry) -> int:
         pdf_settings,
         load_recovery_policy(args.recovery_config),
         load_hard_failure_policy(args.hard_failure_config),
+        witness_context=args.witness_context,
+        witness_context_config_path=args.witness_context_config,
+        nuda_per_mille=args.nuda_per_mille,
+        nuda_approval_ref=args.nuda_approval_ref,
     )
     tree = RunTree.create(
         run_root,
@@ -1246,6 +1256,11 @@ def _real_bindings(
     pdf_settings,
     recovery_policy,
     hard_failure_policy,
+    *,
+    witness_context: str = "named",
+    witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
+    nuda_per_mille: int = 0,
+    nuda_approval_ref: str = "",
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
@@ -1259,6 +1274,13 @@ def _real_bindings(
     approval reference that admitted the corpus. Neither exists any more: real
     input is no longer approval-gated, so there is nothing left to bind here.
     """
+    witness_context_declaration_sha256 = validate_witness_context_bindings(
+        models,
+        witness_context=witness_context,
+        witness_context_config_path=witness_context_config_path,
+        nuda_per_mille=nuda_per_mille,
+        nuda_approval_ref=nuda_approval_ref,
+    )
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
     return {
@@ -1280,6 +1302,17 @@ def _real_bindings(
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
                 "models": models.to_record(),
+                # Spec 08's run-level settings, bound on the real path exactly as
+                # `run_config_bindings` binds them on the fixture path: a resumed
+                # run under a different witness regime, declaration, or nuda
+                # design is a different run wearing an old name. Validated by the
+                # same shared function the fixture path uses, so an unapproved
+                # nuda sample or a misdeclared witness refuses before the run
+                # tree exists, never after the Attestatores leg has been paid for.
+                "witness_context_regime": witness_context,
+                "witness_context_declaration_sha256": witness_context_declaration_sha256,
+                "nuda_per_mille": nuda_per_mille,
+                "nuda_approval_ref": nuda_approval_ref,
             }
         ),
         "adapter_recipes": adapter_recipes,
