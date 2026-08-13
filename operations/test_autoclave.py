@@ -260,6 +260,12 @@ if args[:1] == ["exec"]:
         raise SystemExit(0 if setting("FAKE_AUTH_VALID") == "1" else 1)
     if "refresh_claude_token.py" in command:
         raise SystemExit(int(setting("FAKE_REFRESH_STATUS", "0")))
+    if "git config user.name" in command:
+        # The author stamp, answered on its own so it does not consume
+        # `FAKE_EXEC_STATUS` — the fallback below is how tests stage a failing
+        # *CLI* invocation, and a stamp indistinguishable from that would fail
+        # dispatch before the CLI it exists to attribute ever ran.
+        raise SystemExit(int(setting("FAKE_STAMP_STATUS", "0")))
     chamber = setting("FAKE_CHAMBER_WORK")
     if chamber and "cd /work" in command:
         command = command.replace("cd /work", "cd " + chamber)
@@ -1013,6 +1019,98 @@ class TestDispatch:
         a quoted command line brings its punctuation with it."""
         joined = " ".join(code_lines())
         assert joined.count('-e AC_MODEL="$model" -e AC_EFFORT="$effort"') == 2
+
+    def test_every_dispatch_path_stamps_the_model_as_author_first(self):
+        """`new` sets a placeholder git identity — `autoclave <autoclave@localhost>`
+        — because the chamber is created before any model is chosen. Left alone
+        that placeholder becomes the author of everything the agent commits. Tyrel
+        ruled on 2026-08-11 that autoclave itself should never be the author of any
+        code, so the model has to be stamped as the identity at the first moment it
+        is known: dispatch, before either vendor's CLI runs.
+
+        Checked structurally, against every `docker exec -e AC_MODEL="$model"`
+        dispatch line found in the source, rather than against the two arms named
+        today — so a vendor arm added later without the call is caught the same
+        way. The two behavioural tests below prove the stamp actually *executes*
+        before the CLI and carries the right address; this one exists so a third
+        arm cannot be added without one.
+        """
+        # Comment lines are stripped before matching, so a commented-out stamp
+        # call cannot satisfy this guard (CodeRabbit, PR #29).
+        lines = [
+            "" if line.lstrip().startswith("#") else line
+            for line in SCRIPT.read_text().splitlines()
+        ]
+        dispatch_lines = [
+            i for i, line in enumerate(lines) if 'docker exec -e AC_MODEL="$model"' in line
+        ]
+        assert dispatch_lines, "no dispatch invocation found to check"
+        for i in dispatch_lines:
+            preceding = lines[max(0, i - 16) : i]
+            assert any('stamp_author "$task" "$vendor" "$model"' in line for line in preceding), (
+                f"line {i + 1} dispatches the CLI with no preceding stamp_author call"
+            )
+
+    def _stamped_dispatch_calls(self, tmp_path, vendor, model, cli_marker):
+        """Run one successful dispatch and return (stamp call, CLI call, all calls)."""
+        script = elsewhere(tmp_path)
+        brief = tmp_path / "brief.md"
+        brief.write_text("bounded task\n")
+        (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_CONTAINER_EXISTS": "1",
+                "FAKE_CHAMBER_VENDOR": vendor,
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_REFRESH_STATUS": "0",
+                "FAKE_EXEC_STATUS": "0",
+            }
+        )
+
+        result = run(
+            "dispatch",
+            "task-x",
+            vendor,
+            str(brief),
+            model,
+            "medium",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+
+        assert result.returncode == 0, result.stderr
+        calls = [call for call in docker_calls(log) if call[:1] == ["exec"]]
+        stamp = next(call for call in calls if "git config user.name" in " ".join(call))
+        cli = next(call for call in calls if cli_marker in " ".join(call))
+        return stamp, cli, calls
+
+    def test_a_claude_dispatch_stamps_the_model_and_anthropic_address_before_the_cli(
+        self, tmp_path
+    ):
+        """The stamp is asserted as an executed command, not as source text: it names
+        the dispatched model, carries the Anthropic no-reply address `.githooks/
+        commit-msg` documents, and runs before the CLI it attributes."""
+        stamp, cli, calls = self._stamped_dispatch_calls(
+            tmp_path, "claude", "sonnet", "--append-system-prompt-file"
+        )
+        joined = " ".join(stamp)
+        assert "user.name 'sonnet'" in joined
+        assert "user.email 'noreply@anthropic.com'" in joined
+        assert calls.index(stamp) < calls.index(cli), "the CLI ran before the author stamp"
+
+    def test_a_codex_dispatch_stamps_the_model_and_openai_address_before_the_cli(self, tmp_path):
+        """The vendor argument, not the model's spelling, chooses the address — a
+        name pattern would misattribute the first model whose spelling crosses
+        vendors."""
+        stamp, cli, calls = self._stamped_dispatch_calls(
+            tmp_path, "codex", "gpt-5.6-luna", "--dangerously-bypass-approvals-and-sandbox"
+        )
+        joined = " ".join(stamp)
+        assert "user.name 'gpt-5.6-luna'" in joined
+        assert "user.email 'noreply@openai.com'" in joined
+        assert calls.index(stamp) < calls.index(cli), "the CLI ran before the author stamp"
 
     def test_a_claude_chamber_has_no_background_wait_ceiling(self):
         """The default ceiling is a real kill, and it silently cost a lane.
