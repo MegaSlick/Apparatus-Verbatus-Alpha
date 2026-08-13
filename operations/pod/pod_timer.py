@@ -316,7 +316,15 @@ def _persist_or_close(context: TimerContext, path: Path, value: dict[str, object
             # rather than a reconstruction -- it says the payload was unusable,
             # it does not invent a bootstrap state that was never observed.
             bootstrap = {"state": "unrecorded", "detail": "report payload carried no bootstrap"}
-        _durable_failure_close(context, path, bootstrap, error, "mandatory pod report write failed")
+        prior = value.get("close_attempts")
+        _durable_failure_close(
+            context,
+            path,
+            bootstrap,
+            error,
+            "mandatory pod report write failed",
+            prior_attempts=prior if isinstance(prior, int) and prior >= 0 else 0,
+        )
 
 
 def _durable_failure_close(
@@ -325,6 +333,8 @@ def _durable_failure_close(
     bootstrap: dict[str, object],
     error: Exception,
     label: str,
+    *,
+    prior_attempts: int = 0,
 ) -> None:
     """Attempt verified close even when the retained-volume receipt is unavailable.
 
@@ -344,7 +354,10 @@ def _durable_failure_close(
     fallback = {
         "bootstrap": {**bootstrap, "failure_detail": str(error)},
         "close": result.close_report.to_record() if result.close_report else None,
-        "close_attempts": 1,
+        # Close attempts already made before the report write failed, plus
+        # this one -- a fallback claiming one attempt after three would hide
+        # the three (GOVERNANCE 2).
+        "close_attempts": prior_attempts + 1,
         "green": False,
     }
     receipt = "fallback receipt was written"

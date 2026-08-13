@@ -3595,6 +3595,37 @@ def test_cli_adopt_refused_at_preview_for_a_real_pod_exits_three(
     assert "refused-runtime-contract" in out
 
 
+def test_a_fallback_receipt_counts_the_close_attempts_already_made(tmp_path: Path) -> None:
+    """A report-write failure after three close attempts must not file a
+    fallback claiming one: the earlier attempts would vanish (GOVERNANCE 2).
+    An unserializable close record makes the primary write fail while the
+    serializable fallback still lands."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.06")
+    store = LeaseStore(tmp_path / "fallback-count.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    report_path = tmp_path / "fallback-count-report.json"
+
+    with pytest.raises(RuntimeError, match="mandatory pod report write failed"):
+        _persist_or_close(
+            TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
+            report_path,
+            {
+                "bootstrap": {"argv": ["true"], "state": "failed"},
+                "close": object(),  # unserializable: the primary write fails
+                "close_attempts": 3,
+                "green": False,
+            },
+        )
+
+    fallback = json.loads(report_path.read_text(encoding="utf-8"))
+    assert fallback["close_attempts"] == 4
+    assert fallback["green"] is False
+
+
 def test_pod_timer_main_with_a_failing_factory_writes_a_non_green_report(tmp_path: Path) -> None:
     from .pod_timer import main as pod_timer_main
 
