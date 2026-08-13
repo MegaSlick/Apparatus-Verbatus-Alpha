@@ -11,3 +11,4 @@
 
 !requirements-dev.txt
 !operations/autoclave/agent-brief.md
+!operations/autoclave/refresh_claude_token.py

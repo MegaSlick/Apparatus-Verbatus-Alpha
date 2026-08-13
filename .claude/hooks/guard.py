@@ -516,8 +516,8 @@ def landing_on_main(tool: str, tool_input: Any, payload: dict[str, Any]) -> Deci
             if not token.startswith("-")
         ):
             return "deny", (
-                f"That pushes at main, and hard rule {RULE_THREE} Work reaches main by "
-                "pull request or not at all (hard rule 3, Branches)."
+                f"That pushes at main, and hard rule {RULE_THREE} "
+                "Main is read-only locally; work reaches it through a pull request."
             )
     return None
 
@@ -665,7 +665,7 @@ def rewriting_history(tool: str, tool_input: Any, payload: dict[str, Any]) -> De
     """3. A force-push, a history filter, or a `reset --hard`.
 
     A local rebase and `commit --amend` are deliberately *not* here. Both are routine —
-    the reviewer-pass skill has `Reviewed-by:` trailers amended in after a pass returns — and
+    README.md records reviewers with `Reviewed-by:` trailers after a pass returns — and
     both are recoverable from the reflog. What is not recoverable is a rewrite that has
     reached the remote, or a `reset --hard` that discards a working tree git never saw.
     """

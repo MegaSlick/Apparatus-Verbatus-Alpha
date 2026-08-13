@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,24 +20,48 @@ from .models import (
 SPEND_SCHEMA = "pod-spend.v2"
 
 CONFIRMATION_PREFIX = "I CONFIRM PAID POD"
-"""The fixed opening of the typed phrase; the rest is derived from the price.
+"""The fixed opening of the typed phrase; the rest names one action and one challenge.
 
 A constant phrase can be typed from memory without referring to one action.
-CLAUDE.md's Gate rule is that a clear answer authorises *that action and nothing
-adjacent*, so this phrase names the action, subject, and both displayed hourly
-rates. It binds the acknowledgement to one preview; it is not proof of Tyrel's
-permission and does not claim automation cannot derive the phrase.
+CLAUDE.md's hard rule 1 reserves paid actions to Tyrel and requires the exact action to
+be named, so this phrase names the action, subject, and both displayed hourly rates.
+
+Those four values are all derivable from the price sheet, so they alone proved only that
+the caller knew the price -- not that anyone had been shown a preview. The phrase
+therefore also carries a challenge that only a preview issued in this process can supply.
+
+What that does and does not establish, stated plainly because GOVERNANCE 10 forbids
+claiming more than was measured: it binds the confirmation to a preview produced in this
+run, and makes the phrase unguessable and single-use. It is still not proof of *Tyrel's*
+identity -- nothing local can supply that -- so GOVERNANCE 8 continues to rest on his
+permission in the session, with this gate refusing everything that never saw a preview.
 """
+
+CHALLENGE_BYTES = 8
+"""Wide enough that a phrase cannot be guessed; short enough to retype from a screen."""
+
+
+def mint_challenge() -> str:
+    """A fresh, unpredictable challenge for exactly one preview."""
+
+    return secrets.token_hex(CHALLENGE_BYTES).upper()
 
 
 def confirmation_phrase(
-    action: str, subject: str, pod_hourly_usd: Decimal, volume_hourly_usd: Decimal
+    action: str,
+    subject: str,
+    pod_hourly_usd: Decimal,
+    volume_hourly_usd: Decimal,
+    challenge: str,
 ) -> str:
     """The exact text an operator must type back for this one paid action."""
 
+    if not challenge:
+        raise SpendRefusal("a paid action cannot be confirmed without a preview challenge")
     return (
         f"{CONFIRMATION_PREFIX} {action} {subject} "
-        f"AT ${pod_hourly_usd}/HR PLUS ${volume_hourly_usd}/HR VOLUME"
+        f"AT ${pod_hourly_usd}/HR PLUS ${volume_hourly_usd}/HR VOLUME "
+        f"CHALLENGE {challenge}"
     )
 
 
@@ -304,8 +329,23 @@ def require_confirmation(value: str | None, expected: str) -> None:
 
     if value == expected:
         return
-    prefix_end = expected.rfind(" AT $")
-    if isinstance(value, str) and prefix_end != -1 and value[:prefix_end] == expected[:prefix_end]:
+    challenge_start = expected.rfind(" CHALLENGE ")
+    price_start = expected.rfind(" AT $")
+    if isinstance(value, str) and challenge_start != -1:
+        # Everything but the challenge matches: the operator retyped a phrase from an
+        # older preview. Naming that is the difference between "you mistyped" and
+        # "this authorization was for a different preview".
+        if value[:challenge_start] == expected[:challenge_start]:
+            raise SpendRefusal(
+                "typed confirmation names a different preview challenge; a confirmation "
+                "is valid only for the preview that issued it -- re-run the preview and "
+                "type its phrase; no paid action occurred"
+            )
+    if (
+        isinstance(value, str)
+        and price_start != -1
+        and value[:price_start] == expected[:price_start]
+    ):
         raise SpendRefusal(
             f"typed confirmation must be exactly {expected!r}; the price may have "
             "changed between preview and confirmation -- re-run the preview and "

@@ -29,6 +29,8 @@
 #
 # POSIX sh: this runs on the host, and the host's shell is not guaranteed.
 set -eu
+GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_REPLACE_OBJECTS
 
 IMAGE_NAME="verbatus-autoclave"
 IMAGE_TAG="dev"
@@ -45,6 +47,7 @@ REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 # The one thing in `/out` that a POSIX shell cannot do for itself: open a path once,
 # refusing to follow a symlink at the end of it. See the file's own header.
 SAFE_FILE="${REPO_ROOT}/operations/autoclave/safe_file.py"
+FINGERPRINT="${REPO_ROOT}/operations/autoclave/fingerprint.py"
 
 # Output lives in the gitignored workbench: it is a note, not a document, and it
 # must never appear in `git status`. One drawer per task, kept after the chamber
@@ -67,91 +70,45 @@ AUTH_VOL_CLAUDE="verbatus-ac-auth-claude"
 AUTH_VOL_CODEX="verbatus-ac-auth-codex"
 AUTH_DIR_CLAUDE="/home/agent/.claude"
 AUTH_DIR_CODEX="/home/agent/.codex"
+CLAUDE_LOCK="${AUTH_DIR_CLAUDE}/.credentials.autoclave.lock"
 
-# **Claude keeps its configuration in two places and only one of them was mounted.**
-# `.credentials.json` lives inside the mounted directory named above, so it survived
-# every container. `.claude.json` lives beside that directory rather than in it — one
-# level *up*, outside the mount — and this script created a fresh empty one in every
-# chamber. Both paths below are the container's own; nothing here reads this host. The
-# CLI needs
-# both to refresh an OAuth token: with the credential present and the config blank the
-# refresh fails and the CLI **blanks the token fields in place**, leaving a record whose
-# `refreshTokenExpiresAt` is still weeks away and whose tokens are empty strings.
-#
-# That is not an expiry and it is not a lost volume. It is why the sign-in worked for a
-# few hours and then died, twice, on 2026-08-05 and 2026-08-06 — the access token lasts
-# until its first refresh, and the first refresh is where it goes. The 50-byte
-# `backups/.claude.json.backup.*` files in the volume are the CLI dutifully backing up
-# the empty stub this script had just made.
-#
-# So the file is kept inside the volume and copied in and out around anything that runs
-# a Claude CLI. Copying rather than symlinking on purpose: the CLI writes this file
-# atomically — temp file, then rename over — and a rename replaces a symlink with a
-# regular file, which would put the whole thing back exactly as it was while looking
-# fixed. Codex needs none of this: everything it writes is already inside its own
-# mounted directory, which is why only one vendor ever had this problem.
-HOME_CONFIG_LIVE="/home/agent/.claude.json"
-HOME_CONFIG_KEPT="${AUTH_DIR_CLAUDE}/home-config.json"
+# One task is one lifecycle.  A launcher command may read a chamber state and then
+# act on it; another command for that same task cannot be allowed to change that
+# state between those two operations.  `mkdir` is the portable atomic primitive
+# available to POSIX sh. The directory is resolved beside git's common directory,
+# so linked worktrees share it while the chamber cannot reach it.
+LIFECYCLE_LOCK=""
+LIFECYCLE_SNAPSHOT=""
+LIFECYCLE_INCOMING=""
 
-# The seed aborts its shell on a failed copy rather than letting the second line
-# report success over a partial file — a chamber running the CLI against a torn
-# configuration is the original bug wearing a new face. The save publishes by
-# copy-to-temp-then-rename so a reader never sees a half-written file even when two
-# chambers save at once: rename is atomic on one filesystem, so the last complete
-# snapshot wins and no interleaving produces a torn one.
-#
-# **The temp name comes from `mktemp`, not from the shell pid, and that correction
-# is measured.** This once used `.tmp.$$` on the stated grounds that a container
-# shell pid is unique per chamber. It is not: each container has its own pid
-# namespace, and two chambers exec'd into on this machine both reported pid 8. The
-# kept file is on a volume shared by every chamber of that vendor, so both saves
-# would have written one temp path at once and published the interleaving — the
-# exact tear the rename exists to prevent, in the mechanism built to prevent it.
-# `mktemp` creates the file on the real shared filesystem, so uniqueness is decided
-# where the collision would happen. The save ends in `false` rather than `exit` when the
-# copy fails, because `wrap_home_config` below needs to see the failure and still
-# report the CLI's own status; a bare `sh -c` caller sees the non-zero either way.
-#
-# The seed reads with `cat` rather than `cp`, and that is the pair to the rename
-# above rather than a matter of taste. GNU `cp` stats its source before opening it
-# and refuses when the two differ: "skipping file ..., as it was replaced while
-# being copied", exit 1. The save's rename is exactly that replacement, so one
-# chamber publishing its sign-in killed another chamber's seed — and the seed's
-# `|| exit 1` then killed that whole dispatch before the CLI ran. CI found it; a
-# two-CPU runner reproduces it in about one attempt in twenty, and concurrent
-# Claude chambers are the standing review roster rather than a corner case.
-# `cat` opens the file once and reads the inode it opened, so a rename underneath
-# is invisible to it: the seed gets the complete snapshot from one side of the
-# rename or the other, which is the same guarantee the readers get.
-HOME_CONFIG_SEED="if [ -f '${HOME_CONFIG_KEPT}' ]; then cat '${HOME_CONFIG_KEPT}' > '${HOME_CONFIG_LIVE}' || exit 1; fi
-if [ ! -f '${HOME_CONFIG_LIVE}' ]; then printf '%s\\n' '{}' > '${HOME_CONFIG_LIVE}'; fi"
-HOME_CONFIG_SAVE="if [ -f '${HOME_CONFIG_LIVE}' ] && [ -d '${AUTH_DIR_CLAUDE}' ]; then { ac_home_config_tmp=\$(mktemp '${HOME_CONFIG_KEPT}.tmp.XXXXXX') && cp '${HOME_CONFIG_LIVE}' \"\$ac_home_config_tmp\" && mv -f \"\$ac_home_config_tmp\" '${HOME_CONFIG_KEPT}'; } || { rm -f \"\${ac_home_config_tmp:-}\"; false; }; fi"
+lifecycle_cleanup() {
+    trap - 0 1 2 15
+    [ -z "$LIFECYCLE_INCOMING" ] ||
+        git -C "$REPO_ROOT" update-ref --no-deref -d "$LIFECYCLE_INCOMING" >/dev/null 2>&1 || :
+    [ -z "$LIFECYCLE_SNAPSHOT" ] || rm -f "$LIFECYCLE_SNAPSHOT" || :
+    [ -z "$LIFECYCLE_LOCK" ] || rmdir "$LIFECYCLE_LOCK" 2>/dev/null || :
+    LIFECYCLE_INCOMING=""
+    LIFECYCLE_SNAPSHOT=""
+    LIFECYCLE_LOCK=""
+}
 
-# Run one command between a seed and a save, and hand back the command's own exit
-# status rather than the copy's. A save that quietly became the exit code would report
-# a failed sign-in as success.
-#
-# The single quotes on the two `ac_home_config_rc` lines are the whole point and not an
-# oversight: this function builds a script for the *container's* shell, so the variable
-# must survive as text and be expanded in there. Expanding it here would bake in this
-# shell's exit status, which is a different number about a different command.
-# A save that fails after a successful command is surfaced as the wrapper's own
-# failure — a sign-in that worked but was not persisted will die at the next
-# refresh, and reporting success there is how this bug stayed invisible twice. A
-# failed command keeps its own status regardless; the save still ran first.
-# shellcheck disable=SC2016
-wrap_home_config() {
-    printf '%s\n' \
-        "$HOME_CONFIG_SEED" \
-        "$1" \
-        'ac_home_config_rc=$?' \
-        "$HOME_CONFIG_SAVE" \
-        'ac_home_config_save_rc=$?' \
-        'if [ "$ac_home_config_rc" -eq 0 ] && [ "$ac_home_config_save_rc" -ne 0 ]; then' \
-        '    echo "the command finished but its configuration could not be saved to the volume; the next chamber may find this sign-in blank" >&2' \
-        '    exit "$ac_home_config_save_rc"' \
-        'fi' \
-        'exit $ac_home_config_rc'
+acquire_lifecycle_lock() {
+    lifecycle_task="$1"
+    lifecycle_common=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir) ||
+        die "could not locate this repository's common git directory"
+    lifecycle_root=$(dirname "$lifecycle_common")
+    lifecycle_dir="${lifecycle_root}/workbench/autoclave/.locks"
+    mkdir -p "$lifecycle_dir" ||
+        die "could not create the task lock directory ${lifecycle_dir}"
+    LIFECYCLE_LOCK="${lifecycle_dir}/${lifecycle_task}.lock"
+    mkdir "$LIFECYCLE_LOCK" 2>/dev/null ||
+        die "task '${lifecycle_task}' is already active: ${LIFECYCLE_LOCK}. If no launcher is running, remove the stale lock with: rmdir ${LIFECYCLE_LOCK}"
+    trap 'lifecycle_cleanup' 0
+    trap 'lifecycle_cleanup; exit 1' 1 2 15
+}
+
+collected_marker_of() {
+    printf '%s/.collected/%s/%s' "$OUT_ROOT" "$1" "$2"
 }
 
 die() { printf 'autoclave: %s\n' "$*" >&2; exit 1; }
@@ -233,7 +190,12 @@ cmd_doctor() {
         else
             asked=0; authenticated "$vendor" "$volume" || asked=$?
             case "$asked" in
-                0) echo "signed in (${volume})" ;;
+                0)
+                    if [ "$vendor" = claude ]; then
+                        echo "signed in (${volume}); access is refreshed before chamber auth checks"
+                    else
+                        echo "signed in (${volume})"
+                    fi ;;
                 1) echo "not signed in — the volume exists but ${vendor} says no; run: $0 login ${vendor}" ;;
                 *) echo "unknown — the volume exists but ${vendor} could not be asked" ;;
             esac
@@ -243,13 +205,18 @@ cmd_doctor() {
 
 cmd_build() {
     need_docker
+    docker buildx version >/dev/null 2>&1 ||
+        die "Docker Buildx is required — install it with: brew install docker-buildx"
+    harness_fingerprint=$(python3 "$FINGERPRINT") ||
+        die "cannot fingerprint the chamber image inputs"
     # Context is the repository root so the Dockerfile can reach
     # requirements-dev.txt; .dockerignore there denies everything else.
     # The uid and gid are the caller's, so bundles land owned by the host user.
-    docker build \
+    docker buildx build --load \
         --file "${REPO_ROOT}/operations/autoclave/Dockerfile" \
         --build-arg "UID=$(id -u)" \
         --build-arg "GID=$(id -g)" \
+        --build-arg "HARNESS_FINGERPRINT=${harness_fingerprint}" \
         --tag "$IMAGE" \
         "${REPO_ROOT}"
     note ""
@@ -297,6 +264,11 @@ auth_check() {
 authenticated() {
     vendor_asked="$1"
     volume_asked="$2"
+    # `login` has already inspected an immutable ID before it opens its booth. Keep
+    # every container in that one operation on the exact same image: a tag can move
+    # between the interactive CLI and the status check. Other callers deliberately
+    # keep the current tagged image behaviour.
+    image_asked="${3:-$IMAGE}"
     mount_asked=$(auth_dir "$vendor_asked") || return 2
     check_asked=$(auth_check "$vendor_asked") || return 2
     has_volume "$volume_asked" || return 1
@@ -308,13 +280,35 @@ authenticated() {
     # ever refreshes a near-expiry token, the check verifying a sign-in would be the thing
     # that destroyed it, and the symptom would once again look like an expiry.
     answer=$(docker run --rm --volume "${volume_asked}:${mount_asked}" \
-        --env "CLAUDE_CONFIG_DIR=${mount_asked}" "$IMAGE" \
+        --env "CLAUDE_CONFIG_DIR=${mount_asked}" "$image_asked" \
         sh -c "${check_asked} >/dev/null 2>&1; printf 'ac-auth:%s' \$?" 2>/dev/null) || return 2
     case "$answer" in
         ac-auth:0) return 0 ;;
         ac-auth:*) return 1 ;;
         *) return 2 ;;
     esac
+}
+
+# Claude's print-mode dispatch does not renew an expired access token itself.  Refresh
+# before asking its CLI for status. The CLI reports an expired credential as logged in,
+# so the helper must succeed; status then remains a second check of the resulting layout.
+refresh_claude_volume() {
+    volume_asked="$1"
+    # Same reason `authenticated` takes one: inside a single `new`, a rebuild that moves
+    # the tag would otherwise refresh and verify the credential with one CLI build and
+    # then run the chamber on a different one.
+    image_asked="${2:-$IMAGE}"
+    has_volume "$volume_asked" || return 1
+    docker run --rm --volume "${volume_asked}:${AUTH_DIR_CLAUDE}" \
+        --env "CLAUDE_CONFIG_DIR=${AUTH_DIR_CLAUDE}" "$image_asked" \
+        python3 /opt/autoclave/refresh_claude_token.py
+}
+
+refresh_claude_chamber() {
+    task_asked="$1"
+    docker exec -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
+        "$(container_of "$task_asked")" \
+        python3 /opt/autoclave/refresh_claude_token.py
 }
 
 cmd_login() {
@@ -359,7 +353,9 @@ cmd_login() {
         *) die "login mode is 'browser' or 'device'" ;;
     esac
     need_docker
-    docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
+    image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null) ||
+        die "image not built — run: $0 build"
+    [ -n "$image_id" ] || die "image '$IMAGE' has no immutable image ID"
 
     # **Whether this call created the volume decides whether this call may take it
     # away.** An empty volume that was already here is somebody else's business.
@@ -398,16 +394,11 @@ cmd_login() {
     # happened either way, and a vendor CLI that failed is the clearest evidence there
     # is of what happened.
     #
-    # **The booth is where the two-file split bit hardest.** A Claude sign-in writes
-    # `.credentials.json` into the volume and `.claude.json` into a container marked
-    # `--rm`, so the half the refresh needs was thrown away the moment the sign-in
-    # succeeded. Wrapping the CLI keeps both halves. See `HOME_CONFIG_KEPT` above.
-    # `CLAUDE_CONFIG_DIR` points the CLI's whole configuration at the mounted volume,
-    # so the booth's `--rm` can no longer throw away the half a refresh needs. See the
-    # dispatch path for the probe that established this.
+    # Claude receives CLAUDE_CONFIG_DIR so every configuration file lands in the
+    # mounted volume and survives this temporary login container.
     case "$vendor" in
         claude)
-            login_cmd="$tool"
+            login_cmd="flock -w 60 ${CLAUDE_LOCK} $tool"
             login_env="--env CLAUDE_CONFIG_DIR=${mount}" ;;
         *)
             login_cmd="$tool"
@@ -420,7 +411,7 @@ cmd_login() {
         docker run --rm --interactive --tty \
             --volume "${volume}:${mount}" \
             $login_env \
-            "$IMAGE" \
+            "$image_id" \
             sh -c "$login_cmd" || login_status=$?
     else
         note "(no terminal here — running without one; follow the URL or code below)"
@@ -429,7 +420,7 @@ cmd_login() {
         docker run --rm --interactive \
             --volume "${volume}:${mount}" \
             $login_env \
-            "$IMAGE" \
+            "$image_id" \
             sh -c "$login_cmd" || login_status=$?
     fi
 
@@ -438,7 +429,7 @@ cmd_login() {
     # `ls -A` on the mount, and both CLIs write configuration into that directory
     # before, during and after any sign-in — so it reported success for an attempt
     # that was cancelled at the vendor's own page. Ask the vendor instead.
-    asked=0; authenticated "$vendor" "$volume" || asked=$?
+    asked=0; authenticated "$vendor" "$volume" "$image_id" || asked=$?
     if [ "$asked" -eq 2 ]; then
         # The question could not be put. Whatever the volume now holds is not this
         # script's to throw away on the strength of an answer nobody got.
@@ -460,8 +451,29 @@ cmd_login() {
 # shape is what `test_a_chamber_holds_one_vendor_credential_or_none` reads, and it
 # is the shape of the defect it exists to catch. The tri-state handling that would
 # otherwise be duplicated into both lives here instead.
+# The refresh helper's exit code is the difference between "wait and retry" and "sign in
+# again", and telling an operator to sign in rotates a refresh token that is usually still
+# valid. Exit 1 is retryable and leaves the stored credential intact — the endpoint
+# failed, refused, another writer held the lock, or a concurrent write was restored. Exit
+# 2 is local: the credential could not be read or republished, and needs a human.
+claude_refresh_failure() {
+    case "$1" in
+        2) die "Claude's stored credential could not be read or republished, so this machine's credential state needs checking before anything else — see the message above; '$0 doctor' reports the volumes" ;;
+        *) die "Claude could not refresh its access token, and the stored credential is unchanged — retry, and only run '$0 login claude' if the retry reports the refresh token itself is rejected" ;;
+    esac
+}
+
 require_signed_in() {
-    asked=0; authenticated "$1" "$2" || asked=$?
+    # `new` resolves an immutable image ID and starts the chamber from it, so the
+    # credential must be refreshed and verified against that exact image rather than a
+    # tag that a concurrent rebuild can move in between.
+    image_asked="${3:-$IMAGE}"
+    if [ "$1" = claude ]; then
+        has_volume "$2" || die "'claude' is not signed in — run: $0 login claude"
+        refreshed=0; refresh_claude_volume "$2" "$image_asked" || refreshed=$?
+        [ "$refreshed" -eq 0 ] || claude_refresh_failure "$refreshed"
+    fi
+    asked=0; authenticated "$1" "$2" "$image_asked" || asked=$?
     [ "$asked" -eq 1 ] && die "'$1' is not signed in — run: $0 login $1"
     [ "$asked" -eq 0 ] ||
         die "'$1' could not be asked whether it is signed in, so nothing here can say the chamber will hold a working credential. Check '$0 doctor'"
@@ -483,6 +495,7 @@ cmd_new() {
         claude|codex|none) : ;;
         *) die "new takes 'claude', 'codex' or nothing as its vendor" ;;
     esac
+    acquire_lifecycle_lock "$task"
 
     # Resolve the base to a commit on the host, so the chamber is pinned to an exact
     # tree rather than to whatever a name meant at clone time. It is git-only, so it
@@ -534,25 +547,22 @@ cmd_new() {
     # commit standing — and `rm` refuses a task with no container, so the one command
     # that deletes that ref could not be reached to do it.
     need_docker
-    docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image not built — run: $0 build"
+    image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null) ||
+        die "image not built — run: $0 build"
+    [ -n "$image_id" ] || die "image '$IMAGE' has no immutable image ID"
     exists "$task" && die "chamber '$task' already exists — use 'rm $task' first"
 
-    # **The brief is baked into the image, so editing it does nothing until a
-    # rebuild.** On 2026-08-02 `agent-brief.md` was edited and a chamber created in the
-    # same session ran the *old* brief; the only symptom was an agent behaving as
-    # though the new paragraph had never been written, which is indistinguishable from
-    # an agent ignoring it. Nothing can be corrected at run time either: all three
-    # copies sit at root-owned paths and the container runs as a non-root user.
-    #
-    # Refused rather than warned. A warning on a command whose next step is a dispatch
-    # that may run for an hour is a warning nobody reads in time, and the fix is one
-    # command. Compared by content, not by timestamp — a fresh checkout sets every
-    # mtime to now, so a time comparison would refuse every chamber on a new clone.
-    image_brief=$(docker run --rm "$IMAGE" cat /CLAUDE.md 2>/dev/null) ||
-        die "the image carries no chamber brief at /CLAUDE.md — rebuild it: $0 build"
-    if [ "$image_brief" != "$(cat "${REPO_ROOT}/operations/autoclave/agent-brief.md")" ]; then
-        die "the image's chamber brief is not this checkout's operations/autoclave/agent-brief.md. Any chamber made now would run the older one. Rebuild: $0 build"
-    fi
+    # Every input that defines the image is content-addressed together. Comparing the
+    # label rather than mtimes works after a fresh checkout and catches a locally edited
+    # Dockerfile, requirements file, brief, refresh helper, build-context policy, or the
+    # fingerprint implementation itself. Refuse before creating a snapshot or container.
+    expected_fingerprint=$(python3 "$FINGERPRINT") ||
+        die "cannot fingerprint the chamber image inputs"
+    image_fingerprint=$(docker image inspect --format \
+        '{{index .Config.Labels "verbatus.harness-fingerprint"}}' "$image_id" 2>/dev/null) ||
+        image_fingerprint=""
+    [ "$image_fingerprint" = "$expected_fingerprint" ] ||
+        die "the chamber image does not match this checkout's repository harness inputs. Rebuild: $0 build"
 
     # **A named vendor whose sign-in is not real is refused here.** It used to be
     # tolerated: the mount was skipped and the chamber was still labelled for that
@@ -570,10 +580,10 @@ cmd_new() {
     auth_mounts=""
     case "$vendor" in
         claude)
-            require_signed_in claude "$AUTH_VOL_CLAUDE"
+            require_signed_in claude "$AUTH_VOL_CLAUDE" "$image_id"
             auth_mounts="--volume ${AUTH_VOL_CLAUDE}:${AUTH_DIR_CLAUDE}" ;;
         codex)
-            require_signed_in codex "$AUTH_VOL_CODEX"
+            require_signed_in codex "$AUTH_VOL_CODEX" "$image_id"
             auth_mounts="--volume ${AUTH_VOL_CODEX}:${AUTH_DIR_CODEX}" ;;
     esac
 
@@ -825,7 +835,7 @@ cmd_new() {
         $auth_mounts $window_mount $window_masks \
         --env "CLAUDE_CONFIG_DIR=${AUTH_DIR_CLAUDE}" \
         --workdir /work \
-        "$IMAGE" \
+        "$image_id" \
         sleep infinity >/dev/null || {
         # The one failure past the snapshot that can leave a ref standing. `rm`
         # refuses a task with no container, so nothing else would ever delete it.
@@ -887,7 +897,7 @@ cmd_new() {
         git config user.email 'autoclave@localhost'
         # **The hooks are switched on in here.** `core.hooksPath` is local to a clone
         # and never travels, so a fresh chamber had every git-hook rule off — silently,
-        # which is the state `CLAUDE.md`'s "What may be missing or wrong" warns about.
+        # which violates the repository branch and attribution rules.
         # The one that matters most here is `commit-msg`: without it nothing asked a
         # chamber commit for the `Co-Authored-By` line naming the model that wrote it,
         # and an agent could hand back forty unattributed commits before anyone looked.
@@ -911,18 +921,8 @@ AUTOCLAVE_SETUP
     #
     # `settings.local.json` takes precedence and is gitignored, so the tracked tree
     # stays clean and `collect` still sees an untouched checkout.
-    docker exec "$(container_of "$task")" sh -c '
-        # Without `set -eu` this body ends on the copy at the bottom, so a failed trust
-        # update is masked by a copy that then succeeds: the chamber comes up with no
-        # trust flag, the CLI blocks on a dialog nobody is there to answer, and the die
-        # at the end of this command never fires. The block at AUTOCLAVE_SETUP has had
-        # this line since it was written; this one never did, and the locked trust
-        # update below has just added a new way to fail — a held lock. Found by
-        # CodeRabbit on PR 22.
-        #
-        # Nothing here is expected to fail. The one guarded failure, the copy below,
-        # already ends in `false` deliberately, and the only variable in this block is
-        # read as "${ac_tmp:-}" so `set -u` has nothing to catch.
+    docker exec -e AC_VENDOR="$vendor" "$(container_of "$task")" sh -c '
+        # Fail chamber creation if either the local settings or trust update fails.
         set -eu
 
         printf "%s\n" \
@@ -931,6 +931,8 @@ AUTOCLAVE_SETUP
             "    \"CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH\": \"64\"" \
             "  }" \
             "}" > /work/.claude/settings.local.json
+
+        [ "$AC_VENDOR" = claude ] || exit 0
 
         # **The workspace is trusted, because the chamber *is* the trust boundary.**
         # Without this Claude Code prints "this workspace has not been trusted" and
@@ -941,23 +943,10 @@ AUTOCLAVE_SETUP
         # has carried its own `trust_level = "trusted"` since sign-in, so this is the
         # Claude half of a thing already true for the other vendor.
         #
-        # Seeded from the volume rather than created blank, and written back after, so
-        # the configuration written at sign-in reaches the CLI and the trust flag set
-        # below outlives this chamber. `HOME_CONFIG_KEPT` at the top of this file says
-        # why the file has to make that trip at all.
-        #
         # No apostrophe may appear anywhere in this block. It is one long single-quoted
         # argument, so a word like "the sign-in-s own config" ends the string in the
         # middle of a comment and silently swallows every function defined after it —
         # which is exactly what it did, once, while this fix was being written.
-        # Read with cat rather than cp: the kept file is on a volume every chamber of
-        # this vendor shares, and a save publishes it by rename. GNU cp refuses a
-        # source replaced under it and exits non-zero, which the die below turns into
-        # a dead chamber. cat opens the file once and is blind to the rename.
-        if [ -f /home/agent/.claude/home-config.json ]; then
-            cat /home/agent/.claude/home-config.json > /home/agent/.claude.json
-        fi
-        [ -f /home/agent/.claude.json ] || printf "%s\n" "{}" > /home/agent/.claude.json
         # The trust flag goes where `CLAUDE_CONFIG_DIR` makes the CLI actually look —
         # inside the mounted directory. Written to the path beside it, as it was, the
         # flag is set in a file nothing reads and the trust dialog blocks a detached
@@ -967,9 +956,8 @@ AUTOCLAVE_SETUP
         # `CLAUDE_CONFIG_DIR` has just made `.claude.json` the configuration the CLI
         # refreshes against rather than a throwaway. A plain read-modify-write here races
         # two ways: a refresh from a concurrent chamber landing between the read and the
-        # write is discarded, and a reader can see a truncated file. The doctrine at the
-        # top of this file says exactly that about this volume, and the first cut of this
-        # fix broke it on the one file it had just made load-bearing.
+        # write is discarded, and a reader can see a truncated file. The first cut of
+        # this fix broke it on the one file it had just made load-bearing.
         #
         # No apostrophe may appear in this block, as the warning above it says. The first
         # cut of this comment used one and silently swallowed every function defined after
@@ -980,24 +968,11 @@ AUTOCLAVE_SETUP
         # into a path the CLI will never read.
         #
         # **Locked, and written only when the flag is actually missing.** Temp-then-rename
-        # stopped the torn read. It did nothing about the lost update, which is the harder
-        # half of the same finding. Two writers can still race on this file: another
-        # chamber running this same block, and the Claude CLI in any running chamber
-        # refreshing the file for real.
-        #
-        # `flock` closes the first of those completely — the read, the edit and the rename
-        # all happen while the lock is held, and this block is the only read-modify-write
-        # this script performs on that file. The seed and save beside it publish a
-        # *different* file, whole, by rename, so there is nothing there to serialise with.
-        #
-        # It cannot close the second, and nothing in this tree can: the CLI takes no lock
-        # we can name, so a refresh landing between our read and our rename is still
-        # discarded. What shrinks that window is the other half of this change. The flag
-        # is per project, the project path is the same in every chamber, and the file
-        # lives on the volume — so once it is true it stays true, and every later chamber
-        # reads it, sees it, and writes nothing at all. The exposure is one write per
-        # volume, at the moment that volume is newest and least likely to be in use by a
-        # running chamber. That is not zero and this comment does not claim it is.
+        # stopped the torn read but not a lost update. The login booth, refresh helper,
+        # and this trust initializer join the same volume lock. Status and model runs do
+        # not: locking a whole inference run serialized every Claude chamber. The CLI is
+        # therefore an external writer; refresh detects a change before publication, but
+        # no lock invented here can make a vendor process participate in that protocol.
         #
         # The wait is bounded and loud rather than indefinite. A chamber creation that
         # hangs forever on a lock somebody wedged is worse than one that says why it
@@ -1007,7 +982,7 @@ import fcntl, json, os, pathlib, tempfile, time
 d = pathlib.Path("/home/agent/.claude")
 if d.is_dir():
     p = d / ".claude.json"
-    with open(d / ".claude.json.autoclave.lock", "a+") as guard:
+    with open(d / ".credentials.autoclave.lock", "a+") as guard:
         deadline = time.monotonic() + 30
         while True:
             try:
@@ -1017,16 +992,13 @@ if d.is_dir():
                 if time.monotonic() >= deadline:
                     raise RuntimeError("another chamber held the shared config lock for 30s")
                 time.sleep(0.05)
-        try:
-            config = json.loads(p.read_text() or "{}")
-        except (ValueError, OSError):
-            config = {}
+        contents = p.read_text() if p.exists() else ""
+        config = json.loads(contents) if contents.strip() else {}
         work = config.setdefault("projects", {}).setdefault("/work", {})
         if work.get("hasTrustDialogAccepted") is not True:
             work["hasTrustDialogAccepted"] = True
-            # Temp-then-rename on the real shared filesystem, for the reason the shell
-            # helpers at the top of this file give: a container pid is not unique across
-            # chambers, and rename is atomic only within one filesystem.
+            # A container pid is not unique across chambers, and rename is atomic only
+            # within one filesystem; use a unique temp in the destination directory.
             fd, tmp = tempfile.mkstemp(dir=str(d), prefix=".claude.json.tmp.")
             try:
                 with os.fdopen(fd, "w") as handle:
@@ -1037,21 +1009,6 @@ if d.is_dir():
                     os.unlink(tmp)
                 raise
 PY
-        # Only where the volume is actually mounted. A chamber created without a vendor
-        # — the default, and most of them — has no mounted directory to keep it in, and
-        # an unguarded copy there would fail and take the whole chamber down with it.
-        #
-        # Published by copy-to-temp-then-rename, the same way the dispatch and login
-        # wrapper publishes it, and for the same reason: this writes to the shared
-        # volume, so a reader in another chamber must never see it half written. The
-        # temp name comes from mktemp because a container shell pid is not unique
-        # across chambers - two of them report the same number.
-        if [ -d /home/agent/.claude ]; then
-            { ac_tmp=$(mktemp /home/agent/.claude/home-config.json.tmp.XXXXXX) &&
-                cp /home/agent/.claude.json "$ac_tmp" &&
-                mv -f "$ac_tmp" /home/agent/.claude/home-config.json
-            } || { rm -f "${ac_tmp:-}"; false; }
-        fi
     ' || die "chamber started but the agent configuration could not be written"
 
     note "chamber '${task}' is up"
@@ -1063,8 +1020,16 @@ PY
     note "  collect: $0 collect ${task}"
 }
 
+# `shell` and `exec` deliberately stay outside the lifecycle lock, on the same side as
+# `report`. `dispatch` holds that lock for the entire agent run, and a Claude dispatch
+# buffers all its output until it exits, so taking the lock here meant that for the hours
+# an agent was working the only two commands that could show what it was doing answered
+# "task is already active" -- and told the operator to remove the lock, which is the one
+# action that breaks the serialisation the lock exists to provide. Neither command
+# mutates lifecycle state: they attach to a container that is already running.
 cmd_shell() {
-    task="${1:-}"; check_task "$task"; need_docker
+    task="${1:-}"; check_task "$task"
+    need_docker
     running "$task" || die "chamber '$task' is not running"
     docker exec -it "$(container_of "$task")" /bin/bash
 }
@@ -1104,18 +1069,18 @@ cmd_dispatch() {
         claude|codex) : ;;
         *) die "dispatch takes 'claude' or 'codex'" ;;
     esac
+    acquire_lifecycle_lock "$task"
     [ -f "$brief" ] || die "no brief at '$brief'"
     [ -n "$model" ] || die "dispatch needs a model — see .claude/agents/README.md for which"
-    # Validated rather than trusted, exactly as `operations/codex/seat.sh` validates the
-    # same field. It reaches the container as an environment variable and never as
-    # interpolated text, but a value beginning with `-` would still arrive as a flag.
+    # It reaches the container as an environment variable and never as interpolated
+    # text, but a value beginning with `-` would still arrive as a flag.
     case "$model" in
         -*|*[!A-Za-z0-9._-]*) die "'$model' is not a plain model name" ;;
     esac
     # **Effort is judged against the vendor and the model, not against a vocabulary.**
     # `none minimal low medium high xhigh max` is the union of what the two vendors
-    # accept, and no vendor accepts all seven. `.claude/agents/README.md` measured
-    # which, under "Reachability, which is not negotiable": `minimal` is rejected by
+    # accept, and no vendor accepts all seven. `.claude/agents/README.md` records
+    # the corresponding dispatch table: `minimal` is rejected by
     # every Codex model; `gpt-5.3-codex-spark` also rejects `none` and `max`, leaving it
     # `low`–`xhigh`; Claude accepts `low`, `medium`, `high`, `xhigh`, `max` and nothing
     # else. Checking the union let a value that file records as unreachable through the
@@ -1183,7 +1148,14 @@ cmd_dispatch() {
     # rewrote the configuration directory it shares with every later chamber of the
     # same vendor. Asking inside the chamber, through the mount the CLI will actually
     # read, is the only test that covers all three. It costs one `docker exec` against
-    # a container that is already running.
+    # a container that is already running. Claude is refreshed first because its print
+    # mode does not do that itself and auth status alone accepts expired credentials.
+    if [ "$vendor" = claude ]; then
+        # Same three-way split as `require_signed_in`: a transient endpoint failure
+        # during dispatch must not read as a lost sign-in.
+        refreshed=0; refresh_claude_chamber "$task" || refreshed=$?
+        [ "$refreshed" -eq 0 ] || claude_refresh_failure "$refreshed"
+    fi
     check=$(auth_check "$vendor")
     docker exec "$(container_of "$task")" sh -c "$check" >/dev/null 2>&1 || die \
         "'$vendor' is not signed in inside chamber '$task' — sign in with '$0 login $vendor', then rebuild the chamber ('$0 rm $task' and '$0 new $task <base> $vendor'), because a mount cannot be added to a running container"
@@ -1231,28 +1203,9 @@ cmd_dispatch() {
     #
     # The two vendors spell effort differently and neither spelling is guessable.
     # `claude` takes `--effort <level>`. `codex exec` has no effort flag at all — it
-    # is a config override, `-c model_reasoning_effort=<level>`, which is how
-    # `operations/codex/seat.sh` has always done it. Verified against `--help` on
-    # both CLIs rather than assumed.
-    # Seeded again here, not only at `new`: a chamber can be created before a sign-in
-    # and dispatched after one, so the configuration the CLI is about to refresh against
-    # has to be the current one rather than whatever existed when the chamber was built.
+    # is a config override, `-c model_reasoning_effort=<level>`. Verified against
+    # `--help` on both CLIs rather than assumed.
     dispatch_status=0
-    # **Superseded by `CLAUDE_CONFIG_DIR`, and no longer allowed to be fatal.** The seed
-    # copies into `/home/agent/.claude.json`, which the CLI no longer reads: its
-    # configuration now lives inside the mount. So this copy protects nothing, and its
-    # old `die` — "dispatching without it is what silently blanks the sign-in" — would
-    # kill a whole dispatch over a file that has no bearing on the sign-in. The claim was
-    # true when it was written and is false now.
-    #
-    # It is left in place rather than deleted only because removing it also deletes two
-    # test classes, and a partial removal is worse than a clean one. **That removal is
-    # the named follow-up**, agreed with CodeRabbit and the pre-push review, both of
-    # which found this independently.
-    if [ "$vendor" = claude ]; then
-        docker exec "$(container_of "$task")" sh -c "$HOME_CONFIG_SEED" ||
-            note "note: the superseded configuration copy failed; harmless under CLAUDE_CONFIG_DIR"
-    fi
 
     case "$vendor" in
         claude)
@@ -1263,7 +1216,7 @@ cmd_dispatch() {
             #
             # **`--append-system-prompt-file` is how the chamber's limits reach a
             # Claude agent, and it is the only channel `/work/CLAUDE.md` cannot
-            # outrank.** The four in-tree copies of the brief are files the agent has
+            # outrank.** The in-tree copies of the brief are files the agent has
             # to choose to read, and `/work/CLAUDE.md` — this repository's own rules,
             # written for the host — loads automatically beside them. A seat that read
             # both applied the host's rules to itself and refused to orchestrate.
@@ -1303,6 +1256,7 @@ cmd_dispatch() {
             # backing up the empty configuration it had just been handed. Seven sign-ins
             # in a week, each dying at its first refresh, roughly eight hours in, while
             # the refresh token itself stayed valid for weeks.
+            #
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
                 -e CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
                 -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
@@ -1314,13 +1268,7 @@ cmd_dispatch() {
                     --effort "$AC_EFFORT" \
                     -p < /out/brief.md
             ' || dispatch_status=$?
-            # **The save runs whether the dispatch succeeded or not**, and that is the
-            # point: a refresh that rewrote the configuration and then failed at
-            # something else still rewrote the configuration. Losing it is what killed
-            # the sign-in twice. `HOME_CONFIG_KEPT` at the top of this file has the
-            # whole account.
-            docker exec "$(container_of "$task")" sh -c "$HOME_CONFIG_SAVE" ||
-                note "warning: the CLI configuration could not be written back to the credential volume; a later chamber may find this sign-in blank" ;;
+            ;;
         codex)
             # stdin is a finite regular file, which is what the old `< /dev/null`
             # protected against: `codex exec` waits forever on an open stdin when
@@ -1359,10 +1307,13 @@ cmd_dispatch() {
     [ "$dispatch_status" -eq 0 ] || note "  the CLI exited ${dispatch_status} — read the output above before trusting anything below"
     note "  what it wrote:  $0 collect ${task}"
     note "  what it said:   $0 report ${task}"
+    return "$dispatch_status"
 }
 
 cmd_collect() {
-    task="${1:-}"; check_task "$task"; need_docker
+    task="${1:-}"; check_task "$task"
+    acquire_lifecycle_lock "$task"
+    need_docker
     running "$task" || die "chamber '$task' is not running"
 
     branch="agent/${task}"
@@ -1394,7 +1345,7 @@ cmd_collect() {
             printf '%s\n' \"\$loose\" >&2
             exit 1
         fi
-        git bundle create ${bundle_in} '${branch}' >/dev/null
+        python3 /src/operations/autoclave/safe_file.py bundle ${bundle_in} '${branch}'
     " || die "nothing collected from '$task' — the tree is not clean, or the bundle could not be written; its own message is above. A branch carrying no commits is not this failure: that collects, and says so."
 
     # **This slot is the agent's too, and `[ -f ]` is not enough.** Three reviews
@@ -1406,17 +1357,129 @@ cmd_collect() {
     # private repository's branch arrived on `agent/<task>` and `collect` said
     # `1 commit(s)`.
     #
-    # `git bundle verify` reads the bundle header and refuses anything else, including
-    # that file, and it runs before `fetch` gets a path at all. A symlink is covered by
-    # the same call for the same reason: whatever it points at still has to be a
-    # bundle. The `[ -L ]` test in front says which of the two it was.
+    # Verifying the slot and then fetching the same path is still two reads of a live
+    # agent-controlled name. The agent can replace a verified bundle between them.
+    # `safe_file.py` opens that name once without following a symlink; its bytes go
+    # into a host-owned file under git's common directory. Verification and fetch use
+    # that one snapshot only. A linked worktree has `.git` as a file, hence
+    # `--git-common-dir` rather than spelling `${REPO_ROOT}/.git`.
+    #
+    # The snapshot is created beside where `retain` will move it, not under git's common
+    # directory. Both locations are host-owned and outside the chamber's `/out` mount, so
+    # the security property is the same — but in a linked worktree the common directory
+    # and `${OUT_ROOT}` can sit on different filesystems, and `retain`'s `os.replace`
+    # then raises `EXDEV` *after* the local branch has already been updated. Collection
+    # would fail without retaining the recovery bundle: the one artefact that exists so a
+    # later `rm` cannot destroy unrecoverable work. `.collected` is never mounted.
     [ -L "$bundle_out" ] && die "bundle slot ${bundle_out} is a symlink — refusing to read through it"
     [ -f "$bundle_out" ] || die "bundle did not appear at ${bundle_out}"
-    git -C "$REPO_ROOT" bundle verify "$bundle_out" >/dev/null 2>&1 \
-        || die "what is at ${bundle_out} is not a git bundle. Nothing was fetched. Look at it before anything else — the chamber writes that path and this is what it left there"
+    snapshot_dir="${OUT_ROOT}/.collected"
+    mkdir -p "$snapshot_dir" ||
+        die "could not create the host-owned snapshot directory ${snapshot_dir}; nothing was fetched"
+    bundle_snapshot=$(mktemp "${snapshot_dir}/autoclave-bundle.${task}.XXXXXX") ||
+        die "could not create a host-owned bundle snapshot; nothing was fetched"
+    LIFECYCLE_SNAPSHOT="$bundle_snapshot"
+    if ! python3 "$SAFE_FILE" read "$bundle_out" > "$bundle_snapshot"; then
+        die "could not safely snapshot bundle slot ${bundle_out}; nothing was fetched"
+    fi
+    if ! git -C "$REPO_ROOT" bundle verify "$bundle_snapshot" >/dev/null 2>&1; then
+        die "what is at ${bundle_out} is not a git bundle. Nothing was fetched. Look at it before anything else — the chamber writes that path and this is what it left there"
+    fi
 
-    git -C "$REPO_ROOT" fetch --quiet "$bundle_out" "${branch}:${branch}" \
-        || die "bundle fetched no ref — inspect it with: git bundle list-heads ${bundle_out}"
+    nonce=${bundle_snapshot##*.}
+    incoming="refs/autoclave/incoming/${task}-${nonce}"
+    if git -C "$REPO_ROOT" show-ref --verify --quiet "$incoming" ||
+       git -C "$REPO_ROOT" symbolic-ref -q "$incoming" >/dev/null 2>&1; then
+        die "the invocation-unique incoming ref already exists; nothing was fetched"
+    fi
+    LIFECYCLE_INCOMING="$incoming"
+    if ! git -C "$REPO_ROOT" fetch --quiet "$bundle_snapshot" "+${branch}:${incoming}"; then
+        die "bundle fetched no ref — inspect it with: git bundle list-heads ${bundle_out}"
+    fi
+    incoming_tip=$(git -C "$REPO_ROOT" rev-parse "$incoming")
+
+    # A chamber starts at this exact base and must add commits above it. Rewriting the
+    # inherited history creates an unrelated look-alike branch whose integration has to
+    # rediscover the new commits by subject. Refuse that shape before it can replace a
+    # useful local agent branch. The temporary ref is removed on both paths.
+    if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$chamber_base" "$incoming_tip"; then
+        die "the returned branch rewrote its chamber base instead of extending it. The chamber still holds the work; add new commits above ${chamber_base} and collect again"
+    fi
+
+    branch_ref="refs/heads/${branch}"
+    if git -C "$REPO_ROOT" symbolic-ref -q "$branch_ref" >/dev/null 2>&1; then
+        die "local ${branch} is a symbolic ref; nothing was replaced"
+    fi
+    # `update-ref` can move a checked-out branch even though its worktree has files
+    # from the old commit. Refuse rather than changing a branch another worktree uses.
+    occupancy=$(python3 "$SAFE_FILE" worktree "$REPO_ROOT" "$branch_ref" occupied) || {
+        die "could not inspect worktree occupancy; nothing was replaced"
+    }
+    [ "$occupancy" = absent ] || [ "$occupancy" = occupied ] ||
+        die "worktree occupancy returned an invalid result; nothing was replaced"
+    if [ "$occupancy" = occupied ]; then
+        die "local ${branch} is occupied (checked out in a worktree); nothing was replaced"
+    fi
+    old_tip=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$branch_ref") || old_tip=""
+    if [ -n "$old_tip" ] &&
+       ! git -C "$REPO_ROOT" merge-base --is-ancestor "$old_tip" "$incoming_tip"; then
+        die "local ${branch} contains work the returned branch does not extend; nothing was replaced"
+    fi
+    # `update-ref` alone does not know about worktrees, so make the occupancy check
+    # immediately before the conditional update as well as above.  The old value is
+    # the compare-and-swap: a concurrent ref movement now refuses rather than being
+    # overwritten by a force-update.
+    occupancy=$(python3 "$SAFE_FILE" worktree "$REPO_ROOT" "$branch_ref" occupied) ||
+        die "could not inspect worktree occupancy; nothing was replaced"
+    [ "$occupancy" = absent ] || [ "$occupancy" = occupied ] ||
+        die "worktree occupancy returned an invalid result; nothing was replaced"
+    if [ "$occupancy" = occupied ]; then
+        die "local ${branch} is occupied (checked out in a worktree); nothing was replaced"
+    fi
+    if [ -n "$old_tip" ]; then
+        git -C "$REPO_ROOT" update-ref --no-deref "$branch_ref" "$incoming_tip" "$old_tip" ||
+            die "local ${branch} moved during collection; nothing was replaced (git error above)"
+    else
+        git -C "$REPO_ROOT" update-ref --no-deref "$branch_ref" "$incoming_tip" "0000000000000000000000000000000000000000" ||
+            die "local ${branch} moved during collection; nothing was replaced (git error above)"
+    fi
+    # A worktree can be added after the last occupancy read. If it checked out the
+    # incoming tip after our CAS, branch and worktree already agree and collection is
+    # safe. If it checked out the old tip before the CAS completed, restore the branch
+    # with another CAS so its index and files remain clean too.
+    worktree_state=$(python3 "$SAFE_FILE" worktree "$REPO_ROOT" "$branch_ref" tree) ||
+        die "local ${branch} was updated, but worktree occupancy could not be rechecked; inspect it before changing anything"
+    if [ "$worktree_state" != absent ]; then
+        occupied_tree=${worktree_state#tree:}
+        [ "tree:${occupied_tree}" = "$worktree_state" ] ||
+            die "local ${branch} was updated, but worktree state was invalid; inspect it before changing anything"
+        incoming_tree=$(git -C "$REPO_ROOT" rev-parse "${incoming_tip}^{tree}") ||
+            die "local ${branch} was updated, but its incoming tree could not be resolved"
+        old_tree=""
+        if [ -n "$old_tip" ]; then
+            old_tree=$(git -C "$REPO_ROOT" rev-parse "${old_tip}^{tree}") ||
+                die "local ${branch} was updated, but its previous tree could not be resolved"
+        fi
+        if [ "$occupied_tree" = "$incoming_tree" ]; then
+            : # The worktree began after the CAS and already agrees with the branch.
+        elif [ -n "$old_tip" ] && [ "$occupied_tree" = "$old_tree" ]; then
+            git -C "$REPO_ROOT" update-ref --no-deref "$branch_ref" "$old_tip" "$incoming_tip" ||
+                die "local ${branch} became occupied and could not be safely restored; inspect it before changing anything"
+            die "local ${branch} became occupied during collection; its previous value was restored"
+        else
+            die "local ${branch} was updated, but the new worktree index matches neither its previous nor incoming tree; inspect it before changing anything"
+        fi
+    fi
+
+    # A later re-author may move the branch away from this exact chamber tip. Record
+    # successful publication outside the chamber-writable drawer so `rm` can distinguish
+    # durable collection from an object imported by a collection that later refused.
+    collected_marker=$(collected_marker_of "$task" "$incoming_tip")
+    mkdir -p "$(dirname "$collected_marker")" ||
+        die "local ${branch} was updated, but its collection marker could not be created"
+    python3 "$SAFE_FILE" retain "$bundle_snapshot" "$collected_marker" ||
+        die "local ${branch} was updated, but its recoverable collection bundle could not be retained"
+    LIFECYCLE_SNAPSHOT=""
 
     # An agent that committed nothing leaves its branch pointing at the base, and the
     # bundle for that branch builds and fetches perfectly. Saying "collected" over it
@@ -1479,8 +1542,7 @@ cmd_report() {
     # /out is the one host path the agent can write, so everything read back from it
     # is untrusted input. A symlink left there points `cat` at any file this user can
     # read — an SSH key, `private/` — and prints it straight into the session. `[ -e ]`
-    # follows links, so `[ -L ]` is tested first and separately; the same guard
-    # `capture-seat-report.sh` already carries, which is where this was found missing.
+    # follows links, so `[ -L ]` is tested first and separately.
     #
     # The test above and a `cat` below are two operations on a path a running agent
     # can change in between, and the agent is running: it can pass the test as a file
@@ -1506,6 +1568,7 @@ cmd_rm() {
         ''|force) : ;;
         *) die "rm takes a task and, at most, the word 'force'" ;;
     esac
+    acquire_lifecycle_lock "$task"
     need_docker
     exists "$task" || die "no chamber '$task'"
 
@@ -1558,21 +1621,28 @@ cmd_rm() {
             printf '%s\n' "$chamber_tips" >&2
             die "cannot read the branches in '$task' (above), so nothing here can say whether it holds work. Destroy it unread with: $0 rm $task force"
         fi
-        # **Does this repository have the object** — not "is the tip the same SHA".
-        # Equality deadlocked the moment the host branch moved, which is what
-        # `collect` itself tells the operator to do next: amend the trailers in, and
-        # `rm` then refused for ever while `collect` refused to re-fetch a rewind, so
-        # the only spelling left was the destructive one. Presence is the question
-        # that was always meant: a commit whose object is here was collected, however
-        # the branch has moved since.
+        # Mere object presence is not collection: a refused `collect` has already
+        # fetched the object before its incoming ref is removed. Require a durable ref,
+        # or the host-only marker written only after destination publication succeeded.
         chamber_base=$(docker inspect \
             --format '{{index .Config.Labels "verbatus.base"}}' \
             "$(container_of "$task")" 2>/dev/null) || chamber_base=""
         for tip in $chamber_tips; do
             [ -n "$tip" ] || continue
             [ "$tip" = "$chamber_base" ] && continue
-            git -C "$REPO_ROOT" cat-file -e "${tip}^{commit}" 2>/dev/null && continue
-            die "chamber '$task' holds a commit this repository does not have (${tip}). Run '$0 collect $task' — and if it is on a branch other than agent/${task}, move or merge it there first, because that is the only branch collection bundles. Or destroy it with: $0 rm $task force"
+            if git -C "$REPO_ROOT" for-each-ref --contains "$tip" --format='%(refname)' \
+                refs/heads refs/tags refs/remotes 2>/dev/null | grep -q .; then
+                continue
+            fi
+            collected_marker=$(collected_marker_of "$task" "$tip")
+            if [ ! -L "$collected_marker" ] && [ -f "$collected_marker" ]; then
+                recoverable=$(python3 "$SAFE_FILE" bundle-tip "$collected_marker" \
+                    "refs/heads/agent/${task}" "$tip" 2>/dev/null) || recoverable=""
+                if [ "$recoverable" = recoverable ]; then
+                    continue
+                fi
+            fi
+            die "chamber '$task' holds a commit this repository does not have a durably collected copy of (${tip}). Run '$0 collect $task' — and if it is on a branch other than agent/${task}, move or merge it there first, because that is the only branch collection bundles. Or destroy it with: $0 rm $task force"
         done
     fi
 

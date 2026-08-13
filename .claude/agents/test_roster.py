@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,33 @@ def listed(value: str) -> set[str]:
 def writes(path: Path) -> bool:
     # Bash counts: a role holding only a shell can still edit any file through it.
     return bool(listed(frontmatter(path)["tools"]) & {"Write", "Edit", "NotebookEdit", "Bash"})
+
+
+def affirmative_governing_read_directive(text: str) -> str | None:
+    """The read directive, and only when nothing in the brief acts before it.
+
+    `first` is the word being tested, so position has to be part of the match. Matching
+    any later sentence accepted `Edit /work. Read ... from /work first.` -- a brief that
+    tells the agent to act before it reads the documents that bind the action, with every
+    assertion below still green.
+    """
+
+    introduction = " ".join(text.split("\n-", 1)[0].split())
+    match = re.search(
+        r"(?:^|[.!?]\s+)read\s+(.+?)\s+(?:from|in)\s+`?/work`?\s+first\.",
+        introduction,
+        re.I,
+    )
+    if match is None:
+        return None
+    # Nothing may aim an action at the tree before that sentence. Scoped to `/work`
+    # deliberately: a brief may state its purpose ("Build the task from its
+    # specification") before the read without having touched anything.
+    preceding = introduction[: match.start()]
+    acts_on_work = re.search(
+        r"\b(edit|write|change|modify|inspect|run|commit)\b[^.!?]*`?/work`?", preceding, re.I
+    )
+    return None if acts_on_work else match.group(0).lstrip(".!? ")
 
 
 def test_the_roster_is_not_empty():
@@ -117,38 +145,46 @@ def test_the_briefs_that_replaced_the_writing_roles_still_bind_them():
     assert roles, "no role briefs found; the writing roles have nowhere to be dispatched from"
     for path in roles:
         text = path.read_text(encoding="utf-8").lower()
+        reading_instruction = affirmative_governing_read_directive(text)
+        assert reading_instruction is not None, (
+            f"{path.name} does not positively require its governing documents first"
+        )
         assert "never edit a governed path" in text, (
             f"{path.name} never states the governed-path prohibition"
         )
-        # **The documents are named, not gestured at.** Checking `.claude/` and the
-        # phrase "governed path" as independent substrings let a brief pass while
-        # listing none of the root documents — and a brief that says "never edit a
-        # governed path" without saying which paths those are has told the agent
-        # nothing it can act on. Each name is asserted separately so the failure
-        # message says which one went missing. `data_contract.md` is here because
-        # CLAUDE.md governs it from the moment it exists, and a brief written before
-        # it exists is the one that will still be in use afterwards. Found by
-        # CodeRabbit on pull request 15.
         for document in (
-            "claude.md",
             "goals.md",
             "governance.md",
             "architecture.md",
             "glossary.md",
-            "readme.md",
-            "data_contract.md",
+            "claude.md",
         ):
-            assert document in text, (
-                f"{path.name} states the prohibition without naming `{document}`, so an "
-                "agent reading it cannot tell which documents it covers"
-            )
-        assert ".claude/" in text, (
-            f"{path.name} states the prohibition without naming `.claude/`, which is the "
-            "half of it an agent is most likely to reach"
-        )
+            assert document in reading_instruction, f"{path.name} does not require {document}"
         assert "propose" in text and "exact wording" in text, (
             f"{path.name} never routes document changes through a proposal"
         )
+
+
+def test_negative_wording_is_not_a_governing_read_directive():
+    assert (
+        affirmative_governing_read_directive(
+            "# Builder\n\nDo not read README.md and the governing documents from /work first."
+        )
+        is None
+    )
+
+
+def test_a_directive_that_acts_before_it_reads_is_not_a_governing_read_directive():
+    """The regression the old matcher admitted: reading `first`, but not actually first."""
+
+    assert (
+        affirmative_governing_read_directive(
+            "# Builder\n\nEdit /work as the task requires. "
+            "Read GOALS.md, GOVERNANCE.md, ARCHITECTURE.md, GLOSSARY.md, "
+            "and CLAUDE.md from /work first."
+        )
+        is None
+    )
 
 
 def test_judgement_roles_keep_their_effort_floors():

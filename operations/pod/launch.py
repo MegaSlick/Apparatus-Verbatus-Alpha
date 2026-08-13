@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import threading
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
@@ -33,6 +34,7 @@ from .spend import (
     SpendPolicy,
     assess_spend,
     confirmation_phrase,
+    mint_challenge,
     require_confirmation,
 )
 
@@ -89,23 +91,32 @@ class PaidActionPreview:
     action: str
     subject: str
     assessment: SpendAssessment
+    challenge: str | None = None
+    """The one-time value this preview issued, or ``None`` when none was outstanding.
+
+    ``None`` is the honest representation of "nobody previewed this in this run", and it
+    is what makes a derived phrase useless: there is no phrase to derive.
+    """
 
     @property
     def confirmation_phrase(self) -> str:
-        """Bind the typed acknowledgement to this action and displayed price."""
+        """Bind the typed acknowledgement to this action, price, and preview."""
 
         return confirmation_phrase(
             self.action,
             self.subject,
             self.assessment.estimate.pod_hourly_usd,
             self.assessment.estimate.volume_hourly_usd,
+            self.challenge or "",
         )
 
     def to_record(self) -> dict[str, object]:
         return {
             "action": self.action,
             "subject": self.subject,
-            "confirmation_phrase": self.confirmation_phrase,
+            # A preview with no challenge cannot be confirmed, so it shows no phrase
+            # rather than one that would be refused.
+            "confirmation_phrase": self.confirmation_phrase if self.challenge else None,
             "spend": self.assessment.to_record(),
         }
 
@@ -142,6 +153,7 @@ class PodRuntime:
         shutdown: VerifiedShutdown | None = None,
         now: Callable[[], datetime] = utc_now,
         token_factory: Callable[[], str] = lambda: secrets.token_hex(16),
+        challenge_factory: Callable[[], str] = mint_challenge,
         controller_armer: ControllerArmer | None = None,
     ) -> None:
         self.provider = provider
@@ -166,14 +178,25 @@ class PodRuntime:
         self.shutdown = shutdown
         self.now = now
         self.token_factory = token_factory
+        self.challenge_factory = challenge_factory
         self.controller_armer = controller_armer or FailClosedControllerArmer(now=now)
+        # Outstanding preview challenges, keyed by (action, subject), each holding the
+        # challenge and the hard deadline it was assessed against. In-memory and
+        # per-process on purpose: a challenge that outlived the run would be exactly the
+        # replayable credential this gate exists to refuse. The lock makes claiming one
+        # atomic, so overlapping callers cannot both spend the same confirmation.
+        self._outstanding: dict[tuple[str, str], tuple[str, datetime]] = {}
+        self._challenge_lock = threading.Lock()
 
-    def preview_create(self, request: PodCreateRequest) -> LaunchResult:
+    def preview_create(self, request: PodCreateRequest, *, mint: bool = True) -> LaunchResult:
         """Prove shutdown wiring first, then show the price estimate and ceilings.
 
         The estimate's own ``source`` says whether it came from the provider
         or a reviewed local price sheet -- RunPod has no pre-create quote
         endpoint, so a create preview is priced from config, not the provider.
+
+        ``mint`` is ``False`` only when ``create`` re-runs these checks against an
+        already-issued challenge. Callers asking to see a price leave it alone.
         """
 
         readiness = self.shutdown.prove_ready()
@@ -193,12 +216,12 @@ class PodRuntime:
             estimate = self.provider.estimate(request)
         except Exception as error:
             return LaunchResult(LaunchState.PROVIDER_FAILURE, detail=f"estimate failed: {error}")
-        return self._preview("create", request.name, estimate, request.hard_deadline)
+        return self._preview("create", request.name, estimate, request.hard_deadline, mint=mint)
 
     def create(self, request: PodCreateRequest, *, confirmation: str | None) -> LaunchResult:
         """Arm a durable intent before a provider create, then bind its exact pod id."""
 
-        preview_result = self.preview_create(request)
+        preview_result = self.preview_create(request, mint=False)
         if preview_result.state is not LaunchState.PREVIEW:
             return preview_result
         # Narrowing, not a check: `_preview` is the only producer of `PREVIEW` and it
@@ -210,11 +233,32 @@ class PodRuntime:
                 preview_result.preview,
                 detail="; ".join(preview_result.preview.assessment.reasons),
             )
-        try:
-            require_confirmation(confirmation, preview_result.preview.confirmation_phrase)
-        except SpendRefusal as error:
+        # Nothing outstanding: there is no phrase to build, so say so before trying.
+        # This is an early exit, not the guard -- `_claim_challenge` re-reads under the
+        # lock, so a challenge consumed between here and there still ends in a refusal.
+        claimed = preview_result.preview.challenge is not None
+        if claimed:
+            try:
+                claimed = self._claim_challenge(
+                    "create",
+                    request.name,
+                    request.hard_deadline,
+                    preview_result.preview.confirmation_phrase,
+                    confirmation,
+                )
+            except SpendRefusal as error:
+                return LaunchResult(
+                    LaunchState.REFUSED_CONFIRMATION, preview_result.preview, detail=str(error)
+                )
+        if not claimed:
             return LaunchResult(
-                LaunchState.REFUSED_CONFIRMATION, preview_result.preview, detail=str(error)
+                LaunchState.REFUSED_CONFIRMATION,
+                preview_result.preview,
+                detail=(
+                    "no preview in this run issued a challenge for this create at this "
+                    "hard deadline; run the preview and confirm the phrase it prints; "
+                    "no paid action occurred"
+                ),
             )
 
         try:
@@ -321,8 +365,14 @@ class PodRuntime:
             success_state=LaunchState.CREATED_GUARDED,
         )
 
-    def preview_adopt(self, pod_id: str, *, expected: PodCreateRequest) -> LaunchResult:
-        """Use the exact same shutdown proof, estimate display, and ceiling calculation."""
+    def preview_adopt(
+        self, pod_id: str, *, expected: PodCreateRequest, mint: bool = True
+    ) -> LaunchResult:
+        """Use the exact same shutdown proof, estimate display, and ceiling calculation.
+
+        ``mint`` carries the same meaning as on ``preview_create``: only ``adopt``'s own
+        re-assessment passes ``False``.
+        """
 
         expected = self._policy_bound_request(expected)
         readiness = self.shutdown.prove_ready()
@@ -350,7 +400,9 @@ class PodRuntime:
                 record=record,
                 detail="adopted pod does not prove the requested on-demand image/template/volume/timer contract",
             )
-        result = self._preview("adopt", record.pod_id, record.estimate, expected.hard_deadline)
+        result = self._preview(
+            "adopt", record.pod_id, record.estimate, expected.hard_deadline, mint=mint
+        )
         return LaunchResult(result.state, result.preview, record=record, detail=result.detail)
 
     def adopt(
@@ -363,7 +415,7 @@ class PodRuntime:
         """No pod bills its way around the gate: adoption shares every create check."""
 
         expected = self._policy_bound_request(expected)
-        preview_result = self.preview_adopt(pod_id, expected=expected)
+        preview_result = self.preview_adopt(pod_id, expected=expected, mint=False)
         if preview_result.state is not LaunchState.PREVIEW:
             return preview_result
         # Narrowing, not a check: `preview_adopt` returns `PREVIEW` from one line, and it
@@ -376,14 +428,34 @@ class PodRuntime:
                 record=preview_result.record,
                 detail="; ".join(preview_result.preview.assessment.reasons),
             )
-        try:
-            require_confirmation(confirmation, preview_result.preview.confirmation_phrase)
-        except SpendRefusal as error:
+        # Same early exit as `create`, for the same reason.
+        claimed = preview_result.preview.challenge is not None
+        if claimed:
+            try:
+                claimed = self._claim_challenge(
+                    "adopt",
+                    preview_result.record.pod_id,
+                    expected.hard_deadline,
+                    preview_result.preview.confirmation_phrase,
+                    confirmation,
+                )
+            except SpendRefusal as error:
+                return LaunchResult(
+                    LaunchState.REFUSED_CONFIRMATION,
+                    preview_result.preview,
+                    record=preview_result.record,
+                    detail=str(error),
+                )
+        if not claimed:
             return LaunchResult(
                 LaunchState.REFUSED_CONFIRMATION,
                 preview_result.preview,
                 record=preview_result.record,
-                detail=str(error),
+                detail=(
+                    "no preview in this run issued a challenge for this adoption at this "
+                    "hard deadline; run the preview and confirm the phrase it prints; "
+                    "no paid action occurred"
+                ),
             )
         try:
             lease_id = self._token("lease id")
@@ -475,12 +547,70 @@ class PodRuntime:
         )
 
     def _preview(
-        self, action: str, subject: str, estimate: PodEstimate, hard_deadline: datetime
+        self,
+        action: str,
+        subject: str,
+        estimate: PodEstimate,
+        hard_deadline: datetime,
+        *,
+        mint: bool,
     ) -> LaunchResult:
+        """Assess the price, and either issue a challenge or read the outstanding one.
+
+        ``mint`` is the whole gate. A human-facing preview mints a fresh challenge and
+        displays it. The re-assessment inside ``create``/``adopt`` passes ``False``, so it
+        can only confirm against a challenge some earlier preview actually issued.
+        """
+
         assessment = assess_spend(
             self.spend_policy, estimate, requested_deadline=hard_deadline, now=self.now()
         )
-        return LaunchResult(LaunchState.PREVIEW, PaidActionPreview(action, subject, assessment))
+        key = (action, subject)
+        if mint:
+            challenge = self.challenge_factory()
+            if not challenge:
+                raise ValueError("challenge factory returned no challenge")
+            with self._challenge_lock:
+                self._outstanding[key] = (challenge, hard_deadline)
+        else:
+            # The deadline is part of what was authorized, not merely part of what was
+            # displayed. The phrase names the action, subject and both hourly rates, none
+            # of which changes with lifetime -- so without this a ten-minute preview's
+            # phrase would confirm a create running to the configured ceiling. The
+            # ceiling still bounds the exposure; the operator's consent did not cover it.
+            with self._challenge_lock:
+                held = self._outstanding.get(key)
+            challenge = held[0] if held is not None and held[1] == hard_deadline else None
+        return LaunchResult(
+            LaunchState.PREVIEW, PaidActionPreview(action, subject, assessment, challenge)
+        )
+
+    def _claim_challenge(
+        self, action: str, subject: str, hard_deadline: datetime, expected: str, typed: str | None
+    ) -> bool:
+        """Verify and consume one challenge as a single atomic step.
+
+        Reading the challenge, checking the typed phrase, and consuming it used to be
+        three separate operations. Two overlapping calls could therefore both read the
+        same outstanding challenge, both pass the check, and both create a billing pod
+        from one confirmation -- and a sequential test cannot see that.
+
+        Everything that decides the outcome happens under the lock, and the entry is
+        removed before this returns, so exactly one caller can ever win a given
+        challenge. A wrong phrase raises without consuming: a typo must not burn the
+        preview, and holding the lock makes that safe.
+
+        Returns ``False`` when no challenge matches this action, subject and deadline.
+        Raises ``SpendRefusal`` when one exists but the typed phrase does not match it.
+        """
+
+        with self._challenge_lock:
+            held = self._outstanding.get((action, subject))
+            if held is None or held[1] != hard_deadline:
+                return False
+            require_confirmation(typed, expected)
+            del self._outstanding[(action, subject)]
+            return True
 
     def _store(self, lease_id: str) -> LeaseStore:
         return LeaseStore(self.lease_root / f"{lease_id}.json")
@@ -704,6 +834,9 @@ class PodRuntime:
         )
         if assessment.allowed:
             return None
+        # No challenge: this preview reports why a created pod is being closed, and its
+        # challenge was consumed by the create that got here. A refusal report must not
+        # carry a phrase that would authorize anything.
         actual_preview = PaidActionPreview(preview.action, preview.subject, assessment)
         close, detail = self._close_and_record(
             record=record,

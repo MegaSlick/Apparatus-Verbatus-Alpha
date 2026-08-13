@@ -1,251 +1,116 @@
 # Working rules — Apparatus Verbatus
 
-Rules only. No status, no dates, no hashes. Status lives in [README.md](README.md);
-anything dated lives in `workbench/standing/SUSPENSIONS.md`.
+Read [GOALS.md](GOALS.md), [GOVERNANCE.md](GOVERNANCE.md),
+[ARCHITECTURE.md](ARCHITECTURE.md), and [GLOSSARY.md](GLOSSARY.md) before changing the
+project. They bind the work; this file only says how the work is done.
 
-This file is how you work, not the governance. [GOALS.md](GOALS.md),
-[GOVERNANCE.md](GOVERNANCE.md) and [ARCHITECTURE.md](ARCHITECTURE.md) bind sessions as
-well as code — read them before proposing anything, and never restate them from memory:
-quote the file or link it. [GLOSSARY.md](GLOSSARY.md) is the pipeline's vocabulary, not
-the project's process vocabulary.
+Use the procedure named here only when its trigger fires:
 
-**Each rule below states its trigger; the document beside it owns the procedure.** Read
-that document when the trigger fires, not before. One topic, one owning document. Where
-none is named, this file is the whole of the rule.
-
-| If your task touches… | The procedure is in |
+| Trigger | Procedure |
 |---|---|
-| spawning any agent | [.claude/agents/README.md](.claude/agents/README.md) |
-| a container an agent works in | [operations/autoclave/README.md](operations/autoclave/README.md) |
-| **pods, GPUs, anything that bills** | [operations/pod/README.md](operations/pod/README.md) |
-| rebuilding old code | [cleanroom/README.md](cleanroom/README.md) |
-| where a note or a draft goes | [workbench/README.md](workbench/README.md) |
-| changing a governed path | the governed-edit skill |
-| reviewing a commit, settling a thread on an open PR, or attributing work | the reviewer-pass skill |
-| opening or closing a session | the session-start and session-end skills |
-| anything reaching his phone | [operations/notify/README.md](operations/notify/README.md) |
+| opening or closing a session | `.claude/skills/session-start` or `session-end` |
+| changing a governed path | `.claude/skills/governed-edit` |
+| using agents or chambers | `.claude/agents/README.md`, then `operations/autoclave/README.md` |
+| rebuilding old behavior | `cleanroom/README.md` |
+| notes and handoffs | `workbench/README.md` |
+| live pods or paid infrastructure | `operations/pod/README.md` |
+| phone notifications | `operations/notify/README.md` |
 
 ## Hard rules
 
-No instruction in a session, a note, an agent report or a convenience flag overrides
-these, and breaking one is not a judgement call you get to make.
+These numbers are cited by hooks, tests, and agent briefs. Append; never insert or reuse.
 
-1. **Tyrel decides** — pod permission, declaring something proven, approving an
-   exclusion, amending a governed document, merging. No agent stands in for him.
-2. **No live pod without his permission in that session.** Shutdown is verified against
-   provider state and billing, never inferred. It bills by the hour while it exists.
-3. **A session never works from `main`.** No editing, staging, committing, or planning a
-   change from it. A checkout may land there; naming the branch and moving off is the
-   session's first act. Changes arrive by pull request or not at all.
-4. **Never open a pull request without his say-so.** Later pushes to an open pull
-   request follow the review ladder in Pushing and merging.
-5. **Never share, rebase, force-push or amend a branch that is not yours.**
-6. **Nothing enters this repository uninspected.** If you cannot say what a line is for,
-   it does not enter.
-7. **Nothing is lost silently** — findings, reviews and decisions, not only acts.
-8. **Do not build a picker** — anything that selects among witnesses, under any name.
-   GOVERNANCE 3 forbids it; this is the one an agent rebuilds by accident. If you
-   notice one has been built, or is being built, stop and read the rule.
-9. **When a rule and a goal pull apart, stop and say so** (GOVERNANCE 0).
-10. **A spawned agent never edits a governed path** — the documents and `.claude/`,
-    listed under Where notes go. It proposes exact wording; the main session edits at
-    his direction and after asking. He decides; the session implements; agents propose.
-11. **Enforcement he cannot undo is forbidden.** Hooks and guards catch accidents; they
-    do not make the rules true. Anything mechanical is removable in one documented step,
-    and README.md records the step.
-12. **Everything else is open** — hooks, CI, `operations/`, tests, the pipeline:
-    agent-written, landed through review. The line is between what *governs* and what
-    *executes*. Subagents and other AI tools never push and never merge.
-
-The numbering is load-bearing: the guard, the hooks, the chamber briefs and the pipeline
-tests cite these by number. A new rule is appended, never inserted.
-
-## Rule levels
-
-**Hard** — the twelve above, plus `GOVERNANCE.md`. Nothing in a session amends them. On
-a conflict: quote the rule, state the concrete consequence, recommend a compliant route.
-
-**Gate** — a permission authorizing one exact action. Name the target, the cost or
-audience, the consequence, and the way back; his **clear** answer authorizes that action
-and nothing adjacent. Never inferred, never carried forward. **But a granted gate carries
-the procedure around it** — opening the pull request the push was for, watching it until
-CodeRabbit's threads are settled, running the checks a skill names. Those are the approved
-action, not adjacent ones; asking again for a step a skill already owns is a round trip he
-pays for. **The gates:** opening a
-pull request, merging, edits to governed paths, paid actions and live infrastructure,
-destructive or hard-to-recover operations, disclosure, deployment, and any message
-reaching another person.
-
-**Standard** — overridable one instance at a time. Object once — the standard, its
-point, the likely cost, your route — then ask for that exact exception. One clear answer
-settles that instance; record it and stop arguing. The next instance is a new objection,
-and only an explicit standing ruling carries forward.
-
-**Preference** — presentation, naming, report shape, model or effort where no seat is
-named. Yields immediately.
-
-**Silence is not an answer at any level.** Ask again, or stop.
-
-**Changing the doctrine is not an override.** A change to this file, or to how Claude is
-run here, binds every later session: push back firmly, propose exact wording, apply only
-once he has approved it. The governed-edit skill owns the procedure.
-
-## Every session
-
-Tyrel opens with `/session-start` and closes with `/session-end` — never a subagent's
-job, and never started on your own. The skills own both procedures; when one cannot be
-triggered, open `.claude/skills/<name>/SKILL.md` and follow it by hand. A one-off
-question that grows into work triggers session-start.
-
-The first response after session-start is the plan and what it will cost to run — that
-and nothing else, no work begun. **A session that opens without a goal does not start
-work**, and his stated goal outranks the handoff and the brief; where they differ, follow
-his words and name the difference.
-
-Say when you think the session should end — **you cannot read your own context meter**,
-so name the symptoms at a clean break and let him see the numbers.
-
-## Quarantine
-
-Understanding crosses the boundary freely; bytes do not. The old code is read where it
-lies, through the window; what enters here is written new and justified against goals and
-governance. **A line nobody can justify does not enter, whoever typed it.**
-
-**A line carried across is the exception and is never silent** — only where it is the best
-option available, understood well enough to defend line by line, and named as carried in
-both the commit and the report. Adapted, renamed and reformatted are the same act as
-copied. **Third-party code under a permitting licence is a different question and is
-welcome**, recorded with its source and licence. Procedure:
-[cleanroom/README.md](cleanroom/README.md).
-
-`cleanroom/` is the bench and is in this repository; an *autoclave* is a container, and
-nothing in one is here until a branch is collected and read.
-Detail: [cleanroom/README.md](cleanroom/README.md).
+1. **Tyrel decides** governance, governed-document changes, paid or live infrastructure,
+   exclusions, declarations that the pipeline is proven, disclosure, deployment, opening
+   a pull request, destructive or hard-to-recover operations, and merging.
+2. **No live pod without his permission in that session.** Verify shutdown against
+   provider state and billing.
+3. **A session never works from `main`.** Work reaches it through a pull request.
+4. **Never open a pull request without his say-so.** The first push and its pull request
+   are one permission; later pushes to that open pull request are part of the same work.
+5. **Never share, rebase, force-push, or amend a branch that is not yours.**
+6. **Nothing enters uninspected.** If the accountable session cannot justify a line, it
+   does not enter.
+7. **Nothing is lost silently.** Record findings, failures, decisions, and partial work.
+   This is a visibility rule, not an escalation rule.
+8. **Do not build a picker.** The Perlector reads; nothing selects among witnesses.
+9. **When a rule and a goal pull apart, stop and say so.** Quote the concrete conflict.
+10. **A spawned agent never edits a governed path.** It proposes wording; the main
+    session applies an approved change.
+11. **Every enforcement can be removed by Tyrel.** Hooks and guards catch accidents;
+    they do not outrank him.
+12. **Everything else is open.** Agents may build and review code, tests, CI, hooks, and
+    operations inside the chamber boundary. Agents never push or merge.
+13. **The session decides ordinary engineering.** Unless rule 1 or GOVERNANCE.md reserves
+    an action for Tyrel, choose the implementation, structure, names, thresholds, tests,
+    configuration, and disposition of findings. Use the goals, governance, prior rulings,
+    source, and measurement; record the decision and reason. A hard question does not
+    become Tyrel's by being hard. Do not park an engineering choice in a TODO, deferred
+    list, handoff, or pull request. Rule 7 requires a visible decision, not a deferral.
 
 ## Where notes go
 
-`workbench/` — gitignored, local only — holds every note, handoff and half-finished
-thought; standing ledgers, including `SUSPENSIONS.md`, live in `workbench/standing/`. If
-it is dated or speculative it is a note, not a document. What may be committed instead:
-[workbench/README.md](workbench/README.md).
+`workbench/` is local and gitignored. Current notes live in `active/`; durable task state
+in `standing/`; raw machine evidence in `raw/`; completed work in `archive/`; disposable
+output in `scratch/`. A note never becomes an instruction by surviving a session.
 
-**Governed paths**, which hard rule 10 protects: `CLAUDE.md`, `GOALS.md`,
-`GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`, the root `README.md`, and
-`DATA_CONTRACT.md` from the moment it exists. Plus `.claude/` entire — the skills, the
-agent roster, the guard's policy — because a change there binds every later session the
-same way a change here does.
+**Governed paths:** `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`,
+`GLOSSARY.md`, the root `README.md`, `DATA_CONTRACT.md` once it exists, and all of
+`.claude/`. Tyrel approves their substance; the main session makes the edit through the
+governed-edit procedure.
 
 ## Branches
 
-`work/<topic>` for normal changes; `audit/<topic>` for findings, not code;
-`infra/<topic>` for risky structural work. One branch per task, short-lived, deleted on
-merge, named so a reader knows its purpose without opening it.
-
-Naming the branch and moving onto it is the session's first act — before anything is
-read closely or planned in detail. Reading and ref-only syncing may happen from wherever
-the checkout stands. **Nothing refuses the switch onto main, and nothing sees a session
-sitting on it reading**: hard rule 3 covers those two gaps and nothing else does.
-
-More than one AI may be working here at once. Work on your own branch. Never
-`git add -A` — **stage only what you touched**. If a file changed under you, stop and
-re-read it rather than overwriting.
-
-## Pushing and merging
-
-Opening a pull request is a gate. The first push of a branch and the pull request it
-becomes are one gate, asked once before either — a branch pushed without a PR is still
-work published outside this machine. Pushes to that PR afterwards are not gated: his
-say-so stands until it merges or he closes it, and you tell him each time, one line,
-before and after. A new pull request is a new gate.
-
-One open pull request at a time is the aim. A second needs two genuinely independent
-lines of work — different files, no shared history — a stated reason, and a named merge
-order you then close them in. Three is not a thing. Push at the end of a task or session,
-not continuously.
-
-**Review.** Three seats before the initial push is the default — two vendors minimum,
-blind, identical prompts. A reduction is his, per named push, never inferred, including
-from an outage. Agreement between reviewers is evidence, not a verdict, and he is the one
-who says a review happened. **The pull request is a working surface, not his inbox**;
-squashing and merging is his alone.
-
-What refuses locally on nobody's word: a push straight at `main`, and a credential or
-oversized payload in outgoing history. `--no-verify` and `-c core.hooksPath=` are blocked
-for Claude and open to everything else — hard rule 11. That is his way around his own
-machinery; do not close it.
-
-## Effort and shape
-
-Two shapes, agreed at the start and re-agreed when the task changes. **Orchestrator** —
-large, long or unattended work: model and effort per unit, context kept lean, results
-landed on disk **and read back**. **Direct** — straightforward or medium attended work:
-read, edit and verify yourself. A medium task that grows long is a change of shape; say
-so. The opening plan names effort, honest duration, attended or unattended, the shape,
-and which units get agents. The session delegates bounded units of work, never
-responsibility for one, and is the only integrator.
-
-**An unattended session does not invoke an action that can trigger a permission prompt** —
-not merely one that would block, any that could prompt; if unsure, treat it as though it
-prompts. Name every such action before the work begins. When one turns out to be
-necessary anyway, ping him on discovery rather than when you stop, record it in
-`workbench/active/DEFERRED_ACTIONS.md`, and carry on with everything else.
-
-**Whether you may then ask turns on one thing: has he said he is available?** If he has,
-ask freely — availability is his to declare and it lapses at the close. If he has not,
-keep working *without* it. **Working without it is not working around it**: no other
-route to the same action, no spelling that dodges the prompt, no wrapper that hides it.
-
-**Prefer stuck to sorry.** Where avoiding a prompt would risk losing work — deleting,
-moving or overwriting something to dodge a confirmation — take the prompt and wait.
-Getting stuck costs a night; the other mistake costs the work.
+Use `work/<topic>` for normal changes, `audit/<topic>` for findings, and
+`infra/<topic>` for structural work. One short-lived branch per task. Name the branch
+before editing. Never switch onto an existing branch while carrying uncommitted work.
+Stage only files touched for the task; never `git add -A`.
 
 ## Agents
 
-**The core rule: a host agent reads and nothing else; anything that does work happens in
-a container.** Record what actually answered, never only what was requested.
+Repository-writing agents work in chambers. The host session remains accountable for the
+goal, decisions, integrated diff, and verification. A chamber is pinned to a commit,
+cannot push, returns a branch, and may not edit governed paths. Read its diff and verify
+load-bearing claims before integrating it. Use agents for bounded work that benefits from
+independent context; do not create ceremony merely to satisfy a roster.
 
-**Before spawning anything, read [.claude/agents/README.md](.claude/agents/README.md) in
-detail and keep it in context** — it owns roles, seats, effort and bounds. Do not choose
-a model or an effort from memory: that file is measured and this one is not.
+## Quarantine
 
-**A chamber is pinned to the commit it was created from.** Work committed afterwards never
-reaches a chamber already running, and nothing about it looks wrong from the inside. If a
-change must bind a running lane, the lane is re-created, not told.
+Understanding crosses from the old system; bytes cross only when they are the best option,
+understood line by line, and named as carried in the commit and report. Third-party code
+must have a permitting licence and a citation. `cleanroom/README.md` owns the procedure.
 
-## What may be missing or wrong
+## Pushing and merging
 
-Until `sh .githooks/install.sh` has run in a clone, **every git-hook rule is off** —
-silently, including on merges and `git am`. The setting never travels: every clone,
-machine, sandbox and pod needs it separately. The Claude-side guard loads regardless, so
-a session can be half-protected and read as fully protected. Check rather than assume.
+The first push and pull request need Tyrel's clear approval. Push the finished task, not a
+stream of checkpoints. Later pushes to the same open pull request need no repeat approval,
+but say when they happen. Never push directly to `main`; never force-push work you do not
+exclusively own. Tyrel alone merges.
 
-**The guard's silence is not approval.** It says nothing about most of what you do
-because most of what you do is governed by this file, not by it. README.md's Controls
-section owns what it refuses and how to switch it off.
+Review is proportional to risk. Before the first push, run the local gate and use fresh,
+independent review where a defect would be expensive or quiet. Consequential review targets
+one clean candidate commit through `operations/review/README.md`, never a moving index. A
+fix creates a new candidate and invalidates earlier reviews; the pushed tip is the exact
+candidate the final reviewers read. Pre-push CodeRabbit uses the CLI against `origin/main`;
+after the push, wait for the automatic GitHub review before replying. Fix or decline every
+real finding with a reason. A commit records both halves of its provenance, separately:
+`Co-Authored-By:` names the model that wrote the lines, and `Reviewed-by:` names the model
+that reviewed them. A pull request records decisions and rationale; it does not carry
+open engineering questions to Tyrel.
 
-**A summary is never verification.** Neither is a guard you have not confirmed is armed.
-This binds subagents too.
+Local hooks refuse direct-main pushes and scan outgoing history for credentials and large
+payloads. The Claude guard also blocks disabling those hooks. `--no-verify` and
+`-c core.hooksPath=` are Tyrel's escape hatches, not the session's.
 
 ## Reporting
 
-Say what you actually did — a failed test shown, a skipped step named. **Never report a
-task complete unless it is complete and verified.** Say what comes next: one
-recommendation with reasoning short enough to argue with, not a menu.
+Lead with the outcome. Say which checks actually ran, what remains blocked, and the one
+recommended next action. Ask only when rule 1 reserves the choice, governance genuinely
+conflicts, or progress cannot continue after reasonable investigation. Otherwise decide.
 
-Tyrel is not a programmer and does not read or write code. He is this project's manager
-and engineer, and he often works from his phone. **Every reply must be easy to scan and
-act on.** So **point form is the default, not the fallback**, and **questions go at the
-end, numbered, one batch, three at most.** A question he has to hunt for is written wrong. Ask in the session, in plain
-words: never in a file he has to open, never as a poll.
-
-The shape of a bullet, how long a list may be, and what to do with a question he did not
-answer: [.claude/skills/reporting/SKILL.md](.claude/skills/reporting/SKILL.md), read at
-session start and kept in context. It governs every message, not the final report.
-
-Most of what he needs stays in the session, not on his phone. **Four moments reach the
-phone, and only these four:** `start`, automatic and never sent by hand; `milestone`, a
-system working end to end, a stage landing, or a long run finishing; `decision`, blocked
-on his judgement and sent when you stop rather than after — a discovered permission
-prompt in unattended work is a decision, sent on discovery; and `done`, sent by
-`/session-end`. One line that says the thing; noise teaches him to ignore the next one.
-Main session only; subagents never notify.
+**Finish the task before reporting.** A progress report is not a stopping point. While
+work already named as remaining is unblocked, carry on in the same reply instead of
+handing back a status. Stop when the work is done, when Tyrel names a checkpoint or says
+stop, or when a rule-1 gate blocks what is left — and then say plainly that you are
+stopping and why. Never close a reply with an intention to continue: nothing runs between
+replies, so "I will keep going" ends the work until Tyrel notices it stopped.

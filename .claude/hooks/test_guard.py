@@ -383,8 +383,8 @@ class TestHistory:
         assert decide("git reset HEAD file.py") is None
 
     def test_amend_and_local_rebase_pass(self):
-        # Both are routine here — the reviewer-pass skill amends `Reviewed-by:`
-        # trailers in after a review returns — and both are recoverable from the reflog.
+        # Both are routine here — README.md records reviewers with `Reviewed-by:`
+        # trailers after a review returns — and both are recoverable from the reflog.
         assert decide("git commit --amend --no-edit") is None
         assert decide("git rebase origin/main") is None
 

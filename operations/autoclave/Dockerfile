@@ -18,6 +18,7 @@ FROM node:22-trixie-slim
 # ripgrep      — the agents reach for it; without it they fall back to slow greps.
 # less         — git's pager. Without it `git log` dies in a way that reads as a
 #                repository fault rather than a missing binary.
+# util-linux   — `flock`, shared by every Claude writer against its credential volume.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       git \
@@ -29,6 +30,7 @@ RUN apt-get update \
       curl \
       ripgrep \
       less \
+      util-linux \
  && rm -rf /var/lib/apt/lists/*
 
 # Both vendors, because a task may be given to either and the image must not
@@ -70,32 +72,12 @@ RUN mkdir -p /src /work /out && chown -R "${UID}:${GID}" /work /out
 RUN mkdir -p /home/agent/.claude /home/agent/.codex \
  && chown -R "${UID}:${GID}" /home/agent
 
-# The standing brief for any session that starts in here. Copied to /work by the
-# launcher after the clone, so an agent reads it as the project's own CLAUDE.md
-# would be read. Kept at a fixed path so the launcher never guesses.
-COPY operations/autoclave/agent-brief.md /opt/autoclave/CLAUDE.md
-# Also at the filesystem root. An agent CLI reads CLAUDE.md from its working
-# directory upward, so a copy at `/` is picked up as an ancestor instruction
-# alongside the repository's own at /work/CLAUDE.md — the agent gets both the
-# chamber's limits and the project's rules without either overwriting the other.
-# Written here as root, before the USER switch, because `/` is not writable after.
-COPY operations/autoclave/agent-brief.md /CLAUDE.md
-# **And under the name the other vendor reads.** Claude Code looks for `CLAUDE.md`;
-# Codex looks for `AGENTS.md`. Only the first existed, so every Codex agent
-# dispatched into a chamber may have been working with no standing limits at all
-# beyond whatever its prompt happened to say — including the audit and review seats
-# run on 2026-08-02. Mirroring the same file under both names is the catch-all:
-# whichever CLI is dispatched, it finds the brief under the name it already looks
-# for, and neither has to be told. The file says it exists under both names, so a
-# reader who finds one does not go hunting for a different one.
-COPY operations/autoclave/agent-brief.md /AGENTS.md
-
 # The tests need pytest and ruff. Installed into a venv on the PATH, so an agent
 # runs `python3 -m pytest` exactly as the git hooks do on the host.
 COPY requirements-dev.txt /opt/autoclave/requirements-dev.txt
 # Build context is the repository root, so both COPY paths are written from
 # there. `.dockerignore` at that root denies everything and re-admits exactly
-# these two files — `private/` holds the notification topic and must never
+# these files — `private/` holds the notification topic and must never
 # enter a build context, and a deny-all list is the only form that stays true
 # when someone adds a new secret drawer later.
 RUN python3 -m venv /opt/venv \
@@ -110,6 +92,37 @@ ENV PATH="/opt/venv/bin:${PATH}"
 # before handing work back, was silently off. Found by dispatching, not by reading.
 RUN printf 'PATH="/opt/venv/bin:$PATH"\nexport PATH\n' \
       > /etc/profile.d/10-autoclave-venv.sh
+
+# Frequently edited harness inputs come after the dependency layer so changing a brief
+# or the refresh helper does not reinstall the full Python toolchain.
+COPY operations/autoclave/refresh_claude_token.py /opt/autoclave/refresh_claude_token.py
+# Fail the build if a future `latest` Claude CLI changes either public OAuth constant
+# the refresh helper sends. A broken image is cheaper than another eight-hour 401.
+#
+# The version is deliberately not pinned: a pinned CLI goes quietly stale, which is the
+# failure this whole helper exists because of. So the build must say *why* it stopped --
+# a bare `grep` failure here reports nothing and looks like a broken Dockerfile rather
+# than a moved constant or a relocated launcher.
+RUN set -eu; \
+    launcher=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe; \
+    if [ ! -f "$launcher" ]; then \
+        echo "autoclave: the Claude launcher is not at $launcher." >&2; \
+        echo "autoclave: the npm package moved its entry point; find the new path and update this check and refresh_claude_token.py together." >&2; \
+        exit 1; \
+    fi; \
+    for constant in \
+        '9d1c250a-e61b-44d9-88ed-5944d1962f5e' \
+        'https://platform.claude.com/v1/oauth/token'; do \
+        if ! grep -a -q "$constant" "$launcher"; then \
+            echo "autoclave: the Claude CLI no longer carries the OAuth constant '$constant'." >&2; \
+            echo "autoclave: refresh_claude_token.py would fail against this build; read the launcher and update both together." >&2; \
+            exit 1; \
+        fi; \
+    done
+COPY operations/autoclave/agent-brief.md /opt/autoclave/CLAUDE.md
+# Claude discovers this ancestor file from /work. Codex receives a worktree copy from
+# the launcher because its discovery starts in the working directory.
+COPY operations/autoclave/agent-brief.md /CLAUDE.md
 
 # Git refuses to operate in a directory owned by another uid. The clone is made
 # by this user, but /src arrives owned by the host's, so mark both safe.
@@ -129,6 +142,13 @@ USER ${UID}:${GID}
 # to ${UID}:${GID} above, so pinning the variable is the whole of the fix.
 ENV HOME=/home/agent
 WORKDIR /work
+
+# The launcher computes this from every repository input that defines the image and
+# refuses to create a chamber when the checkout and label differ. The label is metadata,
+# not a claim that Docker rebuilt each layer; BuildKit owns layer invalidation.
+ARG HARNESS_FINGERPRINT
+RUN test -n "${HARNESS_FINGERPRINT}"
+LABEL verbatus.harness-fingerprint="${HARNESS_FINGERPRINT}"
 
 # No entrypoint that runs an agent. The launcher decides what starts, so the
 # same image serves a writer, a reader, or a person opening a shell to look.

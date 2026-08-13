@@ -27,10 +27,17 @@ from pathlib import Path
 
 import pytest
 
+from operations.autoclave.fingerprint import INPUTS as FINGERPRINT_INPUTS
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "operations" / "autoclave" / "autoclave.sh"
 SAFE_FILE = ROOT / "operations" / "autoclave" / "safe_file.py"
 BRIEF = ROOT / "operations" / "autoclave" / "agent-brief.md"
+FINGERPRINT = ROOT / "operations" / "autoclave" / "fingerprint.py"
+# The single declaration of what the image bakes in. `elsewhere` stages exactly these so
+# `fingerprint.py` can run in a throwaway repository; keeping a second list here is what
+# `test_the_declared_inputs_cover_every_baked_file` exists to make unnecessary.
+IMAGE_INPUTS = FINGERPRINT_INPUTS
 
 
 def run(*args, cwd=None, env=None, script=SCRIPT):
@@ -55,6 +62,21 @@ def git(repo, *args):
     ).stdout.strip()
 
 
+def assert_no_incoming_ref(repo):
+    """No ref anywhere under the incoming namespace, whatever the launcher named it.
+
+    Asking for one guessed name proves nothing: the launcher writes
+    `refs/autoclave/incoming/<task>-<nonce>`, so `rev-parse --verify` on a fixed
+    `.../task-x` returns non-zero no matter what happened. A stray ref keeps a fetched
+    chamber commit reachable, which is what lets `rm` believe the work is safely in this
+    repository and destroy the container -- the output then survives only under a ref
+    nobody reads. The namespace is the thing to ask about.
+    """
+
+    leaked = git(repo, "for-each-ref", "--format=%(refname)", "refs/autoclave/incoming/")
+    assert leaked == "", f"a refused collection left an incoming ref behind: {leaked}"
+
+
 def elsewhere(tmp_path):
     """A copy of the launcher in a throwaway repository of its own.
 
@@ -68,12 +90,24 @@ def elsewhere(tmp_path):
     directory.mkdir(parents=True)
     copy = directory / SCRIPT.name
     shutil.copy2(SCRIPT, copy)
-    if SAFE_FILE.is_file():
-        shutil.copy2(SAFE_FILE, directory / SAFE_FILE.name)
+    assert SAFE_FILE.is_file(), f"required launcher input is missing: {SAFE_FILE}"
+    shutil.copy2(SAFE_FILE, directory / SAFE_FILE.name)
     # `new` compares this file against what the image carries, so a throwaway
     # repository without it would fail every chamber creation for the wrong reason.
-    if BRIEF.is_file():
-        shutil.copy2(BRIEF, directory / BRIEF.name)
+    assert BRIEF.is_file(), f"required launcher input is missing: {BRIEF}"
+    shutil.copy2(BRIEF, directory / BRIEF.name)
+    # Derived from the one declaration rather than listed again. `fake_docker` runs
+    # `fingerprint.py` inside this throwaway repository with `check=True`, so every path
+    # in `INPUTS` has to exist here. A second hand-maintained copy drifts the moment
+    # somebody bakes in a new file, and the whole suite then fails at once inside a
+    # subprocess traceback that sends the reader debugging the harness, not their change.
+    for relative in IMAGE_INPUTS:
+        source = ROOT / relative
+        assert source.is_file(), f"required launcher input is missing: {source}"
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source != destination:
+            shutil.copy2(source, destination)
     subprocess.run(["git", "init", "--quiet", "-b", "work/test", str(tmp_path)], check=True)
     # An identity in the repository's own config rather than on a command line: `new`
     # writes its snapshot with `git commit-tree`, which needs one and is not this
@@ -89,7 +123,7 @@ def elsewhere(tmp_path):
     # to skip, and the trailer is here so this still commits on a machine where one is
     # set globally. A test reaching for that flag to make itself work is a test
     # teaching the flag.
-    git(tmp_path, "add", "operations")
+    git(tmp_path, "add", "operations", "requirements-dev.txt", ".dockerignore")
     git(
         tmp_path,
         "commit",
@@ -115,6 +149,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 args = sys.argv[1:]
 with open(os.environ["FAKE_DOCKER_LOG"], "a") as stream:
@@ -129,6 +164,26 @@ def vendor_status(command):
     return "auth status" in command or "login status" in command
 
 
+hold_on = setting("FAKE_HOLD_ON")
+if hold_on and hold_on in " ".join(args):
+    ready = setting("FAKE_HOLD_READY")
+    if ready:
+        open(ready, "w").close()
+    release = setting("FAKE_HOLD_RELEASE")
+    if not release:
+        # A hold with no release file used to fall straight through: the stub returned at
+        # once, the second dispatch found no lock held, and the tests proving two agents
+        # cannot occupy one chamber passed on a race they never staged.
+        sys.stderr.write("fake docker: a hold was requested with no release file\\n")
+        raise SystemExit(126)
+    deadline = time.monotonic() + 60
+    while not os.path.exists(release):
+        if time.monotonic() >= deadline:
+            sys.stderr.write(f"fake docker: hold was never released: {release}\\n")
+            raise SystemExit(126)
+        time.sleep(0.01)
+
+
 def answer_vendor_status():
     # `authenticated()` asks through a stdout sentinel so that "the vendor says no"
     # and "the container never ran" are different answers. FAKE_AUTH_ASKABLE=0 is
@@ -139,8 +194,18 @@ def answer_vendor_status():
     raise SystemExit(0)
 
 
-if args[:1] == ["info"] or args[:2] == ["image", "inspect"]:
+if args[:1] == ["info"]:
     raise SystemExit(0)
+if args[:2] == ["image", "inspect"]:
+    if setting("FAKE_IMAGE_EXISTS", "1") != "1":
+        raise SystemExit(1)
+    if "{{.Id}}" in " ".join(args):
+        print(setting("FAKE_IMAGE_ID", "sha256:" + "1" * 64))
+    elif "verbatus.harness-fingerprint" in " ".join(args):
+        print(setting("FAKE_IMAGE_FINGERPRINT"))
+    raise SystemExit(0)
+if args[:2] == ["buildx", "version"]:
+    raise SystemExit(int(setting("FAKE_BUILDX_STATUS", "0")))
 def volumes():
     # Preset volumes plus any this run has created and not removed. Without the
     # second half, `login`'s first-time path could never be reached: it creates the
@@ -180,14 +245,8 @@ if args[:1] == ["inspect"]:
 if args[:1] == ["run"]:
     if "--detach" in args:
         raise SystemExit(int(setting("FAKE_RUN_STATUS", "0")))
-    if args[-2:] == ["cat", "/CLAUDE.md"]:
-        # `new` reads the brief back out of the image to check it is not older than
-        # the checkout. FAKE_IMAGE_BRIEF is what the image is pretending to carry.
-        baked = setting("FAKE_IMAGE_BRIEF")
-        if baked and os.path.exists(baked):
-            sys.stdout.write(open(baked).read())
-            raise SystemExit(0)
-        raise SystemExit(1)
+    if "refresh_claude_token.py" in " ".join(args):
+        raise SystemExit(int(setting("FAKE_REFRESH_STATUS", "0")))
     if vendor_status(args[-1]):
         answer_vendor_status()
     raise SystemExit(int(setting("FAKE_LOGIN_STATUS", "0")))
@@ -199,9 +258,14 @@ if args[:1] == ["exec"]:
     command = args[-1]
     if vendor_status(command):
         raise SystemExit(0 if setting("FAKE_AUTH_VALID") == "1" else 1)
+    if "refresh_claude_token.py" in command:
+        raise SystemExit(int(setting("FAKE_REFRESH_STATUS", "0")))
     chamber = setting("FAKE_CHAMBER_WORK")
     if chamber and "cd /work" in command:
         command = command.replace("cd /work", "cd " + chamber)
+        command = command.replace(
+            "/src/operations/autoclave/safe_file.py", setting("FAKE_SAFE_FILE")
+        )
         outdir = setting("FAKE_OUT_DIR")
         if outdir:
             command = command.replace("/out/", outdir + "/")
@@ -210,7 +274,7 @@ if args[:1] == ["exec"]:
         # host is about to read. That is the race `collect` has to survive, and it
         # cannot be staged from outside the container any other way.
         planted = setting("FAKE_PLANT_AFTER_EXEC")
-        if planted and "bundle create" in command:
+        if planted and ("bundle create" in command or "safe_file.py bundle" in command):
             target, _, content = planted.partition("=")
             with open(target, "w") as slot:
                 slot.write(content)
@@ -241,16 +305,21 @@ def fake_docker(tmp_path):
         stub.write_text(f"#!/bin/sh\nprintf '%s\\n' {vendor} >> '{host_vendor_log}'\nexit 99\n")
         stub.chmod(0o755)
     log = tmp_path / "docker.jsonl"
-    # What the stub says the image's baked brief is. Defaults to the same file the
-    # launcher will compare it against, so the staleness check passes everywhere
-    # except in the one test that deliberately makes them differ.
-    staged_brief = tmp_path / "operations" / "autoclave" / BRIEF.name
+    fingerprint_root = tmp_path if (tmp_path / ".dockerignore").is_file() else ROOT
+    fingerprint = subprocess.run(
+        ["python3", str(fingerprint_root / "operations" / "autoclave" / "fingerprint.py")],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=fingerprint_root,
+    ).stdout.strip()
     return {
         "PATH": f"{bindir}:{os.environ['PATH']}",
-        "FAKE_IMAGE_BRIEF": str(staged_brief if staged_brief.is_file() else BRIEF),
+        "FAKE_IMAGE_FINGERPRINT": fingerprint,
         "FAKE_DOCKER_LOG": str(log),
         "FAKE_HOST_VENDOR_LOG": str(host_vendor_log),
         "FAKE_SETUP_SCRIPT": str(tmp_path / "setup.sh"),
+        "FAKE_SAFE_FILE": str(tmp_path / "operations" / "autoclave" / "safe_file.py"),
         "FAKE_VOLUME_LEDGER": str(tmp_path / "volumes.log"),
     }, log
 
@@ -685,7 +754,7 @@ class TestLogin:
 class TestDispatch:
     """Running an agent inside a chamber, against a brief written to a file."""
 
-    # `.claude/agents/README.md`, "Reachability, which is not negotiable": `minimal` is
+    # `.claude/agents/README.md`'s dispatch table records that `minimal` is
     # rejected by every Codex model; `gpt-5.3-codex-spark` also rejects `none` and
     # `max`; Claude accepts `low`, `medium`, `high`, `xhigh`, `max` and nothing else.
     # The launcher used to accept the union of all three for every vendor, and the test
@@ -856,6 +925,36 @@ class TestDispatch:
         assert len(carrying) == 1 and carrying[0][0] == "exec"
         assert not Path(env["FAKE_HOST_VENDOR_LOG"]).exists(), "a vendor CLI ran on the host"
 
+    def test_a_vendor_failure_is_the_dispatch_exit_status(self, tmp_path):
+        script = elsewhere(tmp_path)
+        brief = tmp_path / "brief.md"
+        brief.write_text("bounded task\n")
+        (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
+        env, _log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_CONTAINER_EXISTS": "1",
+                "FAKE_CHAMBER_VENDOR": "codex",
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_EXEC_STATUS": "7",
+            }
+        )
+
+        result = run(
+            "dispatch",
+            "task-x",
+            "codex",
+            str(brief),
+            "gpt-5.6-luna",
+            "medium",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+
+        assert result.returncode == 7
+        assert "the CLI exited 7" in result.stdout
+
     def test_a_model_is_required(self):
         """An omitted model runs the vendor's default, and `codex doctor` reports that
         default is `gpt-5.6-sol` — the most expensive seat OpenAI sells. Every chamber
@@ -874,26 +973,36 @@ class TestDispatch:
         ],
     )
     def test_the_model_and_effort_are_validated(self, model, effort, expected):
-        """Validated rather than trusted, exactly as `operations/codex/seat.sh`
-        validates the same fields. Both reach the container as environment variables
-        and never as interpolated text, but a value beginning with `-` would still
-        arrive at the CLI as a flag."""
+        """Both reach the container as environment variables, but a value beginning
+        with `-` would still arrive at the CLI as a flag."""
         result = run("dispatch", "task-x", "claude", str(ROOT / "README.md"), model, effort)
         assert result.returncode != 0
         assert expected in result.stderr
 
-    def test_validation_precedes_any_docker_call(self):
+    def test_validation_precedes_any_docker_call(self, tmp_path):
         """A typo in a model name should cost a line of output, not a container's
         startup and a confusing failure from a vendor CLI two layers down."""
-        result = run("dispatch", "task-x", "claude", str(ROOT / "README.md"), "-evil")
-        assert "docker" not in result.stderr.lower()
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        result = run(
+            "dispatch",
+            "task-x",
+            "claude",
+            str(ROOT / "README.md"),
+            "-evil",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+        assert result.returncode != 0
+        assert "not a plain model name" in result.stderr
+        assert docker_calls(log) == []
 
     def test_both_vendors_receive_model_and_effort_in_their_own_spelling(self):
         """The two CLIs spell effort differently and neither spelling is guessable.
         `claude` takes `--effort <level>`; `codex exec` has no effort flag at all and
-        needs the config override `-c model_reasoning_effort=`, which is how
-        `operations/codex/seat.sh` has always done it. Checked against `--help` on
-        both rather than assumed."""
+        needs the config override `-c model_reasoning_effort=`. Checked against
+        `--help` on both rather than assumed."""
         joined = " ".join(code_lines())
         assert '--model "$AC_MODEL"' in joined and '--effort "$AC_EFFORT"' in joined
         assert '-m "$AC_MODEL"' in joined
@@ -954,6 +1063,191 @@ def test_doctor_reports_sign_in_state_for_both_vendors():
     assert result.returncode == 0
     assert "auth claude" in result.stdout
     assert "auth codex" in result.stdout
+
+
+def test_build_requires_buildx_and_loads_a_fingerprinted_image(tmp_path):
+    script = elsewhere(tmp_path)
+    env, log = fake_docker(tmp_path)
+
+    result = run("build", env=env, script=script, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    calls = docker_calls(log)
+    assert ["buildx", "version"] in calls
+    build = next(call for call in calls if call[:2] == ["buildx", "build"])
+    assert "--load" in build
+    argument = next(
+        build[index + 1]
+        for index, value in enumerate(build[:-1])
+        if value == "--build-arg" and build[index + 1].startswith("HARNESS_FINGERPRINT=")
+    )
+    expected = subprocess.run(
+        ["python3", str(tmp_path / "operations" / "autoclave" / "fingerprint.py")],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    ).stdout.strip()
+    assert argument.partition("=")[2] == expected
+
+
+def test_build_refuses_when_buildx_is_unavailable(tmp_path):
+    script = elsewhere(tmp_path)
+    env, log = fake_docker(tmp_path)
+    env["FAKE_BUILDX_STATUS"] = "1"
+
+    result = run("build", env=env, script=script, cwd=tmp_path)
+
+    assert result.returncode != 0
+    assert "Buildx is required" in result.stderr
+    assert not any(call[:2] == ["buildx", "build"] for call in docker_calls(log))
+
+
+def test_fingerprint_names_a_missing_image_input(tmp_path):
+    elsewhere(tmp_path)
+    (tmp_path / ".dockerignore").unlink()
+
+    result = subprocess.run(
+        ["python3", str(tmp_path / "operations" / "autoclave" / "fingerprint.py")],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    # The name of this test is the assertion: the old message said only that *an* input
+    # could not be read, leaving the operator to check six files. Naming the file is the
+    # behaviour under test, so the file name is what is asserted.
+    assert ".dockerignore" in result.stderr, "the failure did not name the missing input"
+    assert "cannot read the image input" in result.stderr
+
+
+def test_a_second_dispatch_for_the_same_task_is_refused_while_the_first_runs(tmp_path):
+    script = elsewhere(tmp_path)
+    brief = tmp_path / "brief.md"
+    brief.write_text("bounded task\n")
+    (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
+    env, _log = fake_docker(tmp_path)
+    ready = tmp_path / "dispatch-is-holding"
+    release = tmp_path / "release-dispatch"
+    env.update(
+        {
+            "FAKE_CONTAINER_EXISTS": "1",
+            "FAKE_CHAMBER_VENDOR": "codex",
+            "FAKE_AUTH_VALID": "1",
+            "FAKE_EXEC_STATUS": "0",
+            "FAKE_HOLD_ON": "codex exec",
+            "FAKE_HOLD_READY": str(ready),
+            "FAKE_HOLD_RELEASE": str(release),
+        }
+    )
+    first = subprocess.Popen(
+        ["sh", str(script), "dispatch", "task-x", "codex", str(brief), "gpt-5.6-luna", "low"],
+        cwd=tmp_path,
+        env={**os.environ, **env},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists():
+            assert time.monotonic() < deadline, "the first dispatch never reached the CLI"
+            assert first.poll() is None
+            time.sleep(0.01)
+        second = run(
+            "dispatch",
+            "task-x",
+            "codex",
+            str(brief),
+            "gpt-5.6-luna",
+            "low",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+        assert second.returncode != 0
+        assert "task-x.lock" in second.stderr
+    finally:
+        release.touch()
+        first.wait(timeout=30)
+
+
+@pytest.mark.parametrize(
+    ("command", "arguments"),
+    (("shell", ("task-x",)), ("exec", ("task-x", "true"))),
+)
+def test_manual_access_still_works_while_a_dispatch_holds_the_lock(tmp_path, command, arguments):
+    """Watching a running agent is the whole point of these two commands.
+
+    They used to take the exclusive lifecycle lock. `dispatch` holds that lock for the
+    entire agent run, and a Claude dispatch buffers its output until it exits, so for the
+    hours an agent worked the only two commands that could show what it was doing answered
+    "task is already active" -- and the refusal suggested removing the lock, which is the
+    one action that breaks the serialisation the lock provides.
+
+    Neither command mutates lifecycle state: they attach to a container that is already
+    running, and the agent inside it is already executing arbitrary code. `collect`
+    defends against concurrent drawer writes with its own single snapshot rather than by
+    excluding the operator. So these sit beside `report`, outside the lock.
+    """
+
+    script = elsewhere(tmp_path)
+    env, log = fake_docker(tmp_path)
+    # `FAKE_EXEC_STATUS` is 0 because what the operator's command returns is not the
+    # subject here; whether the lock let them reach the container is.
+    env.update(
+        {
+            "FAKE_CONTAINER_EXISTS": "1",
+            "FAKE_CONTAINER_RUNNING": "1",
+            "FAKE_EXEC_STATUS": "0",
+        }
+    )
+    lock = tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock"
+    lock.mkdir(parents=True)
+
+    result = run(command, *arguments, env=env, script=script, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert str(lock) not in result.stderr
+    assert any(call[:1] == ["exec"] for call in docker_calls(log)), "the container was not reached"
+
+
+def test_a_signal_releases_the_task_lock(tmp_path):
+    script = elsewhere(tmp_path)
+    brief = tmp_path / "brief.md"
+    brief.write_text("bounded task\n")
+    (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
+    env, _log = fake_docker(tmp_path)
+    ready = tmp_path / "signal-ready"
+    release = tmp_path / "signal-release"
+    env.update(
+        {
+            "FAKE_CONTAINER_EXISTS": "1",
+            "FAKE_CHAMBER_VENDOR": "codex",
+            "FAKE_AUTH_VALID": "1",
+            "FAKE_HOLD_ON": "codex exec",
+            "FAKE_HOLD_READY": str(ready),
+            "FAKE_HOLD_RELEASE": str(release),
+        }
+    )
+    process = subprocess.Popen(
+        ["sh", str(script), "dispatch", "task-x", "codex", str(brief), "gpt-5.6-luna", "low"],
+        cwd=tmp_path,
+        env={**os.environ, **env},
+    )
+    deadline = time.monotonic() + 10
+    while not ready.exists():
+        assert time.monotonic() < deadline
+        assert process.poll() is None
+        time.sleep(0.01)
+    try:
+        process.terminate()
+        release.touch()
+        assert process.wait(timeout=30) != 0
+    finally:
+        release.touch()
+    assert not (tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock").exists()
 
 
 class TestWhatComesBackAndWhatIsDestroyed:
@@ -1043,6 +1337,342 @@ class TestWhatComesBackAndWhatIsDestroyed:
         assert git(tmp_path, "rev-parse", "agent/task-x") == git(clone, "rev-parse", "agent/task-x")
         assert "1 commit(s)" in result.stdout
         assert "UNATTRIBUTED" not in result.stdout
+
+    def test_collect_refuses_a_branch_that_rewrote_its_requested_base(self, tmp_path):
+        script, clone, _drawer, env, _log = self.chamber(tmp_path)
+        git(clone, "switch", "--orphan", "rewritten")
+        (clone / "tracked.txt").write_text("rewritten history\n")
+        git(clone, "add", "tracked.txt")
+        git(
+            clone,
+            "commit",
+            "--quiet",
+            "-m",
+            "rewritten\n\nCo-Authored-By: Test Model <model@example.invalid>",
+        )
+        git(clone, "branch", "-D", "agent/task-x")
+        git(clone, "branch", "-m", "agent/task-x")
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "rewrote its chamber base" in result.stderr
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "rev-parse", "--verify", "agent/task-x"],
+                capture_output=True,
+            ).returncode
+            != 0
+        )
+        assert_no_incoming_ref(tmp_path)
+
+    def test_collect_does_not_replace_divergent_local_agent_work(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        git(tmp_path, "switch", "--quiet", "-c", "agent/task-x")
+        (tmp_path / "host-only.txt").write_text("keep this branch\n")
+        git(tmp_path, "add", "host-only.txt")
+        git(
+            tmp_path,
+            "commit",
+            "--quiet",
+            "-m",
+            "host work\n\nCo-Authored-By: Test Model <model@example.invalid>",
+        )
+        local_tip = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "switch", "--quiet", "work/test")
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "contains work" in result.stderr
+        assert git(tmp_path, "rev-parse", "agent/task-x") == local_tip
+        assert_no_incoming_ref(tmp_path)
+
+    def test_collect_does_not_move_an_agent_branch_checked_out_elsewhere(self, tmp_path):
+        """A checked-out branch is another worktree, not merely a ref.
+
+        This is deliberately a fast-forward: divergence must not be the thing that
+        protects a worktree whose branch collection is about to update.
+        """
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "other-worktree"
+        git(tmp_path, "worktree", "add", "--quiet", str(linked), "agent/task-x")
+        try:
+            result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert result.returncode != 0
+            assert "checked out in a worktree" in result.stderr
+            assert git(tmp_path, "rev-parse", "agent/task-x") == base
+            assert_no_incoming_ref(tmp_path)
+        finally:
+            git(tmp_path, "worktree", "remove", "--force", str(linked))
+
+    def test_collect_refuses_a_symbolic_agent_branch_without_moving_its_target(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        target = git(tmp_path, "rev-parse", "refs/heads/work/test")
+        git(tmp_path, "symbolic-ref", "refs/heads/agent/task-x", "refs/heads/work/test")
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "symbolic ref" in result.stderr
+        assert git(tmp_path, "rev-parse", "refs/heads/work/test") == target
+        assert git(tmp_path, "symbolic-ref", "refs/heads/agent/task-x") == "refs/heads/work/test"
+
+    def test_collect_serializes_the_same_task(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        lock = tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock"
+        lock.mkdir(parents=True)
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert str(lock) in result.stderr
+        assert f"rmdir {lock}" in result.stderr
+
+    def test_collect_refuses_a_worktree_that_appears_after_the_occupancy_check(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "racing-worktree"
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *args])\n"
+            "if result.returncode == 0 and 'worktree' in args and 'list' in args and not os.path.exists(os.environ['RACE_LINKED']):\n"
+            "    subprocess.run([os.environ['REAL_GIT'], '-C', os.environ['RACE_ROOT'], "
+            "'worktree', 'add', '--quiet', os.environ['RACE_LINKED'], 'agent/task-x'], check=True)\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update({"REAL_GIT": real_git, "RACE_ROOT": str(tmp_path), "RACE_LINKED": str(linked)})
+        try:
+            result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert result.returncode != 0
+            assert "occupied" in result.stderr
+            assert git(tmp_path, "rev-parse", "agent/task-x") == base
+            assert git(linked, "status", "--porcelain") == ""
+        finally:
+            if linked.exists():
+                subprocess.run(
+                    [real_git, "-C", str(tmp_path), "worktree", "remove", "--force", str(linked)],
+                    check=True,
+                )
+
+    def test_collect_refuses_a_ref_move_between_its_read_and_cas(self, tmp_path):
+        """The final update must compare the value it inspected, not force it."""
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        moved = tmp_path / "ref-moved"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *args])\n"
+            "marker = pathlib.Path(os.environ['RACE_MOVED'])\n"
+            "if result.returncode == 0 and 'worktree' in args and 'list' in args:\n"
+            "    count = int(marker.read_text()) + 1 if marker.exists() else 1\n"
+            "    marker.write_text(str(count))\n"
+            "    if count != 2:\n"
+            "        raise SystemExit(result.returncode)\n"
+            "    root = os.environ['RACE_ROOT']\n"
+            "    pathlib.Path(root, 'host-race.txt').write_text('new host work\\n')\n"
+            "    subprocess.run([os.environ['REAL_GIT'], '-C', root, 'add', 'host-race.txt'], check=True)\n"
+            "    subprocess.run([os.environ['REAL_GIT'], '-C', root, 'commit', '--quiet', '-m', 'host race\\n\\nCo-Authored-By: Test <test@example.invalid>'], check=True)\n"
+            "    subprocess.run([os.environ['REAL_GIT'], '-C', root, 'update-ref', 'refs/heads/agent/task-x', 'HEAD'], check=True)\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update({"REAL_GIT": real_git, "RACE_ROOT": str(tmp_path), "RACE_MOVED": str(moved)})
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "moved during collection" in result.stderr
+        assert moved.exists()
+        assert git(tmp_path, "rev-parse", "agent/task-x") == git(tmp_path, "rev-parse", "HEAD")
+
+    def test_collect_rolls_back_if_a_worktree_started_before_the_cas(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "post-cas-worktree"
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        count = tmp_path / "worktree-list-count"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *args])\n"
+            "counter = pathlib.Path(os.environ['RACE_COUNT'])\n"
+            "if result.returncode == 0 and 'worktree' in args and 'list' in args:\n"
+            "    n = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+            "    counter.write_text(str(n))\n"
+            "    if n == 2:\n"
+            "        subprocess.run([os.environ['REAL_GIT'], '-C', os.environ['RACE_ROOT'], 'worktree', 'add', '--quiet', os.environ['RACE_LINKED'], 'agent/task-x'], check=True)\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update(
+            {
+                "REAL_GIT": real_git,
+                "RACE_ROOT": str(tmp_path),
+                "RACE_LINKED": str(linked),
+                "RACE_COUNT": str(count),
+            }
+        )
+        try:
+            result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert result.returncode != 0
+            assert "previous value was restored" in result.stderr
+            assert git(tmp_path, "rev-parse", "agent/task-x") == base
+            assert git(linked, "status", "--porcelain") == ""
+        finally:
+            if linked.exists():
+                subprocess.run(
+                    [real_git, "-C", str(tmp_path), "worktree", "remove", "--force", str(linked)],
+                    check=True,
+                )
+
+    def test_collect_rolls_back_a_newline_named_worktree_started_before_the_cas(self, tmp_path):
+        script, _clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "pre-cas\nworktree"
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        count = tmp_path / "newline-worktree-list-count"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *args])\n"
+            "counter = pathlib.Path(os.environ['RACE_COUNT'])\n"
+            "if result.returncode == 0 and 'worktree' in args and 'list' in args:\n"
+            "    n = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+            "    counter.write_text(str(n))\n"
+            "    if n == 2:\n"
+            "        subprocess.run([os.environ['REAL_GIT'], '-C', os.environ['RACE_ROOT'], 'worktree', 'add', '--quiet', os.environ['RACE_LINKED'], 'agent/task-x'], check=True)\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update(
+            {
+                "REAL_GIT": real_git,
+                "RACE_ROOT": str(tmp_path),
+                "RACE_LINKED": str(linked),
+                "RACE_COUNT": str(count),
+            }
+        )
+        try:
+            result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert result.returncode != 0
+            assert "previous value was restored" in result.stderr
+            assert git(tmp_path, "rev-parse", "agent/task-x") == base
+            assert git(linked, "status", "--porcelain") == ""
+        finally:
+            if linked.exists():
+                subprocess.run(
+                    [real_git, "-C", str(tmp_path), "worktree", "remove", "--force", str(linked)],
+                    check=True,
+                )
+
+    def test_collect_keeps_a_clean_worktree_created_after_the_cas(self, tmp_path):
+        script, clone, _drawer, env, _log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        incoming = git(clone, "rev-parse", "agent/task-x")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "after-cas-worktree"
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        count = tmp_path / "worktree-list-count"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "counter = pathlib.Path(os.environ['RACE_COUNT'])\n"
+            "if 'worktree' in args and 'list' in args:\n"
+            "    n = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+            "    counter.write_text(str(n))\n"
+            "    if n == 3:\n"
+            "        subprocess.run([os.environ['REAL_GIT'], '-C', os.environ['RACE_ROOT'], 'worktree', 'add', '--quiet', os.environ['RACE_LINKED'], 'agent/task-x'], check=True)\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *args])\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update(
+            {
+                "REAL_GIT": real_git,
+                "RACE_ROOT": str(tmp_path),
+                "RACE_LINKED": str(linked),
+                "RACE_COUNT": str(count),
+            }
+        )
+        try:
+            result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert result.returncode == 0, result.stderr
+            assert git(tmp_path, "rev-parse", "agent/task-x") == incoming
+            assert git(linked, "status", "--porcelain") == ""
+        finally:
+            if linked.exists():
+                subprocess.run(
+                    [real_git, "-C", str(tmp_path), "worktree", "remove", "--force", str(linked)],
+                    check=True,
+                )
+
+    def test_failed_collect_does_not_make_an_unreachable_object_safe_to_remove(self, tmp_path):
+        script, _clone, drawer, env, log = self.chamber(tmp_path)
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "branch", "agent/task-x", base)
+        linked = tmp_path / "occupied-worktree"
+        real_git = shutil.which("git")
+        assert real_git is not None
+        subprocess.run(
+            [
+                real_git,
+                "-C",
+                str(tmp_path),
+                "worktree",
+                "add",
+                "--quiet",
+                str(linked),
+                "agent/task-x",
+            ],
+            check=True,
+        )
+        try:
+            collected = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+            assert collected.returncode != 0
+            (drawer / "task-x.bundle").unlink()
+
+            removed = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+
+            assert removed.returncode != 0
+            assert "not have a durably collected copy" in removed.stderr
+            assert not any(call[:2] == ["rm", "--force"] for call in docker_calls(log))
+        finally:
+            subprocess.run(
+                [real_git, "-C", str(tmp_path), "worktree", "remove", "--force", str(linked)],
+                check=True,
+            )
 
     def test_an_empty_branch_collects_and_says_it_is_empty(self, tmp_path):
         """The report is worth keeping, so this succeeds — loudly. Reporting success
@@ -1159,6 +1789,50 @@ class TestWhatComesBackAndWhatIsDestroyed:
         assert result.returncode == 0, result.stderr
         assert ["rm", "--force", "verbatus-ac-task-x"] in docker_calls(log)
 
+    def test_rm_keeps_a_recoverable_bundle_after_the_collected_ref_is_pruned(self, tmp_path):
+        script, clone, drawer, env, log = self.chamber(tmp_path)
+        tip = git(clone, "rev-parse", "agent/task-x")
+        collected = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+        assert collected.returncode == 0, collected.stderr
+        retained = tmp_path / "workbench" / "autoclave" / ".collected" / "task-x" / tip
+        assert retained.is_file()
+
+        git(tmp_path, "branch", "-D", "agent/task-x")
+        (drawer / "task-x.bundle").unlink()
+        git(tmp_path, "reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
+        git(tmp_path, "gc", "--prune=now")
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "cat-file", "-e", f"{tip}^{{commit}}"]
+            ).returncode
+            != 0
+        )
+
+        result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        assert ["rm", "--force", "verbatus-ac-task-x"] in docker_calls(log)
+
+    def test_rm_refuses_a_retained_bundle_whose_pack_was_truncated(self, tmp_path):
+        script, clone, drawer, env, log = self.chamber(tmp_path)
+        tip = git(clone, "rev-parse", "agent/task-x")
+        collected = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+        assert collected.returncode == 0, collected.stderr
+        retained = tmp_path / "workbench" / "autoclave" / ".collected" / "task-x" / tip
+
+        git(tmp_path, "branch", "-D", "agent/task-x")
+        (drawer / "task-x.bundle").unlink()
+        git(tmp_path, "reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
+        git(tmp_path, "gc", "--prune=now")
+        data = retained.read_bytes()
+        retained.write_bytes(data[: data.index(b"PACK") + 20])
+
+        result = run("rm", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "durably collected copy" in result.stderr
+        assert not any(call[:2] == ["rm", "--force"] for call in docker_calls(log))
+
     def test_rm_refuses_a_chamber_it_cannot_read(self, tmp_path):
         """ "A check that cannot run is a failure, not a pass" — `.githooks/commit-msg`
         says it in those words, and the arm that says it here had no test. Swallowing
@@ -1204,6 +1878,50 @@ class TestWhatComesBackAndWhatIsDestroyed:
             capture_output=True,
         )
         assert arrived.returncode != 0, "a ref arrived from somebody else's repository"
+
+    def test_collect_fetches_snapshot_when_slot_changes_after_verify(self, tmp_path):
+        """A post-verify slot swap cannot change the bundle that fetches.
+
+        The git wrapper replaces the agent-controlled `/out` slot immediately after
+        the host verifies its snapshot. Fetching the original slot would import the
+        private gitfile; fetching the snapshot returns the chamber branch.
+        """
+        script, clone, drawer, env, _log = self.chamber(tmp_path)
+        private = tmp_path / "somebody-elses-repo"
+        subprocess.run(["git", "init", "--quiet", str(private)], check=True)
+        git(private, "config", "user.name", "v")
+        git(private, "config", "user.email", "v@v")
+        (private / "PRIVATE.txt").write_text("SENTINEL-PRIVATE\n")
+        git(private, "add", "PRIVATE.txt")
+        git(private, "commit", "--quiet", "-m", "private\n\nCo-Authored-By: m <m@x>")
+        git(private, "branch", "--move", "agent/task-x")
+
+        real_git = shutil.which("git")
+        assert real_git is not None
+        wrapper = tmp_path / "bin" / "git"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, subprocess, sys\n"
+            "from pathlib import Path\n"
+            "result = subprocess.run([os.environ['REAL_GIT'], *sys.argv[1:]])\n"
+            "if result.returncode == 0 and 'bundle' in sys.argv and 'verify' in sys.argv:\n"
+            "    Path(os.environ['SWAP_AFTER_VERIFY']).write_text(os.environ['SWAP_CONTENT'])\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        wrapper.chmod(0o755)
+        env.update(
+            {
+                "REAL_GIT": real_git,
+                "SWAP_AFTER_VERIFY": str(drawer / "task-x.bundle"),
+                "SWAP_CONTENT": f"gitdir: {private}/.git\n",
+            }
+        )
+
+        result = run("collect", "task-x", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        assert git(tmp_path, "rev-parse", "agent/task-x") == git(clone, "rev-parse", "agent/task-x")
+        assert (drawer / "task-x.bundle").read_text() == f"gitdir: {private}/.git\n"
 
     def test_collect_judges_attribution_the_way_the_hook_does(self, tmp_path):
         """A substring search disagreed with `commit-msg` in the direction that
@@ -1444,6 +2162,43 @@ class TestTheUntrustedDrawer:
         assert write.returncode == 0, write.stderr
         assert destination.read_text() == "bounded task\n"
 
+    def test_bundle_creation_does_not_follow_an_output_symlink(self, tmp_path):
+        repository = tmp_path / "repository"
+        repository.mkdir()
+        git(repository, "init", "--quiet", "-b", "work/test")
+        git(repository, "config", "user.name", "Test")
+        git(repository, "config", "user.email", "test@example.invalid")
+        (repository / "file").write_text("content\n")
+        git(repository, "add", "file")
+        git(repository, "commit", "--quiet", "-m", "base")
+        victim = tmp_path / "victim"
+        victim.write_text("keep\n")
+        slot = tmp_path / "bundle"
+        slot.symlink_to(victim)
+
+        result = subprocess.run(
+            ["python3", str(SAFE_FILE), "bundle", str(slot), "HEAD"],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0
+        assert victim.read_text() == "keep\n"
+
+    def test_writing_a_slot_from_itself_preserves_the_brief(self, tmp_path):
+        slot = tmp_path / "brief.md"
+        slot.write_text("bounded task\n")
+
+        result = subprocess.run(
+            ["python3", str(SAFE_FILE), "write", str(slot), str(slot)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert slot.read_text() == "bounded task\n"
+
 
 class TestMakingAChamber:
     """`new` writes to the host repository, and every write must be undoable."""
@@ -1534,8 +2289,34 @@ class TestMakingAChamber:
         )
         assert ref.returncode != 0
 
-    def test_a_stale_baked_brief_refuses_the_chamber(self, tmp_path):
-        """An edit to `agent-brief.md` does nothing at all until the image is rebuilt.
+    def test_new_refuses_before_a_snapshot_when_the_image_is_missing(self, tmp_path):
+        script = self.dirty_repo(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_IMAGE_EXISTS"] = "0"
+
+        result = run("new", "no-image", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "image not built" in result.stderr
+        assert not any("--detach" in call for call in docker_calls(log))
+        assert (
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(tmp_path),
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "refs/heads/autoclave/snapshot-no-image",
+                ],
+                capture_output=True,
+            ).returncode
+            != 0
+        )
+
+    def test_a_stale_image_fingerprint_refuses_the_chamber(self, tmp_path):
+        """An edit to any baked input does nothing at all until the image is rebuilt.
 
         It happened on 2026-08-02: the brief was edited and a chamber created in the
         same session ran the previous one, and the only symptom was an agent behaving
@@ -1546,12 +2327,10 @@ class TestMakingAChamber:
         """
         script = self.dirty_repo(tmp_path)
         env, _log = fake_docker(tmp_path)
-        older = tmp_path / "older-brief.md"
-        older.write_text("# You are in the autoclave\n\nAn earlier edition.\n")
-        env["FAKE_IMAGE_BRIEF"] = str(older)
+        env["FAKE_IMAGE_FINGERPRINT"] = "0" * 64
         result = run("new", "some-task", env=env, script=script, cwd=tmp_path)
-        assert result.returncode != 0, "a chamber was built on a stale brief"
-        assert "agent-brief.md" in result.stderr, result.stderr
+        assert result.returncode != 0, "a chamber was built from stale harness inputs"
+        assert "harness inputs" in result.stderr, result.stderr
         assert "build" in result.stderr, result.stderr
 
     def test_a_matching_baked_brief_lets_the_chamber_through(self, tmp_path):
@@ -1562,7 +2341,63 @@ class TestMakingAChamber:
         env["FAKE_EXEC_STATUS"] = "0"
         result = run("new", "some-task", env=env, script=script, cwd=tmp_path)
         assert result.returncode == 0, result.stderr
-        assert any("--detach" in call for call in docker_calls(log)), "no chamber created"
+        creation = next(call for call in docker_calls(log) if "--detach" in call)
+        assert "sha256:" + "1" * 64 in creation
+        assert "verbatus-autoclave:dev" not in creation
+
+    def test_new_skips_the_claude_trust_initializer_for_codex(self, tmp_path):
+        script = self.dirty_repo(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_VOLUMES": "verbatus-ac-auth-codex",
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_SETUP_STATUS": "0",
+                "FAKE_EXEC_STATUS": "0",
+            }
+        )
+
+        result = run("new", "codex-seat", "HEAD", "codex", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        config = next(call for call in docker_calls(log) if "AC_VENDOR=codex" in call)
+        assert "AC_VENDOR=codex" in config
+        assert '[ "$AC_VENDOR" = claude ] || exit 0' in script.read_text()
+
+    def test_a_second_new_for_the_same_task_is_refused_while_the_first_is_live(self, tmp_path):
+        script = self.dirty_repo(tmp_path)
+        env, _log = fake_docker(tmp_path)
+        ready = tmp_path / "new-is-holding"
+        release = tmp_path / "release-new"
+        env.update(
+            {
+                "FAKE_HOLD_ON": "--detach",
+                "FAKE_HOLD_READY": str(ready),
+                "FAKE_HOLD_RELEASE": str(release),
+                "FAKE_SETUP_STATUS": "0",
+            }
+        )
+        first = subprocess.Popen(
+            ["sh", str(script), "new", "same-task"],
+            cwd=tmp_path,
+            env={**os.environ, **env},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while not ready.exists():
+                assert time.monotonic() < deadline, "the first new never reached docker run"
+                assert first.poll() is None
+                time.sleep(0.01)
+            second = run("new", "same-task", env=env, script=script, cwd=tmp_path)
+            assert second.returncode != 0
+            assert "same-task.lock" in second.stderr
+            assert "rmdir" in second.stderr
+        finally:
+            release.touch()
+            first.wait(timeout=30)
 
     def test_the_snapshot_carries_the_whole_working_tree_and_touches_no_index(self, tmp_path):
         """Staged, unstaged, deleted and untracked, and nothing that is ignored.
@@ -1771,6 +2606,49 @@ class TestSignInIsAsked:
         assert "reports itself signed in" in result.stdout
         assert not any(call[:2] == ["volume", "rm"] for call in docker_calls(log))
 
+    def test_login_uses_its_inspected_image_id_for_the_booth_and_status_check(self, tmp_path):
+        """A tag may move while an operator completes a login, so pin this operation."""
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        image_id = "sha256:" + "a" * 64
+        env.update({"FAKE_AUTH_VALID": "1", "FAKE_IMAGE_ID": image_id})
+
+        result = run("login", "codex", env=env, script=script)
+
+        assert result.returncode == 0, result.stderr
+        login = next(call for call in docker_calls(log) if "codex login" in " ".join(call))
+        status = next(call for call in docker_calls(log) if "login status" in " ".join(call))
+        assert image_id in login
+        assert image_id in status
+        assert "verbatus-autoclave:dev" not in login
+        assert "verbatus-autoclave:dev" not in status
+
+    def test_a_tty_login_uses_the_same_inspected_image_id(self, tmp_path):
+        """The interactive branch must not fall back to the mutable tag either."""
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        image_id = "sha256:" + "b" * 64
+        env.update({"FAKE_AUTH_VALID": "1", "FAKE_IMAGE_ID": image_id})
+        master, slave = os.openpty()
+        try:
+            process = subprocess.Popen(
+                ["sh", str(script), "login", "codex"],
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                cwd=ROOT,
+                env={**os.environ, **env},
+            )
+            assert process.wait(timeout=15) == 0
+        finally:
+            os.close(slave)
+            os.close(master)
+
+        login = next(call for call in docker_calls(log) if "codex login" in " ".join(call))
+        assert "--tty" in login
+        assert image_id in login
+        assert "verbatus-autoclave:dev" not in login
+
     def test_a_first_time_login_keeps_the_volume_it_created(self, tmp_path):
         """The path that matters, and the one nothing covered.
 
@@ -1793,6 +2671,17 @@ class TestSignInIsAsked:
         assert not any(call[:2] == ["volume", "rm"] for call in docker_calls(log)), (
             "a completed first sign-in was deleted on the way out"
         )
+
+    def test_a_first_time_claude_login_keeps_the_empty_volume_it_created(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_AUTH_VALID"] = "1"
+
+        result = run("login", "claude", env=env, script=script)
+
+        assert result.returncode == 0, result.stderr
+        assert ["volume", "create", "verbatus-ac-auth-claude"] in docker_calls(log)
+        assert not any(call[:2] == ["volume", "rm"] for call in docker_calls(log))
 
     def test_a_check_that_could_not_run_never_costs_a_sign_in(self, tmp_path):
         """ "The vendor says no" and "the container never started" are different
@@ -1842,6 +2731,73 @@ class TestSignInIsAsked:
         )
         assert not any("verbatus.vendor=claude" in call for call in docker_calls(log))
 
+    def test_new_refreshes_claude_before_its_authoritative_status_check(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_REFRESH_STATUS": "0",
+                "FAKE_VOLUMES": "verbatus-ac-auth-claude",
+                "FAKE_SETUP_STATUS": "0",
+                "FAKE_EXEC_STATUS": "0",
+            }
+        )
+
+        result = run("new", "refresh-first", "HEAD", "claude", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        calls = docker_calls(log)
+        refresh_call = next(call for call in calls if "refresh_claude_token.py" in " ".join(call))
+        status_call = next(call for call in calls if "auth status" in " ".join(call))
+        assert calls.index(refresh_call) < calls.index(status_call)
+
+    def test_new_does_not_create_an_empty_claude_volume_while_refusing(self, tmp_path):
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["FAKE_AUTH_VALID"] = "1"
+
+        result = run("new", "no-volume", "HEAD", "claude", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert "not signed in" in result.stderr
+        assert not any("refresh_claude_token.py" in " ".join(call) for call in docker_calls(log))
+        assert ["volume", "create", "verbatus-ac-auth-claude"] not in docker_calls(log)
+
+    @pytest.mark.parametrize(
+        ("status", "expected", "forbidden"),
+        (
+            ("1", "stored credential is unchanged", "could not be read or republished"),
+            ("2", "could not be read or republished", "stored credential is unchanged"),
+        ),
+    )
+    def test_new_blocks_when_refresh_fails_and_says_which_kind_of_failure(
+        self, tmp_path, status, expected, forbidden
+    ):
+        """Exit 1 is retryable; exit 2 is a local credential fault needing a human.
+
+        Collapsing both into "run login" sent the operator to an interactive sign-in that
+        rotates a refresh token which is usually still valid -- turning a transient
+        endpoint failure into a real re-authentication.
+        """
+
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_REFRESH_STATUS": status,
+                "FAKE_VOLUMES": "verbatus-ac-auth-claude",
+            }
+        )
+
+        result = run("new", "dead-token", "HEAD", "claude", env=env, script=script, cwd=tmp_path)
+
+        assert result.returncode != 0
+        assert expected in result.stderr
+        assert forbidden not in result.stderr
+        assert not any("auth status" in " ".join(call) for call in docker_calls(log))
+
     def test_dispatch_asks_inside_the_chamber_not_of_the_label(self, tmp_path):
         """A chamber outlives the check `new` made: a token expires, a vendor forces
         a re-auth, an earlier agent rewrites the shared configuration directory. The
@@ -1878,78 +2834,22 @@ class TestSignInIsAsked:
         assert asked, "dispatch never asked the CLI inside the chamber"
 
 
-class TestTheConfigurationThatLivesOutsideTheMount:
-    """Claude keeps its credential inside the mounted directory and its configuration
-    beside it, and the CLI needs both to refresh an OAuth token.
+class TestClaudeConfigurationUsesTheMountedVolume:
+    """Claude keeps all refresh state inside the mounted credential directory."""
 
-    Only the credential half was ever persisted, so every container got a blank
-    configuration next to a real credential, the first refresh failed, and the CLI
-    blanked the token fields in place — twice, on 2026-08-05 and 2026-08-06, each time
-    a few hours after a sign-in that had visibly worked. These tests are the outcome
-    half of that fix: the file has to make the trip in both directions, or the sign-in
-    dies again and the evidence looks exactly like an expiry.
-    """
-
-    def _dispatch_claude(self, tmp_path):
+    def test_the_login_booth_points_configuration_at_the_volume(self, tmp_path):
         script = elsewhere(tmp_path)
-        brief = tmp_path / "brief.md"
-        brief.write_text("bounded task\n")
-        drawer = tmp_path / "workbench" / "autoclave" / "task-x"
-        drawer.mkdir(parents=True)
         env, log = fake_docker(tmp_path)
-        env.update(
-            {
-                "FAKE_CONTAINER_EXISTS": "1",
-                "FAKE_CHAMBER_VENDOR": "claude",
-                "FAKE_AUTH_VALID": "1",
-                "FAKE_EXEC_STATUS": "0",
-            }
-        )
-        result = run(
-            "dispatch",
-            "task-x",
-            "claude",
-            str(brief),
-            "sonnet",
-            "ultracode",
-            env=env,
-            script=script,
-            cwd=tmp_path,
-        )
-        return result, docker_calls(log)
+        env["FAKE_AUTH_VALID"] = "1"
 
-    def test_dispatch_seeds_the_configuration_before_the_cli_and_saves_it_after(self, tmp_path):
-        """Both directions, and in that order. Seeding alone would hand the CLI a
-        current configuration and then throw away whatever the refresh wrote to it,
-        which is the failure being fixed rather than a smaller version of it."""
-        result, calls = self._dispatch_claude(tmp_path)
+        result = run("login", "claude", env=env, script=script, cwd=tmp_path)
+
         assert result.returncode == 0, result.stderr
+        login = next(call for call in docker_calls(log) if "claude auth login" in " ".join(call))
+        assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in login
+        assert ".credentials.autoclave.lock" in " ".join(login)
 
-        def index_of(fragment):
-            # Quotes stripped before matching: the launcher single-quotes both paths
-            # inside the snippet, and a test that depended on that spelling would fail
-            # the day someone reformatted the shell without changing what it does.
-            for position, call in enumerate(calls):
-                if call[:1] == ["exec"] and fragment in " ".join(call).replace("'", ""):
-                    return position
-            return None
-
-        # `cat` rather than `cp`, because the kept file is shared and a concurrent
-        # chamber's publishing rename makes GNU cp refuse the copy outright.
-        seed = index_of("cat /home/agent/.claude/home-config.json > /home/agent/.claude.json")
-        # The save publishes copy-to-temp-then-rename into a name mktemp chose, so the
-        # fragment matches the copy out of the live path rather than any temp spelling.
-        save = index_of('cp /home/agent/.claude.json "$ac_home_config_tmp"')
-        cli = index_of("--append-system-prompt-file")
-        assert seed is not None, "dispatch never seeded the configuration from the volume"
-        assert save is not None, "dispatch never wrote the configuration back to the volume"
-        assert cli is not None, "dispatch never ran the CLI"
-        assert seed < cli < save, f"wrong order: seed={seed} cli={cli} save={save}"
-
-    def test_a_codex_dispatch_touches_none_of_it(self, tmp_path):
-        """Codex keeps everything inside its own mounted directory, so this whole
-        mechanism is Claude's alone. A launcher that copied Claude's files around a
-        Codex chamber would be doing something nobody could explain."""
+    def test_dispatch_points_configuration_at_the_volume(self, tmp_path):
         script = elsewhere(tmp_path)
         brief = tmp_path / "brief.md"
         brief.write_text("bounded task\n")
@@ -1958,380 +2858,104 @@ class TestTheConfigurationThatLivesOutsideTheMount:
         env.update(
             {
                 "FAKE_CONTAINER_EXISTS": "1",
-                "FAKE_CHAMBER_VENDOR": "codex",
+                "FAKE_CHAMBER_VENDOR": "claude",
                 "FAKE_AUTH_VALID": "1",
+                "FAKE_REFRESH_STATUS": "0",
                 "FAKE_EXEC_STATUS": "0",
             }
         )
+
         result = run(
             "dispatch",
             "task-x",
-            "codex",
+            "claude",
             str(brief),
-            "gpt-5.6-luna",
-            "high",
+            "sonnet",
+            "medium",
             env=env,
             script=script,
             cwd=tmp_path,
         )
+
         assert result.returncode == 0, result.stderr
-        assert not [c for c in docker_calls(log) if "home-config.json" in " ".join(c)]
+        calls = [call for call in docker_calls(log) if call[:1] == ["exec"]]
+        cli = next(call for call in calls if "--append-system-prompt-file" in " ".join(call))
+        refresh_call = next(call for call in calls if "refresh_claude_token.py" in " ".join(call))
+        assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in cli
+        assert ".credentials.autoclave.lock" not in " ".join(cli)
+        assert "CLAUDE_CONFIG_DIR=/home/agent/.claude" in refresh_call
+        status_call = next(call for call in calls if "auth status" in " ".join(call))
+        assert ".credentials.autoclave.lock" not in " ".join(status_call)
+        assert calls.index(refresh_call) < calls.index(status_call)
+        assert calls.index(refresh_call) < calls.index(cli)
 
-    def test_the_save_does_not_depend_on_the_cli_succeeding(self):
-        """A refresh that rewrote the configuration and *then* failed at something else
-        still rewrote the configuration. Skipping the save on a non-zero exit would
-        throw away exactly the write that matters most.
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        (
+            ("1", "stored credential is unchanged"),
+            ("2", "could not be read or republished"),
+        ),
+    )
+    def test_dispatch_blocks_when_refresh_fails_and_says_which_kind_of_failure(
+        self, tmp_path, status, expected
+    ):
+        """The same three-way split as `new`: a transient failure mid-dispatch is not a
+        lost sign-in, and must not be reported as one."""
 
-        **This is a reading, not an outcome**, and it is the honest limit of the stub:
-        it has one exec status for every exec, so making the CLI fail also fails the
-        sign-in check that runs before it and the dispatch never reaches the CLI at
-        all. What can be asserted is that the launcher captures the status into a
-        variable instead of branching on it — which is what keeps the save
-        unconditional.
-        """
-        source = SCRIPT.read_text()
-        assert "|| dispatch_status=$?" in source, (
-            "the CLI status is no longer captured, so the save may have become conditional on it"
+        script = elsewhere(tmp_path)
+        brief = tmp_path / "brief.md"
+        brief.write_text("bounded task\n")
+        env, log = fake_docker(tmp_path)
+        env.update(
+            {
+                "FAKE_CONTAINER_EXISTS": "1",
+                "FAKE_CHAMBER_VENDOR": "claude",
+                "FAKE_AUTH_VALID": "1",
+                "FAKE_REFRESH_STATUS": status,
+            }
         )
 
-    def test_the_shared_temp_name_does_not_come_from_the_shell_pid(self):
-        """`.tmp.$$` was not unique across chambers, and the whole atomic publication
-        rested on believing it was.
-
-        The kept file lives on a volume every chamber of that vendor shares, so two
-        saves at once must not choose one temp path. The old spelling took the temp
-        name from the container shell pid, on the stated grounds that a pid is per
-        container. It is: each container has its own pid namespace, which is exactly
-        why the numbers repeat — two chambers exec'd into on this machine both
-        reported **pid 8**. Both saves would have written one path and published the
-        interleaving, in the mechanism built to prevent interleaving.
-
-        **This reads the source rather than racing two pid namespaces**, which a unit
-        test cannot create. `mktemp` decides uniqueness on the shared filesystem,
-        where the collision would actually happen.
-        """
-        source = SCRIPT.read_text()
-        save = next(line for line in source.splitlines() if line.startswith("HOME_CONFIG_SAVE="))
-        assert "mktemp" in save, "the save no longer takes its temp name from mktemp"
-        assert "$$" not in save, (
-            "the save is back to naming its temp file after the shell pid, which "
-            "repeats across containers sharing one volume"
+        result = run(
+            "dispatch",
+            "task-x",
+            "claude",
+            str(brief),
+            "sonnet",
+            "medium",
+            env=env,
+            script=script,
+            cwd=tmp_path,
         )
 
-    def test_chamber_creation_writes_the_shared_file_as_carefully_as_dispatch_does(self):
-        """Chamber creation has its own copy of the seed and the save, and it was the
-        half that got missed.
+        assert result.returncode != 0
+        assert expected in result.stderr
+        assert not any("auth status" in " ".join(call) for call in docker_calls(log))
 
-        It seeded with `cp` — dying on a source another chamber republished, and the
-        `die` beside it takes the whole chamber down — and it saved by copying
-        straight onto the shared file, with no temp and no rename, so a chamber
-        starting up could hand another chamber a half-written configuration. Both are
-        the failures the dispatch path was already fixed for; a second copy of a
-        mechanism is a second place for it to be wrong.
-        """
-        source = SCRIPT.read_text()
-        assert "cat /home/agent/.claude/home-config.json > /home/agent/.claude.json" in source, (
-            "chamber creation no longer seeds with a single open"
+    def test_the_refresh_helper_reaches_the_image(self):
+        helper = ROOT / "operations" / "autoclave" / "refresh_claude_token.py"
+        assert helper.is_file()
+        assert (
+            "refresh_claude_token.py"
+            in (ROOT / "operations" / "autoclave" / "Dockerfile").read_text()
         )
-        assert "cp /home/agent/.claude.json /home/agent/.claude/home-config.json\n" not in source, (
-            "chamber creation copies straight onto the shared file again, with no "
-            "temp and no rename"
-        )
-        assert "mktemp /home/agent/.claude/home-config.json.tmp.XXXXXX" in source, (
-            "chamber creation no longer publishes through a mktemp temp file"
+        assert (
+            "!operations/autoclave/refresh_claude_token.py" in (ROOT / ".dockerignore").read_text()
         )
 
-    def test_the_login_booth_keeps_the_configuration_it_writes(self):
-        """The booth is `--rm`, so a sign-in wrote the credential into the volume and
-        the configuration into a container that was thrown away seconds later. That is
-        why the sign-in worked and then died a few hours on.
+    def test_the_image_and_refresh_helper_name_the_same_claude_client_id(self):
+        helper = (ROOT / "operations" / "autoclave" / "refresh_claude_token.py").read_text()
+        dockerfile = (ROOT / "operations" / "autoclave" / "Dockerfile").read_text()
+        client_id = re.search(r'^CLIENT_ID = "([^"]+)"$', helper, re.MULTILINE)
+        token_url = re.search(r'^TOKEN_URL = "([^"]+)"$', helper, re.MULTILINE)
 
-        **This test used to assert the copy wrapper, and the copy wrapper did not
-        work.** Measured 2026-08-10: `.credentials.json` in the live volume still
-        carried the mtime of the last manual sign-in and had never once been rewritten,
-        while `backups/.claude.json.backup.*` held 50-byte stubs — the CLI backing up
-        the empty configuration it had just been handed. Seven sign-ins in a week, each
-        dying at its first refresh. The wrapper was tested for emitting the right calls
-        and never for the outcome it existed to produce, so a green suite reported a
-        protection that was not there.
-
-        What actually fixes it is `CLAUDE_CONFIG_DIR`: the CLI keeps `.claude.json`
-        beside the credential *inside* the mount instead of one level up, so there is
-        nothing left to copy and nothing left to lose. Probed against CLI 2.1.226 in
-        this image, then confirmed end to end — the expired credential refreshed itself
-        and the volume's `.credentials.json` was rewritten for the first time.
-        """
-        source = SCRIPT.read_text()
-        assert "CLAUDE_CONFIG_DIR=${mount}" in source, (
-            "the login booth no longer points the CLI's configuration at the mounted "
-            "volume, so the sign-in half a refresh needs dies with the --rm container"
-        )
-
-    def test_the_dispatch_points_the_cli_configuration_at_the_volume(self):
-        """The other half. A sign-in that persists is worth nothing if the chamber that
-        runs the CLI writes its refreshed token somewhere the next chamber cannot see."""
-        source = SCRIPT.read_text()
-        assert 'CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE"' in source, (
-            "dispatch no longer sets CLAUDE_CONFIG_DIR, so a refreshed token lands in "
-            "the container and is destroyed with it"
-        )
-
-    def test_the_trust_flag_is_written_where_the_cli_reads_it(self):
-        """`CLAUDE_CONFIG_DIR` moves the file the trust flag belongs in. Written to the
-        old path beside it, the flag is set in a file nothing reads and the trust dialog
-        blocks a detached chamber with nobody there to answer it."""
-        source = SCRIPT.read_text()
-        assert 'd = pathlib.Path("/home/agent/.claude")' in source, (
-            "the trust flag is no longer written into the directory CLAUDE_CONFIG_DIR points at"
-        )
-
-    def test_nothing_symlinks_the_configuration_into_the_volume(self):
-        """A symlink is the obvious one-line fix and it is wrong: the CLI writes this
-        file atomically, and a rename replaces a symlink with a regular file — putting
-        the split back while looking fixed."""
-        for line in code_lines():
-            if "home-config.json" in line:
-                assert "ln -s" not in line, f"symlinked instead of copied: {line.strip()}"
-
-
-class TestTheWrapperAgainstARealFilesystem:
-    """The wrapped seed-command-save script, executed for real against a sandbox.
-
-    The class above proves the launcher *emits* the right calls in the right order;
-    the Docker stand-in cannot prove the calls *work*, because it never executes the
-    shell it records (CodeRabbit on PR 19, three findings). These tests extract the
-    genuine snippet-and-wrapper block from the script's own bytes, retarget its two
-    absolute container paths into a temporary directory, and run what
-    `wrap_home_config` actually generates — so a copy that fails, a partial file, or
-    a swallowed status shows up as an outcome here rather than in a dead chamber.
-    The login booth runs this exact wrapper (`login_cmd=$(wrap_home_config ...)`),
-    so this is its execution coverage too.
-    """
-
-    def _wrapper_script(self, tmp_path, command):
-        """Extract the real block from the script, retargeted into tmp_path."""
-        source = SCRIPT.read_text()
-        start = source.index("HOME_CONFIG_LIVE=")
-        end = source.index("\n}", source.index("wrap_home_config()")) + 2
-        block = source[start:end]
-        live = tmp_path / "home" / ".claude.json"
-        kept_dir = tmp_path / "home" / ".claude"
-        (tmp_path / "home").mkdir(exist_ok=True)
-        kept_dir.mkdir(exist_ok=True)
-        block = block.replace("/home/agent/.claude.json", str(live))
-        block = f'AUTH_DIR_CLAUDE="{kept_dir}"\n' + block
-        driver = block + f'\nwrap_home_config "{command}"\n'
-        generated = subprocess.run(
-            ["sh", "-c", driver], capture_output=True, text=True, check=True
-        ).stdout
-        return generated, live, kept_dir / "home-config.json"
-
-    def _run(self, generated, env=None):
-        return subprocess.run(["sh", "-c", generated], capture_output=True, text=True, env=env)
-
-    def _stub_on_path(self, tmp_path, name, body):
-        """Put an executable `name` on PATH ahead of the real one, and hand back the
-        environment that finds it. The wrapper calls its tools by bare name, so this
-        reaches exactly the call under test and nothing else."""
-        bindir = tmp_path / "bin"
-        bindir.mkdir(exist_ok=True)
-        stub = bindir / name
-        stub.write_text(body)
-        stub.chmod(0o755)
-        env = dict(os.environ)
-        env["PATH"] = f"{bindir}:{env.get('PATH', '')}"
-        return env
-
-    def _cat_that_fails_reading(self, tmp_path, doomed_glob):
-        """A `cat` stand-in that fails only when reading `doomed_glob`.
-
-        The seed reads with `cat`, so this is what stands in front of it. It writes
-        a partial payload to stdout before failing, because a read that dies partway
-        does — the shell has already truncated the destination by then, so the live
-        file is left short, which is the state the seed's abort exists to refuse.
-        """
-        real_cat = shutil.which("cat")
-        assert real_cat, "no cat on PATH to stand in front of"
-        return self._stub_on_path(
-            tmp_path,
-            "cat",
-            "#!/bin/sh\n"
-            f'case "${{1:-}}" in {doomed_glob})\n'
-            "    printf partial\n"
-            "    exit 1 ;;\n"
-            "esac\n"
-            f'exec {real_cat} "$@"\n',
-        )
-
-    def _cp_that_fails_writing_to(self, tmp_path, doomed_glob):
-        """A `cp` stand-in on PATH that fails only when writing to `doomed_glob`.
-
-        The wrapper's save calls `cp` by bare name, so interposing on
-        PATH reaches exactly the copy under test and nothing else. Denying access by
-        `chmod` looked equivalent and is not: under an effective UID of 0 — which is
-        every chamber, and some CI runners — root reads a `0o000` file and writes into
-        a `0o555` directory, so the copy succeeds and the test passes for the wrong
-        reason, or fails for one. Found by CodeRabbit on PR 19.
-
-        It leaves a partial file at the destination before failing, because a real
-        `cp` that dies mid-write does. Exiting without writing anything left the
-        caller's cleanup untested: there was no temp file to remove, so an assertion
-        that none survives passed on a launcher that never removed one. Only the last
-        argument is matched, which is `cp`'s destination — the second CodeRabbit
-        finding on this helper, PR 19.
-        """
-        real_cp = shutil.which("cp")
-        assert real_cp, "no cp on PATH to stand in front of"
-        return self._stub_on_path(
-            tmp_path,
-            "cp",
-            "#!/bin/sh\n"
-            'target=""\n'
-            'for arg in "$@"; do target="$arg"; done\n'
-            f'case "$target" in {doomed_glob})\n'
-            '    printf partial > "$target"\n'
-            "    exit 1 ;;\n"
-            "esac\n"
-            f'exec {real_cp} "$@"\n',
-        )
-
-    def test_content_travels_both_directions_and_survives(self, tmp_path):
-        """The volume's snapshot reaches the live path, the command's rewrite reaches
-        the volume, and a command that succeeded exits zero. Outcome, not call order.
-
-        The command observes the live file *before* rewriting it, so the seed leg is
-        genuinely asserted. Rewriting first would let this pass on the save alone even
-        if the seed stopped copying entirely — CodeRabbit on PR 19.
-        """
-        observed = tmp_path / "observed.json"
-        live_path = tmp_path / "home" / ".claude.json"
-        generated, live, kept = self._wrapper_script(
-            tmp_path, f"cp {live_path} {observed} && printf refreshed > {live_path}"
-        )
-        kept.write_text('{"from":"volume"}')
-        result = self._run(generated)
-        assert result.returncode == 0, result.stderr
-        assert observed.read_text() == '{"from":"volume"}', (
-            "the volume's snapshot never reached the live path"
-        )
-        assert live.read_text() == "refreshed"
-        assert kept.read_text() == "refreshed", "the command's rewrite never reached the volume"
-
-    def test_a_failed_command_still_saves_and_keeps_its_own_status(self, tmp_path):
-        """The refresh that rewrites the file and then fails at something else is the
-        exact case that killed the sign-in — the rewrite must be saved anyway, and the
-        command's status must come back untouched."""
-        # A subshell, deliberately: a real CLI that fails *returns* non-zero to the
-        # wrapper. A bare `exit 7` here would terminate the generated script itself,
-        # which no external command can do.
-        generated, live, kept = self._wrapper_script(
-            tmp_path, f"(printf rewritten > {tmp_path}/home/.claude.json; exit 7)"
-        )
-        kept.write_text('{"stale":true}')
-        result = self._run(generated)
-        assert result.returncode == 7, "the command's own status was not preserved"
-        assert kept.read_text() == "rewritten", "a failed command's rewrite was thrown away"
-
-    def test_a_save_failure_after_success_is_not_reported_as_success(self, tmp_path):
-        """A sign-in that worked but was not persisted dies at the next refresh, and
-        zero here is how that stayed invisible twice. Only the save's copy is made to
-        fail — it writes to the pid-suffixed temp beside the kept file."""
-        generated, live, kept = self._wrapper_script(tmp_path, "true")
-        kept.write_text("{}")
-        env = self._cp_that_fails_writing_to(tmp_path, f"{kept}.tmp.*")
-        result = self._run(generated, env=env)
-        assert result.returncode != 0, "a lost save was reported as a successful sign-in"
-        assert "could not be saved" in result.stderr
-        assert kept.read_text() == "{}", "a failed save left the volume's copy disturbed"
-        assert not list(kept.parent.glob("home-config.json.tmp.*")), (
-            "a failed save left its temp file behind"
-        )
-
-    def test_a_failed_seed_stops_before_the_command_runs(self, tmp_path):
-        """Running the CLI against a configuration that failed to copy is the original
-        bug with extra steps. Only the seed's read is made to fail — it is the one
-        reading the kept file — and the command must never run."""
-        marker = tmp_path / "command-ran"
-        generated, live, kept = self._wrapper_script(tmp_path, f"touch {marker}")
-        kept.write_text("{}")
-        env = self._cat_that_fails_reading(tmp_path, str(kept))
-        result = self._run(generated, env=env)
-        assert result.returncode != 0, "a failed seed was not surfaced"
-        assert not marker.exists(), "the command ran against a configuration that failed to seed"
-
-    def test_the_seed_never_reads_the_kept_file_with_cp(self, tmp_path):
-        """One chamber publishing its sign-in must not kill another chamber's start.
-
-        The save replaces the kept file's inode by rename. GNU `cp` refuses a source
-        that changed under it — *"skipping file ..., as it was replaced while being
-        copied"*, exit 1 — and the seed's `|| exit 1` turned that into a dispatch
-        that died before the CLI ran. Two Claude chambers at once is the standing
-        review roster, so this sat on the path of ordinary work. CI failed on it and
-        a two-CPU Linux runner reproduced it in about one attempt in twenty, each
-        attempt racing twenty writers.
-
-        **This asserts the tool, not the race, and that is deliberate.** The window
-        cp fails in is between its `stat` of the source and its `open` of it —
-        microseconds, hit roughly once per four hundred seeds. A test that runs the
-        race is a test that passes almost every time on the broken code, which is
-        worse than no test. `cat` opens the file once and reads the inode it opened,
-        so a rename underneath it is invisible; that property is the fix, and this
-        is what fails the moment someone spells it `cp` again.
-        """
-        generated, live, kept = self._wrapper_script(tmp_path, "true")
-        assert f"cat '{kept}'" in generated, "the seed no longer reads with a single open"
-        assert f"cp '{kept}'" not in generated, (
-            "the seed reads the shared kept file with cp, which dies when another "
-            "chamber republishes it mid-copy"
-        )
-        assert "|| exit 1" in generated, "the seed no longer aborts on a failed read"
-
-    def test_concurrent_saves_never_leave_a_torn_file(self, tmp_path):
-        """Two chambers saving at once was CodeRabbit's serialization finding. The
-        launcher's answer is atomic publication — copy to a pid-suffixed temp, then
-        rename — so a reader sees a complete snapshot from one writer or the other,
-        never an interleaving. Proven by racing real writers and checking every
-        observation is one of the two whole payloads.
-
-        **Every writer gets its own live path, because a real chamber has one.** The
-        live file is inside the container; the kept file is the shared volume, so the
-        volume is the only object two chambers ever contend for. An earlier version
-        of this test pointed ten writers at a single live path, and CI caught what
-        that produced: one writer's save read that path while another writer's seed
-        was truncating it, and the short copy was then published whole. A real tear,
-        but one the test manufactured and the launcher cannot suffer.
-        """
-        payload_a = "A" * 200_000
-        payload_b = "B" * 200_000
-        base_script, live, kept = self._wrapper_script(tmp_path, "true")
-        scripts = []
-        for index in range(20):
-            mine = tmp_path / "home" / f".claude.json-{index}"
-            mine.write_text(payload_a if index % 2 == 0 else payload_b)
-            scripts.append(base_script.replace(str(live), str(mine)))
-        procs = [
-            subprocess.Popen(["sh", "-c", s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            for s in scripts
-        ]
-        seen = set()
-        while any(p.poll() is None for p in procs):
-            try:
-                seen.add(kept.read_text())
-            except OSError:
-                pass  # not published yet; nothing to observe
-        statuses = [p.wait() for p in procs]
-        try:
-            seen.add(kept.read_text())
-        except OSError:
-            pass
-        # Whole payloads, not a first-byte-and-length signature: a 200,000-byte file
-        # of interleaved As and Bs matched that signature exactly, so the check could
-        # not fail on the thing it was written to catch. CodeRabbit on PR 19.
-        torn = {f"{s[:1]}...{s[-1:]} len={len(s)}" for s in seen if s not in {payload_a, payload_b}}
-        assert not torn, f"a reader observed a torn snapshot: {torn}"
-        # An empty `seen` would otherwise pass this test after every writer failed.
-        assert statuses == [0] * len(procs), f"a writer failed: {statuses}"
-        assert seen, "no snapshot was ever observed, so nothing was proven"
+        assert client_id, "refresh helper defines no public client id"
+        assert token_url, "refresh helper defines no token endpoint"
+        # The values, not the shell spelling that checks them. Asserting on `grep -a -q`
+        # pinned an implementation detail: rewriting the check to name *which* constant
+        # moved broke this test without any constant having changed.
+        assert client_id.group(1) in dockerfile, "image does not verify the helper client id"
+        assert token_url.group(1) in dockerfile, "image does not verify the helper token endpoint"
+        assert "grep -a -q" in dockerfile, "image no longer greps the launcher at all"
 
 
 class TestTheTrustFlagAgainstARealFilesystem:
@@ -2356,6 +2980,53 @@ class TestTheTrustFlagAgainstARealFilesystem:
 
     def _run(self, block):
         return subprocess.run(["sh", "-c", block], capture_output=True, text=True)
+
+    def test_the_enclosing_configuration_body_succeeds_as_shell(self, tmp_path):
+        source = SCRIPT.read_text()
+        marker = 'docker exec -e AC_VENDOR="$vendor" "$(container_of "$task")" sh -c \'\n'
+        start = source.index(marker) + len(marker)
+        body = source[start : source.index("\n    ' || die", start)]
+        assert "set -eu" in {line.strip() for line in body.splitlines()}
+        work_config = tmp_path / "work" / ".claude"
+        shared_config = tmp_path / "shared" / ".claude"
+        work_config.mkdir(parents=True)
+        shared_config.mkdir(parents=True)
+        body = (
+            body.replace('[ "$AC_VENDOR" = claude ] || exit 0', ":")
+            .replace("/work/.claude", str(work_config))
+            .replace("/home/agent/.claude", str(shared_config))
+        )
+
+        result = self._run(body)
+
+        assert result.returncode == 0, result.stderr
+        settings = json.loads((work_config / "settings.local.json").read_text())
+        assert settings["env"]["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] == "64"
+        trust = json.loads((shared_config / ".claude.json").read_text())
+        assert trust["projects"]["/work"]["hasTrustDialogAccepted"] is True
+
+    def test_the_enclosing_body_stops_when_local_settings_cannot_be_written(self, tmp_path):
+        source = SCRIPT.read_text()
+        marker = 'docker exec -e AC_VENDOR="$vendor" "$(container_of "$task")" sh -c \'\n'
+        start = source.index(marker) + len(marker)
+        body = source[start : source.index("\n    ' || die", start)]
+        assert "set -eu" in {line.strip() for line in body.splitlines()}
+        work = tmp_path / "work"
+        work.mkdir()
+        blocked_config = work / ".claude"
+        blocked_config.write_text("not a directory")
+        shared_config = tmp_path / "shared" / ".claude"
+        shared_config.mkdir(parents=True)
+        body = (
+            body.replace('[ "$AC_VENDOR" = claude ] || exit 0', ":")
+            .replace("/work/.claude", str(blocked_config))
+            .replace("/home/agent/.claude", str(shared_config))
+        )
+
+        result = self._run(body)
+
+        assert result.returncode != 0
+        assert not (shared_config / ".claude.json").exists()
 
     def test_the_flag_is_written_once_and_not_rewritten_afterwards(self, tmp_path):
         """Once the flag is on the volume it stays there, so no later chamber has any
@@ -2388,6 +3059,27 @@ class TestTheTrustFlagAgainstARealFilesystem:
         assert merged["projects"]["/other"] == {"x": 1}
         assert merged["projects"]["/work"]["hasTrustDialogAccepted"] is True
 
+    def test_an_invalid_shared_config_is_not_replaced_with_an_empty_one(self, tmp_path):
+        block, directory = self._block(tmp_path)
+        config = directory / ".claude.json"
+        config.write_text("not json")
+
+        result = self._run(block)
+
+        assert result.returncode != 0
+        assert config.read_text() == "not json"
+
+    def test_an_empty_shared_config_is_initialized(self, tmp_path):
+        block, directory = self._block(tmp_path)
+        config = directory / ".claude.json"
+        config.write_text("")
+
+        result = self._run(block)
+
+        assert result.returncode == 0, result.stderr
+        initialized = json.loads(config.read_text())
+        assert initialized["projects"]["/work"]["hasTrustDialogAccepted"] is True
+
     def test_an_interleaved_update_under_the_same_lock_is_not_lost(self, tmp_path):
         """The interleaving regression CodeRabbit asked for.
 
@@ -2396,10 +3088,8 @@ class TestTheTrustFlagAgainstARealFilesystem:
         key exists and republishes it without — a lost update. Under the lock it
         waits, reads what the competitor wrote, and both survive.
 
-        What this cannot prove is the half that stays open: the Claude CLI takes no
-        lock this script can name, so a real refresh landing inside the window is
-        still discarded. That is why the write above happens at most once per volume,
-        and why the comment in the launcher says so rather than claiming a fix.
+        The login booth and refresh helper take this volume lock; dispatch and status do
+        not. This pins the lock shared by the trust initializer and refresh helper.
         """
         block, directory = self._block(tmp_path)
         config = directory / ".claude.json"
@@ -2409,7 +3099,7 @@ class TestTheTrustFlagAgainstARealFilesystem:
         competitor.write_text(
             "import fcntl, json, os, pathlib, tempfile, time\n"
             f"d = pathlib.Path({str(directory)!r})\n"
-            'guard = open(d / ".claude.json.autoclave.lock", "a+")\n'
+            'guard = open(d / ".credentials.autoclave.lock", "a+")\n'
             "fcntl.flock(guard.fileno(), fcntl.LOCK_EX)\n"
             'p = d / ".claude.json"\n'
             # Read first, publish last, and only then let the launcher start: that is
@@ -2449,67 +3139,6 @@ class TestTheTrustFlagAgainstARealFilesystem:
         block = source[start : source.index("\nPY\n", start)]
         assert "LOCK_NB" in block and "time.monotonic()" in block, (
             "the trust update waits on the shared lock without a deadline"
-        )
-
-
-class TestTheEnclosingShellBodyDoesNotMaskAFailure:
-    """The launcher command around the trust update, not just the heredoc inside it.
-
-    Every test above extracts the python block alone, so none of them could see the
-    shell it runs in. That shell had no `set -eu`, and it ends on a copy — so a trust
-    update that failed was masked by a copy that then succeeded, the command exited
-    zero, and the die beside it never fired. A chamber would have come up with no
-    trust flag at all, where the CLI blocks on a dialog nobody is there to answer.
-    Found by CodeRabbit on PR 22, on the change that added a new way to fail here.
-    """
-
-    def _shell_body(self, tmp_path):
-        """Extract the whole `sh -c` body, retargeted into tmp_path."""
-        source = SCRIPT.read_text()
-        end = source.index(
-            '\' || die "chamber started but the agent configuration could not be written"'
-        )
-        opening = "sh -c '"
-        start = source.rindex(opening, 0, end) + len(opening)
-        home = tmp_path / ".claude"
-        home.mkdir()
-        work = tmp_path / "work" / ".claude"
-        work.mkdir(parents=True)
-        body = source[start:end]
-        body = body.replace("/home/agent/.claude", str(home))
-        return body.replace("/work/.claude", str(work)), home
-
-    def _run(self, body):
-        return subprocess.run(["sh", "-c", body], capture_output=True, text=True)
-
-    def test_the_body_still_succeeds_when_nothing_fails(self, tmp_path):
-        """The control. Without it the test below could pass on a retargeting typo."""
-        body, home = self._shell_body(tmp_path)
-
-        result = self._run(body)
-
-        assert result.returncode == 0, result.stderr
-        config = json.loads((home / ".claude.json").read_text())
-        assert config["projects"]["/work"]["hasTrustDialogAccepted"] is True
-        assert (home / "home-config.json").exists(), "the copy at the end of the body never ran"
-
-    def test_a_failed_trust_update_is_fatal_rather_than_copied_over(self, tmp_path):
-        """The regression itself.
-
-        The lock path is a directory, so the trust update raises where it opens it.
-        Everything after that point would otherwise run and succeed, and the last of
-        it — the copy onto the shared volume — would decide the exit status. Checked
-        by hand against a copy of the body with `set -eu` removed: there the command
-        exits 0 and `home-config.json` is written, which is the masking this catches.
-        """
-        body, home = self._shell_body(tmp_path)
-        (home / ".claude.json.autoclave.lock").mkdir()
-
-        result = self._run(body)
-
-        assert result.returncode != 0, "a failed trust update was masked by the copy after it"
-        assert not (home / "home-config.json").exists(), (
-            "the body carried on past the failure instead of stopping at it"
         )
 
 

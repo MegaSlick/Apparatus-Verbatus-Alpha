@@ -8,7 +8,7 @@ Anything with a human, a machine, or money on the other end.
 | `pod/` | future pod rental, shutdown, and provider-state/billing verification |
 | `data/` | future movement of runs and exports between machines |
 | `notify/` | the implemented, fileless one-way notification client |
-| `codex/` | the implemented tracked-seat wrapper for time-bounded Codex calls |
+| `review/` | immutable review-candidate manifests and local receipts |
 
 There is no `local/`, `remote/`, or `deploy/` here. A pod runs the very same stage
 directories this repository holds. Where code runs is an operational fact, not an
@@ -42,13 +42,3 @@ returns. Keeping a caller non-blocking is the caller's job; misreporting deliver
 spent the one thing this script exists to protect.
 
 The client requires Python 3 for in-memory JSON encoding and `curl` for HTTPS delivery.
-
-`codex/seat.sh` pins a read-only evidence seat's requested model, effort, and elapsed-time
-ceiling. Every seat runs at the repository root with closed stdin, ignores desktop model
-defaults, and receives a short reminder that the main session owns scope and decisions. It
-uses Codex's ephemeral mode so the CLI does not persist a second session record. It does
-**not** cap tokens or cost, prove the runtime-resolved model, or retain the result. A caller
-must preserve the raw output and account for the dispatch separately.
-Live calls require the Codex CLI and GNU `timeout` (named `gtimeout` on a normal macOS
-coreutils installation); stdin prompt intake also requires that timeout. A direct-prompt
-dry run needs neither, and the wrapper refuses every path that would otherwise run uncapped.
