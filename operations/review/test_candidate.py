@@ -139,6 +139,27 @@ def test_receipt_requires_the_exact_full_base_sha_in_the_report(tmp_path):
         receipt(tmp_path, candidate, base, "CodeRabbit", report)
 
 
+def test_receipt_accepts_a_report_saved_with_windows_line_endings(tmp_path):
+    """A reviewer on Windows names its candidate correctly; the receipt must see it.
+
+    `$` in multiline mode matches before the `\\n`, so CRLF leaves a `\\r` between the SHA
+    and the line end. Without the `\\r?` in `report_names`, this refuses a report that does
+    name its candidate and tells the reviewer the SHA is missing. Nothing else in this
+    file writes CRLF, so removing that `\\r?` would otherwise break no test.
+    """
+
+    base, candidate = repository(tmp_path)
+    report = tmp_path / "workbench" / "raw" / "review.md"
+    report.parent.mkdir(parents=True)
+    report.write_bytes(f"Candidate: {candidate}\r\nBase: {base}\r\nNo findings.\r\n".encode())
+
+    _output, record = receipt(tmp_path, candidate, base, "Windows Reviewer", report)
+
+    assert record["candidate"] == candidate
+    assert record["base"] == base
+    assert Path(record["report"]).read_bytes() == report.read_bytes()
+
+
 def test_receipt_refuses_a_symlinked_report(tmp_path):
     base, candidate = repository(tmp_path)
     report = tmp_path / "workbench" / "raw" / "review.md"

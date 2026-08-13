@@ -485,7 +485,7 @@ def test_a_create_nobody_previewed_is_refused_even_with_the_derived_phrase(
 
     assert result.state is LaunchState.REFUSED_CONFIRMATION
     assert not result.green
-    assert "no preview issued a challenge" in result.detail
+    assert "no preview in this run issued a challenge" in result.detail
     assert not any(verb == "create" for verb, _ in provider.calls), "a pod was created anyway"
     assert list(tmp_path.glob("*.json")) == []
 
@@ -510,7 +510,7 @@ def test_one_challenge_authorizes_exactly_one_paid_create(tmp_path: Path) -> Non
     replay = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
 
     assert replay.state is LaunchState.REFUSED_CONFIRMATION
-    assert "no preview issued a challenge" in replay.detail
+    assert "no preview in this run issued a challenge" in replay.detail
     assert sum(1 for verb, _ in provider.calls if verb == "create") == created
 
 
@@ -529,6 +529,79 @@ def test_a_confirmation_from_a_different_preview_names_itself(tmp_path: Path) ->
     assert result.state is LaunchState.REFUSED_CONFIRMATION
     assert "different preview challenge" in result.detail
     assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_a_challenge_does_not_authorize_a_longer_lifetime_than_was_previewed(
+    tmp_path: Path,
+) -> None:
+    """The phrase names the rates, which do not change with lifetime.
+
+    Preview ten minutes, then create the same pod at the ceiling: the action, subject and
+    both hourly rates are identical, so the printed phrase still matches. Only the
+    deadline moved, and the deadline is what the money actually depends on. The ceiling
+    bounds the exposure; it does not make the authorization cover it.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+
+    short = request(clock, lifetime=600)
+    pod_runtime.preview_create(short)
+    longer = replace(short, hard_deadline=short.hard_deadline + timedelta(seconds=1800))
+
+    result = pod_runtime.create(longer, confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_CONFIRMATION
+    assert "at this hard deadline" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+    # The preview that was actually issued still works, so this refuses the substitution
+    # rather than the mechanism.
+    assert pod_runtime.create(short, confirmation=CREATE_CONFIRMATION).state is (
+        LaunchState.CREATED_GUARDED
+    )
+
+
+def test_an_adoption_nobody_previewed_is_refused(tmp_path: Path) -> None:
+    """`adopt` carries its own copy of the gate, so it needs its own coverage.
+
+    An adopted pod is already billing, which makes an unauthorized adoption worse than an
+    unauthorized create, not better.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+    expected = request(clock)
+    existing = provider.create(expected)
+
+    result = pod_runtime.adopt(
+        existing.pod_id, expected=expected, confirmation=adopt_confirmation(existing.pod_id)
+    )
+
+    assert result.state is LaunchState.REFUSED_CONFIRMATION
+    assert "no preview in this run issued a challenge" in result.detail
+    assert list(tmp_path.glob("*.json")) == []
+
+
+def test_one_challenge_authorizes_exactly_one_adoption(tmp_path: Path) -> None:
+    """The replay guard on the adopt side, which `create`'s test cannot cover."""
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+    expected = request(clock)
+    existing = provider.create(expected)
+    phrase = adopt_confirmation(existing.pod_id)
+
+    pod_runtime.preview_adopt(existing.pod_id, expected=expected)
+    first = pod_runtime.adopt(existing.pod_id, expected=expected, confirmation=phrase)
+    assert first.state is LaunchState.ADOPTED_GUARDED
+
+    replay = pod_runtime.adopt(existing.pod_id, expected=expected, confirmation=phrase)
+
+    assert replay.state is LaunchState.REFUSED_CONFIRMATION
+    assert "no preview in this run issued a challenge" in replay.detail
 
 
 def test_minted_challenges_are_unpredictable_and_do_not_repeat() -> None:

@@ -38,6 +38,14 @@ def digest(root: Path) -> str:
 
 
 def main() -> int:
+    # Refuse an argument count this cannot honour, rather than silently fingerprinting
+    # a different tree: `len(sys.argv) == 2` is false for two or more arguments, so the
+    # fallback would print this repository's digest while the caller named another. `new`
+    # would then compare an image against the wrong checkout and either refuse a good
+    # image or accept a stale one.
+    if len(sys.argv) > 2:
+        print("fingerprint: expected at most one repository root", file=sys.stderr)
+        return 1
     # Both branches resolve: a relative invocation from another directory would
     # otherwise produce a relative root, and the two spellings would disagree.
     root = (

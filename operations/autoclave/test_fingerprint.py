@@ -49,6 +49,27 @@ def test_every_declared_input_changes_the_fingerprint(tmp_path):
         path.write_bytes(before)
 
 
+def test_more_than_one_argument_is_refused_rather_than_silently_ignored(tmp_path):
+    """Two arguments used to fall through to this repository's own root.
+
+    The caller named a tree, got a digest for a different one, and nothing said so.
+    """
+
+    import subprocess
+    import sys
+
+    script = Path(__file__).with_name("fingerprint.py")
+    result = subprocess.run(
+        [sys.executable, str(script), str(tmp_path), str(tmp_path)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout.strip() == "", "a digest was printed for an unrequested tree"
+    assert "at most one repository root" in result.stderr
+
+
 def test_moving_bytes_between_two_inputs_changes_the_fingerprint(tmp_path):
     """The property, asserted without restating the algorithm.
 

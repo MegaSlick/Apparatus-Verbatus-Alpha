@@ -234,8 +234,9 @@ class PodRuntime:
                 LaunchState.REFUSED_CONFIRMATION,
                 preview_result.preview,
                 detail=(
-                    "no preview issued a challenge for this create in this run; "
-                    "run the preview and confirm the phrase it prints; no paid action occurred"
+                    "no preview in this run issued a challenge for this create at this "
+                    "hard deadline; run the preview and confirm the phrase it prints; "
+                    "no paid action occurred"
                 ),
             )
         try:
@@ -419,8 +420,9 @@ class PodRuntime:
                 preview_result.preview,
                 record=preview_result.record,
                 detail=(
-                    "no preview issued a challenge for this adoption in this run; "
-                    "run the preview and confirm the phrase it prints; no paid action occurred"
+                    "no preview in this run issued a challenge for this adoption at this "
+                    "hard deadline; run the preview and confirm the phrase it prints; "
+                    "no paid action occurred"
                 ),
             )
         try:
@@ -546,9 +548,15 @@ class PodRuntime:
             challenge = self.challenge_factory()
             if not challenge:
                 raise ValueError("challenge factory returned no challenge")
-            self._outstanding[key] = challenge
+            self._outstanding[key] = (challenge, hard_deadline)
         else:
-            challenge = self._outstanding.get(key)
+            # The deadline is part of what was authorized, not merely part of what was
+            # displayed. The phrase names the action, subject and both hourly rates, none
+            # of which changes with lifetime -- so without this a ten-minute preview's
+            # phrase would confirm a create running to the configured ceiling. The
+            # ceiling still bounds the exposure; the operator's consent did not cover it.
+            held = self._outstanding.get(key)
+            challenge = held[0] if held is not None and held[1] == hard_deadline else None
         return LaunchResult(
             LaunchState.PREVIEW, PaidActionPreview(action, subject, assessment, challenge)
         )
