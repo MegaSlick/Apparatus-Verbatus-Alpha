@@ -1,6 +1,12 @@
-"""Prompt fidelity (invariant #49): the serving path builds each chair's declared
-prompt format byte-for-byte. A fine-tuned candidate misread through the wrong
-prompt would be measured as a failure of the model rather than of the harness --
+"""Prompt fidelity -- spec 08's invariant #49, whose text is carried here in
+full because the numbered spec list lives outside the repository: "the serving
+path builds each seat's declared prompt format byte-for-byte (a fine-tuned
+candidate misread through the wrong prompt would be measured as a failure of
+the model rather than of the harness). Tested per seat."
+
+The serving path builds each chair's declared prompt format byte-for-byte. A
+fine-tuned candidate misread through the wrong prompt would be measured as a
+failure of the model rather than of the harness --
 so this is a registry keyed by `ChairIdentity.serving_recipe`, and a recipe with
 no registered builder refuses outright. The silent fallback to some other
 chair's template is the failure invariant #49 exists to prevent.

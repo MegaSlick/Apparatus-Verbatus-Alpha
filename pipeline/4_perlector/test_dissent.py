@@ -217,28 +217,31 @@ def test_a_long_but_affordable_comparison_is_still_genuinely_aligned():
     assert rows[0]["departures"], "an affordable comparison must still locate its departures"
 
 
-def test_a_scattered_difference_comparison_well_under_the_pair_bound_is_still_stopped():
+def test_a_scattered_difference_comparison_well_under_the_pair_bound_is_still_stopped(
+    monkeypatch,
+):
     """`SequenceMatcher`'s cost is not the product of the two lengths -- text that
     differs in many scattered places (exactly what a systematically-mistaken
     witness produces) runs close to the *cube* of the length instead. Measured
-    in this chamber: a 3,600-character reading against an equally long report
-    that differs on every repeated phrase took upward of twenty seconds
-    unbounded, while its pair count (~13M) is nowhere near
+    in this chamber: a 6,800-character scattered comparison took 127 seconds
+    unbounded, while its pair count (~46M) is under
     `MAX_COMPARISON_CHARACTER_PAIRS` (100M) -- so the pair-count prefilter alone
-    would let this one run. `MAX_COMPARISON_SECONDS` is what actually stops it."""
-    reading = "alpha beta gamma " * 200
-    reported = "alpha beta gamna " * 200
+    would let it run. The deadline is pinned to one second here so the test
+    asserts the *mechanism* -- the alarm interrupting a comparison the prefilter
+    admitted -- with a ~100x margin over the measured cost, rather than racing
+    the production five-second bound on whatever hardware runs the suite."""
+    reading = "alpha beta gamma " * 400
+    reported = "alpha beta gamna " * 400
     pairs = len(reading) * len(reported)
     assert pairs < dissent.MAX_COMPARISON_CHARACTER_PAIRS, "the pair prefilter must not catch this"
 
+    monkeypatch.setattr(dissent, "MAX_COMPARISON_SECONDS", 1)
     started = time.monotonic()
     rows = dissent.dissent_against(
         reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
     )
     elapsed = time.monotonic() - started
-    assert elapsed < dissent.MAX_COMPARISON_SECONDS + 2, (
-        "the wall-clock bound must stop the alignment"
-    )
+    assert elapsed < 1 + 2, "the wall-clock bound must stop the alignment"
     assert rows[0]["chair"] == "attestator_1", "the witness must not vanish from the record"
     assert rows[0]["compared"] == "unknown"
     assert "did not align within" in rows[0]["reason"]

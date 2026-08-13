@@ -170,7 +170,8 @@ thing to refuse if it ever appears here.
 ### `prompt` — invariant #49, on the record
 
 ```text
-{serving_recipe, chair_identity_sha256, dossier_digest, rendered_sha256}
+{serving_recipe, chair_identity_sha256, dossier_digest, rendered_sha256,
+ builder_sha256}
 ```
 
 Built by `prompts.py` from the resolved chair's own declared serving recipe,
@@ -183,7 +184,9 @@ model, a local checkpoint or an unmerged adapter in turn; two Perlectiones can
 therefore be compared for whether they were prompted the same way rather than
 assumed to have been. The rendered bytes are recorded by digest only: they
 contain every testimonium the reader was shown, which already travels once on
-`dossier`.
+`dossier`. `builder_sha256` digests the prompt builder's own source, so a
+silently edited builder renames every Perlectio it prompts rather than hiding
+behind an unchanged recipe name.
 
 ### `truncation` — the instrument, not an assumption
 
