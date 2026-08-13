@@ -585,7 +585,10 @@ def _resolve_outcome(*, declared_failure: str | None, truncation_record: dict, t
         return declared_failure
     if truncation.holds_as_failure(truncation_record["classification"]):
         return "truncated"
-    if text == "":
+    if not text.strip():
+        # The same emptiness rubric the publish-time schema uses: a reader
+        # returning "\n" for one act is an unreadable act, not a reason to
+        # abort the stage and lose the parish's other readings.
         return "no-readable-text"
     return "read"
 
@@ -648,10 +651,14 @@ def _publish_lectio_nuda(
     outcome = _resolve_outcome(
         declared_failure=None, truncation_record=truncation_record, text=result["text"]
     )
+    # One emptiness rubric everywhere: a whitespace-only reading resolved to
+    # `no-readable-text` publishes the empty text that outcome's schema
+    # requires — the whitespace was never established ink.
+    nuda_text = "" if outcome == "no-readable-text" else result["text"]
     payload = {
         "act_key": act["act_key"],
         "attempt_ordinal": ordinal,
-        "text": result["text"],
+        "text": nuda_text,
         "dossier": nuda_dossier,
         "prompt": prompt,
         "sampling": nuda.sampling_design(
@@ -824,6 +831,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         outcome = _resolve_outcome(
             declared_failure=declared_failure, truncation_record=truncation_record, text=reading
         )
+        if outcome == "no-readable-text":
+            # See the nuda publish path: whitespace resolved as unreadable is
+            # published as the empty text its schema requires.
+            reading = ""
         testimonium_references = {
             record["artifact_id"]: context.artifact_ref(
                 ATTESTATORES, "testimonium", record["artifact_id"]

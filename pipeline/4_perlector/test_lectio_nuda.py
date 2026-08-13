@@ -213,6 +213,20 @@ def test_is_nuda_sampled_rejects_an_out_of_range_per_mille():
         is_nuda_sampled("act_1", run_id="r", nuda_per_mille=-1)
 
 
+def test_a_partial_rate_samples_some_acts_and_not_others():
+    """The two endpoint tests pin 0 and 1000 per mille; this pins the middle.
+
+    A sampler regressed to a constant — never sampling, or always sampling —
+    passes determinism and one endpoint. Five hundred per mille over two
+    hundred act ids must select some and skip others, deterministically."""
+    drawn = [
+        is_nuda_sampled(f"act-{index:03d}", run_id="partial-rate-run", nuda_per_mille=500)
+        for index in range(200)
+    ]
+    assert any(drawn), "a 500-per-mille rate that samples nothing is a silent instrument"
+    assert not all(drawn), "a 500-per-mille rate that samples everything is not a sample"
+
+
 def test_is_nuda_sampled_is_deterministic_for_the_same_act_and_run():
     first = is_nuda_sampled("act_1", run_id="r", nuda_per_mille=500)
     second = is_nuda_sampled("act_1", run_id="r", nuda_per_mille=500)

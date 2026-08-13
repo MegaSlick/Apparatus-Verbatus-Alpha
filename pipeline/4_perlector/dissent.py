@@ -280,6 +280,8 @@ def validate_dissent(rows: Any, *, text: str, basis_testimonia: list[dict]) -> N
     """
     if not isinstance(rows, list):
         raise SchemaRefusal("a Perlector reading carries no dissent record")
+    if not all(isinstance(row, dict) for row in basis_testimonia):
+        raise SchemaRefusal("a Perlector reading has a malformed Testimonium basis row")
     expected = [row.get("chair") for row in basis_testimonia]
     if any(not isinstance(chair, str) or not chair for chair in expected):
         raise SchemaRefusal("a Perlector reading has a Testimonium basis with no chair")

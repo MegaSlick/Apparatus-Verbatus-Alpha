@@ -95,6 +95,7 @@ from common.stage import (  # noqa: E402
     run_stage,
     scenario_for,
     stage_parser,
+    validate_witness_context_bindings,
 )
 from operations.submit import gate, inventory  # noqa: E402
 from operations.submit import submit as submission_ledger  # noqa: E402
@@ -1273,6 +1274,13 @@ def _real_bindings(
     approval reference that admitted the corpus. Neither exists any more: real
     input is no longer approval-gated, so there is nothing left to bind here.
     """
+    witness_context_declaration_sha256 = validate_witness_context_bindings(
+        models,
+        witness_context=witness_context,
+        witness_context_config_path=witness_context_config_path,
+        nuda_per_mille=nuda_per_mille,
+        nuda_approval_ref=nuda_approval_ref,
+    )
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
     return {
@@ -1297,11 +1305,12 @@ def _real_bindings(
                 # Spec 08's run-level settings, bound on the real path exactly as
                 # `run_config_bindings` binds them on the fixture path: a resumed
                 # run under a different witness regime, declaration, or nuda
-                # design is a different run wearing an old name.
+                # design is a different run wearing an old name. Validated by the
+                # same shared function the fixture path uses, so an unapproved
+                # nuda sample or a misdeclared witness refuses before the run
+                # tree exists, never after the Attestatores leg has been paid for.
                 "witness_context_regime": witness_context,
-                "witness_context_declaration_sha256": digest_bytes(
-                    Path(witness_context_config_path).read_bytes()
-                ),
+                "witness_context_declaration_sha256": witness_context_declaration_sha256,
                 "nuda_per_mille": nuda_per_mille,
                 "nuda_approval_ref": nuda_approval_ref,
             }

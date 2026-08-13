@@ -154,7 +154,7 @@ def build_page_render(context, *, source_page_id: str, source_page_ordinal: int)
     page_bytes = context.tree.read_bytes(source_path)
     try:
         downscaled, transform = _downscale_page(page_bytes, maximum_edge=PAGE_CONTEXT_MAX_EDGE)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, Image.DecompressionBombError) as error:
         raise SchemaRefusal(
             "a sealed Exemplar page could not be rendered as Perlector page context"
         ) from error

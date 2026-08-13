@@ -323,47 +323,22 @@ def load_fixture(fixture_root: str) -> dict[str, Any]:
     return fixture
 
 
-def run_config_bindings(
-    models: ModelsConfig,
-    fixture: dict[str, Any],
-    scenario: str,
+def validate_witness_context_bindings(
+    models,
     *,
-    pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
-    pdf_target_dpi: int | None = None,
-    recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
-    hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
-    witness_context: str = "named",
-    witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
-    nuda_per_mille: int = 0,
-    nuda_approval_ref: str = "",
-) -> dict[str, Any]:
-    """The three `run.json` bindings, and everything that shapes them.
+    witness_context: str,
+    witness_context_config_path: str | Path,
+    nuda_per_mille: int,
+    nuda_approval_ref: str,
+) -> str:
+    """Refuse a bad spec-08 binding before a run tree exists, on every path.
 
-    Since spec 02 `config/models.toml` owns the roster, the witness floor and
-    the adapter recipes, so two of the three come straight off it. The third,
-    `config_digest`, is the digest of *everything* that shapes this run's
-    behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    recovery policy, and the run-level hard-failure policy. The synthetic fixture
-    declares byte-backed pages only, so
-    it does not claim to bind the real Door's PDFium/Pillow/libheif execution
-    recipe; ``door._real_bindings`` binds that recipe on actual ingress.
-
-    All three parts are load-bearing, and the scenario is the one easiest to
-    drop by accident. Spec 01's third acceptance test reuses one run id under a
-    second scenario and requires the refusal *before any write*; the two
-    scenarios declare identical source pages, so with the scenario out of this
-    digest nothing in `run.json` distinguishes them and the run gets four
-    stages in before artifact immutability catches it. A late incidental
-    refusal is not the sealed-tree guarantee spec 01 landed.
+    One function on purpose: the fixture path (`run_config_bindings`) and the
+    real-submission path (`door._real_bindings`) must refuse the same things,
+    or a defect the fixture path catches at run creation costs a real corpus
+    the whole pre-Perlector leg before the Perlector finally refuses it.
+    Returns the declaration's sha256, which both paths seal.
     """
-    try:
-        pdf_render_config_digest = digest_bytes(Path(pdf_render_config_path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            f"the PDF render configuration binding at {pdf_render_config_path} could not be read"
-        ) from error
-    recovery_policy = load_recovery_policy(recovery_config_path)
-    hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
     if witness_context not in WITNESS_CONTEXT_REGIMES:
         raise ContractError(
             f"witness_context {witness_context!r} is not one of {WITNESS_CONTEXT_REGIMES}"
@@ -442,6 +417,57 @@ def run_config_bindings(
             f"{witness_context_config_path} declares {unaddressed[0]!r}, which is not a "
             "configured witness chair; a misspelt chair here would silently lose its witness"
         )
+    return witness_context_config_digest
+
+
+def run_config_bindings(
+    models: ModelsConfig,
+    fixture: dict[str, Any],
+    scenario: str,
+    *,
+    pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
+    pdf_target_dpi: int | None = None,
+    recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
+    hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
+    witness_context: str = "named",
+    witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
+    nuda_per_mille: int = 0,
+    nuda_approval_ref: str = "",
+) -> dict[str, Any]:
+    """The three `run.json` bindings, and everything that shapes them.
+
+    Since spec 02 `config/models.toml` owns the roster, the witness floor and
+    the adapter recipes, so two of the three come straight off it. The third,
+    `config_digest`, is the digest of *everything* that shapes this run's
+    behaviour — the model configuration, fixture, scenario, PDF-render settings,
+    recovery policy, and the run-level hard-failure policy. The synthetic fixture
+    declares byte-backed pages only, so
+    it does not claim to bind the real Door's PDFium/Pillow/libheif execution
+    recipe; ``door._real_bindings`` binds that recipe on actual ingress.
+
+    All three parts are load-bearing, and the scenario is the one easiest to
+    drop by accident. Spec 01's third acceptance test reuses one run id under a
+    second scenario and requires the refusal *before any write*; the two
+    scenarios declare identical source pages, so with the scenario out of this
+    digest nothing in `run.json` distinguishes them and the run gets four
+    stages in before artifact immutability catches it. A late incidental
+    refusal is not the sealed-tree guarantee spec 01 landed.
+    """
+    try:
+        pdf_render_config_digest = digest_bytes(Path(pdf_render_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            f"the PDF render configuration binding at {pdf_render_config_path} could not be read"
+        ) from error
+    recovery_policy = load_recovery_policy(recovery_config_path)
+    hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
+    witness_context_config_digest = validate_witness_context_bindings(
+        models,
+        witness_context=witness_context,
+        witness_context_config_path=witness_context_config_path,
+        nuda_per_mille=nuda_per_mille,
+        nuda_approval_ref=nuda_approval_ref,
+    )
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(

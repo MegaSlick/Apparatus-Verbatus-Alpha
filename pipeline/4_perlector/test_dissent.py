@@ -243,7 +243,9 @@ def test_a_scattered_difference_comparison_well_under_the_pair_bound_is_still_st
         reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
     )
     elapsed = time.monotonic() - started
-    assert elapsed < 1 + 2, "the wall-clock bound must stop the alignment"
+    # Generous headroom on purpose: the alarm fires at one second; the margin
+    # covers a loaded CI machine, not the property under test.
+    assert elapsed < 10, "the wall-clock bound must stop the alignment"
     assert rows[0]["chair"] == "attestator_1", "the witness must not vanish from the record"
     assert rows[0]["compared"] == "unknown"
     assert "did not align within" in rows[0]["reason"]

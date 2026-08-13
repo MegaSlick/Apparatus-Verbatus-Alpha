@@ -190,9 +190,12 @@ model, a local checkpoint or an unmerged adapter in turn; two Perlectiones can
 therefore be compared for whether they were prompted the same way rather than
 assumed to have been. The rendered bytes are recorded by digest only: they
 contain every testimonium the reader was shown, which already travels once on
-`dossier`. `builder_sha256` digests the prompt builder's own source, so a
-silently edited builder renames every Perlectio it prompts rather than hiding
-behind an unchanged recipe name.
+`dossier`. `builder_sha256` digests the whole prompt module's source — not one
+function's, because builders render through helpers — so any edit to the
+prompt-building code renames every Perlectio it prompts rather than hiding
+behind an unchanged recipe name. Deliberately module-scoped: a byte changed
+anywhere in `prompts.py` moves the claim, including edits that do not change
+the rendered bytes.
 
 ### `truncation` — the instrument, not an assumption
 
