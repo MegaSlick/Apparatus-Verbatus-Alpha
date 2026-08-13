@@ -515,6 +515,8 @@ def test_every_generic_artifact_read_route_fails_closed_without_a_valid_run_auth
         fresh.read_artifact_reference(reference, stage=DESIGNATOR, kind="proposal")
     with pytest.raises(IncompatibleReuse):
         fresh.build_manifest(PERLECTOR)
+    with pytest.raises(IncompatibleReuse):
+        fresh.read_index(DESIGNATOR)
 
 
 @pytest.mark.parametrize(
@@ -927,6 +929,12 @@ def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
         "publication; a replace-in-place writer is invisible to the _publish_bytes scan above, "
         "so this is the only thing that keeps it from becoming a hidden unscoped write"
     )
+    index_writer = inspect.getsource(runtree_store.RunTree.write_index)
+    assert "index_path" in index_writer and "_atomic_write" in index_writer, (
+        "the rewritable derived index must use its named path constructor and atomic "
+        "publication; write_index is the third replace-in-place writer the _publish_bytes "
+        "scan above cannot see, so this is what keeps it from becoming a hidden unscoped write"
+    )
     assert passed_through <= indirect, (
         "a store writer publishes bytes at a path that did not come from "
         "artifact_path(), manifest_path() or index_path(); harvest #13 requires every managed "
@@ -938,8 +946,9 @@ def test_no_store_writer_reaches_a_path_the_inventory_scope_cannot_name():
     )
 
 
-def test_a_rebuildable_index_may_be_replaced_while_artifacts_may_not(tmp_path):
-    """An index may be rewritten; the artifacts it summarizes may not."""
+def test_a_rebuildable_index_may_be_replaced(tmp_path):
+    """An index may be rewritten. That the artifacts it summarizes may not be
+    is proven by the write-once tests above, not named here and left unmeasured."""
     tree = make_run(tmp_path)
     first = {"schema": "test-index", "rows": [{"act_id": "a1"}]}
     tree.write_index(DESIGNATOR, first)

@@ -58,6 +58,7 @@ from common.contracts.stages import (  # noqa: E402
 )
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
+    EXIT_HELD,
     WITNESS_READING_OUTCOMES,
     expected_acts,
     latest_attempt,
@@ -634,15 +635,20 @@ def validate_record(record: dict) -> dict:
     return record
 
 
-def _no_readable_text_evidence(review: dict, reading_ref: dict[str, str]) -> dict[str, str] | None:
+def _no_readable_text_evidence(
+    review: dict, reading_ref: dict[str, str], reading_inputs: list
+) -> dict[str, str] | None:
     """Return the Recensor's retained blank proof; never manufacture one here.
 
     `HANDOFF.md`'s whole argument for this field is that an accepted review is
     evidence the Recensor accepted a reading, not evidence the page was blank.
     No `blank-proof` artifact kind exists yet to check this reference's kind
-    against, so the one thing checkable today without inventing that contract is
-    refused here: the reading whose silence is in question is never allowed to
-    stand as its own proof of it.
+    against, so the one class checkable today without inventing that contract is
+    refused here: nothing from the reading's own evidentiary chain — the reading
+    itself, or any crop it read — is allowed to stand as proof of its silence.
+    An accepted review's inputs are the reading plus that reading's crops, so
+    without the second refusal the very image the reading failed to read would
+    pass the direct-input check and seal as proof the page was blank.
     """
     payload = review.get("payload")
     if not isinstance(payload, dict):
@@ -658,6 +664,11 @@ def _no_readable_text_evidence(review: dict, reading_ref: dict[str, str]) -> dic
         raise SchemaRefusal(
             "no_readable_text evidence names the accepted Perlectio itself; a reading is "
             "never evidence of its own silence"
+        )
+    if reference in reading_inputs:
+        raise SchemaRefusal(
+            "no_readable_text evidence names an input of the accepted Perlectio itself; "
+            "the ink a reading failed to read is never evidence of its own silence"
         )
     return reference
 
@@ -807,7 +818,7 @@ def establish_from_accepted_primed_perlectio(
         f"accepted reading of {act['act_id']} annotations",
     )
     text_status = derive_text_status(text, annotations)
-    evidence_ref = _no_readable_text_evidence(review, reading_ref)
+    evidence_ref = _no_readable_text_evidence(review, reading_ref, reading.get("inputs", []))
     if evidence_ref is not None and text_status != "no_readable_text":
         raise FatalAccounting(
             f"the accepted review of {act['act_id']} retains a proof that this act held no "
@@ -1007,6 +1018,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, ARCHETYPUS, registry_factory=registry_factory)
 
+    unresolved_acts: list[str] = []
     for act in expected_acts(context):
         act_id = act["act_id"]
         review = final_review(context, act_id)
@@ -1026,11 +1038,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
 
         if review["outcome"] != "accepted":
-            # Deliberately nothing. A held, recovery-requested, held-for-review,
-            # or confirmed-blank act is already terminal at (or before) the
-            # Recensor — the outcome algebra resolves its category without an
-            # Archetypus record — and that absence is what the Armarium
-            # reconciles against.
+            # A held-for-review, confirmed-blank, or failed act is already
+            # terminal at the Recensor — the outcome algebra resolves its
+            # category without an Archetypus record — and that absence is what
+            # the Armarium reconciles against. An outcome the algebra leaves
+            # unresolved (recovery-requested: "flows onward, nobody has decided
+            # yet") is different in kind: skipping it silently and exiting 0
+            # would report success over an act whose reread never happened.
+            if terminal_category(RECENSOR, review["outcome"]) is None:
+                unresolved_acts.append(act_id)
             continue
 
         review_ref = context.artifact_ref(RECENSOR, "review", review["artifact_id"])
@@ -1055,6 +1071,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context.tree.write_index(ARCHETYPUS, index)
     validate_index(context, context.tree.read_index(ARCHETYPUS))
     context.finish()
+    # Establishment for the accepted acts is real either way; the exit code
+    # answers a different question — "is this stage's work finished?" — and an
+    # outstanding recovery request means it is not (the Armarium refuses the
+    # same state as fatal). EXIT_HELD, exactly as the Recensor reports its own
+    # unfinished acts.
+    if unresolved_acts:
+        print(
+            f"held: {len(unresolved_acts)} act(s) with an outstanding recovery request "
+            f"await a reread before an Archetypus can exist: {sorted(unresolved_acts)}",
+            file=sys.stderr,
+        )
+        return EXIT_HELD
     return EXIT_COMPLETE
 
 

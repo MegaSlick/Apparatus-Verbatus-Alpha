@@ -90,11 +90,18 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
         # projection-identity claim, proven rather than asserted by construction.
         assert digest_of(delivered["text"]) == payload["text_hash"]
     # The whole delivered set, not a sample: a projection check that skipped an
-    # act would pass while that act's export carried a different reading. This
-    # set comparison — not the loop above, which visits whatever "delivered"
-    # happens to hold — is the only line that proves no act was passed over.
-    assert {item["act_id"] for item in export["delivered"]} == {
+    # act would pass while that act's export carried a different reading. These
+    # comparisons — not the loop above, which visits whatever "delivered"
+    # happens to hold — are the only lines that prove no act was passed over,
+    # and the length checks are what a bare set comparison would forgive: an
+    # act delivered twice collapses to one set member and a consumer counts it
+    # twice while the suite reports success.
+    delivered_ids = [item["act_id"] for item in export["delivered"]]
+    archetypus_ids = [
         entry["subject_id"]
         for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
         if entry["kind"] == "archetypus"
-    }
+    ]
+    assert len(delivered_ids) == len(set(delivered_ids))
+    assert len(delivered_ids) == len(archetypus_ids)
+    assert set(delivered_ids) == set(archetypus_ids)

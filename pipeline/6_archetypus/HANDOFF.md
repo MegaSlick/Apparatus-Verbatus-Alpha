@@ -111,6 +111,11 @@ and `recensor_ref` are resolved — is still owed once the Recensor lane defines
   and the reader's own candidate readings for that span. The alternatives are the
   Perlector's, not a witness's: the Perlector reads the ink, so its uncertainty about a
   span it did read is its own. There is no witness-reference field on this shape at all.
+  Be aware of what is *not* verified: alternatives are the one free-text field in the
+  sealed record — non-empty, distinct strings and nothing more. Unlike a gap's quoted
+  variant (checked verbatim against what its cited witness reported), nothing ties an
+  alternative to the ink or to anyone; the claim that they are the reader's own rests on
+  the producer, not on a check. `text` is unaffected either way.
 - `illegible` — `{kind, start, end, witness_evidence}`. A **zero-width anchor**
   (`start == end`, structurally, so a gap can never carry a character), representable at
   leading, internal, trailing and whole-act positions. `witness_evidence` may be empty —
@@ -160,7 +165,10 @@ one under two names is not available without breaking that consumer. `perlectio_
 `recensor_ref` are typed, digest-checked references and both are direct inputs, together
 with the exact crop blobs named by the reading. `text_hash` is the canonical digest of
 `text` alone (`digest_of(text)`), so any export format can prove it carries the same
-clean text without re-hashing the whole record.
+clean text without re-hashing the whole record. One trap for a second implementer:
+`digest_of` hashes the *canonical JSON encoding* of the string — `sha256('"Maria"')`,
+quotes included — not the raw UTF-8 bytes. Computing "the sha256 of the text" the
+obvious way produces a mismatch against every record.
 
 There is no alternate text, no witness text field, and no branch that chooses among
 readings. `establish_from_accepted_primed_perlectio` is the only public constructor: its
@@ -183,8 +191,10 @@ rows, records on disk, and **the acts the Recensor accepted** must be the same s
 missing or duplicate row is FATAL rather than a warning. The reconciliation target is
 deliberately the Recensor's accepted set, recomputed from the immutable review records —
 an index checked only against the writer's own list would agree with itself about an act
-the writer had skipped. `validate_index` is available to any consumer that wants to
-prove the same thing before relying on it.
+the writer had skipped. `validate_index` proves the same thing for any consumer that
+wants it before relying on the file — with one practical caveat: its first argument is a
+stage-context-shaped object (`.tree`, `.fixture`, `.artifact_ref`), so a consumer outside
+a stage builds a small shim first, exactly as `test_index.py` does.
 
 ## Consumer obligations
 

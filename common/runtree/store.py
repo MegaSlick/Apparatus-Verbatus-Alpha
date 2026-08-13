@@ -853,7 +853,13 @@ class RunTree:
         return PublishResult(relative, reused=False)
 
     def read_index(self, stage: str) -> dict[str, Any]:
-        """Read a derived index as JSON; reconciliation belongs to its stage."""
+        """Read a derived index as JSON; reconciliation belongs to its stage.
+
+        Behind the run authority like every other read route: a tree whose
+        `run.json` is missing or corrupt must not hand out a complete-looking
+        index to a consumer that reads nothing else.
+        """
+        self._run_authority()
         value = _read_json(self.resolve(self.index_path(stage)))
         if not isinstance(value, dict):
             raise SchemaRefusal("a derived stage index is not an object")

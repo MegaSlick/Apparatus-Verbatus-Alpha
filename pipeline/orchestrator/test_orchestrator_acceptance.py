@@ -1123,13 +1123,18 @@ def test_archetypus_refuses_a_resealed_completed_perlectio_without_an_object_bas
     review["payload"]["perlectio_ref"] = new_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
-    before = snapshot(root)
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
     assert "no object basis" in result.stderr
-    assert snapshot(root) == before
+    # The tampered act has no record. Deliberately NOT `snapshot == before`:
+    # the stage publishes act by act, so whether the *other* act's record was
+    # sealed before this refusal depends only on loop order, and asserting
+    # nothing was written would pin an ordering coincidence as a contract.
+    assert not tree.has_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
+    )
 
 
 def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
@@ -1355,6 +1360,56 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
     assert "never evidence of its own silence" in result.stderr
     # A refused act leaves no record behind for a downstream stage to treat as
     # output; the refusal and a published Archetypus cannot coexist.
+    assert not tree.has_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
+    )
+
+
+def test_archetypus_refuses_a_blank_proof_that_is_the_readings_own_crop(tmp_path):
+    """The same circularity as the reading-itself case, one step further out.
+
+    An accepted review's inputs are the reading plus every crop that reading
+    read, so a reference to the very image the reading failed to read passes
+    the direct-input check. Without this refusal it would seal as proof the
+    page was blank — the ink whose reading is in question standing as evidence
+    of its own silence.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    old_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(old_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    # A crop the reading read: an input of the reading that the review also
+    # lists directly (the review's inputs are the reading plus its crops).
+    crop_ref = next(reference for reference in reading["inputs"] if reference in review["inputs"])
+    reading["payload"]["text"] = ""
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    new_ref = {
+        "relative_path": old_ref["relative_path"],
+        "sha256": digest_bytes(reading_path.read_bytes()),
+    }
+
+    review["inputs"] = [
+        new_ref if reference == old_ref else reference for reference in review["inputs"]
+    ]
+    review["payload"]["perlectio_ref"] = new_ref
+    review["payload"]["no_readable_text_evidence_ref"] = crop_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "input of the accepted Perlectio itself" in result.stderr
     assert not tree.has_artifact(
         ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
     )

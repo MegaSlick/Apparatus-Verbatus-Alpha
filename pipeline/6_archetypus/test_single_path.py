@@ -153,12 +153,20 @@ def test_a_wrong_stage_artifact_cannot_substitute_for_a_perlectio_reference(tmp_
 
 
 def test_only_an_accepted_review_ever_produces_an_archetypus_record(tmp_path):
-    """Every non-`accepted` current review in a run -- `held-for-review`, in the
-    review scenario -- leaves its act with no Archetypus record at all."""
+    """Every non-`accepted` current review in a run leaves its act with no
+    Archetypus record at all.
+
+    Run straight through the Recensor with no orchestrator recovery drain, the
+    review scenario's held act sits at `recovery-requested` when stage 6 runs —
+    an unresolved outcome, so the stage reports EXIT_HELD rather than a green
+    exit over an act nobody has decided. The property under test is unchanged:
+    no non-accepted review produces a record.
+    """
     root = tmp_path / "runs"
     run_through_recensor(root, "r", scenario="review")
     result = invoke(root, "r", "review", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 3, result.stderr
+    assert "outstanding recovery request" in result.stderr
     tree = RunTree(root, "r")
 
     reviews = [
@@ -177,6 +185,40 @@ def test_only_an_accepted_review_ever_produces_an_archetypus_record(tmp_path):
         if entry["kind"] == "archetypus"
     }
     assert non_accepted_subjects.isdisjoint(established_subjects)
+
+
+def test_an_outstanding_recovery_request_is_held_not_silently_skipped(tmp_path):
+    """An unresolved act must not disappear into a green exit.
+
+    `held-for-review` and `confirmed-blank` are terminal at the Recensor -- the
+    outcome algebra resolves their category with no Archetypus record, and
+    skipping them IS the correct accounting. `recovery-requested` is different
+    in kind: the algebra leaves it unresolved ("flows onward, nobody has
+    decided yet") and the Armarium treats the same state as fatal. A stage that
+    skipped it and exited 0 would report success over an act whose reread never
+    happened -- ARCHITECTURE invariant 6 by way of an exit code.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review = accepted_review(tree)
+    review_path = tree.resolve(tree.artifact_path(RECENSOR, "review", review["artifact_id"]))
+    review["outcome"] = "recovery-requested"
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 3, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "outstanding recovery request" in result.stderr
+    # Establishment for still-accepted acts is real; only the unresolved act
+    # has no record. The exit code, not silence, carries "not finished".
+    established_subjects = {
+        entry["subject_id"]
+        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
+        if entry["kind"] == "archetypus"
+    }
+    assert review["subject_id"] not in established_subjects
 
 
 # --- The grafted half: refusals that do not depend on the reference's stage/kind

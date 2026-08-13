@@ -21,6 +21,12 @@ def repoint_review(tree, review: dict, forged_ref: dict) -> None:
     """Rewrite an accepted review's perlectio_ref to a forged reference, sealed."""
     review_path = tree.resolve(tree.artifact_path(RECENSOR, "review", review["artifact_id"]))
     old_ref = review["payload"]["perlectio_ref"]
+    assert old_ref in review["inputs"], (
+        "the review does not list its own perlectio_ref as a direct input, so this "
+        "reseal would repoint the payload without repointing the inputs — the forged "
+        "review would then fail at the retained-reference check instead of at the "
+        "refusal the calling test names"
+    )
     review["inputs"] = [
         forged_ref if reference == old_ref else reference for reference in review["inputs"]
     ]

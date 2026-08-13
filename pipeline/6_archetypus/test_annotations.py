@@ -472,14 +472,9 @@ def test_a_partial_record_is_exportable_by_the_frozen_armarium(tmp_path):
     verbatim, so a record whose `status` said `partial` would be refused at
     export -- every damaged act, and damage is the common case.
 
-    **And a gap this test names rather than fixes.** The delivered entry carries
-    no trace of the damage today, and the run still aggregates to `complete`: the
-    Armarium does not read `text_status` or `annotations` at all. Making the
-    export honest about a partial reading is spec 11's work, not this stage's.
-    The export-side half of this test therefore ends in an xfail rather than
-    assertions: the suite records the dishonest export as a known defect, so
-    spec 11's fix will surface as an xpass to clean up, never as a regression.
-    Stage 7 was off-limits this round.
+    The known dishonesty on the export side lives in the strict-xfail test
+    below, so a real regression in *this* test's live assertions can never be
+    reported as merely expected. Stage 7 was off-limits this round.
     """
     root = tmp_path / "runs"
     _run_through_recensor(root, "r")
@@ -502,10 +497,40 @@ def test_a_partial_record_is_exportable_by_the_frozen_armarium(tmp_path):
     )["payload"]
     delivered = next(item for item in export["delivered"] if item["act_id"] == act_id)
     assert delivered["text"] == record["payload"]["text"]
-    pytest.xfail(
-        "spec 11: the export drops text_status and annotations, so a partial act "
-        "is delivered as if it were whole and the run still aggregates to complete"
-    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="spec 11: the export drops text_status and annotations, so a partial act "
+    "is delivered as if it were whole and the run still aggregates to complete; "
+    "when the Armarium becomes honest about damage this xpasses loudly — remove the "
+    "marker and update HANDOFF.md's consumer-obligations section together",
+)
+def test_the_export_carries_a_partial_acts_damage(tmp_path):
+    """The honest export shape, asserted so its arrival is announced.
+
+    This fails today — the Armarium reads neither `text_status` nor
+    `annotations` — and `strict=True` turns the day it starts passing into a
+    suite failure that names exactly what to clean up. An imperative
+    `pytest.xfail()` could never do that: it reports xfail unconditionally and
+    the reminder it installs is dormant forever.
+    """
+    root = tmp_path / "runs"
+    _run_through_recensor(root, "r")
+
+    def mutate(payload):
+        payload["annotations"] = [gap(3)]
+
+    tree, act_id = _tamper_reading_annotations(root, "r", mutate)
+    assert invoke_archetypus(root, "r", "happy").returncode == 0
+    assert invoke_armarium(root, "r", "happy").returncode == 0
+
+    export = tree.read_artifact(
+        "armarium", "export", artifact_id("armarium", "export", "export", None)
+    )["payload"]
+    delivered = next(item for item in export["delivered"] if item["act_id"] == act_id)
+    assert "text_status" in delivered
+    assert export["aggregate"]["status"] != "complete"
 
 
 def _reported_by(tree: RunTree, reference: dict) -> str:
