@@ -95,9 +95,11 @@ keeps Perlector silence unresolved until a blank-proof contract exists.
 `evidence_ref` is checked for shape and for membership in the review's own inputs, but —
 unlike `perlectio_ref` and `recensor_ref` — it is never read, stage-checked, or
 kind-checked, because no `blank-proof` artifact kind exists yet to check it against. The
-one thing checkable without that missing contract is refused: the reading itself may never
-stand as its own evidence of its own silence (`no_readable_text_evidence_ref ==
-perlectio_ref` is a `SchemaRefusal`). Resolving the reference through
+one class checkable without that missing contract is refused: nothing from the reading's
+own evidentiary chain may stand as evidence of its own silence — neither the reading
+itself (`no_readable_text_evidence_ref == perlectio_ref`) nor any direct input of that
+reading, including the crops it read. Both are a `SchemaRefusal`. Resolving the reference
+through
 `read_artifact_reference` against a real `kind="blank-proof"` — the way `perlectio_ref`
 and `recensor_ref` are resolved — is still owed once the Recensor lane defines that kind.
 

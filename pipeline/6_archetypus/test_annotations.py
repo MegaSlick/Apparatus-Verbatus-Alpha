@@ -732,4 +732,8 @@ def test_render_strip_hash_round_trip_reproduces_the_canonical_text_hash():
     assert rendered != text  # the display really does differ from the clean text
     stripped = _demo_strip(rendered)
     assert stripped == text
-    assert digest_of(stripped) == digest_of(text)
+    # Against a pinned digest, not digest_of(text): once stripped == text
+    # holds, comparing two calls of the same function proves nothing. The
+    # constant is what a sealed record's text_hash would hold for this text,
+    # so this is the recomputation a real consumer performs.
+    assert digest_of(stripped) == "67173165481aa850b657885cbee282a56bcc4ff006b49aee5e266b94b4eaa035"

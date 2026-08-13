@@ -850,10 +850,20 @@ class RunTree:
                 "producer, so one index file cannot account for both; give the index a "
                 "stage-qualified name before either stage writes one"
             )
+        try:
+            data = canonical_bytes(index)
+        except TypeError as error:
+            # canonical_bytes refuses floats (and anything unserializable) with
+            # TypeError, which is outside the ContractError family a stage
+            # classifies — a later caller's measured ratio would die as a
+            # traceback instead of a named refusal.
+            raise SchemaRefusal(
+                f"a derived stage index must be canonically serializable: {error}"
+            ) from error
         relative = self.index_path(stage)
         target = self.resolve(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(target, canonical_bytes(index))
+        _atomic_write(target, data)
         return PublishResult(relative, reused=False)
 
     def read_index(self, stage: str) -> dict[str, Any]:

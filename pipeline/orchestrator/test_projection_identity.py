@@ -61,6 +61,9 @@ def orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.CompletedP
         cwd=ROOT,
         capture_output=True,
         text=True,
+        # Generous for the two-page fixture; a hung recovery loop should fail
+        # this test with captured output, not block CI until an outer watchdog.
+        timeout=600,
     )
 
 
@@ -109,11 +112,12 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
     # also delete the Recensor's sealed review, so agreeing with this set is
     # not the run agreeing with itself. (Completeness against the *fixture* is
     # the acceptance suite's job, via its pinned file counts and digests.)
-    recensor_accepted = {
+    recensor_accepted_ids = [
         entry["subject_id"]
         for entry in tree.build_manifest(RECENSOR)["artifacts"]
         if entry["kind"] == "review" and entry["outcome"] == "accepted"
-    }
+    ]
     assert len(delivered_ids) == len(set(delivered_ids))
-    assert len(delivered_ids) == len(archetypus_ids)
-    assert set(delivered_ids) == set(archetypus_ids) == recensor_accepted
+    assert len(recensor_accepted_ids) == len(set(recensor_accepted_ids))
+    assert len(delivered_ids) == len(archetypus_ids) == len(recensor_accepted_ids)
+    assert set(delivered_ids) == set(archetypus_ids) == set(recensor_accepted_ids)
