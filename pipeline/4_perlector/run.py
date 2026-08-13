@@ -465,8 +465,12 @@ def validate_reading_payload(
         )
     if outcome == "read" and (not isinstance(payload["text"], str) or not payload["text"].strip()):
         raise SchemaRefusal("a completed reading cannot establish an empty text")
+    # The caller's field set decides which record shape this is: a Perlectio
+    # payload smuggling `basis: None` must refuse as a missing witness basis,
+    # never slip down the nuda branch with every witness gone from the record.
+    is_nuda = "basis" not in fields
     basis = payload.get("basis")
-    if basis is None:
+    if is_nuda:
         if payload["dissent"] != []:
             raise SchemaRefusal("a Lectio nuda cannot dissent from testimony it was not shown")
     elif not isinstance(basis, dict) or not isinstance(basis.get("testimonia"), list):
@@ -510,7 +514,7 @@ def validate_reading_payload(
     dossier_testimonia = reading_dossier["testimonia"]
     if not isinstance(dossier_testimonia, list):
         raise SchemaRefusal("a Perlector dossier has no Testimonium list")
-    if basis is None:
+    if is_nuda:
         if dossier_testimonia:
             raise SchemaRefusal("a Lectio nuda dossier cannot carry Testimonia")
     elif len(dossier_testimonia) != len(basis["testimonia"]):

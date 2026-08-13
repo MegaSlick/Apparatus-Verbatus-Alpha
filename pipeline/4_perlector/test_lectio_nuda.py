@@ -158,7 +158,7 @@ def test_a_forged_review_naming_a_nuda_artifact_as_its_perlectio_is_refused(nuda
         "relative_path": entry["relative_path"],
         "sha256": entry["sha256"],
     }
-    with pytest.raises(SchemaRefusal, match="not required"):
+    with pytest.raises(SchemaRefusal, match="not required 'perlector'/'perlectio'"):
         nuda_run.read_artifact_reference(
             reference, stage=PERLECTOR, kind="perlectio", subject_id=entry["subject_id"]
         )

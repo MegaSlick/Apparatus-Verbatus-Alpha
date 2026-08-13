@@ -19,7 +19,7 @@ def test_a_well_formed_uncertain_span_validates():
 
 
 def test_an_uncertain_span_outside_text_bounds_refuses():
-    with pytest.raises(SchemaRefusal, match="must cover at least one character"):
+    with pytest.raises(SchemaRefusal, match="outside text bounds"):
         annotations.validate_uncertain_spans(
             [{"start": 0, "end": 100, "alternatives": [], "confidence": "low"}], "short"
         )
@@ -130,6 +130,15 @@ def test_the_firewall_check_is_not_vacuous():
     assert 0 <= gap["start"] <= len(text) and 0 <= gap["end"] <= len(text)
     with pytest.raises(SchemaRefusal, match="establishment firewall"):
         annotations.validate_gaps([gap], text)
+
+
+def test_a_gap_anchored_outside_the_text_refuses():
+    """An offset past the end of `text` anchors a gap at no position at all --
+    nothing downstream could render or trace it."""
+    with pytest.raises(SchemaRefusal, match="outside text bounds"):
+        annotations.validate_gaps(
+            [{"position": "internal", "start": 99, "end": 99, "witness_evidence": []}], "abcdef"
+        )
 
 
 def test_a_leading_gap_must_start_at_zero():

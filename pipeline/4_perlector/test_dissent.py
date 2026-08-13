@@ -3,6 +3,7 @@ metric; a raw-string cross-check beside the normalized one; an honest
 `"unknown"` for a witness format the comparator cannot yet reduce.
 """
 
+import signal
 import time
 import unicodedata
 
@@ -141,8 +142,20 @@ def test_departures_are_an_alignment_and_expose_no_similarity_number():
         for bounds in span.values():
             assert set(bounds) == {"start", "end"}
             assert all(isinstance(value, int) for value in bounds.values())
-    assert not any(
-        isinstance(value, float) for value in row.values() if not isinstance(value, (dict, list))
+
+    def scalars(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                yield from scalars(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from scalars(item)
+        else:
+            yield value
+
+    assert not any(isinstance(value, float) for value in scalars(row)), (
+        "a float anywhere in a dissent row is a similarity score wearing a shape; "
+        "refusing ratios is what keeps the comparison from becoming a fuzzy-match picker"
     )
 
 
@@ -219,6 +232,11 @@ def test_a_long_but_affordable_comparison_is_still_genuinely_aligned():
     assert rows[0]["departures"], "an affordable comparison must still locate its departures"
 
 
+@pytest.mark.skipif(
+    not hasattr(signal, "SIGALRM"),
+    reason="the wall-clock backstop is a SIGALRM mechanism; where it cannot exist the "
+    "comparison runs unbounded and this test would hang for minutes to say nothing",
+)
 def test_a_scattered_difference_comparison_well_under_the_pair_bound_is_still_stopped(
     monkeypatch,
 ):

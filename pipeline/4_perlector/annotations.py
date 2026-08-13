@@ -56,12 +56,16 @@ def validate_uncertain_spans(spans: Any, text: str) -> list[dict]:
             or isinstance(start, bool)
             or not isinstance(end, int)
             or isinstance(end, bool)
-            or not (0 <= start < end <= len(text))
+            or not (0 <= start <= len(text))
+            or not (0 <= end <= len(text))
         ):
             raise SchemaRefusal(
-                f"uncertain_spans[{index}] must cover at least one character inside text "
-                f"bounds (0..{len(text)}); a zero-width span holds no read characters and "
-                "may not carry alternatives"
+                f"uncertain_spans[{index}] carries a span outside text bounds (0..{len(text)})"
+            )
+        if start >= end:
+            raise SchemaRefusal(
+                f"uncertain_spans[{index}] must cover at least one character; a zero-width "
+                "span holds no read characters and may not carry alternatives"
             )
         alternatives = span.get("alternatives")
         if not isinstance(alternatives, list) or not all(
@@ -143,6 +147,7 @@ def validate_gaps(gaps: Any, text: str) -> list[dict]:
                 or not isinstance(item.get("testimonium_id"), str)
                 or not item["testimonium_id"]
                 or not isinstance(item.get("variant"), str)
+                or not item["variant"].strip()
                 or not isinstance(reference, dict)
                 or set(reference) != {"relative_path", "sha256"}
                 or not all(isinstance(value, str) and value for value in reference.values())

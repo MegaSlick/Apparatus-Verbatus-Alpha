@@ -81,11 +81,16 @@ def test_balanced_structure_is_not_flagged():
     assert truncation.has_unclosed_structure("a (balanced) reading [with marks]") is False
 
 
-def test_ends_abruptly_uses_the_same_hyphen_rubric_as_attestatores_content_health():
-    """Same rubric, named the same way as
-    `pipeline/3_attestatores/run.py::content_health`, so both stages judge an
-    abrupt ending consistently."""
+def test_ends_abruptly_flags_a_trailing_hyphen_and_spares_ordinary_endings():
+    """The rubric deliberately diverges from `content_health` on one point:
+    trailing whitespace is stripped before the hyphen is read, so "word-   "
+    is abrupt here and complete there. `truncation.py`'s own docstring records
+    the divergence and why the stricter reading stands."""
     assert truncation.ends_abruptly("cut off mid-") is True
+    assert truncation.ends_abruptly("cut off mid-   ") is True, (
+        "trailing whitespace must not hide a truncation; this is the recorded "
+        "divergence from content_health"
+    )
     assert truncation.ends_abruptly("a complete sentence") is False
     assert truncation.ends_abruptly("Jean Dupont, soussigné") is False, (
         "a real parish-register act routinely ends on a name, not a period -- "

@@ -67,7 +67,15 @@ class FixtureReader:
         # sitting after the match would otherwise stay unnoticed, silently
         # defaulting every act it meant to name to "stop" — a declared `length`
         # would vanish and a truncated reading would publish as complete.
+        seen: set[tuple[str, str]] = set()
         for row in rows:
+            key = (row["scenario"], row["act_key"])
+            if key in seen:
+                raise KeyError(
+                    f"stop_reason declares {key!r} twice; two contradictory rows would "
+                    "publish whichever is written first and discard the other silently"
+                )
+            seen.add(key)
             if row["scenario"] not in declared_scenarios:
                 raise KeyError(f"stop_reason row names undeclared scenario {row['scenario']!r}")
             if row["act_key"] not in declared_acts:

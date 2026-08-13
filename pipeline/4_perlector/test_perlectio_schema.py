@@ -293,6 +293,25 @@ def test_an_annotation_span_outside_the_text_is_refused(published_payload):
             "confidence": "low",
         }
     ]
+    with pytest.raises(SchemaRefusal, match="outside text bounds"):
+        _validate(payload)
+
+
+def test_a_perlectio_smuggling_a_none_basis_cannot_take_the_nuda_branch(published_payload):
+    """The discriminator is the caller's field set, never the payload's own
+    claim: a Perlectio with `basis: None` must refuse as a missing witness
+    basis rather than validate as a Lectio nuda with every witness gone."""
+    payload = copy.deepcopy(published_payload)
+    payload["basis"] = None
+    with pytest.raises(SchemaRefusal, match="no Testimonium basis"):
+        _validate(payload)
+
+
+def test_a_zero_width_annotation_span_is_refused(published_payload):
+    payload = copy.deepcopy(published_payload)
+    payload["uncertain_spans"] = [
+        {"start": 1, "end": 1, "alternatives": ["something"], "confidence": "low"}
+    ]
     with pytest.raises(SchemaRefusal, match="must cover at least one character"):
         _validate(payload)
 
