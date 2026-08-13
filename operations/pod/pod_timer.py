@@ -11,13 +11,27 @@ import argparse
 import importlib
 import json
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .controllers import ControllerResult, PodDeadmanTimer
+from .controllers import ControllerResult, ControllerState, PodDeadmanTimer
 from .durable import atomic_write, canonical_json
+
+_CLOSE_ATTEMPTS = 3
+"""Bounded re-attempts of a non-green close before the timer exits.
+
+GOVERNANCE 11 forbids an unbounded reconsideration loop, and staying alive to
+retry bills the full running-pod rate against the cheaper EXITED state the exit
+falls back to -- so the bound is small, the wait is the monitoring interval
+capped at `_MAX_CLOSE_RETRY_WAIT_SECONDS`, and every attempt count reaches the
+durable report."""
+
+
+class PodTimerFailureClosed(RuntimeError):
+    """Raised after a startup failure has already spent an immediate close."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +39,45 @@ class TimerContext:
     """A generic timer already supplied with its provider-neutral close path."""
 
     timer: PodDeadmanTimer
+
+
+_MAX_CLOSE_RETRY_WAIT_SECONDS = 60.0
+"""The retry wait is the monitoring interval, capped: the interval is an
+operator-supplied command-line value with no upper bound, and a pod at this
+point bills the full running rate for every second the timer sleeps."""
+
+
+def _close_with_retries(
+    context: TimerContext,
+    reason: str,
+    sleeper: Callable[[float], None],
+    wait_seconds: float,
+    attempts: int = _CLOSE_ATTEMPTS,
+) -> tuple[ControllerResult, int]:
+    """Re-attempt a non-green close a fixed, recorded number of times.
+
+    One close already re-issues termination for its whole polling window; this
+    re-enters after that window has closed red, so a transient provider fault
+    at the exact deadline is not the last word before the timer exits.  A
+    result no retry can improve -- a lease that never bound a pod id -- exits
+    the loop at once instead of sleeping on it.
+    """
+
+    unimprovable = {
+        ControllerState.PENDING_CREATE_REVIEW,
+        ControllerState.LEASE_RECORD_FAILURE,
+    }
+    result = context.timer.close_now(reason)
+    tried = 1
+    while tried < attempts and not (
+        result.close_report is not None and result.close_report.verified
+    ):
+        if result.state in unimprovable:
+            break
+        sleeper(max(0.01, min(wait_seconds, _MAX_CLOSE_RETRY_WAIT_SECONDS)))
+        result = context.timer.close_now(reason)
+        tried += 1
+    return result, tried
 
 
 def load_timer_context(reference: str) -> TimerContext:
@@ -80,13 +133,16 @@ def run_with_bootstrap(
                     "exit_code": exit_code,
                     "remediation": "Inspect the bootstrap report and repair it before another authorized run.",
                 }
-                result = context.timer.close_now("mandatory bootstrap child failed")
+                result, attempts = _close_with_retries(
+                    context, "mandatory bootstrap child failed", sleeper, interval_seconds
+                )
                 _persist_or_close(
                     context,
                     report,
                     {
                         "bootstrap": bootstrap_record,
                         "close": result.close_report.to_record() if result.close_report else None,
+                        "close_attempts": attempts,
                         "green": False,
                     },
                 )
@@ -100,8 +156,11 @@ def run_with_bootstrap(
                         "Use a long-running bootstrap/service entrypoint; the pod was closed to avoid idle spend."
                     ),
                 }
-                result = context.timer.close_now(
-                    "mandatory bootstrap child exited before hard deadline"
+                result, attempts = _close_with_retries(
+                    context,
+                    "mandatory bootstrap child exited before hard deadline",
+                    sleeper,
+                    interval_seconds,
                 )
                 _persist_or_close(
                     context,
@@ -109,19 +168,26 @@ def run_with_bootstrap(
                     {
                         "bootstrap": bootstrap_record,
                         "close": result.close_report.to_record() if result.close_report else None,
+                        "close_attempts": attempts,
                         "green": False,
                     },
                 )
                 return result
         remaining = (context.timer.lease.hard_deadline - context.timer.now()).total_seconds()
         sleeper(min(interval_seconds, max(0.01, remaining)))
-    result = context.timer.run_once()
+    # The deliberately still-running bootstrap child is left to the pod's
+    # destruction: the timer is the container's primary process and the pod is
+    # being terminated either way.
+    result, attempts = _close_with_retries(
+        context, "pod dead-man hard lifetime expired", sleeper, interval_seconds
+    )
     _persist_or_close(
         context,
         report,
         {
             "bootstrap": bootstrap_record,
             "close": result.close_report.to_record() if result.close_report else None,
+            "close_attempts": attempts,
             "green": bool(result.close_report and result.close_report.verified),
         },
     )
@@ -130,7 +196,10 @@ def run_with_bootstrap(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Verbatus provider-neutral pod hard-lifetime dead-man"
+        description="Verbatus provider-neutral pod hard-lifetime dead-man",
+        # No abbreviated long options: the pre-create validator in models.py
+        # checks the exact flag spellings, and an abbreviation would bypass it.
+        allow_abbrev=False,
     )
     parser.add_argument("--interval-seconds", type=float, default=15.0)
     parser.add_argument(
@@ -143,12 +212,69 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--report-path", required=True, help="durable report path on the attached volume"
     )
     args = parser.parse_args(argv)
-    result = run_with_bootstrap(
-        load_timer_context(args.timer_factory),
-        bootstrap_command_json=args.bootstrap_command_json,
-        report_path=args.report_path,
-        interval_seconds=args.interval_seconds,
-    )
+    try:
+        context = load_timer_context(args.timer_factory)
+    except Exception as error:
+        # No timer means no close capability was ever constructed (deferral
+        # 04-4's territory) -- but a durable statement of that fact can still
+        # reach the volume, so the restart machinery finds evidence rather
+        # than silence.
+        try:
+            _write_report(
+                Path(args.report_path),
+                {
+                    "bootstrap": {
+                        "state": "unstarted",
+                        "detail": "no close capability was constructed; the timer factory failed",
+                    },
+                    "close": None,
+                    "close_attempts": 0,
+                    "green": False,
+                    "error": str(error),
+                },
+            )
+        except Exception as write_error:
+            print(
+                f"timer-factory failure report could not be written: {write_error}", file=sys.stderr
+            )
+        print(f"pod timer factory failed; nothing can close this pod: {error}", file=sys.stderr)
+        return 2
+    try:
+        result = run_with_bootstrap(
+            context,
+            bootstrap_command_json=args.bootstrap_command_json,
+            report_path=args.report_path,
+            interval_seconds=args.interval_seconds,
+        )
+    except PodTimerFailureClosed as outcome:
+        # The failure already spent an immediate close and filed its receipt.
+        print(outcome, file=sys.stderr)
+        return 2
+    except (Exception, KeyboardInterrupt) as error:
+        # Any failure escaping after the provider-backed timer exists must
+        # spend that capability on an immediate close rather than exit with
+        # the pod running -- the timer is the pod's last disciplined act.
+        # The receipt claims nothing about when the failure happened: this
+        # handler cannot tell a startup refusal from a fault that escaped
+        # after hours of monitoring, and inventing a state nobody observed is
+        # exactly what `_persist_or_close` refuses to do.
+        try:
+            _durable_failure_close(
+                context,
+                Path(args.report_path),
+                {
+                    "state": "unrecorded",
+                    "detail": (
+                        "a failure escaped the monitored bootstrap/close paths; "
+                        "this receipt replaced whatever report preceded it"
+                    ),
+                },
+                error if isinstance(error, Exception) else RuntimeError(repr(error)),
+                "pod timer failed outside its monitored paths",
+            )
+        except PodTimerFailureClosed as outcome:
+            print(outcome, file=sys.stderr)
+        return 2
     # Verification rather than process exit decides whether the pod-side close is green.
     return 0 if result.close_report is not None and result.close_report.verified else 2
 
@@ -218,6 +344,7 @@ def _durable_failure_close(
     fallback = {
         "bootstrap": {**bootstrap, "failure_detail": str(error)},
         "close": result.close_report.to_record() if result.close_report else None,
+        "close_attempts": 1,
         "green": False,
     }
     receipt = "fallback receipt was written"
@@ -226,7 +353,7 @@ def _durable_failure_close(
     except Exception as write_error:  # reported below, never swallowed
         receipt = f"fallback receipt also failed: {write_error}"
     state = result.close_report.state.value if result.close_report else "shutdown-exception"
-    raise RuntimeError(
+    raise PodTimerFailureClosed(
         f"{label} ({error}); immediate close result is {state}, never green; {receipt}"
     ) from error
 

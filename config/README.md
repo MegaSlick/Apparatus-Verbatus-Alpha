@@ -64,12 +64,14 @@ scenario — the run's configuration digest. `common/chairs/README.md` describes
 it is read and what a malformed pin earns.
 
 `spend.toml` is intentionally a refusal, not a placeholder default. A configured version
-must name `max_hourly_usd` and `max_estimated_metered_cost_usd` USD ceilings for the
-combined metered pod and attached-volume hourly price and cost through the hard lifetime,
-plus a bounded `billing_cutoff_margin_seconds`, laptop heartbeat, and shutdown
-polling/deadline. It also names an `account_balance_floor_usd` manual reserve: the runtime
-does not observe account balance, and the documented `$50.00` default is unverified until
-checked against RunPod before a live run.
+must name `currency = "USD"`, `max_hourly_usd` and `max_estimated_metered_cost_usd`
+ceilings for the combined metered pod and attached-volume hourly price and cost through
+the hard lifetime, the `hard_lifetime_seconds` itself, plus a bounded
+`billing_cutoff_margin_seconds`, laptop heartbeat, and shutdown polling/deadline. It also
+names an `account_balance_floor_usd` manual reserve: the runtime does not observe account
+balance, and the documented `$50.00` default is unverified until checked against RunPod
+before a live run. The loader refuses any key it does not know and any policy missing one
+of these.
 It does not authorize retaining or deleting a volume after close: that is a separately
 named decision, and every close report states the volume's own ongoing price. The file
 itself carries the full key list as comments, so filling it in needs no code reading.

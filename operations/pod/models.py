@@ -8,9 +8,10 @@ through a cutoff; it never claims that no future charge can appear.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -94,6 +95,11 @@ def as_decimal(value: Decimal | str | int | float, label: str) -> Decimal:
 
 BILLING_CUTOFF_MARGIN_ENV = "VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS"
 """The sealed pod environment key shared by both shutdown controllers."""
+
+BILLING_BUCKET_WIDTH = timedelta(hours=1)
+"""One provider billing bucket, shared by the RunPod adapter (which always
+requests ``bucketSize=hour``) and the generic verifier's window bound, so the
+two slacks cannot drift apart."""
 
 MIN_BILLING_CUTOFF_MARGIN_SECONDS = 0
 MAX_BILLING_CUTOFF_MARGIN_SECONDS = 3600
@@ -287,6 +293,27 @@ def _required_timer_arguments(
             "pod timer report path must include this launch's token, "
             "so a second launch on the same volume cannot overwrite its evidence"
         )
+    # A bad interval would refuse inside the pod -- for a non-numeric value,
+    # in argparse before the timer object even exists -- so refuse it here,
+    # before any paid create, where refusals belong.  Both argv spellings the
+    # pod-side parser accepts are covered: a separate value and `--flag=value`.
+    interval_values: list[str] = []
+    for index in (index for index, item in enumerate(command) if item == "--interval-seconds"):
+        if index + 1 >= len(command):
+            raise ValueError("docker_start_cmd --interval-seconds flag carries no value")
+        interval_values.append(command[index + 1])
+    interval_values.extend(
+        item.split("=", 1)[1] for item in command if item.startswith("--interval-seconds=")
+    )
+    if len(interval_values) > 1:
+        raise ValueError("docker_start_cmd must carry at most one --interval-seconds value")
+    for raw_interval in interval_values:
+        try:
+            interval = float(raw_interval)
+        except ValueError:
+            interval = float("nan")
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError("docker_start_cmd --interval-seconds must be a positive finite number")
 
 
 _CREDENTIAL_MARKERS = ("key", "secret", "password", "credential", "bearer", "token")

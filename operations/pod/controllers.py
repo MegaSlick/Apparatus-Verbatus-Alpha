@@ -99,7 +99,16 @@ class LaptopSupervisor:
     def heartbeat(self) -> ControllerResult:
         """Refresh a live owner heartbeat without making a provider request."""
 
-        lease = self.store.load()
+        try:
+            lease = self.store.load()
+        except Exception as error:
+            # An unreadable or altered lease is a named non-green fact, not a
+            # supervisor crash: a crash-looping supervisor makes no close
+            # attempts at all, which is the worse outcome on this path.
+            return ControllerResult(
+                ControllerState.LEASE_RECORD_FAILURE,
+                f"durable lease cannot be read: {error}",
+            )
         if lease is None:
             return ControllerResult(ControllerState.NO_LEASE, "no lease exists")
         if not lease.active:
@@ -118,7 +127,15 @@ class LaptopSupervisor:
         """Evaluate lifetime and heartbeat safety independently of a pod timer."""
 
         observed = self.now()
-        lease = self.store.load()
+        try:
+            lease = self.store.load()
+        except Exception as error:
+            # Same posture as `heartbeat`: name the lease as the fault rather
+            # than crash the only controller that could still close a pod.
+            return ControllerResult(
+                ControllerState.LEASE_RECORD_FAILURE,
+                f"durable lease cannot be read: {error}",
+            )
         if lease is None:
             return ControllerResult(ControllerState.NO_LEASE, "no lease exists")
         if not lease.active:
@@ -248,7 +265,19 @@ class LaptopSupervisor:
 
     def _close(self, lease: PodLease, state: ControllerState, reason: str) -> ControllerResult:
         try:
-            report = self.shutdown.close(record_from_lease(lease), reason=reason)
+            record = record_from_lease(lease)
+        except Exception as error:
+            # Building the record reads only the durable lease, so its failure
+            # names the lease -- reporting it as "shutdown controller raised"
+            # sent the operator to the wrong subsystem on a money path.  The
+            # close's own reason rides along so it is not lost with the close.
+            return ControllerResult(
+                ControllerState.LEASE_RECORD_FAILURE,
+                f"durable lease cannot produce a closeable pod record for {reason!r}: {error}",
+                lease=lease,
+            )
+        try:
+            report = self.shutdown.close(record, reason=reason)
         except Exception as error:  # defensive: closure exception is itself non-green evidence
             return ControllerResult(state, f"shutdown controller raised: {error}", lease=lease)
         try:
@@ -307,7 +336,15 @@ class PodDeadmanTimer:
                 lease=self.lease,
             )
         try:
-            report = self.shutdown.close(record_from_lease(self.lease), reason=reason)
+            record = record_from_lease(self.lease)
+        except Exception as error:
+            return ControllerResult(
+                ControllerState.LEASE_RECORD_FAILURE,
+                f"durable lease cannot produce a closeable pod record for {reason!r}: {error}",
+                lease=self.lease,
+            )
+        try:
+            report = self.shutdown.close(record, reason=reason)
         except Exception as error:
             return ControllerResult(
                 ControllerState.TIMER_EXPIRED,

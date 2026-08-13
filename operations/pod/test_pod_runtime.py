@@ -446,7 +446,12 @@ def test_create_and_adopt_share_the_price_ceiling_and_typed_confirmation_gate(
     )
     assert refused_adopt.state is LaunchState.REFUSED_CONFIRMATION
     assert refused_adopt.preview is not None
-    assert refused_adopt.preview.confirmation_phrase == adopt_confirmation(existing.pod_id)
+    # The refusal must not hand back the still-spendable phrase: a typo does
+    # not burn the preview, so the report carries a challenge-free preview and
+    # the operator retypes from the preview they were shown.
+    assert refused_adopt.preview.challenge is None
+    assert refused_adopt.preview.to_record()["confirmation_phrase"] is None
+    assert adopt_confirmation(existing.pod_id) not in refused_adopt.detail
     assert list(tmp_path.glob("*.json")) == []
 
 
@@ -852,6 +857,10 @@ def test_both_paid_paths_refuse_a_price_outside_spend_ceiling(tmp_path: Path) ->
     create = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
     assert create.state is LaunchState.REFUSED_CEILING
     assert not any(verb == "create" for verb, _ in provider.calls)
+    # A ceiling refusal's challenge is unspent, so its report must not carry
+    # the still-live phrase -- the same policy as a confirmation refusal.
+    assert create.preview is not None and create.preview.challenge is None
+    assert create.preview.to_record()["confirmation_phrase"] is None
 
     existing = provider.create(create_request)
     adopt = pod_runtime.adopt(
@@ -860,6 +869,7 @@ def test_both_paid_paths_refuse_a_price_outside_spend_ceiling(tmp_path: Path) ->
         confirmation=adopt_confirmation(existing.pod_id),
     )
     assert adopt.state is LaunchState.REFUSED_CEILING
+    assert adopt.preview is not None and adopt.preview.challenge is None
     assert list(tmp_path.glob("*.json")) == []
 
 
@@ -1672,12 +1682,21 @@ def test_empty_billing_is_unverified_not_zero_cost() -> None:
     clock = Clock()
     provider = fake(clock)
     record = provider.create(request(clock))
+    # Advance the clock so the close cutoff strictly follows the window start:
+    # with the two equal, CostCapture refuses to construct and the close would
+    # report through the capture-failed branch instead of the one this test
+    # is named for.
+    clock.sleep(60)
 
     report = shutdown(provider, clock).close(record, reason="test empty billing")
 
     assert report.state is CloseState.UNVERIFIED_BILLING
     assert report.captured_cost_usd is None
     assert report.manual_action is not None
+    # The fake's own sentence is unique to its no-records path, so this cannot
+    # be satisfied by the evidence-error or capture-failed branches -- the two
+    # wrong reasons earlier versions of this test passed for.
+    assert "fake billing deliberately has no records" in report.last_detail
 
 
 def test_pending_billing_reconciliation_stays_non_green_and_names_recheck() -> None:
@@ -1704,7 +1723,7 @@ def test_pending_billing_reconciliation_stays_non_green_and_names_recheck() -> N
     )
 
 
-def test_close_report_names_the_provider_resolved_billing_cutoff() -> None:
+def test_close_report_names_the_declared_billing_cutoff() -> None:
     clock = Clock()
     provider = fake(clock)
     record = provider.create(request(clock))
@@ -2259,9 +2278,14 @@ def test_pod_timer_primary_process_check_accepts_any_interpreter_spelling(
     flags_after_module = request(clock).docker_start_cmd[3:]
     command = interpreter + ("-m", "operations.pod.pod_timer") + flags_after_module
 
-    created = replace(request(clock), docker_start_cmd=command)
+    replace(request(clock), docker_start_cmd=command)
 
-    assert created.docker_start_cmd[: len(interpreter)] == interpreter
+    # Construction not raising IS the acceptance check.  The refusal below is
+    # what makes it meaningful: the validator binds the module, not merely the
+    # interpreter spelling, so the same spelling with another module must fail.
+    impostor = interpreter + ("-m", "operations.pod.not_the_timer") + flags_after_module
+    with pytest.raises(ValueError, match="primary process"):
+        replace(request(clock), docker_start_cmd=impostor)
 
 
 def test_pod_timer_primary_process_check_refuses_a_shell_ahead_of_the_interpreter() -> None:
@@ -3116,3 +3140,623 @@ def test_a_credential_nested_in_a_receipt_list_is_refused() -> None:
         assert_nonsecret_receipt({"controllers": [{"api_key": "would be a capability"}]})
     with pytest.raises(ValueError, match="credential or token material"):
         ControllerReadiness(False, START, "armer refused", {"seen": [[{"bearer": "value"}]]})
+
+
+# --- audit/pod-money-path: red paths the 2026-08-12 independent audit found untested ---
+
+
+def test_a_wrong_confirmation_neither_echoes_the_phrase_nor_burns_the_challenge(
+    tmp_path: Path,
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    # The bare runtime never re-previews, so the retry below can only succeed
+    # if the FIRST preview's challenge genuinely survived the typo -- a
+    # re-previewing helper would re-mint and prove nothing.
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+    create_request = request(clock)
+    pod_runtime.preview_create(create_request)
+
+    refused = pod_runtime.create(create_request, confirmation="wrong words")
+
+    assert refused.state is LaunchState.REFUSED_CONFIRMATION
+    assert refused.detail is not None and CREATE_CONFIRMATION not in refused.detail
+    assert refused.preview is not None and refused.preview.challenge is None
+    assert refused.preview.to_record()["confirmation_phrase"] is None
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+    # The typo deliberately did not burn the preview: the exact phrase the
+    # operator was shown still authorizes exactly this create.
+    retried = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
+    assert retried.state is LaunchState.CREATED_GUARDED
+
+
+def test_an_unconfigured_spend_policy_refuses_both_paid_paths_end_to_end(tmp_path: Path) -> None:
+    """The checked-in refusal, driven through create and adopt rather than
+    asserted about a parsed dataclass field."""
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = runtime(provider, clock, tmp_path, spend=SpendPolicy(state="unconfigured"))
+    create_request = request(clock)
+
+    refused_create = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
+    assert refused_create.state is LaunchState.REFUSED_CEILING
+    assert "unconfigured" in refused_create.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+    assert list(tmp_path.glob("*.json")) == []
+
+    existing = provider.create(create_request)
+    refused_adopt = pod_runtime.adopt(
+        existing.pod_id, expected=create_request, confirmation="anything"
+    )
+    assert refused_adopt.state is LaunchState.REFUSED_CEILING
+    assert "unconfigured" in refused_adopt.detail
+    assert list(tmp_path.glob("*.json")) == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"surprise_field": '"1"'}, "unknown field"),
+        ({"schema": '"pod-spend.v1"'}, "schema must be"),
+        ({"state": '"armed"'}, "state must be"),
+        ({"max_hourly_usd": "1.00"}, "decimal string"),
+        ({"billing_cutoff_margin_seconds": "3601"}, "must be between 0 and 3600 seconds"),
+        ({"hard_lifetime_seconds": None}, "missing a required ceiling"),
+        ({"currency": '"EUR"'}, "currency must be USD"),
+    ],
+)
+def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
+    tmp_path: Path, mutation: dict[str, str | None], message: str
+) -> None:
+    from .spend import load_spend_policy
+
+    base: dict[str, str | None] = {
+        "schema": '"pod-spend.v2"',
+        "state": '"configured"',
+        "currency": '"USD"',
+        "max_hourly_usd": '"1.00"',
+        "max_estimated_metered_cost_usd": '"2.00"',
+        "account_balance_floor_usd": '"50.00"',
+        "hard_lifetime_seconds": "3600",
+        "laptop_heartbeat_timeout_seconds": "30",
+        "shutdown_poll_interval_seconds": "1",
+        "shutdown_deadline_seconds": "5",
+        "billing_cutoff_margin_seconds": "3600",
+    }
+    base.update(mutation)
+    path = tmp_path / "spend.toml"
+    path.write_text(
+        "\n".join(f"{key} = {value}" for key, value in base.items() if value is not None) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SpendRefusal, match=message):
+        load_spend_policy(path)
+
+
+def test_unconfigured_spend_policy_file_may_carry_only_schema_and_state(tmp_path: Path) -> None:
+    from .spend import load_spend_policy
+
+    path = tmp_path / "spend.toml"
+    path.write_text(
+        'schema = "pod-spend.v2"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SpendRefusal, match="only schema and state"):
+        load_spend_policy(path)
+
+
+def test_spend_policy_refuses_shutdown_timing_that_could_outrun_the_lifetime() -> None:
+    with pytest.raises(SpendRefusal, match="cannot exceed the shutdown deadline"):
+        replace(policy(), shutdown_poll_interval_seconds=10, shutdown_deadline_seconds=5)
+    with pytest.raises(SpendRefusal, match="billing-retry tail"):
+        replace(policy(), hard_lifetime_seconds=40, shutdown_deadline_seconds=15)
+
+
+def test_a_verified_close_record_is_never_replaced_by_a_lesser_one(tmp_path: Path) -> None:
+    from .models import LeaseOwnershipError
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.10")
+    store = LeaseStore(tmp_path / "close-guard.json")
+    _lease(store, record, owner="laptop", clock=clock)
+    report = shutdown(provider, clock).close(record, reason="first, verified close")
+    assert report.verified
+    store.record_close(
+        owner_token="laptop", close_record=report.to_record(), verified=True, now=clock.now()
+    )
+
+    with pytest.raises(LeaseOwnershipError, match="verified close record"):
+        store.record_close(
+            owner_token="laptop",
+            close_record={"pod_id": record.pod_id, "state": "failed-shutdown"},
+            verified=False,
+            now=clock.now(),
+        )
+    reloaded = store.load()
+    assert reloaded is not None and reloaded.phase == "closed-verified"
+
+
+def test_an_unverified_close_can_still_be_upgraded_to_verified(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = LeaseStore(tmp_path / "close-upgrade.json")
+    _lease(store, record, owner="laptop", clock=clock)
+    store.record_close(
+        owner_token="laptop",
+        close_record={"pod_id": record.pod_id, "state": "failed-shutdown"},
+        verified=False,
+        now=clock.now(),
+    )
+
+    provider.bill(record.pod_id, "0.10")
+    report = shutdown(provider, clock).close(record, reason="reconciliation close")
+    assert report.verified
+    upgraded = store.record_close(
+        owner_token="laptop", close_record=report.to_record(), verified=True, now=clock.now()
+    )
+    assert upgraded.phase == "closed-verified"
+
+
+def test_a_second_lease_writer_is_refused_at_the_same_path(tmp_path: Path) -> None:
+    from .models import LeaseOwnershipError
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = LeaseStore(tmp_path / "exclusive.json")
+    lease = _lease(store, record, owner="first", clock=clock)
+
+    with pytest.raises(LeaseOwnershipError, match="already exists"):
+        LeaseStore(store.path).create(replace(lease, owner_token="second"))
+
+
+@pytest.mark.parametrize(
+    ("tamper_path", "value", "message"),
+    [
+        (("receipt", "pod_id"), "some-other-pod", "exact lease and pod"),
+        (("receipt", "hard_deadline"), "2027-01-01T00:00:00Z", "immutable hard deadline"),
+        (("laptop_supervisor_started",), False, "must prove both"),
+        (("receipt", "pod_timer", "report_path"), "relative/report.json", "must be absolute"),
+    ],
+)
+def test_a_tampered_controller_receipt_is_refused_when_the_lease_is_reloaded(
+    tmp_path: Path, tamper_path: tuple[str, ...], value: object, message: str
+) -> None:
+    """Falsification for `_validate_controller_record`: each binding it checks
+    is individually broken and the reload must refuse."""
+
+    from common.contracts.canonical import self_hash
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = LeaseStore(tmp_path / "tamper.json")
+    lease = _lease(store, record, owner="laptop", clock=clock)
+
+    sealed = lease.to_record()
+    del sealed["self_hash"]
+    target: dict[str, object] = sealed["controller_record"]  # type: ignore[assignment]
+    for key in tamper_path[:-1]:
+        target = target[key]  # type: ignore[index]
+    target[tamper_path[-1]] = value
+    sealed["self_hash"] = self_hash(sealed)
+
+    # The binding-specific fragment, so deleting any single validation rule
+    # turns exactly its own case red rather than all four staying green on the
+    # generic wrapper text.
+    with pytest.raises(LeaseFormatError, match=message):
+        PodLease.from_record(sealed)
+
+
+def test_arming_binding_refuses_a_receipt_naming_other_facts(tmp_path: Path) -> None:
+    """Falsification for `_validate_arming_binding`'s deadline, identity, and
+    report-path bindings, which had no red-path test."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = LeaseStore(tmp_path / "binding.json")
+    lease = _lease(store, record, owner="laptop", clock=clock)
+    create_request = replace(request(clock), hard_deadline=lease.hard_deadline)
+    stamp = clock.now().isoformat().replace("+00:00", "Z")
+
+    def arming(receipt_overrides: dict[str, object]) -> ControllerArming:
+        report_flag = create_request.docker_start_cmd.index("--report-path")
+        receipt: dict[str, object] = {
+            "lease_id": lease.lease_id,
+            "pod_id": record.pod_id,
+            "hard_deadline": lease.hard_deadline.isoformat().replace("+00:00", "Z"),
+            "laptop_supervisor": {"identity": "test", "started_at": stamp},
+            "pod_timer": {
+                "report_path": create_request.docker_start_cmd[report_flag + 1],
+                "acknowledged_at": stamp,
+            },
+        }
+        receipt.update(receipt_overrides)
+        return ControllerArming(True, True, clock.now(), "test arming", receipt)
+
+    validate = PodRuntime._validate_arming_binding
+    validate(arming=arming({}), request=create_request, record=record, lease=lease)
+    with pytest.raises(ValueError, match="another lease or pod"):
+        validate(
+            arming=arming({"pod_id": "other"}), request=create_request, record=record, lease=lease
+        )
+    with pytest.raises(ValueError, match="another hard deadline"):
+        validate(
+            arming=arming({"hard_deadline": "2027-01-01T00:00:00Z"}),
+            request=create_request,
+            record=record,
+            lease=lease,
+        )
+    with pytest.raises(ValueError, match="different durable report path"):
+        validate(
+            arming=arming(
+                {"pod_timer": {"report_path": "/elsewhere/r.json", "acknowledged_at": stamp}}
+            ),
+            request=create_request,
+            record=record,
+            lease=lease,
+        )
+
+
+def test_pod_timer_expiry_with_a_running_child_closes_verified(tmp_path: Path) -> None:
+    """The dead-man's main production path — a workload still running when the
+    hard lifetime expires — end to end, green."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.bill(record.pod_id, "0.06")
+    store = LeaseStore(tmp_path / "timer-expiry.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+
+    class RunningChild:
+        def poll(self) -> None:
+            return None
+
+    report_path = tmp_path / "expiry-report.json"
+    result = run_with_bootstrap(
+        TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
+        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        report_path=report_path,
+        sleeper=clock.sleep,
+        popen=lambda argv: RunningChild(),  # type: ignore[arg-type]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert result.close_report is not None and result.close_report.verified
+    assert report["green"] is True
+    assert report["close_attempts"] == 1
+    assert provider.status(record.pod_id).presence.value == "absent"
+
+
+def test_pod_timer_reattempts_a_red_close_a_bounded_number_of_times(tmp_path: Path) -> None:
+    """One failed close window is not the timer's last word — and the retries
+    are bounded, recorded, and honestly non-green when they all fail."""
+
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = LeaseStore(tmp_path / "timer-red.json")
+    lease = _lease(store, record, owner="laptop", clock=clock, deadline_seconds=3)
+    provider.inject_failure("terminate", ProviderFailure("injected terminate outage"), times=100)
+
+    class RunningChild:
+        def poll(self) -> None:
+            return None
+
+    report_path = tmp_path / "red-report.json"
+    result = run_with_bootstrap(
+        TimerContext(PodDeadmanTimer(lease, shutdown(provider, clock), now=clock.now)),
+        bootstrap_command_json='["python","-m","operations.pod.bootstrap"]',
+        report_path=report_path,
+        sleeper=clock.sleep,
+        popen=lambda argv: RunningChild(),  # type: ignore[arg-type]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert result.close_report is not None and not result.close_report.verified
+    assert report["green"] is False
+    assert report["close_attempts"] == 3
+    # The pod genuinely still exists; the report must not pretend otherwise.
+    assert provider.verify_absent(record.pod_id).presence.value == "present"
+
+
+def test_a_captured_billing_line_dated_outside_the_declared_window_is_unverified(
+    tmp_path: Path,
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    provider.set_billing(
+        CostCapture(
+            pod_id=record.pod_id,
+            state=BillingState.CAPTURED,
+            cutoff_at=clock.now() + timedelta(minutes=30),
+            lines=(
+                CostLine(
+                    Decimal("0.10"),
+                    "a bucket from long before this pod",
+                    record.created_at - timedelta(hours=3),
+                ),
+            ),
+            source="fake provider billing",
+            window_start_at=record.created_at,
+        )
+    )
+
+    report = shutdown(provider, clock).close(record, reason="out-of-window line")
+
+    assert report.state is CloseState.UNVERIFIED_BILLING
+    assert "dated outside its own declared window" in report.last_detail
+
+
+@pytest.mark.parametrize("bad_interval", ["0", "-3", "abc", "inf", "nan"])
+def test_a_bad_interval_seconds_value_is_refused_before_any_paid_create(bad_interval: str) -> None:
+    clock = Clock()
+    command = request(clock).docker_start_cmd + ("--interval-seconds", bad_interval)
+
+    with pytest.raises(ValueError, match="interval-seconds"):
+        replace(request(clock), docker_start_cmd=command)
+
+
+def test_a_valid_interval_seconds_value_is_accepted_in_both_spellings() -> None:
+    clock = Clock()
+
+    # Construction not raising is the whole check, for both argv spellings the
+    # pod-side parser accepts.
+    replace(
+        request(clock),
+        docker_start_cmd=request(clock).docker_start_cmd + ("--interval-seconds", "15"),
+    )
+    replace(
+        request(clock),
+        docker_start_cmd=request(clock).docker_start_cmd + ("--interval-seconds=15",),
+    )
+
+
+@pytest.mark.parametrize("bad_flag", ["--interval-seconds=0", "--interval-seconds=abc"])
+def test_the_equals_spelling_of_a_bad_interval_is_refused_too(bad_flag: str) -> None:
+    clock = Clock()
+    command = request(clock).docker_start_cmd + (bad_flag,)
+
+    with pytest.raises(ValueError, match="interval-seconds"):
+        replace(request(clock), docker_start_cmd=command)
+
+
+def test_a_created_pod_that_arrives_not_running_is_closed_not_green(tmp_path: Path) -> None:
+    clock = Clock()
+
+    class ExitedOnCreateFake(FakeProvider):
+        def create(self, create_request: PodCreateRequest) -> PodRecord:
+            record = super().create(create_request)
+            return replace(record, state="EXITED")
+
+    provider = ExitedOnCreateFake(now=clock.now)
+    provider.price_sheet = {"fake-48gb": (Decimal("0.77"), Decimal("0.05"))}
+    pod_runtime = runtime(provider, clock, tmp_path)
+
+    result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_RUNTIME_CONTRACT
+    assert "EXITED" in result.detail and "RUNNING" in result.detail
+    assert result.close_report is not None
+    assert result.record is not None
+    assert provider.status(result.record.pod_id).presence.value == "absent"
+
+
+def test_cli_exit_code_three_when_a_pod_may_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Exit 2 must mean 'nothing exists'; a create whose response was lost
+    leaves a pending lease and possibly a pod, and must exit 3."""
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.inject_post_create_failure(ProviderFailure("response lost in flight"))
+    exit_code = _drive_cli(tmp_path, monkeypatch, provider, clock)
+
+    assert exit_code == 3
+    out = capsys.readouterr().out
+    assert "provider-failure" in out
+    # The lease path must be a real value, not the null the key carries on
+    # every record.
+    assert _last_json_object(out).get("lease_path"), "exit 3 must name the pending lease's path"
+
+
+def test_cli_adopt_refused_at_preview_for_a_real_pod_exits_three(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The CLI's FIRST exit applies the same rule as its second: a preview
+    refusal that observed a real pod (here, a runtime-contract mismatch on
+    adopt) must not read as 'nothing exists'."""
+
+    clock = Clock()
+    provider = fake(clock)
+    existing = provider.create(request(clock))
+    exit_code = _drive_cli(
+        tmp_path,
+        monkeypatch,
+        provider,
+        clock,
+        command=["adopt", "--pod-id", existing.pod_id, "--request"],
+        template="a-different-template-than-the-pod-carries",
+    )
+
+    assert exit_code == 3
+    out = capsys.readouterr().out
+    assert "refused-runtime-contract" in out
+
+
+def test_pod_timer_main_with_a_failing_factory_writes_a_non_green_report(tmp_path: Path) -> None:
+    from .pod_timer import main as pod_timer_main
+
+    report = tmp_path / "factory-failure.json"
+
+    exit_code = pod_timer_main(
+        [
+            "--timer-factory",
+            "operations.pod.no_such_module:factory",
+            "--bootstrap-command-json",
+            '["true"]',
+            "--report-path",
+            str(report),
+        ]
+    )
+
+    assert exit_code == 2
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["green"] is False
+    assert data["close"] is None
+    assert "no close capability" in data["bootstrap"]["detail"]
+
+
+def _last_json_object(text: str) -> dict[str, object]:
+    decoder = json.JSONDecoder()
+    found: list[dict[str, object]] = []
+    index = 0
+    while (start := text.find("{", index)) != -1:
+        try:
+            parsed, consumed = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+        if isinstance(parsed, dict):
+            found.append(parsed)
+        index = start + consumed
+    assert found, "no JSON object in CLI output"
+    return found[-1]
+
+
+def test_cli_interrupt_mid_action_prints_an_interrupted_record_then_dies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    provider.inject_failure("create", KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        _drive_cli(tmp_path, monkeypatch, provider, clock)
+
+    out = capsys.readouterr().out
+    assert '"state": "interrupted"' in out
+    assert str(tmp_path / "leases") in out
+
+
+def _drive_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: FakeProvider,
+    clock: Clock,
+    *,
+    command: list[str] | None = None,
+    template: str = "pinned-template",
+) -> int:
+    """Run `cli.main` against a fake, answering any prompt correctly."""
+
+    spend_path = tmp_path / "spend.toml"
+    spend_path.write_text(
+        "\n".join(
+            (
+                'schema = "pod-spend.v2"',
+                'state = "configured"',
+                'currency = "USD"',
+                'max_hourly_usd = "1.00"',
+                'max_estimated_metered_cost_usd = "2.00"',
+                'account_balance_floor_usd = "50.00"',
+                "hard_lifetime_seconds = 3600",
+                "laptop_heartbeat_timeout_seconds = 30",
+                "shutdown_poll_interval_seconds = 1",
+                "shutdown_deadline_seconds = 5",
+                "billing_cutoff_margin_seconds = 3600",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "name": "cli-exit-code-test",
+                "gpu_type": "fake-48gb",
+                "image": "registry.example/verbatus@sha256:" + "a" * 64,
+                "template": template,
+                "volume_id": "test-volume",
+                "volume_mount_path": "/workspace/private",
+                "docker_start_cmd": list(request(clock).docker_start_cmd),
+                "hard_deadline": (datetime.now(UTC) + timedelta(seconds=300)).isoformat(),
+                "repository_commit": "b" * 40,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "_provider", lambda reference: provider)
+    monkeypatch.setattr(
+        cli, "_controller_armer", lambda reference: FakeControllerArmer(clock, provider)
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt: prompt.split("'")[1])
+    return cli.main(
+        [
+            "--provider-factory",
+            "unused:factory",
+            "--controller-armer-factory",
+            "unused:factory",
+            "--spend",
+            str(spend_path),
+            "--leases",
+            str(tmp_path / "leases"),
+            "--provider-name",
+            "fake",
+            *(command or ["create", "--request"]),
+            str(request_path),
+        ]
+    )
+
+
+def test_an_unreadable_lease_is_a_named_failure_not_a_supervisor_crash(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    store = LeaseStore(tmp_path / "garbage.json")
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text("{ this is not a lease", encoding="utf-8")
+    supervisor = LaptopSupervisor(
+        store,
+        shutdown(provider, clock),
+        owner_token="laptop",
+        heartbeat_timeout=timedelta(seconds=30),
+        now=clock.now,
+    )
+
+    ticked = supervisor.run_once()
+    beat = supervisor.heartbeat()
+
+    assert ticked.state is ControllerState.LEASE_RECORD_FAILURE
+    assert beat.state is ControllerState.LEASE_RECORD_FAILURE
+    assert "cannot be read" in ticked.detail
+
+
+def test_preflight_with_no_smoke_read_anywhere_is_red_with_a_named_issue(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runner = PreflightRunner(
+        load_models_toml(root / "config/models.toml"),
+        load_placement_table(root / "config/pod_placement.toml"),
+        FakeCache(),
+        FakeSmoke(),
+        tmp_path / "no-such-fixture.png",
+    )
+
+    report = runner.run(
+        GpuProfile("synthetic", "12.4", "550", (8, 0), Decimal("48"), Decimal("100"), "bfloat16")
+    )
+
+    assert report.color == "red"
+    assert "no-chair-verified" in {issue.code for issue in report.issues}
+    assert not report.smoke_receipts
