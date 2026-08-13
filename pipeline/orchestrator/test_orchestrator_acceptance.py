@@ -232,8 +232,8 @@ FIXTURE = "synthetic-two-page-v0"
 # 46 (happy) and 50 (review) -- the merged tree's 45/49 plus this branch's
 # index.json per run -- and both digests were re-measured from real orchestrator
 # runs under `semantic_snapshot_digest`.
-HAPPY_RUN_TREE_DIGEST = "d745518136117b7d839b876eaae1d6090af193fb1789f43de49f07ea50b16b26"
-REVIEW_RUN_TREE_DIGEST = "b296bb2de6fe0c5093d3e0f073b3c734deb9a564b65b6f9c417b2cd450b23f9d"
+HAPPY_RUN_TREE_DIGEST = "d07a4da7da177b30f90ae696bff11d1be3c314a26b777b0b7ab1e7808e857627"
+REVIEW_RUN_TREE_DIGEST = "fcd4a8726027919e9773a5e1d06c6b953d1fcea8c169128baea73aeb1471809f"
 
 
 def orchestrate(
