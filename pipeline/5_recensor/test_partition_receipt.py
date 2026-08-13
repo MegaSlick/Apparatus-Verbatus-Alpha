@@ -133,6 +133,10 @@ def test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_denominato
         pdf_target_dpi=None,
         recovery_config=str(ROOT / "config/recovery.toml"),
         hard_failure_config=str(ROOT / "config/hard_failure.toml"),
+        witness_context="named",
+        witness_context_config=str(ROOT / "config/witness_context.toml"),
+        nuda_per_mille=0,
+        nuda_approval_ref="",
     )
     context = recensor.open_context(args, RECENSOR)
 
@@ -459,6 +463,10 @@ def test_a_review_whose_stored_coverage_disagrees_with_disk_is_refused(tmp_path)
         pdf_target_dpi=None,
         recovery_config=str(ROOT / "config/recovery.toml"),
         hard_failure_config=str(ROOT / "config/hard_failure.toml"),
+        witness_context="named",
+        witness_context_config=str(ROOT / "config/witness_context.toml"),
+        nuda_per_mille=0,
+        nuda_approval_ref="",
     )
     context = recensor.open_context(args, RECENSOR)
 
@@ -523,6 +531,10 @@ def test_a_recensor_review_for_an_act_nobody_proposed_is_a_fatal_imbalance(tmp_p
         pdf_target_dpi=None,
         recovery_config=str(ROOT / "config/recovery.toml"),
         hard_failure_config=str(ROOT / "config/hard_failure.toml"),
+        witness_context="named",
+        witness_context_config=str(ROOT / "config/witness_context.toml"),
+        nuda_per_mille=0,
+        nuda_approval_ref="",
     )
     context = recensor.open_context(args, RECENSOR)
 
