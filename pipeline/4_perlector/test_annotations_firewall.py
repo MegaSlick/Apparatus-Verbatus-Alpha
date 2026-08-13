@@ -19,14 +19,14 @@ def test_a_well_formed_uncertain_span_validates():
 
 
 def test_an_uncertain_span_outside_text_bounds_refuses():
-    with pytest.raises(SchemaRefusal, match="outside text bounds"):
+    with pytest.raises(SchemaRefusal, match="must cover at least one character"):
         annotations.validate_uncertain_spans(
             [{"start": 0, "end": 100, "alternatives": [], "confidence": "low"}], "short"
         )
 
 
 def test_an_uncertain_span_with_start_after_end_refuses():
-    with pytest.raises(SchemaRefusal, match="outside text bounds"):
+    with pytest.raises(SchemaRefusal, match="must cover at least one character"):
         annotations.validate_uncertain_spans(
             [{"start": 5, "end": 2, "alternatives": [], "confidence": "low"}], "reading text"
         )

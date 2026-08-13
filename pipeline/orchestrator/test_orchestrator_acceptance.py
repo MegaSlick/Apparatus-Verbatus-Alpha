@@ -205,8 +205,14 @@ FIXTURE = "synthetic-two-page-v0"
 # rather than one function's source, and the witness-context declaration gate
 # tightened. File counts are unchanged at 45 and 47+2; both digests re-measured
 # from real orchestrator runs.
-HAPPY_RUN_TREE_DIGEST = "3a36941eadd1af405c83f513a88c96f309cf0c072f007ef53b5fede9af344df2"
-REVIEW_RUN_TREE_DIGEST = "680a9f6ee5022d8b996118f177d72ac2dd977f06f9e219243a8b3e670180ee21"
+#
+# And once more for the second re-review round: both snapshot decoder paths now
+# reduce a PNG to the same grayscale-sample digest (the Pillow fallback was
+# hashing mode+raw bytes, so one image could carry two identities), and the
+# real-submission door digest gained the four spec-08 settings. Counts
+# unchanged; digests re-measured.
+HAPPY_RUN_TREE_DIGEST = "1d078ab169229de4e75cedfb13adb0e3e4b07edbc6533e5ff0eb93bad6f07d6a"
+REVIEW_RUN_TREE_DIGEST = "dec0ba67630ebbccaa42937245441b664e8888e353aeff5ab8659fe434a58cec"
 
 
 def orchestrate(
@@ -324,8 +330,9 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
                 from PIL import Image
 
                 with Image.open(BytesIO(data)) as image:
-                    width, height = image.size
-                    pixel_digest = digest_bytes(image.mode.encode() + image.tobytes())
+                    grayscale = image.convert("L")
+                    width, height = grayscale.size
+                    pixel_digest = digest_bytes(grayscale.tobytes())
             inventory[relative] = digest_of(
                 {
                     "width": width,

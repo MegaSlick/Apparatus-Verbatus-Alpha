@@ -26,9 +26,10 @@ from typing import Any, Callable, Final
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import canonical_text, digest_bytes, digest_of
 
-# The whole module's bytes, read once at import: `inspect.getsource` per call
-# would additionally require source files at run time, which a packaged
-# deployment does not guarantee.
+# The whole module's bytes, read once at import. A deployment without source
+# files still needs them for this line — but it fails loudly when the module
+# loads, before any act is read, rather than per prompt mid-run as
+# `inspect.getsource` would.
 _MODULE_SOURCE_DIGEST: Final[str] = digest_bytes(Path(__file__).resolve().read_bytes())
 
 

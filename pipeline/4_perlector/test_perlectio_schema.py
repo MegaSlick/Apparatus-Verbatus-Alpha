@@ -75,6 +75,61 @@ def _validate(payload, outcome="read"):
     perlector.validate_reading_payload(payload, outcome=outcome, fields=perlector._PERLECTIO_FIELDS)
 
 
+def _reblinded(payload, *, run_id, config_digest):
+    """The published named payload, rewritten as its blinded twin.
+
+    Labels are re-derived through the same pseudonym rule the producer uses, and
+    the dossier digest is re-sealed, so the only difference from a genuine
+    blinded record is that this one was made by a test."""
+    blinded = copy.deepcopy(payload)
+    blinded["provenance"]["witness_regime"] = "blinded"
+    reading_dossier = blinded["dossier"]
+    reading_dossier["witness_regime"] = "blinded"
+    for row, basis_row in zip(
+        reading_dossier["testimonia"], blinded["basis"]["testimonia"], strict=True
+    ):
+        row["witness_label"] = perlector.regime.pseudonym_for(
+            basis_row["chair"], run_id=run_id, config_digest=config_digest
+        )
+        row["model_name"] = None
+        row["resolved_provenance"] = None
+        row["training_domain"] = None
+    reading_dossier["testimonia"].sort(key=lambda row: row["witness_label"])
+    body = {key: value for key, value in reading_dossier.items() if key != "dossier_digest"}
+    reading_dossier["dossier_digest"] = perlector.digest_of(body)
+    identity = perlector.ChairIdentity(**blinded["provenance"]["resolved_identity"])
+    blinded["prompt"] = perlector.prompts.prompt_evidence(identity, reading_dossier)
+    return blinded
+
+
+def test_a_blinded_dossier_with_a_wrong_witness_label_is_refused(published_payload):
+    """The blinded branch of the label guard: pseudonyms are re-derived from the
+    run's own identity, so a swapped or foreign label — invisible to a reader by
+    construction — still refuses against the Testimonium basis."""
+    run_id, config_digest = "schema-blind-run", "c" * 64
+    blinded = _reblinded(published_payload, run_id=run_id, config_digest=config_digest)
+    perlector.validate_reading_payload(
+        blinded,
+        outcome="read",
+        fields=perlector._PERLECTIO_FIELDS,
+        run_id=run_id,
+        config_digest=config_digest,
+    )
+
+    tampered = copy.deepcopy(blinded)
+    tampered["dossier"]["testimonia"][0]["witness_label"] = "pseudo-witness-99"
+    body = {key: value for key, value in tampered["dossier"].items() if key != "dossier_digest"}
+    tampered["dossier"]["dossier_digest"] = perlector.digest_of(body)
+    with pytest.raises(SchemaRefusal, match="witness labels do not match"):
+        perlector.validate_reading_payload(
+            tampered,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            run_id=run_id,
+            config_digest=config_digest,
+        )
+
+
 def test_a_real_published_perlectio_satisfies_the_closed_schema(published_payload):
     """The check is not vacuous in the other direction either: what the stage
     actually writes must pass, or the schema is describing a record nobody
@@ -82,22 +137,7 @@ def test_a_real_published_perlectio_satisfies_the_closed_schema(published_payloa
     _validate(copy.deepcopy(published_payload))
 
 
-@pytest.mark.parametrize(
-    "field",
-    [
-        "act_key",
-        "attempt_ordinal",
-        "text",
-        "basis",
-        "dossier",
-        "prompt",
-        "dissent",
-        "truncation",
-        "uncertain_spans",
-        "gaps",
-        "provenance",
-    ],
-)
+@pytest.mark.parametrize("field", sorted(perlector._PERLECTIO_FIELDS))
 def test_a_perlectio_missing_any_field_of_its_record_is_refused(published_payload, field):
     payload = copy.deepcopy(published_payload)
     del payload[field]
@@ -253,7 +293,7 @@ def test_an_annotation_span_outside_the_text_is_refused(published_payload):
             "confidence": "low",
         }
     ]
-    with pytest.raises(SchemaRefusal, match="outside text bounds"):
+    with pytest.raises(SchemaRefusal, match="must cover at least one character"):
         _validate(payload)
 
 
@@ -315,7 +355,7 @@ def test_a_real_held_not_run_perlectio_satisfies_the_closed_not_run_schema(
     )
 
 
-@pytest.mark.parametrize("field", ["act_key", "attempt_ordinal", "reason", "provenance"])
+@pytest.mark.parametrize("field", sorted(perlector._NOT_RUN_HELD_FIELDS))
 def test_a_held_not_run_perlectio_missing_any_field_is_refused(held_not_run_payload, field):
     payload = copy.deepcopy(held_not_run_payload)
     del payload[field]

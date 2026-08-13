@@ -86,6 +86,7 @@ from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
+    DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     StageContext,
     adapter_recipe_for,
@@ -1171,6 +1172,10 @@ def real_submission(args, registry) -> int:
         pdf_settings,
         load_recovery_policy(args.recovery_config),
         load_hard_failure_policy(args.hard_failure_config),
+        witness_context=args.witness_context,
+        witness_context_config_path=args.witness_context_config,
+        nuda_per_mille=args.nuda_per_mille,
+        nuda_approval_ref=args.nuda_approval_ref,
     )
     tree = RunTree.create(
         run_root,
@@ -1250,6 +1255,11 @@ def _real_bindings(
     pdf_settings,
     recovery_policy,
     hard_failure_policy,
+    *,
+    witness_context: str = "named",
+    witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
+    nuda_per_mille: int = 0,
+    nuda_approval_ref: str = "",
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
@@ -1284,6 +1294,16 @@ def _real_bindings(
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
                 "models": models.to_record(),
+                # Spec 08's run-level settings, bound on the real path exactly as
+                # `run_config_bindings` binds them on the fixture path: a resumed
+                # run under a different witness regime, declaration, or nuda
+                # design is a different run wearing an old name.
+                "witness_context_regime": witness_context,
+                "witness_context_declaration_sha256": digest_bytes(
+                    Path(witness_context_config_path).read_bytes()
+                ),
+                "nuda_per_mille": nuda_per_mille,
+                "nuda_approval_ref": nuda_approval_ref,
             }
         ),
         "adapter_recipes": adapter_recipes,

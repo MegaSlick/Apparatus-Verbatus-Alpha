@@ -338,7 +338,11 @@ def _whole_act_gap(testimonia: list[dict], references: dict[str, dict]) -> list[
             "variant": record["payload"]["reported"],
         }
         for record in testimonia
-        if record["outcome"] in WITNESS_READING_OUTCOMES and record["payload"].get("reported")
+        # Presence and type, never truthiness: a genuinely-empty witness
+        # reported "" and that report is the strongest corroboration a
+        # whole-act gap can carry.
+        if record["outcome"] in WITNESS_READING_OUTCOMES
+        and isinstance(record["payload"].get("reported"), str)
     ]
     return [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": evidence}]
 

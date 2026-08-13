@@ -280,8 +280,8 @@ def test_a_blinded_regimes_pseudonym_order_is_not_a_fixed_slot_per_chair(evidenc
     # particular run id to produce it.
     first_sequence = chair_sequence(first, original_run_id)
     second_sequence = first_sequence
-    for suffix in ("-alternate", "-alternate-2", "-alternate-3", "-alternate-4", "-alternate-5"):
-        alternate_run_id = original_run_id + suffix
+    for index in range(24):
+        alternate_run_id = f"{original_run_id}-alternate-{index}"
         monkeypatch.setattr(context.tree, "run_id", alternate_run_id)
         second = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
         second_sequence = chair_sequence(second, alternate_run_id)

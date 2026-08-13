@@ -56,10 +56,12 @@ def validate_uncertain_spans(spans: Any, text: str) -> list[dict]:
             or isinstance(start, bool)
             or not isinstance(end, int)
             or isinstance(end, bool)
-            or not (0 <= start <= end <= len(text))
+            or not (0 <= start < end <= len(text))
         ):
             raise SchemaRefusal(
-                f"uncertain_spans[{index}] carries a span outside text bounds (0..{len(text)})"
+                f"uncertain_spans[{index}] must cover at least one character inside text "
+                f"bounds (0..{len(text)}); a zero-width span holds no read characters and "
+                "may not carry alternatives"
             )
         alternatives = span.get("alternatives")
         if not isinstance(alternatives, list) or not all(

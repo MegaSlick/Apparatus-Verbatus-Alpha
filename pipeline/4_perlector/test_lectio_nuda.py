@@ -91,6 +91,7 @@ def test_a_nuda_reading_carries_no_testimonia_at_all(nuda_run):
         for entry in nuda_run.build_manifest(PERLECTOR)["artifacts"]
         if entry["kind"] == LECTIO_NUDA_KIND
     ]
+    assert entries, "a sampled run must publish nuda records before their contents can be tested"
     for entry in entries:
         record = nuda_run.read_artifact(PERLECTOR, LECTIO_NUDA_KIND, entry["artifact_id"])
         assert record["payload"]["dossier"]["testimonia"] == []

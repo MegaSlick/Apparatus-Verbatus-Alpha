@@ -35,7 +35,7 @@ def test_run_config_bindings_refuses_a_witness_context_missing_a_configured_chai
     incomplete = tmp_path / "witness_context.toml"
     incomplete.write_text('[attestator_1]\ntraining_domain = "only one witness declared"\n')
 
-    with pytest.raises(ContractError, match="attestator_2.*has no declared entry"):
+    with pytest.raises(ContractError, match="has no declared entry"):
         run_config_bindings(
             registry.config,
             {"fixture": "none"},

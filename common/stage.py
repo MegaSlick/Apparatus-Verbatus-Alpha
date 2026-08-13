@@ -426,12 +426,13 @@ def run_config_bindings(
         # `dossier.load_witness_context` refused it.
         if (
             not isinstance(entry, dict)
+            or set(entry) != {"training_domain"}
             or not isinstance(entry.get("training_domain"), str)
             or not entry["training_domain"].strip()
         ):
             raise ContractError(
                 f"the witness-context entry for {chair!r} in {witness_context_config_path} "
-                "is not a table with a non-blank training_domain"
+                "is not a closed table with only a non-blank training_domain"
             )
     unaddressed = [
         chair for chair in witness_context_table if chair not in set(models.witness_chairs)
