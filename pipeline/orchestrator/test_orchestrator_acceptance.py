@@ -232,8 +232,14 @@ FIXTURE = "synthetic-two-page-v0"
 # 46 (happy) and 50 (review) -- the merged tree's 45/49 plus this branch's
 # index.json per run -- and both digests were re-measured from real orchestrator
 # runs under `semantic_snapshot_digest`.
-HAPPY_RUN_TREE_DIGEST = "d07a4da7da177b30f90ae696bff11d1be3c314a26b777b0b7ab1e7808e857627"
-REVIEW_RUN_TREE_DIGEST = "fcd4a8726027919e9773a5e1d06c6b953d1fcea8c169128baea73aeb1471809f"
+#
+# Moved once more by the pre-push CodeRabbit round: the index's count field is
+# now named `record_count` for what it actually holds (records summarized, with
+# `validate_index` proving the tie to the Recensor's accepted set), which
+# changes `index.json`'s bytes under both scenarios. Counts unchanged at 46 and
+# 50; both digests re-measured from real orchestrator runs.
+HAPPY_RUN_TREE_DIGEST = "889dfadd21596e23c3f55efcb4c94ed5c9b3b51e1502af8c929f29ee48889d3e"
+REVIEW_RUN_TREE_DIGEST = "ee6b295637d84883341f86a1714db2bfbeaa588514a6d80fdb795b4226c8301a"
 
 
 def orchestrate(

@@ -268,7 +268,7 @@ def test_no_readable_text_can_never_carry_an_annotation_at_all():
     """
     for text in ("", "   ", "\n\t "):
         assert archetypus.derive_text_status(text, []) == "no_readable_text"
-        with pytest.raises(SchemaRefusal):
+        with pytest.raises(SchemaRefusal, match="covering no readable character"):
             archetypus.validate_annotations(
                 [uncertain(0, len(text))], text, WITNESSES, "annotations"
             )

@@ -79,7 +79,6 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
     export = export_of(tree)
     assert export["delivered"], f"the {scenario!r} scenario must deliver at least one act"
 
-    checked = 0
     for delivered in export["delivered"]:
         established = tree.read_artifact(
             ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", delivered["act_id"])
@@ -90,10 +89,10 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
         # And its hash mechanically equals the record's own text hash — the
         # projection-identity claim, proven rather than asserted by construction.
         assert digest_of(delivered["text"]) == payload["text_hash"]
-        checked += 1
-    assert checked == len(export["delivered"])
     # The whole delivered set, not a sample: a projection check that skipped an
-    # act would pass while that act's export carried a different reading.
+    # act would pass while that act's export carried a different reading. This
+    # set comparison — not the loop above, which visits whatever "delivered"
+    # happens to hold — is the only line that proves no act was passed over.
     assert {item["act_id"] for item in export["delivered"]} == {
         entry["subject_id"]
         for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]

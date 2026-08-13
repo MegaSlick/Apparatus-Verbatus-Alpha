@@ -141,7 +141,7 @@ _REGION_FIELDS = frozenset(
 _INDEX_ROW_FIELDS = frozenset(
     {"act_id", "act_key", "artifact_id", "text_status", "text_hash", "relative_path", "sha256"}
 )
-_INDEX_FIELDS = frozenset({"schema", "run_id", "stage", "accepted_count", "rows", "self_hash"})
+_INDEX_FIELDS = frozenset({"schema", "run_id", "stage", "record_count", "rows", "self_hash"})
 
 
 def _is_ref_shaped(value) -> bool:
@@ -539,18 +539,18 @@ def accepted_primed_perlectio(
                 f"act {act_id} Testimonium basis {index} is not a digest-checked direct input "
                 "of the reading that claims to have seen it"
             )
-        testimonium = context.tree.read_artifact_reference(
-            reference,
-            stage=ATTESTATORES,
-            kind="testimonium",
-            subject_id=act_id,
-        )
         reference_key = _reference_key(reference)
         if reference_key in witnesses:
             raise SchemaRefusal(
                 f"act {act_id} repeats Testimonium basis {index}; one retained witness "
                 "reference may not count twice as evidence that this reading was primed"
             )
+        testimonium = context.tree.read_artifact_reference(
+            reference,
+            stage=ATTESTATORES,
+            kind="testimonium",
+            subject_id=act_id,
+        )
         testimonium_payload = testimonium.get("payload")
         if not isinstance(testimonium_payload, dict):
             raise SchemaRefusal(f"act {act_id} Testimonium basis {index} has no object payload")
@@ -935,7 +935,10 @@ def build_index(context) -> dict:
         "schema": SCHEMA_LABEL,
         "run_id": context.tree.run_id,
         "stage": ARCHETYPUS,
-        "accepted_count": len(rows),
+        # The number of immutable records this index summarizes. `validate_index`
+        # is what proves that set equals the acts the Recensor accepted; this
+        # field never claims it on its own.
+        "record_count": len(rows),
         "rows": rows,
     }
     index["self_hash"] = self_hash(index)
@@ -960,11 +963,11 @@ def validate_index(context, index) -> dict:
     if not isinstance(rows, list):
         raise FatalAccounting("the Archetypus index rows are not a list")
     if (
-        not isinstance(index["accepted_count"], int)
-        or isinstance(index["accepted_count"], bool)
-        or index["accepted_count"] < 0
+        not isinstance(index["record_count"], int)
+        or isinstance(index["record_count"], bool)
+        or index["record_count"] < 0
     ):
-        raise FatalAccounting("the Archetypus index accepted_count is not a non-negative integer")
+        raise FatalAccounting("the Archetypus index record_count is not a non-negative integer")
 
     on_disk = {row["act_id"]: row for row in _archetypus_rows(context)}
     seen: set[str] = set()
@@ -986,7 +989,7 @@ def validate_index(context, index) -> dict:
             raise FatalAccounting(
                 f"the Archetypus index row for act {act_id} does not match its immutable record"
             )
-    if index["accepted_count"] != len(rows):
+    if index["record_count"] != len(rows):
         raise FatalAccounting("the Archetypus index count disagrees with the rows it carries")
 
     accepted = accepted_act_ids(context)

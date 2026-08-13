@@ -175,7 +175,10 @@ as `manifest.json` is — never the only evidence. Written through `RunTree.writ
 so it is rewritable (unlike an artifact) and safe to delete and rebuild identically.
 
 Each row is `{act_id, act_key, artifact_id, text_status, text_hash, relative_path,
-sha256}`. The stage rebuilds it, reads it back, and reconciles it before finishing:
+sha256}`, and the index itself is the closed set `{schema, run_id, stage, record_count,
+rows, self_hash}` — `record_count` counts the records the index summarizes; the
+reconciliation below, not the field, is what ties that number to the Recensor's accepted
+set. The stage rebuilds it, reads it back, and reconciles it before finishing:
 rows, records on disk, and **the acts the Recensor accepted** must be the same set, and a
 missing or duplicate row is FATAL rather than a warning. The reconciliation target is
 deliberately the Recensor's accepted set, recomputed from the immutable review records —

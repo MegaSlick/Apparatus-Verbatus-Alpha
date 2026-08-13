@@ -138,7 +138,7 @@ def test_index_reconciles_1_to_1_with_both_established_acts_in_the_happy_scenari
         if entry["kind"] == "archetypus"
     }
     assert established == {row["act_id"] for row in index["rows"]}
-    assert index["accepted_count"] == len(index["rows"]) == 2
+    assert index["record_count"] == len(index["rows"]) == 2
     assert index["rows"] == sorted(index["rows"], key=lambda row: row["act_id"])
     assert index["stage"] == ARCHETYPUS
 
@@ -165,7 +165,7 @@ def test_the_held_act_never_appears_in_the_index(tmp_path):
     }
     assert len(established) == 1
     assert {row["act_id"] for row in index["rows"]} == established
-    assert index["accepted_count"] == 1
+    assert index["record_count"] == 1
 
 
 def test_the_index_self_hash_verifies(established_run):
@@ -190,7 +190,7 @@ def test_deleting_and_rerunning_rebuilds_the_index_identically(tmp_path):
 def test_validate_index_refuses_a_missing_row(established_run):
     short = archetypus.build_index(established_run)
     short["rows"] = short["rows"][:-1]
-    short["accepted_count"] = len(short["rows"])
+    short["record_count"] = len(short["rows"])
     short["self_hash"] = self_hash(short)
     with pytest.raises(FatalAccounting, match="do not reconcile 1:1"):
         archetypus.validate_index(established_run, short)
@@ -199,7 +199,7 @@ def test_validate_index_refuses_a_missing_row(established_run):
 def test_validate_index_refuses_a_duplicate_row(established_run):
     doubled = archetypus.build_index(established_run)
     doubled["rows"] = doubled["rows"] + [dict(doubled["rows"][0])]
-    doubled["accepted_count"] = len(doubled["rows"])
+    doubled["record_count"] = len(doubled["rows"])
     doubled["self_hash"] = self_hash(doubled)
     with pytest.raises(FatalAccounting, match="duplicate row"):
         archetypus.validate_index(established_run, doubled)
@@ -215,7 +215,7 @@ def test_validate_index_refuses_a_row_that_disagrees_with_its_record(established
 
 def test_validate_index_refuses_an_index_whose_self_hash_was_not_recomputed(established_run):
     edited = archetypus.build_index(established_run)
-    edited["accepted_count"] = 99
+    edited["record_count"] = 99
     with pytest.raises(FatalAccounting, match="self-hash"):
         archetypus.validate_index(established_run, edited)
 
@@ -231,10 +231,10 @@ def test_validate_index_refuses_an_index_whose_self_hash_was_not_recomputed(esta
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [
-        (lambda index: index.update(accepted_count=len(index["rows"]) + 1), "count disagrees"),
-        (lambda index: index.update(accepted_count=-1), "non-negative integer"),
-        (lambda index: index.update(accepted_count=True), "non-negative integer"),
-        (lambda index: index.update(accepted_count="2"), "non-negative integer"),
+        (lambda index: index.update(record_count=len(index["rows"]) + 1), "count disagrees"),
+        (lambda index: index.update(record_count=-1), "non-negative integer"),
+        (lambda index: index.update(record_count=True), "non-negative integer"),
+        (lambda index: index.update(record_count="2"), "non-negative integer"),
         (lambda index: index.update(schema="skeleton.v0"), "different schema or run"),
         (lambda index: index.update(run_id="another-run"), "different schema or run"),
         (lambda index: index.update(stage="7_armarium"), "own stage label or self-hash"),
