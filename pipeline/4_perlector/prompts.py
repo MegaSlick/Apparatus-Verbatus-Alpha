@@ -20,11 +20,16 @@ has none yet.
 
 from __future__ import annotations
 
-import inspect
+from pathlib import Path
 from typing import Any, Callable, Final
 
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import canonical_text, digest_bytes, digest_of
+
+# The whole module's bytes, read once at import: `inspect.getsource` per call
+# would additionally require source files at run time, which a packaged
+# deployment does not guarantee.
+_MODULE_SOURCE_DIGEST: Final[str] = digest_bytes(Path(__file__).resolve().read_bytes())
 
 
 def _fake_perlector_v0(chair_role: str, dossier: dict[str, Any]) -> str:
@@ -88,10 +93,12 @@ def prompt_evidence(chair: ChairIdentity, dossier: dict[str, Any]) -> dict[str, 
     only by convention -- nothing bound the builder's own bytes into the
     record, so reproducing `rendered_sha256` later needs the builder at the
     exact revision that ran, and the record itself could not say whether that
-    revision had moved. `builder_sha256` closes that: a digest of the
-    builder's own source, so a later edit to `_fake_perlector_v0` (or any
-    future recipe's builder) changes this record's own claim about itself
-    rather than silently invalidating an old one nothing can detect.
+    revision had moved. `builder_sha256` closes that: a digest of this whole
+    module's source — not one function's, because a builder renders through
+    helpers, and an edited helper changes the rendered bytes just as surely as
+    an edited builder — so any edit to the prompt-building code changes this
+    record's own claim about itself rather than silently invalidating an old
+    one nothing can detect.
     """
     builder = _builder_for(chair.serving_recipe)
     rendered = builder(chair.role, dossier)
@@ -100,5 +107,5 @@ def prompt_evidence(chair: ChairIdentity, dossier: dict[str, Any]) -> dict[str, 
         "chair_identity_sha256": digest_of(chair.to_record()),
         "dossier_digest": dossier["dossier_digest"],
         "rendered_sha256": digest_bytes(rendered.encode("utf-8")),
-        "builder_sha256": digest_bytes(inspect.getsource(builder).encode("utf-8")),
+        "builder_sha256": _MODULE_SOURCE_DIGEST,
     }

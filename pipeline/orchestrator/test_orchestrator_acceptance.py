@@ -198,8 +198,15 @@ FIXTURE = "synthetic-two-page-v0"
 # PNG entries, bytes for everything else). The Perlector's Pillow-written
 # page-render blobs decode through Pillow in that helper; the project's minimal
 # filter-0 decoder still covers every fixture page.
-HAPPY_RUN_TREE_DIGEST = "cf439f526399dde790cc8c61514849544bd46541a6c13e73ed29927efad4c9a5"
-REVIEW_RUN_TREE_DIGEST = "7005b6ce38b050df9d9a6857b5e63cbd44e646b5d71db9303eb23d692ef9f890"
+#
+# Moved once more by the pre-push CodeRabbit round: the Lectio nuda dossier's
+# region rows no longer carry `witness_covered` (coverage is witness-derived and
+# the baseline saw no witnesses), `builder_sha256` binds the whole prompt module
+# rather than one function's source, and the witness-context declaration gate
+# tightened. File counts are unchanged at 45 and 47+2; both digests re-measured
+# from real orchestrator runs.
+HAPPY_RUN_TREE_DIGEST = "3a36941eadd1af405c83f513a88c96f309cf0c072f007ef53b5fede9af344df2"
+REVIEW_RUN_TREE_DIGEST = "680a9f6ee5022d8b996118f177d72ac2dd977f06f9e219243a8b3e670180ee21"
 
 
 def orchestrate(

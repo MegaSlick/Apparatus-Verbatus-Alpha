@@ -53,7 +53,7 @@ def test_the_refusal_is_not_vacuous_it_actually_distinguishes_recipes():
     """Prove the guard can go red: a recipe that *is* registered must not
     raise, so the refusal above is really about the missing entry."""
     prompts.build_prompt("fake-perlector-v0", "perlector", _dossier())  # does not raise
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no declared prompt builder"):
         prompts.build_prompt("fake-perlector-v1", "perlector", _dossier())
 
 
@@ -78,14 +78,25 @@ def test_prompt_evidence_binds_the_builders_own_bytes_not_only_its_name(monkeypa
     )
     dossier = _dossier() | {"dossier_digest": "d" * 64}
     before = prompts.prompt_evidence(chair, dossier)
-    assert "builder_sha256" in before
+    # The claim is module-wide on purpose: a builder renders through helpers,
+    # so the digest binds every line of prompt-building code, not one
+    # function's source. A monkeypatched builder is not a source edit and must
+    # NOT move it -- only the rendered bytes move.
+    from pathlib import Path
+
+    from common.contracts.canonical import digest_bytes
+
+    module_bytes = Path(prompts.__file__).resolve().read_bytes()
+    assert before["builder_sha256"] == digest_bytes(module_bytes), (
+        "builder_sha256 must be the digest of the whole prompt module's source"
+    )
 
     def _mutated_builder(chair_role, dossier):
         return prompts._fake_perlector_v0(chair_role, dossier) + "\n"
 
     monkeypatch.setitem(prompts._BUILDERS, "fake-perlector-v0", _mutated_builder)
     after = prompts.prompt_evidence(chair, dossier)
-    assert after["builder_sha256"] != before["builder_sha256"], (
-        "an edited builder must change its own digest in the record"
+    assert after["builder_sha256"] == before["builder_sha256"], (
+        "a runtime monkeypatch is not a source edit; the module digest binds bytes on disk"
     )
     assert after["rendered_sha256"] != before["rendered_sha256"]

@@ -67,6 +67,16 @@ def test_an_unclosed_structural_mark_is_flagged(pair):
     assert truncation.has_unclosed_structure(f"reading with {opener}unclosed") is True
 
 
+@pytest.mark.parametrize("pair", [("(", ")"), ("[", "]"), ("\u201c", "\u201d")])
+def test_a_closed_structural_pair_is_not_flagged(pair):
+    """The closer of every declared pair must close it: a detector that counted
+    an opener and never its closer would flag every act carrying French
+    quotation marks, and two of three signals would then hold ordinary quoted
+    acts for review."""
+    opener, closer = pair
+    assert truncation.has_unclosed_structure(f"reading with {opener}closed{closer}") is False
+
+
 def test_balanced_structure_is_not_flagged():
     assert truncation.has_unclosed_structure("a (balanced) reading [with marks]") is False
 

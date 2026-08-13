@@ -6,6 +6,8 @@ metric; a raw-string cross-check beside the normalized one; an honest
 import time
 import unicodedata
 
+from common.contracts.errors import SchemaRefusal
+
 import dissent
 import pytest
 
@@ -274,7 +276,7 @@ def test_dissent_never_drops_an_unknown_chair_from_the_record():
 
 
 def test_a_completed_reading_outcome_with_no_reported_text_refuses():
-    with pytest.raises(Exception, match="no text to compare"):
+    with pytest.raises(SchemaRefusal, match="no text to compare"):
         dissent.dissent_against(
             "reading", [{"outcome": "read", "payload": {"chair": "attestator_1"}}]
         )

@@ -78,6 +78,8 @@ instrument that never ran.
 ```text
 act_id, act_key, witness_regime
 regions       = [{region_id, image_path, image_sha256, witness_covered}, ...]
+                # a Lectio nuda dossier's region rows carry no witness_covered:
+                # coverage is a witness-derived fact, and the baseline saw none
 page_renders  = [{source_page_id, source_page_ordinal, source, image_path,
                    image_sha256, transform}, ...]
 testimonia    = [{witness_label, model_name, resolved_provenance,
@@ -119,8 +121,10 @@ happen.
 **Training-domain context.** `config/witness_context.toml`, a new
 Perlector-owned declaration (not part of `common/chairs`/`ChairIdentity`),
 mapping each configured chair to a factual, non-evaluative training-domain
-sentence. Every configured witness must have an entry or the dossier build
-refuses by name.
+sentence. Every configured witness must have an entry: `common/stage.py`
+refuses a missing, misshapen or unaddressed entry at run creation, before any
+stage writes, and the dossier build refuses again by name when it loads the
+declaration.
 
 ### `dissent` — derived comparison views, never raw-string voting
 

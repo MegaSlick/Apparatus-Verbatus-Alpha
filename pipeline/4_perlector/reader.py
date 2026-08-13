@@ -60,7 +60,17 @@ class FixtureReader:
         calling the reading complete, and nothing in this offline chamber is
         entitled to claim an engine went silent.
         """
+        declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
+        declared_acts = {act["key"] for act in self._fixture["act"]}
         for row in self._fixture.get("stop_reason", []):
+            # A misspelt row would otherwise silently default every act it
+            # meant to name to "stop", and a declared `length` would vanish.
+            if row["scenario"] not in declared_scenarios:
+                raise KeyError(f"stop_reason row names undeclared scenario {row['scenario']!r}")
+            if row["act_key"] not in declared_acts:
+                raise KeyError(f"stop_reason row names undeclared act {row['act_key']!r}")
+            if row["stop_reason"] not in {"stop", "length"}:
+                raise KeyError(f"stop_reason row declares unknown signal {row['stop_reason']!r}")
             if row["scenario"] == self._scenario and row["act_key"] == act_key:
                 return row["stop_reason"]
         return "stop"

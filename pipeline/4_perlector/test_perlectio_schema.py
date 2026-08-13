@@ -352,9 +352,14 @@ def test_an_absent_chair_not_run_perlectio_satisfies_the_closed_not_run_schema()
     )
 
 
-@pytest.mark.parametrize(
-    "field", ["act_key", "attempt_ordinal", "reason", "basis", "dissent", "provenance"]
-)
+def test_the_mirrored_absent_chair_shape_matches_the_closed_field_set():
+    """The hand-written payload below and run.py's constant must be the same
+    set, or the parametrized refusals exercise a shape production never
+    writes."""
+    assert set(_absent_chair_not_run_payload()) == set(perlector._NOT_RUN_ABSENT_FIELDS)
+
+
+@pytest.mark.parametrize("field", sorted(perlector._NOT_RUN_ABSENT_FIELDS))
 def test_an_absent_chair_not_run_perlectio_missing_any_field_is_refused(field):
     payload = _absent_chair_not_run_payload()
     del payload[field]

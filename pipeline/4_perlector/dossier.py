@@ -236,6 +236,16 @@ def _testimonium_entry(
     }
 
 
+def witnessed_region_ids(testimonia: list[dict]) -> set[str]:
+    """The original regions actually read by at least one completed witness."""
+    return {
+        reference["region_id"]
+        for record in testimonia
+        if record["outcome"] in WITNESS_READING_OUTCOMES
+        for reference in record["payload"]["regions"]
+    }
+
+
 def build_dossier(
     context,
     *,
@@ -243,7 +253,6 @@ def build_dossier(
     act_key: str,
     regions: list[dict[str, Any]],
     testimonia: list[dict[str, Any]],
-    witnessed_region_ids: set[str],
     regime: str,
     page_renders: list[dict[str, Any]],
     witness_context: dict[str, dict[str, str]],
@@ -258,13 +267,19 @@ def build_dossier(
     """
     if regime not in REGIMES:
         raise SchemaRefusal(f"witness regime {regime!r} is not one of {sorted(REGIMES)}")
+    # Witness coverage is derived here, from the same testimonia this dossier
+    # carries, never passed in beside them: a Lectio nuda dossier (no testimonia)
+    # therefore has no `witness_covered` fact at all. A baseline that knew which
+    # regions witnesses saw would carry witness-derived metadata into the one
+    # reading whose point is to have seen none.
+    witnessed = witnessed_region_ids(testimonia)
     region_rows = sorted(
         (
             {
                 "region_id": region["region_id"],
                 "image_path": region["image_path"],
                 "image_sha256": region["image_sha256"],
-                "witness_covered": region["region_id"] in witnessed_region_ids,
+                **({"witness_covered": region["region_id"] in witnessed} if testimonia else {}),
             }
             for region in regions
         ),

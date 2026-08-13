@@ -187,7 +187,13 @@ def validate_annotations(payload: dict[str, Any], *, outcome: str | None = None)
     text = payload.get("text")
     if not isinstance(text, str):
         raise SchemaRefusal("a reading's annotations cannot be validated with no text field")
-    validate_uncertain_spans(payload.get("uncertain_spans", []), text)
-    gaps = validate_gaps(payload.get("gaps", []), text)
+    for field in ("uncertain_spans", "gaps"):
+        if field not in payload:
+            raise SchemaRefusal(
+                f"a reading carries no {field} record; an absent annotation layer is not "
+                "the same claim as an empty one"
+            )
+    validate_uncertain_spans(payload["uncertain_spans"], text)
+    gaps = validate_gaps(payload["gaps"], text)
     if outcome is not None:
         validate_whole_act_consistency(outcome=outcome, text=text, gaps=gaps)

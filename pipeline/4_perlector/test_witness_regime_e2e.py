@@ -96,5 +96,6 @@ def test_a_named_run_still_carries_the_real_chair_names(tmp_path):
     )
     reading = tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
     labels = {row["witness_label"] for row in reading["payload"]["dossier"]["testimonia"]}
-    assert labels <= configured_chairs
-    assert labels, "a named dossier must show at least one real chair label"
+    assert labels == configured_chairs, (
+        "a named dossier must show every configured chair; a short roster is a lost witness"
+    )

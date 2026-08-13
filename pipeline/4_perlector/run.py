@@ -36,6 +36,7 @@ import annotations  # noqa: E402
 import dossier as dossier_module  # noqa: E402
 import nuda  # noqa: E402
 import prompts  # noqa: E402
+import regime  # noqa: E402
 import truncation  # noqa: E402
 from dissent import dissent_against, validate_dissent  # noqa: E402
 from reader import FixtureReader  # noqa: E402
@@ -212,14 +213,9 @@ def verify_region(context, region: dict) -> dict:
         raise SchemaRefusal("a Designator region does not trace to its Exemplar page") from error
 
 
-def witnessed_region_ids(testimonia: list[dict]) -> set[str]:
-    """The original regions actually read by at least one completed witness."""
-    return {
-        reference["region_id"]
-        for record in testimonia
-        if record["outcome"] in WITNESS_READING_OUTCOMES
-        for reference in record["payload"]["regions"]
-    }
+# Moved into dossier.py so the dossier derives witness coverage from the same
+# testimonia it carries; re-exported here for its callers and tests.
+witnessed_region_ids = dossier_module.witnessed_region_ids
 
 
 def declared_reading_failure(context, act_key: str) -> str | None:
@@ -441,7 +437,14 @@ def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
         )
 
 
-def validate_reading_payload(payload: dict, *, outcome: str, fields: frozenset) -> None:
+def validate_reading_payload(
+    payload: dict,
+    *,
+    outcome: str,
+    fields: frozenset,
+    run_id: str | None = None,
+    config_digest: str | None = None,
+) -> None:
     """Refuse a reading payload that is missing part of the record it claims.
 
     Producer-local and deliberately so: `validate_serving_provenance` already
@@ -510,6 +513,31 @@ def validate_reading_payload(payload: dict, *, outcome: str, fields: frozenset) 
         raise SchemaRefusal(
             "a Perlector dossier does not account for exactly its Testimonium basis"
         )
+    else:
+        # Label-for-label, not merely count-for-count: a sealed reading must not
+        # show one witness set in the prompt while its basis, dissent and export
+        # record another. Named labels are the chairs themselves; blinded labels
+        # are re-derived from the run's own identity when the caller supplies it
+        # (the production publish path always does — the bare form exists for
+        # schema tests that assert other refusals).
+        basis_chairs = {row["chair"] for row in basis["testimonia"] if isinstance(row, dict)}
+        dossier_labels = {
+            row["witness_label"] for row in dossier_testimonia if isinstance(row, dict)
+        }
+        regime_name = reading_dossier["witness_regime"]
+        if regime_name == regime.NAMED:
+            expected_labels = basis_chairs
+        elif run_id is not None and config_digest is not None:
+            expected_labels = {
+                regime.pseudonym_for(chair, run_id=run_id, config_digest=config_digest)
+                for chair in basis_chairs
+            }
+        else:
+            expected_labels = None
+        if expected_labels is not None and dossier_labels != expected_labels:
+            raise SchemaRefusal(
+                "a Perlector dossier's witness labels do not match its Testimonium basis"
+            )
     prompt_record = payload["prompt"]
     identity_record = provenance.get("resolved_identity")
     if not isinstance(identity_record, dict):
@@ -584,7 +612,6 @@ def _publish_lectio_nuda(
     ordinal: int,
     chair: ChairIdentity,
     bases: list[dict],
-    witnessed: set[str],
     page_renders: list[dict],
     reader: FixtureReader,
     region_pixels: int,
@@ -605,7 +632,6 @@ def _publish_lectio_nuda(
         act_key=act["act_key"],
         regions=bases,
         testimonia=[],
-        witnessed_region_ids=witnessed,
         regime=context.witness_context,
         page_renders=page_renders,
         witness_context=witness_context_table,
@@ -756,7 +782,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 ordinal=ordinal,
                 chair=chair,
                 bases=bases,
-                witnessed=witnessed,
                 page_renders=page_renders,
                 reader=reader,
                 region_pixels=region_pixels,
@@ -770,7 +795,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             act_key=act["act_key"],
             regions=bases,
             testimonia=testimonia,
-            witnessed_region_ids=witnessed,
             regime=context.witness_context,
             page_renders=page_renders,
             witness_context=witness_context_table,
@@ -833,7 +857,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "gaps": gaps,
             "provenance": provenance,
         }
-        validate_reading_payload(payload, outcome=outcome, fields=_PERLECTIO_FIELDS)
+        validate_reading_payload(
+            payload,
+            outcome=outcome,
+            fields=_PERLECTIO_FIELDS,
+            run_id=context.tree.run_id,
+            config_digest=context.config_digest,
+        )
         context.publish(
             kind="perlectio",
             subject_id=act_id,

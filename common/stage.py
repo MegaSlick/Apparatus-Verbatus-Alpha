@@ -420,6 +420,23 @@ def run_config_bindings(
             f"chair {missing[0]!r} has no declared entry in {witness_context_config_path}; "
             "every configured witness must carry a factual dossier context, or none is described"
         )
+    for chair, entry in sorted(witness_context_table.items()):
+        # Shape, not just presence: `attestator_1 = "typed by mistake"` passed
+        # the presence check and then cost the whole pre-Perlector leg before
+        # `dossier.load_witness_context` refused it.
+        if not isinstance(entry, dict) or not str(entry.get("training_domain", "")).strip():
+            raise ContractError(
+                f"the witness-context entry for {chair!r} in {witness_context_config_path} "
+                "is not a table with a non-blank training_domain"
+            )
+    unaddressed = [
+        chair for chair in witness_context_table if chair not in set(models.witness_chairs)
+    ]
+    if unaddressed:
+        raise ContractError(
+            f"{witness_context_config_path} declares {unaddressed[0]!r}, which is not a "
+            "configured witness chair; a misspelt chair here would silently lose its witness"
+        )
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(

@@ -115,7 +115,6 @@ def _build(context, act_id, act_key, regions, testimonia, *, regime="named", wit
         act_key=act_key,
         regions=regions,
         testimonia=testimonia,
-        witnessed_region_ids={region["region_id"] for region in regions},
         regime=regime,
         page_renders=[],
         witness_context=witness_context,
@@ -267,8 +266,6 @@ def test_a_blinded_regimes_pseudonym_order_is_not_a_fixed_slot_per_chair(evidenc
     original_run_id = context.tree.run_id
 
     first = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
-    monkeypatch.setattr(context.tree, "run_id", original_run_id + "-alternate")
-    second = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
 
     def chair_sequence(built, run_id):
         pseudonym_to_chair = {
@@ -277,8 +274,19 @@ def test_a_blinded_regimes_pseudonym_order_is_not_a_fixed_slot_per_chair(evidenc
         }
         return [pseudonym_to_chair[entry["witness_label"]] for entry in built["testimonia"]]
 
+    # With three chairs two run ids coincide on the same order one time in six,
+    # so one alternate is a bet the suite loses on an unrelated roster or run-id
+    # change. Search a handful; the property needs one reorder to exist, not a
+    # particular run id to produce it.
     first_sequence = chair_sequence(first, original_run_id)
-    second_sequence = chair_sequence(second, original_run_id + "-alternate")
+    second_sequence = first_sequence
+    for suffix in ("-alternate", "-alternate-2", "-alternate-3", "-alternate-4", "-alternate-5"):
+        alternate_run_id = original_run_id + suffix
+        monkeypatch.setattr(context.tree, "run_id", alternate_run_id)
+        second = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
+        second_sequence = chair_sequence(second, alternate_run_id)
+        if second_sequence != first_sequence:
+            break
     assert set(first_sequence) == set(second_sequence) == set(chairs)
     assert first_sequence != second_sequence, (
         "two different run ids produced the same chair order by coincidence; "

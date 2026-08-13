@@ -253,6 +253,7 @@ def test_the_consistent_no_readable_text_combination_validates():
 def test_validate_annotations_enforces_bidirectional_consistency_when_outcome_supplied():
     payload = {
         "text": "",
+        "uncertain_spans": [],
         "gaps": [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}],
     }
     with pytest.raises(SchemaRefusal, match="wholly illegible"):
