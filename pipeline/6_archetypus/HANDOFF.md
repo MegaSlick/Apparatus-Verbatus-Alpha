@@ -195,8 +195,8 @@ deliberately the Recensor's accepted set, recomputed from the immutable review r
 an index checked only against the writer's own list would agree with itself about an act
 the writer had skipped. `validate_index` proves the same thing for any consumer that
 wants it before relying on the file — with one practical caveat: its first argument is a
-stage-context-shaped object (`.tree`, `.fixture`, `.artifact_ref`), so a consumer outside
-a stage builds a small shim first, exactly as `test_index.py` does.
+stage-context-shaped object (`.tree`, `.fixture`, `.input_ref`, `.artifact_ref`), so a
+consumer outside a stage builds a small shim first, exactly as `test_index.py` does.
 
 ## Consumer obligations
 

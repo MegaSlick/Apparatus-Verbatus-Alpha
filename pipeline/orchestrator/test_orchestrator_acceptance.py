@@ -1225,7 +1225,7 @@ def _forge_blank_proof(tree: RunTree, act_id: str) -> dict[str, str]:
     payload = {"note": "a hypothetical blank-proof artifact"}
     payload["self_hash"] = self_hash(payload)
     envelope = build_envelope(
-        run_id="r",
+        run_id=tree.run_id,
         artifact_id=artifact_id(RECENSOR, "blank-proof", act_id),
         subject_id=act_id,
         stage=RECENSOR,
