@@ -45,6 +45,11 @@ def reseal_reviewed_reading(tree, review: dict, mutate) -> str:
     reading_path = tree.resolve(old_ref["relative_path"])
     reading = json.loads(reading_path.read_text(encoding="utf-8"))
     mutate(reading["payload"])
+    # Reseal the nested payload hash too, when the producer carries one, so a
+    # later stage-side check of it cannot make every forgery here fail at the
+    # hash instead of at the refusal the calling test names.
+    if "self_hash" in reading["payload"]:
+        reading["payload"]["self_hash"] = self_hash(reading["payload"])
     reading["self_hash"] = self_hash(reading)
     reading_path.write_bytes(canonical_bytes(reading))
     repoint_review(

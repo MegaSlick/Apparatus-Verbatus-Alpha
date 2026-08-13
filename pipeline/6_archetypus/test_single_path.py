@@ -24,10 +24,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import reseal_chain
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import build_envelope
+from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ATTESTATORES, RECENSOR
 from common.runtree.store import RunTree
@@ -440,3 +442,10 @@ def test_two_groups_naming_one_crop_path_collapse_to_a_single_input():
     assert set(paths) == {shared["relative_path"], other["relative_path"]}, (
         "collapsing duplicates must not drop a distinct input"
     )
+
+    # The other half of the same function: one path cannot hold two sets of
+    # bytes, so collapsing them silently would seal a record whose inputs the
+    # Armarium cannot reconcile at export.
+    conflicting = {"relative_path": shared["relative_path"], "sha256": "c" * 64}
+    with pytest.raises(FatalAccounting, match="different digests"):
+        archetypus._direct_inputs([shared], [conflicting])

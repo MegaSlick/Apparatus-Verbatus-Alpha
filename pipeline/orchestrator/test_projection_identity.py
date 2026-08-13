@@ -81,6 +81,15 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
     # review run is a wrong result this test must not read past.
     assert result.returncode == exit_code, result.stderr
     tree = RunTree(root, "r")
+    # The closed set of Armarium artifact kinds this test knows how to check.
+    # A second export format arrives as a new kind; this assertion makes it
+    # fail here — a missing format, never a silent pass over the one that
+    # exists — which is the failure mode the module docstring promises.
+    produced_kinds = {entry["kind"] for entry in tree.build_manifest(ARMARIUM)["artifacts"]}
+    assert produced_kinds == {"export", "manifest-entry"}, (
+        f"the Armarium produced kinds {sorted(produced_kinds)}; a new export format "
+        "must be added to this projection-identity test before it ships"
+    )
     export = export_of(tree)
     assert export["delivered"], f"the {scenario!r} scenario must deliver at least one act"
 

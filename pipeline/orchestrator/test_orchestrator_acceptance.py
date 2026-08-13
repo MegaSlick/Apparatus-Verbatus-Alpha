@@ -1389,7 +1389,14 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_readings_own_crop(tmp_path
     reading = json.loads(reading_path.read_text(encoding="utf-8"))
     # A crop the reading read: an input of the reading that the review also
     # lists directly (the review's inputs are the reading plus its crops).
-    crop_ref = next(reference for reference in reading["inputs"] if reference in review["inputs"])
+    crop_ref = next(
+        (reference for reference in reading["inputs"] if reference in review["inputs"]),
+        None,
+    )
+    assert crop_ref is not None, (
+        "this test needs a crop the reading read that the review also lists directly; "
+        "the review's inputs are the reading plus its crops"
+    )
     reading["payload"]["text"] = ""
     reading["self_hash"] = self_hash(reading)
     reading_path.write_bytes(canonical_bytes(reading))

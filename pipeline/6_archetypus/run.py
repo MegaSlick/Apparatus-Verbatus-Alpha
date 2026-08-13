@@ -1072,11 +1072,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # Reconciled against the Recensor's accepted set *before* it is published, so
     # a run that fails its accounting never leaves an internally consistent index
     # on disk that summarizes fewer acts than the Recensor accepted. Then read
-    # back and reconciled again, proving the bytes on disk parse to the index
-    # just checked.
-    # Read the immutable evidence once; both reconciliations below check the
-    # same rows and the same accepted set, so re-reading a parish of records
-    # per pass buys nothing.
+    # back and checked again against the same cached rows, proving the bytes on
+    # disk parse to the index just checked. The read-back deliberately does NOT
+    # re-derive the rows — nothing can publish a record between these two calls
+    # in one process, and re-reading a parish of records per pass buys nothing.
+    # A change that moves record publication after this point must drop the
+    # cached arguments, or the read-back would pass against stale rows.
     on_disk = {row["act_id"]: row for row in _archetypus_rows(context)}
     accepted = accepted_act_ids(context)
     index = validate_index(context, build_index(context), on_disk=on_disk, accepted=accepted)
