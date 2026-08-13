@@ -484,7 +484,7 @@ def test_a_same_named_run_in_another_root_cannot_lend_this_one_its_evidence(tmp_
 
 
 @pytest.mark.parametrize("authority_state", ("missing", "self-hash-corrupt", "bad-digest"))
-def test_every_generic_artifact_read_route_fails_closed_without_a_valid_run_authority(
+def test_every_generic_store_route_fails_closed_without_a_valid_run_authority(
     tmp_path, authority_state
 ):
     """`run.json` is the binding, not an optional optimization for a fresh reader."""
@@ -517,6 +517,8 @@ def test_every_generic_artifact_read_route_fails_closed_without_a_valid_run_auth
         fresh.build_manifest(PERLECTOR)
     with pytest.raises(IncompatibleReuse):
         fresh.read_index(DESIGNATOR)
+    with pytest.raises(IncompatibleReuse):
+        fresh.write_index(DESIGNATOR, {"schema": "test-index", "rows": []})
 
 
 @pytest.mark.parametrize(

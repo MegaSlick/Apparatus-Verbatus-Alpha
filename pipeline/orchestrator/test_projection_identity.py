@@ -29,7 +29,7 @@ import pytest
 
 from common.contracts.canonical import digest_of
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARCHETYPUS, ARMARIUM
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, RECENSOR
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -70,11 +70,13 @@ def export_of(tree: RunTree) -> dict:
     ]
 
 
-@pytest.mark.parametrize("scenario", ["happy", "review"])
-def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, scenario):
+@pytest.mark.parametrize(("scenario", "exit_code"), [("happy", 0), ("review", 3)])
+def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, scenario, exit_code):
     root = tmp_path / "runs"
     result = orchestrate(root, "r", scenario)
-    assert result.returncode in (0, 3), result.stderr
+    # The scenario's own exit, not "either": a held happy run or a completed
+    # review run is a wrong result this test must not read past.
+    assert result.returncode == exit_code, result.stderr
     tree = RunTree(root, "r")
     export = export_of(tree)
     assert export["delivered"], f"the {scenario!r} scenario must deliver at least one act"
@@ -102,6 +104,16 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
         for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
         if entry["kind"] == "archetypus"
     ]
+    # A census from a different stage's records: the acts the Recensor
+    # accepted. An omission shared by the Archetypus and the export cannot
+    # also delete the Recensor's sealed review, so agreeing with this set is
+    # not the run agreeing with itself. (Completeness against the *fixture* is
+    # the acceptance suite's job, via its pinned file counts and digests.)
+    recensor_accepted = {
+        entry["subject_id"]
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    }
     assert len(delivered_ids) == len(set(delivered_ids))
     assert len(delivered_ids) == len(archetypus_ids)
-    assert set(delivered_ids) == set(archetypus_ids)
+    assert set(delivered_ids) == set(archetypus_ids) == recensor_accepted

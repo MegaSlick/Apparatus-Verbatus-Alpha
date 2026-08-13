@@ -956,13 +956,18 @@ def build_index(context) -> dict:
     return index
 
 
-def validate_index(context, index) -> dict:
+def validate_index(context, index, *, on_disk=None, accepted=None) -> dict:
     """Spec 10 test 6, as a consumer check: 1:1 with the acts the Recensor accepted.
 
     The index is derived and rewritable. That does not make a missing or
     duplicate row harmless where someone relies on it for accounting: it is
     FATAL until it is regenerated from the immutable records, never a warning
     and never quietly repaired underneath a reader.
+
+    `on_disk` and `accepted` are derived from the immutable records when
+    omitted — the one-argument consumer form HANDOFF.md documents. The stage's
+    own finishing step passes both, because it reconciles twice back to back
+    and re-reading a parish of records for the same answer buys nothing.
     """
     if not isinstance(index, dict) or set(index) != _INDEX_FIELDS:
         raise FatalAccounting("the Archetypus index is not the closed derived-index shape")
@@ -980,7 +985,8 @@ def validate_index(context, index) -> dict:
     ):
         raise FatalAccounting("the Archetypus index record_count is not a non-negative integer")
 
-    on_disk = {row["act_id"]: row for row in _archetypus_rows(context)}
+    if on_disk is None:
+        on_disk = {row["act_id"]: row for row in _archetypus_rows(context)}
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict) or set(row) != _INDEX_ROW_FIELDS:
@@ -1003,7 +1009,8 @@ def validate_index(context, index) -> dict:
     if index["record_count"] != len(rows):
         raise FatalAccounting("the Archetypus index count disagrees with the rows it carries")
 
-    accepted = accepted_act_ids(context)
+    if accepted is None:
+        accepted = accepted_act_ids(context)
     if seen != accepted or set(on_disk) != accepted:
         raise FatalAccounting(
             f"the Archetypus records and index ({sorted(seen)}) do not reconcile 1:1 with the "
@@ -1067,9 +1074,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # on disk that summarizes fewer acts than the Recensor accepted. Then read
     # back and reconciled again, proving the bytes on disk parse to the index
     # just checked.
-    index = validate_index(context, build_index(context))
+    # Read the immutable evidence once; both reconciliations below check the
+    # same rows and the same accepted set, so re-reading a parish of records
+    # per pass buys nothing.
+    on_disk = {row["act_id"]: row for row in _archetypus_rows(context)}
+    accepted = accepted_act_ids(context)
+    index = validate_index(context, build_index(context), on_disk=on_disk, accepted=accepted)
     context.tree.write_index(ARCHETYPUS, index)
-    validate_index(context, context.tree.read_index(ARCHETYPUS))
+    validate_index(context, context.tree.read_index(ARCHETYPUS), on_disk=on_disk, accepted=accepted)
     context.finish()
     # Establishment for the accepted acts is real either way; the exit code
     # answers a different question — "is this stage's work finished?" — and an

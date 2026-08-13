@@ -839,6 +839,10 @@ class RunTree:
         """
         if not isinstance(index, dict):
             raise SchemaRefusal("a derived stage index must be an object")
+        # Behind the run authority like `write_manifest` (through `build_manifest`)
+        # and `read_index`: a tree with no valid `run.json` must not gain a
+        # summary file nothing can bind to it.
+        self._run_authority()
         directory = writing_directory(stage)
         if _all_writing_directories().count(directory) > 1:
             raise SchemaRefusal(

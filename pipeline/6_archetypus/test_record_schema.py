@@ -166,6 +166,12 @@ def test_dissent_travels_by_reference_and_never_by_value():
 
 
 def test_the_text_hash_is_the_digest_of_the_text_alone():
+    """Scope stated plainly: `make_record` goes through `seal_record`, not the
+    full constructor, so this and the dissent test above pin the sealed shape
+    against values their own fixture wrote. That the *constructor* assigns
+    these fields correctly from real accepted evidence is proven end to end by
+    the acceptance suite and `test_projection_identity.py`, which hash-check
+    text/text_hash agreement on records the real CLI established."""
     record = make_record()
     assert record["text_hash"] == digest_of("Maria")
 
