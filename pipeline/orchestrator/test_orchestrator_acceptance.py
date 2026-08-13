@@ -195,9 +195,11 @@ FIXTURE = "synthetic-two-page-v0"
 # (review) -- main's Recensor partition receipt plus this branch's two page-render
 # blobs per scenario -- and both digests were recomputed from real orchestrator
 # runs on the merged tree under `semantic_snapshot_digest` (decoded pixels for
-# PNG entries, bytes for everything else).
-HAPPY_RUN_TREE_DIGEST = "REPIN_AT_TIP_HAPPY"
-REVIEW_RUN_TREE_DIGEST = "REPIN_AT_TIP_REVIEW"
+# PNG entries, bytes for everything else). The Perlector's Pillow-written
+# page-render blobs decode through Pillow in that helper; the project's minimal
+# filter-0 decoder still covers every fixture page.
+HAPPY_RUN_TREE_DIGEST = "cf439f526399dde790cc8c61514849544bd46541a6c13e73ed29927efad4c9a5"
+REVIEW_RUN_TREE_DIGEST = "7005b6ce38b050df9d9a6857b5e63cbd44e646b5d71db9303eb23d692ef9f890"
 
 
 def orchestrate(
@@ -302,12 +304,26 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
         data = path.read_bytes()
         relative = str(path.relative_to(root))
         if data.startswith(PNG_SIGNATURE):
-            width, height, rows = decode_grayscale_png(data)
+            try:
+                width, height, rows = decode_grayscale_png(data)
+                pixel_digest = digest_bytes(b"".join(rows))
+            except ValueError:
+                # The Perlector's page-render blobs are written by Pillow, whose
+                # adaptive PNG filters the project's own minimal decoder refuses
+                # by design. The pin still binds pixels, not compressor bytes —
+                # only the decoder differs.
+                from io import BytesIO
+
+                from PIL import Image
+
+                with Image.open(BytesIO(data)) as image:
+                    width, height = image.size
+                    pixel_digest = digest_bytes(image.mode.encode() + image.tobytes())
             inventory[relative] = digest_of(
                 {
                     "width": width,
                     "height": height,
-                    "pixel_sha256": digest_bytes(b"".join(rows)),
+                    "pixel_sha256": pixel_digest,
                 }
             )
         else:
