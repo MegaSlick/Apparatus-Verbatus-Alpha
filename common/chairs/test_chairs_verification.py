@@ -19,7 +19,13 @@ import json
 import pytest
 
 from common.chairs.errors import DigestMismatchRefusal, UnresolvedChairRefusal
-from common.chairs.manifests import build_manifest, manifest_digest, read_manifest, write_manifest
+from common.chairs.manifests import (
+    build_manifest,
+    file_digest,
+    manifest_digest,
+    read_manifest,
+    write_manifest,
+)
 from common.chairs.registry import CACHE_DESCRIPTOR
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
@@ -31,6 +37,65 @@ from .conftest import (
     registry_for,
     write_snapshot,
 )
+
+
+def test_file_digest_streams_the_snapshot_file_in_bounded_chunks(tmp_path, monkeypatch):
+    """Large model weights are hashed in bounded chunks, never loaded whole.
+
+    ``Path.read_bytes`` is blocked outright, and every read on the opened handle
+    is bounded, so a regression to *either* whole-file shape — ``read_bytes()``
+    or ``open().read()`` — fails by name. The bound is judged from the requested
+    size, not the bytes returned, so the fixture file can stay small.
+    """
+    weights = tmp_path / "weights.bin"
+    weights.write_bytes(b"fixture weights\n")
+
+    def whole_file_read_would_be_a_memory_regression(_path):
+        pytest.fail("snapshot digest read the entire file into memory")
+
+    monkeypatch.setattr(type(weights), "read_bytes", whole_file_read_would_be_a_memory_regression)
+
+    # Far above hashlib.file_digest's 256 KiB chunk, far below any real weights file.
+    bound = 4 * 1024 * 1024
+
+    class BoundedHandle:
+        """Proxy that refuses any single read larger than the bound.
+
+        Deliberately carries no ``getbuffer``: ``hashlib.file_digest`` takes the
+        whole buffer at once down that path, which is exactly the shape refused.
+        """
+
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._handle.__exit__(*exc_info)
+
+        def readable(self):
+            return self._handle.readable()
+
+        def readinto(self, buffer):
+            if len(buffer) > bound:
+                pytest.fail("snapshot digest read the entire file into memory")
+            return self._handle.readinto(buffer)
+
+        def read(self, size=-1):
+            if size is None or size < 0 or size > bound:
+                pytest.fail("snapshot digest read the entire file into memory")
+            return self._handle.read(size)
+
+    real_open = type(weights).open
+
+    def bounded_open(self, *args, **kwargs):
+        return BoundedHandle(real_open(self, *args, **kwargs))
+
+    monkeypatch.setattr(type(weights), "open", bounded_open)
+
+    assert file_digest(weights, "attestator_1", "weights.bin") == digest_bytes(b"fixture weights\n")
+
 
 # --- A complete match ---------------------------------------------------------------
 
