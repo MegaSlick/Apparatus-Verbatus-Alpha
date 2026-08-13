@@ -1042,6 +1042,37 @@ cmd_exec() {
     docker exec "$(container_of "$task")" "$@"
 }
 
+# **The model that writes a chamber commit is the author of it.** `new` sets a
+# placeholder identity — `git config user.name 'autoclave'`, `user.email
+# 'autoclave@localhost'` — because the chamber is created before any model is
+# chosen, and something has to be there for the clone to commit at all. Left alone,
+# that placeholder is what `commit-msg` records as the author of every line the
+# agent writes. Tyrel ruled on 2026-08-11: "Generally I don't think autoclave
+# should ever be an author on any code it should be the models who wrote it." So
+# the identity is restamped here, at dispatch — the first moment the model is
+# known — immediately before its CLI runs, in both vendor arms below.
+#
+# The address is chosen by the validated `$vendor` argument, never inferred from
+# the model's name — a name pattern misattributes the first model whose spelling
+# crosses vendors. `.githooks/commit-msg` documents these two exact no-reply
+# addresses for the `Co-Authored-By` trailer, and the author line has to agree.
+stamp_author() {
+    stamp_task="$1"
+    stamp_vendor="$2"
+    stamp_model="$3"
+    case "$stamp_vendor" in
+        claude) stamp_addr='noreply@anthropic.com' ;;
+        codex) stamp_addr='noreply@openai.com' ;;
+        *) die "cannot stamp an author for unknown vendor '$stamp_vendor'" ;;
+    esac
+    docker exec "$(container_of "$stamp_task")" sh -c \
+        "set -eu
+        cd /work
+        git config user.name '$stamp_model'
+        git config user.email '$stamp_addr'" \
+        || die "could not stamp '$stamp_model' as the commit author in chamber '$stamp_task'"
+}
+
 cmd_dispatch() {
     task="${1:-}"; check_task "$task"
     vendor="${2:-}"
@@ -1257,6 +1288,7 @@ cmd_dispatch() {
             # in a week, each dying at its first refresh, roughly eight hours in, while
             # the refresh token itself stayed valid for weeks.
             #
+            stamp_author "$task" "$vendor" "$model"
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
                 -e CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
                 -e CLAUDE_CONFIG_DIR="$AUTH_DIR_CLAUDE" \
@@ -1291,6 +1323,7 @@ cmd_dispatch() {
             # `--` before the prompt so a brief beginning with a dash is read as the
             # prompt rather than as an unknown option, and `-` as the prompt because
             # that is how `codex exec` spells "read the instructions from stdin".
+            stamp_author "$task" "$vendor" "$model"
             docker exec -e AC_MODEL="$model" -e AC_EFFORT="$effort" \
                 "$(container_of "$task")" sh -c '
                 cd /work
