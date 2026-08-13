@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import threading
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
@@ -179,10 +180,13 @@ class PodRuntime:
         self.token_factory = token_factory
         self.challenge_factory = challenge_factory
         self.controller_armer = controller_armer or FailClosedControllerArmer(now=now)
-        # Outstanding preview challenges, keyed by (action, subject). In-memory and
+        # Outstanding preview challenges, keyed by (action, subject), each holding the
+        # challenge and the hard deadline it was assessed against. In-memory and
         # per-process on purpose: a challenge that outlived the run would be exactly the
-        # replayable credential this gate exists to refuse.
-        self._outstanding: dict[tuple[str, str], str] = {}
+        # replayable credential this gate exists to refuse. The lock makes claiming one
+        # atomic, so overlapping callers cannot both spend the same confirmation.
+        self._outstanding: dict[tuple[str, str], tuple[str, datetime]] = {}
+        self._challenge_lock = threading.Lock()
 
     def preview_create(self, request: PodCreateRequest, *, mint: bool = True) -> LaunchResult:
         """Prove shutdown wiring first, then show the price estimate and ceilings.
@@ -229,7 +233,24 @@ class PodRuntime:
                 preview_result.preview,
                 detail="; ".join(preview_result.preview.assessment.reasons),
             )
-        if preview_result.preview.challenge is None:
+        # Nothing outstanding: there is no phrase to build, so say so before trying.
+        # This is an early exit, not the guard -- `_claim_challenge` re-reads under the
+        # lock, so a challenge consumed between here and there still ends in a refusal.
+        claimed = preview_result.preview.challenge is not None
+        if claimed:
+            try:
+                claimed = self._claim_challenge(
+                    "create",
+                    request.name,
+                    request.hard_deadline,
+                    preview_result.preview.confirmation_phrase,
+                    confirmation,
+                )
+            except SpendRefusal as error:
+                return LaunchResult(
+                    LaunchState.REFUSED_CONFIRMATION, preview_result.preview, detail=str(error)
+                )
+        if not claimed:
             return LaunchResult(
                 LaunchState.REFUSED_CONFIRMATION,
                 preview_result.preview,
@@ -239,13 +260,6 @@ class PodRuntime:
                     "no paid action occurred"
                 ),
             )
-        try:
-            require_confirmation(confirmation, preview_result.preview.confirmation_phrase)
-        except SpendRefusal as error:
-            return LaunchResult(
-                LaunchState.REFUSED_CONFIRMATION, preview_result.preview, detail=str(error)
-            )
-        self._consume_challenge("create", request.name)
 
         try:
             lease_id = self._token("lease id")
@@ -414,7 +428,25 @@ class PodRuntime:
                 record=preview_result.record,
                 detail="; ".join(preview_result.preview.assessment.reasons),
             )
-        if preview_result.preview.challenge is None:
+        # Same early exit as `create`, for the same reason.
+        claimed = preview_result.preview.challenge is not None
+        if claimed:
+            try:
+                claimed = self._claim_challenge(
+                    "adopt",
+                    preview_result.record.pod_id,
+                    expected.hard_deadline,
+                    preview_result.preview.confirmation_phrase,
+                    confirmation,
+                )
+            except SpendRefusal as error:
+                return LaunchResult(
+                    LaunchState.REFUSED_CONFIRMATION,
+                    preview_result.preview,
+                    record=preview_result.record,
+                    detail=str(error),
+                )
+        if not claimed:
             return LaunchResult(
                 LaunchState.REFUSED_CONFIRMATION,
                 preview_result.preview,
@@ -425,16 +457,6 @@ class PodRuntime:
                     "no paid action occurred"
                 ),
             )
-        try:
-            require_confirmation(confirmation, preview_result.preview.confirmation_phrase)
-        except SpendRefusal as error:
-            return LaunchResult(
-                LaunchState.REFUSED_CONFIRMATION,
-                preview_result.preview,
-                record=preview_result.record,
-                detail=str(error),
-            )
-        self._consume_challenge("adopt", preview_result.record.pod_id)
         try:
             lease_id = self._token("lease id")
             owner_token = self._token("lease owner token")
@@ -548,23 +570,47 @@ class PodRuntime:
             challenge = self.challenge_factory()
             if not challenge:
                 raise ValueError("challenge factory returned no challenge")
-            self._outstanding[key] = (challenge, hard_deadline)
+            with self._challenge_lock:
+                self._outstanding[key] = (challenge, hard_deadline)
         else:
             # The deadline is part of what was authorized, not merely part of what was
             # displayed. The phrase names the action, subject and both hourly rates, none
             # of which changes with lifetime -- so without this a ten-minute preview's
             # phrase would confirm a create running to the configured ceiling. The
             # ceiling still bounds the exposure; the operator's consent did not cover it.
-            held = self._outstanding.get(key)
+            with self._challenge_lock:
+                held = self._outstanding.get(key)
             challenge = held[0] if held is not None and held[1] == hard_deadline else None
         return LaunchResult(
             LaunchState.PREVIEW, PaidActionPreview(action, subject, assessment, challenge)
         )
 
-    def _consume_challenge(self, action: str, subject: str) -> None:
-        """One challenge authorizes one paid action; the next one needs a new preview."""
+    def _claim_challenge(
+        self, action: str, subject: str, hard_deadline: datetime, expected: str, typed: str | None
+    ) -> bool:
+        """Verify and consume one challenge as a single atomic step.
 
-        self._outstanding.pop((action, subject), None)
+        Reading the challenge, checking the typed phrase, and consuming it used to be
+        three separate operations. Two overlapping calls could therefore both read the
+        same outstanding challenge, both pass the check, and both create a billing pod
+        from one confirmation -- and a sequential test cannot see that.
+
+        Everything that decides the outcome happens under the lock, and the entry is
+        removed before this returns, so exactly one caller can ever win a given
+        challenge. A wrong phrase raises without consuming: a typo must not burn the
+        preview, and holding the lock makes that safe.
+
+        Returns ``False`` when no challenge matches this action, subject and deadline.
+        Raises ``SpendRefusal`` when one exists but the typed phrase does not match it.
+        """
+
+        with self._challenge_lock:
+            held = self._outstanding.get((action, subject))
+            if held is None or held[1] != hard_deadline:
+                return False
+            require_confirmation(typed, expected)
+            del self._outstanding[(action, subject)]
+            return True
 
     def _store(self, lease_id: str) -> LeaseStore:
         return LeaseStore(self.lease_root / f"{lease_id}.json")

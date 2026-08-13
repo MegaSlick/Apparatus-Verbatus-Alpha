@@ -6,8 +6,10 @@ without the paired red path would not establish that the guard is wired.
 
 from __future__ import annotations
 
+import itertools
 import json
 import subprocess
+import threading
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -18,6 +20,7 @@ import pytest
 from common.chairs.config import load_models_toml
 
 from . import cli
+from . import launch as launch_module
 from .arming import ControllerArming, ControllerReadiness
 from .bootstrap import (
     BootstrapJournal,
@@ -450,9 +453,14 @@ def test_create_and_adopt_share_the_price_ceiling_and_typed_confirmation_gate(
 def bare_runtime(
     provider: FakeProvider, clock: Clock, root: Path, *, challenge: str = TEST_CHALLENGE
 ) -> PodRuntime:
-    """A runtime that does *not* preview for you, for testing the gate itself."""
+    """A runtime that does *not* preview for you, for testing the gate itself.
 
-    tokens = iter(("a" * 32, "b" * 32))
+    Tokens are unbounded rather than a pair: the concurrency test needs a second create
+    to run far enough to be *counted* when the gate leaks, so that its assertion names
+    the two pods instead of the fixture dying of `StopIteration` first.
+    """
+
+    tokens = (f"{index:032x}" for index in itertools.count())
     return PodRuntime(
         provider,
         provider_name="fake",
@@ -602,6 +610,78 @@ def test_one_challenge_authorizes_exactly_one_adoption(tmp_path: Path) -> None:
 
     assert replay.state is LaunchState.REFUSED_CONFIRMATION
     assert "no preview in this run issued a challenge" in replay.detail
+
+
+def test_two_overlapping_creates_spend_one_challenge_exactly_once(tmp_path: Path) -> None:
+    """One confirmation must buy one pod even when two callers race for it.
+
+    Validating the challenge and consuming it used to be separate steps, so both callers
+    could read the same outstanding challenge, both pass, and both reach the provider --
+    two billing pods from one authorization. A sequential test cannot see that, because
+    the second call only fails once the first has already finished consuming.
+
+    The barrier makes the overlap real rather than hoped for: neither thread proceeds
+    past the claim until both have arrived at it.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+    create_request = request(clock)
+    pod_runtime.preview_create(create_request)
+
+    # Hold the window open *inside* the claim, between reading the challenge and
+    # consuming it, which is where the old code was interruptible. A barrier on entry to
+    # `_claim_challenge` is not enough: one thread still finishes the whole read-and-
+    # delete before the other starts, so the broken version passes it.
+    #
+    # `require_confirmation` runs at exactly that point, so the first caller to reach it
+    # waits for a second to arrive. Without the lock both threads get there and both
+    # spend the same challenge. With it, the second is still blocked acquiring the lock,
+    # the wait expires, and the first proceeds alone — so the fixed code does not
+    # deadlock, it just pauses once.
+    monkeypatched = launch_module.require_confirmation
+    gate = threading.Lock()
+    first_here = threading.Event()
+    second_here = threading.Event()
+
+    def rendezvous_then_confirm(typed, expected):
+        with gate:
+            is_first = not first_here.is_set()
+            first_here.set()
+        if is_first:
+            # Without the runtime lock the other thread reaches this same point and
+            # releases us; with it, the other thread is still blocked acquiring the
+            # lock, this wait expires, and we proceed alone.
+            second_here.wait(timeout=0.5)
+        else:
+            second_here.set()
+        return monkeypatched(typed, expected)
+
+    launch_module.require_confirmation = rendezvous_then_confirm
+    results: list[LaunchResult] = []
+    lock = threading.Lock()
+
+    def attempt() -> None:
+        outcome = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
+        with lock:
+            results.append(outcome)
+
+    threads = [threading.Thread(target=attempt) for _ in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+    finally:
+        launch_module.require_confirmation = monkeypatched
+
+    assert len(results) == 2
+    granted = [outcome for outcome in results if outcome.state is LaunchState.CREATED_GUARDED]
+    refused = [outcome for outcome in results if outcome.state is LaunchState.REFUSED_CONFIRMATION]
+    assert len(granted) == 1, "one confirmation authorized more than one pod"
+    assert len(refused) == 1, f"unexpected outcomes: {[r.state for r in results]}"
+    assert sum(1 for verb, _ in provider.calls if verb == "create") == 1, "two pods were created"
 
 
 def test_minted_challenges_are_unpredictable_and_do_not_repeat() -> None:
