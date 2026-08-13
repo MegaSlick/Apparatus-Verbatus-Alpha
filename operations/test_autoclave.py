@@ -1035,7 +1035,12 @@ class TestDispatch:
         before the CLI and carries the right address; this one exists so a third
         arm cannot be added without one.
         """
-        lines = SCRIPT.read_text().splitlines()
+        # Comment lines are stripped before matching, so a commented-out stamp
+        # call cannot satisfy this guard (CodeRabbit, PR #29).
+        lines = [
+            "" if line.lstrip().startswith("#") else line
+            for line in SCRIPT.read_text().splitlines()
+        ]
         dispatch_lines = [
             i for i, line in enumerate(lines) if 'docker exec -e AC_MODEL="$model"' in line
         ]
