@@ -88,9 +88,15 @@ def read_regular_file(path: Path, noun: str) -> bytes:
 
 
 def report_names(data: bytes, label: str, identity: str) -> bool:
-    """Require a labelled, complete identity rather than a SHA substring."""
+    """Require a labelled, complete identity rather than a SHA substring.
+
+    The optional carriage return matters: `$` in multiline mode matches before the `\\n`,
+    so a report saved with CRLF endings leaves a `\\r` between the SHA and the line end.
+    Without this the receipt refuses a report that does name its candidate, and blames
+    the missing SHA rather than the line ending.
+    """
     expression = (
-        rb"(?m)^" + re.escape(label.encode()) + rb":[ \t]*" + identity.encode() + rb"[ \t]*$"
+        rb"(?m)^" + re.escape(label.encode()) + rb":[ \t]*" + identity.encode() + rb"[ \t]*\r?$"
     )
     return re.search(expression, data) is not None
 

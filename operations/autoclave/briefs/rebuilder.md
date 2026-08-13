@@ -11,7 +11,7 @@ first. Reason from this project's needs before inspecting the read-only window.
   the commit and report. Cite third-party source and licence.
 - Build in the cleanroom route when the task requires it; run relevant checks.
 - Never edit a governed path named by `CLAUDE.md`; report proposed exact wording instead.
-  Never write `/src`, push, merge, notify, or invoke paid actions.
+  Never write `/src`, open a pull request, push, merge, notify, or invoke paid actions.
 
 Make and record ordinary engineering choices. Do not convert uncertainty into “let Tyrel
 decide” unless an applicable hard rule or governance reservation reserves the choice, or

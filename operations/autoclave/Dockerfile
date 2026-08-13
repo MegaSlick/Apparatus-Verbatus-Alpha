@@ -98,10 +98,27 @@ RUN printf 'PATH="/opt/venv/bin:$PATH"\nexport PATH\n' \
 COPY operations/autoclave/refresh_claude_token.py /opt/autoclave/refresh_claude_token.py
 # Fail the build if a future `latest` Claude CLI changes either public OAuth constant
 # the refresh helper sends. A broken image is cheaper than another eight-hour 401.
-RUN grep -a -q '9d1c250a-e61b-44d9-88ed-5944d1962f5e' \
-      /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
- && grep -a -q 'https://platform.claude.com/v1/oauth/token' \
-      /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+#
+# The version is deliberately not pinned: a pinned CLI goes quietly stale, which is the
+# failure this whole helper exists because of. So the build must say *why* it stopped --
+# a bare `grep` failure here reports nothing and looks like a broken Dockerfile rather
+# than a moved constant or a relocated launcher.
+RUN set -eu; \
+    launcher=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe; \
+    if [ ! -f "$launcher" ]; then \
+        echo "autoclave: the Claude launcher is not at $launcher." >&2; \
+        echo "autoclave: the npm package moved its entry point; find the new path and update this check and refresh_claude_token.py together." >&2; \
+        exit 1; \
+    fi; \
+    for constant in \
+        '9d1c250a-e61b-44d9-88ed-5944d1962f5e' \
+        'https://platform.claude.com/v1/oauth/token'; do \
+        if ! grep -a -q "$constant" "$launcher"; then \
+            echo "autoclave: the Claude CLI no longer carries the OAuth constant '$constant'." >&2; \
+            echo "autoclave: refresh_claude_token.py would fail against this build; read the launcher and update both together." >&2; \
+            exit 1; \
+        fi; \
+    done
 COPY operations/autoclave/agent-brief.md /opt/autoclave/CLAUDE.md
 # Claude discovers this ancestor file from /work. Codex receives a worktree copy from
 # the launcher because its discovery starts in the working directory.

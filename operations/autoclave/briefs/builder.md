@@ -9,7 +9,7 @@ Build the task from its specification and the repository's current rules. Read
 - Run the relevant tests and linter; report exact results and skipped checks.
 - Commit only task files. Do not shortcut a hook or gate you are editing.
 - Never edit a governed path named by `CLAUDE.md`; report proposed exact wording instead.
-  Never push, merge, notify, or invoke paid infrastructure.
+  Never open a pull request, push, merge, notify, or invoke paid infrastructure.
 
 Make ordinary engineering decisions from governance, goals, source, measurement, and
 prior rulings. A reviewer disagreement or hard implementation question is yours to settle

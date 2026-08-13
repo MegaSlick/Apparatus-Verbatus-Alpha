@@ -294,9 +294,13 @@ authenticated() {
 # so the helper must succeed; status then remains a second check of the resulting layout.
 refresh_claude_volume() {
     volume_asked="$1"
+    # Same reason `authenticated` takes one: inside a single `new`, a rebuild that moves
+    # the tag would otherwise refresh and verify the credential with one CLI build and
+    # then run the chamber on a different one.
+    image_asked="${2:-$IMAGE}"
     has_volume "$volume_asked" || return 1
     docker run --rm --volume "${volume_asked}:${AUTH_DIR_CLAUDE}" \
-        --env "CLAUDE_CONFIG_DIR=${AUTH_DIR_CLAUDE}" "$IMAGE" \
+        --env "CLAUDE_CONFIG_DIR=${AUTH_DIR_CLAUDE}" "$image_asked" \
         python3 /opt/autoclave/refresh_claude_token.py
 }
 
@@ -447,13 +451,29 @@ cmd_login() {
 # shape is what `test_a_chamber_holds_one_vendor_credential_or_none` reads, and it
 # is the shape of the defect it exists to catch. The tri-state handling that would
 # otherwise be duplicated into both lives here instead.
+# The refresh helper's exit code is the difference between "wait and retry" and "sign in
+# again", and telling an operator to sign in rotates a refresh token that is usually still
+# valid. Exit 1 is retryable and leaves the stored credential intact — the endpoint
+# failed, refused, another writer held the lock, or a concurrent write was restored. Exit
+# 2 is local: the credential could not be read or republished, and needs a human.
+claude_refresh_failure() {
+    case "$1" in
+        2) die "Claude's stored credential could not be read or republished, so this machine's credential state needs checking before anything else — see the message above; '$0 doctor' reports the volumes" ;;
+        *) die "Claude could not refresh its access token, and the stored credential is unchanged — retry, and only run '$0 login claude' if the retry reports the refresh token itself is rejected" ;;
+    esac
+}
+
 require_signed_in() {
+    # `new` resolves an immutable image ID and starts the chamber from it, so the
+    # credential must be refreshed and verified against that exact image rather than a
+    # tag that a concurrent rebuild can move in between.
+    image_asked="${3:-$IMAGE}"
     if [ "$1" = claude ]; then
         has_volume "$2" || die "'claude' is not signed in — run: $0 login claude"
-        refresh_claude_volume "$2" ||
-            die "Claude could not validate or refresh its credential — run: $0 login claude"
+        refreshed=0; refresh_claude_volume "$2" "$image_asked" || refreshed=$?
+        [ "$refreshed" -eq 0 ] || claude_refresh_failure "$refreshed"
     fi
-    asked=0; authenticated "$1" "$2" || asked=$?
+    asked=0; authenticated "$1" "$2" "$image_asked" || asked=$?
     [ "$asked" -eq 1 ] && die "'$1' is not signed in — run: $0 login $1"
     [ "$asked" -eq 0 ] ||
         die "'$1' could not be asked whether it is signed in, so nothing here can say the chamber will hold a working credential. Check '$0 doctor'"
@@ -560,10 +580,10 @@ cmd_new() {
     auth_mounts=""
     case "$vendor" in
         claude)
-            require_signed_in claude "$AUTH_VOL_CLAUDE"
+            require_signed_in claude "$AUTH_VOL_CLAUDE" "$image_id"
             auth_mounts="--volume ${AUTH_VOL_CLAUDE}:${AUTH_DIR_CLAUDE}" ;;
         codex)
-            require_signed_in codex "$AUTH_VOL_CODEX"
+            require_signed_in codex "$AUTH_VOL_CODEX" "$image_id"
             auth_mounts="--volume ${AUTH_VOL_CODEX}:${AUTH_DIR_CODEX}" ;;
     esac
 
@@ -1000,9 +1020,15 @@ PY
     note "  collect: $0 collect ${task}"
 }
 
+# `shell` and `exec` deliberately stay outside the lifecycle lock, on the same side as
+# `report`. `dispatch` holds that lock for the entire agent run, and a Claude dispatch
+# buffers all its output until it exits, so taking the lock here meant that for the hours
+# an agent was working the only two commands that could show what it was doing answered
+# "task is already active" -- and told the operator to remove the lock, which is the one
+# action that breaks the serialisation the lock exists to provide. Neither command
+# mutates lifecycle state: they attach to a container that is already running.
 cmd_shell() {
     task="${1:-}"; check_task "$task"
-    acquire_lifecycle_lock "$task"
     need_docker
     running "$task" || die "chamber '$task' is not running"
     docker exec -it "$(container_of "$task")" /bin/bash
@@ -1011,7 +1037,6 @@ cmd_shell() {
 cmd_exec() {
     task="${1:-}"; check_task "$task"; shift
     [ "$#" -gt 0 ] || die "a command is required"
-    acquire_lifecycle_lock "$task"
     need_docker
     running "$task" || die "chamber '$task' is not running"
     docker exec "$(container_of "$task")" "$@"
@@ -1126,8 +1151,10 @@ cmd_dispatch() {
     # a container that is already running. Claude is refreshed first because its print
     # mode does not do that itself and auth status alone accepts expired credentials.
     if [ "$vendor" = claude ]; then
-        refresh_claude_chamber "$task" ||
-            die "Claude could not validate or refresh its credential — run: $0 login claude"
+        # Same three-way split as `require_signed_in`: a transient endpoint failure
+        # during dispatch must not read as a lost sign-in.
+        refreshed=0; refresh_claude_chamber "$task" || refreshed=$?
+        [ "$refreshed" -eq 0 ] || claude_refresh_failure "$refreshed"
     fi
     check=$(auth_check "$vendor")
     docker exec "$(container_of "$task")" sh -c "$check" >/dev/null 2>&1 || die \
@@ -1297,9 +1324,6 @@ cmd_collect() {
         "$(container_of "$task")" 2>/dev/null) || chamber_base=""
     [ -n "$chamber_base" ] || die "chamber '$task' records no base, so nothing here can say what it added"
 
-    git_common=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir) ||
-        die "could not locate this repository's common git directory; nothing was collected"
-
     # **Work that was never added counts as uncommitted.** A bundle carries commits, so
     # anything still loose in the chamber's tree is left behind — and `rm` then destroys
     # the only copy of it. `git diff` and `git diff --cached` between them see modified
@@ -1339,9 +1363,20 @@ cmd_collect() {
     # into a host-owned file under git's common directory. Verification and fetch use
     # that one snapshot only. A linked worktree has `.git` as a file, hence
     # `--git-common-dir` rather than spelling `${REPO_ROOT}/.git`.
+    #
+    # The snapshot is created beside where `retain` will move it, not under git's common
+    # directory. Both locations are host-owned and outside the chamber's `/out` mount, so
+    # the security property is the same — but in a linked worktree the common directory
+    # and `${OUT_ROOT}` can sit on different filesystems, and `retain`'s `os.replace`
+    # then raises `EXDEV` *after* the local branch has already been updated. Collection
+    # would fail without retaining the recovery bundle: the one artefact that exists so a
+    # later `rm` cannot destroy unrecoverable work. `.collected` is never mounted.
     [ -L "$bundle_out" ] && die "bundle slot ${bundle_out} is a symlink — refusing to read through it"
     [ -f "$bundle_out" ] || die "bundle did not appear at ${bundle_out}"
-    bundle_snapshot=$(mktemp "${git_common}/autoclave-bundle.${task}.XXXXXX") ||
+    snapshot_dir="${OUT_ROOT}/.collected"
+    mkdir -p "$snapshot_dir" ||
+        die "could not create the host-owned snapshot directory ${snapshot_dir}; nothing was fetched"
+    bundle_snapshot=$(mktemp "${snapshot_dir}/autoclave-bundle.${task}.XXXXXX") ||
         die "could not create a host-owned bundle snapshot; nothing was fetched"
     LIFECYCLE_SNAPSHOT="$bundle_snapshot"
     if ! python3 "$SAFE_FILE" read "$bundle_out" > "$bundle_snapshot"; then

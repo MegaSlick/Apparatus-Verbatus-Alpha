@@ -8,7 +8,18 @@ from operations.autoclave.fingerprint import INPUTS, digest
 def test_the_declared_inputs_cover_every_baked_file():
     root = Path(__file__).parents[2]
     dockerfile = (root / "operations/autoclave/Dockerfile").read_text()
-    copied = set(re.findall(r"(?m)^COPY\s+(\S+)\s+\S+\s*$", dockerfile))
+    # Every COPY must be understood, not merely the two-token spelling. The old pattern
+    # required exactly `COPY <src> <dst>`, so `COPY --chown=agent:agent src dst`, a
+    # multi-source `COPY a b dir/`, or a continued line simply dropped out of `copied` --
+    # and both comparisons below still passed. A file baked in that way would never reach
+    # INPUTS, the fingerprint would stop moving when it changed, and the launcher would
+    # accept a stale image as current. That is the same defect its stale-image test names.
+    statements = re.findall(r"(?m)^COPY\s+(.*)$", dockerfile)
+    copied = set()
+    for statement in statements:
+        tokens = [token for token in statement.split() if not token.startswith("--")]
+        assert len(tokens) >= 2, f"this COPY was not understood: {statement!r}"
+        copied.update(tokens[:-1])
     admitted = {
         line[1:]
         for line in (root / ".dockerignore").read_text().splitlines()
@@ -36,6 +47,29 @@ def test_every_declared_input_changes_the_fingerprint(tmp_path):
         path.write_bytes(before + b" changed")
         assert digest(tmp_path) != original, f"{relative} does not affect the fingerprint"
         path.write_bytes(before)
+
+
+def test_moving_bytes_between_two_inputs_changes_the_fingerprint(tmp_path):
+    """The property, asserted without restating the algorithm.
+
+    `test_paths_are_part_of_the_fingerprint` below rebuilds `digest`'s exact update
+    sequence, so anyone editing `digest` will edit it to match and it will then agree with
+    whatever the implementation now does. This one cannot be satisfied that way: if the
+    path were not bound to its bytes, swapping two inputs' contents would leave the digest
+    unchanged.
+    """
+
+    first, second = INPUTS[0], INPUTS[1]
+    for relative in INPUTS:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(relative.encode())
+
+    original = digest(tmp_path)
+    (tmp_path / first).write_bytes(second.encode())
+    (tmp_path / second).write_bytes(first.encode())
+
+    assert digest(tmp_path) != original, "the fingerprint ignores which path holds which bytes"
 
 
 def test_paths_are_part_of_the_fingerprint(tmp_path):

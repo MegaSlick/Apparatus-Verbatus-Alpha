@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -95,7 +96,15 @@ def test_receipt_binds_the_report_and_refuses_a_moved_head(tmp_path):
     assert json.loads(output.read_text()) == record
     assert record["candidate"] == candidate
     assert len(record["report_sha256"]) == 64
-    snapshot = tmp_path / record["report"]
+    # Pin the form of `report`, because nothing else here does. `tmp_path / record[...]`
+    # discards `tmp_path` whenever the right operand is absolute, so that join passed
+    # under either form and left the field's shape untested. If someone made it relative
+    # -- which the README's "under workbench/raw/reviews/<candidate>/" invites -- a tool
+    # reading receipts would resolve it against the wrong directory and call the reviewed
+    # snapshot missing. The receipt is the whole evidence artefact; its pointer is pinned.
+    assert Path(record["report"]).is_absolute(), "the receipt must name the snapshot unambiguously"
+    snapshot = Path(record["report"])
+    assert snapshot.parent == tmp_path / "workbench" / "raw" / "reviews" / candidate
     assert snapshot.read_bytes() == report.read_bytes()
     assert record["report_sha256"] == hashlib.sha256(snapshot.read_bytes()).hexdigest()
 
@@ -192,7 +201,7 @@ def test_receipt_is_idempotent_when_the_source_changes_or_is_removed(tmp_path):
     repeated, record = receipt(tmp_path, candidate, base, "Independent Sol", second)
     assert repeated == output and record == original
     assert json.loads(output.read_text()) == original
-    assert (tmp_path / record["report"]).read_text() == body
+    assert Path(record["report"]).read_text() == body
 
 
 def test_receipt_recovers_after_a_partial_publication(tmp_path, monkeypatch):
@@ -221,7 +230,7 @@ def test_receipt_recovers_after_a_partial_publication(tmp_path, monkeypatch):
     monkeypatch.setattr(candidate_module, "publish_immutable", actual_publish)
     output, record = receipt(tmp_path, candidate, base, "Independent Sol", report)
     assert output.is_file()
-    assert (tmp_path / record["report"]).read_bytes() == report.read_bytes()
+    assert Path(record["report"]).read_bytes() == report.read_bytes()
 
 
 def test_partial_write_never_publishes_a_receipt_or_leaves_a_temp_file(tmp_path, monkeypatch):

@@ -11,9 +11,9 @@ The main session performs this. Never delegate it.
 ## 1. Sync the view
 
 ```sh
-git fetch origin
+git fetch origin || echo "FETCH FAILED — the checkout may be stale; stop here"
 git status --short --branch
-git rev-list --left-right --count origin/main...HEAD
+git rev-list --left-right --count origin/main...HEAD   # only if the fetch above succeeded
 ```
 
 If fetch fails, stop the start procedure before reading `origin/main`, measuring distance,

@@ -21,7 +21,15 @@ def digest(root: Path) -> str:
     value = hashlib.sha256()
     for relative in INPUTS:
         path = root / relative
-        data = path.read_bytes()
+        try:
+            data = path.read_bytes()
+        except OSError as error:
+            # These are tracked repository paths, never secrets, so naming the one that
+            # failed costs nothing. `build` and `new` both stop here; without the name
+            # the operator is told that one of six files might be the problem.
+            raise OSError(
+                error.errno, f"cannot read the image input {relative}: {error.strerror}"
+            ) from error
         value.update(relative.encode("utf-8"))
         value.update(b"\0")
         value.update(len(data).to_bytes(8, "big"))
@@ -30,11 +38,15 @@ def digest(root: Path) -> str:
 
 
 def main() -> int:
-    root = Path(sys.argv[1]).resolve() if len(sys.argv) == 2 else Path(__file__).parents[2]
+    # Both branches resolve: a relative invocation from another directory would
+    # otherwise produce a relative root, and the two spellings would disagree.
+    root = (
+        Path(sys.argv[1]).resolve() if len(sys.argv) == 2 else Path(__file__).resolve().parents[2]
+    )
     try:
         print(digest(root))
     except OSError as error:
-        print(f"fingerprint: cannot read an image input ({type(error).__name__})", file=sys.stderr)
+        print(f"fingerprint: {error}", file=sys.stderr)
         return 1
     return 0
 

@@ -31,13 +31,30 @@ def writes(path: Path) -> bool:
 
 
 def affirmative_governing_read_directive(text: str) -> str | None:
+    """The read directive, and only when nothing in the brief acts before it.
+
+    `first` is the word being tested, so position has to be part of the match. Matching
+    any later sentence accepted `Edit /work. Read ... from /work first.` -- a brief that
+    tells the agent to act before it reads the documents that bind the action, with every
+    assertion below still green.
+    """
+
     introduction = " ".join(text.split("\n-", 1)[0].split())
     match = re.search(
         r"(?:^|[.!?]\s+)read\s+(.+?)\s+(?:from|in)\s+`?/work`?\s+first\.",
         introduction,
         re.I,
     )
-    return None if match is None else match.group(0).lstrip(".!? ")
+    if match is None:
+        return None
+    # Nothing may aim an action at the tree before that sentence. Scoped to `/work`
+    # deliberately: a brief may state its purpose ("Build the task from its
+    # specification") before the read without having touched anything.
+    preceding = introduction[: match.start()]
+    acts_on_work = re.search(
+        r"\b(edit|write|change|modify|inspect|run|commit)\b[^.!?]*`?/work`?", preceding, re.I
+    )
+    return None if acts_on_work else match.group(0).lstrip(".!? ")
 
 
 def test_the_roster_is_not_empty():
@@ -152,6 +169,19 @@ def test_negative_wording_is_not_a_governing_read_directive():
     assert (
         affirmative_governing_read_directive(
             "# Builder\n\nDo not read README.md and the governing documents from /work first."
+        )
+        is None
+    )
+
+
+def test_a_directive_that_acts_before_it_reads_is_not_a_governing_read_directive():
+    """The regression the old matcher admitted: reading `first`, but not actually first."""
+
+    assert (
+        affirmative_governing_read_directive(
+            "# Builder\n\nEdit /work as the task requires. "
+            "Read GOALS.md, GOVERNANCE.md, ARCHITECTURE.md, GLOSSARY.md, "
+            "and CLAUDE.md from /work first."
         )
         is None
     )

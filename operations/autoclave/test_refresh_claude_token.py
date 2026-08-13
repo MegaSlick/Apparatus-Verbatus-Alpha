@@ -307,11 +307,60 @@ def test_a_failed_restoring_exchange_preserves_the_displaced_concurrent_credenti
     assert displaced["claudeAiOauth"]["accessToken"] == "old-access"
 
 
+def test_a_failed_restoring_exchange_is_reported_to_the_launcher_as_a_failure(
+    tmp_path, monkeypatch, capsys
+):
+    """The test above proves the displaced credential survives; this proves the exit code.
+
+    `RestoreConcurrentCredential` is the worst state this helper reaches: the new
+    credential is live, the other writer's credential is in a temporary file, and a human
+    has to choose. The test above calls `publish` directly, so it never sees what `main`
+    reports. If a later broad `except` or a reordered handler mapped this to 0, the
+    launcher would read the refresh as successful and build a chamber against a credential
+    state nobody reconciled -- with every other test in this file still green. Hard rule 7
+    and GOVERNANCE 2 both forbid a success status over unreconciled evidence.
+    """
+
+    path = write_credential(tmp_path, monkeypatch, expires_at=1)
+    original_exchange = refresh.exchange_paths
+    exchanges = []
+
+    def exchange(first, second):
+        exchanges.append((first, second))
+        if len(exchanges) == 1:
+            concurrent = json.loads(path.read_text(encoding="utf-8"))
+            concurrent["vendorWrite"] = "kept"
+            path.write_text(json.dumps(concurrent), encoding="utf-8")
+            original_exchange(first, second)
+        else:
+            raise OSError(errno.EIO, "restoring exchange failed")
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: Response(
+            json.dumps({"access_token": "new-access", "expires_in": 3_600})
+        ),
+    )
+    monkeypatch.setattr(refresh, "exchange_paths", exchange)
+
+    assert refresh.main() == 2, "a two-credential state was reported as a successful refresh"
+
+    error = capsys.readouterr().err
+    assert "new-access" not in error, "a token was printed"
+    assert "credential changed concurrently" in error
+    assert list(path.parent.glob(".credentials.tmp.*")), "the recoverable copy was not named"
+
+
 def test_dockerfile_pins_both_oauth_constants_from_the_refresh_helper():
     dockerfile = Path(__file__).with_name("Dockerfile").read_text(encoding="utf-8")
 
-    assert f"grep -a -q '{refresh.CLIENT_ID}'" in dockerfile
-    assert f"grep -a -q '{refresh.TOKEN_URL}'" in dockerfile
+    # The constants, not the shell spelling. The build checks them in a loop that names
+    # which one moved; pinning `grep -a -q '<value>'` made improving that message a
+    # test failure while both constants were still verified.
+    assert refresh.CLIENT_ID in dockerfile
+    assert refresh.TOKEN_URL in dockerfile
+    assert "grep -a -q" in dockerfile, "the build no longer greps the launcher"
 
 
 def test_the_deadline_is_disarmed_after_response_parsing_before_publication(tmp_path, monkeypatch):

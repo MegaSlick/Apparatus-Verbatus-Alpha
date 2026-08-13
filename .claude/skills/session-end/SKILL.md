@@ -13,10 +13,10 @@ Run this when Tyrel asks to close the session. The main session owns it.
 Run unfiltered:
 
 ```sh
-git fetch origin
+git fetch origin || echo "FETCH FAILED — record it; do not measure divergence or park"
 git status --porcelain
 git status --short --branch
-git rev-list --left-right --count origin/main...HEAD
+git rev-list --left-right --count origin/main...HEAD   # only if the fetch above succeeded
 python3 .githooks/tidy.py
 ```
 

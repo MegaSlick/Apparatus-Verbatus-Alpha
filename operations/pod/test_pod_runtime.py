@@ -29,7 +29,7 @@ from .bootstrap import (
 )
 from .controllers import ControllerResult, ControllerState, LaptopSupervisor, PodDeadmanTimer
 from .fake_provider import FakeProvider
-from .launch import LaunchState, PodRuntime, _bind_report_path_to_launch
+from .launch import LaunchResult, LaunchState, PodRuntime, _bind_report_path_to_launch
 from .lease import LeaseStore, PodLease
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
@@ -58,7 +58,13 @@ from .preflight import (
     load_placement_table,
 )
 from .shutdown import VerifiedShutdown
-from .spend import CONFIRMATION_PREFIX, SpendPolicy, confirmation_phrase
+from .spend import (
+    CHALLENGE_BYTES,
+    CONFIRMATION_PREFIX,
+    SpendPolicy,
+    confirmation_phrase,
+    mint_challenge,
+)
 
 UTC = timezone.utc
 START = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
@@ -68,11 +74,18 @@ START = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
 # out from the same inputs the preview would rather than reuse a constant.
 POD_HOURLY = Decimal("0.77")
 VOLUME_HOURLY = Decimal("0.05")
-CREATE_CONFIRMATION = confirmation_phrase("create", "pod-runtime-test", POD_HOURLY, VOLUME_HOURLY)
+
+# A real challenge is unpredictable by design, which a test cannot spell out in advance.
+# These tests pin it instead, so the phrase stays computable here; the property that it
+# is unguessable in production belongs to `mint_challenge`, which is tested separately.
+TEST_CHALLENGE = "0F1E2D3C4B5A6978"
+CREATE_CONFIRMATION = confirmation_phrase(
+    "create", "pod-runtime-test", POD_HOURLY, VOLUME_HOURLY, TEST_CHALLENGE
+)
 
 
 def adopt_confirmation(pod_id: str) -> str:
-    return confirmation_phrase("adopt", pod_id, POD_HOURLY, VOLUME_HOURLY)
+    return confirmation_phrase("adopt", pod_id, POD_HOURLY, VOLUME_HOURLY, TEST_CHALLENGE)
 
 
 @dataclass
@@ -357,6 +370,29 @@ def shutdown(
     )
 
 
+class PreviewingRuntime(PodRuntime):
+    """A runtime that previews before it confirms, exactly as ``cli.main`` does.
+
+    The paid gate only accepts a challenge some preview actually issued, so a bare
+    ``create`` with a typed phrase is refused. Most tests below are about leases,
+    arming, timers or shutdown rather than about the gate, and staging a preview in
+    each of them would bury what they are testing. This stages it once.
+
+    Tests that *are* about the gate use `PodRuntime` directly, so nothing here can
+    hide a missing challenge: see the no-preview and replay tests.
+    """
+
+    def create(self, request: PodCreateRequest, *, confirmation: str | None) -> LaunchResult:
+        self.preview_create(request)
+        return super().create(request, confirmation=confirmation)
+
+    def adopt(
+        self, pod_id: str, *, expected: PodCreateRequest, confirmation: str | None
+    ) -> LaunchResult:
+        self.preview_adopt(pod_id, expected=expected)
+        return super().adopt(pod_id, expected=expected, confirmation=confirmation)
+
+
 def runtime(
     provider: FakeProvider,
     clock: Clock,
@@ -366,7 +402,7 @@ def runtime(
     armer: FakeControllerArmer | None = None,
 ) -> PodRuntime:
     tokens = iter(("a" * 32, "b" * 32))
-    return PodRuntime(
+    return PreviewingRuntime(
         provider,
         provider_name="fake",
         spend_policy=spend or policy(),
@@ -374,6 +410,7 @@ def runtime(
         shutdown=shutdown(provider, clock),
         now=clock.now,
         token_factory=lambda: next(tokens),
+        challenge_factory=lambda: TEST_CHALLENGE,
         controller_armer=armer or FakeControllerArmer(clock, provider),
     )
 
@@ -408,6 +445,100 @@ def test_create_and_adopt_share_the_price_ceiling_and_typed_confirmation_gate(
     assert refused_adopt.preview is not None
     assert refused_adopt.preview.confirmation_phrase == adopt_confirmation(existing.pod_id)
     assert list(tmp_path.glob("*.json")) == []
+
+
+def bare_runtime(
+    provider: FakeProvider, clock: Clock, root: Path, *, challenge: str = TEST_CHALLENGE
+) -> PodRuntime:
+    """A runtime that does *not* preview for you, for testing the gate itself."""
+
+    tokens = iter(("a" * 32, "b" * 32))
+    return PodRuntime(
+        provider,
+        provider_name="fake",
+        spend_policy=policy(),
+        lease_root=root,
+        shutdown=shutdown(provider, clock),
+        now=clock.now,
+        token_factory=lambda: next(tokens),
+        challenge_factory=lambda: challenge,
+        controller_armer=FakeControllerArmer(clock, provider),
+    )
+
+
+def test_a_create_nobody_previewed_is_refused_even_with_the_derived_phrase(
+    tmp_path: Path,
+) -> None:
+    """The price is public; being shown a preview is not.
+
+    Every component of the old phrase came from the price sheet, so any caller able to
+    read the config could compute it and spend money without a human ever seeing the
+    preview. The challenge is what closes that: with no preview issued in this run there
+    is no phrase to derive, and `create` must refuse before it reaches the provider.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+
+    result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_CONFIRMATION
+    assert not result.green
+    assert "no preview issued a challenge" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls), "a pod was created anyway"
+    assert list(tmp_path.glob("*.json")) == []
+
+
+def test_one_challenge_authorizes_exactly_one_paid_create(tmp_path: Path) -> None:
+    """A confirmation is spent when it is used, so a replay buys nothing.
+
+    Without this, one preview would stand as open authorization for as many pods as a
+    caller cared to create -- each of them billing by the hour.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+    create_request = request(clock)
+
+    pod_runtime.preview_create(create_request)
+    first = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
+    assert first.state is LaunchState.CREATED_GUARDED
+
+    created = sum(1 for verb, _ in provider.calls if verb == "create")
+    replay = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
+
+    assert replay.state is LaunchState.REFUSED_CONFIRMATION
+    assert "no preview issued a challenge" in replay.detail
+    assert sum(1 for verb, _ in provider.calls if verb == "create") == created
+
+
+def test_a_confirmation_from_a_different_preview_names_itself(tmp_path: Path) -> None:
+    """A stale challenge is not a typo, and must not be reported as one."""
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path, challenge="FFFFFFFFFFFFFFFF")
+    create_request = request(clock)
+
+    pod_runtime.preview_create(create_request)
+    # CREATE_CONFIRMATION names TEST_CHALLENGE; this runtime issued a different one.
+    result = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_CONFIRMATION
+    assert "different preview challenge" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_minted_challenges_are_unpredictable_and_do_not_repeat() -> None:
+    """The gate rests on this: a guessable challenge is no challenge at all."""
+
+    minted = {mint_challenge() for _ in range(256)}
+
+    assert len(minted) == 256, "mint_challenge repeated a value"
+    assert all(len(value) == CHALLENGE_BYTES * 2 for value in minted)
+    assert all(set(value) <= set("0123456789ABCDEF") for value in minted)
 
 
 def test_a_price_move_between_preview_and_confirmation_names_itself(tmp_path: Path) -> None:
@@ -515,10 +646,15 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
     assert CONFIRMATION_PREFIX in observed["prompt"]
     # The prompt carries the phrase for *this* pod at *this* price — not a
     # constant an operator could have typed without reading the preview above.
-    assert (
-        confirmation_phrase("create", "cli-preview-test", POD_HOURLY, VOLUME_HOURLY)
-        in observed["prompt"]
-    )
+    # The real CLI mints a random challenge, so the price-bearing head is checked
+    # literally and the challenge is checked for being present and non-empty: an
+    # unguessable tail is exactly the part a test cannot spell out in advance.
+    head = confirmation_phrase(
+        "create", "cli-preview-test", POD_HOURLY, VOLUME_HOURLY, "X"
+    ).removesuffix(" CHALLENGE X")
+    assert head in observed["prompt"]
+    challenge = observed["prompt"].split(" CHALLENGE ", 1)[1].split("'", 1)[0].strip()
+    assert len(challenge) == CHALLENGE_BYTES * 2, "the CLI prompt carried no live challenge"
     assert "refused-confirmation" in capsys.readouterr().out
     assert not any(verb == "create" for verb, _ in provider.calls)
 
@@ -1093,7 +1229,7 @@ def test_an_adoption_lease_that_cannot_be_read_back_closes_the_pod(tmp_path: Pat
         def load(self) -> PodLease | None:
             return None
 
-    class BlindRuntime(PodRuntime):
+    class BlindRuntime(PreviewingRuntime):
         def _store(self, lease_id: str) -> LeaseStore:
             return BlindStore(self.lease_root / f"{lease_id}.json")
 
@@ -1106,6 +1242,7 @@ def test_an_adoption_lease_that_cannot_be_read_back_closes_the_pod(tmp_path: Pat
         shutdown=shutdown(provider, clock),
         now=clock.now,
         token_factory=lambda: next(tokens),
+        challenge_factory=lambda: TEST_CHALLENGE,
         controller_armer=FakeControllerArmer(clock, provider),
     )
 
@@ -1134,7 +1271,7 @@ def test_a_request_that_cannot_be_sealed_is_named_a_request_refusal_not_a_lease_
     clock = Clock()
     provider = fake(clock)
 
-    class UnsealableRuntime(PodRuntime):
+    class UnsealableRuntime(PreviewingRuntime):
         def _sealed_request(
             self, request: PodCreateRequest, launch_token: str, estimate: object
         ) -> PodCreateRequest:
@@ -1149,6 +1286,7 @@ def test_a_request_that_cannot_be_sealed_is_named_a_request_refusal_not_a_lease_
         shutdown=shutdown(provider, clock),
         now=clock.now,
         token_factory=lambda: next(tokens),
+        challenge_factory=lambda: TEST_CHALLENGE,
         controller_armer=FakeControllerArmer(clock, provider),
     )
 
@@ -2060,7 +2198,7 @@ def test_two_launches_on_one_volume_get_distinct_report_paths(tmp_path: Path) ->
     clock = Clock()
     provider = fake(clock)
     tokens = iter(("a" * 32, "b" * 32, "c" * 32, "d" * 32))
-    pod_runtime = PodRuntime(
+    pod_runtime = PreviewingRuntime(
         provider,
         provider_name="fake",
         spend_policy=policy(),
@@ -2068,6 +2206,7 @@ def test_two_launches_on_one_volume_get_distinct_report_paths(tmp_path: Path) ->
         shutdown=shutdown(provider, clock),
         now=clock.now,
         token_factory=lambda: next(tokens),
+        challenge_factory=lambda: TEST_CHALLENGE,
         controller_armer=FakeControllerArmer(clock, provider),
     )
 

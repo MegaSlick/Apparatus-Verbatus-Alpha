@@ -113,8 +113,11 @@ def test_no_witness_outcome_terminates_an_act():
     among witnesses. If any witness outcome ever mapped to a terminal category,
     chair results would decide an act's fate: a picker wearing an accounting name.
 
-    CLAUDE.md hard rule 8 forbids building a picker. This test is where an accidental
-    outcome-based picker would be caught.
+    Scope, stated so this is not read as more than it is: this catches one specific
+    shape of accidental picker — an *outcome* that terminates an act. A stage that
+    selected among witnesses without touching this mapping would pass here untouched,
+    so this is not a general guarantee against hard rule 8. `pipeline/5_recensor`'s
+    quality-firewall tests constrain the recovery gate's inputs, which is the other half.
     """
     terminating = [
         outcome

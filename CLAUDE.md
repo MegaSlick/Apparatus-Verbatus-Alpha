@@ -93,8 +93,9 @@ one clean candidate commit through `operations/review/README.md`, never a moving
 fix creates a new candidate and invalidates earlier reviews; the pushed tip is the exact
 candidate the final reviewers read. Pre-push CodeRabbit uses the CLI against `origin/main`;
 after the push, wait for the automatic GitHub review before replying. Fix or decline every
-real finding with a reason. Record a reviewing agent with a `Reviewed-by:` trailer naming
-the model that answered. A pull request records decisions and rationale; it does not carry
+real finding with a reason. A commit records both halves of its provenance, separately:
+`Co-Authored-By:` names the model that wrote the lines, and `Reviewed-by:` names the model
+that reviewed them. A pull request records decisions and rationale; it does not carry
 open engineering questions to Tyrel.
 
 Local hooks refuse direct-main pushes and scan outgoing history for credentials and large
@@ -106,3 +107,10 @@ payloads. The Claude guard also blocks disabling those hooks. `--no-verify` and
 Lead with the outcome. Say which checks actually ran, what remains blocked, and the one
 recommended next action. Ask only when rule 1 reserves the choice, governance genuinely
 conflicts, or progress cannot continue after reasonable investigation. Otherwise decide.
+
+**Finish the task before reporting.** A progress report is not a stopping point. While
+work already named as remaining is unblocked, carry on in the same reply instead of
+handing back a status. Stop when the work is done, when Tyrel names a checkpoint or says
+stop, or when a rule-1 gate blocks what is left — and then say plainly that you are
+stopping and why. Never close a reply with an intention to continue: nothing runs between
+replies, so "I will keep going" ends the work until Tyrel notices it stopped.

@@ -27,11 +27,17 @@ from pathlib import Path
 
 import pytest
 
+from operations.autoclave.fingerprint import INPUTS as FINGERPRINT_INPUTS
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "operations" / "autoclave" / "autoclave.sh"
 SAFE_FILE = ROOT / "operations" / "autoclave" / "safe_file.py"
 BRIEF = ROOT / "operations" / "autoclave" / "agent-brief.md"
 FINGERPRINT = ROOT / "operations" / "autoclave" / "fingerprint.py"
+# The single declaration of what the image bakes in. `elsewhere` stages exactly these so
+# `fingerprint.py` can run in a throwaway repository; keeping a second list here is what
+# `test_the_declared_inputs_cover_every_baked_file` exists to make unnecessary.
+IMAGE_INPUTS = FINGERPRINT_INPUTS
 
 
 def run(*args, cwd=None, env=None, script=SCRIPT):
@@ -56,6 +62,21 @@ def git(repo, *args):
     ).stdout.strip()
 
 
+def assert_no_incoming_ref(repo):
+    """No ref anywhere under the incoming namespace, whatever the launcher named it.
+
+    Asking for one guessed name proves nothing: the launcher writes
+    `refs/autoclave/incoming/<task>-<nonce>`, so `rev-parse --verify` on a fixed
+    `.../task-x` returns non-zero no matter what happened. A stray ref keeps a fetched
+    chamber commit reachable, which is what lets `rm` believe the work is safely in this
+    repository and destroy the container -- the output then survives only under a ref
+    nobody reads. The namespace is the thing to ask about.
+    """
+
+    leaked = git(repo, "for-each-ref", "--format=%(refname)", "refs/autoclave/incoming/")
+    assert leaked == "", f"a refused collection left an incoming ref behind: {leaked}"
+
+
 def elsewhere(tmp_path):
     """A copy of the launcher in a throwaway repository of its own.
 
@@ -75,17 +96,16 @@ def elsewhere(tmp_path):
     # repository without it would fail every chamber creation for the wrong reason.
     assert BRIEF.is_file(), f"required launcher input is missing: {BRIEF}"
     shutil.copy2(BRIEF, directory / BRIEF.name)
-    for source, destination in (
-        (FINGERPRINT, directory / FINGERPRINT.name),
-        (ROOT / "operations" / "autoclave" / "Dockerfile", directory / "Dockerfile"),
-        (
-            ROOT / "operations" / "autoclave" / "refresh_claude_token.py",
-            directory / "refresh_claude_token.py",
-        ),
-        (ROOT / "requirements-dev.txt", tmp_path / "requirements-dev.txt"),
-        (ROOT / ".dockerignore", tmp_path / ".dockerignore"),
-    ):
+    # Derived from the one declaration rather than listed again. `fake_docker` runs
+    # `fingerprint.py` inside this throwaway repository with `check=True`, so every path
+    # in `INPUTS` has to exist here. A second hand-maintained copy drifts the moment
+    # somebody bakes in a new file, and the whole suite then fails at once inside a
+    # subprocess traceback that sends the reader debugging the harness, not their change.
+    for relative in IMAGE_INPUTS:
+        source = ROOT / relative
         assert source.is_file(), f"required launcher input is missing: {source}"
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
         if source != destination:
             shutil.copy2(source, destination)
     subprocess.run(["git", "init", "--quiet", "-b", "work/test", str(tmp_path)], check=True)
@@ -150,8 +170,14 @@ if hold_on and hold_on in " ".join(args):
     if ready:
         open(ready, "w").close()
     release = setting("FAKE_HOLD_RELEASE")
+    if not release:
+        # A hold with no release file used to fall straight through: the stub returned at
+        # once, the second dispatch found no lock held, and the tests proving two agents
+        # cannot occupy one chamber passed on a race they never staged.
+        sys.stderr.write("fake docker: a hold was requested with no release file\\n")
+        raise SystemExit(126)
     deadline = time.monotonic() + 60
-    while release and not os.path.exists(release):
+    while not os.path.exists(release):
         if time.monotonic() >= deadline:
             sys.stderr.write(f"fake docker: hold was never released: {release}\\n")
             raise SystemExit(126)
@@ -1089,7 +1115,11 @@ def test_fingerprint_names_a_missing_image_input(tmp_path):
     )
 
     assert result.returncode != 0
-    assert "cannot read an image input" in result.stderr
+    # The name of this test is the assertion: the old message said only that *an* input
+    # could not be read, leaving the operator to check six files. Naming the file is the
+    # behaviour under test, so the file name is what is asserted.
+    assert ".dockerignore" in result.stderr, "the failure did not name the missing input"
+    assert "cannot read the image input" in result.stderr
 
 
 def test_a_second_dispatch_for_the_same_task_is_refused_while_the_first_runs(tmp_path):
@@ -1147,17 +1177,40 @@ def test_a_second_dispatch_for_the_same_task_is_refused_while_the_first_runs(tmp
     ("command", "arguments"),
     (("shell", ("task-x",)), ("exec", ("task-x", "true"))),
 )
-def test_manual_access_joins_the_task_lifecycle_lock(tmp_path, command, arguments):
+def test_manual_access_still_works_while_a_dispatch_holds_the_lock(tmp_path, command, arguments):
+    """Watching a running agent is the whole point of these two commands.
+
+    They used to take the exclusive lifecycle lock. `dispatch` holds that lock for the
+    entire agent run, and a Claude dispatch buffers its output until it exits, so for the
+    hours an agent worked the only two commands that could show what it was doing answered
+    "task is already active" -- and the refusal suggested removing the lock, which is the
+    one action that breaks the serialisation the lock provides.
+
+    Neither command mutates lifecycle state: they attach to a container that is already
+    running, and the agent inside it is already executing arbitrary code. `collect`
+    defends against concurrent drawer writes with its own single snapshot rather than by
+    excluding the operator. So these sit beside `report`, outside the lock.
+    """
+
     script = elsewhere(tmp_path)
     env, log = fake_docker(tmp_path)
+    # `FAKE_EXEC_STATUS` is 0 because what the operator's command returns is not the
+    # subject here; whether the lock let them reach the container is.
+    env.update(
+        {
+            "FAKE_CONTAINER_EXISTS": "1",
+            "FAKE_CONTAINER_RUNNING": "1",
+            "FAKE_EXEC_STATUS": "0",
+        }
+    )
     lock = tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock"
     lock.mkdir(parents=True)
 
     result = run(command, *arguments, env=env, script=script, cwd=tmp_path)
 
-    assert result.returncode != 0
-    assert str(lock) in result.stderr
-    assert not any(call[:1] == ["exec"] for call in docker_calls(log))
+    assert result.returncode == 0, result.stderr
+    assert str(lock) not in result.stderr
+    assert any(call[:1] == ["exec"] for call in docker_calls(log)), "the container was not reached"
 
 
 def test_a_signal_releases_the_task_lock(tmp_path):
@@ -1311,20 +1364,7 @@ class TestWhatComesBackAndWhatIsDestroyed:
             ).returncode
             != 0
         )
-        assert (
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(tmp_path),
-                    "rev-parse",
-                    "--verify",
-                    "refs/autoclave/incoming/task-x",
-                ],
-                capture_output=True,
-            ).returncode
-            != 0
-        )
+        assert_no_incoming_ref(tmp_path)
 
     def test_collect_does_not_replace_divergent_local_agent_work(self, tmp_path):
         script, _clone, _drawer, env, _log = self.chamber(tmp_path)
@@ -1346,20 +1386,7 @@ class TestWhatComesBackAndWhatIsDestroyed:
         assert result.returncode != 0
         assert "contains work" in result.stderr
         assert git(tmp_path, "rev-parse", "agent/task-x") == local_tip
-        assert (
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(tmp_path),
-                    "rev-parse",
-                    "--verify",
-                    "refs/autoclave/incoming/task-x",
-                ],
-                capture_output=True,
-            ).returncode
-            != 0
-        )
+        assert_no_incoming_ref(tmp_path)
 
     def test_collect_does_not_move_an_agent_branch_checked_out_elsewhere(self, tmp_path):
         """A checked-out branch is another worktree, not merely a ref.
@@ -1378,20 +1405,7 @@ class TestWhatComesBackAndWhatIsDestroyed:
             assert result.returncode != 0
             assert "checked out in a worktree" in result.stderr
             assert git(tmp_path, "rev-parse", "agent/task-x") == base
-            assert (
-                subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(tmp_path),
-                        "rev-parse",
-                        "--verify",
-                        "refs/autoclave/incoming/task-x",
-                    ],
-                    capture_output=True,
-                ).returncode
-                != 0
-            )
+            assert_no_incoming_ref(tmp_path)
         finally:
             git(tmp_path, "worktree", "remove", "--force", str(linked))
 
@@ -2750,13 +2764,29 @@ class TestSignInIsAsked:
         assert not any("refresh_claude_token.py" in " ".join(call) for call in docker_calls(log))
         assert ["volume", "create", "verbatus-ac-auth-claude"] not in docker_calls(log)
 
-    def test_new_blocks_when_refresh_fails_even_if_auth_status_would_pass(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("status", "expected", "forbidden"),
+        (
+            ("1", "stored credential is unchanged", "could not be read or republished"),
+            ("2", "could not be read or republished", "stored credential is unchanged"),
+        ),
+    )
+    def test_new_blocks_when_refresh_fails_and_says_which_kind_of_failure(
+        self, tmp_path, status, expected, forbidden
+    ):
+        """Exit 1 is retryable; exit 2 is a local credential fault needing a human.
+
+        Collapsing both into "run login" sent the operator to an interactive sign-in that
+        rotates a refresh token which is usually still valid -- turning a transient
+        endpoint failure into a real re-authentication.
+        """
+
         script = elsewhere(tmp_path)
         env, log = fake_docker(tmp_path)
         env.update(
             {
                 "FAKE_AUTH_VALID": "1",
-                "FAKE_REFRESH_STATUS": "1",
+                "FAKE_REFRESH_STATUS": status,
                 "FAKE_VOLUMES": "verbatus-ac-auth-claude",
             }
         )
@@ -2764,7 +2794,8 @@ class TestSignInIsAsked:
         result = run("new", "dead-token", "HEAD", "claude", env=env, script=script, cwd=tmp_path)
 
         assert result.returncode != 0
-        assert "could not validate or refresh" in result.stderr
+        assert expected in result.stderr
+        assert forbidden not in result.stderr
         assert not any("auth status" in " ".join(call) for call in docker_calls(log))
 
     def test_dispatch_asks_inside_the_chamber_not_of_the_label(self, tmp_path):
@@ -2858,7 +2889,19 @@ class TestClaudeConfigurationUsesTheMountedVolume:
         assert calls.index(refresh_call) < calls.index(status_call)
         assert calls.index(refresh_call) < calls.index(cli)
 
-    def test_dispatch_blocks_when_refresh_fails_even_if_auth_status_would_pass(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        (
+            ("1", "stored credential is unchanged"),
+            ("2", "could not be read or republished"),
+        ),
+    )
+    def test_dispatch_blocks_when_refresh_fails_and_says_which_kind_of_failure(
+        self, tmp_path, status, expected
+    ):
+        """The same three-way split as `new`: a transient failure mid-dispatch is not a
+        lost sign-in, and must not be reported as one."""
+
         script = elsewhere(tmp_path)
         brief = tmp_path / "brief.md"
         brief.write_text("bounded task\n")
@@ -2868,7 +2911,7 @@ class TestClaudeConfigurationUsesTheMountedVolume:
                 "FAKE_CONTAINER_EXISTS": "1",
                 "FAKE_CHAMBER_VENDOR": "claude",
                 "FAKE_AUTH_VALID": "1",
-                "FAKE_REFRESH_STATUS": "1",
+                "FAKE_REFRESH_STATUS": status,
             }
         )
 
@@ -2885,7 +2928,7 @@ class TestClaudeConfigurationUsesTheMountedVolume:
         )
 
         assert result.returncode != 0
-        assert "could not validate or refresh" in result.stderr
+        assert expected in result.stderr
         assert not any("auth status" in " ".join(call) for call in docker_calls(log))
 
     def test_the_refresh_helper_reaches_the_image(self):
@@ -2904,13 +2947,15 @@ class TestClaudeConfigurationUsesTheMountedVolume:
         dockerfile = (ROOT / "operations" / "autoclave" / "Dockerfile").read_text()
         client_id = re.search(r'^CLIENT_ID = "([^"]+)"$', helper, re.MULTILINE)
         token_url = re.search(r'^TOKEN_URL = "([^"]+)"$', helper, re.MULTILINE)
-        image_check = re.search(r"grep -a -q '([^']+)'", dockerfile)
 
         assert client_id, "refresh helper defines no public client id"
         assert token_url, "refresh helper defines no token endpoint"
-        assert image_check, "image does not verify its Claude CLI client id"
-        assert image_check.group(1) == client_id.group(1)
+        # The values, not the shell spelling that checks them. Asserting on `grep -a -q`
+        # pinned an implementation detail: rewriting the check to name *which* constant
+        # moved broke this test without any constant having changed.
+        assert client_id.group(1) in dockerfile, "image does not verify the helper client id"
         assert token_url.group(1) in dockerfile, "image does not verify the helper token endpoint"
+        assert "grep -a -q" in dockerfile, "image no longer greps the launcher at all"
 
 
 class TestTheTrustFlagAgainstARealFilesystem:

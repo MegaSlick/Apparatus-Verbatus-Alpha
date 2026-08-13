@@ -28,6 +28,14 @@ TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 SKEW_SECONDS = 600
 DEADLINE_SECONDS = 60
+LOCK_WAIT_SECONDS = 30
+"""Strictly shorter than DEADLINE_SECONDS, so a held lock reports itself as a held lock.
+
+With both budgets equal, the SIGALRM armed in `main` always fired first and the operator
+read "refresh exceeded 60 seconds" -- pointing at the network -- when the real cause was
+another writer holding the credential. The login booth holds this same lock for a whole
+interactive sign-in, so that is a case which happens rather than a theoretical one.
+"""
 
 
 class RefreshDeadline(Exception):
@@ -69,8 +77,10 @@ def exchange_paths(first: Path, second: Path) -> None:
     else:
         raise OSError(errno.ENOTSUP, "atomic path exchange is unsupported")
     if result != 0:
+        # Name the errno: this image exports both symbols, so a failure here is a kernel
+        # or filesystem refusal (ENOSYS, EINVAL) and the operator needs to see which.
         code = ctypes.get_errno()
-        raise OSError(code, os.strerror(code))
+        raise OSError(code, f"atomic path exchange failed: {os.strerror(code)}")
 
 
 def publish(path: Path, document: dict[str, object], expected: bytes) -> None:
@@ -142,14 +152,18 @@ def refresh() -> int:
         return 2
 
     with lock:
-        lock_deadline = time.monotonic() + DEADLINE_SECONDS
+        lock_deadline = time.monotonic() + LOCK_WAIT_SECONDS
         while True:
             try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
                 if time.monotonic() >= lock_deadline:
-                    print("refresh: credential lock wait exceeded 60 seconds", file=sys.stderr)
+                    print(
+                        "refresh: another Claude writer held the credential lock for "
+                        f"{LOCK_WAIT_SECONDS} seconds; nothing was changed",
+                        file=sys.stderr,
+                    )
                     return 1
                 time.sleep(0.05)
         try:
@@ -203,8 +217,8 @@ def refresh() -> int:
 
         # The deadline bounds waiting on the remote endpoint, not local publication.
         # Once the complete response is parsed, disarm it before touching the rotated
-        # state: a late SIGALRM between validation and os.replace must not interrupt an
-        # otherwise complete credential update.
+        # state: a late SIGALRM between validation and the atomic exchange in `publish`
+        # must not interrupt an otherwise complete credential update.
         signal.setitimer(signal.ITIMER_REAL, 0)
 
         if not isinstance(payload, dict):
