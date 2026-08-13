@@ -27,9 +27,16 @@ Choose the model and effort for the job, not from a permanent ceremony:
 | quick path or reference lookup | `scout`, low |
 | ordinary bounded build | Sonnet or Terra, medium |
 | long repository read or large build | Terra |
-| security, money, accounting, or quiet failure | Sol or Opus, high |
+| audit, correction, security, money, or quiet failure | Sol or Opus, high |
 | design objection before a costly change | `consult`, xhigh |
 | independent review | fresh readers; mix vendors when risk warrants it |
+
+**Sonnet and Terra are the default seats; Opus and Sol are the audit and correction
+seats. Fable is not dispatched unless Tyrel asks for it in the session** — it may hold
+the main session, but as an agent seat it is his call, not the roster's. Effort runs at
+`medium` for building and `high` for judging; `ultracode` and `ultra` are dispatched only
+when Tyrel asks. The `consult` floor of `xhigh` stands (his 2026-08-01 ruling, enforced
+by `test_roster.py`). Tyrel's ruling, 2026-08-13, in session.
 
 Effort buys thinking time, not virtue. Raise it for hard judgement, not merely long work.
 Model and effort are dispatch arguments; record what actually answered. A substitution is
