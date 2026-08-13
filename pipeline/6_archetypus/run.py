@@ -1046,9 +1046,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             payload=record,
         )
 
-    # Rebuilt from the immutable records every run, then read back and reconciled
-    # against the Recensor's accepted set before anything may rely on it.
-    context.tree.write_index(ARCHETYPUS, build_index(context))
+    # Reconciled against the Recensor's accepted set *before* it is published, so
+    # a run that fails its accounting never leaves an internally consistent index
+    # on disk that summarizes fewer acts than the Recensor accepted. Then read
+    # back and reconciled again, proving the bytes on disk parse to the index
+    # just checked.
+    index = validate_index(context, build_index(context))
+    context.tree.write_index(ARCHETYPUS, index)
     validate_index(context, context.tree.read_index(ARCHETYPUS))
     context.finish()
     return EXIT_COMPLETE

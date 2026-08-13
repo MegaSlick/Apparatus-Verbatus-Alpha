@@ -20,10 +20,11 @@ eventually writing the field, and is named as an assumption rather than dressed
 up as a proof.
 """
 
-import json
 import subprocess
 import sys
 from pathlib import Path
+
+import reseal_chain
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import build_envelope
@@ -74,16 +75,9 @@ def accepted_review(tree: RunTree) -> dict:
     return tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
 
 
-def _repoint_review(tree: RunTree, review: dict, forged_ref: dict) -> None:
-    """Rewrite an accepted review's perlectio_ref to a forged reference, sealed."""
-    review_path = tree.resolve(tree.artifact_path(RECENSOR, "review", review["artifact_id"]))
-    old_ref = review["payload"]["perlectio_ref"]
-    review["inputs"] = [
-        forged_ref if reference == old_ref else reference for reference in review["inputs"]
-    ]
-    review["payload"]["perlectio_ref"] = forged_ref
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
+# One shared reseal chain for every forgery in this directory; three private
+# copies would drift apart the first time the envelope gains a bound field.
+_repoint_review = reseal_chain.repoint_review
 
 
 def test_a_testimonium_cannot_substitute_for_a_perlectio_reference(tmp_path):
@@ -188,26 +182,7 @@ def test_only_an_accepted_review_ever_produces_an_archetypus_record(tmp_path):
 # --- The grafted half: refusals that do not depend on the reference's stage/kind
 
 
-def _reseal_reading(tree: RunTree, review: dict, mutate) -> None:
-    """Mutate the reviewed Perlectio's payload and reseal the chain around it."""
-    review_path = tree.resolve(tree.artifact_path(RECENSOR, "review", review["artifact_id"]))
-    old_ref = review["payload"]["perlectio_ref"]
-    reading_path = tree.resolve(old_ref["relative_path"])
-    reading = json.loads(reading_path.read_text(encoding="utf-8"))
-    mutate(reading["payload"])
-    reading["self_hash"] = self_hash(reading)
-    reading_path.write_bytes(canonical_bytes(reading))
-
-    new_ref = {
-        "relative_path": old_ref["relative_path"],
-        "sha256": digest_bytes(reading_path.read_bytes()),
-    }
-    review["inputs"] = [
-        new_ref if reference == old_ref else reference for reference in review["inputs"]
-    ]
-    review["payload"]["perlectio_ref"] = new_ref
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
+_reseal_reading = reseal_chain.reseal_reviewed_reading
 
 
 def _archetypus_after(tmp_path: Path, mutate) -> subprocess.CompletedProcess:
@@ -229,12 +204,14 @@ def test_an_unrecognised_lectio_kind_cannot_establish_either(tmp_path):
     """Unlabeled is tolerated while the producer has no field; *mislabeled* is not."""
     result = _archetypus_after(tmp_path, lambda payload: payload.update(lectio_kind="unlabeled"))
     assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
     assert "only an explicitly primed" in result.stderr
 
 
 def test_a_primed_false_flag_cannot_establish(tmp_path):
     result = _archetypus_after(tmp_path, lambda payload: payload.update(primed=False))
     assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
     assert "non-primed Lectio" in result.stderr
 
 

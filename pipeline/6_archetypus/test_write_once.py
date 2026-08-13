@@ -144,6 +144,14 @@ def test_index_json_is_rewritable_and_reflects_the_same_reconciled_rows(tmp_path
     index_path = tree.resolve(tree.index_path(ARCHETYPUS))
     first = json.loads(index_path.read_bytes().decode("utf-8"))
 
+    # Replace the index with a valid-looking but stale summary before the rerun.
+    # If the stage stopped rebuilding index.json, the stale bytes would survive
+    # and this test — not only a later consumer's validate_index call — fails.
+    stale = dict(first, rows=[], record_count=0)
+    stale.pop("self_hash")
+    stale["self_hash"] = self_hash(stale)
+    index_path.write_bytes(json.dumps(stale).encode("utf-8"))
+
     result = invoke_archetypus(root, "r", "happy")
     assert result.returncode == 0, result.stderr
     second = json.loads(index_path.read_bytes().decode("utf-8"))

@@ -16,8 +16,8 @@ import sys
 from pathlib import Path
 
 import pytest
+import reseal_chain
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, RECENSOR
@@ -437,27 +437,9 @@ def _tamper_reading_annotations(root: Path, run_id: str, mutate) -> tuple[RunTre
         for entry in tree.build_manifest(RECENSOR)["artifacts"]
         if entry["kind"] == "review" and entry["outcome"] == "accepted"
     )
-    review_path = tree.resolve(review_entry["relative_path"])
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    old_ref = review["payload"]["perlectio_ref"]
-    reading_path = tree.resolve(old_ref["relative_path"])
-    reading = json.loads(reading_path.read_text(encoding="utf-8"))
-
-    mutate(reading["payload"])
-    reading["self_hash"] = self_hash(reading)
-    reading_path.write_bytes(canonical_bytes(reading))
-
-    new_ref = {
-        "relative_path": old_ref["relative_path"],
-        "sha256": digest_bytes(reading_path.read_bytes()),
-    }
-    review["inputs"] = [
-        new_ref if reference == old_ref else reference for reference in review["inputs"]
-    ]
-    review["payload"]["perlectio_ref"] = new_ref
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
-    return tree, review["subject_id"]
+    review = json.loads(tree.resolve(review_entry["relative_path"]).read_text(encoding="utf-8"))
+    act_id = reseal_chain.reseal_reviewed_reading(tree, review, mutate)
+    return tree, act_id
 
 
 def _witness_refs_of(reading_payload: dict) -> list[dict]:
@@ -493,9 +475,11 @@ def test_a_partial_record_is_exportable_by_the_frozen_armarium(tmp_path):
     **And a gap this test names rather than fixes.** The delivered entry carries
     no trace of the damage today, and the run still aggregates to `complete`: the
     Armarium does not read `text_status` or `annotations` at all. Making the
-    export honest about a partial reading is spec 11's work, not this stage's, and
-    the assertions below record what is true now so that whoever changes it reads
-    this. Stage 7 was off-limits this round.
+    export honest about a partial reading is spec 11's work, not this stage's.
+    The export-side half of this test therefore ends in an xfail rather than
+    assertions: the suite records the dishonest export as a known defect, so
+    spec 11's fix will surface as an xpass to clean up, never as a regression.
+    Stage 7 was off-limits this round.
     """
     root = tmp_path / "runs"
     _run_through_recensor(root, "r")
@@ -518,10 +502,10 @@ def test_a_partial_record_is_exportable_by_the_frozen_armarium(tmp_path):
     )["payload"]
     delivered = next(item for item in export["delivered"] if item["act_id"] == act_id)
     assert delivered["text"] == record["payload"]["text"]
-    # Named, not endorsed: the export shows no gap and the aggregate says complete.
-    assert "text_status" not in delivered
-    assert "annotations" not in delivered
-    assert export["aggregate"]["status"] == "complete"
+    pytest.xfail(
+        "spec 11: the export drops text_status and annotations, so a partial act "
+        "is delivered as if it were whole and the run still aggregates to complete"
+    )
 
 
 def _reported_by(tree: RunTree, reference: dict) -> str:

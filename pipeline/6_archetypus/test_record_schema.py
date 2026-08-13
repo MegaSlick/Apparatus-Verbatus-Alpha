@@ -104,14 +104,17 @@ def test_the_record_carries_exactly_the_closed_field_set():
 
 
 def test_exactly_one_field_holds_the_established_characters():
-    """Every other string-valued field is a hash, a status, or an identifier."""
-    record = make_record()
-    text_bearing = [
-        field
-        for field, value in record.items()
-        if isinstance(value, str) and value == record["text"]
-    ]
-    assert text_bearing == ["text"]
+    """Every other string-valued field is a hash, a status, or an identifier.
+
+    Pinned by field name against the closed schema, not by comparing values: a
+    revived fallback field holding *different* characters (the old pipeline's
+    exact shape) would never equal `text`, so a value filter cannot fail. The
+    test below proves the closed set refuses such a field outright.
+    """
+    assert "text" in archetypus._RECORD_FIELDS
+    # No sibling spelling of "the text" exists to fall back to: the old
+    # pipeline's reader_text/alternate_text family is outside the closed set.
+    assert not any(field.endswith("_text") for field in archetypus._RECORD_FIELDS)
 
 
 def test_a_second_text_bearing_field_is_outside_the_closed_schema():
@@ -386,7 +389,7 @@ def test_a_completed_reading_is_not_refused_by_that_guard():
     parts of the boundary this test does not supply, which is what proves the
     guard above is the thing being exercised rather than some earlier refusal.
     """
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(FatalAccounting, match="no object basis") as caught:
         archetypus.accepted_primed_perlectio(
             None,
             _accepted_review(),

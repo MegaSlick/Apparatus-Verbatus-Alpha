@@ -299,9 +299,10 @@ class RunTree:
         Door and Exemplar share one physical directory (`writing_directory`), so
         `index_path(DOOR)` and `index_path(EXEMPLAR)` collide, exactly as
         `manifest_path` already does for the two. Unlike `build_manifest`, which
-        filters entries by `record["stage"]`, `write_index` writes whatever its
-        caller builds with no such filter — latent today because no stage
-        sharing a directory calls `write_index`, worth knowing before one does.
+        filters entries by `record["stage"]`, an index holds whatever its caller
+        builds with no such filter — so `write_index` refuses any stage whose
+        directory has more than one producer, rather than letting the second
+        stage's index silently erase the first stage's rows.
         """
         return f"{writing_directory(stage)}/{INDEX_FILE}"
 
@@ -838,6 +839,13 @@ class RunTree:
         """
         if not isinstance(index, dict):
             raise SchemaRefusal("a derived stage index must be an object")
+        directory = writing_directory(stage)
+        if _all_writing_directories().count(directory) > 1:
+            raise SchemaRefusal(
+                f"stage {stage!r} shares run-tree directory {directory!r} with another "
+                "producer, so one index file cannot account for both; give the index a "
+                "stage-qualified name before either stage writes one"
+            )
         relative = self.index_path(stage)
         target = self.resolve(relative)
         target.parent.mkdir(parents=True, exist_ok=True)

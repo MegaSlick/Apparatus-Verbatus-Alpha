@@ -1299,6 +1299,13 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
 
     export_result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
     assert export_result.returncode == 0, export_result.stderr
+    # Surviving the consumer means being *in* its export, not merely not
+    # crashing it: a delivered set that silently dropped the blank act would
+    # exit 0 too. The export row carries the record's established empty text;
+    # the evidence reference lives on the record itself, asserted above.
+    export = export_of(tree)
+    blank = next(item for item in export["delivered"] if item["act_id"] == act_id)
+    assert blank["text"] == ""
 
 
 def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
@@ -1346,6 +1353,11 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "never evidence of its own silence" in result.stderr
+    # A refused act leaves no record behind for a downstream stage to treat as
+    # output; the refusal and a published Archetypus cannot coexist.
+    assert not tree.has_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
+    )
 
 
 def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path):
@@ -1433,6 +1445,10 @@ def test_archetypus_refuses_a_crop_the_run_tree_cannot_read(tmp_path):
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "which this run tree cannot read" in result.stderr
+    # The classified refusal must not leave a record behind either.
+    assert not tree.has_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
+    )
 
 
 def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):

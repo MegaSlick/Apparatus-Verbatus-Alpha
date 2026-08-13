@@ -951,6 +951,17 @@ def test_a_rebuildable_index_may_be_replaced_while_artifacts_may_not(tmp_path):
     assert tree.read_index(DESIGNATOR) == second
 
 
+@pytest.mark.parametrize("stage", [DOOR, EXEMPLAR])
+def test_a_stage_sharing_its_directory_cannot_write_an_index(tmp_path, stage):
+    """Door and Exemplar share one directory, so one index file cannot account
+    for both producers: the second writer would silently erase the first's rows
+    and `read_index` would return a complete-looking summary of one of two
+    stages. Refused at the write, not documented and left as a trap."""
+    tree = make_run(tmp_path)
+    with pytest.raises(SchemaRefusal, match="shares run-tree directory"):
+        tree.write_index(stage, {"schema": "test-index", "rows": []})
+
+
 def test_a_derived_index_that_is_not_an_object_is_refused(tmp_path):
     tree = make_run(tmp_path)
     with pytest.raises(SchemaRefusal, match="must be an object"):
