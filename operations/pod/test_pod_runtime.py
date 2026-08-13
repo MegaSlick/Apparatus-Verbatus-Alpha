@@ -644,16 +644,20 @@ def test_two_overlapping_creates_spend_one_challenge_exactly_once(tmp_path: Path
     gate = threading.Lock()
     first_here = threading.Event()
     second_here = threading.Event()
+    # Generous on purpose. Detection of a re-introduced leak depends on the second
+    # thread reaching this window while the first is still in it, so the wait has to
+    # outlast any plausible scheduling delay -- a loaded machine, a coverage hook. Too
+    # short and a leaking gate looks fixed. The correct code pays this wait once per
+    # run, because its second thread is blocked on the lock and never arrives.
+    rendezvous_seconds = 5.0
+    observed: list[bool] = []
 
     def rendezvous_then_confirm(typed, expected):
         with gate:
             is_first = not first_here.is_set()
             first_here.set()
         if is_first:
-            # Without the runtime lock the other thread reaches this same point and
-            # releases us; with it, the other thread is still blocked acquiring the
-            # lock, this wait expires, and we proceed alone.
-            second_here.wait(timeout=0.5)
+            observed.append(second_here.wait(timeout=rendezvous_seconds))
         else:
             second_here.set()
         return monkeypatched(typed, expected)
@@ -682,6 +686,14 @@ def test_two_overlapping_creates_spend_one_challenge_exactly_once(tmp_path: Path
     assert len(granted) == 1, "one confirmation authorized more than one pod"
     assert len(refused) == 1, f"unexpected outcomes: {[r.state for r in results]}"
     assert sum(1 for verb, _ in provider.calls if verb == "create") == 1, "two pods were created"
+    # The staging itself, asserted rather than assumed. `Event.wait` returns False only
+    # on timeout, which is what must happen here: the second caller is held on the lock
+    # and never reaches the consume window. A True would mean both callers were inside
+    # it together and the run above proved nothing about the lock.
+    assert observed == [False], (
+        "the second caller reached the consume window, so this run did not exercise "
+        f"the lock it claims to test (rendezvous returned {observed})"
+    )
 
 
 def test_minted_challenges_are_unpredictable_and_do_not_repeat() -> None:
