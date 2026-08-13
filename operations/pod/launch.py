@@ -39,6 +39,25 @@ from .spend import (
 )
 
 
+def _phraseless(preview: PaidActionPreview | None) -> PaidActionPreview | None:
+    """The same preview with its challenge withheld.
+
+    A refused confirmation is printed and logged, and the challenge it carries
+    is still spendable -- a typo deliberately does not burn the preview.  The
+    refusal report therefore must not carry a phrase that would authorize
+    anything, which is the policy `_reassess_actual_price` already states for
+    its own refusal.  The operator retypes from the preview they were shown.
+
+    On the returned preview the `confirmation_phrase` property raises rather
+    than returning a string; callers rendering a refusal read `to_record()`,
+    which shows the phrase as absent instead.
+    """
+
+    if preview is None or preview.challenge is None:
+        return preview
+    return PaidActionPreview(preview.action, preview.subject, preview.assessment)
+
+
 def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> tuple[str, ...]:
     """Fold the launch token into the pod-side report path's file name.
 
@@ -228,9 +247,11 @@ class PodRuntime:
         # always carries a `PaidActionPreview`, under `-O` as much as without it.
         assert preview_result.preview is not None
         if not preview_result.preview.assessment.allowed:
+            # Same policy as the confirmation refusals: a refusal report never
+            # carries a phrase whose challenge is still spendable.
             return LaunchResult(
                 LaunchState.REFUSED_CEILING,
-                preview_result.preview,
+                _phraseless(preview_result.preview),
                 detail="; ".join(preview_result.preview.assessment.reasons),
             )
         # Nothing outstanding: there is no phrase to build, so say so before trying.
@@ -248,12 +269,14 @@ class PodRuntime:
                 )
             except SpendRefusal as error:
                 return LaunchResult(
-                    LaunchState.REFUSED_CONFIRMATION, preview_result.preview, detail=str(error)
+                    LaunchState.REFUSED_CONFIRMATION,
+                    _phraseless(preview_result.preview),
+                    detail=str(error),
                 )
         if not claimed:
             return LaunchResult(
                 LaunchState.REFUSED_CONFIRMATION,
-                preview_result.preview,
+                _phraseless(preview_result.preview),
                 detail=(
                     "no preview in this run issued a challenge for this create at this "
                     "hard deadline; run the preview and confirm the phrase it prints; "
@@ -344,6 +367,27 @@ class PodRuntime:
                 owner_token=owner_token,
                 preview=preview_result.preview,
             )
+        if record.state.upper() != "RUNNING":
+            # `adopt` refuses a non-RUNNING pod outright; a create response in
+            # EXITED or TERMINATED is the same dead-but-billing shape and must
+            # end in a close, not a green launch.  Case-insensitive because
+            # `PodRecord.state` carries the provider's spelling verbatim.
+            close, detail = self._close_and_record(
+                record=record,
+                reason=f"created pod arrived in state {record.state!r}, not RUNNING",
+                store=store,
+                owner_token=owner_token,
+                situation=f"created pod reports state {record.state!r} rather than RUNNING",
+            )
+            return LaunchResult(
+                LaunchState.REFUSED_RUNTIME_CONTRACT,
+                preview_result.preview,
+                record=record,
+                lease_path=store.path,
+                owner_token=owner_token,
+                detail=detail,
+                close_report=close,
+            )
         actual = self._reassess_actual_price(
             action="create",
             record=record,
@@ -422,9 +466,11 @@ class PodRuntime:
         # passes `_preview`'s preview and a non-None record on it. Neither needs `-O` off.
         assert preview_result.preview is not None and preview_result.record is not None
         if not preview_result.preview.assessment.allowed:
+            # Same policy as the confirmation refusals: no live phrase on a
+            # refusal report.
             return LaunchResult(
                 LaunchState.REFUSED_CEILING,
-                preview_result.preview,
+                _phraseless(preview_result.preview),
                 record=preview_result.record,
                 detail="; ".join(preview_result.preview.assessment.reasons),
             )
@@ -442,14 +488,14 @@ class PodRuntime:
             except SpendRefusal as error:
                 return LaunchResult(
                     LaunchState.REFUSED_CONFIRMATION,
-                    preview_result.preview,
+                    _phraseless(preview_result.preview),
                     record=preview_result.record,
                     detail=str(error),
                 )
         if not claimed:
             return LaunchResult(
                 LaunchState.REFUSED_CONFIRMATION,
-                preview_result.preview,
+                _phraseless(preview_result.preview),
                 record=preview_result.record,
                 detail=(
                     "no preview in this run issued a challenge for this adoption at this "

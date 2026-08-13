@@ -608,3 +608,53 @@ def test_the_live_transport_does_not_hand_the_bearer_token_to_a_redirect() -> No
             server.server_close()
 
     assert "authorization" not in seen
+
+
+# --- audit/pod-money-path: red paths the 2026-08-12 independent audit found untested ---
+
+
+def test_provider_money_fields_never_exist_as_binary_floats() -> None:
+    """`costPerHr` arrives as a JSON number; it must land as an exact Decimal
+    without a float intermediate (config/spend.toml: money does not survive
+    that).  The literal below has more digits than a double can carry, and it
+    is spliced into the raw response bytes so no Python float exists on the
+    way in -- through a float, the tail digits are lost and this fails."""
+
+    exact = "0.1234567890123456789"
+    body = json.dumps(pod_payload()).replace("0.77", exact).encode()
+    transport = ScriptedTransport(
+        [
+            HttpResponse(200, json.dumps([]).encode()),
+            HttpResponse(200, body),
+        ]
+    )
+
+    record = provider(transport).create(request())
+
+    assert record.estimate.pod_hourly_usd == Decimal(exact)
+
+
+def test_exact_token_recovery_finds_a_renamed_pod_without_a_second_post() -> None:
+    """A provider- or console-side rename must not hide the pod this client
+    already paid for: an invisible pod means a second POST for one authorised
+    launch."""
+
+    renamed = pod_payload(name="console-renamed-this-pod")
+    transport = ScriptedTransport([HttpResponse(200, json.dumps([renamed]).encode())])
+
+    record = provider(transport).create(request())
+
+    assert record.pod_id == "pod-1"
+    assert [call[0] for call in transport.calls] == ["GET"]
+
+
+def test_a_same_name_pod_with_no_env_still_refuses_token_correlation() -> None:
+    no_env = pod_payload()
+    del no_env["env"]
+    transport = ScriptedTransport([HttpResponse(200, json.dumps([no_env]).encode())])
+
+    with pytest.raises(ProviderFailure, match="returned no env"):
+        provider(transport).create(request())
+
+    # The refusal happened during correlation: the list GET ran, no POST did.
+    assert [call[0] for call in transport.calls] == ["GET"]

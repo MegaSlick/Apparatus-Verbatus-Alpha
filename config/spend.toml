@@ -46,14 +46,17 @@
 #   laptop_heartbeat_timeout_seconds = 0
 #
 #   # Verified shutdown's poll interval and its overall deadline while waiting
-#   # for exact-pod GET-404 and pod-list absence to agree.
+#   # for exact-pod GET-404 and pod-list absence to agree.  The loader refuses
+#   # a poll interval longer than the deadline, and a deadline whose sum with
+#   # the fixed 30s billing-retry tail below reaches the hard lifetime.
 #   shutdown_poll_interval_seconds = 0
 #   shutdown_deadline_seconds = 0
 #
-#   # How far provider-resolved billing evidence may extend beyond the requested
-#   # cutoff. The verifier accepts only 0–3600 seconds; an out-of-bounds value
-#   # is refused, never clamped. 3600 preserves the previous behavior but is
-#   # not a measured RunPod value and must be chosen deliberately for a live run.
+#   # How far the billing evidence a provider returns may extend beyond the
+#   # requested cutoff. The verifier accepts only 0–3600 seconds; an
+#   # out-of-bounds value is refused, never clamped. 3600 preserves the
+#   # previous behavior but is not a measured RunPod value and must be chosen
+#   # deliberately for a live run.
 #   billing_cutoff_margin_seconds = 3600
 #
 # Billing reconciliation is not a key here: VerifiedShutdown's retry (3 attempts,

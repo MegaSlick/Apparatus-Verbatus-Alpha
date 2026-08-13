@@ -43,13 +43,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Mapping, Protocol
 
 from .controllers import PodDeadmanTimer
 from .lease import PodLease
 from .models import (
+    BILLING_BUCKET_WIDTH,
     BILLING_CUTOFF_MARGIN_ENV,
     AbsenceObservation,
     BillingState,
@@ -79,8 +80,9 @@ pod its own POST may have created without guessing from the name alone."""
 
 _POD_STATES = frozenset({"RUNNING", "EXITED", "TERMINATED"})
 
-_BUCKET_WIDTH = timedelta(hours=1)
-"""Matches the `bucketSize=hour` this adapter always requests."""
+_BUCKET_WIDTH = BILLING_BUCKET_WIDTH
+"""Matches the `bucketSize=hour` this adapter always requests; the shared
+symbol keeps this slack and the generic verifier's from drifting apart."""
 
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 """No documented RunPod response (one pod, a pod list, a billing window) is
@@ -434,26 +436,31 @@ class RunPodProvider:
         return result
 
     def _find_by_launch_token(self, name: str, token: str) -> PodRecord | None:
-        """Exactly one pod carrying this name and token, or nothing.
+        """Exactly one pod carrying this exact launch token, or nothing.
 
-        A name-matched pod whose `env` the provider did not return refuses
-        outright rather than falling back to matching on the name alone: two
-        pods can share a name, and paying twice for one authorised launch is the
-        failure this whole path exists to prevent.
+        The token is matched on **every** listed pod, not only name-matched
+        ones: a provider- or console-side rename must not make the pod this
+        client already paid for invisible, because an invisible pod means a
+        second POST for one authorised launch.  The name still scopes the
+        no-env refusal below -- a pod sharing this launch name whose `env` the
+        provider did not return refuses outright rather than falling back to
+        matching on the name alone: two pods can share a name, and paying twice
+        for one authorised launch is the failure this whole path exists to
+        prevent.
         """
 
         candidates: list[dict[str, object]] = []
         for row in self._pod_rows():
-            if row.get("name") != name:
-                continue
             env = row.get("env")
-            if not isinstance(env, dict):
+            if isinstance(env, dict):
+                if env.get(LAUNCH_TOKEN_ENV) == token:
+                    candidates.append(row)
+                continue
+            if row.get("name") == name:
                 raise ProviderFailure(
                     f"RunPod pod {row.get('id')!r} shares this launch name but returned no env; "
                     "the exact launch token cannot be correlated and no create request was issued"
                 )
-            if env.get(LAUNCH_TOKEN_ENV) == token:
-                candidates.append(row)
         if not candidates:
             return None
         if len(candidates) > 1:
@@ -726,7 +733,10 @@ def _bounded_read(stream: http.client.HTTPResponse | urllib.error.HTTPError) -> 
 
 def _json(body: bytes, label: str) -> object:
     try:
-        return json.loads(body)
+        # parse_float=Decimal: money fields (costPerHr, billing amount) must
+        # never exist as binary floats, even transiently -- config/spend.toml's
+        # own rule is that money does not survive that.
+        return json.loads(body, parse_float=Decimal)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ProviderFailure(f"{label} response is not JSON: {error}") from error
 

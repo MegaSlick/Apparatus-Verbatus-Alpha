@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -309,25 +310,41 @@ class LeaseStore:
             handle.close()
 
     def create(self, lease: PodLease) -> PodLease:
-        """Create an intent before a paid create; never overwrite a sibling owner."""
+        """Create an intent before a paid create; never overwrite a sibling owner.
+
+        The payload is written and fsynced to a uniquely named temporary
+        sibling (``mkstemp``: exclusive creation, 0600, never following a
+        planted symlink) and published with ``os.link``, so a crash mid-write
+        can leave only a stray temporary, never a torn file at the lease path
+        -- this is the record a restarting controller uses to find a pod that
+        may be billing.  ``link`` failing with EEXIST is the exclusivity
+        guarantee itself: whichever writer publishes first wins the path.
+        Hard links are required of the leases filesystem; one that lacks them
+        refuses every launch, which is fail-closed and acceptable -- the run
+        tree's immutable publication already relies on hard links.
+        """
 
         with self._lock():
-            if self.path.exists():
-                raise LeaseOwnershipError(f"lease already exists at {self.path}")
             payload = canonical_json(lease.to_record())
-            descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{self.path.name}.", dir=self.path.parent
+            )
             try:
                 with os.fdopen(descriptor, "wb") as handle:
                     handle.write(payload)
                     handle.flush()
                     os.fsync(handle.fileno())
-                sync_directory(self.path.parent)
-            except Exception:
                 try:
-                    self.path.unlink(missing_ok=True)
+                    os.link(temporary, self.path)
+                except FileExistsError as error:
+                    raise LeaseOwnershipError(f"lease already exists at {self.path}") from error
+                sync_directory(self.path.parent)
+            finally:
+                try:
+                    os.unlink(temporary)
                 except OSError:
                     pass
-                raise
         return lease
 
     def load(self) -> PodLease | None:
@@ -459,6 +476,15 @@ class LeaseStore:
         _validate_close_record(close_record, pod_id=None, verified=verified, bind_pod=False)
         with self._lock():
             lease = self._require_owner_unlocked(owner_token)
+            if lease.phase == "closed-verified":
+                # Verified close evidence is never replaced (GOVERNANCE 4): a
+                # later, lesser observation overwriting it would turn a proven
+                # close back into a question.  The unverified phase stays
+                # writable so reconciliation can still upgrade it.
+                raise LeaseOwnershipError(
+                    "lease already carries a verified close record; refusing to "
+                    "replace verified close evidence"
+                )
             pod_id = lease.pod_id or _close_record_pod_id(close_record)
             _validate_close_record(close_record, pod_id=pod_id, verified=verified)
             next_phase = "closed-verified" if verified else "close-unverified"

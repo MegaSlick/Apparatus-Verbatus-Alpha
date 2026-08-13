@@ -36,8 +36,10 @@ line saying "terminated".
 
 A close is green only when **provider state says the same pod is gone** (both exact-pod GET
 and the pod list) and the provider returns non-empty, exact-pod billing records whose named
-window begins no later than the instant the record is anchored on and reaches the
-provider-resolved cutoff requested by close.
+window begins no later than the instant the record is anchored on and reaches the cutoff
+requested by close. "Provider-resolved" would overstate that cutoff: the shipped adapter
+composes the capture from the values the runtime itself sent, so the window is a declared
+echo until a live run proves otherwise (deferrals 04-7 and 04-9).
 
 **That anchor is not proven to be pod creation, and this paragraph used to say it was.**
 `PodRecord.created_at` is filled from RunPod's `lastStartedAt`, falling back to the
@@ -55,7 +57,9 @@ A shutdown that cannot be verified is not a tidy-up for next session. Say it now
 
 The fake-first runtime is now present. It has not started, inspected, or billed a live
 pod. This build's no-live-call boundary applies even to the otherwise read-only provider
-operations above: every adapter check used an in-memory fake transport. RunPod's public
+operations above: every adapter check used an in-memory fake transport, except the
+redirect-refusal check, which measured urllib itself against two loopback HTTP servers
+on this machine — still no provider contact. RunPod's public
 *documentation* was fetched to settle which API version and which response shapes the
 adapter targets — that is reading a web page, not calling the provider — and every page
 is named with its date in `provider_runpod.py`. So the field names here are documented,
@@ -73,20 +77,25 @@ check.
   this runtime must have before it can spend: an explicit `interruptible=false`
   and a primary `dockerStartCmd`. REST v2 (`api.runpod.io/v2`) is not used: its
   own overview still says it is in beta and may change before general
-  availability. Every endpoint shape the adapter reads is named, with its
-  documentation URL and the date it was checked, in that file's module
-  docstring. `fake_provider.py` has a fixed local price sheet, exact-token crash
+  availability. Every endpoint whose response *shape* the adapter parses is
+  named, with its documentation URL and the date it was checked, in that file's
+  module docstring; DELETE's response body is never parsed, only its status
+  code, so it is not on that list. `fake_provider.py` has a fixed local price sheet, exact-token crash
   recovery, and injected failures only.
 - `shutdown.py` is written before launch. Its only green close result requires a
   termination request, exact-pod GET-404, independent pod-list absence, and a
   non-empty provider billing capture through its named window and cutoff. The
   generic verifier binds all three returned observations to the requested pod,
-  and requires billing coverage from creation through the requested cutoff.
-  Empty/unreachable or mismatched billing is **UNVERIFIED**, never zero. Billing
-  lags termination, so the capture is retried a bounded, configured number of
-  times before that verdict; an adapter that can distinguish "not posted yet"
-  from "nothing to post" reports `pending-reconciliation` instead. Neither state
-  claims no future charge is possible.
+  requires the capture to *declare* a window spanning creation through the
+  requested cutoff, and refuses any dated record lying outside that declared
+  window — allowing one hour of slack before the window start, for the billing
+  bucket that contains the pod's creation. Whether the returned records
+  actually *fill* the window is unproven — deferral 04-9 below. Empty/unreachable or mismatched billing is
+  **UNVERIFIED**, never zero. Billing lags termination, so the capture is
+  retried a bounded number of times — fixed in code (3 attempts, 15s apart),
+  not reviewed policy — before that verdict; an adapter that can distinguish
+  "not posted yet" from "nothing to post" reports `pending-reconciliation`
+  instead. Neither state claims no future charge is possible.
 - `lease.py`, `controllers.py`, `arming.py`, and `pod_timer.py` implement a pre-create
   atomic lease, restart recovery by exact token, laptop heartbeat/lifetime supervisor,
   mandatory bootstrap, and an independent pod-side hard-lifetime dead-man. A launch or
@@ -102,8 +111,11 @@ check.
   volume's ongoing price is in the close report. This runtime has no volume-delete operation.
 - `spend.py` applies the same price display, ceiling calculation, and typed phrase to
   create and adopt. The phrase is **derived from the preview**: it names the action, the
-  subject and both hourly rates just displayed, binding the acknowledgement to that
-  preview. It is not Tyrel's live-pod permission and does not claim a script cannot derive it. The hourly and
+  subject and both hourly rates just displayed, and carries a random single-use
+  challenge only a preview issued in this process can supply, binding the
+  acknowledgement to that preview. A refused confirmation neither reproduces the
+  phrase nor spends the challenge — a typo does not burn the preview. It is not
+  Tyrel's live-pod permission and does not claim a script cannot derive it. The hourly and
   lifetime ceiling checks include both pod and attached volume while the hard lifetime is
   running, and the ceiling is applied a second time to the price the provider *actually*
   returned — a created pod that bills above it is closed immediately rather than left
@@ -139,7 +151,11 @@ The local command surface is `python -m operations.pod.cli`. It requires explici
 untracked provider and controller-armer factories plus a request file, so this repository
 contains neither a credential, a personal provider default, nor an implicit controller
 process. It prints the previewed current price and ceilings before prompting for the exact
-typed confirmation; EOF is a refusal. A request must make the provider-neutral timer the
+typed confirmation; EOF is a refusal. Its exit status never reads as "nothing happened"
+when something did: 0 is a guarded success, 2 a refusal whose result names no pod, lease,
+or close, 3 a non-green outcome that observed or touched a real pod, wrote a lease, or
+attempted a close — go and look; an interrupt mid-action prints an `interrupted` record
+naming the leases directory before dying. A request must make the provider-neutral timer the
 primary command and include a
 provider-owned timer factory, a structured mandatory bootstrap command, and a durable
 report path under the attached volume. If bootstrap exits (successfully or not), or its
@@ -161,10 +177,15 @@ gated demonstration, not capabilities this fake suite proves. A pod-side process
 destroyed by its own DELETE before it can observe GET-404, list absence, or lagging billing;
 the real controller design must leave final verification and reconciliation to surviving
 laptop/restart machinery rather than infer it from the pod process. If `pod_timer.py`'s
-own startup fails (a missing environment value, a deadline already passed) it has no
-provider object yet and can terminate nothing; the pod goes `EXITED`, which bills volume
-disk at double the running rate, and the laptop supervisor above is the only backstop for
-that case until it exists.
+own startup fails **before a provider-backed timer exists** (a missing environment value,
+a deadline already passed) it can terminate nothing; the pod goes `EXITED`, which bills
+volume disk at double the running rate, and the laptop supervisor above is the only
+backstop for that case until it exists. A refusal raised *after* the timer is built now
+spends that capability on an immediate close and files a receipt. A non-green close at
+the hard deadline is re-attempted a small fixed number of times before the timer exits;
+the durable report records the attempt count and the final close's evidence (not each
+intermediate attempt). The deliberately still-running workload child is left to the
+pod's destruction, since the timer is the container's primary process.
 
 Run the fake checks with:
 
@@ -205,6 +226,12 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
 - [ ] Verify exact launch-token recovery from the pod list after a deliberately lost
   create response. The list must expose the token-bearing environment and must not confuse
   a same-name pod with the one to recover.
+- [ ] Confirm whether `GET /pods` paginates on an account holding many pods. Both the
+  list-absence proof and launch-token recovery read it as one unpaginated array; a
+  truncated list would mean a false absence or a second POST for one authorised launch.
+- [ ] Exercise the checksummed transfer end to end on the attached volume: upload the
+  sealed submission-manifest rows, read at least one object back, and record that the
+  post-upload digest verification actually ran against target-observed bytes.
 - [ ] Verify that the network volume is mounted at the sealed path, receives the
   token-bound pod report, survives a process restart, and supports the run tree's
   immutable hard-link publication. Write a control report and one pipeline artifact
@@ -238,9 +265,11 @@ documented shapes, not observed behavior; no unchecked item may be reported as a
 
 ## Stage 04 deferrals
 
-Six items Tyrel accepted as deferred, on the express condition that the record survives
-to the pull request. These are accepted deferrals carried by his ruling, not oversights —
-each closes on the named condition, not on being noticed again.
+Nine rows in all: six items Tyrel accepted as deferred on the express condition that the
+record survives to the pull request, then two disclosed by the pre-push review, then one
+disclosed by the 2026-08-12 independent audit. The first six are accepted deferrals
+carried by his ruling, not oversights — each closes on the named condition, not on being
+noticed again.
 
 | # | What is deferred | Closes when |
 |---|---|---|
@@ -258,6 +287,14 @@ fixed on an assumption. Both are Tyrel's to accept or send back:
 |---|---|---|
 | 04-7 | The verified-close billing window is anchored on `lastStartedAt`, not on pod creation, and the check meant to catch a narrowed window compares that value against itself. A close can read `verified` over a partial total. Whether RunPod bills between creation and first start is documented-only; changing the query now would swap one unverified assumption for another | the first authorised live run observes the two instants |
 | 04-8 | `ChairCacheBootstrapAction` is constructed nowhere and tested nowhere — the README describes its at-most-one same-pin re-fetch as though it ships. The equivalent rule in `preflight.py` **is** exercised | the live bootstrap path is built, or the class is removed |
+
+One more, found by the 2026-08-12 independent audit of this package and disclosed here
+rather than papered over with a check that guesses at unobserved provider behaviour.
+Tyrel's to accept or send back:
+
+| # | What is deferred | Closes when |
+|---|---|---|
+| 04-9 | The billing verifier binds the capture's *declared* window and refuses any dated record outside it (allowing one hour of slack before the start, for the bucket containing creation), but nothing proves the returned buckets actually **cover** the window — a single in-window bucket can still total as a verified close. Whether RunPod posts contiguous hour buckets, or omits late ones under lag, is documented-only; a coverage gate written now would guess, and a wrong guess turns every real close red | the first authorised live run observes real bucket posting, then the coverage check is written against observations |
 
 ## If your task seems to need one
 

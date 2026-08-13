@@ -700,6 +700,29 @@ class PreflightRunner:
             if not verified or not fixture_present:
                 continue
             self._smoke(configured, tier, issues, smoke_receipts, utilization)
+        if not smoke_receipts:
+            # An all-absent or fully-failed roster produced placements and no
+            # measurements; green here would claim a serving assembly nobody
+            # smoke-read (GOVERNANCE 10).
+            issues.append(
+                PreflightIssue(
+                    "no-chair-verified",
+                    "no configured chair completed cache verification and a smoke read; "
+                    "this preflight measured no serving assembly at all",
+                    "Configure at least one chair with a verified cache before a paid run.",
+                )
+            )
+        floor = self.models.witness_floor_status()
+        if not floor.meets_floor:
+            issues.append(
+                PreflightIssue(
+                    "witness-floor-unmet",
+                    f"configured Attestator chairs ({floor.configured_count}) fall short of "
+                    f"the witness floor ({floor.floor})",
+                    "Configure the missing Attestator chairs or lower the floor deliberately "
+                    "before a paid run.",
+                )
+            )
         # This stage runs against injected/fake probes and the repository's
         # fixture roster.  It must never turn source labels into a claim that a
         # real GPU/chair assembly was measured; Spec 05 owns that demonstration.

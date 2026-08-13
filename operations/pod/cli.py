@@ -69,14 +69,54 @@ def main(argv: Sequence[str] | None = None) -> int:
         or preview.preview is None
         or not preview.preview.assessment.allowed
     ):
-        return 2
+        # The same exit-status rule as the post-confirmation exit below: a
+        # preview refusal that observed a real pod (an adopt inspection) must
+        # not read as "nothing exists".
+        return 3 if _observed_something(preview) else 2
     confirmation = _typed_confirmation(preview.preview.confirmation_phrase)
-    if args.command == "create":
-        result = runtime.create(request, confirmation=confirmation)
-    else:
-        result = runtime.adopt(args.pod_id, expected=request, confirmation=confirmation)
+    try:
+        if args.command == "create":
+            result = runtime.create(request, confirmation=confirmation)
+        else:
+            result = runtime.adopt(args.pod_id, expected=request, confirmation=confirmation)
+    except KeyboardInterrupt:
+        # An interrupt mid-action may have left a pod and a pending lease.
+        # Say so before dying: an exit that looks like a plain abort is how a
+        # billing pod goes unwatched.
+        print(
+            json.dumps(
+                {
+                    "state": "interrupted",
+                    "detail": (
+                        "interrupted during the paid action; a pod and a pending lease "
+                        "may exist -- inspect the leases directory and the provider "
+                        "console now"
+                    ),
+                    "leases_root": str(args.leases),
+                },
+                sort_keys=True,
+                indent=2,
+            ),
+            flush=True,
+        )
+        raise
     print(json.dumps(_record(result), sort_keys=True, indent=2))
-    return 0 if result.green else 2
+    # Exit status alone must never read as "nothing happened": 0 is guarded
+    # success, 2 is a refusal that made no paid action, 3 means a pod or lease
+    # exists (or existed and a close was attempted) -- go and look.
+    if result.green:
+        return 0
+    return 3 if _observed_something(result) else 2
+
+
+def _observed_something(result: LaunchResult) -> bool:
+    """True when the result names a real pod, a durable lease, or a close."""
+
+    return (
+        result.record is not None
+        or result.lease_path is not None
+        or result.close_report is not None
+    )
 
 
 def _provider(reference: str) -> PodProvider:

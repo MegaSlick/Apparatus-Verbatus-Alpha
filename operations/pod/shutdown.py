@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Callable
 
 from .models import (
+    BILLING_BUCKET_WIDTH,
     AbsenceObservation,
     BillingState,
     CloseState,
@@ -134,6 +135,14 @@ class CloseReport:
         }
 
 
+BILLING_RECONCILIATION_ATTEMPTS = 3
+BILLING_RECONCILIATION_RETRY_SECONDS = 15.0
+"""The fixed-in-code billing reconciliation schedule (config/spend.toml names
+it so a configured shutdown deadline is not silently short by its tail).
+`SpendPolicy` computes its deadline-versus-lifetime bound from these same
+symbols, so changing the schedule cannot silently unhinge that bound."""
+
+
 class VerifiedShutdown:
     """Closure controller whose only green state has three independent observations."""
 
@@ -153,8 +162,8 @@ class VerifiedShutdown:
         *,
         timeout_seconds: float = 120.0,
         poll_seconds: float = 2.0,
-        billing_attempts: int = 3,
-        billing_retry_seconds: float = 15.0,
+        billing_attempts: int = BILLING_RECONCILIATION_ATTEMPTS,
+        billing_retry_seconds: float = BILLING_RECONCILIATION_RETRY_SECONDS,
         billing_cutoff_margin_seconds: int = 0,
         monotonic: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
@@ -465,4 +474,22 @@ def _billing_evidence_error(
         return "billing capture omits its window start; coverage from pod creation is unproven"
     if capture.window_start_at > record.created_at:
         return "billing capture starts after pod creation; the requested charge window is narrowed"
+    # The generic seam is the final money-path boundary, so it bounds every
+    # dated record to the capture's own declared window -- the same one-bucket
+    # slack the RunPod adapter applies, from the shared symbol, so a future
+    # adapter cannot total another window's records into a green close.
+    # Undated records pass: not every provider stamps its lines, and absence
+    # of a stamp is already visible on the receipt.
+    bucket_slack = BILLING_BUCKET_WIDTH
+    for line in capture.lines:
+        if line.recorded_at is None:
+            continue
+        if (
+            line.recorded_at < capture.window_start_at - bucket_slack
+            or line.recorded_at > capture.cutoff_at
+        ):
+            return (
+                "billing capture contains a record dated outside its own declared "
+                "window; cost attribution is unverifiable"
+            )
     return None

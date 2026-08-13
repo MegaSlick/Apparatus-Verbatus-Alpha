@@ -201,11 +201,18 @@ class FakeProvider:
                 cutoff_at=cutoff_at,
                 reason="fake billing has no observation for this pod",
             )
+        # The shipped RunPod adapter's `_unavailable` always names its window
+        # start; the fake matches that shape so a test reaches the same
+        # empty-billing branch the real adapter would, not the missing-window
+        # evidence error.  The start is clamped strictly below the cutoff: a
+        # real close always takes time, but a deterministic test clock may not
+        # have moved, and CostCapture refuses a zero-width window.
         return CostCapture(
             pod_id=pod_id,
             state=BillingState.UNAVAILABLE,
             cutoff_at=cutoff_at,
             reason="fake billing deliberately has no records; zero is not inferred",
+            window_start_at=min(record.created_at, cutoff_at - timedelta(seconds=1)),
         )
 
     def bill(

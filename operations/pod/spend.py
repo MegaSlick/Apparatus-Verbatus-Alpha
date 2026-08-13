@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import secrets
 import tomllib
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from .models import (
     require_billing_cutoff_margin_seconds,
     require_utc,
 )
+from .shutdown import BILLING_RECONCILIATION_ATTEMPTS, BILLING_RECONCILIATION_RETRY_SECONDS
 
 SPEND_SCHEMA = "pod-spend.v2"
 
@@ -140,6 +142,25 @@ class SpendPolicy:
                 raise SpendRefusal(f"{label} must be a positive integer")
         if self.laptop_heartbeat_timeout_seconds >= self.hard_lifetime_seconds:
             raise SpendRefusal("laptop heartbeat timeout must be shorter than hard lifetime")
+        if self.shutdown_poll_interval_seconds > self.shutdown_deadline_seconds:
+            raise SpendRefusal("shutdown poll interval cannot exceed the shutdown deadline")
+        # One laptop-side close may run to the configured deadline plus the
+        # fixed-in-code billing reconciliation tail (the shared symbols keep
+        # this bound honest if that schedule ever changes).  This bounds only
+        # what it names: a single close on the controller that reads this
+        # policy.  The pod-side timer builds its shutdown from code defaults,
+        # not this policy, and may re-attempt a bounded number of closes --
+        # both facts are recorded in the audit note rather than claimed here.
+        # Ceil, not int: a fractional retry interval must round the bound up,
+        # never silently shave it.
+        billing_tail = math.ceil(
+            (BILLING_RECONCILIATION_ATTEMPTS - 1) * BILLING_RECONCILIATION_RETRY_SECONDS
+        )
+        if self.shutdown_deadline_seconds + billing_tail >= self.hard_lifetime_seconds:
+            raise SpendRefusal(
+                f"shutdown deadline plus the fixed {billing_tail}s billing-retry tail "
+                "must be shorter than hard lifetime"
+            )
         try:
             object.__setattr__(
                 self,
@@ -347,11 +368,17 @@ def require_confirmation(value: str | None, expected: str) -> None:
         and value[:price_start] == expected[:price_start]
     ):
         raise SpendRefusal(
-            f"typed confirmation must be exactly {expected!r}; the price may have "
-            "changed between preview and confirmation -- re-run the preview and "
+            "typed confirmation does not match this preview's phrase; the price may "
+            "have changed between preview and confirmation -- re-run the preview and "
             "confirm the current price; no paid action occurred"
         )
-    raise SpendRefusal(f"typed confirmation must be exactly {expected!r}; no paid action occurred")
+    # The expected phrase is deliberately not reproduced here: this refusal is
+    # printed and logged, and the phrase it would quote is still spendable
+    # because a typo does not burn the preview.
+    raise SpendRefusal(
+        "typed confirmation does not match the phrase this preview displayed; "
+        "type it exactly as shown; no paid action occurred"
+    )
 
 
 def _decimal_text(value: object, label: str) -> Decimal:
