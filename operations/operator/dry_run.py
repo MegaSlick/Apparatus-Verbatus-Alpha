@@ -178,9 +178,13 @@ def main(argv: list[str] | None = None) -> int:
     description = __doc__ or "Produce the offline Verbatus rehearsal transcript."
     parser = argparse.ArgumentParser(description=description.splitlines()[0])
     parser.add_argument("--output", type=Path, required=True, help="where to save the transcript")
-    args = parser.parse_args(argv)
     try:
+        args = parser.parse_args(argv)
         make_transcript(args.output)
+    except KeyboardInterrupt:
+        # The same contract every other operator entry keeps for Ctrl+C.
+        print(OperatorError(ErrorCode.INTERRUPTED).render())
+        return 1
     except OperatorError as error:
         # The same three-part contract every other operator entry keeps: a
         # failed rehearsal transcript names what happened and what did not,
