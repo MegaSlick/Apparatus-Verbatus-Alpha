@@ -33,9 +33,20 @@ for. The asymmetry is safe in exactly one direction, and that direction is the
 invariant: every pixel the Recensor calls ink is ink to this stage too, so the
 audit can never flag ink this accounting silently ignored — while ink only this
 stage sees ends as a held residual act, which is visible, never lost. The
-containment is pinned by `test_conservation.py`; narrowing this stage's margin
-past the Recensor's contrast would break the safe direction and must be a
-deliberate two-sided change.
+containment is pinned where the two stages legitimately meet,
+`common/test_designator_recensor_ink_calibration.py`; narrowing this stage's
+margin past the Recensor's contrast would break the safe direction and must be
+a deliberate two-sided change.
+
+**This is a mechanism-scale implementation, not the real-page backend.**
+`reconcile` currently materialises the page's ink, claimed ink, and residual
+ink as Python coordinate sets. That is deliberately legible over the walking
+skeleton's tiny synthetic pages, but it is the substitution boundary before a
+real corpus: replace this classification with a row-oriented bitmap/interval
+or native array implementation, together with `structure.ink_pixels` and
+`structure.label_components`, after measurement on representative pages. A
+rewrite now would optimise an unmeasured skeleton; carrying these three sets
+onto dense high-resolution pages would be equally unjustified.
 """
 
 from typing import Final, TypedDict

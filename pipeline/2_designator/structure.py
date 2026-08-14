@@ -23,6 +23,14 @@ to `gap_tolerance_px` empty pixels are treated as one component (a tolerance
 of 0 still reaches an immediately adjacent pixel). This is an ordinary
 morphological "close" before labeling, not a fixture-specific hack; it is what
 keeps one word from scanning as a dozen one-pixel islands.
+
+**The substitution boundary for real pages is explicit:** `ink_pixels` and
+`label_components` are simple per-pixel Python/set implementations for the
+walking skeleton's tiny synthetic pages. Before real parish pages or a corpus
+run, replace those two functions as a pair with a measured array-based or
+native implementation that preserves their exact threshold, connectivity,
+ordering, and accounting contracts. Their present form proves mechanism, not
+production scale.
 """
 
 from typing import Final, TypedDict

@@ -68,8 +68,8 @@ MINIMUM_INK_PIXELS = 24
 #: value at or above the Designator's margin is what guarantees the audit
 #: never calls a pixel ink that the Designator's accounting dismissed — the
 #: one direction of disagreement that could lose ink silently. Pinned by
-#: `pipeline/2_designator/test_conservation.py`; see `conservation.py`'s
-#: module docstring for the whole decision.
+#: `common/test_designator_recensor_ink_calibration.py`; see the Designator's
+#: `conservation.py` module docstring for the whole decision.
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
 
 #: The fraction of a page's own ink pixels that must fall outside every region
