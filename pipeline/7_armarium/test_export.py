@@ -337,3 +337,38 @@ def test_a_provenance_that_fails_deeper_validation_is_also_downgraded_to_refused
     assert not [
         entry for entry in export["payload"]["delivered"] if entry["act_id"] == refused_act_id
     ]
+
+
+def test_a_digest_damaged_testimonium_hard_stops_instead_of_exporting_partial(tmp_path):
+    """Broken witness custody is damage, not an act-level provenance refusal."""
+    root = tmp_path / "runs"
+    assert _orchestrate(root, "damaged-testimonium").returncode == 0
+    tree = RunTree(root, "damaged-testimonium")
+    first_act = next(
+        item for item in _export(tree)["payload"]["delivered"] if item["act_key"] == "a1"
+    )
+    reading = tree.read_artifact_reference(
+        first_act["perlectio_ref"],
+        stage=PERLECTOR,
+        kind="perlectio",
+        subject_id=first_act["act_id"],
+    )
+    testimony_ref = reading["payload"]["basis"]["testimonia"][0]["reference"]
+    testimony_path = tree.resolve(testimony_ref["relative_path"])
+
+    shutil.rmtree(tree.root / "7_armarium")
+    # Whitespace keeps the Testimonium readable JSON while changing the bytes
+    # under the Perlectio's sealed digest reference.
+    testimony_path.write_bytes(testimony_path.read_bytes() + b"\n")
+
+    result = _run_armarium(root, "damaged-testimonium")
+
+    assert result.returncode == 2
+    assert "bytes changed under a sealed reference" in result.stderr
+    assert not tree.has_artifact(
+        "armarium", "export", artifact_id("armarium", "export", "export", None)
+    )
+    armarium_root = tree.root / "7_armarium"
+    assert not armarium_root.exists() or not any(
+        path.is_file() for path in armarium_root.rglob("*")
+    )

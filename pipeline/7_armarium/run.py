@@ -657,6 +657,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                         producer_stage=PERLECTOR,
                         require_receipt=True,
                     )
+                except SchemaRefusal as error:
+                    refusal = f"the established reading's provenance was refused: {error}"
+                else:
                     provenance = payload["provenance"]
                     source_regions = export_source_regions(context.tree, payload["regions"], census)
                     reading = context.tree.read_artifact_reference(
@@ -666,9 +669,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                         subject_id=act["act_id"],
                     )
                     witnesses = export_witnesses(context, reading, act["act_id"])
-                except SchemaRefusal as error:
-                    refusal = f"the established reading's provenance was refused: {error}"
-                else:
                     entry.update(
                         {
                             # The Archetypus's own field. Nothing else may reach here.
