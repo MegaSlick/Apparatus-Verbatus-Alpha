@@ -365,11 +365,27 @@ def verify_isotropic(
     later, because a distorted geometry used anyway is exactly the "narrow
     left-margin crops" defect class this module exists to close.
     """
+    if not _is_plain_int(tolerance_bp) or tolerance_bp < 0:
+        raise ContractError(
+            f"anisotropy tolerance {tolerance_bp!r} is not a non-negative plain integer"
+        )
+    axes: dict[str, tuple[int, int]] = {}
     for axis in ("x", "y"):
-        if not isinstance(scale.get(axis), dict):
+        ratio = scale.get(axis)
+        if not isinstance(ratio, dict):
             raise ContractError(f"scale has no {axis!r} ratio to check for anisotropy")
-    x_num, x_den = scale["x"]["numerator"], scale["x"]["denominator"]
-    y_num, y_den = scale["y"]["numerator"], scale["y"]["denominator"]
+        numerator = ratio.get("numerator")
+        denominator = ratio.get("denominator")
+        if (
+            not _is_plain_int(numerator)
+            or not _is_plain_int(denominator)
+            or numerator <= 0
+            or denominator <= 0
+        ):
+            raise ContractError(f"scale.{axis} {ratio} is not a positive integer ratio")
+        axes[axis] = (numerator, denominator)
+    x_num, x_den = axes["x"]
+    y_num, y_den = axes["y"]
     # Compare x_num/x_den to y_num/y_den without division: cross-multiply, then
     # express the relative difference in basis points of the larger product.
     left = x_num * y_den

@@ -293,6 +293,33 @@ def test_verify_isotropic_refuses_a_distorted_rescale():
         verify_isotropic(scale)
 
 
+@pytest.mark.parametrize(
+    "ratio",
+    [
+        {"numerator": -1, "denominator": 1},
+        {"numerator": 1, "denominator": -1},
+        {"numerator": True, "denominator": 1},
+        {"numerator": 1, "denominator": False},
+        {"numerator": 1.0, "denominator": 1},
+        {"numerator": 1, "denominator": 1.0},
+    ],
+)
+def test_verify_isotropic_refuses_non_positive_or_boolean_ratio_components(ratio):
+    scale = {"x": ratio, "y": ratio}
+    with pytest.raises(ContractError, match="positive integer ratio"):
+        verify_isotropic(scale)
+
+
+@pytest.mark.parametrize("tolerance", [-1, True, 1.5])
+def test_verify_isotropic_refuses_an_invalid_tolerance(tolerance):
+    scale = {
+        "x": {"numerator": 1, "denominator": 1},
+        "y": {"numerator": 1, "denominator": 1},
+    }
+    with pytest.raises(ContractError, match="non-negative plain integer"):
+        verify_isotropic(scale, tolerance_bp=tolerance)
+
+
 # --- transform_digest ---------------------------------------------------------
 
 

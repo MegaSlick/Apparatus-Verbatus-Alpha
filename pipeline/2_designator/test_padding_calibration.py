@@ -144,6 +144,20 @@ def test_calibrate_padding_refuses_zero_samples():
             },
             r"true_content rectangle has non-positive dimensions",
         ),
+        (
+            {
+                "detected": {"x": 0, "y": 0, "w": 10, "h": True},
+                "true_content": {"x": 0, "y": 0, "w": 10, "h": 10},
+            },
+            r"detected rectangle is not integer-valued",
+        ),
+        (
+            {
+                "detected": {"x": 0, "y": 0, "w": 10, "h": 10},
+                "true_content": {"x": 0.5, "y": 0, "w": 10, "h": 10},
+            },
+            r"true_content rectangle is not integer-valued",
+        ),
     ],
 )
 def test_calibrate_padding_refuses_a_malformed_gold_sample(sample, refusal):

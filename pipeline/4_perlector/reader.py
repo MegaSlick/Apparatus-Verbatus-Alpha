@@ -17,6 +17,9 @@ from __future__ import annotations
 
 from typing import Any, Protocol, TypedDict
 
+from common.contracts.identities import act_id as derive_act_id
+from common.stage import FALLBACK_PAGE_ACT_ORDINAL
+
 
 class LectioResult(TypedDict):
     text: str
@@ -39,21 +42,38 @@ class FixtureReader:
     def read(self, dossier: dict[str, Any], *, primed: bool) -> LectioResult:
         act_key = dossier["act_key"]
         return {
-            "text": self._reading_text(act_key),
+            "text": self._reading_text(dossier),
             "stop_reason": self._declared_stop_reason(act_key),
         }
 
-    def _reading_text(self, act_key: str) -> str:
+    def _reading_text(self, dossier: dict[str, Any]) -> str:
+        act_key = dossier["act_key"]
+        if self._is_page_fallback(dossier):
+            # Identity, not the review-facing key, proves this dossier belongs
+            # to the reserved whole-page fallback act. A key can drift or be
+            # forged; the derived identity binds the page and rectangle.
+            return ""
         for act in self._fixture["act"]:
             if act["key"] == act_key:
                 return act["text"]
-        if any(act_key == f"page-fallback:{page['ordinal']}" for page in self._fixture["page"]):
-            # A page-fallback act is minted because no fixture act declared the
-            # page's contents. The fake reader can honestly return only the
-            # empty result of this synthetic ink-free page; a real reader would
-            # inspect the same delivered crops through this protocol.
-            return ""
         raise KeyError(f"the fixture declares no act {act_key!r}")
+
+    def _is_page_fallback(self, dossier: dict[str, Any]) -> bool:
+        renders = dossier.get("page_renders")
+        if not isinstance(renders, list) or len(renders) != 1:
+            return False
+        render = renders[0]
+        if not isinstance(render, dict):
+            return False
+        ordinal = render.get("source_page_ordinal")
+        source_page_id = render.get("source_page_id")
+        for page in self._fixture["page"]:
+            if page["ordinal"] != ordinal:
+                continue
+            page_bounds = {"x": 0, "y": 0, "w": page["width"], "h": page["height"]}
+            expected = derive_act_id(source_page_id, FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
+            return dossier.get("act_id") == expected
+        return False
 
     def _declared_stop_reason(self, act_key: str) -> str | None:
         """The engine's own word on why it stopped.

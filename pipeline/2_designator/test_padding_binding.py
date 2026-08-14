@@ -152,8 +152,12 @@ def test_padding_rewritten_between_the_binding_check_and_its_use_is_refused(tmp_
         ]
     )
     context = open_context(args, designator.DESIGNATOR)  # the check
+    shipped = SHIPPED_PADDING.read_text(encoding="utf-8")
+    assert "bottom_bp = 1800" in shipped, (
+        "the shipped padding config no longer declares bottom_bp = 1800"
+    )
     padding_path.write_text(
-        SHIPPED_PADDING.read_text(encoding="utf-8").replace("bottom_bp = 1800", "bottom_bp = 9000"),
+        shipped.replace("bottom_bp = 1800", "bottom_bp = 9000"),
         encoding="utf-8",
     )
     with pytest.raises(ContractError, match="changed between this run's binding check"):

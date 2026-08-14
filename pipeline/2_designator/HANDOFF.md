@@ -271,11 +271,14 @@ that must appear, but the seal may also carry additional rows a residual
 minted, each `held` from the moment it exists (never `proposed`: nothing
 witnessed or read ink no structural pass claimed), each independently
 recomputable from its own hold record's `residual_ordinal` and
-`residual_bounds` rather than trusted because the seal names it. This is a
-strictly additive change to the shared function: for every existing scenario
-in this fixture, no page has any residual ink today, so the new code path
-never fires and every prior digest is unchanged — proven by the full test
-suite, not merely argued (`pipeline/orchestrator/test_orchestrator_acceptance.py`'s
+`residual_bounds` rather than trusted because the seal names it. This
+additive denominator path is not evidence that prior artifact digests remain
+unchanged: `run_config_bindings` now seals
+`designator_padding_config_sha256` into every run's `config_digest`, and later
+fixture additions also enter that digest. The HAPPY and REVIEW pins were
+therefore re-measured from fresh orchestrator runs rather than inferred from
+which scenarios exercise residual minting
+(`pipeline/orchestrator/test_orchestrator_acceptance.py`'s
 `test_losing_the_first_page_holds_every_act_and_delivers_nothing` is the one
 existing scenario that *does* produce a residual, incidentally: page 2 seals in
 `refused-first-page` but never receives a cut region, so its own real ink

@@ -943,8 +943,6 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     because the whole point of cutting it is that it goes downstream to be read.
     """
     fixture_acts = context.fixture.get("act", [])
-    if not fixture_acts:
-        return
     expected = {
         act_identity(context.fixture, row): {
             "act_key": row["key"],

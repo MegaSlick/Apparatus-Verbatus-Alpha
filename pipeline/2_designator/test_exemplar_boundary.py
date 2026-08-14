@@ -130,8 +130,9 @@ def test_a_changed_sealed_pixel_blob_stops_before_designator_crops_or_rehashes_i
     page = tree.read_artifact(EXEMPLAR, "page", page_entry["artifact_id"])
     blob_path = tree.resolve(page["payload"]["image_path"])
     with Image.open(BytesIO(blob_path.read_bytes())) as image:
-        changed = image.convert("RGB")
-        changed.putpixel((0, 0), (255, 0, 0))
+        changed = image.copy()
+        original = changed.getpixel((0, 0))
+        changed.putpixel((0, 0), 0 if original else 255)
         output = BytesIO()
         changed.save(output, format="PNG")
     blob_path.write_bytes(output.getvalue())
@@ -277,8 +278,9 @@ def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tm
     # Tamper the same page's blob *after* that check already passed.
     blob_path = context.tree.resolve(page_record["payload"]["image_path"])
     with Image.open(BytesIO(blob_path.read_bytes())) as image:
-        changed = image.convert("RGB")
-        changed.putpixel((0, 0), (255, 0, 0))
+        changed = image.copy()
+        original = changed.getpixel((0, 0))
+        changed.putpixel((0, 0), 0 if original else 255)
         output = BytesIO()
         changed.save(output, format="PNG")
     blob_path.write_bytes(output.getvalue())
