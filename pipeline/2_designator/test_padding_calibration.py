@@ -120,6 +120,32 @@ def test_calibrate_padding_refuses_zero_samples():
         calibrate_padding([], corpus="test", sample_unit="test-record")
 
 
+@pytest.mark.parametrize(
+    ("sample", "refusal"),
+    [
+        ("not-an-object", r"gold sample 0 has fields outside"),
+        ({"detected": {"x": 0, "y": 0, "w": 1, "h": 1}}, r"gold sample 0 has fields outside"),
+        (
+            {
+                "detected": {"x": 0, "y": 0, "w": 0, "h": 1},
+                "true_content": {"x": 0, "y": 0, "w": 1, "h": 1},
+            },
+            r"detected rectangle has non-positive dimensions",
+        ),
+        (
+            {
+                "detected": {"x": 0, "y": 0, "w": 1, "h": 1},
+                "true_content": {"x": 0, "y": 0, "w": 1, "h": -1},
+            },
+            r"true_content rectangle has non-positive dimensions",
+        ),
+    ],
+)
+def test_calibrate_padding_refuses_a_malformed_gold_sample(sample, refusal):
+    with pytest.raises(ContractError, match=refusal):
+        calibrate_padding([sample], corpus="test", sample_unit="test-record")
+
+
 def test_calibrate_padding_produces_the_shipped_config_shape():
     samples = [
         {

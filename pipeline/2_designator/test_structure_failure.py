@@ -381,8 +381,10 @@ def test_a_uniformly_dark_page_is_refused_rather_than_counted_as_zero_ink():
     assert max(range(256), key=lambda v: sum(row.count(v) for row in rows)) == 0
     with pytest.raises(ContractError, match=r"darker than the 20-point ink margin"):
         infer_background(width, height, rows)
-    # And what a run would have reported had it been allowed through.
-    assert primary_scan(width, height, rows, background=0) == []
+    # Defence in depth: even a caller bypassing inference cannot turn the
+    # impossible threshold into an all-zero measurement.
+    with pytest.raises(ContractError, match=r"below every 8-bit sample"):
+        primary_scan(width, height, rows, background=0)
     assert PRIMARY_MARGIN == 20
 
 
@@ -594,6 +596,40 @@ def test_a_fallback_act_minted_over_a_detected_page_is_refused(blank_first_page_
         expected_acts(context)
     context.tree.read_artifact_reference = real_read
     assert fallback_row["outcome"] == "proposed"
+
+
+def test_a_fallback_act_bound_to_only_part_of_its_sealed_page_is_refused(blank_first_page_run):
+    """A self-consistent minted identity must still deliver the complete page downstream."""
+    from common.contracts.errors import FatalAccounting
+    from common.stage import FALLBACK_PAGE_ACT_ORDINAL, _verify_page_fallback_act_row
+
+    designator, context, _held = blank_first_page_run
+    fallback_record = next(
+        context.tree.read_artifact(DESIGNATOR, "page-fallback", entry["artifact_id"])
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == "page-fallback"
+    )
+    payload = fallback_record["payload"]
+    partial_bounds = {**payload["page_bounds"], "h": payload["page_bounds"]["h"] - 1}
+    corrupt_act_id = designator.derive_minted_act_id(
+        payload["page_id"], FALLBACK_PAGE_ACT_ORDINAL, partial_bounds
+    )
+    corrupt_record = {
+        **fallback_record,
+        "subject_id": corrupt_act_id,
+        "payload": {**payload, "page_bounds": partial_bounds},
+    }
+    original_row = next(
+        row
+        for row in _payloads(context, "proposal-seal")[0]["expected_acts"]
+        if row["act_key"] == payload["act_key"]
+    )
+    corrupt_row = {**original_row, "act_id": corrupt_act_id}
+
+    with pytest.raises(FatalAccounting, match="not the complete sealed page rectangle"):
+        _verify_page_fallback_act_row(
+            context, corrupt_act_id, corrupt_row, {corrupt_act_id: corrupt_record}
+        )
 
 
 def test_an_act_on_a_fallback_tiled_page_records_no_detected_bounds(blank_first_page_run):

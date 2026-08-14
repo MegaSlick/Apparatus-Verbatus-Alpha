@@ -10,6 +10,8 @@ import pytest
 from structure import (
     PRIMARY_MARGIN,
     SECONDARY_MARGIN,
+    BackgroundInferenceRefusal,
+    _ink_threshold,
     infer_background,
     label_components,
     primary_scan,
@@ -32,6 +34,11 @@ def paint_rect(rows: list[bytearray], x: int, y: int, w: int, h: int, value: int
         row = rows[y + row_offset]
         for col_offset in range(w):
             row[x + col_offset] = value
+
+
+def test_an_ink_threshold_below_every_8_bit_sample_is_refused():
+    with pytest.raises(BackgroundInferenceRefusal, match="below every 8-bit sample"):
+        _ink_threshold(10, 11)
 
 
 def paint_pixel(rows: list[bytearray], x: int, y: int, value: int) -> None:

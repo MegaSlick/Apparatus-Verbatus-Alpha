@@ -98,6 +98,23 @@ def test_a_body_run_with_no_preceding_anchor_is_a_leading_fragment():
     assert "leading fragment" in groups[0]["rationale"]
 
 
+def test_a_component_contained_in_a_taller_predecessor_does_not_shorten_the_active_run():
+    """The active run reaches the greatest bottom edge seen, not merely the last one.
+
+    The middle component is wholly contained by the first.  Replacing the run's
+    bottom with that smaller component's bottom makes the third component appear
+    seven pixels away and falsely splits it at the six-pixel chain-gap limit.
+    """
+    tall = body_component(10, 30)  # reaches row 40
+    contained = body_component(20, 5)  # reaches only row 25
+    following = body_component(32, 5)  # still overlaps the tall component
+
+    groups = group_page([tall, contained, following], PAGE_W, PAGE_H)
+
+    assert len(groups) == 1
+    assert groups[0]["body_members"] == [tall, contained, following]
+
+
 def test_an_isolated_anchor_with_no_body_run_is_its_own_marginal_note_act():
     stray = margin_component(200)
     body = body_component(20, 40)  # far away, will not overlap the stray anchor's range

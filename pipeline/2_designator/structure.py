@@ -78,7 +78,14 @@ def _ink_threshold(background: int, margin: int) -> int:
         raise ContractError(f"background value {background} is not an 8-bit sample")
     if margin < 0:
         raise ContractError(f"sensitivity margin {margin} is negative")
-    return background - margin
+    threshold = background - margin
+    if threshold < 0:
+        raise BackgroundInferenceRefusal(
+            f"a background of {background} at a {margin}-point margin implies the threshold "
+            f"{threshold}, which is below every 8-bit sample: no pixel could be counted as ink "
+            "and a blank result here would be arithmetic rather than a measurement"
+        )
+    return threshold
 
 
 def infer_background(width: int, height: int, rows: list) -> int:

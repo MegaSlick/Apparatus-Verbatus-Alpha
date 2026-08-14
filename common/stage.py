@@ -34,8 +34,10 @@ from common.contracts.errors import (
 from common.contracts.identities import act_bindings, artifact_id, attempt_id
 from common.contracts.identities import verify as verify_identity
 from common.contracts.outcomes import classify
-from common.contracts.stages import DESIGNATOR, PERLECTOR, RECENSOR
+from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR, RECENSOR
+from common.exemplar_boundary import verify_sealed_page_pixels
 from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
+from common.imaging import dimensions
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
     RECOVERY_KINDS,
@@ -1161,10 +1163,40 @@ def _verify_page_fallback_act_row(
         )
     payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
     bounds = payload.get("page_bounds")
-    if not isinstance(bounds, dict) or payload.get("act_key") != row["act_key"]:
+    ordinal = row["page_ordinal"]
+    expected_key = fallback_page_act_key(ordinal)
+    if (
+        not isinstance(bounds, dict)
+        or payload.get("act_key") != row["act_key"]
+        or payload.get("act_key") != expected_key
+        or payload.get("page_id") != row["page_id"]
+        or payload.get("page_ordinal") != ordinal
+        or payload.get("fallback_ordinal") != FALLBACK_PAGE_ACT_ORDINAL
+    ):
         raise FatalAccounting(
-            f"act {act_id}'s page-fallback record carries no page rectangle and act key to "
-            "recompute its identity from"
+            f"act {act_id}'s page-fallback record does not carry the page id, ordinal, reserved "
+            "fallback ordinal, derived fallback key, and page rectangle it must bind"
+        )
+    sources = [
+        source
+        for source in context.run.get("source_manifest", [])
+        if source.get("ordinal") == ordinal
+    ]
+    if len(sources) != 1:
+        raise FatalAccounting(
+            f"act {act_id}'s page ordinal {ordinal} does not name exactly one sealed source"
+        )
+    page = context.tree.read_artifact(
+        EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", row["page_id"])
+    )
+    verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    width, height = dimensions(page_bytes)
+    full_page_bounds = {"x": 0, "y": 0, "w": width, "h": height}
+    if bounds != full_page_bounds:
+        raise FatalAccounting(
+            f"act {act_id}'s page-fallback rectangle {bounds} is not the complete sealed page "
+            f"rectangle {full_page_bounds}"
         )
     try:
         verify_identity(

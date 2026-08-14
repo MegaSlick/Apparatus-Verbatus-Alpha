@@ -30,7 +30,8 @@ edge) but never in the config file itself: writing a freshly-calibrated
 project does not yet have, not something this module does on import.
 """
 
-from typing import Any, Final, TypedDict
+from collections.abc import Mapping
+from typing import Any, Final, TypedDict, cast
 
 from geometry import BP_DENOMINATOR, Bounds
 
@@ -51,6 +52,38 @@ _EDGES: Final = ("top", "bottom", "left", "right")
 class GoldSample(TypedDict):
     detected: Bounds
     true_content: Bounds
+
+
+def _validated_bounds(value: object, *, sample_index: int, name: str) -> Bounds:
+    """One complete integer rectangle with positive dimensions, or a named refusal."""
+    fields = {"x", "y", "w", "h"}
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ContractError(
+            f"gold sample {sample_index} {name} rectangle has fields outside {sorted(fields)}"
+        )
+    if any(not isinstance(value[field], int) or isinstance(value[field], bool) for field in fields):
+        raise ContractError(f"gold sample {sample_index} {name} rectangle is not integer-valued")
+    if value["w"] <= 0 or value["h"] <= 0:
+        raise ContractError(
+            f"gold sample {sample_index} {name} rectangle has non-positive dimensions"
+        )
+    return cast(Bounds, dict(value))
+
+
+def _validated_sample(value: object, sample_index: int) -> GoldSample:
+    """Validate the runtime shape the ``GoldSample`` type hint cannot enforce."""
+    if not isinstance(value, Mapping) or set(value) != {"detected", "true_content"}:
+        raise ContractError(
+            f"gold sample {sample_index} has fields outside ['detected', 'true_content']"
+        )
+    return {
+        "detected": _validated_bounds(
+            value["detected"], sample_index=sample_index, name="detected"
+        ),
+        "true_content": _validated_bounds(
+            value["true_content"], sample_index=sample_index, name="true_content"
+        ),
+    }
 
 
 def _edge_shortfall_bp(detected: Bounds, true_content: Bounds, edge: str) -> int:
@@ -139,16 +172,19 @@ def calibrate_padding(
     numbers and states plainly what they rest on; it does not write a file
     and is not called by any run-path code.
     """
+    if not isinstance(samples, list):
+        raise ContractError("gold samples must be supplied as a list for deterministic calibration")
     if not samples:
         raise ContractError(
             "cannot calibrate padding from zero gold samples; a percentile of nothing is "
             "not a number, it is an absence wearing a number's shape"
         )
+    validated_samples = [_validated_sample(sample, index) for index, sample in enumerate(samples)]
     per_edge_bp = {
         edge: _nearest_rank_percentile(
             [
                 _edge_shortfall_bp(sample["detected"], sample["true_content"], edge)
-                for sample in samples
+                for sample in validated_samples
             ],
             percentile,
         )
@@ -163,10 +199,10 @@ def calibrate_padding(
             "source": "pipeline/2_designator/padding_calibration.py, run against real gold samples",
             "corpus": corpus,
             "sample_unit": sample_unit,
-            "sample_count": len(samples),
+            "sample_count": len(validated_samples),
             "statistic": f"p{percentile} per-edge shortfall, as a fraction of the detected "
             "box's own dimension for that edge, nearest-rank",
             "calibrated_for_this_corpus": True,
-            "caveat": sample_size_caveat(len(samples)),
+            "caveat": sample_size_caveat(len(validated_samples)),
         },
     }

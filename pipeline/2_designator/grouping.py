@@ -183,7 +183,7 @@ def _chain_body(
             current = []
         current.append(component)
         current_index = index
-        previous_bottom = bottom
+        previous_bottom = bottom if previous_bottom is None else max(previous_bottom, bottom)
     if current:
         runs.append(current)
     return runs
