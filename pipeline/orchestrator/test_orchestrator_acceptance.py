@@ -346,10 +346,16 @@ FIXTURE = "synthetic-two-page-v0"
 # Re-pinned for System 11: formats.toml is now a sealed run configuration and
 # Armarium writes one content-addressed, self-verifying external product bundle.
 # The added blob changes each inventory count by one; the changed configuration
-# digest deliberately changes every dependent artifact byte. Values below are
-# replaced with fresh post-rebase measurements before this branch is complete.
-HAPPY_RUN_TREE_DIGEST = "e6c455d96048733149978b84ac2265886a524c08bdeec140655a9f660a1b4d6e"
-REVIEW_RUN_TREE_DIGEST = "07c5eff63596b9d96fd3914a9f1479d98e58c476f187f3262ec58c44bd2bce84"
+# digest deliberately changes every dependent artifact byte.
+#
+# Re-pinned for the rebase onto post-#35 main. Armarium's bundle adds one file
+# to each of main's measured trees, moving happy from 53 to 54 files and review
+# from 57 to 58. Fresh real runs through this module's `orchestrate` and
+# `semantic_snapshot_digest` helpers measured the values below; happy exited 0
+# and review exited 3. These replace the branch's old raw-snapshot pins rather
+# than carrying forward its pre-main reason for leaving them platform-specific.
+HAPPY_RUN_TREE_DIGEST = "f0774eea922286258873260324d4465d2a7ee999c2fcc076989636bd31b45bd0"
+REVIEW_RUN_TREE_DIGEST = "492762959adb66d756bc3d4db0b77889c87f6953e670c5b8638ce83676150b7a"
 
 
 def orchestrate(
@@ -2186,7 +2192,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    assert len(before) == 53
+    assert len(before) == 54
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -2231,7 +2237,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    assert len(before) == 57
+    assert len(before) == 58
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
