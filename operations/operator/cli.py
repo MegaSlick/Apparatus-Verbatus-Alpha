@@ -231,7 +231,8 @@ def load_request(path: str | Path) -> PodCreateRequest:
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise OperatorError(
-            ErrorCode.INVALID_COMMAND, detail="the pod request contains an unknown field"
+            ErrorCode.INVALID_COMMAND,
+            detail=f"the pod request contains unknown fields: {', '.join(unknown)}",
         )
     try:
         command = raw["docker_start_cmd"]
@@ -316,19 +317,25 @@ def _interactive_arguments() -> list[str]:
         return arguments
     if verb == "upload":
         source = _ask("Folder containing the submitted files")
-        manifest = _ask("Path to its sealed submission record")
-        # The same guard the launch route above carries. A blank answer became
-        # `Path("")` and then `Path(".")`, which `upload` refuses cleanly further
-        # down — so nothing was ever sent or billed, and the defect is that a
-        # person who pressed return twice was answered with an error about a
-        # sealed manifest rather than with "nothing changed". Found by CodeRabbit.
-        if not source or not manifest:
+        if not source:
             _print(
-                "Upload needs both a folder and its sealed submission record. "
-                "One of them was left blank, so nothing changed."
+                "Upload needs a folder containing the submitted files. "
+                "It was left blank, so nothing changed."
             )
             return []
-        return ["upload", "--source", source, "--sealed-manifest", manifest]
+        manifest = _ask(
+            "Path to its sealed submission record (leave blank if this is the first upload)"
+        )
+        if manifest:
+            return ["upload", "--source", source, "--sealed-manifest", manifest]
+        manifest_out = _ask("Path where the new sealed submission record should be saved")
+        if not manifest_out:
+            _print(
+                "A first upload needs a destination for its new sealed submission record. "
+                "It was left blank, so nothing changed."
+            )
+            return []
+        return ["upload", "--source", source, "--manifest-out", manifest_out]
     if verb == "run":
         run_id = _ask("A short name for this run", default="dry-run")
         return ["run", "--run-id", run_id]

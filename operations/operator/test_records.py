@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -106,17 +107,28 @@ def test_reusing_a_receipt_path_refuses_an_oversized_file(tmp_path: Path) -> Non
         records._atomic_create_or_reuse(target, b"payload")
 
 
-def test_descriptor_lock_serializes_a_second_writer(tmp_path: Path) -> None:
+def test_descriptor_lock_serializes_a_second_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A second writer cannot enter its read-modify-write while the first owns the lock."""
 
     store = records.DescriptorStore(tmp_path)
     receipt = tmp_path / "receipt.json"
-    started = threading.Event()
+    attempted_lock = threading.Event()
+    entered_record = threading.Event()
     finished = threading.Event()
     raised: list[BaseException] = []
+    order: list[str] = []
+
+    original_lock = store._lock
+    original_record_unlocked = store._record_unlocked
+
+    def observed_record_unlocked(action: str, path: Path):
+        entered_record.set()
+        order.append("second-entered")
+        return original_record_unlocked(action, path)
 
     def second_writer() -> None:
-        started.set()
         try:
             store.record("boot", receipt)
         except BaseException as error:  # noqa: BLE001 - surfaced after the timing assertion
@@ -124,14 +136,26 @@ def test_descriptor_lock_serializes_a_second_writer(tmp_path: Path) -> None:
         finally:
             finished.set()
 
-    with store._lock():
+    with original_lock():
+        order.append("first-holds")
+
+        @contextmanager
+        def observed_lock():
+            attempted_lock.set()
+            with original_lock():
+                yield
+
+        monkeypatch.setattr(store, "_lock", observed_lock)
+        monkeypatch.setattr(store, "_record_unlocked", observed_record_unlocked)
         writer = threading.Thread(target=second_writer, daemon=True)
         writer.start()
-        assert started.wait(1), "the second writer did not start"
-        assert not finished.wait(0.2), "the second writer passed the held descriptor lock"
+        assert attempted_lock.wait(1), "the second writer did not reach the descriptor lock"
+        assert not entered_record.wait(0.2), "the second writer passed the held descriptor lock"
+        order.append("first-releases")
 
     assert finished.wait(5), "the second writer did not proceed after the lock was released"
     assert raised == []
+    assert order == ["first-holds", "first-releases", "second-entered"]
     loaded = store.load()
     assert loaded is not None and loaded["actions"]["boot"] == str(receipt.resolve())
 
@@ -155,11 +179,28 @@ def test_receipt_and_descriptor_publication_sync_their_directories(
     assert synced == [tmp_path, tmp_path]
 
 
-@pytest.mark.parametrize("publisher", (records._atomic_create_or_reuse, records._atomic_replace))
-def test_operator_publication_reports_a_directory_sync_failure(
+def test_operator_receipt_publication_names_a_directory_sync_failure_after_the_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    publisher: Callable[[Path, bytes], None],
+) -> None:
+    def refuses(_path: Path, *, strict: bool) -> None:
+        assert strict
+        raise OSError("injected directory sync failure")
+
+    monkeypatch.setattr(records, "sync_directory", refuses)
+
+    target = tmp_path / "record.json"
+    with pytest.raises(
+        records.RecordError,
+        match="was written but its directory entry could not be made durable",
+    ):
+        records._atomic_create_or_reuse(target, b"payload")
+
+    assert target.read_bytes() == b"payload"
+
+
+def test_operator_descriptor_publication_reports_a_directory_sync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def refuses(_path: Path, *, strict: bool) -> None:
         assert strict
@@ -168,4 +209,4 @@ def test_operator_publication_reports_a_directory_sync_failure(
     monkeypatch.setattr(records, "sync_directory", refuses)
 
     with pytest.raises(records.RecordError, match="could not be written"):
-        publisher(tmp_path / "record.json", b"payload")
+        records._atomic_replace(tmp_path / "record.json", b"payload")

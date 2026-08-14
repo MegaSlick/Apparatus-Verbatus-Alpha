@@ -7,9 +7,11 @@ HTTP client, or S3 client.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 from typing import BinaryIO
@@ -76,14 +78,25 @@ class LocalFixtureObjectStore(TransferTarget):
         self.puts: list[str] = []
 
     def inspect(self, key: str) -> RemoteObject | None:
-        path = self._path(key)
+        self._path(key)
+        path = self.root.resolve() / key
         # `_path` resolves for containment, so inspect the unresolved object key
         # as well: a link at the key is not verified bytes under that name.
-        if (self.root.resolve() / key).is_symlink() or not path.is_file():
+        if path.is_symlink():
             return None
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                return None
+            raise
         digest = hashlib.sha256()
         size = 0
-        with path.open("rb") as handle:
+        with os.fdopen(descriptor, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return None
             for block in iter(lambda: handle.read(BLOCK_BYTES), b""):
                 digest.update(block)
                 size += len(block)
@@ -93,12 +106,13 @@ class LocalFixtureObjectStore(TransferTarget):
         # The same rule inspect() applies, at the write: a link at the object
         # key must be refused, or a successful put would record a key that
         # inspect() then reports absent and nothing could verify or resume.
-        if (self.root.resolve() / key).is_symlink():
+        target = self.root.resolve() / key
+        if target.is_symlink():
             raise RuntimeError(f"fixture object key {key!r} is a symbolic link, not an object")
         if self.fail_once_for == key:
             self.fail_once_for = None
             raise RuntimeError("injected partial transfer")
-        target = self._path(key)
+        self._path(key)
         target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
         temporary = Path(temporary_name)
@@ -116,10 +130,24 @@ class LocalFixtureObjectStore(TransferTarget):
                 os.link(temporary, target)
                 sync_directory(target.parent, strict=True)
             except FileExistsError:
-                if not _same_bytes(temporary, target):
+                try:
+                    existing = os.open(
+                        target,
+                        os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                    )
+                except OSError as error:
                     raise RuntimeError(
-                        "fixture object already exists with different bytes"
-                    ) from None
+                        f"fixture object key {key!r} is not a readable object"
+                    ) from error
+                with os.fdopen(existing, "rb") as opened:
+                    if not stat.S_ISREG(os.fstat(opened.fileno()).st_mode):
+                        raise RuntimeError(
+                            f"fixture object key {key!r} is not a readable object"
+                        ) from None
+                    if not _same_handle_bytes(temporary, opened):
+                        raise RuntimeError(
+                            "fixture object already exists with different bytes"
+                        ) from None
             self.puts.append(key)
         finally:
             temporary.unlink(missing_ok=True)
@@ -134,11 +162,13 @@ class LocalFixtureObjectStore(TransferTarget):
         return candidate
 
 
-def _same_bytes(left: Path, right: Path) -> bool:
-    with left.open("rb") as first, right.open("rb") as second:
+def _same_handle_bytes(left: Path, right: BinaryIO) -> bool:
+    """Compare a local temporary with an already-opened object-key handle."""
+
+    with left.open("rb") as first:
         while True:
             block = first.read(BLOCK_BYTES)
-            if block != second.read(BLOCK_BYTES):
+            if block != right.read(BLOCK_BYTES):
                 return False
             if not block:
                 return True

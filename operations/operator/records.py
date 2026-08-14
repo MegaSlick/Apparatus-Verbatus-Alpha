@@ -361,7 +361,13 @@ def _atomic_create_or_reuse(target: Path, payload: bytes) -> None:
     try:
         try:
             os.link(temporary, target)
-            sync_directory(target.parent, strict=True)
+            try:
+                sync_directory(target.parent, strict=True)
+            except OSError as error:
+                raise RecordError(
+                    "the operator receipt was written but its directory entry could not be "
+                    "made durable"
+                ) from error
         except FileExistsError:
             try:
                 existing = _bounded_bytes(target, "existing operator receipt")

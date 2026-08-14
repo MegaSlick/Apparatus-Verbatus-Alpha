@@ -733,9 +733,13 @@ class OperatorSurface:
         )
         page_records = export_payload.get("pages", [])
         expected = export_payload.get("expected_acts")
+        expected_on_screen = f"{expected} total" if expected is not None else "total not recorded"
+        expected_in_notice = (
+            f"{expected} act(s) accounted for" if expected is not None else "act total not recorded"
+        )
         self.present(
             f"Pages accounted for: {', '.join(pages)} ({len(page_records)} total). "
-            f"Acts accounted for: {', '.join(acts)} ({expected} total)."
+            f"Acts accounted for: {', '.join(acts)} ({expected_on_screen})."
         )
         if state == "complete":
             self.present("Run complete. The named pages and acts reached the Armarium record.")
@@ -743,7 +747,7 @@ class OperatorSurface:
             self._notify(
                 "milestone",
                 f"Verbatus run {run_id} finished: {len(page_records)} page(s), "
-                f"{expected} act(s) accounted for.",
+                f"{expected_in_notice}.",
             )
             return RunOutcome(state, run_root, run_id, aggregate, export_payload)
         # A list, or none at all. `aggregate` is read from an artifact on disk, so
@@ -1380,16 +1384,31 @@ class OperatorSurface:
             )
         temporary = destination.with_name(f".{destination.name}.tmp")
         try:
+            refused: list[str] = []
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
                 for entry in selected:
                     if entry.is_file():
                         bundle.write(entry, arcname=f"{run_id}/{entry.relative_to(source)}")
                     elif entry.is_dir():
                         for member in sorted(entry.rglob("*")):
-                            if member.is_file() and not member.is_symlink():
+                            if member.is_symlink():
+                                refused.append(str(member.relative_to(source)))
+                            elif member.is_dir():
+                                continue
+                            elif member.is_file():
                                 bundle.write(
                                     member, arcname=f"{run_id}/{member.relative_to(source)}"
                                 )
+                            else:
+                                refused.append(str(member.relative_to(source)))
+            if refused:
+                raise OperatorError(
+                    ErrorCode.EXPORT_FAILED,
+                    detail=(
+                        "the Armarium evidence bundle cannot be written as complete: "
+                        + "; ".join(f"{name} is not a regular file" for name in sorted(refused))
+                    ),
+                )
             temporary.replace(destination)
         finally:
             temporary.unlink(missing_ok=True)

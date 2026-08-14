@@ -93,6 +93,9 @@ def test_error_renderer_never_shows_a_raw_traceback_or_old_close_vocabulary() ->
     assert "Traceback" not in rendered
     assert "terminate" not in rendered.lower()
     assert "shutdown" not in rendered.lower()
+    assert "What happened:" in rendered
+    assert "Next step:" in rendered
+    assert "not saved by this error path" in rendered
 
 
 def test_old_close_vocabulary_is_replaced_even_without_the_word_traceback() -> None:

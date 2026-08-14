@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,8 +38,16 @@ def make_transcript(output: str | Path) -> Path:
         "This is an offline rehearsal. It contacts no cloud provider and creates no bill.",
         "",
     ]
-    with tempfile.TemporaryDirectory(prefix="verbatus-dry-run-") as temporary_name:
+    with tempfile.TemporaryDirectory(prefix=".verbatus-dry-run-", dir=ROOT) as temporary_name:
         temporary = Path(temporary_name)
+        workspace = temporary / "workspace"
+        config = workspace / "config"
+        config.mkdir(parents=True)
+        shutil.copy2(ROOT / "uv.lock", workspace / "uv.lock")
+        shutil.copy2(ROOT / "config" / "models.toml", config / "models.toml")
+        shutil.copy2(ROOT / "config" / "pod_placement.toml", config / "pod_placement.toml")
+        (workspace / "pipeline").symlink_to(ROOT / "pipeline", target_is_directory=True)
+        (workspace / "proof").symlink_to(ROOT / "proof", target_is_directory=True)
         state = temporary / "operator-records"
         source = temporary / "submitted-pages"
         source.mkdir()
@@ -46,7 +55,7 @@ def make_transcript(output: str | Path) -> Path:
         manifest = temporary / "sealed-submission.json"
         submission = build_manifest(walk_folder(source))
         manifest.write_bytes(canonical_bytes(submission))
-        spend = temporary / "reviewed-spend.toml"
+        spend = config / "spend.toml"
         spend.write_text(
             "\n".join(
                 (
@@ -73,7 +82,7 @@ def make_transcript(output: str | Path) -> Path:
             lines.append(_friendly_path(value, temporary))
 
         surface = OperatorSurface(
-            ROOT,
+            workspace,
             state,
             provider=provider,
             now=lambda: START,

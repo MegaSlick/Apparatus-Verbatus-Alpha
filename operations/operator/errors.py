@@ -340,7 +340,10 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     if not compact:
         return "no additional detail was recorded"
     if "traceback" in compact.lower():
-        return "a technical detail was saved locally; this step was not called complete"
+        return (
+            "a technical detail was omitted from this message and was not saved by this error "
+            "path; this step was not called complete"
+        )
     compact = " ".join(_translate_close_vocabulary(word) for word in compact.split(" "))
     if len(compact) <= maximum:
         return compact

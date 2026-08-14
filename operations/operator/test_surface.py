@@ -32,7 +32,7 @@ from operations.pod.spend import load_spend_policy
 from operations.submit import gate
 from operations.submit.submit import build_manifest, walk_folder
 
-from . import cli, entry
+from . import cli, dry_run, entry, notify_bridge
 from .dry_run import make_transcript
 from .errors import ErrorCode, OperatorError
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
@@ -589,6 +589,74 @@ def test_a_fixture_object_key_that_is_a_symlink_is_never_verified(tmp_path: Path
     assert LocalFixtureObjectStore(root).inspect("volume/page.bin") is None
 
 
+@pytest.mark.parametrize("referent_bytes", (b"payload", b"different"))
+def test_a_symlink_planted_during_fixture_object_publication_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    referent_bytes: bytes,
+) -> None:
+    """The FileExistsError comparison must inspect the key, not its referent."""
+
+    root = tmp_path / "volume"
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"payload")
+    referent = tmp_path / "referent.bin"
+    referent.write_bytes(referent_bytes)
+    target = root / "objects" / "page.bin"
+    real_link = os.link
+
+    def plant_link(source_name, target_name, *args, **kwargs):  # type: ignore[no-untyped-def]
+        Path(target_name).symlink_to(referent)
+        return real_link(source_name, target_name, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", plant_link)
+    store = LocalFixtureObjectStore(root)
+
+    with source.open("rb") as handle:
+        with pytest.raises(RuntimeError, match="not a readable object"):
+            store.put_file("objects/page.bin", handle)
+
+    assert target.is_symlink()
+    assert store.puts == []
+
+
+def test_inspect_refuses_a_symlink_planted_as_the_object_is_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "volume"
+    target = root / "objects" / "page.bin"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"payload")
+    referent = tmp_path / "referent.bin"
+    referent.write_bytes(b"payload")
+    real_os_open = os.open
+    real_path_open = Path.open
+    planted = False
+
+    def plant() -> None:
+        nonlocal planted
+        if not planted:
+            planted = True
+            target.unlink()
+            target.symlink_to(referent)
+
+    def opening_descriptor(path, flags, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if Path(path) == target:
+            plant()
+        return real_os_open(path, flags, *args, **kwargs)
+
+    def opening_path(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if path == target:
+            plant()
+        return real_path_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", opening_descriptor)
+    monkeypatch.setattr(Path, "open", opening_path)
+
+    assert LocalFixtureObjectStore(root).inspect("objects/page.bin") is None
+    assert target.is_symlink(), "the test did not drive the read-side substitution"
+
+
 def test_fixture_object_publication_syncs_its_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1089,6 +1157,7 @@ def test_load_request_refuses_an_unknown_field(tmp_path: Path) -> None:
         cli.load_request(_request_json(tmp_path, unexpected_field="not allowed"))
 
     assert refusal.value.code is ErrorCode.INVALID_COMMAND
+    assert "unexpected_field" in (refusal.value.detail or "")
 
 
 def test_load_request_refuses_an_incomplete_request(tmp_path: Path) -> None:
@@ -1410,6 +1479,38 @@ def test_a_held_run_raises_run_held_not_run_failed(
     assert "could not reach" not in failure.value.render()
 
 
+def test_a_missing_expected_act_total_is_named_on_screen_and_in_the_milestone(
+    tmp_path: Path,
+) -> None:
+    messages: list[str] = []
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path, output=messages)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete"},
+        "pages": [],
+    }
+
+    def record_notification(event: str, message: str):  # type: ignore[no-untyped-def]
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = record_notification
+
+    surface.run(run_id="missing-expected-total")
+
+    assert any("Acts accounted for:" in line and "total not recorded" in line for line in messages)
+    assert notifications == [
+        (
+            "milestone",
+            "Verbatus run missing-expected-total finished: 0 page(s), act total not recorded.",
+        )
+    ]
+    assert "None" not in "\n".join(messages + [notifications[0][1]])
+
+
 def test_a_run_whose_declared_fixture_cannot_be_read_says_so(tmp_path: Path) -> None:
     """A fixture that cannot be read must not silently become a placeholder.
 
@@ -1553,6 +1654,36 @@ def test_interactive_launch_can_name_an_exact_recorded_fixture_pod(
     ]
 
 
+def test_interactive_first_upload_asks_where_to_seal_the_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answers = iter(("upload", "/approved/batch", "", "/approved/submission.json"))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert cli._interactive_arguments() == [
+        "upload",
+        "--source",
+        "/approved/batch",
+        "--manifest-out",
+        "/approved/submission.json",
+    ]
+
+
+def test_interactive_upload_keeps_an_existing_sealed_manifest_primary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answers = iter(("upload", "/approved/batch", "/reviewed/submission.json"))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert cli._interactive_arguments() == [
+        "upload",
+        "--source",
+        "/approved/batch",
+        "--sealed-manifest",
+        "/reviewed/submission.json",
+    ]
+
+
 def test_close_confirmation_shows_the_exact_unquoted_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1568,9 +1699,13 @@ def test_close_confirmation_shows_the_exact_unquoted_line(
     assert prompts == ["Type this line exactly, with no quotation marks:\nclose fake-pod-1\n> "]
 
 
-@pytest.mark.parametrize("verb", ("launch", "upload"))
-def test_interactive_missing_inputs_name_the_required_pair_plainly(
+@pytest.mark.parametrize(
+    ("verb", "expected"),
+    (("launch", "needs both"), ("upload", "needs a folder")),
+)
+def test_interactive_missing_inputs_name_the_required_facts_plainly(
     verb: str,
+    expected: str,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1579,8 +1714,20 @@ def test_interactive_missing_inputs_name_the_required_pair_plainly(
 
     assert cli._interactive_arguments() == []
     output = capsys.readouterr().out
-    assert "needs both" in output
+    assert expected in output
     assert "left blank" in output
+
+
+def test_interactive_first_upload_refuses_a_blank_manifest_destination(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answers = iter(("upload", "/approved/batch", "", ""))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert cli._interactive_arguments() == []
+    output = capsys.readouterr().out
+    assert "first upload needs a destination" in output
+    assert "nothing changed" in output
 
 
 def test_mac_wrapper_starts_the_same_console_flow() -> None:
@@ -1621,6 +1768,43 @@ def test_scripted_dry_run_is_a_readable_six_word_acceptance_artifact(tmp_path: P
     assert "I CONFIRM PAID POD" in transcript
     assert "Charges captured through" in transcript
     assert "zero GPU-hours" in transcript
+
+
+def test_scripted_dry_run_uses_one_configured_policy_from_its_fixture_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: list[tuple[Path, str]] = []
+    launch_policies: list[Path] = []
+    real_surface = dry_run.OperatorSurface
+
+    class ObservedSurface(real_surface):
+        def __init__(self, workspace, *args, **kwargs):  # type: ignore[no-untyped-def]
+            workspace_path = Path(workspace)
+            observed.append(
+                (
+                    workspace_path,
+                    (workspace_path / "config" / "spend.toml").read_text(encoding="utf-8"),
+                )
+            )
+            super().__init__(workspace, *args, **kwargs)
+
+        def prepare_launch(self, request, *, policy_path, adopt_pod_id=None):  # type: ignore[no-untyped-def]
+            launch_policies.append(Path(policy_path))
+            return super().prepare_launch(
+                request,
+                policy_path=policy_path,
+                adopt_pod_id=adopt_pod_id,
+            )
+
+    monkeypatch.setattr(dry_run, "OperatorSurface", ObservedSurface)
+
+    dry_run.make_transcript(tmp_path / "operator-dry-run.txt")
+
+    assert len(observed) == 1
+    workspace, policy = observed[0]
+    assert workspace != ROOT
+    assert 'state = "configured"' in policy
+    assert launch_policies == [workspace / "config" / "spend.toml"] * 2
 
 
 def test_status_repeats_the_recorded_values_exactly_and_never_recomputes_them(
@@ -1914,6 +2098,28 @@ def test_an_evidence_bundle_refuses_a_symlinked_top_level_member(
 
     assert "symbolic link" in (refusal.value.detail or "")
     assert not destination.exists()
+
+
+def test_an_evidence_bundle_refuses_a_symlinked_armarium_member(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "run-with-linked-armarium-member"
+    root = run_root / run_id
+    armarium = root / "7_armarium"
+    armarium.mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    referent = tmp_path / "real-export.json"
+    referent.write_text('{"state": "complete"}', encoding="utf-8")
+    (armarium / "export.json").symlink_to(referent)
+    destination = tmp_path / "bundle-linked-member.zip"
+
+    with pytest.raises(OperatorError) as refusal:
+        surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    assert "7_armarium/export.json is not a regular file" in (refusal.value.detail or "")
+    assert not destination.exists(), "a refused bundle must not leave a file behind"
+    assert not destination.with_name(f".{destination.name}.tmp").exists()
 
 
 def test_the_top_of_the_reviewed_margin_range_passes_through_unchanged(tmp_path: Path) -> None:
