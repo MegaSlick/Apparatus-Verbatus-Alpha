@@ -172,9 +172,9 @@ def _is_page_fallback(context, act: dict, bounds_by_act: dict[str, dict] | None 
     page_bounds = bounds_by_act.get(act["act_id"])
     if page_bounds is None:
         return False
-    return act["act_id"] == derive_act_id(
-        act["page_id"], FALLBACK_PAGE_ACT_ORDINAL, page_bounds
-    )
+    return act["act_id"] == derive_act_id(act["page_id"], FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
+
+
 def declared_malformed(context, ordinal: int) -> dict[tuple[str, str], str]:
     """Fixture stand-in for a provider response the recording channel could not keep."""
     rows: dict[tuple[str, str], str] = {}

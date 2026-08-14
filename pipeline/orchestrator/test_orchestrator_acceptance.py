@@ -324,8 +324,16 @@ FIXTURE = "synthetic-two-page-v0"
 # new page and scenario moves every artifact in happy and review even though that
 # page is inactive in both. Counts remain 53/57. Both values were measured from
 # fresh runs through the same two helpers, never derived arithmetically.
-HAPPY_RUN_TREE_DIGEST = "b01c8fb231a120086c183439f9ca40cecae50ac793284058a2fb29e5e1e2b4d0"
-REVIEW_RUN_TREE_DIGEST = "4320cf43bff3866b1522a58a6049911f156af12fe27e93c0046785492d06250e"
+#
+# Re-pinned for the post-#34 System 07 rebase. Testimonia now retain append-only
+# attempts with native payloads, explicit non-reading outcomes, deterministic
+# channel health, and an independent attempt tally; the fixture also declares
+# the merged Designator and Attestatores scenario set. Those deliberate record
+# and sealed-fixture changes move both trees. Fresh real runs through this
+# module's `orchestrate` and `semantic_snapshot_digest` helpers measured 53 files
+# for happy and 57 for review; no file count moved.
+HAPPY_RUN_TREE_DIGEST = "4e94cc8e668781a8f10f210c022ee29b5bda1bb2a72858e4b894ce0b12307f51"
+REVIEW_RUN_TREE_DIGEST = "53480181a544939958571bf6209f385890e20d89f1668d603c347952eeccac50"
 
 
 def orchestrate(

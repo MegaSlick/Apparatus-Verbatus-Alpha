@@ -91,6 +91,20 @@ def test_a_deeply_nested_record_fails_its_hash_rather_than_crashing():
     nested: dict = {"leaf": 1}
     for _ in range(2000):
         nested = {"nested": nested}
+
+    # Assert the premise against the same walk `verify_self_hash` guards. On an
+    # interpreter that can absorb this depth, the deliberately wrong hash below
+    # would make the test pass without ever exercising the RecursionError path.
+    try:
+        canonical_bytes(nested)
+    except RecursionError:
+        pass
+    else:
+        pytest.skip(
+            "this interpreter's canonical walk absorbs 2000 levels, so the "
+            "guarded path is unreachable here and this test proves nothing"
+        )
+
     record = {"a": nested, "self_hash": "0" * 64}
     assert verify_self_hash(record) is False
 
