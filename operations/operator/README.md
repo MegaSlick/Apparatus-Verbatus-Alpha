@@ -147,7 +147,9 @@ cannot travel in a commit.
   and the date it was read.
 - Close timing comes from the workspace's own `config/spend.toml`, and falls back to the
   pod runtime's operational defaults if that file is missing, unreadable, or
-  unconfigured. This is always the workspace default, **not** whatever path a `launch
+  unconfigured. When the file cannot be read, close says that the reviewed spend policy
+  could not be read and that it is using its built-in operational deadline instead; the
+  fallback is not silent. This is always the workspace default, **not** whatever path a `launch
   --spend` used — nothing records which policy path a launch was given, so close has no
   way to read it back even if it wanted to. A drill that needs a close to give up
   quickly injects a fast clock (`monotonic=`, `sleeper=`); it never shortens the shipped

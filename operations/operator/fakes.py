@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from typing import BinaryIO
 
+from operations.pod.durable import sync_directory
 from operations.pod.fake_provider import FakeProvider
 from operations.pod.models import PodCreateRequest, PodRecord
 from operations.pod.transfer import RemoteObject, TransferTarget
@@ -76,7 +77,9 @@ class LocalFixtureObjectStore(TransferTarget):
 
     def inspect(self, key: str) -> RemoteObject | None:
         path = self._path(key)
-        if not path.is_file() or path.is_symlink():
+        # `_path` resolves for containment, so inspect the unresolved object key
+        # as well: a link at the key is not verified bytes under that name.
+        if (self.root.resolve() / key).is_symlink() or not path.is_file():
             return None
         digest = hashlib.sha256()
         size = 0
@@ -106,6 +109,7 @@ class LocalFixtureObjectStore(TransferTarget):
                 # see it absent and each replace the other: 90 times in 400,
                 # with the refusal below never firing.
                 os.link(temporary, target)
+                sync_directory(target.parent)
             except FileExistsError:
                 if not _same_bytes(temporary, target):
                     raise RuntimeError(

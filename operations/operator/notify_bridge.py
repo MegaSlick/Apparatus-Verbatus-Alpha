@@ -28,6 +28,7 @@ ROOT: Final = Path(__file__).resolve().parents[2]
 NOTIFY_SCRIPT: Final = ROOT / "operations" / "notify" / "notify.sh"
 
 ALLOWED_EVENTS: Final = frozenset({"milestone", "decision"})
+NOTIFY_TIMEOUT_SECONDS: Final = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,15 +79,31 @@ def shell_notifier(
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=NOTIFY_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return NotifyOutcome(
+                True,
+                False,
+                f"the notification command did not answer within {NOTIFY_TIMEOUT_SECONDS:g} seconds",
             )
         except OSError as error:
             return NotifyOutcome(True, False, f"the notification command could not run: {error}")
         if result.returncode == 0:
             return NotifyOutcome(True, True, "delivered")
         detail = " ".join((result.stderr or result.stdout or "no reason given").split())
-        return NotifyOutcome(True, False, detail[:160])
+        if len(detail) > 160:
+            detail = f"{detail[:160]} (reason truncated at 160 characters)"
+        return NotifyOutcome(True, False, detail)
 
     return notify
 
 
-__all__ = ["ALLOWED_EVENTS", "Notifier", "NotifyOutcome", "shell_notifier", "silent"]
+__all__ = [
+    "ALLOWED_EVENTS",
+    "NOTIFY_TIMEOUT_SECONDS",
+    "Notifier",
+    "NotifyOutcome",
+    "shell_notifier",
+    "silent",
+]

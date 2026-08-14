@@ -148,6 +148,39 @@ def test_an_object_without_our_digest_is_refused_and_not_overwritten(tmp_path: P
     assert client.uploads == ["volume/page.bin"]
 
 
+def test_a_head_response_of_the_wrong_shape_is_a_named_refusal_not_a_traceback() -> None:
+    """A remote server's metadata shape is not ours to assume."""
+
+    class WrongShapeClient(FakeS3Client):
+        def head_object(self, *, Bucket: str, Key: str):  # noqa: N803 - boto3's own names
+            del Bucket, Key
+            return {"ContentLength": 12, "Metadata": "not a mapping"}
+
+    with pytest.raises(VolumeTransferRefusal, match="was not overwritten"):
+        S3VolumeTarget(_spec(), client=WrongShapeClient()).inspect("volume/page.bin")
+
+
+def test_an_error_response_of_the_wrong_shape_is_not_read_as_absence() -> None:
+    client = FakeS3Client()
+    client.head_error = _ResponseError({"Error": "not a mapping", "ResponseMetadata": 404})
+
+    with pytest.raises(VolumeTransferRefusal):
+        S3VolumeTarget(_spec(), client=client).inspect("volume/page.bin")
+
+
+def test_head_metadata_keys_are_read_case_insensitively() -> None:
+    client = FakeS3Client()
+    client.objects["volume/page.bin"] = (
+        b"payload",
+        {SHA256_METADATA_KEY.upper(): "a" * 64},
+    )
+
+    observed = S3VolumeTarget(_spec(), client=client).inspect("volume/page.bin")
+
+    assert observed is not None
+    assert observed.sha256 == "a" * 64
+
+
 def test_a_target_that_never_returns_our_digest_cannot_be_called_complete(
     tmp_path: Path,
 ) -> None:
@@ -214,6 +247,19 @@ def test_a_read_failure_on_the_handle_is_a_named_refusal() -> None:
 
     with pytest.raises(VolumeTransferRefusal, match="could not be read"):
         target.put_file("volume/broken.bin", _BrokenHandle())
+
+
+def test_an_os_error_from_the_upload_names_source_or_network_without_guessing(
+    tmp_path: Path,
+) -> None:
+    client = FakeS3Client()
+    client.upload_error = OSError("connection reset")
+    source = tmp_path / "page.bin"
+    source.write_bytes(b"payload")
+
+    with source.open("rb") as handle:
+        with pytest.raises(VolumeTransferRefusal, match="reading the source or writing"):
+            S3VolumeTarget(_spec(), client=client).put_file("volume/page.bin", handle)
 
 
 def test_upload_through_the_surface_sends_only_the_sealed_record(tmp_path: Path) -> None:

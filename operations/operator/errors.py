@@ -108,9 +108,9 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Read the new price and ceilings, then type a new confirmation only if they are acceptable; this is safe.",
     ),
     ErrorCode.SAFETY_CHECK_FAILED: ErrorCopy(
-        "Launch was refused by a required safety check.",
+        "Launch could not prove that its runtime safeguards were ready.",
         "No paid provider action was sent from this refusal path.",
-        "Read the saved detail, repair the named setup or limit, then preview launch again; this is safe.",
+        "Read the saved detail, repair the named controller, lease, or close-readiness problem, then preview launch again; this is safe.",
     ),
     ErrorCode.LAUNCH_UNRESOLVED: ErrorCopy(
         "Launch could not prove that its fixture pod is safely accounted for.",
@@ -128,9 +128,9 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Run `verbatus status`, read the saved pod and cost records, and do not assume billing ended before deciding what to do next.",
     ),
     ErrorCode.PAID_ACTION_REFUSED: ErrorCopy(
-        "Launch was refused by its safety checks.",
+        "Launch exceeds a reviewed spending limit.",
         "Verbatus sent no new paid provider action.",
-        "Read the stated limit or setup problem, correct it, then run `verbatus launch` again; this is safe.",
+        "Read the stated price and limit, revise the reviewed policy or request if appropriate, then run `verbatus launch` again; this is safe.",
     ),
     ErrorCode.PROVIDER_TIMEOUT: ErrorCopy(
         "The test provider did not answer in time.",
@@ -283,12 +283,15 @@ class OperatorError(RuntimeError):
         return "\n".join(lines)
 
 
-# C0/C1 control bytes, including ESC (0x1B): text this surface prints can embed
+# C0/C1 control bytes, including ESC (0x1B), plus Unicode format characters
+# that reorder or invisibly change a terminal line: text this surface prints can embed
 # a filename, a path or a refusal reason an operator did not choose (a submitted
 # folder, a manifest entry, a page-census reason that travelled up from the run
 # tree), and an ANSI escape sequence in one could clear the screen or spoof a
 # fake confirmation line on the terminal that renders it.
-_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_CONTROL_CHARACTERS = re.compile(
+    r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]"
+)
 
 
 def strip_control_bytes(value: str) -> str:
@@ -339,10 +342,10 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
 
 
 _CLOSE_VOCABULARY: Final = (
-    (re.compile(r"\bshutdown\b", re.IGNORECASE), "close"),
-    (re.compile(r"\btermination\b", re.IGNORECASE), "close"),
-    (re.compile(r"\bterminate(?:d|s|ing)?\b", re.IGNORECASE), "close"),
-    (re.compile(r"\bstop(?:ped|s|ping)?\b", re.IGNORECASE), "paused"),
+    (re.compile(r"(?<![\w.-])shutdown(?![\w.-])", re.IGNORECASE), "close"),
+    (re.compile(r"(?<![\w.-])termination(?![\w.-])", re.IGNORECASE), "close"),
+    (re.compile(r"(?<![\w.-])terminate(?:d|s|ing)?(?![\w.-])", re.IGNORECASE), "close"),
+    (re.compile(r"(?<![\w.-])stop(?:ped|s|ping)?(?![\w.-])", re.IGNORECASE), "paused"),
 )
 
 
@@ -353,9 +356,12 @@ def _translate_close_vocabulary(word: str) -> str:
     receipt path with "stop" or "shutdown" in one of its directory names is
     not prose to translate, it is an identifier a person needs intact to find
     the file again, and this module's own detail contract asks a raise site to
-    "preserve this message and its saved receipt path". `/` and `\\` are the
-    only reliable signal, in text this general, that a word is a path segment
-    rather than a sentence.
+    "preserve this message and its saved receipt path". A path separator is
+    decisive. Dots, underscores and hyphens touching the vocabulary are also
+    preserved because a bare submitted name such as ``stop-list`` has no
+    separator but is still an identifier the person needs byte-true. A bare
+    name equal to one ordinary prose word is inherently ambiguous at this
+    unstructured boundary.
     """
 
     if "/" in word or "\\" in word:

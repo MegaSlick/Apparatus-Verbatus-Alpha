@@ -1154,8 +1154,6 @@ class OperatorSurface:
 
     def _launch_error(self, result: LaunchResult, *, receipt: Path | None = None) -> OperatorError:
         detail = result.detail if receipt is None else f"{result.detail} Saved receipt: {receipt}"
-        if "timeout" in detail.lower():
-            return OperatorError(ErrorCode.PROVIDER_TIMEOUT, detail=detail)
         if result.state is LaunchState.REFUSED_CONFIRMATION:
             # `launch()` already refuses a typed confirmation that does not match
             # the phrase the operator was shown, before the provider is ever
@@ -1182,6 +1180,11 @@ class OperatorSurface:
         if result.state is LaunchState.PROVIDER_FAILURE:
             if result.lease_path is not None:
                 return OperatorError(ErrorCode.LAUNCH_UNRESOLVED, detail=detail)
+            # Only a provider failure with no lease can safely use the provider's
+            # wording to choose between retryable codes. State always wins where
+            # a pod may exist and may already be billing.
+            if "timeout" in detail.lower():
+                return OperatorError(ErrorCode.PROVIDER_TIMEOUT, detail=detail)
             return OperatorError(ErrorCode.PROVIDER_ERROR, detail=detail)
         return OperatorError(ErrorCode.SAFETY_CHECK_FAILED, detail=detail)
 
@@ -1351,13 +1354,17 @@ class OperatorSurface:
         # GOVERNANCE 2: "a partial result is visibly partial; 'complete' is refused
         # unless everything reconciles."
         wrong = []
-        if not run_authority.is_file():
+        if run_authority.is_symlink():
+            wrong.append("run.json is a symbolic link, not a regular file")
+        elif not run_authority.is_file():
             wrong.append(
                 "run.json is missing"
                 if not run_authority.exists()
                 else "run.json is not a regular file"
             )
-        if not armarium.is_dir():
+        if armarium.is_symlink():
+            wrong.append("7_armarium is a symbolic link, not a directory")
+        elif not armarium.is_dir():
             wrong.append(
                 "7_armarium is missing"
                 if not armarium.exists()
@@ -1810,9 +1817,20 @@ def _pod_from_record(value: dict[str, Any]) -> PodRecord:
 
 
 def _repository_commit(workspace: Path) -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True, capture_output=True, check=False
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=workspace,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise OperatorError(
+            ErrorCode.BOOT_RED,
+            detail=f"the current repository commit could not be read: {error}",
+        ) from error
     value = result.stdout.strip()
     if (
         result.returncode != 0

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import re
+import ast
 from pathlib import Path
 
 import pytest
@@ -10,6 +10,18 @@ import pytest
 from operations.operator import errors
 
 PACKAGE = Path(__file__).resolve().parent
+
+
+def _referenced_error_codes(source: str) -> set[str]:
+    """Return real ``ErrorCode.X`` expressions, excluding comments and prose."""
+
+    return {
+        node.attr
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "ErrorCode"
+    }
 
 
 @pytest.mark.parametrize("code", tuple(errors.ErrorCode), ids=lambda code: code.value)
@@ -50,16 +62,26 @@ def test_every_declared_error_code_is_one_this_surface_actually_raises() -> None
     alive solely by its own test is the same fiction.
     """
 
-    sources = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted(PACKAGE.glob("*.py"))
-        if not path.name.startswith("test_") and path.name != "errors.py"
+    reached = set().union(
+        *(
+            _referenced_error_codes(path.read_text(encoding="utf-8"))
+            for path in sorted(PACKAGE.glob("*.py"))
+            if not path.name.startswith("test_") and path.name != "errors.py"
+        )
     )
-    unreached = sorted(
-        code.name for code in errors.ErrorCode if not re.search(rf"\b{code.name}\b", sources)
-    )
+    unreached = sorted(code.name for code in errors.ErrorCode if code.name not in reached)
 
     assert unreached == [], f"declared but never raised: {unreached}"
+
+
+def test_error_code_reachability_ignores_comments_and_docstrings() -> None:
+    source = '''
+# ErrorCode.RUN_FAILED is prose, not a caller.
+"""ErrorCode.RUN_HELD is also prose."""
+actual = ErrorCode.BOOT_RED
+'''
+
+    assert _referenced_error_codes(source) == {"BOOT_RED"}
 
 
 def test_error_renderer_never_shows_a_raw_traceback_or_old_close_vocabulary() -> None:
@@ -111,6 +133,13 @@ def test_a_path_segment_survives_the_close_vocabulary_rewrite_unmangled() -> Non
     assert "/home/x/stop/terminated-run.log" in rendered
 
 
+def test_a_bare_hyphenated_name_survives_the_close_vocabulary_rewrite() -> None:
+    rendered = errors.sanitize_detail("submitted folders stop-list and shutdown-scans")
+
+    assert "stop-list" in rendered
+    assert "shutdown-scans" in rendered
+
+
 def test_stripping_control_bytes_changes_nothing_else_about_a_line() -> None:
     """The output channel needs the strip without the detail-only rewriting.
 
@@ -150,3 +179,20 @@ def test_control_bytes_are_stripped_from_the_operator_facing_detail() -> None:
 
     assert "\x1b" not in rendered
     assert "FAKE: type CONFIRM to finish" in rendered
+
+
+@pytest.mark.parametrize(
+    "character",
+    ("\u200b", "\u200e", "\u202e", "\u2066", "\u2069", "\ufeff"),
+)
+def test_unicode_terminal_spoofing_controls_are_stripped(character: str) -> None:
+    assert errors.strip_control_bytes(f"before{character}after") == "beforeafter"
+
+
+def test_launch_safeguard_and_spending_refusals_name_different_causes() -> None:
+    safeguard = errors.ERRORS[errors.ErrorCode.SAFETY_CHECK_FAILED]
+    spending = errors.ERRORS[errors.ErrorCode.PAID_ACTION_REFUSED]
+
+    assert safeguard != spending
+    assert "runtime safeguards" in safeguard.what_happened
+    assert "spending limit" in spending.what_happened

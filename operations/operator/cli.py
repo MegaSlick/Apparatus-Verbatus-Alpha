@@ -257,7 +257,8 @@ def load_request(path: str | Path) -> PodCreateRequest:
         )
     except (KeyError, TypeError, ValueError) as error:
         raise OperatorError(
-            ErrorCode.INVALID_COMMAND, detail="the reviewed pod request is incomplete or invalid"
+            ErrorCode.INVALID_COMMAND,
+            detail=f"the reviewed pod request is incomplete or invalid: {error}",
         ) from error
 
 
@@ -296,7 +297,8 @@ def _interactive_arguments() -> list[str]:
         spend = _ask("Path to the reviewed spending-policy file")
         if not request or not spend:
             _print(
-                "No reviewed request and spending policy were both chosen. Nothing changed or billed."
+                "Launch needs both a reviewed pod request and a reviewed spending policy. "
+                "One of them was left blank, so nothing changed or billed."
             )
             return []
         adoption_id = _ask(
@@ -315,7 +317,10 @@ def _interactive_arguments() -> list[str]:
         # person who pressed return twice was answered with an error about a
         # sealed manifest rather than with "nothing changed". Found by CodeRabbit.
         if not source or not manifest:
-            _print("No folder and sealed record were both chosen. Nothing changed.")
+            _print(
+                "Upload needs both a folder and its sealed submission record. "
+                "One of them was left blank, so nothing changed."
+            )
             return []
         return ["upload", "--source", source, "--sealed-manifest", manifest]
     if verb == "run":
@@ -346,7 +351,7 @@ def _typed_paid_confirmation() -> str | None:
 
 def _typed_close_confirmation(phrase: str) -> str | None:
     try:
-        return input(f"Type exactly {phrase!r} to continue with close: ")
+        return input(f"Type this line exactly, with no quotation marks:\n{phrase}\n> ")
     except EOFError:
         return None
 

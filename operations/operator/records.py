@@ -13,11 +13,13 @@ import json
 import os
 import stat
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Final
+from typing import Any, Callable, Final, Iterator
 
 from common.contracts.canonical import canonical_bytes as _pipeline_canonical_bytes
+from operations.pod.durable import sync_directory
 
 UTC = timezone.utc
 SCHEMA = "operator-receipt.v1"
@@ -235,6 +237,30 @@ class DescriptorStore:
 
     def __init__(self, root: str | Path) -> None:
         self.path = Path(root) / "operator-surface.json"
+        self.lock_path = self.path.with_name(f".{self.path.name}.lock")
+
+    @contextmanager
+    def _lock(self) -> Iterator[None]:
+        """Serialize the descriptor's read-modify-write across operator processes."""
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self.lock_path.open("a+b")
+        try:
+            try:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except ImportError:  # pragma: no cover - production operator and tests are POSIX
+                pass
+            yield
+        finally:
+            try:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except ImportError:  # pragma: no cover - production operator and tests are POSIX
+                pass
+            handle.close()
 
     def load(self) -> dict[str, Any] | None:
         if not self.path.exists():
@@ -262,6 +288,10 @@ class DescriptorStore:
     def record(self, action: str, receipt: Path) -> dict[str, Any]:
         if not isinstance(action, str) or not action:
             raise RecordError("operator descriptor action must be non-blank")
+        with self._lock():
+            return self._record_unlocked(action, receipt)
+
+    def _record_unlocked(self, action: str, receipt: Path) -> dict[str, Any]:
         current = self.load()
         actions = {} if current is None else dict(current["actions"])
         history = (
@@ -331,9 +361,10 @@ def _atomic_create_or_reuse(target: Path, payload: bytes) -> None:
     try:
         try:
             os.link(temporary, target)
+            sync_directory(target.parent)
         except FileExistsError:
             try:
-                existing = target.read_bytes()
+                existing = _bounded_bytes(target, "existing operator receipt")
             except OSError as error:
                 raise RecordError("existing operator receipt cannot be read") from error
             if existing != payload:
@@ -355,6 +386,7 @@ def _atomic_replace(target: Path, payload: bytes) -> None:
         raise RecordError("operator descriptor could not be written") from error
     try:
         os.replace(temporary, target)
+        sync_directory(target.parent)
     except OSError as error:
         temporary.unlink(missing_ok=True)
         raise RecordError("operator descriptor could not be written") from error

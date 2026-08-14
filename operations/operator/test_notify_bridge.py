@@ -54,12 +54,14 @@ def test_an_allowed_moment_reaches_the_notify_script_with_one_line(event: str) -
     assert outcome.line() == "Phone notification: sent."
 
 
-def test_a_multi_line_message_is_refused_rather_than_truncated() -> None:
+@pytest.mark.parametrize("message", ("first line\nsecond line", "", "   "))
+def test_a_message_that_is_not_one_non_empty_line_is_refused(message: str) -> None:
     runner = RecordingRunner()
-    outcome = notify_bridge.shell_notifier(runner=runner)("milestone", "first line\nsecond line")
+    outcome = notify_bridge.shell_notifier(runner=runner)("milestone", message)
 
     assert runner.calls == []
     assert not outcome.delivered
+    assert "one non-empty line" in outcome.detail
 
 
 def test_a_failed_delivery_is_reported_as_not_delivered_and_never_as_success() -> None:
@@ -69,6 +71,30 @@ def test_a_failed_delivery_is_reported_as_not_delivered_and_never_as_success() -
     assert outcome.attempted and not outcome.delivered
     assert "NOT DELIVERED" in outcome.line()
     assert "The result above still stands." in outcome.line()
+
+
+def test_a_cut_delivery_reason_says_where_it_was_cut() -> None:
+    runner = RecordingRunner(returncode=1, stderr="x" * 200)
+
+    outcome = notify_bridge.shell_notifier(runner=runner)("milestone", "run finished")
+
+    assert outcome.detail.startswith("x" * 160)
+    assert "reason truncated at 160 characters" in outcome.detail
+
+
+def test_a_notification_timeout_is_a_named_non_delivery() -> None:
+    observed: dict[str, object] = {}
+
+    def hangs(argv, **kwargs):  # type: ignore[no-untyped-def]
+        del argv
+        observed.update(kwargs)
+        raise subprocess.TimeoutExpired("notify", kwargs["timeout"])
+
+    outcome = notify_bridge.shell_notifier(runner=hangs)("milestone", "run finished")
+
+    assert observed["timeout"] == notify_bridge.NOTIFY_TIMEOUT_SECONDS
+    assert outcome.attempted and not outcome.delivered
+    assert "did not answer within 10 seconds" in outcome.detail
 
 
 def test_a_notifier_that_cannot_run_at_all_is_still_not_an_exception() -> None:

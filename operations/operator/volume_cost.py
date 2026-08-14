@@ -40,7 +40,10 @@ CHECKED_ON: Final = "2026-08-09"
 SOURCE: Final = "https://docs.runpod.io/storage/network-volumes"
 
 RETENTION_FACT: Final = "Data is retained when Pods terminate or Serverless workers scale to zero."
-ACCRUAL_FACT: Final = "Storage charges continue to accrue while the Pod is stopped."
+ACCRUAL_FACT: Final = (
+    "Storage charges continue to accrue while the Pod is stopped, so if your balance stays "
+    "at $0 and these charges can't be covered, the network volume may eventually be terminated."
+)
 
 
 def volume_cost_lines(*, volume_id: str | None, hourly_usd: str) -> list[str]:

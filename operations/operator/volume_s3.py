@@ -204,7 +204,10 @@ class S3VolumeTarget:
         # found; this is the other. Found by the Opus read of this branch.
         metadata = head.get("Metadata")
         metadata = metadata if isinstance(metadata, Mapping) else {}
-        recorded = metadata.get(SHA256_METADATA_KEY)
+        normalized_metadata = {
+            key.lower(): value for key, value in metadata.items() if isinstance(key, str)
+        }
+        recorded = normalized_metadata.get(SHA256_METADATA_KEY)
         size = head.get("ContentLength")
         if not isinstance(recorded, str) or not isinstance(size, int):
             # The object is present, so `None` would authorize the transfer layer
@@ -256,7 +259,8 @@ class S3VolumeTarget:
                 )
         except OSError as error:
             raise VolumeTransferRefusal(
-                f"the source for {key!r} could not be read while sending it: {error}"
+                f"sending {key!r} failed while reading the source or writing to the network "
+                f"volume; nothing was verified as sent: {error}"
             ) from error
         except Exception as error:
             raise VolumeTransferRefusal(

@@ -18,6 +18,7 @@ import pytest
 
 from common.contracts.canonical import canonical_bytes
 from operations.pod.fake_provider import FakeProvider
+from operations.pod.launch import LaunchResult, LaunchState
 from operations.pod.lease import LeaseStore
 from operations.pod.models import (
     BILLING_CUTOFF_MARGIN_ENV,
@@ -43,9 +44,11 @@ from .surface import (
     OperatorSurface,
     _pod_from_record,
     _pod_record,
+    _repository_commit,
     _request_from_record,
     _request_record,
 )
+from .volume_cost import ACCRUAL_FACT
 
 UTC = timezone.utc
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
@@ -576,6 +579,31 @@ def test_two_writers_cannot_both_claim_one_fixture_object(tmp_path: Path) -> Non
         assert "different bytes" in str(refusals[0])
 
 
+def test_a_fixture_object_key_that_is_a_symlink_is_never_verified(tmp_path: Path) -> None:
+    root = tmp_path / "volume"
+    (root / "volume").mkdir(parents=True)
+    actual = root / "actual.bin"
+    actual.write_bytes(b"payload")
+    (root / "volume" / "page.bin").symlink_to(actual)
+
+    assert LocalFixtureObjectStore(root).inspect("volume/page.bin") is None
+
+
+def test_fixture_object_publication_syncs_its_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced: list[Path] = []
+    monkeypatch.setattr("operations.operator.fakes.sync_directory", synced.append)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"payload")
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    with source.open("rb") as handle:
+        store.put_file("objects/page.bin", handle)
+
+    assert synced == [(tmp_path / "volume" / "objects").resolve()]
+
+
 def test_submit_and_upload_seals_a_new_manifest_then_transfers_it(tmp_path: Path) -> None:
     """The `--manifest-out` route through Spec 03's door, end to end.
 
@@ -800,6 +828,19 @@ def test_provider_preview_faults_are_named_and_a_retry_is_safe(
     assert not any(verb == "create" for verb, _ in surface.provider.calls)
     prepared = surface.prepare_launch(_request(), policy_path=spend)
     assert prepared.result.preview is not None
+
+
+def test_timeout_word_cannot_make_an_unleased_launch_look_retryable(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    result = LaunchResult(
+        LaunchState.CREATE_UNLEASED,
+        detail="controller timeout after the provider may have created the pod",
+    )
+
+    failure = surface._launch_error(result)
+
+    assert failure.code is ErrorCode.LAUNCH_UNRESOLVED
+    assert "do not launch again" in failure.render().lower()
 
 
 def test_a_post_confirmation_provider_failure_is_named_launch_unresolved_not_retryable(
@@ -1057,6 +1098,7 @@ def test_load_request_refuses_an_incomplete_request(tmp_path: Path) -> None:
         cli.load_request(path)
 
     assert refusal.value.code is ErrorCode.INVALID_COMMAND
+    assert "name" in (refusal.value.detail or "")
 
 
 def test_load_request_refuses_a_malformed_docker_start_cmd(tmp_path: Path) -> None:
@@ -1506,6 +1548,36 @@ def test_interactive_launch_can_name_an_exact_recorded_fixture_pod(
     ]
 
 
+def test_close_confirmation_shows_the_exact_unquoted_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts: list[str] = []
+
+    def answer(prompt: str) -> str:
+        prompts.append(prompt)
+        return "close fake-pod-1"
+
+    monkeypatch.setattr("builtins.input", answer)
+
+    assert cli._typed_close_confirmation("close fake-pod-1") == "close fake-pod-1"
+    assert prompts == ["Type this line exactly, with no quotation marks:\nclose fake-pod-1\n> "]
+
+
+@pytest.mark.parametrize("verb", ("launch", "upload"))
+def test_interactive_missing_inputs_name_the_required_pair_plainly(
+    verb: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answers = iter((verb, "", ""))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert cli._interactive_arguments() == []
+    output = capsys.readouterr().out
+    assert "needs both" in output
+    assert "left blank" in output
+
+
 def test_mac_wrapper_starts_the_same_console_flow() -> None:
     wrapper = ROOT / "operations" / "operator" / "Verbatus.command"
     assert ".venv/bin/python" in wrapper.read_text(encoding="utf-8")
@@ -1515,6 +1587,8 @@ def test_mac_wrapper_starts_the_same_console_flow() -> None:
         text=True,
         capture_output=True,
         check=False,
+        stdin=subprocess.DEVNULL,
+        timeout=10,
     )
 
     assert completed.returncode == 0
@@ -1804,6 +1878,34 @@ def test_an_evidence_bundle_whose_run_authority_is_a_directory_refuses(tmp_path:
     assert "run.json is not a regular file" in (refusal.value.detail or "")
 
 
+@pytest.mark.parametrize("linked_member", ("run.json", "7_armarium"))
+def test_an_evidence_bundle_refuses_a_symlinked_top_level_member(
+    tmp_path: Path, linked_member: str
+) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "run-with-linked-authority"
+    root = run_root / run_id
+    root.mkdir(parents=True)
+    real_run = tmp_path / "real-run.json"
+    real_run.write_text("{}", encoding="utf-8")
+    real_armarium = tmp_path / "real-armarium"
+    real_armarium.mkdir()
+    if linked_member == "run.json":
+        (root / "run.json").symlink_to(real_run)
+        (root / "7_armarium").mkdir()
+    else:
+        (root / "run.json").write_text("{}", encoding="utf-8")
+        (root / "7_armarium").symlink_to(real_armarium, target_is_directory=True)
+
+    destination = tmp_path / "bundle-linked.zip"
+    with pytest.raises(OperatorError) as refusal:
+        surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert "symbolic link" in (refusal.value.detail or "")
+    assert not destination.exists()
+
+
 def test_the_top_of_the_reviewed_margin_range_passes_through_unchanged(tmp_path: Path) -> None:
     """3600 is both the floor and the top of the accepted range, so nothing is raised.
 
@@ -1868,6 +1970,31 @@ def test_an_unreadable_spend_policy_never_stops_a_close(tmp_path: Path) -> None:
     assert any("built-in operational deadline" in line for line in messages)
     close = surface.receipts.read(surface._descriptor_receipt("close"))["payload"]
     assert close["spend_policy_error"] is not None
+
+
+def test_the_storage_accrual_quote_includes_the_documented_loss_consequence() -> None:
+    assert "balance stays at $0" in ACCRUAL_FACT
+    assert "network volume may eventually be terminated" in ACCRUAL_FACT
+
+
+def test_repository_commit_lookup_is_bounded_and_names_a_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    def times_out(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args
+        observed.update(kwargs)
+        raise subprocess.TimeoutExpired("git", kwargs["timeout"])
+
+    monkeypatch.setattr("operations.operator.surface.subprocess.run", times_out)
+
+    with pytest.raises(OperatorError) as refusal:
+        _repository_commit(tmp_path)
+
+    assert observed["timeout"] == 30
+    assert refusal.value.code is ErrorCode.BOOT_RED
+    assert "timed out" in (refusal.value.detail or "")
 
 
 def test_the_combined_price_preview_line_is_rounded_to_cents(tmp_path: Path) -> None:
