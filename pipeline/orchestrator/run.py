@@ -55,6 +55,7 @@ from common.recovery import (  # noqa: E402
 )
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
+    DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -186,7 +187,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--designator-padding-config",
-        default="config/designator_padding.toml",
+        default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH),
         help="the capture padding applied to every act crop, sealed into this run",
     )
     parser.add_argument(

@@ -6,7 +6,6 @@ new proposal rather than allowing the final Armarium census to discover a missin
 source after later stages have worked around it.
 """
 
-import importlib.util
 import json
 import subprocess
 import sys
@@ -14,6 +13,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+from _test_support import load_designator
 from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, self_hash
@@ -232,11 +232,7 @@ def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(tm
 
 
 def _load_designator():
-    path = ROOT / "pipeline" / "2_designator" / "run.py"
-    spec = importlib.util.spec_from_file_location("designator_toctou_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_designator("designator_toctou_under_test")
 
 
 def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tmp_path):

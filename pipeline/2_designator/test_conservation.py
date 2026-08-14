@@ -71,6 +71,8 @@ def test_claimed_plus_residual_always_equals_total():
         result["claimed_pixel_count"] + result["residual_pixel_count"]
         == result["total_ink_pixel_count"]
     )
+    assert result["total_ink_pixel_count"] == 100 + 36 + 1
+    assert result["claimed_pixel_count"] == 100
 
 
 def test_an_empty_page_reconciles_to_all_zeros():

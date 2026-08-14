@@ -13,8 +13,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from _test_support import load_designator
 
 from common.contracts.errors import ContractError
+from common.stage import EXIT_FATAL
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -93,7 +95,7 @@ def test_recovering_the_same_act_twice_refuses_rather_than_cutting_a_duplicate(t
     assert len(recovery_regions_before) == 1
 
     second = _run("pipeline/2_designator/run.py", root, *recovery_args)
-    assert second.returncode == 2
+    assert second.returncode == EXIT_FATAL
     assert "already has a region cut" in second.stderr
 
     recovery_regions_after = [
@@ -119,18 +121,12 @@ def test_an_unrecognized_operation_refuses_rather_than_running_initial_pass(tmp_
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
     result = _run("pipeline/2_designator/run.py", root, "--operation", "Recover")
-    assert result.returncode == 2, result.stdout
+    assert result.returncode == EXIT_FATAL, result.stdout
     assert "is not one of 'initial' or 'recover'" in result.stderr
 
 
 def _load_designator():
-    import importlib.util
-
-    path = ROOT / "pipeline" / "2_designator" / "run.py"
-    spec = importlib.util.spec_from_file_location("designator_recovery_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_designator("designator_recovery_under_test")
 
 
 def _designator_context(designator, root: Path):

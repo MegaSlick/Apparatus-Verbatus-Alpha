@@ -6,6 +6,8 @@ or sub-threshold-mark case can be constructed at the single-pixel level
 without disturbing the shared walking-skeleton fixture other stages depend on.
 """
 
+import itertools
+
 import pytest
 from structure import (
     PRIMARY_MARGIN,
@@ -189,10 +191,12 @@ def test_two_components_sharing_a_top_left_origin_still_sort_deterministically()
     ]
     assert [c["pixel_count"] for c in components] == [1, 4]
 
-    # Rerun with the same pixels inserted in a different order (a fresh set
-    # literal, same elements): the result must not depend on that order.
-    reordered = {(3, 0), (2, 1), (0, 0), (1, 2), (0, 3)}
-    assert label_components(reordered, gap_tolerance_px=0) == components
+    # A set literal normalises insertion order away. Drive every order through
+    # an ordered keys view so removal of the deterministic tiebreaker would make
+    # at least one permutation disagree.
+    for order in itertools.permutations(sorted(pixels)):
+        reordered = dict.fromkeys(order).keys()
+        assert label_components(reordered, gap_tolerance_px=0) == components
 
 
 # --- primary vs secondary sensitivity ----------------------------------------

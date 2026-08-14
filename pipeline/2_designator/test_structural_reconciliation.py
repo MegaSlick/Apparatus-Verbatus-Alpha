@@ -5,24 +5,14 @@ declared act to the structural group detection actually found, and to refuse
 when detection found nothing worth calling a match.
 """
 
-import importlib.util
-from pathlib import Path
-
 import pytest
+from _test_support import load_designator
 
 from common.contracts.errors import ContractError
 
-ROOT = Path(__file__).resolve().parents[2]
-
 
 def _load_designator():
-    path = ROOT / "pipeline" / "2_designator" / "run.py"
-    spec = importlib.util.spec_from_file_location(
-        "designator_structural_reconciliation_under_test", path
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_designator("designator_structural_reconciliation_under_test")
 
 
 def test_overlap_area_of_disjoint_rectangles_is_zero():

@@ -2611,6 +2611,7 @@ def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_firs
     """
     _, tree = refused_first_page_run
     seal = proposal_seal(tree)
+    assert len(seal["expected_acts"]) == 3
     assert {entry["act_key"]: entry["outcome"] for entry in seal["expected_acts"]} == {
         "a1": "held",
         "a2": "held",

@@ -21,12 +21,12 @@ change to that contract and is named in this build's report rather than made
 quietly here.
 """
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from _test_support import load_designator
 
 from common.contracts.errors import ContractError
 from common.contracts.stages import ARMARIUM, DESIGNATOR
@@ -37,11 +37,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_designator():
-    path = ROOT / "pipeline" / "2_designator" / "run.py"
-    spec = importlib.util.spec_from_file_location("designator_structure_failure_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_designator("designator_structure_failure_under_test")
 
 
 class _Context:

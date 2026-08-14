@@ -6,23 +6,19 @@ full end-to-end orchestrator run proving that configuring the role changes no
 authoritative outcome relative to leaving it absent.
 """
 
-import importlib.util
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from _test_support import load_designator
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_designator():
-    path = ROOT / "pipeline" / "2_designator" / "run.py"
-    spec = importlib.util.spec_from_file_location("designator_secondary_proposer_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_designator("designator_secondary_proposer_under_test")
 
 
 # --- level 1: the pure candidate rule, no I/O at all ---------------------------

@@ -7,12 +7,12 @@ a transcription cannot enter one and pass silently -- a payload carrying a
 but an explicit walk of the payload would ever refuse it.
 """
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from _test_support import load_designator
 
 from common.contracts.errors import ContractError
 
@@ -20,11 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_designator():
-    path = ROOT / "pipeline" / "2_designator" / "run.py"
-    spec = importlib.util.spec_from_file_location("designator_no_text_schema_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_designator("designator_no_text_schema_under_test")
 
 
 # --- the mechanical check, direct --------------------------------------------
@@ -51,6 +47,7 @@ def test_an_unknown_text_synonym_cannot_enter_the_closed_act_group_contract():
     payload = {
         "act_key": "a1",
         "declared_bounds": {"x": 1, "y": 2, "w": 3, "h": 4},
+        "structure_evidence": "detected",
         "detected_bounds": {"x": 1, "y": 2, "w": 3, "h": 4},
         "body_member_count": 1,
         "anchor_count": 0,
@@ -60,6 +57,9 @@ def test_an_unknown_text_synonym_cannot_enter_the_closed_act_group_contract():
     }
     with pytest.raises(ContractError, match="closed contract"):
         designator._validate_act_group_payload(payload)
+    designator._validate_act_group_payload(
+        {key: value for key, value in payload.items() if key != "ocr_text"}
+    )
 
 
 @pytest.mark.parametrize(
