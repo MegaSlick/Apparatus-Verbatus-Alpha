@@ -19,6 +19,23 @@ whether a residual exists in the accounting. Deleting the priority threshold
 entirely would only reorder review, never drop a region -- which is the
 property GOVERNANCE 10 requires of any threshold in an instrument: the
 instrument may not constrain what it measures.
+
+**Two ink calibrations exist in this pipeline, by decision rather than drift.**
+This stage counts a pixel as ink at `background - PRIMARY_MARGIN` (20 levels);
+the Recensor's independent page-coverage check
+(`pipeline/5_recensor/residual_ink.py`) requires `MINIMUM_CONTRAST_BELOW_BACKGROUND`
+(40 levels). They are different instruments: this one is the Designator
+reconciling its own cut and errs sensitive, because a faint mark it dismisses
+here is GOALS 1's worst failure; the Recensor's is an after-the-fact audit of
+the same pages and errs confident, because it exists to catch whole missed
+regions rather than to re-litigate faint pixels a held act already accounts
+for. The asymmetry is safe in exactly one direction, and that direction is the
+invariant: every pixel the Recensor calls ink is ink to this stage too, so the
+audit can never flag ink this accounting silently ignored — while ink only this
+stage sees ends as a held residual act, which is visible, never lost. The
+containment is pinned by `test_conservation.py`; narrowing this stage's margin
+past the Recensor's contrast would break the safe direction and must be a
+deliberate two-sided change.
 """
 
 from typing import Final, TypedDict

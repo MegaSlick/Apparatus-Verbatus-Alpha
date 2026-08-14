@@ -238,3 +238,27 @@ def test_refuses_a_non_positive_claimed_rectangle():
             background=BACKGROUND,
             claimed_bounds=[{"x": 0, "y": 0, "w": 0, "h": 5}],
         )
+
+
+# --- the two ink calibrations stay safely ordered -------------------------------
+
+
+def test_the_recensor_audit_never_calls_ink_what_this_stage_dismissed():
+    """Two ink calibrations exist on this tree by decision, not drift: this
+    stage's sensitive `PRIMARY_MARGIN` and the Recensor audit's confident
+    `MINIMUM_CONTRAST_BELOW_BACKGROUND` (see `conservation.py`'s module
+    docstring for the whole decision). The decision is safe only while the
+    audit's contrast requirement is at least this stage's margin — the moment
+    it dips below, the Recensor could flag a pixel as ink that this stage's
+    accounting dismissed as background, and that disagreement loses ink
+    silently instead of holding it. Pin the ordering so a one-sided retuning
+    fails a named test instead of shipping."""
+    import importlib.util
+    from pathlib import Path
+
+    recensor = Path(__file__).resolve().parents[1] / "5_recensor" / "residual_ink.py"
+    spec = importlib.util.spec_from_file_location("recensor_residual_ink", recensor)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.MINIMUM_CONTRAST_BELOW_BACKGROUND >= PRIMARY_MARGIN

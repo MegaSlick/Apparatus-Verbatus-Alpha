@@ -911,6 +911,9 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
         settings,
         recovery,
         door.load_hard_failure_policy(),
+        designator_padding_config_sha256=door._padding_config_digest(
+            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+        ),
     )
     changed = door._real_bindings(
         Models(),
@@ -924,6 +927,9 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
             "kinds": [("perlector", "failed")],
             "reason_kinds": [],
         },
+        designator_padding_config_sha256=door._padding_config_digest(
+            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+        ),
     )
 
     assert baseline["config_digest"] != changed["config_digest"]
