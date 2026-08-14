@@ -93,14 +93,38 @@ field sets, so an unanticipated synonym such as `ocr_text` is refused as an
 unknown field rather than passing because a denylist did not predict its name.
 
 ```text
-act_key, declared_bounds, detected_bounds
+act_key, declared_bounds
+structure_evidence ("detected" | "fallback-tiles"), detected_bounds | null
 body_member_count, anchor_count, rationale
-continuation = {declared_bounds, detected_bounds, rationale, geometric_corroboration} | null
+continuation = {declared_bounds, structure_evidence, detected_bounds | null,
+                body_member_count, anchor_count, rationale,
+                geometric_corroboration} | null
 ```
 
 `rationale` is one of a small set of code-generated strings naming which
 grouping rule fired (a single anchor, a brace linking two acts, an isolated
 marginal note, a leading fragment with no anchor) — never a reading of the ink.
+
+**`structure_evidence` is what tells a measurement from a fallback, structurally.**
+`detected` means the structure pass genuinely found a region covering at least
+half of this act's declared bounds. `fallback-tiles` means it found no ink on
+the page at all, the page was cut into the predetermined grid instead (see
+`kind="page-fallback"` below), and *nothing detected this act*: `detected_bounds`
+is `null` and both counts are zero. This is a field rather than a sentence
+because a consumer must not have to parse `rationale` to tell the two apart.
+
+Recording a computed band as `detected_bounds` was the defect this closes, and
+it had two heads. The bands span the whole page by construction, so every
+declared act on a fallback-tiled page "matched" one — which published a
+rectangle nothing measured with a zero member count beside it (GOVERNANCE 10),
+and silently disabled `_match_structural_group`'s missed-act refusal on exactly
+the pages where the structure pass found nothing. The refusal is unchanged
+wherever detection actually ran, which is the property
+`test_structure_failure.py::test_the_missed_act_refusal_still_fires_where_detection_actually_ran`
+holds down. `continuation.geometric_corroboration` is likewise `false` whenever
+either page was tiled: `find_continuation_candidate`'s test is that the trailing
+group touches the page's bottom edge and the leading group its top, and a
+full-page grid satisfies both on every page ever cut.
 
 **One detected group corresponds to at most one act** (`_claim_structural_group`).
 `_match_structural_group` answers "which detected group best covers this
@@ -120,6 +144,67 @@ continuation whose crops do not happen to touch either page's edge (as in this
 stage's own synthetic fixture) is still a genuine continuation. **Continuation
 ownership itself is unresolved between specs 06 and 09** — see "What this
 handoff does not settle" below.
+
+## `kind="page-fallback"`
+
+One record per sealed page the structure pass found **no ink at all** on,
+subject-keyed to the one act that page's predetermined crops belong to. Tyrel
+ruled this on 2026-08-11: *"If the designator sees no text it should default to
+predetermined crops with a small margin of overlap and send the crops down
+stream to be read by everything. If all the witnesses and the perlector see no
+text on any of the crops then it's likely a true blank."* Deciding blankness
+here, from one threshold on one page, decides it with the weakest instrument in
+the pipeline; the witnesses and the Perlector are the strong ones and they only
+get a say if the crops reach them.
+
+```text
+act_key ("page-fallback:<ordinal>"), page_id, page_ordinal, page_bounds
+fallback_ordinal (the reserved FALLBACK_PAGE_ACT_ORDINAL)
+tile_count, tiles = [{bounds, rationale}]
+reason
+provenance (the resolved Designator chair)
+```
+
+`grouping.fallback_tiles` computed this grid before, and nothing cut it: the
+tiles were handed to `_match_structural_group` as match candidates only, so the
+*second half* of the ruling — send the crops downstream — did not exist, and a
+sealed page with no ink and no declared act sent nothing anywhere. Now each tile
+becomes an ordinary `origin="proposal"` region of the minted act, cut by the same
+`cut_minted_region` a declared act's crop goes through, so a crop still has
+exactly one author.
+
+**One minted act per page, one region per tile**, never one act per tile. The
+structure pass found nothing, so it has no opinion about how many acts are on
+this page and must not manufacture one by counting bands. Every consumer already
+reads *all* of an act's proposal regions — the Attestatores witness each one,
+the Perlector reads through every region of the act — so one act with N regions
+delivers the page whole, and N acts would be an act count invented from a grid.
+
+The act is **`proposed`, not `held`**. A held act is terminal and is never read
+(`recovery_pass`; and `_publish_residual_holds`'s own "never witnessed and never
+read"), and crops nobody reads are precisely what the ruling forbids producing.
+Its identity is `act_bindings(page_id, FALLBACK_PAGE_ACT_ORDINAL, page_bounds)`,
+using the one ordinal reserved in `common/stage.py` beside the residual space —
+which is now bounded below (`RESIDUAL_ACT_ORDINAL_FLOOR`) so the two minted-act
+ordinal spaces are disjoint by construction rather than by an argument about
+which values are unlikely to be reached. `common/stage.py::_verify_page_fallback_act_row`
+recomputes that identity and then reads this record's single input — the page's
+own `structure-status`, through the digest-checked reference hop — to confirm
+that page really does record `structure_evidence == "fallback-tiles"`. A
+fallback act minted over a page the structure pass detected regions on is
+refused there, so the extra denominator row proves its premise rather than
+asserting it.
+
+A fallback tile's region carries `padding: null`, like a recovery crop and for
+the same reason: the tile *is* the final rectangle, computed from the page's own
+dimensions with `grouping.DEFAULT_FALLBACK_OVERLAP_PX` already built into it.
+Expanding it again by the capture padding would conflate a structural pad with a
+capture pad, which `geometry.py`'s docstring says must never happen.
+
+A page the structure pass was **held** on (`structure_failures`) is not tiled:
+its acts are held and no crop is cut on it at all. "We could not mark this page
+out" and "we marked it out and found nothing" are the two different facts Tyrel
+drew apart on 2026-08-05, and they get different records.
 
 ## `kind="conservation"`
 
@@ -254,8 +339,22 @@ different fact about the *act*, not this per-page structural pass record.
 
 ```text
 page_id, page_ordinal, state ("scanned" | "held"), reason_code | null
+background_source | null, structure_evidence | null
 provenance (the resolved Designator chair)
 ```
+
+`background_source` and `structure_evidence` are the structure pass's own audit
+trail for *how* this page was read, and they are published here because this is
+the one per-page record that already exists. `background_source` says where the
+ink threshold came from — `inferred-modal` when the page's own modal pixel was
+taken as its paper — so a page whose threshold did not come from its own mode is
+visibly different on disk rather than identical to an ordinary scan.
+`structure_evidence` says whether the crops on this page came from detection or
+from the predetermined grid. Both were computed in an in-process dict that
+nothing published, which meant neither fact survived the run. Both are `null` on
+a page held before it was analysed at all: the structure pass produced no
+background and no evidence there, and saying `inferred-modal` of a pass that
+never ran would be the same defect these fields exist to close.
 
 A failure is declared per scenario by the fixture's `[[structure_failure]]`
 rows, because the walking skeleton has no live structure model that can fail.

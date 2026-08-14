@@ -930,13 +930,15 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     proposal seal exists, so no unbuilt structural model is being prescribed.
 
     The fixture's own acts are a *floor*, never a ceiling: every one must
-    appear, and the seal may also carry acts the fixture never declared, minted
-    from ink conservation found that structural grouping never claimed
-    (`pipeline/2_designator/run.py`'s `_publish_residual_holds`). Those extra
-    rows are not fixture data and cannot be checked against it —
-    `_verify_residual_act_rows` checks them against the one thing they *can* be
-    checked against: their own hold record's residual facts, recomputed rather
-    than trusted.
+    appear, and the seal may also carry acts the fixture never declared. Two
+    kinds exist, and neither is fixture data, so neither can be checked against
+    it — `_verify_minted_act_rows` checks each against the one thing it *can*
+    be checked against: its own Designator evidence record, recomputed rather
+    than trusted. A **residual** act (`_publish_residual_holds`) is ink
+    conservation found that structural grouping never claimed, and is `held`. A
+    **page-fallback** act (`_publish_page_fallback`) is the predetermined crop
+    grid cut over a page the structure pass found nothing on, and is `proposed`,
+    because the whole point of cutting it is that it goes downstream to be read.
     """
     fixture_acts = context.fixture.get("act", [])
     if not fixture_acts:
@@ -980,9 +982,32 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     # and always fired; which act it accused was a coin flip, which is the kind of
     # evidence nobody can act on twice. Found by the Opus read of this branch,
     # which demonstrated five different orders over six keys in five runs.
-    _verify_residual_act_rows(
+    _verify_minted_act_rows(
         context, {act_id: observed[act_id] for act_id in sorted(set(observed) - set(expected))}
     )
+
+
+# An act identity is `act_bindings(page_id, ordinal, bounds)`, so two acts minted
+# on one page must never share an ordinal. Three classes of ordinal exist on a
+# page and they are kept disjoint here, in one place, rather than by each minter
+# knowing what the others do:
+#
+#   >= 0                          the nth region a structure pass proposed
+#   RESIDUAL_FLOOR .. -1          one conservation residual (`residual_act_ordinal`)
+#   FALLBACK_PAGE_ACT_ORDINAL     the one page-fallback act, below that floor
+#
+# The residual space used to be the *whole* negative range, which left nowhere
+# for a second minted class to live without an argument about which values were
+# "unlikely" to be reached. Bounding it below makes the fallback ordinal
+# unreachable from it by construction, and `residual_act_ordinal` refuses an
+# index that would cross the floor rather than silently minting a colliding
+# identity. The floor is far past any reachable residual count -- this stage's
+# own worst measured page reconciles to about 60,000 residual components
+# (`pipeline/2_designator/HANDOFF.md`, "Cost, and where it is unbounded") --
+# so no existing ordinal moves and none ever will in practice; the point of the
+# bound is that the disjointness is proven rather than assumed.
+RESIDUAL_ACT_ORDINAL_FLOOR: int = -(2**31)
+FALLBACK_PAGE_ACT_ORDINAL: int = RESIDUAL_ACT_ORDINAL_FLOOR - 1
 
 
 def residual_act_ordinal(index: int) -> int:
@@ -1002,43 +1027,83 @@ def residual_act_ordinal(index: int) -> int:
 
     The minting code and this module's verification of what was minted call the
     same function, so the two cannot drift on what `-(index + 1)` means.
+
+    Bounded below by `RESIDUAL_ACT_ORDINAL_FLOOR` so the page-fallback act's own
+    reserved ordinal cannot be reached from here. An index that would cross the
+    floor is refused rather than allowed to mint an identity that could collide
+    with a fallback act on the same page.
     """
     if index < 0:
         raise ContractError(f"a residual index {index} is negative and names no residual")
-    return -(index + 1)
+    ordinal = -(index + 1)
+    if ordinal < RESIDUAL_ACT_ORDINAL_FLOOR:
+        raise ContractError(
+            f"residual index {index} is past the residual ordinal floor "
+            f"{RESIDUAL_ACT_ORDINAL_FLOOR}; a page this speckled has to be refused as a page "
+            "rather than accounted for with an ordinal that collides with another minted act"
+        )
+    return ordinal
 
 
-def _verify_residual_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> None:
+def fallback_page_act_key(page_ordinal: int) -> str:
+    """The human-readable label of the one act a page's fallback crops belong to.
+
+    For a reviewer's eye and for `expected_acts`'s duplicate-key refusal; what
+    keeps this act's *identity* from colliding with anything is
+    `FALLBACK_PAGE_ACT_ORDINAL`, not this string. Named here beside the ordinal
+    rather than in the Designator so the producer and this module's verification
+    of what was produced cannot spell it differently.
+    """
+    return f"page-fallback:{page_ordinal}"
+
+
+def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> None:
     """Every expected-act row beyond the fixture's own denominator.
 
-    The only unit the Designator may add beyond what the fixture declares is a
-    conservation residual it could never structurally propose — GOALS 1's "a
-    missed act is worse than a poorly read act", extended to ink no structural
-    pass claimed at all. Such an act is `held` from the moment it exists, never
-    `proposed`: nothing witnessed it and nothing read it, so it may not carry a
-    continuation either. Its identity must independently *recompute* from facts
-    a reviewer can check against the conservation record that found it — an
-    extra row is not trustworthy merely because the seal's own producer wrote
-    it down, which is the same reasoning `expected_acts` already applies to
-    every fixture-derived row above.
+    Two units the Designator may add beyond what the fixture declares, and no
+    others. Both exist for GOALS 1's "a missed act is worse than a poorly read
+    act", and neither may be trusted merely because the seal's own producer
+    wrote it down — that is the same reasoning `expected_acts` already applies
+    to every fixture-derived row above.
 
-    The hold index is built once for the whole set rather than per row. Every
-    residual component on a page mints one of these rows, and a speckled or
-    foxed page reconciles to tens of thousands of them, so a per-row walk of the
-    stage's whole artifact tree makes ordinary input quadratic in itself.
+    A **conservation residual** is ink no structural pass claimed at all. It is
+    `held` from the moment it exists, never `proposed`: nothing witnessed it and
+    nothing read it, so it may not carry a continuation either, and its identity
+    must recompute from facts a reviewer can check against the conservation
+    record that found it.
+
+    A **page-fallback** act is the predetermined crop grid cut over a page the
+    structure pass found no ink on (Tyrel, 2026-08-11: "If the designator sees
+    no text it should default to predetermined crops ... and send the crops down
+    stream to be read by everything"). It is `proposed`, because cutting crops
+    nothing will read would be the pointless half of that ruling, and its
+    identity must recompute against the page's own `structure-status` record,
+    which is what independently says the structure pass found nothing there.
+
+    The evidence index is built once for the whole set rather than per row.
+    Every residual component on a page mints one of these rows, and a speckled
+    or foxed page reconciles to tens of thousands of them, so a per-row walk of
+    the stage's whole artifact tree makes ordinary input quadratic in itself.
     """
-    holds_by_subject = _designator_holds_by_subject(context) if extra_rows else {}
+    holds_by_subject = _designator_records_by_subject(context, "hold") if extra_rows else {}
+    fallbacks_by_subject = (
+        _designator_records_by_subject(context, "page-fallback") if extra_rows else {}
+    )
     for act_id, row in extra_rows.items():
-        if row["outcome"] != "held":
-            raise FatalAccounting(
-                f"act {act_id} is not declared in the sealed fixture and is not 'held'; the "
-                "only unit that may extend the denominator beyond the fixture is a conservation "
-                "residual, and a residual is never structurally proposed"
-            )
         if row["has_continuation"]:
             raise FatalAccounting(
                 f"act {act_id} extends the denominator beyond the fixture but claims a "
-                "continuation; a residual has no declared continuation to claim"
+                "continuation; a residual has no declared continuation to claim, and neither "
+                "has a page-fallback act"
+            )
+        if row["outcome"] == "proposed":
+            _verify_page_fallback_act_row(context, act_id, row, fallbacks_by_subject)
+            continue
+        if row["outcome"] != "held":
+            raise FatalAccounting(
+                f"act {act_id} is not declared in the sealed fixture and is neither 'held' nor "
+                "'proposed'; the only units that may extend the denominator beyond the fixture "
+                "are a conservation residual and a page-fallback act"
             )
         hold = holds_by_subject.get(act_id)
         if hold is None:
@@ -1067,6 +1132,68 @@ def _verify_residual_act_rows(context, extra_rows: dict[str, dict[str, Any]]) ->
             ) from error
         _verify_residual_traces_to_conservation(
             context, act_id, row["page_id"], hold, ordinal, bounds
+        )
+
+
+def _verify_page_fallback_act_row(
+    context, act_id: str, row: dict[str, Any], fallbacks_by_subject: dict[str, dict[str, Any]]
+) -> None:
+    """The one extra row that may be `proposed`, checked against its own evidence.
+
+    A page-fallback act is the only unit outside the fixture that reaches the
+    witnesses and the Perlector, so it is the one whose provenance most needs to
+    be recomputed rather than believed. Two independent things are checked, and
+    the second is what stops a fabricated one: the identity must derive from
+    this page and the one reserved fallback ordinal over the page rectangle its
+    own record declares, and that record's single input must be the page's
+    `structure-status` — read through the digest-checked hop, not by address —
+    saying the structure pass genuinely fell back to tiles on that page. A
+    fallback act minted over a page whose structure pass *did* detect something
+    therefore refuses here, which is exactly the claim-about-what-was-measured
+    GOVERNANCE 10 forbids.
+    """
+    record = fallbacks_by_subject.get(act_id)
+    if record is None:
+        raise FatalAccounting(
+            f"act {act_id} extends the denominator beyond the fixture as a proposed act but the "
+            "Designator published no page-fallback record for it; it is not 'held' either, so it "
+            "is not a conservation residual"
+        )
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    bounds = payload.get("page_bounds")
+    if not isinstance(bounds, dict) or payload.get("act_key") != row["act_key"]:
+        raise FatalAccounting(
+            f"act {act_id}'s page-fallback record carries no page rectangle and act key to "
+            "recompute its identity from"
+        )
+    try:
+        verify_identity(
+            act_id, "act", act_bindings(row["page_id"], FALLBACK_PAGE_ACT_ORDINAL, bounds)
+        )
+    except IdentityRefusal as error:
+        raise FatalAccounting(
+            f"act {act_id} does not verify against the reserved page-fallback ordinal and the "
+            f"page rectangle its own record names: {error}"
+        ) from error
+    inputs = record.get("inputs")
+    if not isinstance(inputs, list) or len(inputs) != 1:
+        raise FatalAccounting(
+            f"act {act_id}'s page-fallback record does not reference exactly one "
+            "structure-status artifact to check its premise against"
+        )
+    status = context.tree.read_artifact_reference(
+        inputs[0], stage=DESIGNATOR, kind="structure-status", subject_id=row["page_id"]
+    )
+    status_payload = status.get("payload")
+    evidence = (
+        status_payload.get("structure_evidence") if isinstance(status_payload, Mapping) else None
+    )
+    if evidence != "fallback-tiles":
+        raise FatalAccounting(
+            f"act {act_id} is a page-fallback act, but page {row['page_id']}'s own "
+            f"structure-status records its structural evidence as {evidence!r} rather than "
+            "'fallback-tiles'; a predetermined grid may not be minted over a page the "
+            "structure pass actually found regions on"
         )
 
 
@@ -1130,18 +1257,18 @@ def _verify_residual_traces_to_conservation(
         )
 
 
-def _designator_holds_by_subject(context) -> dict[str, dict[str, Any]]:
-    """Every Designator hold record, by the act it holds.
+def _designator_records_by_subject(context, kind: str) -> dict[str, dict[str, Any]]:
+    """Every Designator record of one kind, by the act it is evidence for.
 
     Read the same way `_verify_proposal_seal_evidence` reads every act's
     evidence below, but ahead of it: the denominator check runs first, so an
-    extra row must already name a real hold before that later, more general
-    evidence check ever sees it.
+    extra row must already name its own real evidence record before that later,
+    more general evidence check ever sees it.
     """
     return {
-        entry["subject_id"]: context.tree.read_artifact(DESIGNATOR, "hold", entry["artifact_id"])
+        entry["subject_id"]: context.tree.read_artifact(DESIGNATOR, kind, entry["artifact_id"])
         for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "hold"
+        if entry["kind"] == kind
     }
 
 

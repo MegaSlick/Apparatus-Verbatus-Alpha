@@ -272,7 +272,7 @@ def _run_program(program: str, root):
     )
 
 
-def test_a_page_whose_background_cannot_be_inferred_is_tiled_and_read_not_held(
+def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     tmp_path, monkeypatch
 ):
     """Tyrel, 2026-08-11, twice, and the second ruling overrides the first.
@@ -283,11 +283,17 @@ def test_a_page_whose_background_cannot_be_inferred_is_tiled_and_read_not_held(
     gets pulled out or held."**
 
     So a page whose modal pixel is not its paper is neither dropped, nor called
-    blank, nor held for a human. It is cut into predetermined overlapping crops
-    and sent downstream, and the witnesses and the Perlector -- the strong
-    instruments -- decide whether there is text on it. This stage's one
-    threshold is the weakest instrument in the pipeline and it does not get to
-    end a page's life.
+    blank, nor held for a human. Its crops are cut and sent downstream, and the
+    witnesses and the Perlector -- the strong instruments -- decide whether
+    there is text on it. This stage's one threshold is the weakest instrument in
+    the pipeline and it does not get to end a page's life.
+
+    **What this test does not drive**, named because its previous name claimed
+    it did: the refusal it forces changes only *how the background value is
+    obtained*. The page's real ink is still there, so `primary_scan` still finds
+    components, `group_page` still returns groups, and the fallback grid never
+    fires. The tests below drive that mechanism, over a page with genuinely no
+    ink on it.
     """
 
     root = tmp_path / "runs"
@@ -340,6 +346,243 @@ def test_a_page_whose_background_cannot_be_inferred_is_tiled_and_read_not_held(
 
     regions = _artifact_payloads("region")
     assert regions, "the page must still have been cut: crops are what reach the readers"
+
+
+# --- a page the structure pass finds no ink on is cut into crops that go on ------
+#
+# Tyrel, 2026-08-11: "If the designator sees no text it should default to
+# predetermined crops with a small margin of overlap and send the crops down
+# stream to be read by everything. If all the witnesses and the perlector see no
+# text on any of the crops then it's likely a true blank."
+#
+# `grouping.fallback_tiles` computed that grid and `run.py` handed it to
+# `_match_structural_group` as match candidates. No tile was ever *cut*, so the
+# second half of the ruling -- send the crops downstream -- was not built, and a
+# sealed page with no ink and no declared act sent nothing at all. These tests
+# drive the mechanism over a page whose pixels really are blank, so
+# `structure.primary_scan` genuinely returns no component and the grid genuinely
+# fires; nothing here monkeypatches the scan, the grouping, or the grid.
+#
+# The one substitution is the page's *pixels*: the door refuses any fixture root
+# but `proof/` (`door.declared_synthetic_fixture_root`, ruling 2026-08-04 item
+# 1), and every shipped fixture page carries ink, so an ink-free page cannot be
+# sealed here without adding one to the shipped fixture and moving every digest
+# in the tree. Substituting the sealed page's own byte reader gives this stage a
+# genuinely blank page to scan, crop and reconcile end to end. What that cannot
+# reach is the *downstream* lineage check, which recomputes a crop from the
+# Exemplar's stored pixels; proving the fallback crops through a real
+# orchestrator run needs an ink-free fixture page, and that is named in this
+# build's report rather than faked here.
+
+
+def _flat_page_png(width: int, height: int, value: int) -> bytes:
+    from common.imaging import encode_grayscale_png
+
+    return encode_grayscale_png(width, height, [bytearray([value]) * width for _ in range(height)])
+
+
+def _page_with_one_mark_png(width: int, height: int, value: int, mark: dict, ink: int) -> bytes:
+    from common.imaging import encode_grayscale_png
+
+    rows = [bytearray([value]) * width for _ in range(height)]
+    for y in range(mark["y"], mark["y"] + mark["h"]):
+        for x in range(mark["x"], mark["x"] + mark["w"]):
+            rows[y][x] = ink
+    return encode_grayscale_png(width, height, rows)
+
+
+def _designator_context(root, designator):
+    from common.stage import open_context, stage_parser
+
+    args = stage_parser("fallback crop test").parse_args(
+        ["--run-root", str(root), "--run-id", "r", "--scenario", "happy"]
+    )
+    return open_context(args, designator.DESIGNATOR)
+
+
+def _substitute_page_pixels(designator, monkeypatch, ordinal: int, data: bytes) -> None:
+    """Give one sealed page different pixels, leaving every other page real."""
+    real = designator._read_checked_page_bytes
+
+    def substituted(context, page_record):
+        if page_record["payload"]["ordinal"] == ordinal:
+            return data
+        return real(context, page_record)
+
+    monkeypatch.setattr(designator, "_read_checked_page_bytes", substituted)
+
+
+def _payloads(context, kind):
+    return [
+        context.tree.read_artifact(DESIGNATOR, kind, entry["artifact_id"])["payload"]
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == kind
+    ]
+
+
+@pytest.fixture
+def blank_first_page_run(tmp_path, monkeypatch):
+    """One Designator pass whose page 1 has no ink on it at all."""
+    root = tmp_path / "runs"
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = _run_program(program, root)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    designator = _load_designator()
+    context = _designator_context(root, designator)
+    _substitute_page_pixels(designator, monkeypatch, 1, _flat_page_png(200, 260, 230))
+
+    # The premise, asserted rather than assumed: the real structure pass over
+    # these real pixels finds nothing. If a later threshold change made this page
+    # scan as inked, every assertion below would still pass for the wrong reason.
+    width, height, rows = designator.decode_grayscale_png(_flat_page_png(200, 260, 230))
+    background = designator.structure.infer_background(width, height, rows)
+    assert designator.structure.primary_scan(width, height, rows, background=background) == []
+    assert designator.grouping.group_page([], width, height) == []
+
+    held = designator.initial_pass(context)
+    return designator, context, held
+
+
+def test_a_page_with_no_found_ink_is_cut_into_fallback_crops(blank_first_page_run):
+    """The tiles become real proposal regions of one minted act, not inert geometry."""
+    designator, context, _held = blank_first_page_run
+
+    statuses = {row["page_ordinal"]: row for row in _payloads(context, "structure-status")}
+    assert statuses[1]["structure_evidence"] == "fallback-tiles"
+    assert statuses[2]["structure_evidence"] == "detected"
+
+    fallbacks = _payloads(context, "page-fallback")
+    assert len(fallbacks) == 1, "one minted act per fallback-tiled page, never one per tile"
+    fallback = fallbacks[0]
+    assert fallback["page_ordinal"] == 1
+    assert fallback["tile_count"] == len(designator.grouping.fallback_tiles(200, 260))
+
+    tiles = [tile["bounds"] for tile in fallback["tiles"]]
+    covered = set()
+    for bounds in tiles:
+        covered |= set(range(bounds["y"], bounds["y"] + bounds["h"]))
+    assert covered == set(range(260)), "every row of the page must be inside some cut crop"
+
+    regions = [
+        row
+        for row in _payloads(context, "region")
+        if row["act_key"] == fallback["act_key"] and row["origin"] == "proposal"
+    ]
+    assert len(regions) == fallback["tile_count"]
+    assert [
+        row["transform"]["bounds"] for row in sorted(regions, key=lambda r: r["attempt_ordinal"])
+    ] == tiles
+    for row in regions:
+        assert row["transform"]["source_page_ordinal"] == 1
+        # The tile is already the final rectangle, overlap built in: expanding it
+        # again by the capture padding would conflate a structural pad with a
+        # capture pad (`geometry.py`).
+        assert row["padding"] is None
+        assert row["image_sha256"], "a fallback crop is real cut pixels, not a rectangle on paper"
+
+
+def test_the_fallback_crops_reach_the_downstream_denominator(blank_first_page_run):
+    """The seal is what every later stage reads. A crop outside it is not sent anywhere."""
+    from common.stage import expected_acts
+
+    _designator, context, _held = blank_first_page_run
+
+    fallback = _payloads(context, "page-fallback")[0]
+    seal = _payloads(context, "proposal-seal")[0]
+    rows = {row["act_key"]: row for row in seal["expected_acts"]}
+    assert fallback["act_key"] in rows, (
+        "a fallback crop nothing accounts for is a crop nobody reads"
+    )
+    row = rows[fallback["act_key"]]
+    assert row["outcome"] == "proposed", (
+        "a held act is terminal and is never read; crops cut so that they can be read "
+        "must reach the readers"
+    )
+    assert len(row["evidence"]) == fallback["tile_count"]
+
+    # And the seal that carries it validates as the downstream expected-act
+    # denominator -- the actual cross-stage contract, not this stage's own idea
+    # of one. `_verify_page_fallback_act_row` recomputes the minted identity and
+    # reads page 1's structure-status through a digest-checked hop to confirm the
+    # premise that the structure pass really did fall back to tiles there.
+    validated = {act["act_key"]: act for act in expected_acts(context)}
+    assert validated[fallback["act_key"]]["act_id"] == row["act_id"]
+
+
+def test_a_fallback_act_minted_over_a_detected_page_is_refused(blank_first_page_run):
+    """The premise is checked against the page's own record, not the minter's word."""
+    from common.contracts.errors import FatalAccounting
+    from common.stage import expected_acts
+
+    _designator, context, _held = blank_first_page_run
+
+    seal = _payloads(context, "proposal-seal")[0]
+    fallback_row = next(
+        row for row in seal["expected_acts"] if row["act_key"].startswith("page-fallback:")
+    )
+    real_read = context.tree.read_artifact_reference
+
+    def status_says_detected(reference, **kwargs):
+        record = real_read(reference, **kwargs)
+        if record["kind"] == "structure-status":
+            record["payload"] = {**record["payload"], "structure_evidence": "detected"}
+        return record
+
+    context.tree.read_artifact_reference = status_says_detected
+    with pytest.raises(FatalAccounting, match="may not be minted over a page"):
+        expected_acts(context)
+    context.tree.read_artifact_reference = real_read
+    assert fallback_row["outcome"] == "proposed"
+
+
+def test_an_act_on_a_fallback_tiled_page_records_no_detected_bounds(blank_first_page_run):
+    """A computed band is not a detection, and a consumer must not need prose to tell.
+
+    The bands span the whole page by construction, so before this distinction
+    existed every declared act on such a page "matched" one: `detected_bounds`
+    recorded a rectangle nothing detected, `body_member_count` was 0 beside it,
+    and `_match_structural_group`'s missed-act refusal could not fire on any
+    fallback-tiled page at all.
+    """
+    _designator, context, _held = blank_first_page_run
+
+    groups = {row["act_key"]: row for row in _payloads(context, "act-group")}
+    for key in ("a1", "a2"):
+        assert groups[key]["structure_evidence"] == "fallback-tiles"
+        assert groups[key]["detected_bounds"] is None
+        assert groups[key]["body_member_count"] == 0
+        assert groups[key]["anchor_count"] == 0
+
+    # Act a2 continues onto page 2, which has its real ink and was really
+    # detected: one payload carrying both kinds of evidence, each labelled.
+    continuation = groups["a2"]["continuation"]
+    assert continuation["structure_evidence"] == "detected"
+    assert continuation["detected_bounds"] is not None
+    assert continuation["geometric_corroboration"] is False
+
+
+def test_the_missed_act_refusal_still_fires_where_detection_actually_ran(tmp_path, monkeypatch):
+    """The other half of the same finding: a real detector that missed an act refuses.
+
+    A page with one small mark, nowhere near either declared act, is a page the
+    structure pass *did* find regions on. Nothing covers half of act a1's
+    declared bounds, so the structure pass missed it -- and a missed act is the
+    finding GOALS 1 cares about most. It must still be a refusal, not a fallback
+    band quietly standing in for the detection that did not happen.
+    """
+    root = tmp_path / "runs"
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = _run_program(program, root)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    designator = _load_designator()
+    context = _designator_context(root, designator)
+    marked = _page_with_one_mark_png(200, 260, 230, {"x": 4, "y": 240, "w": 8, "h": 8}, 30)
+    _substitute_page_pixels(designator, monkeypatch, 1, marked)
+
+    with pytest.raises(ContractError, match="may have missed this act entirely"):
+        designator.initial_pass(context)
 
 
 def test_fallback_tiles_cover_every_row_of_the_page_and_overlap_their_neighbours():

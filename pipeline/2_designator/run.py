@@ -66,7 +66,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import digest_bytes, self_hash  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
-from common.contracts.identities import act_id as derive_residual_act_id  # noqa: E402
+from common.contracts.identities import act_id as derive_minted_act_id  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, RECENSOR  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
@@ -80,6 +80,7 @@ from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
     EXIT_HELD,
+    FALLBACK_PAGE_ACT_ORDINAL,
     SECONDARY_PROPOSER_CHAIR,
     StageContext,
     act_bounds,
@@ -87,6 +88,7 @@ from common.stage import (  # noqa: E402
     adapter_recipe_for,
     continuation_for,
     current_recovery_request,
+    fallback_page_act_key,
     fixture_serving_details,
     open_context,
     page_identity,
@@ -155,11 +157,48 @@ def _refuse_text_fields(value, path: str = "$") -> None:
             _refuse_text_fields(item, f"{path}[{index}]")
 
 
-def _require_rectangle_fields(block: dict, what: str) -> None:
-    for field in ("declared_bounds", "detected_bounds"):
-        bounds = block[field]
-        if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
-            raise ContractError(f"a Designator act-group {what} has invalid {field}")
+# What kind of structural evidence an act-group's `detected_bounds` rests on. A
+# **structural** field rather than a sentence, because a consumer must be able
+# to tell a measurement from a fallback without reading a rationale string:
+# `detected` means the structure pass genuinely found a region covering this act,
+# and `fallback-tiles` means it found nothing on the page at all and the page was
+# cut into a predetermined grid instead. In the second case `detected_bounds` is
+# `null` and the two counts are zero -- recording a computed band there, with
+# zero members, would be a claim about something nothing measured (GOVERNANCE 10).
+ACT_GROUP_EVIDENCE = frozenset({"detected", "fallback-tiles"})
+
+# The rationale a fallback-tiled page's act-group carries. One string, defined
+# once, because it is a statement about the mechanism and must read identically
+# on a primary block and on a continuation block.
+_FALLBACK_ACT_GROUP_RATIONALE = (
+    "the structure pass found no ink to group on this page, so no detected region "
+    "corroborates this act; the page's predetermined fallback crops are separate "
+    "evidence and are not a detection"
+)
+
+
+def _require_evidence_block(block: dict, what: str) -> None:
+    """A declared rectangle always; a detected one exactly when detection ran."""
+    declared = block["declared_bounds"]
+    if not isinstance(declared, dict) or set(declared) != {"x", "y", "w", "h"}:
+        raise ContractError(f"a Designator act-group {what} has invalid declared_bounds")
+    evidence = block["structure_evidence"]
+    if evidence not in ACT_GROUP_EVIDENCE:
+        raise ContractError(
+            f"a Designator act-group {what} claims structural evidence {evidence!r}, which is "
+            f"not one of {sorted(ACT_GROUP_EVIDENCE)}"
+        )
+    detected = block["detected_bounds"]
+    if evidence == "detected":
+        if not isinstance(detected, dict) or set(detected) != {"x", "y", "w", "h"}:
+            raise ContractError(f"a Designator act-group {what} has invalid detected_bounds")
+        return
+    if detected is not None or block["body_member_count"] or block["anchor_count"]:
+        raise ContractError(
+            f"a Designator act-group {what} claims fallback-tile evidence but carries detected "
+            "bounds or members; a predetermined grid detected nothing and may not report a "
+            "region or a member count as if it had"
+        )
 
 
 def _validate_act_group_payload(payload: object) -> None:
@@ -167,6 +206,7 @@ def _validate_act_group_payload(payload: object) -> None:
     required = {
         "act_key",
         "declared_bounds",
+        "structure_evidence",
         "detected_bounds",
         "body_member_count",
         "anchor_count",
@@ -175,12 +215,15 @@ def _validate_act_group_payload(payload: object) -> None:
     }
     if not isinstance(payload, dict) or set(payload) != required:
         raise ContractError("a Designator act-group payload has fields outside its closed contract")
-    _require_rectangle_fields(payload, "payload")
+    _require_evidence_block(payload, "payload")
     continuation = payload["continuation"]
     if continuation is not None:
         continuation_fields = {
             "declared_bounds",
+            "structure_evidence",
             "detected_bounds",
+            "body_member_count",
+            "anchor_count",
             "rationale",
             "geometric_corroboration",
         }
@@ -188,7 +231,7 @@ def _validate_act_group_payload(payload: object) -> None:
             raise ContractError(
                 "a Designator act-group continuation has fields outside its closed contract"
             )
-        _require_rectangle_fields(continuation, "continuation")
+        _require_evidence_block(continuation, "continuation")
     _refuse_text_fields(payload)
 
 
@@ -501,7 +544,43 @@ def cut_region(
     *,
     padding: dict | None = None,
 ):
+    """Cut one region of one *fixture-declared* act, by that act's own identity."""
+    return cut_minted_region(
+        context,
+        act_identity(context.fixture, act),
+        act["key"],
+        page_record,
+        bounds,
+        ordinal,
+        page_ordinal,
+        origin,
+        recovery_request,
+        padding=padding,
+    )
+
+
+def cut_minted_region(
+    context,
+    act_id,
+    act_key,
+    page_record,
+    bounds,
+    ordinal,
+    page_ordinal,
+    origin,
+    recovery_request: dict[str, str] | None = None,
+    *,
+    padding: dict | None = None,
+):
     """Cut one region of one act and publish it.
+
+    Split from `cut_region` so an act this stage *minted* -- one whose identity
+    the fixture never declared, because the structure pass found nothing on its
+    page -- is cut by exactly the same code that cuts a declared act's crop,
+    rather than by a second copy of it. A crop has one author (this module's own
+    docstring), and that has to stay true of a fallback crop too: the region
+    record, its transform, its digest, its lineage back to the sealed Exemplar
+    page and its Designator provenance are all produced here, once.
 
     `origin` separates two things that a bare sequence number runs together. A
     **proposal** region is part of what the Designator originally marked out —
@@ -532,7 +611,6 @@ def cut_region(
     `transform` and that broke the shared Exemplar-lineage boundary check,
     which reads `transform` as a closed four-field schema.
     """
-    act_id = act_identity(context.fixture, act)
     provenance = structure_provenance(context)
     image_path = page_record["payload"]["image_path"]
     page_bytes = _read_checked_page_bytes(context, page_record)
@@ -576,7 +654,7 @@ def cut_region(
         inputs=[context.input_ref(image_path)] + ([recovery_request] if recovery_request else []),
         payload={
             "region_id": region_id(act_id, transform),
-            "act_key": act["key"],
+            "act_key": act_key,
             "attempt_ordinal": ordinal,
             "origin": origin,
             "transform": transform,
@@ -672,7 +750,7 @@ def structure_failures(context, pages: dict[int, dict]) -> dict[int, str]:
     return failures
 
 
-def publish_structure_status(context, records, pages, provenance, failures) -> None:
+def publish_structure_status(context, records, pages, provenance, failures, analyses) -> dict:
     """One visible per-page outcome for the structure pass: scanned or held.
 
     Published for every sealed page, not only the failing ones, so "the
@@ -689,10 +767,27 @@ def publish_structure_status(context, records, pages, provenance, failures) -> N
     act touches it) -- the two are different facts, and reusing the Designator's
     own glossary verb for this field's success state would make them read as
     the same one.
+
+    `background_source` and `structure_evidence` are this stage's own audit
+    trail for *how* the page was read, published rather than computed and
+    dropped. `_analyze_page` had both facts in an in-process dict that nothing
+    ever wrote down, so a page whose ink threshold came from somewhere other
+    than its own modal pixel, and a page cut into a predetermined grid because
+    nothing was found on it, were indistinguishable on disk from an ordinary
+    scan. Both are null on a page held before it was analysed at all: the
+    structure pass produced no background and no evidence there, and saying
+    "inferred" of a pass that never ran would be the same defect the fields
+    exist to close.
+
+    Returns each page's own published status reference, because the
+    page-fallback act minted below has to name the record that independently
+    says its premise is true (`common/stage.py::_verify_page_fallback_act_row`).
     """
+    published: dict[int, dict[str, str]] = {}
     for ordinal in sorted(pages):
         reason_code = failures.get(ordinal)
-        context.publish(
+        analysis = analyses.get(ordinal)
+        result = context.publish(
             kind="structure-status",
             subject_id=page_identity(context.fixture, ordinal),
             outcome="held" if reason_code else "proposed",
@@ -702,9 +797,13 @@ def publish_structure_status(context, records, pages, provenance, failures) -> N
                 "page_ordinal": ordinal,
                 "state": "held" if reason_code else "scanned",
                 "reason_code": reason_code,
+                "background_source": analysis["background_source"] if analysis else None,
+                "structure_evidence": analysis["structure_evidence"] if analysis else None,
                 "provenance": provenance,
             },
         )
+        published[ordinal] = context.input_ref(result.relative_path)
+    return published
 
 
 def _analyze_page(cache: dict, context, ordinal: int, page_record: dict) -> dict:
@@ -741,8 +840,16 @@ def _analyze_page(cache: dict, context, ordinal: int, page_record: dict) -> dict
         # deciding it with the weakest instrument in the pipeline; the witnesses
         # and the Perlector are the strong ones and they only get a say if the
         # crops reach them.
-        fallback_tiled = not groups
-        if fallback_tiled:
+        #
+        # `structure_evidence` is the whole difference, kept as a field rather
+        # than as a sentence: these tiles are a grid computed from the page's
+        # own dimensions, not a detection, and `_publish_page_fallback` is what
+        # turns them into crops that actually go downstream. Grouping's output
+        # being *used as match candidates* is not the same as its output being
+        # cut, and this record is what keeps the two apart everywhere below.
+        structure_evidence = "detected"
+        if not groups:
+            structure_evidence = "fallback-tiles"
             groups = grouping.fallback_tiles(width, height)
         cache[ordinal] = {
             "width": width,
@@ -751,9 +858,40 @@ def _analyze_page(cache: dict, context, ordinal: int, page_record: dict) -> dict
             "background": background,
             "background_source": background_source,
             "groups": groups,
-            "fallback_tiled": fallback_tiled,
+            "structure_evidence": structure_evidence,
         }
     return cache[ordinal]
+
+
+def _structural_evidence_block(
+    analysis: dict, declared_bounds: dict, act_key: str, what: str
+) -> dict:
+    """The four fields that say what structural evidence stands behind one rectangle.
+
+    One builder for the primary block and the continuation block, because the
+    distinction between a detected region and a predetermined grid has to read
+    identically in both. On a detected page this matches the declared rectangle
+    against the groups the structure pass actually found, claims the matched
+    group for this act, and refuses when nothing covers half of it. On a
+    fallback-tiled page there is nothing to match against and it says so.
+    """
+    if analysis["structure_evidence"] == "fallback-tiles":
+        return {
+            "structure_evidence": "fallback-tiles",
+            "detected_bounds": None,
+            "body_member_count": 0,
+            "anchor_count": 0,
+            "rationale": _FALLBACK_ACT_GROUP_RATIONALE,
+        }
+    group = _match_structural_group(analysis["groups"], declared_bounds, what)
+    _claim_structural_group(analysis, group, act_key, what)
+    return {
+        "structure_evidence": "detected",
+        "detected_bounds": group["bounds"],
+        "body_member_count": len(group["body_members"]),
+        "anchor_count": len(group["anchors"]),
+        "rationale": group["rationale"],
+    }
 
 
 def _publish_act_group(
@@ -774,49 +912,52 @@ def _publish_act_group(
     the fixture already bound identity to (`act_bounds`); it never becomes the
     source of that identity, so a grouping disagreement is a refusal
     (`_match_structural_group`), never a silent substitution.
+
+    **A fallback-tiled page corroborates nothing, and says so structurally.**
+    The predetermined bands cover the whole page by construction, so matching a
+    declared act against one would always succeed -- which would silently
+    disable `_match_structural_group`'s missed-act refusal on exactly the pages
+    where the structure pass found nothing, and would publish a computed band as
+    `detected_bounds` with zero members. Both are claims about something nothing
+    measured. So the fallback branch below never consults the grid at all: it
+    records `structure_evidence="fallback-tiles"` and null detected bounds, and
+    the refusal stays live on every page where detection actually ran.
     """
-    primary_group = _match_structural_group(
-        analysis["groups"], act_bounds(act), f"act {act['key']}"
-    )
-    _claim_structural_group(analysis, primary_group, act["key"], f"act {act['key']}")
+    inputs = [context.input_ref(page_record["payload"]["image_path"])]
     payload: dict = {
         "act_key": act["key"],
         "declared_bounds": act_bounds(act),
-        "detected_bounds": primary_group["bounds"],
-        "body_member_count": len(primary_group["body_members"]),
-        "anchor_count": len(primary_group["anchors"]),
-        "rationale": primary_group["rationale"],
         "continuation": None,
+        **_structural_evidence_block(analysis, act_bounds(act), act["key"], f"act {act['key']}"),
     }
-    inputs = [context.input_ref(page_record["payload"]["image_path"])]
     if continuation is not None:
         continuation_bounds = _bounds_of(continuation)
-        continuation_group = _match_structural_group(
-            continuation_analysis["groups"], continuation_bounds, f"act {act['key']} continuation"
-        )
-        _claim_structural_group(
-            continuation_analysis,
-            continuation_group,
-            act["key"],
-            f"act {act['key']} continuation",
-        )
         # Recorded, not gated: the synthetic fixture's continuation rectangles
         # do not touch either page's edge (`proof/synthetic_pages.py` says
         # linking them is "a different unit's job"), so honest geometry here
         # is usually `False` for this fixture even though the continuation
         # itself is genuine. Forcing a match would be fabricating corroboration
-        # a real page's geometry has not offered.
+        # a real page's geometry has not offered. A page cut into fallback tiles
+        # offers none at all, so the check is not run over a grid: its bands
+        # touch both page edges by construction and would corroborate every
+        # continuation ever declared.
         corroborated = (
-            grouping.find_continuation_candidate(
+            analysis["structure_evidence"] == "detected"
+            and continuation_analysis["structure_evidence"] == "detected"
+            and grouping.find_continuation_candidate(
                 analysis["groups"], analysis["height"], continuation_analysis["groups"]
             )
             is not None
         )
         payload["continuation"] = {
             "declared_bounds": continuation_bounds,
-            "detected_bounds": continuation_group["bounds"],
-            "rationale": continuation_group["rationale"],
             "geometric_corroboration": corroborated,
+            **_structural_evidence_block(
+                continuation_analysis,
+                continuation_bounds,
+                act["key"],
+                f"act {act['key']} continuation",
+            ),
         }
         inputs.append(context.input_ref(continuation_page_record["payload"]["image_path"]))
     _validate_act_group_payload(payload)
@@ -1012,7 +1153,7 @@ def hold_residual_act(
     evidence, never merely appear because this stage's own seal says so.
     """
     ordinal = residual_act_ordinal(index)
-    minted_act_id = derive_residual_act_id(page_id, ordinal, bounds)
+    minted_act_id = derive_minted_act_id(page_id, ordinal, bounds)
     hold = context.publish(
         kind="hold",
         subject_id=minted_act_id,
@@ -1075,6 +1216,103 @@ def _publish_residual_holds(
             }
         )
     return rows
+
+
+def _publish_page_fallback(
+    context, ordinal: int, page_record: dict, analysis: dict, status_ref: dict[str, str]
+) -> dict:
+    """Cut the predetermined crops over a page the structure pass found nothing on.
+
+    This is the half of Tyrel's 2026-08-11 ruling that `grouping.fallback_tiles`
+    alone never delivered. The grid existed and was handed to
+    `_match_structural_group` as match candidates; no tile ever became a crop, so
+    a sealed page with no found ink and no declared act still sent *nothing*
+    downstream — which is the outcome the ruling exists to forbid: "If the
+    designator sees no text it should default to predetermined crops with a small
+    margin of overlap and send the crops down stream to be read by everything. If
+    all the witnesses and the perlector see no text on any of the crops then it's
+    likely a true blank."
+
+    **One minted act per page, one proposal region per tile**, rather than one
+    act per tile. The structure pass found nothing, so it has no opinion at all
+    about how many acts are on this page and must not manufacture one by
+    counting bands: what it can honestly say is "here is a page, and here is
+    every part of it, cut so a reader can be shown all of it". Every consumer
+    already reads *all* of an act's proposal regions — the Attestatores witness
+    each one and the Perlector reads through every region of the act — so one
+    act with N regions is a page delivered whole, and N acts would be an act
+    count invented from a grid.
+
+    The act is `proposed`, not `held`. A held act is terminal and is never read
+    (`recovery_pass`, and `_publish_residual_holds`'s own "never witnessed and
+    never read"), and crops nobody reads are exactly what the ruling says not to
+    produce. Its identity uses the one reserved `FALLBACK_PAGE_ACT_ORDINAL`, and
+    the record published here is what
+    `common/stage.py::_verify_page_fallback_act_row` recomputes that identity
+    from — together with the page's own `structure-status`, which independently
+    states the premise that the structure pass fell back to tiles here.
+
+    A fallback tile carries `padding: null`, like a recovery crop and for the
+    same reason: the tile *is* the final rectangle. It was computed from the
+    page's own dimensions with its overlap already built in
+    (`grouping.DEFAULT_FALLBACK_OVERLAP_PX`), so expanding it again by the
+    capture padding would conflate a structural pad with a capture pad, which
+    `geometry.py`'s docstring says must never happen.
+    """
+    page_id = page_identity(context.fixture, ordinal)
+    page_bounds = {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]}
+    act_id = derive_minted_act_id(page_id, FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
+    act_key = fallback_page_act_key(ordinal)
+    tiles = analysis["groups"]
+    fallback_payload = {
+        "act_key": act_key,
+        "page_id": page_id,
+        "page_ordinal": ordinal,
+        "page_bounds": page_bounds,
+        "fallback_ordinal": FALLBACK_PAGE_ACT_ORDINAL,
+        "tile_count": len(tiles),
+        "tiles": [
+            {"bounds": dict(tile["bounds"]), "rationale": tile["rationale"]} for tile in tiles
+        ],
+        "reason": (
+            "the structure pass found no ink to group on this page, so the page is cut into "
+            "predetermined overlapping crops and sent downstream to be read rather than being "
+            "called blank here; blankness is proved by the witnesses and the Perlector, which "
+            "only get a say if the crops reach them"
+        ),
+        "provenance": structure_provenance(context),
+    }
+    _refuse_text_fields(fallback_payload)
+    context.publish(
+        kind="page-fallback",
+        subject_id=act_id,
+        outcome="proposed",
+        inputs=[status_ref],
+        payload=fallback_payload,
+    )
+
+    evidence = []
+    for index, tile in enumerate(tiles):
+        region = cut_minted_region(
+            context,
+            act_id,
+            act_key,
+            page_record,
+            dict(tile["bounds"]),
+            index + 1,
+            ordinal,
+            "proposal",
+        )
+        evidence.append(context.input_ref(region.relative_path))
+    return {
+        "act_id": act_id,
+        "act_key": act_key,
+        "page_id": page_id,
+        "page_ordinal": ordinal,
+        "has_continuation": False,
+        "outcome": "proposed",
+        "evidence": sorted(evidence, key=lambda reference: reference["relative_path"]),
+    }
 
 
 def _publish_conservation_and_secondary(
@@ -1170,7 +1408,9 @@ def initial_pass(context) -> bool:
             # time nothing gets pulled out or held". A corrupt decode is still
             # fatal, and the comment above says why.
             _analyze_page(page_cache, context, ordinal, page_record)
-    publish_structure_status(context, records, pages, structure_provenance(context), failures)
+    status_refs = publish_structure_status(
+        context, records, pages, structure_provenance(context), failures, page_cache
+    )
 
     expected = []
     seal_inputs = []
@@ -1312,6 +1552,24 @@ def initial_pass(context) -> bool:
 
     if not expected:
         raise ContractError("no act was marked out on any sealed page")
+
+    # Every sealed page the structure pass found nothing on is cut into its
+    # predetermined crops, which become real proposal regions of one minted act
+    # per page. Before conservation, deliberately: these crops are claims on the
+    # page's own pixels, so `_claimed_regions_by_page` below has to see them or
+    # the reconciliation would report as residual exactly the ink these crops
+    # already cover. A page the structure pass was *held* on is not tiled -- its
+    # acts are held and no crop is cut on it at all, which is a different, named
+    # outcome (`structure_failures`) rather than an absence of findings.
+    for ordinal, page_record in pages.items():
+        if ordinal in failures:
+            continue
+        analysis = _analyze_page(page_cache, context, ordinal, page_record)
+        if analysis["structure_evidence"] != "fallback-tiles":
+            continue
+        row = _publish_page_fallback(context, ordinal, page_record, analysis, status_refs[ordinal])
+        expected.append(row)
+        seal_inputs.extend(row["evidence"])
 
     # Conservation runs over every sealed page this run reached, not only the
     # pages a declared act happened to touch — a page nothing was assigned to
