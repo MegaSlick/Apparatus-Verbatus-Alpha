@@ -39,13 +39,15 @@ class TransferTarget(Protocol):
     def inspect(self, key: str) -> RemoteObject | None:
         """Return the target's digest/size evidence, or None if the object is absent."""
 
-    def put_file(self, key: str, source: BinaryIO) -> None:
+    def put_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
         """Upload the exact bytes behind this already-opened, verified-regular handle.
 
         A handle, not a path: the caller opens and verifies the source once
         (``O_NOFOLLOW``, regular-file check) and this seam reads only from
         that open file descriptor, so no implementation re-resolves the name
         and reopens whatever happens to be there by the time it runs.
+        ``expected_sha`` is the sealed digest the caller has just re-proved
+        against that handle, so adapters need not read the whole file again.
         """
 
 
@@ -129,7 +131,7 @@ class ChecksummedTransfer:
                 if remote is None:
                     handle.seek(0)
                     try:
-                        self.target.put_file(key, handle)
+                        self.target.put_file(key, handle, expected_sha=expected_sha)
                     except Exception as error:
                         raise TransferFailure(
                             f"transfer of {relative!r} failed: {error}"
@@ -221,7 +223,15 @@ def _open_verified_regular_file(path: Path, *, relative: str) -> BinaryIO:
     through the one descriptor opened here, never through the path again.
     """
 
-    flags = os.O_RDONLY
+    # `O_NONBLOCK` beside `O_NOFOLLOW`, because the swap this guards against has
+    # two halves and only one was closed. A leaf replaced by a **symlink** was
+    # refused; a leaf replaced by a **FIFO** blocked on the open itself, before
+    # the `S_ISREG` check below could ever run — so `verbatus upload` printed its
+    # pre-transfer lines and then hung indefinitely, which is the one failure that
+    # tells an operator nothing at all. Reproduced end to end through the operator
+    # verb by the Opus read of this branch. Third site of a rule this branch has
+    # now fixed twice: `records.py`'s two readers were the first two.
+    flags = os.O_RDONLY | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
