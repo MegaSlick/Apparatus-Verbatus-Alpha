@@ -1,5 +1,7 @@
 # operations
 
+**Status:** offline rehearsal; no live provider or paid path is wired in.
+
 Anything with a human, a machine, or money on the other end.
 
 | Directory | Declared responsibility |

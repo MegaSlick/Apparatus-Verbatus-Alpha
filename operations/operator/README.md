@@ -1,5 +1,7 @@
 # Verbatus — the operator surface
 
+**Status:** offline rehearsal; every verb runs against fixtures, and no live provider is wired in.
+
 **You do not need Terminal, SSH, Python, or an AI assistant for a normal run.**
 Double-click [Verbatus.command](Verbatus.command) and answer one question at a time.
 Everything below explains what each word does and what it asks you before it does it —

@@ -16,8 +16,6 @@ from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .surface import DEFAULT_FIXTURE, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
-ROOT = Path(__file__).resolve().parents[2]
-
 
 def _print(text: str = "") -> None:
     """Print through the same control-byte stripping the operator surface uses.
@@ -44,7 +42,15 @@ def build_parser() -> PlainParser:
         description="A safe, offline rehearsal for the Apparatus Verbatus operator flow.",
     )
     parser.add_argument(
-        "--workspace", type=Path, default=ROOT, help="the checked-out Apparatus Verbatus folder"
+        "--workspace",
+        type=Path,
+        # The current directory, not this module's own parents: under an
+        # installed wheel that spelling is site-packages, where no project
+        # config lives and where receipt writes do not belong. The wrapper cd's
+        # into the checkout before running, so the default is right for both
+        # the double-click route and a terminal opened at the project root.
+        default=Path.cwd(),
+        help="the checked-out Apparatus Verbatus folder (defaults to the current directory)",
     )
     parser.add_argument(
         "--state-dir", type=Path, default=Path(".verbatus"), help="where local receipts are kept"

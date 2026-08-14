@@ -180,7 +180,8 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ),
     ErrorCode.RUN_HELD: ErrorCopy(
         "The run is held for review. This is a decision to make, not a failure.",
-        "Every named act and hold reason was recorded, and a decision notification was sent.",
+        "Every named act and hold reason was recorded; if notifications were enabled, a "
+        "decision alert was also attempted.",
         "Run `verbatus status` to read the hold reasons, resolve them, then run `verbatus run` again with the same run name; this is safe.",
     ),
     ErrorCode.EXPORT_MISSING: ErrorCopy(
@@ -235,8 +236,10 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ),
     ErrorCode.UNEXPECTED: ErrorCopy(
         "Verbatus met a problem it could not classify.",
-        "It did not report the problem as success; the saved diagnostic says where it ended.",
-        "Run `verbatus status`, preserve the record, and ask for help before retrying; this is safe.",
+        "It did not report the problem as success; this terminal message is the only record "
+        "of what happened, so keep it.",
+        "Copy or photograph this message, run `verbatus status` to check for saved records "
+        "from earlier steps, and ask for help before retrying; this is safe.",
     ),
 }
 
