@@ -280,6 +280,44 @@ def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_pat
     assert recovery_regions == [], "a refused out-of-page recovery must cut no region"
 
 
+def test_recovery_of_an_act_missing_from_the_fixture_is_a_named_refusal(tmp_path):
+    """The seal is the contract, but this fixture implementation still needs a
+    declared rectangle source; absence there must not escape as StopIteration."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+        "pipeline/5_recensor/run.py",
+    ):
+        result = _run(program, root)
+        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+
+    from common.contracts.stages import RECENSOR
+    from common.runtree.store import RunTree
+
+    designator = _load_designator()
+    tree = RunTree(root, "r")
+    review = next(
+        record
+        for record in (
+            tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+            for entry in tree.build_manifest(RECENSOR)["artifacts"]
+            if entry["kind"] == "review"
+        )
+        if record["payload"]["act_key"] == "a1"
+    )
+    request_id = review["payload"]["recovery_request_ref"]["relative_path"].rsplit("/", 1)[-1][:-5]
+    context = _designator_context(designator, root)
+    context.fixture["act"] = [row for row in context.fixture["act"] if row["key"] != "a1"]
+
+    with pytest.raises(ContractError, match="fixture declares no act for key 'a1'"):
+        designator.recovery_pass(context, review["subject_id"], request_id)
+    context.finish()
+
+
 def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first(tmp_path):
     """A recovery request may not pick one of several fixture rectangles by order."""
     root = tmp_path / "runs"

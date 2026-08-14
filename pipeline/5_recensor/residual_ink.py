@@ -66,9 +66,10 @@ MINIMUM_INK_PIXELS = 24
 #: `pipeline/2_designator/structure.py`): this check is an independent audit
 #: that flags whole missed regions with confidence, while the Designator's
 #: conservation errs sensitive and holds faint residuals itself. Keeping this
-#: value at or above the Designator's margin is what guarantees the audit
-#: never calls a pixel ink that the Designator's accounting dismissed — the
-#: one direction of disagreement that could lose ink silently. Pinned by
+#: value at or above the Designator's margin is what guarantees the audit,
+#: on any page that stage measured, never calls a pixel ink that the
+#: Designator's accounting dismissed — the one direction of disagreement that
+#: could lose ink silently. Pinned by
 #: `common/test_designator_recensor_ink_calibration.py`; see the Designator's
 #: `conservation.py` module docstring for the whole decision.
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40

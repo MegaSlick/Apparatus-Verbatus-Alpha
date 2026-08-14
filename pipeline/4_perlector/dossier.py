@@ -23,7 +23,7 @@ from PIL import Image
 from regime import NAMED, REGIMES, witness_label
 
 from common.chairs.models import ChairIdentity
-from common.contracts.canonical import digest_of
+from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR, PERLECTOR
@@ -329,6 +329,65 @@ def build_dossier(
     assert_no_order_bearing_field(dossier)
     dossier["dossier_digest"] = digest_of(dossier)
     return dossier
+
+
+def _delivered_images(context, rows: list[dict[str, Any]], *, kind: str) -> list[bytes]:
+    """Resolve the image references a reader is about to receive, without
+    granting the reader access to the run tree.
+
+    The dossier remains the persisted, reproducible record. These bytes are a
+    transient transport beside it: a fixture reader can inspect the same pixels
+    a real reader transport would receive without learning how to open arbitrary
+    paths itself.
+    """
+    images = []
+    for ordinal, row in enumerate(rows):
+        image_path = row.get("image_path") if isinstance(row, dict) else None
+        expected_digest = row.get("image_sha256") if isinstance(row, dict) else None
+        if not isinstance(image_path, str) or not image_path:
+            raise SchemaRefusal(f"a dossier {kind} at ordinal {ordinal} names no image path")
+        if not isinstance(expected_digest, str) or not expected_digest:
+            raise SchemaRefusal(f"a dossier {kind} at ordinal {ordinal} names no image digest")
+        image = context.tree.read_bytes(image_path)
+        observed_digest = digest_bytes(image)
+        if observed_digest != expected_digest:
+            raise SchemaRefusal(
+                f"a dossier {kind} at ordinal {ordinal} no longer matches its image digest: "
+                f"expected {expected_digest}, observed {observed_digest}"
+            )
+        images.append(image)
+    return images
+
+
+def build_reader_dossier(
+    context,
+    *,
+    act_id: str,
+    act_key: str,
+    regions: list[dict[str, Any]],
+    testimonia: list[dict[str, Any]],
+    regime: str,
+    page_renders: list[dict[str, Any]],
+    witness_context: dict[str, dict[str, str]],
+) -> tuple[dict[str, Any], dict[str, list[bytes]]]:
+    """Build the persisted dossier and its transient, digest-checked pixels."""
+    dossier = build_dossier(
+        context,
+        act_id=act_id,
+        act_key=act_key,
+        regions=regions,
+        testimonia=testimonia,
+        regime=regime,
+        page_renders=page_renders,
+        witness_context=witness_context,
+    )
+    delivered_pixels = {
+        "region_images": _delivered_images(context, dossier["regions"], kind="region"),
+        "page_render_images": _delivered_images(
+            context, dossier["page_renders"], kind="page render"
+        ),
+    }
+    return dossier, delivered_pixels
 
 
 def assert_no_order_bearing_field(value: Any, path: str = "$") -> None:

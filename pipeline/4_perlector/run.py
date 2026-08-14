@@ -8,8 +8,9 @@ the record, and the shape is where GOVERNANCE 3 either holds or quietly fails:
                                           digest against the sealed reference, and
                                           decodes them to confirm the image is the
                                           size the transform claims. The fixture
-                                          reader still does not inspect pixels; a
-                                          real reader transport must receive them.
+                                          reader observes pixels only to prove a
+                                          page-fallback act empty; ordinary text
+                                          remains declared fixture text.
   It records its basis.                   The region it read, and every testimonium
                                           it saw, by reference.
   It never counts witnesses.              No branch anywhere in this file reads how
@@ -644,7 +645,7 @@ def _publish_lectio_nuda(
     `latest_attempt`'s `attempt_id` derivation binds to `perlegere` readings,
     so nothing can ever conflate a nuda attempt with an establishing one.
     """
-    nuda_dossier = dossier_module.build_dossier(
+    nuda_dossier, delivered_pixels = dossier_module.build_reader_dossier(
         context,
         act_id=act_id,
         act_key=act["act_key"],
@@ -655,7 +656,7 @@ def _publish_lectio_nuda(
         witness_context=witness_context_table,
     )
     prompt = prompts.prompt_evidence(chair, nuda_dossier)
-    result = reader.read(nuda_dossier, primed=False)
+    result = reader.read(nuda_dossier, primed=False, delivered_pixels=delivered_pixels)
     truncation_record = truncation.classify(
         result["text"], region_pixels=region_pixels, stop_reason=result["stop_reason"]
     )
@@ -811,7 +812,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
 
         # The establishing read: every testimonium in the dossier, verbatim.
-        primed_dossier = dossier_module.build_dossier(
+        primed_dossier, delivered_pixels = dossier_module.build_reader_dossier(
             context,
             act_id=act_id,
             act_key=act["act_key"],
@@ -825,7 +826,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # about to be shown, so what is recorded is the prompt this reading was
         # produced through rather than one reconstructed afterwards.
         prompt = prompts.prompt_evidence(chair, primed_dossier)
-        result = reader.read(primed_dossier, primed=True)
+        result = reader.read(primed_dossier, primed=True, delivered_pixels=delivered_pixels)
 
         # The scenario's declared engine behaviour stands in for a real
         # engine's own report and, when present, decides `reading` and

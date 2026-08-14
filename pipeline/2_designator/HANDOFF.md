@@ -158,8 +158,9 @@ predetermined crops with a small margin of overlap and send the crops down
 stream to be read by everything. If all the witnesses and the perlector see no
 text on any of the crops then it's likely a true blank."* Deciding blankness
 here, from one threshold on one page, decides it with the weakest instrument in
-the pipeline; the witnesses and the Perlector are the strong ones and they only
-get a say if the crops reach them.
+the pipeline; the readers only get a say if the crops reach them. In this
+walking skeleton the witnesses' empty reports are declared fixture receipts,
+while the Perlector now observes the delivered pixels before it reports empty.
 
 ```text
 act_key ("page-fallback:<ordinal>"), page_id, page_ordinal, page_bounds
@@ -510,9 +511,12 @@ Attestatores witness each one and the Perlector reads through all of them,
 without any of them needing to treat the grid as a detection. That is the point —
 the crops exist so the strong instruments can decide whether the page is blank.
 The scenario-only ink-free fixture page proves this path through a real orchestrator
-run: all configured witnesses publish completed empty Testimonia over its tiles,
-the fixture Perlector returns `no-readable-text` for the minted key, and the
-Recensor confirms the blank only after those readings exist.
+run. All configured witnesses publish completed empty Testimonia over its tiles;
+their emptiness is declared by the fixture (`fixture://` receipts), not measured.
+The fixture Perlector separately decodes every delivered tile and returns
+`no-readable-text` only when none contains a pixel at the conservation margin
+below the page's inferred background. The Recensor confirms the blank only after
+those declared witness reports and the Perlector's observed-empty reading exist.
 
 `act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop` and
 `structure-status` have no consumer downstream of this stage today.

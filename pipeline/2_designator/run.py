@@ -1888,7 +1888,18 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             "kind names a different owning stage, not a substitute crop"
         )
 
-    act = next(item for item in context.fixture["act"] if item["key"] == match[0]["act_key"])
+    fixture_acts = [item for item in context.fixture["act"] if item["key"] == match[0]["act_key"]]
+    if not fixture_acts:
+        raise ContractError(
+            f"recovery fixture declares no act for key {match[0]['act_key']!r}; the fixture "
+            "cannot supply recovery geometry for an act it never declared"
+        )
+    if len(fixture_acts) != 1:  # pragma: no cover - fixture loading already refuses duplicates
+        raise ContractError(
+            f"recovery fixture declares {len(fixture_acts)} acts for key "
+            f"{match[0]['act_key']!r}; recovery geometry needs one unambiguous act"
+        )
+    act = fixture_acts[0]
     recovery = [row for row in context.fixture.get("recovery", []) if row["act_key"] == act["key"]]
     if len(recovery) != 1:
         raise ContractError(

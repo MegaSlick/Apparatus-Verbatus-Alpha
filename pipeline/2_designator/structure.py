@@ -132,15 +132,12 @@ def infer_background(width: int, height: int, rows: list) -> int:
     silent loss the majority-ink check exists to stop, reached by the one route
     it does not cover.
 
-    So a background must also be light enough to *express* an ink threshold at
-    all. `PRIMARY_MARGIN` is the sensitivity every authoritative use of this
-    value runs at -- `primary_scan`, and `conservation.reconcile`'s own default
-    -- so a background below it separates nothing: every pixel on the page would
-    be classified as paper by arithmetic rather than by measurement, which is
-    GOVERNANCE 10's "a metric that cannot be measured is a failure, not a pass"
-    exactly. The page is still cut and still read (see this module's
-    `BackgroundInferenceRefusal`); what it does not do is report a measurement
-    it did not make.
+    So a background must also be light enough to preserve `primary_scan`'s
+    declared separation at `PRIMARY_MARGIN`: below it, that authoritative
+    structural proposer could classify no pixel as ink. Conservation separately
+    reconciles at the more sensitive `SECONDARY_MARGIN`; a page this guard
+    refuses is still cut and read, records `ink_measurable: false`, and holds the
+    run rather than reporting a measurement it did not make.
     """
     if width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to infer a background from")
