@@ -880,9 +880,14 @@ def test_a_self_report_is_retained_verbatim_whatever_its_format_can_express(tmp_
     `content_health` — a witness that cannot say "unsure" must not be read as
     confident merely for having said something.
     """
-    run_root, tree = run_to_designator(tmp_path, "happy")
+    run_root, tree = run_to_designator(tmp_path, "witness-capabilities")
     assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        invoke_stage(
+            run_root,
+            "retention",
+            "witness-capabilities",
+            "pipeline/3_attestatores/run.py",
+        ).returncode
         == 0
     )
 

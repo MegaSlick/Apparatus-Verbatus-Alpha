@@ -276,6 +276,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     names = [scenario["name"] for scenario in skeleton["scenario"]]
     assert names == [
         "happy",
+        "witness-capabilities",
         "review",
         "refused-page",
         "refused-first-page",
@@ -297,6 +298,8 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     by_name = {scenario["name"]: scenario for scenario in skeleton["scenario"]}
     assert by_name["happy"]["recover_acts"] == []
     assert by_name["happy"]["hold_acts"] == []
+    assert by_name["witness-capabilities"]["recover_acts"] == []
+    assert by_name["witness-capabilities"]["hold_acts"] == []
     assert by_name["review"]["recover_acts"] == ["a1"]
     assert by_name["review"]["hold_acts"] == ["a2"]
     assert by_name["refused-page"]["recover_acts"] == []

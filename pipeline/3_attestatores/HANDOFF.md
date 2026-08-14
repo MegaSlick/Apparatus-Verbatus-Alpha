@@ -42,11 +42,12 @@ truncation is `null`, not guessed from punctuation.
 `format_capabilities` says what this witness's output format can express at all,
 and it is the fact a later reader needs beside `witness_reported` to avoid a
 specific mistake: a witness whose format cannot say "unsure" must not be read as
-confident merely for having said something. The happy scenario declares both
-sides on act a1 — chair 1 cannot express uncertainty and claims high confidence
-anyway, chair 2 can and reports doubt — so the distinction is exercised rather
-than merely representable. Both claims are retained verbatim and neither reaches
-an outcome, a coverage count, or `content_health`.
+confident merely for having said something. The `witness-capabilities` scenario
+declares both sides on act a1 — chair 1 cannot express uncertainty and claims
+high confidence anyway, chair 2 can and reports doubt — so the distinction is
+exercised rather than merely representable without blinding one chair in the
+reference happy run's dissent record. Both claims are retained verbatim and
+neither reaches an outcome, a coverage count, or `content_health`.
 
 The synthetic fixture declares complete responses, so its retained text gets
 `truncated=false`. A malformed or unrecordable provider response becomes a
@@ -89,6 +90,15 @@ Every configured chair has one explicit outcome per act per attempt:
   refuses a missing reference but checks only that the identifier is non-empty;
   Stage 3 does not yet resolve that identifier to verified Tyrel approval-record
   bytes. The positive approved-exclusion path is therefore not implemented.
+
+For a Designator page-fallback act, this stage computes `genuinely-empty` for
+every configured chair from the act's derived identity (`_is_page_fallback`),
+with no fixture declaration. This is the one witness outcome not driven by a
+declaration table. Whether a real serving implementation may keep that
+short-circuit and skip provider calls for fallback pages remains an open ruling
+for Tyrel: the 2026-08-11 fallback ruling intended fallback crops to be read
+downstream. The current path is pinned by
+`test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end`.
 
 `provenance` holds the exact resolved identity/revision and, only for attempted
 outcomes, the digest-checked serving receipt. A failed or absent chair cannot be

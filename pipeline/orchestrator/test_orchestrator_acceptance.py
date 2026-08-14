@@ -332,8 +332,18 @@ FIXTURE = "synthetic-two-page-v0"
 # and sealed-fixture changes move both trees. Fresh real runs through this
 # module's `orchestrate` and `semantic_snapshot_digest` helpers measured 53 files
 # for happy and 57 for review; no file count moved.
-HAPPY_RUN_TREE_DIGEST = "4e94cc8e668781a8f10f210c022ee29b5bda1bb2a72858e4b894ce0b12307f51"
-REVIEW_RUN_TREE_DIGEST = "53480181a544939958571bf6209f385890e20d89f1668d603c347952eeccac50"
+#
+# Re-pinned for the audit F2 follow-up. The two scenario-specific testimony rows
+# carrying `witness_reported` and `format_capabilities` moved from `happy` to the
+# dedicated `witness-capabilities` scenario. The reference run now measures
+# dissent against all three chairs, while the capability distinction remains
+# exercised in its own real orchestrator run. Because the full parsed fixture is
+# sealed into every run's `config_digest`, both pins move even though review does
+# not use those declarations. Fresh runs through this module's `orchestrate` and
+# `semantic_snapshot_digest` helpers measured 53 files for happy (exit 0) and 57
+# for review (exit 3); no file count moved.
+HAPPY_RUN_TREE_DIGEST = "e6c455d96048733149978b84ac2265886a524c08bdeec140655a9f660a1b4d6e"
+REVIEW_RUN_TREE_DIGEST = "07c5eff63596b9d96fd3914a9f1479d98e58c476f187f3262ec58c44bd2bce84"
 
 
 def orchestrate(
@@ -2432,8 +2442,10 @@ def test_the_failed_chair_is_visible_in_the_export(review_run):
     assert any("under-witnessed" in reason for reason in export["aggregate"]["reasons"])
 
 
-def test_the_uncertainty_capable_chair_is_visibly_uncompared_in_the_happy_run(happy_run):
-    """The one place a witness's declared *format* reaches the dissent instrument.
+def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compares_all(
+    tmp_path, happy_run
+):
+    """Capability handling stays live without blinding the reference instrument.
 
     `pipeline/4_perlector/dissent.py::is_comparable` refuses to diff a witness
     whose format can express uncertainty, because such a format may embed
@@ -2443,18 +2455,16 @@ def test_the_uncertainty_capable_chair_is_visibly_uncompared_in_the_happy_run(ha
     instrument ARCHITECTURE names for catching a reader that "learned to agree
     with witnesses rather than to read ink."
 
-    Spec 07's fixture declares that capability on chair 2 of act a1 so the
-    `format_capabilities` distinction is exercised rather than merely
-    representable, and the consequence is that the *reference* happy run now
-    carries one chair permanently uncompared on that axis. That is a real
-    reduction in what this run measures, and GOVERNANCE 2 puts the burden on
-    making it visible rather than on it being harmless. So it is asserted here:
-    the row exists, it says `unknown` with its reason, and it is exactly one of
-    three chairs. A markup-aware comparison view, or moving the declaration off
-    the reference scenario, is what makes this test change — and either is a
-    deliberate act rather than a silent widening.
+    Spec 07's fixture declares that capability on chair 2 of act a1 in the
+    dedicated `witness-capabilities` scenario. The row there says `unknown` with
+    its reason and is exactly one of three chairs. The reference happy run keeps
+    the ordinary declarations, so all three chairs are compared and its dissent
+    record remains able to expose a parroting reader across the full set.
     """
-    _, tree = happy_run
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "witness-capabilities")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
     reading = next(
         record
         for record in artifacts(tree, PERLECTOR, "perlectio")
@@ -2481,6 +2491,20 @@ def test_the_uncertainty_capable_chair_is_visibly_uncompared_in_the_happy_run(ha
         "unresolved": 0,
         "failed": 0,
     }
+
+    _, happy_tree = happy_run
+    happy_reading = next(
+        record
+        for record in artifacts(happy_tree, PERLECTOR, "perlectio")
+        if record["payload"]["act_key"] == "a1"
+    )
+    happy_dissent = happy_reading["payload"]["dissent"]
+    assert {row["chair"] for row in happy_dissent} == {
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+    }
+    assert all(row["compared"] != "unknown" for row in happy_dissent)
 
 
 def test_a_delivered_act_still_links_back_to_the_exact_ink(review_run):

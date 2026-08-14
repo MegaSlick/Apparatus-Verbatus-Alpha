@@ -76,16 +76,18 @@ TESTIMONY = {
 }
 
 # The first two rows are the pair spec 07's `format_capabilities` exists for: "a
-# witness that cannot say 'unsure' must not be read as confident". Chair 1's
-# format cannot express uncertainty and its self-report claims high confidence
-# anyway; chair 2's can, and reports doubt. Declaring one side only would leave
-# the distinction representable but never exercised, which is where a later
-# reader starts treating a self-report as evidence. The structured row exercises
-# the schema without pretending the text-only Perlector bridge can consume it: a
-# stage 3 boundary fixture, not an end-to-end surface.
+# witness that cannot say 'unsure' must not be read as confident". Their own
+# `witness-capabilities` scenario keeps that distinction exercised without
+# leaving one of the reference happy run's three chairs uncompared in its dissent
+# record. Chair 1's format cannot express uncertainty and its self-report claims
+# high confidence anyway; chair 2's can, and reports doubt. Declaring one side
+# only would leave the distinction representable but never exercised, which is
+# where a later reader starts treating a self-report as evidence. The structured
+# row exercises the schema without pretending the text-only Perlector bridge can
+# consume it: a stage 3 boundary fixture, not an end-to-end surface.
 SCENARIO_TESTIMONY = (
     {
-        "scenario": "happy",
+        "scenario": "witness-capabilities",
         "act_key": "a1",
         "chair": "attestator_1",
         "payload": TESTIMONY["a1"]["attestator_1"],
@@ -93,7 +95,7 @@ SCENARIO_TESTIMONY = (
         "format_capabilities": {"can_express_uncertainty": False, "can_express_layout": False},
     },
     {
-        "scenario": "happy",
+        "scenario": "witness-capabilities",
         "act_key": "a1",
         "chair": "attestator_2",
         "payload": TESTIMONY["a1"]["attestator_2"],
@@ -391,6 +393,11 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "",
         "[[scenario]]",
         'name = "happy"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "[[scenario]]",
+        'name = "witness-capabilities"',
         "recover_acts = []",
         "hold_acts = []",
         "",

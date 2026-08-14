@@ -97,7 +97,7 @@ chair = "attestator_3"
 payload = "SYNTHETIC ACT TWO delta epsiIon zeta eta"
 
 [[testimony]]
-scenario = "happy"
+scenario = "witness-capabilities"
 act_key = "a1"
 chair = "attestator_1"
 payload = "SYNTHETIC ACT ONE alpha beta gamma"
@@ -105,7 +105,7 @@ witness_reported = { confidence = "high" }
 format_capabilities = { can_express_layout = false, can_express_uncertainty = false }
 
 [[testimony]]
-scenario = "happy"
+scenario = "witness-capabilities"
 act_key = "a1"
 chair = "attestator_2"
 payload = "SYNTHETIC ACT ONE alpha beta gamna"
@@ -145,6 +145,11 @@ attempt_ordinal = 2
 
 [[scenario]]
 name = "happy"
+recover_acts = []
+hold_acts = []
+
+[[scenario]]
+name = "witness-capabilities"
 recover_acts = []
 hold_acts = []
 
