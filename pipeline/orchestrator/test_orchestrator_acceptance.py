@@ -290,8 +290,19 @@ FIXTURE = "synthetic-two-page-v0"
 # already owns that verb for the stage as a whole) and with the Recensor's own,
 # different "marked out" fact about an act. Renamed to "scanned" — counts
 # unchanged, only these two artifacts' bytes move.
-HAPPY_RUN_TREE_DIGEST = "7c8d918ff3c28bdfb2a9e910c5ee0f54ffdec42f83571820cb83206450504968"
-REVIEW_RUN_TREE_DIGEST = "ed130ed7744a517de544194dc88212940d5df20afe04fc57dacbb105cdf17791"
+#
+# Re-pinned for the rebase of the System 06 build onto the post-#33 main
+# (Systems 08, 10 and 12 merged underneath it): the counts are 53 (happy)
+# and 57 (review) — main's 46/50 plus this branch's seven per scenario (five
+# Designator evidence kinds from the first deepening plus two
+# `structure-status` records) — and both digests were recomputed from real
+# orchestrator runs on the merged tree under `semantic_snapshot_digest`.
+# The fixture also now declares the union of both sides' scenarios
+# (main's confirmed-blank/blank-with-dissent beside this branch's
+# structure-failure), which enters `config_digest` and moves every
+# downstream artifact digest with it.
+HAPPY_RUN_TREE_DIGEST = "cdf40a82b564256ff6208f21ea97679ad1f9f2ed4b55ee86b0df870aaaf1aec6"
+REVIEW_RUN_TREE_DIGEST = "7986bb8b9815df65b57325a1b1bfe483a54f0be4ecf346af8fbcbbd4c4009465"
 
 
 def orchestrate(
@@ -1980,7 +1991,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    assert len(before) == 46
+    assert len(before) == 53
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -2025,7 +2036,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    assert len(before) == 50
+    assert len(before) == 57
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
