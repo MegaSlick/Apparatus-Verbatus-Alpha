@@ -220,8 +220,26 @@ FIXTURE = "synthetic-two-page-v0"
 # `common.imaging.encode_grayscale_png_deterministic` (filter 0, stored-block
 # DEFLATE, every byte fixed by the spec), so these two values are the same on
 # every machine that can run the suite. Counts unchanged; digests re-measured.
-HAPPY_RUN_TREE_DIGEST = "4a99aad0dacb4015e023633f2308d414d541a9f4901bdba43178c1e3f781e0cb"
-REVIEW_RUN_TREE_DIGEST = "2495d250b8a3a8041498be9be9476a3cb76a426929568989c01921a2c4ad4158"
+#
+# Re-pinned for spec 10, the Archetypus rebuild, and this one *is* a behaviour change:
+# every established record now carries `text_hash`, `text_status`, `annotations` and
+# `evidence_ref`, and each run writes one genuinely new file, `6_archetypus/index.json`
+# — a rebuildable summary reconciled 1:1 against the acts the Recensor accepted. Both
+# trees therefore gain one file each and every downstream digest moves with the
+# payload shape. A deliberate record change, not drift.
+#
+# Re-pinned for the rebase onto the merged System 08 tree (PR #31): the counts are
+# 46 (happy) and 50 (review) -- the merged tree's 45/49 plus this branch's
+# index.json per run -- and both digests were re-measured from real orchestrator
+# runs under `semantic_snapshot_digest`.
+#
+# Moved once more by the pre-push CodeRabbit round: the index's count field is
+# now named `record_count` for what it actually holds (records summarized, with
+# `validate_index` proving the tie to the Recensor's accepted set), which
+# changes `index.json`'s bytes under both scenarios. Counts unchanged at 46 and
+# 50; both digests re-measured from real orchestrator runs.
+HAPPY_RUN_TREE_DIGEST = "889dfadd21596e23c3f55efcb4c94ed5c9b3b51e1502af8c929f29ee48889d3e"
+REVIEW_RUN_TREE_DIGEST = "ee6b295637d84883341f86a1714db2bfbeaa588514a6d80fdb795b4226c8301a"
 
 
 def orchestrate(
@@ -1105,13 +1123,18 @@ def test_archetypus_refuses_a_resealed_completed_perlectio_without_an_object_bas
     review["payload"]["perlectio_ref"] = new_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
-    before = snapshot(root)
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
     assert "no object basis" in result.stderr
-    assert snapshot(root) == before
+    # The tampered act has no record. Deliberately NOT `snapshot == before`:
+    # the stage publishes act by act, so whether the *other* act's record was
+    # sealed before this refusal depends only on loop order, and asserting
+    # nothing was written would pin an ordering coincidence as a contract.
+    assert not tree.has_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
+    )
 
 
 def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
@@ -1147,8 +1170,13 @@ def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
     assert "newer Perlectio" in result.stderr
 
 
-def test_archetypus_refuses_an_accepted_empty_reading(tmp_path):
-    """An empty string is not evidence that the act was blank."""
+def test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proof(tmp_path):
+    """An accepted reading is not itself evidence that the page was blank.
+
+    Tyrel ruled blank pages ordinary, and also distinguished them from unread ink.
+    The outcome algebra therefore leaves silence unresolved until the Recensor
+    retains a blank proof.  Acceptance alone must not manufacture that proof.
+    """
     root = tmp_path / "runs"
     run_through_recensor(root, "r")
     tree = RunTree(root, "r")
@@ -1175,10 +1203,314 @@ def test_archetypus_refuses_an_accepted_empty_reading(tmp_path):
     review["payload"]["perlectio_ref"] = new_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    act_id = review["subject_id"]
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
     assert result.returncode == 2
-    assert "establishes no readable text" in result.stderr
+    assert "requires its evidence reference" in result.stderr
+    assert not tree.has_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+    )
+
+
+def _forge_blank_proof(tree: RunTree, act_id: str) -> dict[str, str]:
+    """A standalone artifact standing in for a real Recensor blank proof.
+
+    Deliberately a *distinct* artifact rather than a reference already in the
+    review's inputs: reusing `perlectio_ref` or a region blob would coincidentally
+    satisfy the Armarium's input reconciliation even if this stage's own inputs
+    were wrong, which is the gap the caller below exists to close.
+    """
+    run = tree.read_run()
+    payload = {"note": "a hypothetical blank-proof artifact"}
+    payload["self_hash"] = self_hash(payload)
+    envelope = build_envelope(
+        run_id=tree.run_id,
+        artifact_id=artifact_id(RECENSOR, "blank-proof", act_id),
+        subject_id=act_id,
+        stage=RECENSOR,
+        kind="blank-proof",
+        outcome="accepted",
+        config_digest=run["config_digest"],
+        adapter_revision=run["adapter_recipes"][RECENSOR],
+        inputs=[],
+        payload=payload,
+    )
+    relative = tree.artifact_path(RECENSOR, "blank-proof", envelope["artifact_id"])
+    path = tree.resolve(relative)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(envelope))
+    return {"relative_path": relative, "sha256": digest_bytes(path.read_bytes())}
+
+
+def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_blank_proof(
+    tmp_path,
+):
+    """The success path `_no_readable_text_evidence` exists for, exercised for real.
+
+    No producer in this build writes `no_readable_text_evidence_ref` today
+    (HANDOFF.md's named cross-stage gap), so this forges a blank proof onto an
+    accepted review's own inputs the same way the sibling refusal test above
+    forges an empty reading -- standing in for whatever real blank-proof
+    artifact a future Recensor contract produces.
+
+    The point is twofold: prove the constructor's success path actually writes
+    the record spec 10 describes, not only that its refusal paths fire; and
+    prove the record it writes remains exportable through the (frozen,
+    off-limits this round) Armarium -- an Archetypus record that cannot survive
+    its own consumer is not established, whatever its own schema says.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    old_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(old_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    reading["payload"]["text"] = ""
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    new_ref = {
+        "relative_path": old_ref["relative_path"],
+        "sha256": digest_bytes(reading_path.read_bytes()),
+    }
+
+    act_id = review["subject_id"]
+    evidence_ref = _forge_blank_proof(tree, act_id)
+
+    review["inputs"] = [
+        new_ref if reference == old_ref else reference for reference in review["inputs"]
+    ] + [evidence_ref]
+    review["payload"]["perlectio_ref"] = new_ref
+    review["payload"]["no_readable_text_evidence_ref"] = evidence_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 0, result.stderr
+    record = tree.read_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+    )["payload"]
+    assert record["text"] == ""
+    assert record["text_status"] == "no_readable_text"
+    assert record["status"] == "established"
+    assert record["evidence_ref"] == evidence_ref
+
+    export_result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
+    assert export_result.returncode == 0, export_result.stderr
+    # Surviving the consumer means being *in* its export, not merely not
+    # crashing it: a delivered set that silently dropped the blank act would
+    # exit 0 too. The export row carries the record's established empty text;
+    # the evidence reference lives on the record itself, asserted above.
+    export = export_of(tree)
+    blank = next(item for item in export["delivered"] if item["act_id"] == act_id)
+    assert blank["text"] == ""
+
+
+def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
+    """A reading is never evidence of its own silence.
+
+    Unlike `perlectio_ref` and `recensor_ref`, `evidence_ref` is never read,
+    stage-checked or kind-checked -- no `blank-proof` artifact kind exists yet
+    to check it against (HANDOFF.md's named gap). Without this refusal, naming
+    the accepted (now-emptied) Perlectio itself as `no_readable_text_evidence_ref`
+    passes: the reading whose silence is in question stands in as proof of it,
+    defeating HANDOFF.md's whole argument for the field ("An accepted review is
+    evidence that the Recensor accepted a reading; it is not evidence that the
+    page was blank"). Reproduces audit-d finding F4's measurement.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    old_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(old_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    reading["payload"]["text"] = ""
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    new_ref = {
+        "relative_path": old_ref["relative_path"],
+        "sha256": digest_bytes(reading_path.read_bytes()),
+    }
+
+    review["inputs"] = [
+        new_ref if reference == old_ref else reference for reference in review["inputs"]
+    ]
+    review["payload"]["perlectio_ref"] = new_ref
+    review["payload"]["no_readable_text_evidence_ref"] = new_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "never evidence of its own silence" in result.stderr
+    # A refused act leaves no record behind for a downstream stage to treat as
+    # output; the refusal and a published Archetypus cannot coexist.
+    assert not tree.has_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
+    )
+
+
+def test_archetypus_refuses_a_blank_proof_that_is_the_readings_own_crop(tmp_path):
+    """The same circularity as the reading-itself case, one step further out.
+
+    An accepted review's inputs are the reading plus every crop that reading
+    read, so a reference to the very image the reading failed to read passes
+    the direct-input check. Without this refusal it would seal as proof the
+    page was blank — the ink whose reading is in question standing as evidence
+    of its own silence.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    old_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(old_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    # A crop the reading read: an input of the reading that the review also
+    # lists directly (the review's inputs are the reading plus its crops).
+    crop_ref = next(
+        (reference for reference in reading["inputs"] if reference in review["inputs"]),
+        None,
+    )
+    assert crop_ref is not None, (
+        "this test needs a crop the reading read that the review also lists directly; "
+        "the review's inputs are the reading plus its crops"
+    )
+    reading["payload"]["text"] = ""
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    new_ref = {
+        "relative_path": old_ref["relative_path"],
+        "sha256": digest_bytes(reading_path.read_bytes()),
+    }
+
+    review["inputs"] = [
+        new_ref if reference == old_ref else reference for reference in review["inputs"]
+    ]
+    review["payload"]["perlectio_ref"] = new_ref
+    review["payload"]["no_readable_text_evidence_ref"] = crop_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "input of the accepted Perlectio itself" in result.stderr
+    assert not tree.has_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
+    )
+
+
+def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path):
+    """Two upstream claims that contradict each other are never quietly one claim.
+
+    A review carrying a blank proof says this act held no readable ink; the
+    reading it accepted says otherwise, in characters. Consulting the evidence
+    reference only where the stage's own derivation has already reached
+    `no_readable_text` reads past the Recensor's finding everywhere else, so the
+    contradiction resolves in favour of whichever claim the derivation reaches
+    first and leaves no trace of the other (GOVERNANCE 2).
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    act_id = review["subject_id"]
+    reading = json.loads(
+        tree.resolve(review["payload"]["perlectio_ref"]["relative_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert reading["payload"]["text"].strip(), "this act must carry real text for the conflict"
+
+    evidence_ref = _forge_blank_proof(tree, act_id)
+    review["inputs"] = review["inputs"] + [evidence_ref]
+    review["payload"]["no_readable_text_evidence_ref"] = evidence_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "reconciliation failure" in result.stderr
+    assert not tree.has_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+    )
+
+
+def test_archetypus_refuses_a_crop_the_run_tree_cannot_read(tmp_path):
+    """A named crop that is not there is an accounting failure, not a traceback.
+
+    The reference is built by hashing the bytes on disk, so a reading naming a
+    crop this tree does not hold arrives as `OSError` — outside the family
+    `run_stage` classifies. Unnamed, it takes every other act's record with it
+    under exit 1, which the orchestrator does not recognise as a stage outcome.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    review_entry = next(
+        entry
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["outcome"] == "accepted"
+    )
+    review_path = tree.resolve(review_entry["relative_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    old_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(old_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    # The envelope's own `inputs` still name the real crops, so the reading
+    # verifies; only the basis this stage reads its regions from is repointed.
+    for region in reading["payload"]["basis"]["regions"]:
+        region["image_path"] = tree.blob_path(DESIGNATOR, "0" * 64)
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    new_ref = {
+        "relative_path": old_ref["relative_path"],
+        "sha256": digest_bytes(reading_path.read_bytes()),
+    }
+    review["inputs"] = [
+        new_ref if reference == old_ref else reference for reference in review["inputs"]
+    ]
+    review["payload"]["perlectio_ref"] = new_ref
+    review["self_hash"] = self_hash(review)
+    review_path.write_bytes(canonical_bytes(review))
+
+    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "which this run tree cannot read" in result.stderr
+    # The classified refusal must not leave a record behind either.
+    assert not tree.has_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
+    )
 
 
 def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):
@@ -1265,7 +1597,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    assert len(before) == 45
+    assert len(before) == 46
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -1310,7 +1642,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    assert len(before) == 49
+    assert len(before) == 50
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
