@@ -164,9 +164,17 @@ def is_comparable(record: dict[str, Any]) -> bool:
     (`format_capabilities.can_express_uncertainty`, spec_07) may embed
     alternative-reading markup inline in `reported` -- diffing that raw string
     against clean established text would count markup characters as
-    disagreement, which is not what dissent means. No configured chair declares
-    it today, so no live producer reaches this branch; it exists so the format
-    is refused a fake comparison the day one does.
+    disagreement, which is not what dissent means. The format is refused a fake
+    comparison instead.
+
+    **This branch is live.** It used to say no producer reached it, which was
+    true until spec 07's fixture declared `can_express_uncertainty` on chair 2 of
+    act a1 so that the `format_capabilities` distinction was exercised rather
+    than merely representable. The reference happy run therefore carries one
+    chair uncompared on this axis, which is asserted end to end by
+    `test_the_uncertainty_capable_chair_is_visibly_uncompared_in_the_happy_run`
+    -- there rather than here, because the fact worth pinning is what a real run
+    now measures, not what this function returns for a dict.
 
     **Known watch item, named rather than hidden:** the exemption is
     per-capability, so a witness adapter that self-declares

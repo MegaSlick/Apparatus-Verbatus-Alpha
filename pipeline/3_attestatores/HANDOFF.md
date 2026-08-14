@@ -101,11 +101,19 @@ metadata similarly becomes one `failed` attempt with the remaining chair records
 retained; neither case is silently repaired into a reading.
 
 A refused crop completes this retention stage because each configured chair has
-been accounted for; its explicit non-reading records force the later partial
-status. Stage 3 holds in two cases, and both stop orchestration: an `UNKNOWN`
-attempt tally, and a whole pass whose preflight refuses to seal bytes that
-differ from an attempt already sealed at the same ordinal. Only the first says
-the evidence channel is damaged.
+been accounted for, and the explicit non-reading records are what make the
+shortfall visible downstream. It is worth being exact about how far that goes
+today: the Perlector verifies the same crop lineage itself, so a crop this stage
+refused for a broken lineage is refused there as a named fatal rather than
+carried into a partial export. Retention completing is the guarantee here; a
+partial export past a refused crop is not one this tree currently reaches.
+
+Stage 3 holds, and every hold stops orchestration, in two shapes: an `UNKNOWN`
+attempt tally, and a whole pass refused by its own no-write preflight. The
+preflight refuses more than one thing — bytes that differ from an attempt
+already sealed at that ordinal, an ordinal past the next appendable one, a
+fixture declaring conflicting outcomes for one pair at one ordinal — and every
+one of them writes nothing. Only the tally says the evidence channel is damaged.
 
 ## Retention and current state
 
@@ -156,12 +164,19 @@ than repaired or selected around.
 ## Attempt tally
 
 The stage's derived manifest is rebuilt from immutable Testimonia, compared to its
-stored inventory, reconciled to the full act/chair denominator, and checked against
-the Testimonium schema, provenance, receipts, and exact region inputs before a
-re-read may append. `attempt_tally()` returns `KNOWN` only when that inventory is
+stored inventory, and checked against the Testimonium schema, provenance, receipts,
+and exact region inputs before a re-read may append. The full act/chair denominator
+is reconciled at the close of a pass rather than before one — see the last section,
+which says why. `attempt_tally()` returns `KNOWN` only when that inventory is
 whole. An absent, garbled, truncated or divergent inventory returns `UNKNOWN`,
-`count=null`, `hold=true`; a re-read then exits held and writes no replacement
-attempt.
+`count=null`, `hold=true`, and the check runs before anything is written, so a
+re-read over a damaged inventory appends nothing. The stored inventory counts as
+evidence that attempts existed even when the walk finds none left: a folder whose
+whole Testimonium layer is gone but whose manifest still describes it holds, rather
+than taking the first-run path and writing attempt 1 over a history that recorded
+more. The closing tally can also hold *after* an attempt was appended — the append
+happened and is retained; what the hold says is that the folder no longer
+reconciles.
 
 **This channel is the count of attempts, not a witness's own output.** A provider
 response the stage could not retain is one witness's channel, and the `failed`
@@ -188,3 +203,9 @@ nothing because the manifest is derived from the immutable attempts. After that
 the pass resumes: the attempts already written are byte-identical repeats and the
 missing ones are created. If the denominator still does not reconcile once the
 pass has run, the folder holds.
+
+One thing to know before reaching for that step: it loses nothing *while the
+attempts it describes are still on disk*. Over a folder whose attempts are gone,
+re-deriving the manifest discards the last record that they existed, and the
+pass that follows restarts the history at ordinal 1. That is a decision someone
+may legitimately take; it is not one to take without reading the manifest first.

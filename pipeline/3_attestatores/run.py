@@ -1351,7 +1351,20 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     except ContractError as error:
         print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
         return EXIT_HELD
-    if has_existing_attempts:
+    # The stored inventory is evidence that attempts existed, and it is evidence
+    # even when none of them is left. Gating the check below on the *walk* finding
+    # something meant that losing part of a folder's Testimonium layer held it —
+    # stored and rebuilt no longer agree — while losing all of it did not: the
+    # first-run path was taken instead, attempt 1 was written for every pair, and
+    # `context.finish()` rewrote the inventory that said otherwise. A reread makes
+    # that loss material rather than merely re-derivable, because the ordinal it
+    # appended does not come back. So the stored manifest's own existence is the
+    # second trigger, and `attempt_tally` then says what it always says about an
+    # inventory that disagrees with the evidence: UNKNOWN, and hold. Re-deriving it
+    # deliberately (`RunTree.write_manifest`) remains the one-step way out, exactly
+    # as it is for a pass interrupted before its manifest was written.
+    stored_inventory = context.tree.resolve(context.tree.manifest_path(ATTESTATORES)).exists()
+    if has_existing_attempts or stored_inventory:
         # No chair denominator here: this pass is what fills it. See `attempt_tally`.
         prior_tally = attempt_tally(context.tree, context=context, acts=acts)
         if prior_tally["hold"]:

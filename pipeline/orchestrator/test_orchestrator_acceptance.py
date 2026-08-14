@@ -2432,6 +2432,57 @@ def test_the_failed_chair_is_visible_in_the_export(review_run):
     assert any("under-witnessed" in reason for reason in export["aggregate"]["reasons"])
 
 
+def test_the_uncertainty_capable_chair_is_visibly_uncompared_in_the_happy_run(happy_run):
+    """The one place a witness's declared *format* reaches the dissent instrument.
+
+    `pipeline/4_perlector/dissent.py::is_comparable` refuses to diff a witness
+    whose format can express uncertainty, because such a format may embed
+    alternative-reading markup inline and diffing the markup would count as
+    disagreement. It cannot touch the reading — dissent is read-only and computed
+    after the fact — so it is not a picker. What it is, is a hole in the
+    instrument ARCHITECTURE names for catching a reader that "learned to agree
+    with witnesses rather than to read ink."
+
+    Spec 07's fixture declares that capability on chair 2 of act a1 so the
+    `format_capabilities` distinction is exercised rather than merely
+    representable, and the consequence is that the *reference* happy run now
+    carries one chair permanently uncompared on that axis. That is a real
+    reduction in what this run measures, and GOVERNANCE 2 puts the burden on
+    making it visible rather than on it being harmless. So it is asserted here:
+    the row exists, it says `unknown` with its reason, and it is exactly one of
+    three chairs. A markup-aware comparison view, or moving the declaration off
+    the reference scenario, is what makes this test change — and either is a
+    deliberate act rather than a silent widening.
+    """
+    _, tree = happy_run
+    reading = next(
+        record
+        for record in artifacts(tree, PERLECTOR, "perlectio")
+        if record["payload"]["act_key"] == "a1"
+    )
+    by_chair = {row["chair"]: row for row in reading["payload"]["dissent"]}
+    assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
+    assert by_chair["attestator_2"]["compared"] == "unknown"
+    assert "cannot be reduced to a plain comparison view" in by_chair["attestator_2"]["reason"]
+    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 1
+
+    testimonium = next(
+        record
+        for record in artifacts(tree, ATTESTATORES, "testimonium")
+        if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_2"
+    )
+    assert testimonium["payload"]["format_capabilities"]["can_express_uncertainty"] is True
+    # The capability blinds the comparison and nothing else: the outcome, the
+    # class, and the coverage count are what they would be without it.
+    assert testimonium["outcome"] == "read"
+    entry = next(row for row in export_of(tree)["delivered"] if row["act_key"] == "a1")
+    assert entry["witness_coverage"]["by_class"] == {
+        "completed": 3,
+        "unresolved": 0,
+        "failed": 0,
+    }
+
+
 def test_a_delivered_act_still_links_back_to_the_exact_ink(review_run):
     _, tree = review_run
     delivered = export_of(tree)["delivered"][0]

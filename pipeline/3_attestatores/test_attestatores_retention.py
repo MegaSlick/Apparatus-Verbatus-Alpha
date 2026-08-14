@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import inspect
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -657,6 +658,216 @@ def test_a_pass_interrupted_before_its_manifest_was_written_can_still_be_complet
     assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
 
 
+def test_a_wiped_attempt_layer_holds_rather_than_silently_restarting_history(tmp_path):
+    """The stored inventory is evidence that attempts existed, even with none left.
+
+    Losing *some* of a folder's attempts holds it: the stored manifest no longer
+    equals the rebuilt one, `attempt_tally` says UNKNOWN, and nothing is written
+    until someone re-derives the inventory deliberately. Losing *all* of them did
+    not, because the check that would have noticed was reached only when the walk
+    found at least one artifact still on disk — so a folder whose whole Testimonium
+    layer was gone took the first-run path instead, wrote attempt 1 for every pair,
+    rewrote the inventory over the one that said otherwise, and exited 0.
+
+    A reread is what makes the loss material rather than merely re-derivable: the
+    fixture's chairs are deterministic, so the ordinal-1 attempts come back
+    byte-identical, but the ordinal-2 attempt a reread appended does not come back
+    at all. This folder's own manifest recorded seven sealed attempts; the silent
+    restart left six and said nothing. GOVERNANCE 2 and GOVERNANCE 4 both refuse
+    that, and the inventory needed to notice it was on disk the whole time.
+    """
+    run_root, tree = run_to_designator(tmp_path, "reread-failure")
+    assert (
+        invoke_stage(
+            run_root, "retention", "reread-failure", "pipeline/3_attestatores/run.py"
+        ).returncode
+        == 0
+    )
+    assert (
+        _reread(run_root, "reread-failure", _act_id_for(tree, "a1"), "attestator_3").returncode == 0
+    )
+    manifest = tree.resolve(tree.manifest_path(ATTESTATORES))
+    stored = json.loads(manifest.read_text(encoding="utf-8"))
+    assert len(stored["artifacts"]) == 7
+    assert any(record["payload"]["attempt_ordinal"] == 2 for record in _testimonia(tree))
+
+    shutil.rmtree(tree.resolve("3_attestatores/artifacts"))
+
+    wiped = invoke_stage(run_root, "retention", "reread-failure", "pipeline/3_attestatores/run.py")
+
+    assert wiped.returncode == 3, wiped.stderr
+    assert "UNKNOWN" in wiped.stderr
+    assert _testimonia(tree) == [], "a held pass writes no attempt over a damaged inventory"
+    assert json.loads(manifest.read_text(encoding="utf-8")) == stored, (
+        "the inventory that recorded the lost attempts must survive the refusal"
+    )
+
+
+def test_a_resealed_testimonium_may_not_rebind_the_regions_its_witness_saw(tmp_path):
+    """The tally's own region binding, which nothing else in this suite exercised.
+
+    `pipeline/4_perlector/run.py::validate_testimonium_regions` makes the same
+    comparison at the consumer, but this stage checks it again before authorizing
+    another immutable append — a resealed Testimonium that renames the crop its
+    witness saw must not be counted as known evidence by the producer that would
+    then append beside it. Removing the refusal in `validate_tallied_testimonium`
+    left this whole file green, which is what this test closes.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    initial = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
+    assert initial.returncode == 0, initial.stderr
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    changed = copy.deepcopy(record)
+    assert changed["payload"]["regions"], "the happy reading must bind a proposal region"
+    changed["payload"]["regions"][0]["region_id"] = "rgn_0123456789abcdef"
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    tally = attestatores.attempt_tally(
+        tree,
+        context=None,
+        acts=None,
+    )
+    assert tally["state"] == "KNOWN", "the context-free tally deliberately checks no regions"
+
+    retry = invoke_stage(
+        run_root,
+        "retention",
+        "happy",
+        "pipeline/3_attestatores/run.py",
+        attempt_ordinal=2,
+    )
+
+    assert retry.returncode == 3
+    assert "does not bind exactly the proposal regions and inputs" in retry.stderr
+    assert all(item["payload"]["attempt_ordinal"] == 1 for item in _testimonia(tree))
+
+
+def test_a_reread_holds_when_the_folder_no_longer_accounts_for_every_pair(tmp_path):
+    """The closing act/chair denominator, which nothing exercised.
+
+    A whole pass fills its own denominator, so the closing check can only be seen
+    through the one write path that cannot: a targeted reread moves exactly the
+    chair it names and leaves a pair that is missing entirely still missing. The
+    tally then refuses to call the folder known, the reread's own append is
+    retained, and the run holds instead of reporting a complete evidence layer
+    over a chair whose testimony is not there.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    for record in _testimonia(tree):
+        if record["payload"]["act_key"] == "a2" and record["payload"]["chair"] == "attestator_2":
+            tree.resolve(
+                tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"])
+            ).unlink()
+    # Re-derived deliberately, so the divergent-inventory refusal is not what fires
+    # here and the denominator check is the only thing left that can.
+    tree.write_manifest(ATTESTATORES)
+    assert len(_testimonia(tree)) == 5
+
+    result = _reread(run_root, "happy", _act_id_for(tree, "a1"), "attestator_3")
+
+    assert result.returncode == 3, result.stderr
+    assert "does not account for every expected act/chair pair" in result.stderr
+    assert len(_testimonia(tree)) == 6, "the reread's own attempt is retained by the hold"
+
+
+@pytest.mark.parametrize(
+    ("chair", "field", "value", "message"),
+    (
+        ("attestator_1", "act_key", "a9", "disagrees with its act key"),
+        ("attestator_1", "chair", "attestator_9", "names no configured chair"),
+        (
+            "attestator_1",
+            "format_capabilities",
+            None,
+            "non-failed Testimonium carries no format_capabilities record",
+        ),
+        (
+            "attestator_3",
+            "regions",
+            [
+                {
+                    "region_id": "rgn_0123456789abcdef",
+                    "image_path": "2_designator/blobs/sha256/" + "0" * 64,
+                    "image_sha256": "0" * 64,
+                }
+            ],
+            "non-attempted Testimonium tally record carries regions",
+        ),
+    ),
+)
+def test_a_resealed_testimonium_the_writer_could_not_have_produced_is_unknown(
+    tmp_path, chair, field, value, message
+):
+    """`validate_tallied_testimonium`'s per-record refusals, exercised rather than
+    assumed. Each of these passes the envelope, the self-hash and this stage's
+    content-health schema, and each is a record this writer could not have
+    produced — the tally must not authorize another immutable append beside one.
+    Removing any of these four refusals left the whole file green.
+    """
+    run_root, tree = run_to_designator(tmp_path, "not-run-witness")
+    initial = invoke_stage(
+        run_root, "retention", "not-run-witness", "pipeline/3_attestatores/run.py"
+    )
+    assert initial.returncode == 0, initial.stderr
+    record = _testimonium_for(tree, act_key="a1", chair=chair, ordinal=1)
+    changed = copy.deepcopy(record)
+    changed["payload"][field] = value
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    retry = invoke_stage(
+        run_root,
+        "retention",
+        "not-run-witness",
+        "pipeline/3_attestatores/run.py",
+        attempt_ordinal=2,
+    )
+
+    assert retry.returncode == 3, retry.stderr
+    assert message in retry.stderr
+    assert all(item["payload"]["attempt_ordinal"] == 1 for item in _testimonia(tree))
+
+
+def test_a_resealed_dead_outcome_over_a_configured_chair_is_unknown(tmp_path):
+    """`dead` is the one outcome that must retain an absent chair, and the check
+    that says so had no test: a `not-run` record resealed as `dead` keeps a valid
+    configured provenance and passes every generic check on the way in."""
+    run_root, tree = run_to_designator(tmp_path, "not-run-witness")
+    initial = invoke_stage(
+        run_root, "retention", "not-run-witness", "pipeline/3_attestatores/run.py"
+    )
+    assert initial.returncode == 0, initial.stderr
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    assert record["outcome"] == "not-run"
+    changed = copy.deepcopy(record)
+    changed["outcome"] = "dead"
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    retry = invoke_stage(
+        run_root,
+        "retention",
+        "not-run-witness",
+        "pipeline/3_attestatores/run.py",
+        attempt_ordinal=2,
+    )
+
+    assert retry.returncode == 3, retry.stderr
+    assert "does not retain an absent chair" in retry.stderr
+    assert all(item["payload"]["attempt_ordinal"] == 1 for item in _testimonia(tree))
+
+
 # --- `witness_reported`: kept, and demoted ---------------------------------------
 
 
@@ -915,6 +1126,38 @@ def test_a_deeply_nested_native_payload_becomes_failed_not_a_recursion_crash():
     # Reasonable real-world nesting must not be caught by the same guard.
     reasonable = {"tokens": ["a", "b"], "layout": {"line": 4, "spans": [{"a": 1}, {"b": 2}]}}
     assert attestatores._native_problem(reasonable) is None
+
+
+@pytest.mark.parametrize(
+    ("native", "expected_type", "where"),
+    ((1.5, "float", "payload"), ({"score": 0.5}, "object", "payload.score")),
+)
+def test_a_float_in_a_native_payload_is_a_failed_attempt_not_a_coerced_number(
+    native, expected_type, where
+):
+    """HANDOFF names this gap; nothing exercised it.
+
+    The shared canonical writer refuses floating-point numbers, so a witness
+    returning one — bare, or buried in an otherwise ordinary object — cannot be
+    retained verbatim. What this stage owes that response is a `failed` attempt
+    that says so, never a rounded, stringified or dropped number quietly wearing
+    `read`. The fixture builder cannot declare a float (`toml_value` refuses one),
+    so this is the boundary at which the claim can be checked at all.
+    """
+    payload, self_report, capabilities, health, problem = attestatores.prepared_response(
+        {"payload": native}
+    )
+
+    assert payload is None
+    assert self_report is None
+    assert capabilities is None
+    assert health["recordable"] is False
+    assert health["native_type"] == expected_type
+    assert problem == f"{where} has unsupported native type 'float'"
+    # And the record such an attempt lands in is a coherent one: the tally's own
+    # validator has to accept this exact shape, or the refusal would itself be
+    # unaccountable evidence.
+    attestatores.validate_content_health(payload, health)
 
 
 def test_configured_never_attempted_seat_is_not_run_not_dead(tmp_path):
