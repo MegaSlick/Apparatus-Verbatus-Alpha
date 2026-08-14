@@ -31,7 +31,6 @@ from operations.pod.bootstrap import (
     BootstrapStep,
     BootstrapStepFailure,
 )
-from operations.pod.fake_provider import FakeProvider
 from operations.pod.launch import LaunchResult, LaunchState, PodRuntime
 from operations.pod.lease import LeaseStore, PodLease
 from operations.pod.models import (
@@ -311,7 +310,13 @@ class OperatorSurface:
         self.now = now or (lambda: datetime.now(UTC))
         self._present: Presenter = present or print
         candidate = provider or OperatorFakeProvider(now=self.now)
-        if not isinstance(candidate, FakeProvider):
+        # OperatorFakeProvider exactly, not the base FakeProvider: close() calls
+        # clear_failures, _provider_for_record calls seed_existing, and
+        # _shutdown's billing-margin floor is gated on this subclass — a plain
+        # FakeProvider would pass construction, then die at close with a bare
+        # AttributeError and silently skip the floor that keeps a rehearsal's
+        # shutdown from reporting a spurious UNVERIFIED.
+        if not isinstance(candidate, OperatorFakeProvider):
             raise OperatorError(ErrorCode.LIVE_PROVIDER_BLOCKED)
         self.provider = candidate
         self.faults = faults or Faults()
