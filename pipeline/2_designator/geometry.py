@@ -135,6 +135,12 @@ def load_padding_config(path: str | Path = DEFAULT_PADDING_CONFIG_PATH) -> dict[
     padding = config.get("padding") if isinstance(config, dict) else None
     if not isinstance(padding, dict):
         raise ContractError("the padding configuration has no [padding] table")
+    unexpected = sorted(set(padding) - (set(_PADDING_FIELDS) | {"provenance"}))
+    if unexpected:
+        raise ContractError(
+            f"the padding configuration has unknown field(s) {unexpected}; "
+            "an unread policy field cannot be applied"
+        )
     values = {name: padding.get(name) for name in _PADDING_FIELDS}
     invalid = [
         name for name in _PADDING_FIELDS if not _is_plain_int(values[name]) or values[name] < 0

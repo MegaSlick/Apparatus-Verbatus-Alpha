@@ -148,7 +148,11 @@ handoff does not settle" below.
 ## `kind="page-fallback"`
 
 One record per sealed page the structure pass found **no ink at all** on,
-subject-keyed to the one act that page's predetermined crops belong to. Tyrel
+subject-keyed to the one act that page's predetermined crops belong to. Where a
+declared act or continuation already has a proposal crop on that page, the
+fallback bands are clipped around its final padded bounds before they are cut:
+the union still sends the whole page downstream, but no pixel reaches readers
+under both a declared identity and the page-fallback identity. Tyrel
 ruled this on 2026-08-11: *"If the designator sees no text it should default to
 predetermined crops with a small margin of overlap and send the crops down
 stream to be read by everything. If all the witnesses and the perlector see no

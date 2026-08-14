@@ -162,7 +162,12 @@ def sample_size_caveat(sample_count: int) -> str:
 
 
 def calibrate_padding(
-    samples: list[GoldSample], *, percentile: int = 75, corpus: str, sample_unit: str
+    samples: list[GoldSample],
+    *,
+    percentile: int = 75,
+    corpus: str,
+    sample_unit: str,
+    calibrated_for_this_corpus: bool,
 ) -> dict[str, Any]:
     """Fresh per-edge padding fractions from real (detected, true) rectangle pairs.
 
@@ -174,6 +179,8 @@ def calibrate_padding(
     """
     if not isinstance(samples, list):
         raise ContractError("gold samples must be supplied as a list for deterministic calibration")
+    if not isinstance(calibrated_for_this_corpus, bool):
+        raise ContractError("calibrated_for_this_corpus must be a boolean caller decision")
     if not samples:
         raise ContractError(
             "cannot calibrate padding from zero gold samples; a percentile of nothing is "
@@ -202,7 +209,10 @@ def calibrate_padding(
             "sample_count": len(validated_samples),
             "statistic": f"p{percentile} per-edge shortfall, as a fraction of the detected "
             "box's own dimension for that edge, nearest-rank",
-            "calibrated_for_this_corpus": True,
+            # Only the caller holding the gold set knows whether its samples
+            # belong to this project's corpus. Computing rectangles cannot
+            # honestly infer that provenance fact from their coordinates.
+            "calibrated_for_this_corpus": calibrated_for_this_corpus,
             "caveat": sample_size_caveat(len(validated_samples)),
         },
     }

@@ -64,7 +64,7 @@ import structure  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
-from common.contracts.canonical import digest_bytes, self_hash  # noqa: E402
+from common.contracts.canonical import digest_bytes, digest_of, self_hash  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import act_id as derive_minted_act_id  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
@@ -95,6 +95,7 @@ from common.stage import (  # noqa: E402
     residual_act_ordinal,
     run_stage,
     stage_parser,
+    validate_serving_provenance,
 )
 
 # Fields a Designator artifact may never carry, at any depth of its payload.
@@ -394,19 +395,30 @@ def _match_structural_group(groups: list[dict], declared_bounds: dict, what: str
     this function's own callers document it as refusing rather than doing.
     """
     declared_area = declared_bounds["w"] * declared_bounds["h"]
-    best, best_overlap, best_body_overlap = None, 0, 0
+    best_score = (0, 0)
+    best_groups = []
     for group in groups:
         overlap = _overlap_area(group["bounds"], declared_bounds)
         body_overlap = _body_overlap_area(group, declared_bounds)
-        if overlap > best_overlap or (overlap == best_overlap and body_overlap > best_body_overlap):
-            best, best_overlap, best_body_overlap = group, overlap, body_overlap
-    if best is None or best_overlap * 2 < declared_area:
+        score = (overlap, body_overlap)
+        if score > best_score:
+            best_score = score
+            best_groups = [group]
+        elif score == best_score:
+            best_groups.append(group)
+    best_overlap, _best_body_overlap = best_score
+    if not best_groups or best_overlap * 2 < declared_area:
         raise ContractError(
             f"{what}: structural grouping found no detected region covering at least "
             f"half of the declared bounds {declared_bounds}; the structure pass may "
             "have missed this act entirely"
         )
-    return best
+    if len(best_groups) != 1:
+        raise ContractError(
+            f"{what}: unresolved structural tie between {len(best_groups)} detected regions "
+            f"at overlap score {best_score}; input order is not measured evidence"
+        )
+    return best_groups[0]
 
 
 def _claim_structural_group(analysis: dict, group: dict, act_key: str, what: str) -> None:
@@ -428,14 +440,19 @@ def _claim_structural_group(analysis: dict, group: dict, act_key: str, what: str
     returns two distinct groups sharing one anchor, so each act claims its own.
     """
     claims = analysis.setdefault("group_claims", {})
-    holder = claims.get(id(group))
+    # A digest of the detected evidence survives a copied/rebuilt group while
+    # still distinguishing brace-linked siblings whose union bounds coincide.
+    # Object identity does neither reliably: it changes on copy and can be
+    # reused after collection.
+    key = digest_of(group)
+    holder = claims.get(key)
     if holder is not None and holder != act_key:
         raise ContractError(
             f"{what}: the detected region {group['bounds']} already corresponds to act "
             f"{holder!r}; the structure pass found one region where two acts are declared, "
             "so it corroborates neither and the boundary between them was not detected"
         )
-    claims[id(group)] = act_key
+    claims[key] = act_key
 
 
 def page_records(context) -> dict[int, dict]:
@@ -1061,6 +1078,12 @@ def _publish_secondary_proposals(
         # absence changes no authority decision here either -- there is simply
         # no additive recall pass to run.
         return False
+    validate_serving_provenance(
+        context,
+        secondary,
+        producer_stage=DESIGNATOR,
+        require_receipt=True,
+    )
     if analysis["background"] is None:
         # The secondary scan is the same threshold at a more sensitive margin,
         # so a page with no inferable background gives it nothing to be
@@ -1236,9 +1259,65 @@ def _publish_residual_holds(
     return rows
 
 
+def _subtract_rectangle(bounds: dict, claimed: dict) -> list[dict]:
+    """Non-overlapping rectangles covering ``bounds`` minus one claimed box."""
+    x0, y0 = bounds["x"], bounds["y"]
+    x1, y1 = x0 + bounds["w"], y0 + bounds["h"]
+    cx0, cy0 = max(x0, claimed["x"]), max(y0, claimed["y"])
+    cx1 = min(x1, claimed["x"] + claimed["w"])
+    cy1 = min(y1, claimed["y"] + claimed["h"])
+    if cx0 >= cx1 or cy0 >= cy1:
+        return [dict(bounds)]
+    pieces = []
+    if y0 < cy0:
+        pieces.append({"x": x0, "y": y0, "w": x1 - x0, "h": cy0 - y0})
+    if cy1 < y1:
+        pieces.append({"x": x0, "y": cy1, "w": x1 - x0, "h": y1 - cy1})
+    if x0 < cx0:
+        pieces.append({"x": x0, "y": cy0, "w": cx0 - x0, "h": cy1 - cy0})
+    if cx1 < x1:
+        pieces.append({"x": cx1, "y": cy0, "w": x1 - cx1, "h": cy1 - cy0})
+    return pieces
+
+
+def _unclaimed_fallback_tiles(tiles: list[dict], claimed: list[dict]) -> list[dict]:
+    """Clip fallback bands to pixels no declared proposal region already owns."""
+    unclaimed = []
+    for tile in tiles:
+        pieces = [dict(tile["bounds"])]
+        for claim in claimed:
+            pieces = [
+                remainder
+                for piece in pieces
+                for remainder in _subtract_rectangle(piece, claim["bounds"])
+            ]
+        unclaimed.extend(
+            {
+                "bounds": piece,
+                "rationale": tile["rationale"]
+                + "; excludes any pixels already assigned to a declared act",
+            }
+            for piece in pieces
+        )
+    return sorted(
+        unclaimed,
+        key=lambda tile: (
+            tile["bounds"]["y"],
+            tile["bounds"]["x"],
+            tile["bounds"]["h"],
+            tile["bounds"]["w"],
+        ),
+    )
+
+
 def _publish_page_fallback(
-    context, ordinal: int, page_record: dict, analysis: dict, status_ref: dict[str, str]
-) -> dict:
+    context,
+    ordinal: int,
+    page_record: dict,
+    analysis: dict,
+    status_ref: dict[str, str],
+    claimed: list[dict],
+) -> dict | None:
     """Cut the predetermined crops over a page the structure pass found nothing on.
 
     This is the half of Tyrel's 2026-08-11 ruling that `grouping.fallback_tiles`
@@ -1261,6 +1340,12 @@ def _publish_page_fallback(
     act with N regions is a page delivered whole, and N acts would be an act
     count invented from a grid.
 
+    Declared proposal crops on the same page are subtracted from these tiles
+    before publication. Together the declared regions and the remaining tile
+    pieces still cover the whole page, while no pixel is read under two act
+    identities. If declared crops already cover the whole page, there is no
+    uncovered tile and therefore no second act to mint.
+
     The act is `proposed`, not `held`. A held act is terminal and is never read
     (`recovery_pass`, and `_publish_residual_holds`'s own "never witnessed and
     never read"), and crops nobody reads are exactly what the ruling says not to
@@ -1281,7 +1366,9 @@ def _publish_page_fallback(
     page_bounds = {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]}
     act_id = derive_minted_act_id(page_id, FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
     act_key = fallback_page_act_key(ordinal)
-    tiles = analysis["groups"]
+    tiles = _unclaimed_fallback_tiles(analysis["groups"], claimed)
+    if not tiles:
+        return None
     fallback_payload = {
         "act_key": act_key,
         "page_id": page_id,
@@ -1428,17 +1515,25 @@ def _publish_page_fallbacks(
     page_cache: dict[int, dict],
     status_refs: dict[int, dict[str, str]],
 ) -> list[dict]:
-    """Publish every predetermined full-page crop set and return its seal rows."""
+    """Publish each page's unclaimed fallback coverage and return its seal rows."""
     rows = []
+    claimed_by_page = _claimed_regions_by_page(context)
     for ordinal, page_record in pages.items():
         if ordinal in failures:
             continue
         analysis = _analyze_page(page_cache, context, ordinal, page_record)
         if analysis["structure_evidence"] != "fallback-tiles":
             continue
-        rows.append(
-            _publish_page_fallback(context, ordinal, page_record, analysis, status_refs[ordinal])
+        row = _publish_page_fallback(
+            context,
+            ordinal,
+            page_record,
+            analysis,
+            status_refs[ordinal],
+            claimed_by_page.get(ordinal, []),
         )
+        if row is not None:
+            rows.append(row)
     return rows
 
 
@@ -1507,7 +1602,6 @@ def initial_pass(context) -> bool:
         inputs=[],
         payload=secondary,
     )
-
     # Which sealed pages the structure pass could not mark out, decided once and
     # before any crop is cut, so a page's structural outcome is a fact the act
     # loop reads rather than one it discovers halfway through.
@@ -1666,9 +1760,6 @@ def initial_pass(context) -> bool:
         )
         seal_inputs.extend(evidence)
 
-    if not expected:
-        raise ContractError("no act was marked out on any sealed page")
-
     # Every sealed page the structure pass found nothing on is cut into its
     # predetermined crops, which become real proposal regions of one minted act
     # per page. Before conservation, deliberately: these crops are claims on the
@@ -1680,6 +1771,8 @@ def initial_pass(context) -> bool:
     fallback_rows = _publish_page_fallbacks(context, pages, failures, page_cache, status_refs)
     expected.extend(fallback_rows)
     seal_inputs.extend(reference for row in fallback_rows for reference in row["evidence"])
+    if not expected:
+        raise ContractError("no declared act or page fallback was marked out on any sealed page")
 
     # Conservation runs over every sealed page this run reached, not only the
     # pages a declared act happened to touch — a page nothing was assigned to

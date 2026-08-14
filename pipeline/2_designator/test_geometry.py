@@ -421,6 +421,13 @@ def test_load_padding_config_refuses_a_bool_bp_field(tmp_path):
         load_padding_config(path)
 
 
+def test_load_padding_config_refuses_an_unknown_padding_field(tmp_path):
+    path = tmp_path / "padding.toml"
+    _write_padding_toml(path, fields={**PADDING, "right_bps": 9999})
+    with pytest.raises(ContractError, match=r"unknown field.*right_bps"):
+        load_padding_config(path)
+
+
 def test_load_padding_config_refuses_malformed_toml_syntax(tmp_path):
     path = tmp_path / "padding.toml"
     path.write_text("[padding]\ntop_bp = 600\nbottom_bp = [unterminated\n", encoding="utf-8")

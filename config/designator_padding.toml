@@ -26,8 +26,9 @@
 # repository has re-run the calibration against this project's own pages.
 # `pipeline/2_designator/padding_calibration.py` is a ready-to-run harness for
 # doing exactly that once a gold set of this project's own hand-marked act
-# rectangles exists — it computes fresh numbers from real samples; it does not
-# invent them, and none has been invented here to replace the ones below.
+# rectangles exists — its caller must explicitly state whether the supplied
+# samples belong to this project's corpus, it computes fresh numbers from those
+# samples, and none has been invented here to replace the ones below.
 
 [padding]
 top_bp = 600

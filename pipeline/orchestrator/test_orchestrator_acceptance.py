@@ -39,6 +39,7 @@ from common.contracts.stages import (
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import (
+    EXIT_FATAL,
     load_fixture,
     open_context,
     page_identity,
@@ -308,8 +309,16 @@ FIXTURE = "synthetic-two-page-v0"
 # conservation measurement states the threshold it actually used. Counts stay
 # 53/57; both digests were re-measured from real orchestrator runs through this
 # module's `orchestrate` and `semantic_snapshot_digest` helpers.
-HAPPY_RUN_TREE_DIGEST = "ae6645f8a6e334ceacbdc09f2140878f0160448f26e3caaa36032f2450000485"
-REVIEW_RUN_TREE_DIGEST = "643f2382fd7a15557088ef91d5105bb1dc2f4e376317415fa0be63808f3ccc66"
+#
+# Re-pinned for CodeRabbit round 2. The padding calibration harness now makes
+# its caller state whether the supplied gold set belongs to this corpus, and
+# the shipped padding config's generation note records that requirement. The
+# config is sealed byte-for-byte, so this explanatory correction deliberately
+# moves every artifact's config digest while leaving the 53/57 counts intact.
+# Both values below were measured from fresh real runs through this module's
+# `orchestrate` and `semantic_snapshot_digest` helpers.
+HAPPY_RUN_TREE_DIGEST = "c8e82293419b994c86713a608c0184d21b5d09ee10407bdc653883028f628458"
+REVIEW_RUN_TREE_DIGEST = "66198a088615914741153f2d716d1e2dd52a060a45e4ffa687a91d5d85802b61"
 
 
 def orchestrate(
@@ -371,6 +380,17 @@ def invoke_stage(
     for key, value in extra.items():
         command.extend((f"--{key.replace('_', '-')}", str(value)))
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+
+
+def _run_through_designator(root: Path, run_id: str = "r", scenario: str = "happy") -> None:
+    """Run Door, Exemplar, and Designator, refusing a partial setup loudly."""
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+    ):
+        result = invoke_stage(root, run_id, scenario, program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
 
 
 def run_through_recensor(
@@ -760,11 +780,7 @@ def test_a_well_formed_residual_act_extends_the_denominator_and_the_first_consum
     record rather than trusted because the seal says so.
     """
     root = tmp_path / "runs"
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-    result = invoke_stage(root, "r", "happy", "pipeline/2_designator/run.py")
-    assert result.returncode == 0, result.stderr
+    _run_through_designator(root)
 
     tree = RunTree(root, "r")
     context = _designator_context_for(root, "r", "happy")
@@ -801,13 +817,7 @@ def test_a_self_consistent_residual_with_no_matching_conservation_component_is_r
     long as whoever invented it also recomputed the identity correctly.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-    ):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
+    _run_through_designator(root)
 
     tree = RunTree(root, "r")
     context = _designator_context_for(root, "r", "happy")
@@ -816,7 +826,7 @@ def test_a_self_consistent_residual_with_no_matching_conservation_component_is_r
     _reseal_with_extra_row(tree, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
-    assert result.returncode == 2
+    assert result.returncode == EXIT_FATAL
     assert "does not reference exactly one conservation" in result.stderr
 
 
@@ -830,13 +840,7 @@ def test_a_residual_whose_bounds_do_not_match_its_own_conservation_record_is_ref
     as a reference that actually corroborates the claim.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-    ):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
+    _run_through_designator(root)
 
     tree = RunTree(root, "r")
     context = _designator_context_for(root, "r", "happy")
@@ -850,20 +854,14 @@ def test_a_residual_whose_bounds_do_not_match_its_own_conservation_record_is_ref
     _reseal_with_extra_row(tree, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
-    assert result.returncode == 2
+    assert result.returncode == EXIT_FATAL
     assert "does not carry at that ordinal" in result.stderr
 
 
 def test_a_residual_act_claiming_to_be_proposed_is_refused(tmp_path):
     """A residual may only ever be `held`; it was never a structural proposal."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-    ):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
+    _run_through_designator(root)
 
     tree = RunTree(root, "r")
     context = _designator_context_for(root, "r", "happy")
@@ -873,20 +871,14 @@ def test_a_residual_act_claiming_to_be_proposed_is_refused(tmp_path):
     _reseal_with_extra_row(tree, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
-    assert result.returncode == 2
+    assert result.returncode == EXIT_FATAL
     assert "is not 'held'" in result.stderr
 
 
 def test_a_residual_act_claiming_a_continuation_is_refused(tmp_path):
     """A residual has no declared continuation to claim."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-    ):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
+    _run_through_designator(root)
 
     tree = RunTree(root, "r")
     context = _designator_context_for(root, "r", "happy")
@@ -896,7 +888,7 @@ def test_a_residual_act_claiming_a_continuation_is_refused(tmp_path):
     _reseal_with_extra_row(tree, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
-    assert result.returncode == 2
+    assert result.returncode == EXIT_FATAL
     assert "has no declared continuation to claim" in result.stderr
 
 
@@ -909,13 +901,7 @@ def test_a_residual_act_whose_hold_bounds_do_not_verify_is_refused(tmp_path):
     `_verify_residual_act_rows` exists to catch.
     """
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-    ):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
+    _run_through_designator(root)
 
     tree = RunTree(root, "r")
     context = _designator_context_for(root, "r", "happy")
@@ -931,20 +917,14 @@ def test_a_residual_act_whose_hold_bounds_do_not_verify_is_refused(tmp_path):
     _reseal_with_extra_row(tree, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
-    assert result.returncode == 2
+    assert result.returncode == EXIT_FATAL
     assert "does not verify against the residual ordinal and bounds" in result.stderr
 
 
 def test_a_residual_act_with_no_hold_record_is_refused(tmp_path):
     """An extra act is not accounted for merely because the seal names it."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-    ):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
+    _run_through_designator(root)
 
     tree = RunTree(root, "r")
     context = _designator_context_for(root, "r", "happy")
@@ -963,7 +943,7 @@ def test_a_residual_act_with_no_hold_record_is_refused(tmp_path):
     _reseal_with_extra_row(tree, row, include_hold_evidence=False)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
-    assert result.returncode == 2
+    assert result.returncode == EXIT_FATAL
     assert "published no hold record" in result.stderr
 
 

@@ -117,7 +117,12 @@ def test_at_or_above_preferred_names_no_shortfall():
 
 def test_calibrate_padding_refuses_zero_samples():
     with pytest.raises(ContractError, match=r"cannot calibrate padding from zero gold samples"):
-        calibrate_padding([], corpus="test", sample_unit="test-record")
+        calibrate_padding(
+            [],
+            corpus="test",
+            sample_unit="test-record",
+            calibrated_for_this_corpus=False,
+        )
 
 
 @pytest.mark.parametrize(
@@ -143,7 +148,12 @@ def test_calibrate_padding_refuses_zero_samples():
 )
 def test_calibrate_padding_refuses_a_malformed_gold_sample(sample, refusal):
     with pytest.raises(ContractError, match=refusal):
-        calibrate_padding([sample], corpus="test", sample_unit="test-record")
+        calibrate_padding(
+            [sample],
+            corpus="test",
+            sample_unit="test-record",
+            calibrated_for_this_corpus=False,
+        )
 
 
 def test_calibrate_padding_produces_the_shipped_config_shape():
@@ -154,7 +164,10 @@ def test_calibrate_padding_produces_the_shipped_config_shape():
         }
     ]
     result = calibrate_padding(
-        samples, corpus="synthetic-test-only", sample_unit="synthetic-record"
+        samples,
+        corpus="synthetic-test-only",
+        sample_unit="synthetic-record",
+        calibrated_for_this_corpus=False,
     )
     assert set(result) == {"top_bp", "bottom_bp", "left_bp", "right_bp", "provenance"}
     assert result["top_bp"] == 1000
@@ -164,7 +177,7 @@ def test_calibrate_padding_produces_the_shipped_config_shape():
     for value in (result["top_bp"], result["bottom_bp"], result["left_bp"], result["right_bp"]):
         assert isinstance(value, int) and not isinstance(value, bool)
     provenance = result["provenance"]
-    assert provenance["calibrated_for_this_corpus"] is True
+    assert provenance["calibrated_for_this_corpus"] is False
     assert provenance["sample_count"] == 1
     assert "provisional" in provenance["caveat"]
     assert provenance["corpus"] == "synthetic-test-only"
@@ -184,7 +197,10 @@ def test_calibrate_padding_result_loads_through_load_padding_config_shape(tmp_pa
         for _ in range(MINIMUM_DEFENSIBLE_SAMPLES)
     ]
     result = calibrate_padding(
-        samples, corpus="synthetic-test-only", sample_unit="synthetic-record"
+        samples,
+        corpus="synthetic-test-only",
+        sample_unit="synthetic-record",
+        calibrated_for_this_corpus=True,
     )
     lines = ["[padding]"]
     for field in ("top_bp", "bottom_bp", "left_bp", "right_bp"):
@@ -204,6 +220,20 @@ def test_calibrate_padding_result_loads_through_load_padding_config_shape(tmp_pa
     loaded = geometry.load_padding_config(path)
     assert loaded["top_bp"] == result["top_bp"]
     assert loaded["provenance"]["calibrated_for_this_corpus"] is True
+
+
+def test_calibrate_padding_refuses_a_non_boolean_corpus_claim():
+    sample = {
+        "detected": {"x": 0, "y": 0, "w": 10, "h": 10},
+        "true_content": {"x": 0, "y": 0, "w": 10, "h": 10},
+    }
+    with pytest.raises(ContractError, match="calibrated_for_this_corpus must be a boolean"):
+        calibrate_padding(
+            [sample],
+            corpus="test",
+            sample_unit="test-record",
+            calibrated_for_this_corpus="false",
+        )
 
 
 def test_basis_points_stay_within_denominator_scale_for_a_realistic_shortfall():

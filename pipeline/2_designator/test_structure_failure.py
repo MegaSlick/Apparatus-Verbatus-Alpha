@@ -525,13 +525,9 @@ def test_a_page_with_no_found_ink_is_cut_into_fallback_crops(blank_first_page_ru
     assert len(fallbacks) == 1, "one minted act per fallback-tiled page, never one per tile"
     fallback = fallbacks[0]
     assert fallback["page_ordinal"] == 1
-    assert fallback["tile_count"] == len(designator.grouping.fallback_tiles(200, 260))
 
     tiles = [tile["bounds"] for tile in fallback["tiles"]]
-    covered = set()
-    for bounds in tiles:
-        covered |= set(range(bounds["y"], bounds["y"] + bounds["h"]))
-    assert covered == set(range(260)), "every row of the page must be inside some cut crop"
+    assert fallback["tile_count"] == len(tiles) > 0
 
     regions = [
         row
@@ -639,15 +635,44 @@ def test_a_fallback_act_bound_to_only_part_of_its_sealed_page_is_refused(blank_f
         )
 
 
-def test_an_act_on_a_fallback_tiled_page_records_no_detected_bounds(blank_first_page_run):
-    """A computed band is not a detection, and a consumer must not need prose to tell.
+def test_fallback_tiles_cover_only_pixels_no_declared_act_crop_already_claims(
+    blank_first_page_run,
+):
+    designator, context, _held = blank_first_page_run
+    regions = [
+        row
+        for row in _payloads(context, "region")
+        if row["origin"] == "proposal" and row["transform"]["source_page_ordinal"] == 1
+    ]
+    fallback = [row for row in regions if row["act_key"] == "page-fallback:1"]
+    declared = [row for row in regions if row["act_key"] != "page-fallback:1"]
+    assert fallback and declared, "the test must exercise both identities on one page"
 
-    The bands span the whole page by construction, so before this distinction
-    existed every declared act on such a page "matched" one: `detected_bounds`
-    recorded a rectangle nothing detected, `body_member_count` was 0 beside it,
-    and `_match_structural_group`'s missed-act refusal could not fire on any
-    fallback-tiled page at all.
-    """
+    for fallback_region in fallback:
+        for declared_region in declared:
+            assert (
+                designator._overlap_area(
+                    fallback_region["transform"]["bounds"],
+                    declared_region["transform"]["bounds"],
+                )
+                == 0
+            ), "one pixel may not be delivered under both act identities"
+
+    covered = set()
+    for region in regions:
+        bounds = region["transform"]["bounds"]
+        covered.update(
+            (x, y)
+            for y in range(bounds["y"], bounds["y"] + bounds["h"])
+            for x in range(bounds["x"], bounds["x"] + bounds["w"])
+        )
+    assert covered == {(x, y) for y in range(260) for x in range(200)}
+
+
+def test_declared_acts_on_a_fallback_tiled_page_record_no_detected_bounds(
+    blank_first_page_run,
+):
+    """A computed band is not a detection, even when declared crops coexist."""
     _designator, context, _held = blank_first_page_run
 
     groups = {row["act_key"]: row for row in _payloads(context, "act-group")}
@@ -657,8 +682,6 @@ def test_an_act_on_a_fallback_tiled_page_records_no_detected_bounds(blank_first_
         assert groups[key]["body_member_count"] == 0
         assert groups[key]["anchor_count"] == 0
 
-    # Act a2 continues onto page 2, which has its real ink and was really
-    # detected: one payload carrying both kinds of evidence, each labelled.
     continuation = groups["a2"]["continuation"]
     assert continuation["structure_evidence"] == "detected"
     assert continuation["detected_bounds"] is not None
@@ -695,14 +718,7 @@ def test_fallback_tiles_cover_every_row_of_the_page_and_overlap_their_neighbours
     be shown. And overlap, so a line sitting exactly on a boundary is whole
     inside one of the two neighbours rather than halved by both.
     """
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "grouping_fallback_under_test", ROOT / "pipeline" / "2_designator" / "grouping.py"
-    )
-    grouping = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(ROOT / "pipeline" / "2_designator"))
-    spec.loader.exec_module(grouping)
+    import grouping
 
     page_w, page_h = 100, 200
     tiles = grouping.fallback_tiles(page_w, page_h)

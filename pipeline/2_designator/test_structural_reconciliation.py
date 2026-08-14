@@ -114,7 +114,17 @@ def test_two_declared_acts_cannot_both_claim_one_detected_group():
     designator._claim_structural_group(analysis, first, "a", "act a")
     second = designator._match_structural_group(groups, declared_b, "act b")
     with pytest.raises(ContractError, match="already corresponds to act 'a'"):
-        designator._claim_structural_group(analysis, second, "b", "act b")
+        designator._claim_structural_group(
+            analysis,
+            {
+                **second,
+                "bounds": dict(second["bounds"]),
+                "body_members": [dict(member) for member in second["body_members"]],
+                "anchors": [dict(anchor) for anchor in second["anchors"]],
+            },
+            "b",
+            "act b",
+        )
 
 
 def test_one_act_may_claim_its_own_group_twice_without_refusing_itself():
@@ -149,13 +159,11 @@ def test_brace_linked_acts_each_claim_their_own_group():
         designator._claim_structural_group(analysis, group, key, f"act {key}")
 
 
-def test_match_falls_back_to_first_when_body_members_cannot_break_the_tie_either():
-    """Neither group carries a `body_members` key (a bare-bounds test double, or
-    an isolated marginal-note group with no body at all): the tie-break has
-    nothing to compare, and the original first-wins behavior is preserved
-    rather than raising or picking arbitrarily."""
+def test_match_refuses_when_body_members_cannot_break_the_tie_either():
+    """Equal evidence has no measured basis for selecting either group."""
     designator = _load_designator()
     declared = {"x": 0, "y": 0, "w": 10, "h": 10}
     first = {"bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}
     second = {"bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}
-    assert designator._match_structural_group([first, second], declared, "test act") is first
+    with pytest.raises(ContractError, match="unresolved structural tie"):
+        designator._match_structural_group([first, second], declared, "test act")

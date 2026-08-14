@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 from _test_support import load_designator
 
+from common.contracts.errors import ContractError
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -83,7 +85,10 @@ def test_removing_the_proposer_from_a_candidate_set_never_changes_the_rescue_set
 # --- level 2: a real rescue crop, published, flagged non-authoritative ---------
 
 
-def _run(program: str, root: Path) -> subprocess.CompletedProcess:
+def _run(
+    program: str, root: Path, models_config: Path | None = None
+) -> subprocess.CompletedProcess:
+    extra = [] if models_config is None else ["--models-config", str(models_config)]
     return subprocess.run(
         [
             sys.executable,
@@ -94,40 +99,65 @@ def _run(program: str, root: Path) -> subprocess.CompletedProcess:
             "r",
             "--scenario",
             "happy",
-        ],
+        ]
+        + extra,
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
 
 
-def _designator_context(designator, root: Path):
+def _designator_context(
+    designator,
+    root: Path,
+    models_config: Path | None = None,
+    description: str = "secondary proposer test",
+):
     from common.stage import open_context, stage_parser
 
-    args = stage_parser("secondary proposer test").parse_args(
-        ["--run-root", str(root), "--run-id", "r", "--scenario", "happy"]
+    extra = [] if models_config is None else ["--models-config", str(models_config)]
+    args = stage_parser(description).parse_args(
+        ["--run-root", str(root), "--run-id", "r", "--scenario", "happy"] + extra
     )
     return open_context(args, designator.DESIGNATOR)
 
 
-def _populated_context(tmp_path):
+def _prepared_context(designator, root: Path, models_config: Path | None, description: str):
+    """Run the Door and Exemplar, then open the matching Designator context."""
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = _run(program, root, models_config)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+    return _designator_context(designator, root, models_config, description)
+
+
+def _populated_context(tmp_path, models_config: Path | None = None):
     root = tmp_path / "runs"
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
         "pipeline/2_designator/run.py",
     ):
-        result = _run(program, root)
+        result = _run(program, root, models_config)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     designator = _load_designator()
-    context = _designator_context(designator, root)
+    context = _designator_context(designator, root, models_config)
     return designator, context
+
+
+def _published_secondary_provenance(designator, context):
+    return next(
+        context.tree.read_artifact(
+            designator.DESIGNATOR, "secondary-provenance", entry["artifact_id"]
+        )["payload"]
+        for entry in context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
+        if entry["kind"] == "secondary-provenance"
+    )
 
 
 def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_rescue_crop(
     tmp_path,
 ):
-    designator, context = _populated_context(tmp_path)
+    designator, context = _populated_context(tmp_path, _configured_models_config(tmp_path))
     records = designator.page_records(context)
     pages = designator.sealed_pages(records)
     page_record = pages[1]
@@ -147,14 +177,7 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
     rows = [bytearray(row) for row in rows]
     rows[stray_y][stray_x] = 10  # unambiguous ink, far below any background threshold
     analysis = {"width": width, "height": height, "rows": rows, "background": background}
-    secondary = {
-        "chair": "secondary_proposer",
-        "chair_state": "configured",
-        "resolved_identity": None,
-        "resolved_revision": None,
-        "receipt_ref": None,
-        "adapter_revision": context.adapter_revision,
-    }
+    secondary = _published_secondary_provenance(designator, context)
 
     before_kinds = {
         entry["kind"] for entry in context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
@@ -201,6 +224,28 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
     assert after_kinds - before_kinds == {"secondary-proposal", "rescue-crop"}
 
 
+@pytest.mark.parametrize("missing", ["resolved_identity", "resolved_revision", "receipt_ref"])
+def test_a_configured_secondary_proposer_refuses_incomplete_provenance(tmp_path, missing):
+    designator, context = _populated_context(tmp_path, _configured_models_config(tmp_path))
+    records = designator.page_records(context)
+    page_record = designator.sealed_pages(records)[1]
+    width, height, rows, background = designator.page_pixels(context, page_record)
+    rows = [bytearray(row) for row in rows]
+    rows[height - 2][width - 2] = 10
+    secondary = _published_secondary_provenance(designator, context)
+    secondary[missing] = None
+
+    with pytest.raises(ContractError, match="identity|revision|receipt"):
+        designator._publish_secondary_proposals(
+            context,
+            1,
+            page_record,
+            {"width": width, "height": height, "rows": rows, "background": background},
+            designator._claimed_regions_by_page(context)[1],
+            secondary,
+        )
+
+
 # --- level 3: configuring the real roster changes no authoritative outcome -----
 
 
@@ -239,44 +284,10 @@ def _configured_models_config(tmp_path: Path) -> Path:
 def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_authority(
     tmp_path, monkeypatch
 ):
-    from common.stage import open_context, stage_parser
-
     designator = _load_designator()
     root = tmp_path / "runs"
     models_config = _configured_models_config(tmp_path)
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / program),
-                "--run-root",
-                str(root),
-                "--run-id",
-                "r",
-                "--scenario",
-                "happy",
-                "--models-config",
-                str(models_config),
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-
-    args = stage_parser("secondary held-exit test").parse_args(
-        [
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "happy",
-            "--models-config",
-            str(models_config),
-        ]
-    )
-    context = open_context(args, designator.DESIGNATOR)
+    context = _prepared_context(designator, root, models_config, "secondary held-exit test")
 
     def one_stray_candidate(width, height, rows, *, background):
         return [{"bounds": {"x": width - 2, "y": height - 2, "w": 1, "h": 1}, "pixel_count": 1}]
@@ -307,48 +318,14 @@ def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_
     every act's authoritative work was discarded and every downstream stage lost
     its expected-act denominator, because a review-only box was ambiguous.
     """
-    from common.stage import open_context, stage_parser
-
     designator = _load_designator()
     root = tmp_path / "runs"
     models_config = _configured_models_config(tmp_path)
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / program),
-                "--run-root",
-                str(root),
-                "--run-id",
-                "r",
-                "--scenario",
-                "happy",
-                "--models-config",
-                str(models_config),
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-
-    args = stage_parser("straddling rescue test").parse_args(
-        [
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "happy",
-            "--models-config",
-            str(models_config),
-        ]
-    )
-    context = open_context(args, designator.DESIGNATOR)
+    context = _prepared_context(designator, root, models_config, "straddling rescue test")
 
     # The two claims `initial_pass` is about to cut, computed from the same
     # fixture rectangles and the same padding policy it will use.
-    padding = designator.geometry.load_padding_config(args.designator_padding_config)
+    padding = designator.geometry.load_padding_config(context.args.designator_padding_config)
     page = next(row for row in context.fixture["page"] if row["ordinal"] == 1)
     will_claim = [
         designator.geometry.apply_padding(
@@ -402,45 +379,12 @@ def test_an_out_of_page_secondary_candidate_is_refused_as_a_contract_error(tmp_p
     always in-page by construction) but the day a real detector proposes boxes,
     they arrive from outside that guarantee.
     """
-    from common.contracts.errors import ContractError
-    from common.stage import open_context, stage_parser
-
     designator = _load_designator()
     root = tmp_path / "runs"
     models_config = _configured_models_config(tmp_path)
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / program),
-                "--run-root",
-                str(root),
-                "--run-id",
-                "r",
-                "--scenario",
-                "happy",
-                "--models-config",
-                str(models_config),
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-
-    args = stage_parser("out-of-page secondary candidate test").parse_args(
-        [
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "happy",
-            "--models-config",
-            str(models_config),
-        ]
+    context = _prepared_context(
+        designator, root, models_config, "out-of-page secondary candidate test"
     )
-    context = open_context(args, designator.DESIGNATOR)
 
     def out_of_page_candidate(width, height, rows, *, background):
         return [{"bounds": {"x": width - 1, "y": height - 1, "w": 5, "h": 5}, "pixel_count": 25}]
@@ -495,12 +439,9 @@ def test_configuring_the_real_roster_changes_no_authoritative_outcome(tmp_path):
         == configured_export["aggregate"]["status"]
         == "complete"
     )
-    assert {item["act_key"] for item in absent_export["delivered"]} == {
-        item["act_key"] for item in configured_export["delivered"]
+    assert {item["act_key"]: item["text"] for item in absent_export["delivered"]} == {
+        item["act_key"]: item["text"] for item in configured_export["delivered"]
     }
-    assert [item["text"] for item in absent_export["delivered"]] == [
-        item["text"] for item in configured_export["delivered"]
-    ]
 
     def seal_outcomes(tree):
         seal = tree.read_artifact(
@@ -515,9 +456,10 @@ def test_configuring_the_real_roster_changes_no_authoritative_outcome(tmp_path):
 
     assert seal_outcomes(absent_tree) == seal_outcomes(configured_tree)
 
-    # The only visible difference is the secondary chair's own provenance
-    # record and (on this fixture, which has no stray ink) no rescue crops --
-    # never a region, an act-group, or a changed proposal-seal.
+    # Nothing visible differs. The secondary chair's provenance record is
+    # written on every run, configured or absent, and this fixture has no stray
+    # ink, so no rescue crop is cut either -- and never a region, an act-group,
+    # or a changed proposal-seal.
     absent_kinds = {entry["kind"] for entry in absent_tree.build_manifest(DESIGNATOR)["artifacts"]}
     configured_kinds = {
         entry["kind"] for entry in configured_tree.build_manifest(DESIGNATOR)["artifacts"]
