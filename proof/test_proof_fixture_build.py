@@ -277,7 +277,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
 
 
 def test_the_recorded_structure_failure_names_one_page_and_one_closed_reason(skeleton):
-    """Spec 06 test 4's fixture: a page the structure seat could not mark out."""
+    """Spec 06 test 4's fixture: a page the structure chair could not mark out."""
     assert skeleton["structure_failure"] == [
         {
             "scenario": "structure-failure",

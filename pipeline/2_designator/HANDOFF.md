@@ -199,8 +199,8 @@ the roster flips it on — a misspelt or newly-added role that nothing resolves
 is exactly the silent-drift shape invariant #2 forbids. `secondary_provenance()`
 is that resolution path, and it is unconditional by construction (called once
 in `initial_pass` regardless of scenario or configuration), which is what makes
-the optional *seat* possible without a mandatory *code path* ever being
-skippable. This build's reading: the seat is optional, its resolution is not,
+the optional *chair* possible without a mandatory *code path* ever being
+skippable. This build's reading: the chair is optional, its resolution is not,
 and the two were never actually in tension — a reader who takes "optional"
 to mean "the resolution call may be skipped when nothing is configured" is
 reading a word choice as an implementation instruction it was never meant to
@@ -223,7 +223,7 @@ pass of 2026-08-10 measured what that cost: act a1's and act a2's *padded*
 capture rectangles abut at exactly one row of the shipped fixture page, so a
 single ordinary pen mark in the blank band between the two entries produced a
 candidate touching both, and `initial_pass` raised before the proposal seal was
-written. Configuring an optional, explicitly non-authoritative seat therefore
+written. Configuring an optional, explicitly non-authoritative chair therefore
 turned a complete run into a fatal one with no denominator at all — the exact
 inverse of spec 06's test 5, "removing the proposer changes no authority
 decision (it adds recall, never verdicts)".

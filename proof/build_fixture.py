@@ -428,7 +428,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
     for row in STRUCTURE_FAILURES:
         lines += [
             "",
-            "# A recorded structure-seat failure: the Designator holds the page and every",
+            "# A recorded structure-chair failure: the Designator holds the page and every",
             "# act that needed it, with the reason named, rather than skipping either.",
             "",
             "[[structure_failure]]",

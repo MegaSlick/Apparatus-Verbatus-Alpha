@@ -302,7 +302,7 @@ def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_aut
 def test_a_rescue_straddling_two_padded_claims_does_not_abort_the_authoritative_pass(
     tmp_path, monkeypatch
 ):
-    """The optional seat may not cost the run its denominator.
+    """The optional chair may not cost the run its denominator.
 
     Act a1's and act a2's *padded* capture rectangles abut exactly at one row of
     the fixture page, so an ordinary pen mark in the blank band between the two
