@@ -54,6 +54,27 @@ def test_ink_fully_covered_by_claimed_bounds_reconciles_with_no_residual():
     assert result["claimed_pixel_count"] == result["total_ink_pixel_count"] == 100 + 64
 
 
+@pytest.mark.parametrize(
+    "claimed_bounds",
+    [
+        {"x": -1, "y": 0, "w": 2, "h": 2},
+        {"x": 0, "y": 0, "w": 61, "h": 2},
+        {"x": 0.5, "y": 0, "w": 2, "h": 2},
+        {"x": 0, "y": 0, "w": 2, "h": 2, "extra": 1},
+    ],
+)
+def test_claimed_bounds_must_be_a_closed_integer_rectangle_inside_the_page(claimed_bounds):
+    width, height = 60, 40
+    with pytest.raises(ContractError, match="claimed bounds"):
+        reconcile(
+            width,
+            height,
+            blank_rows(width, height),
+            background=BACKGROUND,
+            claimed_bounds=[claimed_bounds],
+        )
+
+
 def test_claimed_plus_residual_always_equals_total():
     width, height = 80, 60
     rows = blank_rows(width, height)
@@ -240,7 +261,7 @@ def test_refuses_a_negative_review_priority_threshold():
 
 
 def test_refuses_a_non_positive_claimed_rectangle():
-    with pytest.raises(ContractError, match=r"claimed bounds .* are not a positive rectangle"):
+    with pytest.raises(ContractError, match=r"claimed bounds .* falls outside"):
         reconcile(
             10,
             10,

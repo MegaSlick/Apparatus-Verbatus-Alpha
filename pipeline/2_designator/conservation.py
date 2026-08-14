@@ -52,7 +52,7 @@ onto dense high-resolution pages would be equally unjustified.
 
 from typing import Final, TypedDict
 
-from geometry import Bounds
+import geometry
 from structure import (
     DEFAULT_GAP_TOLERANCE_PX,
     SECONDARY_MARGIN,
@@ -77,7 +77,7 @@ class ReconciliationResult(TypedDict):
 DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX: Final = 6
 
 
-def _is_claimed(x: int, y: int, claimed_bounds: list[Bounds]) -> bool:
+def _is_claimed(x: int, y: int, claimed_bounds: list[geometry.Bounds]) -> bool:
     for bounds in claimed_bounds:
         if (
             bounds["x"] <= x < bounds["x"] + bounds["w"]
@@ -93,7 +93,7 @@ def reconcile(
     rows: list,
     *,
     background: int,
-    claimed_bounds: list[Bounds],
+    claimed_bounds: list[geometry.Bounds],
     margin: int = SECONDARY_MARGIN,
     gap_tolerance_px: int = DEFAULT_GAP_TOLERANCE_PX,
     review_priority_min_dimension_px: int = DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX,
@@ -112,8 +112,7 @@ def reconcile(
             f"review priority threshold {review_priority_min_dimension_px} is negative"
         )
     for bounds in claimed_bounds:
-        if bounds["w"] <= 0 or bounds["h"] <= 0:
-            raise ContractError(f"claimed bounds {bounds} are not a positive rectangle")
+        geometry.validate_bounds(bounds, width, height, "claimed bounds")
 
     pixels = ink_pixels(width, height, rows, background=background, margin=margin)
     claimed = {pixel for pixel in pixels if _is_claimed(pixel[0], pixel[1], claimed_bounds)}

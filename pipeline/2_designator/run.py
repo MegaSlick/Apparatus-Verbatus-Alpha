@@ -368,9 +368,10 @@ def _body_overlap_area(group: dict, declared_bounds: dict) -> int:
     alone. The anchor is common evidence for both acts, so it cannot be what
     tells them apart; each group's own body text can.
     """
-    return sum(
-        _overlap_area(member["bounds"], declared_bounds) for member in group.get("body_members", [])
-    )
+    body_members = group.get("body_members")
+    if not isinstance(body_members, list):
+        raise ContractError("a structural group carries no body_members evidence")
+    return sum(_overlap_area(member["bounds"], declared_bounds) for member in body_members)
 
 
 def _match_structural_group(groups: list[dict], declared_bounds: dict, what: str) -> dict:
@@ -1588,6 +1589,153 @@ def _initial_pass_has_holds(
     return any(hold_facts)
 
 
+def _account_for_declared_act(
+    context,
+    act: dict,
+    pages: dict[int, dict],
+    records: dict[int, dict],
+    failures: dict[int, str],
+    page_cache: dict[int, dict],
+    padding: dict,
+    provenance: dict,
+) -> tuple[dict, list[dict]]:
+    """Account for one fixture act and return its seal row and evidence."""
+    page_ordinal = act["page_ordinal"]
+    act_id = act_identity(context.fixture, act)
+    continuation = continuation_for(context.fixture, act["key"])
+    continuation_cut = False
+    evidence = []
+
+    if page_ordinal not in pages:
+        # The act's own page never sealed. It cannot be marked out, and it
+        # may not disappear either: it is held, with the reason on record,
+        # and no region of it — not even a sealed continuation — is cut. An
+        # orphan far-side crop would be evidence of an act nothing accounts
+        # for.
+        outcome = "held"
+        hold = hold_act(
+            context,
+            act,
+            act_id,
+            page_ordinal,
+            records,
+            f"page {page_ordinal} was not sealed, so the act could not be marked out",
+            "exemplar-page-not-sealed",
+        )
+        evidence.append(context.input_ref(hold.relative_path))
+    elif page_ordinal in failures:
+        # The page sealed — its ink is real and reachable — but the structure
+        # pass could not mark it out. That is not a blank page and not a page
+        # to skip: the act stays in the denominator, held, with the structural
+        # reason named. Its ink still reaches the accounting, as conservation
+        # residual, because no crop claims any of it.
+        outcome = "held"
+        hold = hold_act(
+            context,
+            act,
+            act_id,
+            page_ordinal,
+            records,
+            f"the structure pass could not mark out page {page_ordinal} "
+            f"({failures[page_ordinal]}), so the act could not be bounded",
+            "structure-pass-held",
+        )
+        evidence.append(context.input_ref(hold.relative_path))
+    else:
+        analysis = _analyze_page(page_cache, context, page_ordinal, pages[page_ordinal])
+        primary = cut_region(
+            context,
+            act,
+            pages[page_ordinal],
+            act_bounds(act),
+            1,
+            page_ordinal,
+            "proposal",
+            padding=padding,
+            provenance=provenance,
+        )
+        evidence.append(context.input_ref(primary.relative_path))
+
+        # An act that runs over the page break gets a second region of the
+        # SAME act. A continuation that became its own act would quietly turn
+        # one entry into two and break identity where it is hardest to see.
+        continuation_analysis = None
+        if (
+            continuation
+            and continuation["page_ordinal"] in pages
+            and continuation["page_ordinal"] not in failures
+        ):
+            continuation_analysis = _analyze_page(
+                page_cache,
+                context,
+                continuation["page_ordinal"],
+                pages[continuation["page_ordinal"]],
+            )
+            continuation_region = cut_region(
+                context,
+                act,
+                pages[continuation["page_ordinal"]],
+                _bounds_of(continuation),
+                2,
+                continuation["page_ordinal"],
+                "proposal",
+                padding=padding,
+                provenance=provenance,
+            )
+            evidence.append(context.input_ref(continuation_region.relative_path))
+            continuation_cut = True
+
+        if continuation and not continuation_cut:
+            # The near side is sealed ink and stays cut as evidence for the
+            # reviewer, but the act as marked out is incomplete: delivering
+            # a reading of the near side alone would be a truncation wearing
+            # a complete act's name.
+            outcome = "held"
+            far_ordinal = continuation["page_ordinal"]
+            if far_ordinal in failures:
+                reason = (
+                    f"the act continues onto page {far_ordinal}, which the structure "
+                    f"pass could not mark out ({failures[far_ordinal]}), so its "
+                    "continuation could not be cut"
+                )
+                reason_code = "structure-pass-held-on-continuation"
+            else:
+                reason = (
+                    f"the act continues onto page {far_ordinal}, "
+                    "which was not sealed, so its continuation could not be cut"
+                )
+                reason_code = "exemplar-continuation-not-sealed"
+            hold = hold_act(context, act, act_id, far_ordinal, records, reason, reason_code)
+            evidence.append(context.input_ref(hold.relative_path))
+        else:
+            outcome = "proposed"
+            _publish_act_group(
+                context,
+                act,
+                act_id,
+                pages[page_ordinal],
+                analysis,
+                continuation if continuation_cut else None,
+                pages[continuation["page_ordinal"]] if continuation_cut else None,
+                continuation_analysis if continuation_cut else None,
+            )
+
+    row = {
+        "act_id": act_id,
+        "act_key": act["key"],
+        "page_id": page_identity(context.fixture, page_ordinal),
+        "page_ordinal": page_ordinal,
+        # Derived from the regions actually cut, never from the fixture
+        # declaration: a seal that claims a continuation nothing holds is
+        # how an act gets read on one side of a page break and delivered as a
+        # complete reading.
+        "has_continuation": continuation_cut,
+        "outcome": outcome,
+        "evidence": sorted(evidence, key=lambda reference: reference["relative_path"]),
+    }
+    return row, evidence
+
+
 def initial_pass(context) -> bool:
     """Mark out every act on every sealed page. True when anything was held."""
     records = page_records(context)
@@ -1634,141 +1782,17 @@ def initial_pass(context) -> bool:
     expected = []
     seal_inputs = []
     for act in context.fixture["act"]:
-        page_ordinal = act["page_ordinal"]
-        act_id = act_identity(context.fixture, act)
-        continuation = continuation_for(context.fixture, act["key"])
-        continuation_cut = False
-        evidence = []
-
-        if page_ordinal not in pages:
-            # The act's own page never sealed. It cannot be marked out, and it
-            # may not disappear either: it is held, with the reason on record,
-            # and no region of it — not even a sealed continuation — is cut. An
-            # orphan far-side crop would be evidence of an act nothing accounts
-            # for.
-            outcome = "held"
-            hold = hold_act(
-                context,
-                act,
-                act_id,
-                page_ordinal,
-                records,
-                f"page {page_ordinal} was not sealed, so the act could not be marked out",
-                "exemplar-page-not-sealed",
-            )
-            evidence.append(context.input_ref(hold.relative_path))
-        elif page_ordinal in failures:
-            # The page sealed — its ink is real and reachable — but the structure
-            # pass could not mark it out. That is not a blank page and not a page
-            # to skip: the act stays in the denominator, held, with the structural
-            # reason named. Its ink still reaches the accounting, as conservation
-            # residual, because no crop claims any of it.
-            outcome = "held"
-            hold = hold_act(
-                context,
-                act,
-                act_id,
-                page_ordinal,
-                records,
-                f"the structure pass could not mark out page {page_ordinal} "
-                f"({failures[page_ordinal]}), so the act could not be bounded",
-                "structure-pass-held",
-            )
-            evidence.append(context.input_ref(hold.relative_path))
-        else:
-            analysis = _analyze_page(page_cache, context, page_ordinal, pages[page_ordinal])
-            primary = cut_region(
-                context,
-                act,
-                pages[page_ordinal],
-                act_bounds(act),
-                1,
-                page_ordinal,
-                "proposal",
-                padding=padding,
-                provenance=provenance,
-            )
-            evidence.append(context.input_ref(primary.relative_path))
-
-            # An act that runs over the page break gets a second region of the
-            # SAME act. A continuation that became its own act would quietly turn
-            # one entry into two and break identity where it is hardest to see.
-            continuation_analysis = None
-            if (
-                continuation
-                and continuation["page_ordinal"] in pages
-                and continuation["page_ordinal"] not in failures
-            ):
-                continuation_analysis = _analyze_page(
-                    page_cache,
-                    context,
-                    continuation["page_ordinal"],
-                    pages[continuation["page_ordinal"]],
-                )
-                continuation_region = cut_region(
-                    context,
-                    act,
-                    pages[continuation["page_ordinal"]],
-                    _bounds_of(continuation),
-                    2,
-                    continuation["page_ordinal"],
-                    "proposal",
-                    padding=padding,
-                    provenance=provenance,
-                )
-                evidence.append(context.input_ref(continuation_region.relative_path))
-                continuation_cut = True
-
-            if continuation and not continuation_cut:
-                # The near side is sealed ink and stays cut as evidence for the
-                # reviewer, but the act as marked out is incomplete: delivering
-                # a reading of the near side alone would be a truncation wearing
-                # a complete act's name.
-                outcome = "held"
-                far_ordinal = continuation["page_ordinal"]
-                if far_ordinal in failures:
-                    reason = (
-                        f"the act continues onto page {far_ordinal}, which the structure "
-                        f"pass could not mark out ({failures[far_ordinal]}), so its "
-                        "continuation could not be cut"
-                    )
-                    reason_code = "structure-pass-held-on-continuation"
-                else:
-                    reason = (
-                        f"the act continues onto page {far_ordinal}, "
-                        "which was not sealed, so its continuation could not be cut"
-                    )
-                    reason_code = "exemplar-continuation-not-sealed"
-                hold = hold_act(context, act, act_id, far_ordinal, records, reason, reason_code)
-                evidence.append(context.input_ref(hold.relative_path))
-            else:
-                outcome = "proposed"
-                _publish_act_group(
-                    context,
-                    act,
-                    act_id,
-                    pages[page_ordinal],
-                    analysis,
-                    continuation if continuation_cut else None,
-                    pages[continuation["page_ordinal"]] if continuation_cut else None,
-                    continuation_analysis if continuation_cut else None,
-                )
-
-        expected.append(
-            {
-                "act_id": act_id,
-                "act_key": act["key"],
-                "page_id": page_identity(context.fixture, page_ordinal),
-                "page_ordinal": page_ordinal,
-                # Derived from the regions actually cut, never from the fixture
-                # declaration: a seal that claims a continuation nothing holds is
-                # how an act gets read on one side of a page break and delivered
-                # as a complete reading.
-                "has_continuation": continuation_cut,
-                "outcome": outcome,
-                "evidence": sorted(evidence, key=lambda reference: reference["relative_path"]),
-            }
+        row, evidence = _account_for_declared_act(
+            context,
+            act,
+            pages,
+            records,
+            failures,
+            page_cache,
+            padding,
+            provenance,
         )
+        expected.append(row)
         seal_inputs.extend(evidence)
 
     # Every sealed page the structure pass found nothing on is cut into its
