@@ -1,6 +1,8 @@
 # operations
 
-**Status:** offline rehearsal; no live provider or paid path is wired in.
+**Status:** offline rehearsal; no pod is started, adopted, or billed. The one path that
+leaves the computer is `verbatus upload --network-volume`, which must be named explicitly
+and moves files only.
 
 Anything with a human, a machine, or money on the other end.
 

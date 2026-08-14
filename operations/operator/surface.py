@@ -732,6 +732,15 @@ class OperatorSurface:
             descriptor_action="run",
         )
         page_records = export_payload.get("pages", [])
+        # A list, or the count is refused: `pages` arrives from an artifact on
+        # disk, and len() of a string or mapping is a confident wrong page
+        # count on the one line that says whether a parish was accounted for.
+        if not isinstance(page_records, list):
+            raise OperatorError(
+                ErrorCode.RUN_FAILED,
+                detail="the Armarium export's page record is not a list; the page count "
+                "cannot be reported from it",
+            )
         expected = export_payload.get("expected_acts")
         expected_on_screen = f"{expected} total" if expected is not None else "total not recorded"
         expected_in_notice = (

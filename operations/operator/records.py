@@ -69,13 +69,16 @@ def utc_stamp(value: datetime) -> str:
 def sha256_file(path: Path) -> str:
     """The one spelling of a file digest, read in blocks rather than whole.
 
-    Opened non-blocking and refused unless the *open descriptor* says it is a
-    regular file — not the name, which can change between the check and the
-    open. A FIFO left at a path a receipt records would otherwise block on the
-    open itself, and `status` would hang forever having printed nothing.
+    Opened non-blocking, no-follow, and refused unless the *open descriptor*
+    says it is a regular file — not the name, which can change between the
+    check and the open. A FIFO left at a path a receipt records would
+    otherwise block on the open itself, and `status` would hang forever having
+    printed nothing; a planted symlink would be read through to bytes this
+    store never wrote and cannot vouch for (`operations/pod/transfer.py`
+    closes the same gap the same way).
     """
 
-    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     digest = hashlib.sha256()
     with os.fdopen(descriptor, "rb") as handle:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
@@ -98,7 +101,7 @@ def _bounded_bytes(path: Path, subject: str) -> bytes:
     is the other one. Found by CodeRabbit.
     """
 
-    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     with os.fdopen(descriptor, "rb") as handle:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
             raise OSError(errno.EINVAL, "a record needs a regular file", str(path))

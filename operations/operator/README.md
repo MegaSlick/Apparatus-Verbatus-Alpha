@@ -1,6 +1,8 @@
 # Verbatus — the operator surface
 
-**Status:** offline rehearsal; every verb runs against fixtures, and no live provider is wired in.
+**Status:** offline rehearsal; every verb runs against fixtures, and no pod is started,
+adopted, or billed. The one path that leaves the computer is `upload --network-volume`,
+which must be named explicitly and moves files only.
 
 **You do not need Terminal, SSH, Python, or an AI assistant for a normal run.**
 Double-click [Verbatus.command](Verbatus.command) and answer one question at a time.

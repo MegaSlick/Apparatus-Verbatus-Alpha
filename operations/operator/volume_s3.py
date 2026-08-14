@@ -134,6 +134,7 @@ def build_client(spec: VolumeSpec, environ: Mapping[str, str] | None = None) -> 
     secret_key = _credential(env, spec.secret_key_env)
     try:
         import boto3
+        from botocore.config import Config
     except ImportError as error:
         raise VolumeTransferRefusal(
             "sending to a network volume needs the project's boto3 dependency, but it "
@@ -145,6 +146,14 @@ def build_client(spec: VolumeSpec, environ: Mapping[str, str] | None = None) -> 
         aws_secret_access_key=secret_key,
         region_name=spec.datacenter_id,
         endpoint_url=spec.endpoint_url,
+        # Explicit bounds, so a stalled endpoint becomes a named refusal rather
+        # than a terminal that prints nothing indefinitely. total_max_attempts
+        # counts the initial request.
+        config=Config(
+            connect_timeout=30,
+            read_timeout=120,
+            retries={"total_max_attempts": 3, "mode": "standard"},
+        ),
     )
 
 
