@@ -75,7 +75,7 @@ SEQUENCE = (
     ("door", "pipeline/1_exemplar/door.py"),
     ("exemplar", "pipeline/1_exemplar/run.py"),
     ("designator", "pipeline/2_designator/run.py"),
-    ("attestatores", "pipeline/3_attestatores/run.py"),
+    (ATTESTATORES, "pipeline/3_attestatores/run.py"),
     ("perlector", "pipeline/4_perlector/run.py"),
     ("recensor", "pipeline/5_recensor/run.py"),
     ("archetypus", "pipeline/6_archetypus/run.py"),

@@ -140,9 +140,10 @@ reusing attempt 1's testimony. A reread for which no response is declared at its
 own ordinal is `failed`, not `not-run`: the invocation named one chair on one
 act, so it is an attempt that produced no usable Testimonium.
 
-Each identity is `read:<chair>:<ordinal>`; the RunTree's immutable publish
-boundary atomically creates it and refuses different bytes at an existing
-identity. The stage has no pointer and no artifact overwrite path.
+Each attempt identity binds the act, the operation `read:<chair>`, and the
+ordinal — `attempt_id(act_id, f"read:{chair}", ordinal)`. The RunTree's
+immutable publish boundary atomically creates it and refuses different bytes at
+an existing identity. The stage has no pointer and no artifact overwrite path.
 
 Consumers derive current per chair through `common.stage.latest_per_chair()`.
 Thus a later `failed` attempt is current and visible, while the earlier successful

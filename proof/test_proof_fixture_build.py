@@ -312,6 +312,16 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # recorded structure failure, or the scenario would prove nothing.
     assert by_name["structure-failure"]["recover_acts"] == []
     assert by_name["structure-failure"]["hold_acts"] == []
+    for name in (
+        "reread-failure",
+        "reread-success",
+        "not-run-witness",
+        "malformed-witness",
+        "structured-witness",
+        "malformed-capabilities",
+    ):
+        assert by_name[name]["recover_acts"] == []
+        assert by_name[name]["hold_acts"] == []
 
 
 def test_the_recorded_structure_failure_names_one_page_and_one_closed_reason(skeleton):

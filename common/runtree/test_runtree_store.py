@@ -1172,10 +1172,20 @@ def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_cras
     tree.publish_artifact(envelope)
     path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
     nesting = 30_000
-    path.write_text(
-        f'{{"deep": {"[" * nesting}"leaf"{"]" * nesting}}}',
-        encoding="utf-8",
-    )
+    deep_text = f'{{"deep": {"[" * nesting}"leaf"{"]" * nesting}}}'
+    path.write_text(deep_text, encoding="utf-8")
+
+    # Without this premise the assertion below can pass through the missing-field
+    # refusal alone, leaving the reader-side RecursionError guard uncovered.
+    try:
+        json.loads(deep_text)
+    except RecursionError:
+        pass
+    else:
+        pytest.skip(
+            f"this interpreter's JSON scanner absorbs {nesting} levels, so the "
+            "guarded path is unreachable here and this test proves nothing"
+        )
 
     # Both refusals named, rather than any `SchemaRefusal` at all: the point is
     # that one of two known doors closes, not that something somewhere objected.

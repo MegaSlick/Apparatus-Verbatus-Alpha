@@ -1407,34 +1407,11 @@ def test_the_config_digest_still_binds_the_scenario_as_well_as_the_chairs(happy_
     assert run_config_bindings(config, altered, "happy")["config_digest"] != happy
 
 
-def absent_third_chair_config(tmp_path: Path) -> Path:
-    """A models.toml identical to the live one but with chair 3 explicitly absent."""
-    config_root = tmp_path / "chair-config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
-    configured = """[chairs.attestator_3]
-state = \"configured\"
-source = \"local-repository\"
-path = \"attestator_3\"
-digest_manifest = \"b9d6f5b6400e8aa36ecc35bad33cb4c54bb69b207e1ffdea39e1999cfa7e523a\"
-manifest = \"manifests/attestator_3.json\"
-serving_recipe = \"fake-attestatores-v0\"
-license_note = \"fixture identity only; no model weights or model license apply\"
-"""
-    absent = """[chairs.attestator_3]
-state = \"absent\"
-reason = \"fixture test removes this witness without replacing it\"
-"""
-    assert configured in live
-    models_config = config_root / "models.toml"
-    models_config.write_text(live.replace(configured, absent), encoding="utf-8")
-    return models_config
-
-
-def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(tmp_path):
+def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(
+    tmp_path, absent_third_chair_config
+):
     """Exercise absence through real stage programs, not only the config parser."""
-    models_config = absent_third_chair_config(tmp_path)
+    models_config = absent_third_chair_config
 
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "happy", models_config=models_config)
@@ -1475,7 +1452,9 @@ def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(t
     assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
 
 
-def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(tmp_path):
+def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(
+    tmp_path, absent_third_chair_config
+):
     """A dead witness is dead independent of the act's own state.
 
     "Held" here is the Designator's own outcome — `refused-page` holds a2 because
@@ -1486,7 +1465,7 @@ def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(tmp_path):
     unreachable witness into a merely unasked one, and a live chair on the same
     act must stay `not-run` rather than being swept into the same word.
     """
-    models_config = absent_third_chair_config(tmp_path)
+    models_config = absent_third_chair_config
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "refused-page", models_config=models_config)
     assert result.returncode == 3, result.stderr

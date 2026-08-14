@@ -4,7 +4,7 @@ import ast
 import copy
 import importlib.util
 import inspect
-import shutil
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -89,36 +89,6 @@ def run_to_designator(
     return run_root, RunTree(run_root, "retention")
 
 
-def absent_third_chair_config(tmp_path: Path) -> Path:
-    """A models.toml whose third witness chair is explicitly absent.
-
-    The same substitution `pipeline/orchestrator/test_orchestrator_acceptance.py`
-    makes, kept here so this file can exercise the reread guard rails against a
-    real `AbsentChair` rather than against a stub of one.
-    """
-    config_root = tmp_path / "chair-config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
-    configured = """[chairs.attestator_3]
-state = "configured"
-source = "local-repository"
-path = "attestator_3"
-digest_manifest = "b9d6f5b6400e8aa36ecc35bad33cb4c54bb69b207e1ffdea39e1999cfa7e523a"
-manifest = "manifests/attestator_3.json"
-serving_recipe = "fake-attestatores-v0"
-license_note = "fixture identity only; no model weights or model license apply"
-"""
-    absent = """[chairs.attestator_3]
-state = "absent"
-reason = "fixture test removes this witness without replacing it"
-"""
-    assert configured in live
-    path = config_root / "models.toml"
-    path.write_text(live.replace(configured, absent), encoding="utf-8")
-    return path
-
-
 def _testimonia(tree: RunTree) -> list[dict]:
     return [
         tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
@@ -189,6 +159,55 @@ def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
     assert current["payload"]["attempt_ordinal"] == 2
     assert current["outcome"] == "failed"
     assert attestatores.attempt_tally(tree)["count"] == 12
+
+
+def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair(
+    tmp_path, monkeypatch
+):
+    """Preflight and publication share one region map, while the closing tally
+    independently verifies each act once. Page-fallback bounds are indexed once
+    for the pass rather than by every act/chair resolution."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    region_calls: list[str] = []
+    bounds_calls = 0
+    real_proposed_regions = attestatores.proposed_regions
+    real_page_fallback_bounds = attestatores._page_fallback_bounds
+
+    def counted_regions(context, act_id):
+        region_calls.append(act_id)
+        return real_proposed_regions(context, act_id)
+
+    def counted_bounds(context):
+        nonlocal bounds_calls
+        bounds_calls += 1
+        return real_page_fallback_bounds(context)
+
+    monkeypatch.setattr(attestatores, "proposed_regions", counted_regions)
+    monkeypatch.setattr(attestatores, "_page_fallback_bounds", counted_bounds)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+
+    assert attestatores.main() == 0
+
+    act_ids = {record["subject_id"] for record in _testimonia(tree)}
+    assert len(act_ids) == 2
+    assert bounds_calls == 1
+    assert {act_id: region_calls.count(act_id) for act_id in act_ids} == {
+        act_id: 2 for act_id in act_ids
+    }
 
 
 # --- The targeted reread: one chair, one act ------------------------------------
@@ -464,10 +483,10 @@ def test_a_targeted_reread_of_a_held_act_is_refused(tmp_path):
     assert "is held" in result.stderr
 
 
-def test_a_targeted_reread_of_an_absent_chair_is_refused(tmp_path):
+def test_a_targeted_reread_of_an_absent_chair_is_refused(tmp_path, absent_third_chair_config):
     """A dead chair is dead. Asking it again is not a second attempt, and inventing
     one would put a serving moment on a chair that never served."""
-    models_config = absent_third_chair_config(tmp_path)
+    models_config = absent_third_chair_config
     run_root, tree = run_to_designator(tmp_path, "happy", models_config=models_config)
     assert (
         invoke_stage(
@@ -1145,7 +1164,17 @@ def test_damaged_attempt_tally_is_unknown_and_refuses_to_add_a_replacement(tmp_p
         manifest_path.write_bytes(b"{")
     elif damage == "recursion":
         nesting = 30_000
-        manifest_path.write_bytes(f'{{"deep": {"[" * nesting}"leaf"{"]" * nesting}}}'.encode())
+        deep_text = f'{{"deep": {"[" * nesting}"leaf"{"]" * nesting}}}'
+        try:
+            json.loads(deep_text)
+        except RecursionError:
+            pass
+        else:
+            pytest.skip(
+                f"this interpreter's JSON scanner absorbs {nesting} levels, so the "
+                "guarded path is unreachable here and this case proves nothing"
+            )
+        manifest_path.write_bytes(deep_text.encode())
     else:
         manifest_path.write_bytes(original[:-1])
 
@@ -1249,3 +1278,30 @@ def test_an_accounting_imbalance_is_fatal_and_never_becomes_a_hold(tmp_path, mon
 
     with pytest.raises(attestatores.FatalAccounting, match="no terminal set"):
         attestatores.attempt_tally(tree)
+
+
+def test_main_does_not_turn_a_fatal_manifest_outcome_into_a_hold(tmp_path):
+    """The initial existing-attempt check builds the manifest before the tally.
+    Its FatalAccounting must reach the stage boundary as fatal, not be caught by
+    the neighbouring ordinary ContractError-to-hold path."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    initial = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
+    assert initial.returncode == 0, initial.stderr
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    damaged = copy.deepcopy(record)
+    damaged["outcome"] = "outside-the-closed-vocabulary"
+    damaged["self_hash"] = self_hash(damaged)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(damaged))
+
+    retry = invoke_stage(
+        run_root,
+        "retention",
+        "happy",
+        "pipeline/3_attestatores/run.py",
+        attempt_ordinal=2,
+    )
+
+    assert retry.returncode == 2
+    assert "outside-the-closed-vocabulary" in retry.stderr
+    assert "attempt tally UNKNOWN" not in retry.stderr

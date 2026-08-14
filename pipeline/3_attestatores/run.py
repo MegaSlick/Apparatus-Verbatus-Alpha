@@ -647,20 +647,28 @@ def _refuse_write_collision(
         )
 
 
-def preflight_appendable_ordinals(context, acts: list[dict[str, Any]], ordinal: int) -> None:
+def preflight_appendable_ordinals(
+    context,
+    acts: list[dict[str, Any]],
+    ordinal: int,
+    declarations: dict[str, Any],
+    page_fallback_bounds: dict[str, dict],
+) -> dict[str, tuple[list[dict], str | None]]:
     """Refuse a damaged history, or a colliding write, before adding any new
     attempt to this invocation.
 
     The ordinal bound alone is not enough: it lets a whole pass through at an
     ordinal a targeted reread has already sealed a *different* record at for one
     chair, and the collision then surfaces reactively, mid-pass, at whichever
-    pair the loop reaches it on — see `_refuse_write_collision`. Declarations
-    are read once, ahead of the loop, exactly as `attempt_pass` reads them,
-    since the two must agree on what this ordinal means to compute the same
-    would-be attempt this pass is actually about to write.
+    pair the loop reaches it on — see `_refuse_write_collision`. The caller
+    supplies one declaration set and one page-fallback index for both
+    this preflight and `attempt_pass`, since the two must agree on what this
+    ordinal means. The returned region map lets publication use the exact regions
+    preflight already verified instead of walking and hashing Designator again.
     """
-    declarations = declarations_for(context, ordinal)
+    regions_by_act: dict[str, tuple[list[dict], str | None]] = {}
     for act in acts:
+        regions: list[dict] = []
         if act["outcome"] == "held":
             not_read: str | None = (
                 "the Designator held this act; its incomplete proposal was not shown "
@@ -668,30 +676,45 @@ def preflight_appendable_ordinals(context, acts: list[dict[str, Any]], ordinal: 
             )
         else:
             try:
-                proposed_regions(context, act["act_id"])
+                regions = proposed_regions(context, act["act_id"])
                 not_read = None
             except ContractError as error:
                 if isinstance(error, FatalAccounting):
                     raise
                 not_read = f"the proposed region was refused before this chair ran: {error}"
+        regions_by_act[act["act_id"]] = (regions, not_read)
         for chair in context.witness_chairs:
             require_appendable_ordinal(context, act["act_id"], chair, ordinal)
             resolved = context.registry.resolve(chair)
             attempt = (
                 not_read_attempt(resolved, not_read)
                 if not_read is not None
-                else resolve_attempt(context, act, chair, resolved, declarations)
+                else resolve_attempt(
+                    context,
+                    act,
+                    chair,
+                    resolved,
+                    declarations,
+                    page_fallback_bounds=page_fallback_bounds,
+                )
             )
             _refuse_write_collision(context, act, chair, ordinal, attempt)
+    return regions_by_act
 
 
-def validate_tallied_testimonium(context, record: dict[str, Any], act: dict[str, Any]) -> None:
+def validate_tallied_testimonium(
+    context,
+    record: dict[str, Any],
+    act: dict[str, Any],
+    regions_by_act: dict[str, list[dict]],
+) -> None:
     """Refuse a resealed Testimonium that this stage could not have produced.
 
     The generic envelope proves a record is syntactically sealed; the attempt
     tally also has to prove its stage-specific channel remains interpretable
     before authorizing another immutable append. This deliberately validates no
-    witness's *content* and makes no quality decision.
+    witness's *content* and makes no quality decision. `regions_by_act` retains
+    that independent verification once per act while the tally checks each chair.
     """
     payload = record.get("payload")
     if not isinstance(payload, dict):
@@ -740,7 +763,10 @@ def validate_tallied_testimonium(context, record: dict[str, Any], act: dict[str,
     if attempted:
         if act["outcome"] != "proposed":
             raise SchemaRefusal("a Testimonium attempted a Designator-held act")
-        regions = proposed_regions(context, act["act_id"])
+        regions = regions_by_act.get(act["act_id"])
+        if regions is None:
+            regions = proposed_regions(context, act["act_id"])
+            regions_by_act[act["act_id"]] = regions
         if payload["regions"] != region_references(regions) or record["inputs"] != region_inputs(
             context, regions
         ):
@@ -843,6 +869,7 @@ def attempt_tally(
     by_act = {act["act_id"]: act for act in acts or ()}
     try:
         by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        regions_by_act: dict[str, list[dict]] = {}
         for entry in testimonia:
             record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
             payload = record.get("payload")
@@ -866,7 +893,7 @@ def attempt_tally(
                 act = by_act.get(record["subject_id"])
                 if act is None:
                     raise SchemaRefusal("a Testimonium tally record names no expected act")
-                validate_tallied_testimonium(context, record, act)
+                validate_tallied_testimonium(context, record, act, regions_by_act)
         if chairs is not None:
             expected_pairs = {(act["act_id"], chair) for act in acts for chair in chairs}
             if set(by_pair) != expected_pairs:
@@ -995,6 +1022,7 @@ def resolve_attempt(
     resolved: ChairIdentity | AbsentChair,
     declarations: dict[str, Any],
     *,
+    page_fallback_bounds: dict[str, dict],
     reread: bool = False,
 ) -> Attempt:
     """What one configured chair's attempt at one act came to.
@@ -1043,7 +1071,7 @@ def resolve_attempt(
         reason = (
             f"the provider response was refused without repair: {declarations['malformed'][key]}"
         )
-    elif _is_page_fallback(context, act) or key in declarations["empty"]:
+    elif _is_page_fallback(context, act, page_fallback_bounds) or key in declarations["empty"]:
         outcome = "genuinely-empty"
         native_payload = ""
         health = content_health(native_payload, completed=True)
@@ -1107,36 +1135,31 @@ def publish_attempt(
     )
 
 
-def attempt_pass(context, acts: list[dict[str, Any]], ordinal: int) -> tuple[int, bool]:
+def attempt_pass(
+    context,
+    acts: list[dict[str, Any]],
+    ordinal: int,
+    declarations: dict[str, Any],
+    page_fallback_bounds: dict[str, dict],
+    regions_by_act: dict[str, tuple[list[dict], str | None]],
+) -> tuple[int, bool]:
     """Every configured chair's attempt at every expected act, at one ordinal.
 
     Returns how many records were written and whether any proposal crop was
     refused — the second is reported, never swallowed, because an act whose crop
-    no chair could be shown is a different fact from an act every chair read.
+    no chair could be shown is a different fact from an act every chair read. The
+    region map is the result of this invocation's no-write preflight; publication
+    order and the write path remain unchanged.
     """
-    declarations = declarations_for(context, ordinal)
     recorded = 0
     isolated_crop_failure = False
     for act in acts:
-        regions: list[dict] = []
-        not_read: str | None = None
-        if act["outcome"] == "held":
-            not_read = (
-                "the Designator held this act; its incomplete proposal was not shown "
-                "to any configured witness"
-            )
-        else:
-            try:
-                regions = proposed_regions(context, act["act_id"])
-            except ContractError as error:
-                if isinstance(error, FatalAccounting):
-                    raise
-                # A refused crop is isolated to its act. No witness is claimed to
-                # have read pixels whose lineage failed; every chair instead
-                # receives an explicit non-reading record and the other acts
-                # proceed.
-                not_read = f"the proposed region was refused before this chair ran: {error}"
-                isolated_crop_failure = True
+        regions, not_read = regions_by_act[act["act_id"]]
+        if not_read is not None and act["outcome"] != "held":
+            # A refused crop is isolated to its act. No witness is claimed to
+            # have read pixels whose lineage failed; every chair instead receives
+            # an explicit non-reading record and the other acts proceed.
+            isolated_crop_failure = True
 
         for chair in context.witness_chairs:
             resolved = context.registry.resolve(chair)
@@ -1150,7 +1173,14 @@ def attempt_pass(context, acts: list[dict[str, Any]], ordinal: int) -> tuple[int
                 attempt=(
                     not_read_attempt(resolved, not_read)
                     if not_read is not None
-                    else resolve_attempt(context, act, chair, resolved, declarations)
+                    else resolve_attempt(
+                        context,
+                        act,
+                        chair,
+                        resolved,
+                        declarations,
+                        page_fallback_bounds=page_fallback_bounds,
+                    )
                 ),
             )
             recorded += 1
@@ -1211,6 +1241,7 @@ def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) ->
     # No `require_appendable_ordinal` here: `next_attempt_ordinal` returns the
     # current ordinal plus one, off the same history, so the bound cannot fire.
     ordinal = next_attempt_ordinal(context, act_id, chair)
+    page_fallback_bounds = _page_fallback_bounds(context)
     publish_attempt(
         context,
         act=act,
@@ -1219,7 +1250,13 @@ def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) ->
         ordinal=ordinal,
         regions=proposed_regions(context, act_id),
         attempt=resolve_attempt(
-            context, act, chair, resolved, declarations_for(context, ordinal), reread=True
+            context,
+            act,
+            chair,
+            resolved,
+            declarations_for(context, ordinal),
+            page_fallback_bounds=page_fallback_bounds,
+            reread=True,
         ),
     )
     return 1
@@ -1248,6 +1285,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     acts = expected_acts(context)
     try:
         has_existing_attempts = bool(context.tree.build_manifest(ATTESTATORES)["artifacts"])
+    except FatalAccounting:
+        raise
     except ContractError as error:
         print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
         return EXIT_HELD
@@ -1280,7 +1319,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
         ordinal = 1 if args.attempt_ordinal is None else args.attempt_ordinal
         try:
-            preflight_appendable_ordinals(context, acts, ordinal)
+            declarations = declarations_for(context, ordinal)
+            page_fallback_bounds = _page_fallback_bounds(context)
+            regions_by_act = preflight_appendable_ordinals(
+                context,
+                acts,
+                ordinal,
+                declarations,
+                page_fallback_bounds,
+            )
         except ContractError as error:
             # A damaged existing channel cannot be repaired by adding a replacement
             # attempt. It is an UNKNOWN tally and holds the folder as it stands.
@@ -1297,7 +1344,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 raise
             print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
             return EXIT_HELD
-        recorded, isolated_crop_failure = attempt_pass(context, acts, ordinal)
+        recorded, isolated_crop_failure = attempt_pass(
+            context,
+            acts,
+            ordinal,
+            declarations,
+            page_fallback_bounds,
+            regions_by_act,
+        )
 
     if recorded == 0:
         raise ContractError("no chair produced an outcome for any act")
