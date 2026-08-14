@@ -348,7 +348,13 @@ def _delivered_images(context, rows: list[dict[str, Any]], *, kind: str) -> list
             raise SchemaRefusal(f"a dossier {kind} at ordinal {ordinal} names no image path")
         if not isinstance(expected_digest, str) or not expected_digest:
             raise SchemaRefusal(f"a dossier {kind} at ordinal {ordinal} names no image digest")
-        image = context.tree.read_bytes(image_path)
+        try:
+            image = context.tree.read_bytes(image_path)
+        except OSError as error:
+            raise SchemaRefusal(
+                f"a dossier {kind} at ordinal {ordinal} names an image at {image_path!r} "
+                f"that could not be read: {error}"
+            ) from error
         observed_digest = digest_bytes(image)
         if observed_digest != expected_digest:
             raise SchemaRefusal(

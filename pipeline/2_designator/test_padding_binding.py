@@ -108,7 +108,7 @@ def test_reusing_a_run_id_under_changed_padding_is_refused_before_a_crop_is_cut(
         "--designator-padding-config",
         str(_widened(tmp_path)),
     )
-    assert result.returncode == EXIT_FATAL, result.stdout
+    assert result.returncode == EXIT_FATAL, result.stderr
     assert "config_digest" in result.stderr
     assert not (root / "r" / "2_designator" / "artifacts").exists(), (
         "the refusal must land before the first region write, not after it"

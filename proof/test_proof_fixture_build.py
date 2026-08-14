@@ -141,6 +141,10 @@ def test_the_ink_free_page_is_restricted_to_its_integration_scenario(skeleton):
     assert blank["scenarios"] == ["ink-free-page"]
     source = next(page for page in ALL_PAGES if page["ordinal"] == 3)
     assert source["acts"] == ()
+    _, _, rows = decode_grayscale_png(render_page(source))
+    assert {value for row in rows for value in row} == {rows[0][0]}, (
+        "page 3 must be uniform paper: the ink-free scenario proves nothing otherwise"
+    )
 
 
 def test_declared_acts_match_the_rendered_act_bounds(skeleton):

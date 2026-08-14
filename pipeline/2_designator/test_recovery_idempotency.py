@@ -17,7 +17,7 @@ from _test_support import load_designator
 
 from common.contracts.errors import ContractError
 from common.contracts.stages import DESIGNATOR
-from common.stage import EXIT_FATAL
+from common.stage import EXIT_COMPLETE, EXIT_FATAL, EXIT_HELD
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -52,7 +52,7 @@ def test_recovering_the_same_act_twice_refuses_rather_than_cutting_a_duplicate(t
         "pipeline/5_recensor/run.py",
     ):
         result = _run(program, root)
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+        assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import RECENSOR
     from common.runtree.store import RunTree
@@ -168,7 +168,7 @@ def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_p
         "pipeline/5_recensor/run.py",
     ):
         result = _run(program, root)
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+        assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import DESIGNATOR, RECENSOR
     from common.runtree.store import RunTree
@@ -240,7 +240,7 @@ def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_pat
         "pipeline/5_recensor/run.py",
     ):
         result = _run(program, root)
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+        assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import RECENSOR
     from common.runtree.store import RunTree
@@ -293,7 +293,7 @@ def test_recovery_of_an_act_missing_from_the_fixture_is_a_named_refusal(tmp_path
         "pipeline/5_recensor/run.py",
     ):
         result = _run(program, root)
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+        assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import RECENSOR
     from common.runtree.store import RunTree
@@ -330,7 +330,7 @@ def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first
         "pipeline/5_recensor/run.py",
     ):
         result = _run(program, root)
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+        assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import RECENSOR
     from common.runtree.store import RunTree

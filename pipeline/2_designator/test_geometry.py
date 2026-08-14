@@ -46,6 +46,9 @@ def test_padding_rounds_half_up_deterministically():
     # h=5, top_bp=600 -> 5*600/10000 = 0.3 -> rounds to 0.
     # h=5, bottom_bp=1800 -> 5*1800/10000 = 0.9 -> rounds to 1.
     result = apply_padding({"x": 10, "y": 10, "w": 10, "h": 5}, 1000, 1000, PADDING)
+    # w=10, left_bp=500 -> exactly 0.5 px. Half-up gives 1; truncation and
+    # round-half-even both give 0, so this tie pins the declared rule.
+    assert result["applied_px"]["left"] == 1
     assert result["applied_px"]["top"] == 0
     assert result["applied_px"]["bottom"] == 1
 

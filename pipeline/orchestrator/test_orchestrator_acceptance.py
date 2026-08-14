@@ -780,9 +780,12 @@ def _patch_conservation_with_extra_residual(
     relative_path = tree.artifact_path(DESIGNATOR, "conservation", conservation_id)
     path = tree.resolve(relative_path)
     record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["residual_components"].append(
-        {"bounds": bounds, "pixel_count": pixel_count, "review_priority": "low"}
+    components = record["payload"]["residual_components"]
+    assert not components, (
+        f"page {page_id} already reconciles {len(components)} residual component(s); "
+        "these tests mint their added residual at index 0"
     )
+    components.append({"bounds": bounds, "pixel_count": pixel_count, "review_priority": "low"})
     record["payload"]["residual_pixel_count"] += pixel_count
     record["payload"]["total_ink_pixel_count"] += pixel_count
     record["self_hash"] = self_hash(record)

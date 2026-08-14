@@ -9,6 +9,7 @@ authoritative outcome relative to leaving it absent.
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -265,7 +266,7 @@ _CONFIGURED_BLOCK = """[chairs.secondary_proposer]
 state = \"configured\"
 source = \"local-repository\"
 path = \"designator_structure\"
-digest_manifest = \"52a8dd17b3a77f6a3f2e7c39b242339180a91d0c2fe0a6906b4e3d1d125e0313\"
+digest_manifest = \"{digest_manifest}\"
 manifest = \"manifests/designator_structure.json\"
 serving_recipe = \"fake-designator-v0\"
 license_note = \"fixture identity only; no model weights or model license apply\"
@@ -282,8 +283,10 @@ def _configured_models_config(tmp_path: Path) -> Path:
     shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
     live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
     assert _ABSENT_BLOCK in live
+    digest_manifest = tomllib.loads(live)["chairs"]["designator_structure"]["digest_manifest"]
     (config_root / "models.toml").write_text(
-        live.replace(_ABSENT_BLOCK, _CONFIGURED_BLOCK), encoding="utf-8"
+        live.replace(_ABSENT_BLOCK, _CONFIGURED_BLOCK.format(digest_manifest=digest_manifest)),
+        encoding="utf-8",
     )
     return config_root / "models.toml"
 

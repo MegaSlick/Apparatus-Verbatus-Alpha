@@ -259,9 +259,6 @@ def test_nothing_downstream_reports_the_lost_page_as_a_success(structure_failure
 
 
 def _run_program(program: str, root):
-    import subprocess
-    import sys
-
     return subprocess.run(
         [
             sys.executable,
@@ -639,7 +636,7 @@ def test_the_fallback_crops_reach_the_downstream_denominator(blank_first_page_ru
     assert validated[fallback["act_key"]]["act_id"] == row["act_id"]
 
 
-def test_a_fallback_act_minted_over_a_detected_page_is_refused(blank_first_page_run):
+def test_a_fallback_act_minted_over_a_detected_page_is_refused(blank_first_page_run, monkeypatch):
     """The premise is checked against the page's own record, not the minter's word."""
     from common.contracts.errors import FatalAccounting
     from common.stage import expected_acts
@@ -658,10 +655,9 @@ def test_a_fallback_act_minted_over_a_detected_page_is_refused(blank_first_page_
             record["payload"] = {**record["payload"], "structure_evidence": "detected"}
         return record
 
-    context.tree.read_artifact_reference = status_says_detected
+    monkeypatch.setattr(context.tree, "read_artifact_reference", status_says_detected)
     with pytest.raises(FatalAccounting, match="may not be minted over a page"):
         expected_acts(context)
-    context.tree.read_artifact_reference = real_read
     assert fallback_row["outcome"] == "proposed"
 
 
