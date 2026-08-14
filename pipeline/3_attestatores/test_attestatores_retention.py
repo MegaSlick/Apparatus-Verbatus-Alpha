@@ -450,7 +450,7 @@ def test_a_whole_pass_may_not_skip_an_ordinal_over_any_seat(tmp_path):
     )
 
     assert skipped.returncode == 3
-    assert "UNKNOWN" in skipped.stderr
+    assert "neither a rerun of an attempt it holds" in skipped.stderr
     assert len(_testimonia(tree)) == before
 
 
@@ -721,6 +721,23 @@ def test_conflicting_fixture_outcomes_are_refused_instead_of_selected():
     )
 
     with pytest.raises(SchemaRefusal, match="conflicting witness outcomes"):
+        attestatores.declarations_for(context, 1)
+
+
+@pytest.mark.parametrize(
+    "fixture_key",
+    ("witness_failure", "witness_empty", "witness_not_run", "witness_malformed"),
+)
+def test_a_witness_declaration_without_a_scenario_names_its_table_and_row(fixture_key):
+    row = {"act_key": "a1", "chair": "attestator_1"}
+    if fixture_key == "witness_malformed":
+        row["reason"] = "provider body was malformed"
+    context = SimpleNamespace(scenario="happy", fixture={fixture_key: [row]})
+
+    with pytest.raises(
+        SchemaRefusal,
+        match=rf"fixture \[\[{fixture_key}\]\] row 1 has no scenario",
+    ):
         attestatores.declarations_for(context, 1)
 
 

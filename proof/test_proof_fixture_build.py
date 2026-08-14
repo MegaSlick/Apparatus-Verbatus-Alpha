@@ -37,6 +37,7 @@ from proof.build_fixture import (
     build_ingress_manifest,
     build_skeleton_fixture,
     render_all,
+    toml_value,
 )
 from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, PAGES, render_page
 
@@ -125,6 +126,12 @@ def test_the_skeleton_declaration_is_up_to_date(skeleton):
     assert build_skeleton_fixture(render_all()) == (PROOF_ROOT / "skeleton_fixture.toml").read_text(
         encoding="utf-8"
     )
+
+
+@pytest.mark.parametrize("key", ("nested.key", "spaced key"))
+def test_inline_toml_objects_refuse_keys_that_are_not_bare_safe(key):
+    with pytest.raises(ValueError, match="object keys must be bare-safe"):
+        toml_value({key: "value"})
 
 
 # --- The pipeline's declaration agrees with the rendered geometry --------------

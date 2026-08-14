@@ -139,11 +139,16 @@ def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
 
 def _declared_pairs(context, ordinal: int, fixture_key: str) -> set[tuple[str, str]]:
     """The (act, chair) pairs one fixture table declares for this exact attempt."""
-    return {
-        (row["act_key"], row["chair"])
-        for row in context.fixture.get(fixture_key, [])
-        if row["scenario"] == context.scenario and _declared_for_ordinal(row, ordinal)
-    }
+    pairs = set()
+    for row_number, row in enumerate(context.fixture.get(fixture_key, []), start=1):
+        scenario = row.get("scenario")
+        if not isinstance(scenario, str) or not scenario:
+            raise SchemaRefusal(
+                f"fixture [[{fixture_key}]] row {row_number} has no scenario: {row!r}"
+            )
+        if scenario == context.scenario and _declared_for_ordinal(row, ordinal):
+            pairs.add((row["act_key"], row["chair"]))
+    return pairs
 
 
 def _page_fallback_bounds(context) -> dict[str, dict]:
@@ -178,8 +183,14 @@ def _is_page_fallback(context, act: dict, bounds_by_act: dict[str, dict] | None 
 def declared_malformed(context, ordinal: int) -> dict[tuple[str, str], str]:
     """Fixture stand-in for a provider response the recording channel could not keep."""
     rows: dict[tuple[str, str], str] = {}
-    for row in context.fixture.get("witness_malformed", []):
-        if row["scenario"] != context.scenario or not _declared_for_ordinal(row, ordinal):
+    fixture_key = "witness_malformed"
+    for row_number, row in enumerate(context.fixture.get(fixture_key, []), start=1):
+        scenario = row.get("scenario")
+        if not isinstance(scenario, str) or not scenario:
+            raise SchemaRefusal(
+                f"fixture [[{fixture_key}]] row {row_number} has no scenario: {row!r}"
+            )
+        if scenario != context.scenario or not _declared_for_ordinal(row, ordinal):
             continue
         key = (row["act_key"], row["chair"])
         if key in rows:
@@ -1378,20 +1389,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 history,
             )
         except ContractError as error:
-            # A damaged existing channel cannot be repaired by adding a replacement
-            # attempt. It is an UNKNOWN tally and holds the folder as it stands.
-            #
-            # Except an accounting imbalance, which is not a damaged channel and is
-            # not repairable by holding: `FatalAccounting` is a `ContractError`, and
-            # `preflight_appendable_ordinals` reaches the same readers that raise it.
-            # `attempt_tally` above happens to screen it first today, but by the
-            # order these two calls sit in rather than by any stated invariant — and
-            # a hold that depends on call ordering is one refactor from silence.
-            # Third instance of this in the file; the other two are at :641 and in
-            # `attempt_tally`. Found by the Opus read of this branch.
+            # An ordinary preflight refusal holds this pass before it writes any
+            # witness artifact. An accounting imbalance is a broken partition, not
+            # a holdable request refusal; it must still reach the fatal boundary.
             if isinstance(error, FatalAccounting):
                 raise
-            print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
+            print(f"Attestatores refused this pass: {error}", file=sys.stderr)
             return EXIT_HELD
         recorded, isolated_crop_failure = attempt_pass(
             context,

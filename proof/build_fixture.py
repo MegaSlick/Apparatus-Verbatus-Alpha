@@ -26,6 +26,7 @@ answers "what is on these pages, and what should the fakes do?" and is read by t
 stage programs as data.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, render_page  # noqa: E4
 
 PROOF_ROOT = Path(__file__).resolve().parent
 FIXTURE_DIR = PROOF_ROOT / "fixtures" / FIXTURE_ID
+_BARE_TOML_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # What the fake Perlector establishes for each act. Fixture-defined text proving
 # structural wiring only: it says nothing whatever about reading ink, and the
@@ -240,6 +242,8 @@ def toml_value(value) -> str:
     if isinstance(value, dict):
         if not all(isinstance(key, str) for key in value):
             raise ValueError("fixture TOML object keys must be strings")
+        if unsafe := [key for key in value if _BARE_TOML_KEY.fullmatch(key) is None]:
+            raise ValueError(f"fixture TOML object keys must be bare-safe: {unsafe!r}")
         fields = ", ".join(f"{key} = {toml_value(item)}" for key, item in sorted(value.items()))
         return "{ " + fields + " }"
     raise ValueError(f"fixture cannot render TOML value {value!r}")

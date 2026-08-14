@@ -26,4 +26,9 @@ reason = "fixture test removes this witness without replacing it"
 """
     path = config_root / "models.toml"
     path.write_text(live[:section_start] + absent + live[section_end + 1 :], encoding="utf-8")
+    rewritten = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert rewritten["chairs"]["attestator_3"]["state"] == "absent"
+    assert set(rewritten["chairs"]) == set(tomllib.loads(live)["chairs"]), (
+        "the splice changed which chairs the roster declares"
+    )
     return path
