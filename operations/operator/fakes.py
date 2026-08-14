@@ -109,7 +109,7 @@ class LocalFixtureObjectStore(TransferTarget):
                 # see it absent and each replace the other: 90 times in 400,
                 # with the refusal below never firing.
                 os.link(temporary, target)
-                sync_directory(target.parent)
+                sync_directory(target.parent, strict=True)
             except FileExistsError:
                 if not _same_bytes(temporary, target):
                     raise RuntimeError(

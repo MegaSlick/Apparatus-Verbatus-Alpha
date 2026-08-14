@@ -140,7 +140,12 @@ def test_receipt_and_descriptor_publication_sync_their_directories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     synced: list[Path] = []
-    monkeypatch.setattr(records, "sync_directory", synced.append)
+
+    def sync(path: Path, *, strict: bool) -> None:
+        assert strict
+        synced.append(path)
+
+    monkeypatch.setattr(records, "sync_directory", sync)
     receipt = tmp_path / "receipt.json"
     descriptor = tmp_path / "operator-surface.json"
 
@@ -148,3 +153,19 @@ def test_receipt_and_descriptor_publication_sync_their_directories(
     records._atomic_replace(descriptor, b"descriptor")
 
     assert synced == [tmp_path, tmp_path]
+
+
+@pytest.mark.parametrize("publisher", (records._atomic_create_or_reuse, records._atomic_replace))
+def test_operator_publication_reports_a_directory_sync_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    publisher: Callable[[Path, bytes], None],
+) -> None:
+    def refuses(_path: Path, *, strict: bool) -> None:
+        assert strict
+        raise OSError("injected directory sync failure")
+
+    monkeypatch.setattr(records, "sync_directory", refuses)
+
+    with pytest.raises(records.RecordError, match="could not be written"):
+        publisher(tmp_path / "record.json", b"payload")

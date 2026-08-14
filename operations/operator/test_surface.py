@@ -593,7 +593,12 @@ def test_fixture_object_publication_syncs_its_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     synced: list[Path] = []
-    monkeypatch.setattr("operations.operator.fakes.sync_directory", synced.append)
+
+    def sync(path: Path, *, strict: bool) -> None:
+        assert strict
+        synced.append(path)
+
+    monkeypatch.setattr("operations.operator.fakes.sync_directory", sync)
     source = tmp_path / "source.bin"
     source.write_bytes(b"payload")
     store = LocalFixtureObjectStore(tmp_path / "volume")

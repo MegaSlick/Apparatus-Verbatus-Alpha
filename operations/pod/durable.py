@@ -54,16 +54,25 @@ def atomic_write(path: Path, payload: bytes) -> None:
         raise
 
 
-def sync_directory(path: Path) -> None:
-    """Persist the directory entry itself; ``os.replace`` alone survives only a crash of us."""
+def sync_directory(path: Path, *, strict: bool = False) -> None:
+    """Persist a directory entry, optionally refusing when durability cannot be proved.
+
+    Pod-side callers retain the established best-effort behavior on filesystems
+    that refuse directory opens or syncs. Operator publication passes
+    ``strict=True`` because it must not print that a receipt or submitted object
+    was saved after the directory entry itself failed to become durable.
+    """
 
     try:
         descriptor = os.open(path, os.O_RDONLY)
     except OSError:  # pragma: no cover - unusual filesystems may refuse directory opens
+        if strict:
+            raise
         return
     try:
         os.fsync(descriptor)
     except OSError:  # pragma: no cover - the same filesystem caveat
-        pass
+        if strict:
+            raise
     finally:
         os.close(descriptor)

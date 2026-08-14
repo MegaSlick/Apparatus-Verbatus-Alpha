@@ -361,7 +361,7 @@ def _atomic_create_or_reuse(target: Path, payload: bytes) -> None:
     try:
         try:
             os.link(temporary, target)
-            sync_directory(target.parent)
+            sync_directory(target.parent, strict=True)
         except FileExistsError:
             try:
                 existing = _bounded_bytes(target, "existing operator receipt")
@@ -386,7 +386,7 @@ def _atomic_replace(target: Path, payload: bytes) -> None:
         raise RecordError("operator descriptor could not be written") from error
     try:
         os.replace(temporary, target)
-        sync_directory(target.parent)
+        sync_directory(target.parent, strict=True)
     except OSError as error:
         temporary.unlink(missing_ok=True)
         raise RecordError("operator descriptor could not be written") from error
