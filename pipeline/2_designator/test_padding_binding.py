@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from _test_support import load_designator
 
 from common.chairs.registry import ChairRegistry
 from common.contracts.errors import ContractError
@@ -125,7 +126,6 @@ def test_padding_rewritten_between_the_binding_check_and_its_use_is_refused(tmp_
     and the run still exited complete. Reproduced against the real stage before
     this check existed.
     """
-    import importlib.util
     import shutil
 
     from common.stage import open_context, stage_parser
@@ -137,11 +137,7 @@ def test_padding_rewritten_between_the_binding_check_and_its_use_is_refused(tmp_
         result = _invoke(program, root, "--designator-padding-config", str(padding_path))
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
-    spec = importlib.util.spec_from_file_location(
-        "designator_padding_toctou_under_test", ROOT / "pipeline" / "2_designator" / "run.py"
-    )
-    designator = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(designator)
+    designator = load_designator("designator_padding_toctou_under_test")
 
     args = stage_parser("padding TOCTOU test").parse_args(
         [

@@ -123,6 +123,9 @@ def test_an_unrecognized_operation_refuses_rather_than_running_initial_pass(tmp_
     result = _run("pipeline/2_designator/run.py", root, "--operation", "Recover")
     assert result.returncode == EXIT_FATAL, result.stdout
     assert "is not one of 'initial' or 'recover'" in result.stderr
+    assert not (root / "r" / "2_designator" / "artifacts").exists(), (
+        "an unrecognized operation must refuse before any region or seal is written"
+    )
 
 
 def _load_designator():

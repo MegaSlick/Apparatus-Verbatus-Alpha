@@ -7,13 +7,13 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.stages import RECENSOR
 from common.runtree.store import RunTree
+from common.stage import stage_parser
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -54,6 +54,21 @@ def _load_recensor():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _recensor_args(root: Path, run_id: str):
+    return stage_parser("partition receipt test").parse_args(
+        [
+            "--run-root",
+            str(root),
+            "--run-id",
+            run_id,
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ]
+    )
 
 
 def test_happy_recensor_pass_writes_a_complete_scoped_partition_receipt(tmp_path):
@@ -123,22 +138,7 @@ def test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_denominato
     tree = RunTree(root, "manifest")
     tree.resolve(tree.manifest_path(RECENSOR)).write_text("{}", encoding="utf-8")
     recensor = _load_recensor()
-    args = SimpleNamespace(
-        run_root=root,
-        run_id="manifest",
-        scenario="happy",
-        fixture_root=str(ROOT / "proof"),
-        models_config=str(ROOT / "config/models.toml"),
-        pdf_render_config=str(ROOT / "config/pdf_render.toml"),
-        designator_padding_config=str(ROOT / "config/designator_padding.toml"),
-        pdf_target_dpi=None,
-        recovery_config=str(ROOT / "config/recovery.toml"),
-        hard_failure_config=str(ROOT / "config/hard_failure.toml"),
-        witness_context="named",
-        witness_context_config=str(ROOT / "config/witness_context.toml"),
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-    )
+    args = _recensor_args(root, "manifest")
     context = recensor.open_context(args, RECENSOR)
 
     with pytest.raises(FatalAccounting, match="manifest disagrees"):
@@ -454,22 +454,7 @@ def test_a_review_whose_stored_coverage_disagrees_with_disk_is_refused(tmp_path)
     tree.write_manifest(RECENSOR)
 
     recensor = _load_recensor()
-    args = SimpleNamespace(
-        run_root=root,
-        run_id="coverage-drift",
-        scenario="happy",
-        fixture_root=str(ROOT / "proof"),
-        models_config=str(ROOT / "config/models.toml"),
-        pdf_render_config=str(ROOT / "config/pdf_render.toml"),
-        designator_padding_config=str(ROOT / "config/designator_padding.toml"),
-        pdf_target_dpi=None,
-        recovery_config=str(ROOT / "config/recovery.toml"),
-        hard_failure_config=str(ROOT / "config/hard_failure.toml"),
-        witness_context="named",
-        witness_context_config=str(ROOT / "config/witness_context.toml"),
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-    )
+    args = _recensor_args(root, "coverage-drift")
     context = recensor.open_context(args, RECENSOR)
 
     with pytest.raises(FatalAccounting, match="does not retain the act key"):
@@ -523,22 +508,7 @@ def test_a_recensor_review_for_an_act_nobody_proposed_is_a_fatal_imbalance(tmp_p
     tree.write_manifest(RECENSOR)
 
     recensor = _load_recensor()
-    args = SimpleNamespace(
-        run_root=root,
-        run_id="fabricated",
-        scenario="happy",
-        fixture_root=str(ROOT / "proof"),
-        models_config=str(ROOT / "config/models.toml"),
-        pdf_render_config=str(ROOT / "config/pdf_render.toml"),
-        designator_padding_config=str(ROOT / "config/designator_padding.toml"),
-        pdf_target_dpi=None,
-        recovery_config=str(ROOT / "config/recovery.toml"),
-        hard_failure_config=str(ROOT / "config/hard_failure.toml"),
-        witness_context="named",
-        witness_context_config=str(ROOT / "config/witness_context.toml"),
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-    )
+    args = _recensor_args(root, "fabricated")
     context = recensor.open_context(args, RECENSOR)
 
     with pytest.raises(FatalAccounting, match="outside the proposal-act denominator"):
