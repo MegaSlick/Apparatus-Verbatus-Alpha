@@ -44,25 +44,26 @@ from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.stages import ARMARIUM  # noqa: E402
-from common.stage import EXIT_COMPLETE, open_context, run_stage, stage_parser  # noqa: E402
+from common.runtree.store import RunTree  # noqa: E402
+from common.stage import EXIT_COMPLETE, run_stage, stage_parser  # noqa: E402
 
 EXTRACTION_NAME = "bundle"
 
 
-def sealed_bundle(context) -> tuple[bytes, dict]:
+def sealed_bundle(tree: RunTree) -> tuple[bytes, dict]:
     """The exact bytes the `export` artifact references, checked against its digest."""
     # Absence is asked about separately, before reading: a `try` around the read would
     # report "there is no export here" for "the export does not verify", hiding a
     # tampered blob behind the more reassuring of the two sentences.
     address = artifact_id(ARMARIUM, "export", "export", None)
-    relative = context.tree.artifact_path(ARMARIUM, "export", address)
-    if not context.tree.resolve(relative).is_file():
+    relative = tree.artifact_path(ARMARIUM, "export", address)
+    if not tree.resolve(relative).is_file():
         raise ContractError(
             "this run has no sealed armarium/export artifact; the bundle is published "
             "from a job the Armarium has already run over, and a job with none has "
             "nothing to publish"
         )
-    record = context.tree.read_artifact(ARMARIUM, "export", address)
+    record = tree.read_artifact(ARMARIUM, "export", address)
     reference = record["payload"].get("bundle", {}).get("reference")
     declared = record["payload"].get("bundle", {}).get("sha256")
     if not isinstance(reference, dict) or not isinstance(declared, str):
@@ -70,7 +71,7 @@ def sealed_bundle(context) -> tuple[bytes, dict]:
     relative_path = reference.get("relative_path")
     if not isinstance(relative_path, str):
         raise ContractError("the export artifact names no sealed product bundle")
-    data = context.tree.read_bytes(relative_path)
+    data = tree.read_bytes(relative_path)
     if digest_bytes(data) != declared or reference.get("sha256") != declared:
         raise ContractError(
             "the sealed product bundle no longer matches the digest its export "
@@ -79,7 +80,7 @@ def sealed_bundle(context) -> tuple[bytes, dict]:
     return data, record["payload"]
 
 
-def publish(context, out_dir: Path) -> dict:
+def publish(tree: RunTree, out_dir: Path) -> dict:
     """Verify the sealed bundle and put it at `out_dir`, atomically or not at all.
 
     The destination is *reserved* with `mkdir` before the read, verify and write work
@@ -97,7 +98,7 @@ def publish(context, out_dir: Path) -> dict:
             "into, so a half-written publication can never be mistaken for a whole one"
         ) from error
     try:
-        data, payload = sealed_bundle(context)
+        data, payload = sealed_bundle(tree)
         staging = Path(
             tempfile.mkdtemp(prefix=f".{out_dir.name}.publishing-", dir=str(out_dir.parent))
         )
@@ -147,8 +148,12 @@ def main() -> int:
     parser = stage_parser(__doc__.splitlines()[0])
     parser.add_argument("--out", required=True, help="the destination for the export bundle")
     args = parser.parse_args()
-    context = open_context(args, ARMARIUM)
-    summary = publish(context, Path(args.out))
+    # Publication is a reader of a completed run, not a stage resuming under the
+    # configuration currently on disk. `read_run` verifies the sealed authority;
+    # every artifact and input read below remains checked against that authority.
+    tree = RunTree(Path(args.run_root), args.run_id)
+    tree.read_run()
+    summary = publish(tree, Path(args.out))
     print(
         f"export bundle published to {args.out}: {summary['status']}, "
         f"{summary['unit_count']} accounted units, {summary['unresolved']} unresolved"

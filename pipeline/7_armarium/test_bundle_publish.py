@@ -19,32 +19,31 @@ import pytest
 from armarium_export import EXPORT_MANIFEST_NAME
 
 from common.contracts.canonical import digest_bytes
-from common.contracts.stages import ARMARIUM
-from common.stage import open_context, stage_parser
+from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 BUNDLE = ROOT / "pipeline" / "7_armarium" / "bundle.py"
 
 
-def _orchestrate(run_root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ORCHESTRATOR),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            scenario,
-            "--run-id",
-            run_id,
-            "--run-root",
-            str(run_root),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
+def _orchestrate(
+    run_root: Path, run_id: str, scenario: str, **extra
+) -> subprocess.CompletedProcess:
+    command = [
+        sys.executable,
+        str(ORCHESTRATOR),
+        "--fixture",
+        "synthetic-two-page-v0",
+        "--scenario",
+        scenario,
+        "--run-id",
+        run_id,
+        "--run-root",
+        str(run_root),
+    ]
+    for key, value in extra.items():
+        command += [f"--{key.replace('_', '-')}", str(value)]
+    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
 def _publish(run_root: Path, run_id: str, out: Path, **extra) -> subprocess.CompletedProcess:
@@ -142,9 +141,8 @@ def test_a_rename_failure_at_publish_does_not_orphan_the_staging_directory(
     """
     import bundle as bundle_module
 
-    parser = stage_parser("test")
-    args = parser.parse_args(["--run-root", str(happy_run), "--run-id", "r", "--scenario", "happy"])
-    context = open_context(args, ARMARIUM)
+    tree = RunTree(happy_run, "r")
+    tree.read_run()
 
     def _boom(_src, _dst):
         raise OSError("simulated ENOSPC at rename")
@@ -153,7 +151,7 @@ def test_a_rename_failure_at_publish_does_not_orphan_the_staging_directory(
 
     out = tmp_path / "delivery"
     with pytest.raises(OSError, match="simulated ENOSPC"):
-        bundle_module.publish(context, out)
+        bundle_module.publish(tree, out)
 
     assert not out.exists()
     assert list(tmp_path.glob(".delivery.publishing-*")) == []
@@ -172,6 +170,22 @@ def test_a_tampered_sealed_blob_is_refused_before_anything_is_published(tmp_path
     # The run tree's own damage report, not a reassuring "there is no export here".
     assert "no sealed armarium/export artifact" not in result.stderr
     assert not out.exists()
+
+
+def test_a_sealed_export_remains_publishable_after_its_config_file_changes(tmp_path):
+    """The publisher verifies sealed evidence; it does not resume the writer."""
+    formats = tmp_path / "formats.toml"
+    shutil.copyfile(ROOT / "config" / "formats.toml", formats)
+    root = tmp_path / "runs"
+    result = _orchestrate(root, "sealed-config", "happy", formats_config=formats)
+    assert result.returncode == 0, result.stderr
+
+    formats.write_text(formats.read_text(encoding="utf-8") + "\n# edited after sealing\n")
+    out = tmp_path / "delivery"
+    result = _publish(root, "sealed-config", out, formats_config=formats)
+
+    assert result.returncode == 0, result.stderr
+    assert (out / "armarium-export.zip").is_file()
 
 
 def test_a_published_bundle_directory_carries_the_operators_umask_not_mkdtemps(happy_run, tmp_path):
