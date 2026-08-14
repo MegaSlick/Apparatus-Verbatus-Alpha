@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import unicodedata
 from dataclasses import replace
 from io import BytesIO
 from zipfile import ZipFile
@@ -803,7 +804,7 @@ def test_excluded_act_requires_and_carries_its_approval_reference(tmp_path):
 def test_database_keeps_literal_and_derived_search_layers_separate(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     root = tmp_path / "clean"
-    verify_export_bundle(bundle.data, root)
+    manifest = verify_export_bundle(bundle.data, root)
     connection = sqlite3.connect(root / "acts.sqlite")
     try:
         literal, literal_hash = connection.execute(
@@ -828,18 +829,61 @@ def test_database_keeps_literal_and_derived_search_layers_separate(tmp_path):
     assert revision == TEXTNORM_REVISION
     assert derived_from == literal_hash
     assert matched == [("act-1",)]
+    assert manifest["verification"]["search_fold"] == {
+        "status": "verified",
+        "recorded_unidata_version": unicodedata.unidata_version,
+        "verifier_unidata_version": unicodedata.unidata_version,
+        "statement": "search folds recomputed with the recorded Unicode database version",
+    }
 
 
-def test_a_self_consistent_but_falsified_search_fold_column_is_refused(tmp_path):
-    """A digest and a self-hash prove the package was not edited after sealing. Neither
-    proves `act_search.derived_search_text` was ever a fold of its own act's literal."""
+def test_a_different_unicode_database_records_an_honest_search_fold_skip(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     scratch = tmp_path / "acts.sqlite"
     scratch.write_bytes(members["acts.sqlite"])
     connection = sqlite3.connect(scratch)
     try:
-        connection.execute("UPDATE act_search SET derived_search_text = 'not a fold of anything'")
+        connection.execute(
+            "UPDATE export_metadata SET value = 'different-test-version' "
+            "WHERE key = 'unidata_version'"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    members["acts.sqlite"] = scratch.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+
+    manifest = verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+    assert manifest["verification"]["search_fold"] == {
+        "status": "not-run-unicode-database-mismatch",
+        "recorded_unidata_version": "different-test-version",
+        "verifier_unidata_version": unicodedata.unidata_version,
+        "statement": (
+            "search-fold recomputation was not run because the package and verifier "
+            "use different Unicode database versions"
+        ),
+    }
+
+
+def test_a_self_consistent_but_falsified_search_fold_column_is_refused(tmp_path):
+    """A digest and a self-hash prove the package was not edited after sealing. Neither
+    proves `act_search.derived_search_text` was ever a fold of its own act's literal.
+    The package records this interpreter's own Unicode database version, so this
+    exercises the same-version recomputation path rather than the honest skip.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    scratch = tmp_path / "acts.sqlite"
+    scratch.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(scratch)
+    try:
+        falsified = "not a fold of anything"
+        connection.execute(
+            "UPDATE act_search SET derived_search_text = ?, derived_text_sha256 = ?",
+            (falsified, canonical_text_sha256(falsified)),
+        )
         connection.commit()
     finally:
         connection.close()

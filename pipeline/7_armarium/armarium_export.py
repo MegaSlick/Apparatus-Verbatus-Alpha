@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from io import BytesIO
@@ -251,7 +252,9 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
 
     With pixels embedded this opens their packaged bytes.  With embedding off it
     verifies only the declared run-relative reference shape and explicitly does
-    not claim that pixels can resolve on the clean machine.
+    not claim that pixels can resolve on the clean machine. The returned copy of
+    the manifest adds a verifier-local ``verification`` report; that report is not
+    represented as though it were part of the sealed package manifest.
     """
     root = clean_root
     root.mkdir(parents=True, exist_ok=True)
@@ -354,8 +357,11 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_canonical_text_claim(manifest)
     _verify_annotations_claim(manifest)
     _verify_exact_product_members(formats, sources, actual_names)
-    _verify_product_accounting(root, manifest, formats, sources)
-    return manifest
+    search_fold_verification = _verify_product_accounting(root, manifest, formats, sources)
+    verification = {}
+    if search_fold_verification is not None:
+        verification["search_fold"] = search_fold_verification
+    return {**manifest, "verification": verification}
 
 
 def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
@@ -1097,6 +1103,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                 "canonical_text_field": CANONICAL_TEXT_FIELD,
                 "normalizer_revision": TEXTNORM_REVISION,
                 "schema": "armarium-acts-sqlite.v1",
+                "unidata_version": unicodedata.unidata_version,
             }
             connection.executemany(
                 "INSERT INTO export_metadata(key, value) VALUES (?, ?)",
@@ -1391,19 +1398,20 @@ def _text_bundle_literals(root) -> dict[str, tuple[str, str]]:
     }
 
 
-_STORED_ACTS_TABLES: Final = ("acts", "act_search")
+_STORED_ACTS_TABLES: Final = ("acts", "act_search", "export_metadata")
 
 
 def _open_acts_database(path) -> sqlite3.Connection:
     """Open a package's acts database read-only, as stored rows and not as a program.
 
-    **A table is not a view.**  Every read below names ``acts`` or ``act_search``, and
-    SQLite is perfectly happy for either to be a *view* -- which is a program.  A view
-    over a recursive CTE turns a few kilobytes of package member into an unbounded
-    result set: built one, and watched this function's caller allocate until the kernel
-    killed the process.  Same amplification the ``ZIP_STORED`` check refuses in the
-    archive reader, and closed the same way -- a stored table's row count is bounded by
-    the member's own physical bytes, a view's by nothing.
+    **A table is not a view.** Every read below names ``acts``, ``act_search`` or
+    ``export_metadata``, and SQLite is perfectly happy for any of them to be a
+    *view* -- which is a program. A view over a recursive CTE turns a few
+    kilobytes of package member into an unbounded result set: built one, and
+    watched this function's caller allocate until the kernel killed the process.
+    Same amplification the ``ZIP_STORED`` check refuses in the archive reader,
+    and closed the same way -- a stored table's row count is bounded by the
+    member's own physical bytes, a view's by nothing.
 
     **A path is not a URI.**  ``f"file:{path}?mode=ro"`` makes a directory named ``x?y``
     into a query string, and ``bundle.py`` derives its staging directory from the
@@ -1416,9 +1424,10 @@ def _open_acts_database(path) -> sqlite3.Connection:
     except sqlite3.DatabaseError as error:
         raise SchemaRefusal("the acts database cannot be opened") from error
     try:
+        placeholders = ", ".join("?" for _name in _STORED_ACTS_TABLES)
         kinds = dict(
             connection.execute(
-                "SELECT name, type FROM sqlite_master WHERE name IN (?, ?)",
+                f"SELECT name, type FROM sqlite_master WHERE name IN ({placeholders})",
                 _STORED_ACTS_TABLES,
             ).fetchall()
         )
@@ -2485,8 +2494,8 @@ def _verify_exact_delivered_citations(
             raise SchemaRefusal(f"the {subject} does not retain exact delivered provenance")
 
 
-def _verify_search_fold_claim(path: Path) -> None:
-    """Recompute the derived search column from its own act's literal.
+def _verify_search_fold_claim(path: Path) -> dict[str, str]:
+    """Recompute the derived search column when its Unicode database is ours.
 
     A digest-checked SQLite member proves the package was not edited after
     sealing; it proves nothing about whether ``act_search.derived_search_text``
@@ -2494,13 +2503,23 @@ def _verify_search_fold_claim(path: Path) -> None:
     defect or a package rebuilt around a tampered column would pass every
     other check in this file with the search projection carrying unrelated
     text. Unlike ``claims.canonical_text``/``claims.annotations`` above, this
-    one *does* have a source graph to recompute against: the literal each
-    row's own ``act_id`` already carries in ``acts``.
+    one *does* have a source graph to recompute against: the literal each row's
+    own ``act_id`` already carries in ``acts``. That recomputation is meaningful
+    only under the Unicode database version that created the fold. A different
+    verifier version keeps checking row identity and digests, but records that
+    the fold calculation itself was not run instead of accusing a good package
+    of tampering.
     """
     literals = _database_literals(path)
     connection: sqlite3.Connection | None = None
     try:
         connection = _open_acts_database(path)
+        metadata = dict(
+            connection.execute(
+                "SELECT key, value FROM export_metadata "
+                "WHERE key IN ('normalizer_revision', 'unidata_version')"
+            ).fetchall()
+        )
         rows = connection.execute(
             "SELECT act_id, derived_search_text, derived_text_sha256, "
             "derived_from_canonical_sha256, normalizer_revision, derived_kind FROM act_search"
@@ -2512,6 +2531,15 @@ def _verify_search_fold_claim(path: Path) -> None:
     finally:
         if connection is not None:
             connection.close()
+    recorded_version = metadata.get("unidata_version")
+    if (
+        metadata.get("normalizer_revision") != TEXTNORM_REVISION
+        or not isinstance(recorded_version, str)
+        or not recorded_version
+    ):
+        raise SchemaRefusal("the acts database has no recognized search normalizer metadata")
+    verifier_version = unicodedata.unidata_version
+    recompute = recorded_version == verifier_version
     seen: set[str] = set()
     for act_id, derived, derived_hash, source_hash, revision, kind in rows:
         if (
@@ -2525,11 +2553,11 @@ def _verify_search_fold_claim(path: Path) -> None:
             raise SchemaRefusal("the acts database search projection has an invalid row")
         seen.add(act_id)
         literal, literal_hash = literals[act_id]
-        if (
-            derived != search_fold(literal)
-            or derived_hash != canonical_text_sha256(derived)
-            or source_hash != literal_hash
-        ):
+        if derived_hash != canonical_text_sha256(derived) or source_hash != literal_hash:
+            raise SchemaRefusal(
+                "the acts database search projection is not a fold of its act's literal"
+            )
+        if recompute and derived != search_fold(literal):
             raise SchemaRefusal(
                 "the acts database search projection is not a fold of its act's literal"
             )
@@ -2537,6 +2565,22 @@ def _verify_search_fold_claim(path: Path) -> None:
         raise SchemaRefusal(
             "the acts database search projection does not cover exactly the delivered literals"
         )
+    if recompute:
+        return {
+            "status": "verified",
+            "recorded_unidata_version": recorded_version,
+            "verifier_unidata_version": verifier_version,
+            "statement": "search folds recomputed with the recorded Unicode database version",
+        }
+    return {
+        "status": "not-run-unicode-database-mismatch",
+        "recorded_unidata_version": recorded_version,
+        "verifier_unidata_version": verifier_version,
+        "statement": (
+            "search-fold recomputation was not run because the package and verifier "
+            "use different Unicode database versions"
+        ),
+    }
 
 
 def _verify_product_accounting(
@@ -2544,7 +2588,7 @@ def _verify_product_accounting(
     manifest: dict[str, Any],
     formats: ArmariumFormats,
     sources: dict[str, list[dict[str, Any]]],
-) -> None:
+) -> dict[str, str] | None:
     """Require every selected act projection to match the manifest denominator."""
     expected = _manifest_act_categories(manifest)
     _verify_honest_status_claims(manifest, expected, sources)
@@ -2579,6 +2623,7 @@ def _verify_product_accounting(
                 raise SchemaRefusal(
                     "the text bundle does not retain every delivered source citation"
                 )
+    search_fold_verification = None
     if "acts-database" in formats.formats:
         database_records = _database_act_records(root / "acts.sqlite", sources["regions"])
         if _product_categories(database_records) != expected:
@@ -2589,7 +2634,7 @@ def _verify_product_accounting(
         _verify_exact_delivered_citations(
             database_records, citations, act_keys, subject="acts database"
         )
-        _verify_search_fold_claim(root / "acts.sqlite")
+        search_fold_verification = _verify_search_fold_claim(root / "acts.sqlite")
     if "jsonl" in formats.formats:
         jsonl_records = _jsonl_act_records(root / "acts.jsonl", sources["regions"])
         if _product_categories(jsonl_records) != expected:
@@ -2619,6 +2664,7 @@ def _verify_product_accounting(
         )
     else:
         _verify_salvage_claim(manifest, (), sources)
+    return search_fold_verification
 
 
 def _verify_pixel_claims(

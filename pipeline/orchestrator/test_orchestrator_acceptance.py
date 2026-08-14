@@ -367,8 +367,13 @@ FIXTURE = "synthetic-two-page-v0"
 # https://www.sqlite.org/fileformat.html#the_database_header. All unrelated
 # members and manifest fields remain byte-bound. Both values below were measured
 # from fresh real orchestrator runs with 54 files/exit 0 and 58 files/exit 3.
-HAPPY_RUN_TREE_DIGEST = "73b47878be6c964564ff47279e8d3a44fa147036ebb7e2bc7f8f1be5ea92e46f"
-REVIEW_RUN_TREE_DIGEST = "e7dbc0cbbfa814224d04cff2c9ab47f10cc4dba8763ae5229be8261db137f336"
+#
+# Re-pinned for the Unicode-version verification repair. `acts.sqlite` now
+# records the build interpreter's Unicode database version beside the normalizer
+# revision, so that new logical metadata deliberately moves the semantic bundle
+# identity. Fresh real runs again measured 54 files/exit 0 and 58 files/exit 3.
+HAPPY_RUN_TREE_DIGEST = "1df6c537b18acad263765eb1de788a5ea458bd651b1dbd24c878d91985d71a43"
+REVIEW_RUN_TREE_DIGEST = "f01b9b8473a9d28b2e993cbc1250645c7f2d863c005f6b4d40a6a4dd52054b72"
 
 
 def orchestrate(
