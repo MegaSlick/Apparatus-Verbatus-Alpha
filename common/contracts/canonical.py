@@ -105,4 +105,14 @@ def verify_self_hash(record: dict[str, Any], field: str = "self_hash") -> bool:
     stored = record.get(field)
     if not isinstance(stored, str):
         return False
-    return stored == self_hash(record, field)
+    try:
+        return stored == self_hash(record, field)
+    except RecursionError:
+        # A record nested deep enough exhausts the stack here even when it was
+        # shallow enough for the JSON scanner that read it: `_refuse_floats`
+        # recurses once per nesting level walking the *parsed* structure, a
+        # second recursive pass a reader's own RecursionError guard on the read
+        # itself does not cover. The fact this call exists to establish is the
+        # same either way — a record whose self-hash cannot be trusted — so it
+        # is refused exactly as a mismatched hash would be, not crashed on.
+        return False

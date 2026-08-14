@@ -69,32 +69,69 @@ h = 88
 [[testimony]]
 act_key = "a1"
 chair = "attestator_1"
-reported = "SYNTHETIC ACT ONE alpha beta gamma"
+payload = "SYNTHETIC ACT ONE alpha beta gamma"
 
 [[testimony]]
 act_key = "a1"
 chair = "attestator_2"
-reported = "SYNTHETIC ACT ONE alpha beta gamna"
+payload = "SYNTHETIC ACT ONE alpha beta gamna"
 
 [[testimony]]
 act_key = "a1"
 chair = "attestator_3"
-reported = "SYNTHETIC ACT ONE alpha beta"
+payload = "SYNTHETIC ACT ONE alpha beta"
 
 [[testimony]]
 act_key = "a2"
 chair = "attestator_1"
-reported = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+payload = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 
 [[testimony]]
 act_key = "a2"
 chair = "attestator_2"
-reported = "SYNTHETIC ACT TWO delta epsilon zeta"
+payload = "SYNTHETIC ACT TWO delta epsilon zeta"
 
 [[testimony]]
 act_key = "a2"
 chair = "attestator_3"
-reported = "SYNTHETIC ACT TWO delta epsiIon zeta eta"
+payload = "SYNTHETIC ACT TWO delta epsiIon zeta eta"
+
+[[testimony]]
+scenario = "witness-capabilities"
+act_key = "a1"
+chair = "attestator_1"
+payload = "SYNTHETIC ACT ONE alpha beta gamma"
+witness_reported = { confidence = "high" }
+format_capabilities = { can_express_layout = false, can_express_uncertainty = false }
+
+[[testimony]]
+scenario = "witness-capabilities"
+act_key = "a1"
+chair = "attestator_2"
+payload = "SYNTHETIC ACT ONE alpha beta gamna"
+witness_reported = { confidence = "low", note = "faded ink" }
+format_capabilities = { can_express_layout = false, can_express_uncertainty = true }
+
+[[testimony]]
+scenario = "structured-witness"
+act_key = "a1"
+chair = "attestator_1"
+payload = { layout = { line = 4 }, tokens = ["μ", "beta"], uncertain = true }
+witness_reported = { confidence = "certain", note = "witness claim only" }
+
+[[testimony]]
+scenario = "malformed-capabilities"
+act_key = "a1"
+chair = "attestator_3"
+payload = "SYNTHETIC ACT ONE alpha beta"
+format_capabilities = "provider supplied a non-object capability declaration"
+
+[[testimony]]
+scenario = "reread-success"
+act_key = "a2"
+chair = "attestator_1"
+payload = "SYNTHETIC ACT TWO delta epsilon zeta eta, reread"
+attempt_ordinal = 2
 
 # The happy scenario establishes both acts. The review scenario recovers act
 # a1 once -- act identity stable, region and attempt identities changing -- and
@@ -108,6 +145,11 @@ reported = "SYNTHETIC ACT TWO delta epsiIon zeta eta"
 
 [[scenario]]
 name = "happy"
+recover_acts = []
+hold_acts = []
+
+[[scenario]]
+name = "witness-capabilities"
 recover_acts = []
 hold_acts = []
 
@@ -178,6 +220,36 @@ name = "ink-free-page"
 recover_acts = []
 hold_acts = []
 
+[[scenario]]
+name = "reread-failure"
+recover_acts = []
+hold_acts = []
+
+[[scenario]]
+name = "reread-success"
+recover_acts = []
+hold_acts = []
+
+[[scenario]]
+name = "not-run-witness"
+recover_acts = []
+hold_acts = []
+
+[[scenario]]
+name = "malformed-witness"
+recover_acts = []
+hold_acts = []
+
+[[scenario]]
+name = "structured-witness"
+recover_acts = []
+hold_acts = []
+
+[[scenario]]
+name = "malformed-capabilities"
+recover_acts = []
+hold_acts = []
+
 # A reading that did not succeed. `truncated` is a failed-class Perlector
 # outcome that still carries text, which is the combination that matters: the
 # Recensor used to ask only whether a reading existed, and the Archetypus
@@ -227,15 +299,6 @@ scenario = "engine-truncated-reading"
 act_key = "a1"
 stop_reason = "length"
 
-# A chair whose attempt failed, exercising the witness `failed` state that Sol's
-# finding B-2 added to the closed vocabulary. It makes act a2 under-witnessed
-# without changing which acts are held.
-
-[[witness_failure]]
-scenario = "review"
-act_key = "a2"
-chair = "attestator_3"
-
 # A completed empty Testimonium means the chair read the region and found no
 # reportable text. It is deliberately distinct from a missing or failed attempt.
 
@@ -280,6 +343,29 @@ chair = "attestator_2"
 scenario = "structure-failure"
 page_ordinal = 1
 reason_code = "recorded-fixture-structure-failure"
+
+[[witness_failure]]
+scenario = "review"
+act_key = "a2"
+chair = "attestator_3"
+attempt_ordinal = 1
+
+[[witness_failure]]
+scenario = "reread-failure"
+act_key = "a1"
+chair = "attestator_3"
+attempt_ordinal = 2
+
+[[witness_not_run]]
+scenario = "not-run-witness"
+act_key = "a1"
+chair = "attestator_3"
+
+[[witness_malformed]]
+scenario = "malformed-witness"
+act_key = "a1"
+chair = "attestator_3"
+reason = "fixture declares an invalid UTF-8 provider body"
 
 [[page_refusal]]
 scenario = "refused-page"

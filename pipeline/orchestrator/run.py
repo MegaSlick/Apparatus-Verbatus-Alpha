@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.outcomes import check_algebra_is_total  # noqa: E402
-from common.contracts.stages import DESIGNATOR, RECENSOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
     load_hard_failure_policy,
@@ -75,7 +75,7 @@ SEQUENCE = (
     ("door", "pipeline/1_exemplar/door.py"),
     ("exemplar", "pipeline/1_exemplar/run.py"),
     ("designator", "pipeline/2_designator/run.py"),
-    ("attestatores", "pipeline/3_attestatores/run.py"),
+    (ATTESTATORES, "pipeline/3_attestatores/run.py"),
     ("perlector", "pipeline/4_perlector/run.py"),
     ("recensor", "pipeline/5_recensor/run.py"),
     ("archetypus", "pipeline/6_archetypus/run.py"),
@@ -259,7 +259,13 @@ def main() -> int:
             halted = drive_recovery(args, hard_failure_policy)
             if halted is not None:
                 break
-        invoke(program, args)
+        result = invoke(program, args)
+        # A held Attestatores exit is not an ordinary partial act result. Its own
+        # forwarded stderr names whether the attempt tally was UNKNOWN or a whole
+        # pass was refused during preflight; either cause stops orchestration.
+        if name == ATTESTATORES and result == EXIT_HELD:
+            print(f"run {args.run_id}: held; its reason is on stderr above")
+            return EXIT_HELD
         halted = checkpoint(args, name, hard_failure_policy)
         if halted is not None:
             break

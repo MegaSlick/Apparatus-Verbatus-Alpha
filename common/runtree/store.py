@@ -980,9 +980,24 @@ def _write_temporary(target: Path, data: bytes) -> Path:
 
 
 def _read_json(path: Path) -> Any:
+    # `RecursionError` beside the two obvious ones because it is the same fact —
+    # this file could not be read — arriving by a route the tuple did not name.
+    # `json`'s scanner recurses per nesting level, so a deeply nested artifact
+    # raised it straight through every caller: a stage that should have refused
+    # the file and held instead died with a traceback, and the manifest walk that
+    # reads every artifact in a directory made one such file enough to stop the
+    # whole stage. The exact depth this fires at is the scanner's own, not a
+    # number this file should claim: it depends on the interpreter's recursion
+    # limit and the C accelerator's own tolerance, both environment facts rather
+    # than this project's. The regression test drives it at a depth deep enough
+    # to be unambiguous on any of them (30,000) rather than pin one that would
+    # not reproduce elsewhere. A second, shallower band of the same failure can
+    # still reach `verify_self_hash`'s own recursive walk after this guard has
+    # already let a shallower-but-still-deep file through; that band is caught
+    # where it happens, in `common/contracts/canonical.py`.
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, RecursionError) as error:
         raise SchemaRefusal(f"{path} could not be read as an artifact: {error}") from error
 
 

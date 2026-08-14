@@ -52,12 +52,12 @@ ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
 
-# Re-pinned, in the same commit that changed the provenance block, per spec 02's
-# test 9 — never loosened. Each is the digest of the whole relative-path ->
-# file-digest inventory, so "nothing changed" cannot be satisfied by a run that
-# is internally consistent but no longer the run these tests describe. A change
-# here is legitimate exactly when a commit deliberately changes what a run
-# writes, and then the new value belongs in that commit and nowhere else.
+# Each of these is the digest of a whole run tree's relative-path -> file-digest
+# inventory, per spec 02's test 9. They are re-pinned in the commit that changes
+# what a run writes, and never loosened: "nothing changed" must not be satisfiable
+# by a run that is internally consistent but no longer the run these tests
+# describe, so the new value belongs in that commit and nowhere else. Which past
+# change moved them, and why, is in that commit beside the change itself.
 #
 # Re-pinned again for the System 03 rebuild. The file count remains fixed, but door
 # admissions, Exemplar pages/census, and Armarium export rows now retain original
@@ -324,8 +324,26 @@ FIXTURE = "synthetic-two-page-v0"
 # new page and scenario moves every artifact in happy and review even though that
 # page is inactive in both. Counts remain 53/57. Both values were measured from
 # fresh runs through the same two helpers, never derived arithmetically.
-HAPPY_RUN_TREE_DIGEST = "b01c8fb231a120086c183439f9ca40cecae50ac793284058a2fb29e5e1e2b4d0"
-REVIEW_RUN_TREE_DIGEST = "4320cf43bff3866b1522a58a6049911f156af12fe27e93c0046785492d06250e"
+#
+# Re-pinned for the post-#34 System 07 rebase. Testimonia now retain append-only
+# attempts with native payloads, explicit non-reading outcomes, deterministic
+# channel health, and an independent attempt tally; the fixture also declares
+# the merged Designator and Attestatores scenario set. Those deliberate record
+# and sealed-fixture changes move both trees. Fresh real runs through this
+# module's `orchestrate` and `semantic_snapshot_digest` helpers measured 53 files
+# for happy and 57 for review; no file count moved.
+#
+# Re-pinned for the audit F2 follow-up. The two scenario-specific testimony rows
+# carrying `witness_reported` and `format_capabilities` moved from `happy` to the
+# dedicated `witness-capabilities` scenario. The reference run now measures
+# dissent against all three chairs, while the capability distinction remains
+# exercised in its own real orchestrator run. Because the full parsed fixture is
+# sealed into every run's `config_digest`, both pins move even though review does
+# not use those declarations. Fresh runs through this module's `orchestrate` and
+# `semantic_snapshot_digest` helpers measured 53 files for happy (exit 0) and 57
+# for review (exit 3); no file count moved.
+HAPPY_RUN_TREE_DIGEST = "e6c455d96048733149978b84ac2265886a524c08bdeec140655a9f660a1b4d6e"
+REVIEW_RUN_TREE_DIGEST = "07c5eff63596b9d96fd3914a9f1479d98e58c476f187f3262ec58c44bd2bce84"
 
 
 def orchestrate(
@@ -387,6 +405,30 @@ def invoke_stage(
     for key, value in extra.items():
         command.extend((f"--{key.replace('_', '-')}", str(value)))
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize(
+    "program",
+    (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/4_perlector/run.py",
+        "pipeline/5_recensor/run.py",
+        "pipeline/6_archetypus/run.py",
+        "pipeline/7_armarium/run.py",
+    ),
+)
+def test_only_attestatores_accepts_the_shared_chair_argument(tmp_path, program):
+    """A stage must never report success while ignoring an operator's chair."""
+    root = tmp_path / "runs"
+
+    result = invoke_stage(root, "r", "happy", program, chair="attestator_1")
+
+    assert result.returncode == EXIT_FATAL
+    assert "ContractError" in result.stderr
+    assert "--chair is implemented only by the Attestatores" in result.stderr
+    assert not root.exists()
 
 
 def _run_through_designator(root: Path, run_id: str = "r", scenario: str = "happy") -> None:
@@ -623,10 +665,17 @@ def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
     )
     assert empty["payload"]["chair"] == "attestator_3"
     assert empty["payload"]["content_health"] == {
+        "native_type": "string",
+        "encoding": "utf-8-json-native",
+        "recordable": True,
         "empty": True,
+        "blank": True,
         "truncated": False,
         "characters": 0,
+        "truncation_basis": "trusted-response-boundary",
     }
+    assert empty["payload"]["payload"] == ""
+    assert empty["payload"]["witness_reported"] is None
     reading = next(
         tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
         for entry in tree.build_manifest(PERLECTOR)["artifacts"]
@@ -1392,28 +1441,11 @@ def test_the_config_digest_still_binds_the_scenario_as_well_as_the_chairs(happy_
     assert run_config_bindings(config, altered, "happy")["config_digest"] != happy
 
 
-def test_an_explicit_absent_witness_is_a_visible_not_run_and_counts_against_floor(tmp_path):
+def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(
+    tmp_path, absent_third_chair_config
+):
     """Exercise absence through real stage programs, not only the config parser."""
-    config_root = tmp_path / "chair-config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
-    configured = """[chairs.attestator_3]
-state = \"configured\"
-source = \"local-repository\"
-path = \"attestator_3\"
-digest_manifest = \"b9d6f5b6400e8aa36ecc35bad33cb4c54bb69b207e1ffdea39e1999cfa7e523a\"
-manifest = \"manifests/attestator_3.json\"
-serving_recipe = \"fake-attestatores-v0\"
-license_note = \"fixture identity only; no model weights or model license apply\"
-"""
-    absent = """[chairs.attestator_3]
-state = \"absent\"
-reason = \"fixture test removes this witness without replacing it\"
-"""
-    assert configured in live
-    models_config = config_root / "models.toml"
-    models_config.write_text(live.replace(configured, absent), encoding="utf-8")
+    models_config = absent_third_chair_config
 
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "happy", models_config=models_config)
@@ -1428,10 +1460,13 @@ reason = \"fixture test removes this witness without replacing it\"
         record for record in testimonia if record["payload"]["chair"] == "attestator_3"
     ]
     assert len(absent_records) == 2
-    assert all(record["outcome"] == "not-run" for record in absent_records)
+    assert all(record["outcome"] == "dead" for record in absent_records)
     for record in absent_records:
         provenance = record["payload"]["provenance"]
         assert provenance["chair_state"] == "absent"
+        assert provenance["receipt_ref"] is None
+        assert record["inputs"] == []
+        assert record["payload"]["regions"] == []
         assert provenance["absence"] == {
             "role": "attestator_3",
             "state": "absent",
@@ -1440,7 +1475,105 @@ reason = \"fixture test removes this witness without replacing it\"
     export = export_of(tree)
     assert export["aggregate"]["status"] == "partial"
     assert all(item["under_witnessed"] is True for item in export["review"])
+    assert all(
+        item["witness_coverage"]["by_outcome"] == {"read": 2, "dead": 1}
+        for item in export["review"]
+    )
+    assert all(
+        item["witness_coverage"]["by_class"] == {"completed": 2, "unresolved": 0, "failed": 1}
+        for item in export["review"]
+    )
     assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
+
+
+def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(
+    tmp_path, absent_third_chair_config
+):
+    """A dead witness is dead independent of the act's own state.
+
+    "Held" here is the Designator's own outcome — `refused-page` holds a2 because
+    its continuation page never sealed — not the Recensor's later
+    `held-for-review` category. Before spec 07's repair every chair on a held act
+    was recorded `not-run` whether it was configured or explicitly absent, which
+    is the collapse this guards against: holding the act does not turn an
+    unreachable witness into a merely unasked one, and a live chair on the same
+    act must stay `not-run` rather than being swept into the same word.
+    """
+    models_config = absent_third_chair_config
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "refused-page", models_config=models_config)
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(root, "r")
+    testimonia = [
+        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium"
+    ]
+    held = [record for record in testimonia if record["payload"]["act_key"] == "a2"]
+    by_chair = {record["payload"]["chair"]: record for record in held}
+    assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
+    assert by_chair["attestator_3"]["outcome"] == "dead"
+    assert "chair is explicitly absent" in by_chair["attestator_3"]["payload"]["reason"]
+    assert by_chair["attestator_1"]["outcome"] == "not-run"
+    assert by_chair["attestator_2"]["outcome"] == "not-run"
+
+
+def test_a_structured_testimonium_is_retained_here_and_refused_by_name_downstream(tmp_path):
+    """The known edge of the Testimonium split, pinned rather than left to be found.
+
+    Spec 07 requires `payload` to be the witness's native output, verbatim, never
+    coerced into a shared body schema — so a witness whose real output is an object
+    lands here as an object. The Perlector's current dissent comparison still reads
+    a textual `reported` field, and this stage deliberately projects that only for a
+    *textual* native payload: picking a field out of a structured one to stand in
+    for the whole would be the coercion the spec refuses, one step further on.
+
+    So the pipeline cannot yet carry a structured witness end to end, and this test
+    exists to say exactly how it fails: a named `SchemaRefusal` at the Perlector
+    boundary naming the chair, with the Testimonium retained intact behind it —
+    never a reading assembled from part of a payload, and never a silent skip.
+    Removing this test is the Perlector owner's to do, once its reader consumes
+    `payload` natively; until then it is the honest record of a gap.
+    """
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "structured-witness")
+
+    assert result.returncode == 2, result.stderr
+    assert "carries no text to compare" in result.stderr
+    assert "attestator_1" in result.stderr
+
+    tree = RunTree(root, "r")
+    structured = next(
+        record
+        for record in artifacts(tree, ATTESTATORES, "testimonium")
+        if record["payload"]["chair"] == "attestator_1" and record["payload"]["act_key"] == "a1"
+    )
+    assert structured["outcome"] == "read"
+    assert structured["payload"]["payload"] == {
+        "tokens": ["μ", "beta"],
+        "layout": {"line": 4},
+        "uncertain": True,
+    }
+    assert "reported" not in structured["payload"], (
+        "no field of a structured payload may be promoted to stand in for the whole"
+    )
+
+
+def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):
+    """A damaged independent count cannot hide behind an old complete export."""
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    tally_path = tree.resolve(tree.manifest_path(ATTESTATORES))
+    tally_path.write_bytes(b"{")
+    before = snapshot(root)
+
+    result = orchestrate(root, "r", "happy")
+
+    assert result.returncode == 3
+    assert "UNKNOWN" in result.stderr
+    assert "run r: held; its reason is on stderr above" in result.stdout
+    assert snapshot(root) == before
 
 
 def test_perlector_refuses_a_tampered_testimonium_model_provenance(tmp_path):
@@ -1503,7 +1636,7 @@ def test_a_perlectio_retains_digest_checked_testimonia_it_used(tmp_path):
     )
     path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", testimony["artifact_id"]))
     changed = json.loads(path.read_text(encoding="utf-8"))
-    changed["payload"]["reported"] = "changed after Perlectio"
+    changed["payload"]["payload"] = "changed after Perlectio"
     changed["self_hash"] = self_hash(changed)
     path.write_bytes(canonical_bytes(changed))
     before = snapshot(root)
@@ -2288,7 +2421,7 @@ def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
     _, tree = review_run
     export = export_of(tree)
     testimony = {
-        record["payload"]["reported"]
+        record["payload"]["payload"]
         for record in artifacts(tree, ATTESTATORES, "testimonium")
         if record["outcome"] == "read" and record["payload"]["act_key"] == "a1"
     }
@@ -2298,8 +2431,8 @@ def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
 
 
 def test_the_failed_chair_is_visible_in_the_export(review_run):
-    """Sol B-2 / blocker 4, driven end to end: `failed` is a real member of the
-    closed vocabulary and reaches the export as a named shortfall."""
+    """`failed` is a real member of the closed witness vocabulary, driven end to
+    end: it reaches the export as a named shortfall rather than as a silence."""
     _, tree = review_run
     export = export_of(tree)
     held = export["review"][0]
@@ -2307,6 +2440,71 @@ def test_the_failed_chair_is_visible_in_the_export(review_run):
     assert held["witness_coverage"]["by_outcome"]["failed"] == 1
     assert held["witness_coverage"]["by_class"] == {"completed": 2, "unresolved": 0, "failed": 1}
     assert any("under-witnessed" in reason for reason in export["aggregate"]["reasons"])
+
+
+def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compares_all(
+    tmp_path, happy_run
+):
+    """Capability handling stays live without blinding the reference instrument.
+
+    `pipeline/4_perlector/dissent.py::is_comparable` refuses to diff a witness
+    whose format can express uncertainty, because such a format may embed
+    alternative-reading markup inline and diffing the markup would count as
+    disagreement. It cannot touch the reading — dissent is read-only and computed
+    after the fact — so it is not a picker. What it is, is a hole in the
+    instrument ARCHITECTURE names for catching a reader that "learned to agree
+    with witnesses rather than to read ink."
+
+    Spec 07's fixture declares that capability on chair 2 of act a1 in the
+    dedicated `witness-capabilities` scenario. The row there says `unknown` with
+    its reason and is exactly one of three chairs. The reference happy run keeps
+    the ordinary declarations, so all three chairs are compared and its dissent
+    record remains able to expose a parroting reader across the full set.
+    """
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "witness-capabilities")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
+    reading = next(
+        record
+        for record in artifacts(tree, PERLECTOR, "perlectio")
+        if record["payload"]["act_key"] == "a1"
+    )
+    by_chair = {row["chair"]: row for row in reading["payload"]["dissent"]}
+    assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
+    assert by_chair["attestator_2"]["compared"] == "unknown"
+    assert "cannot be reduced to a plain comparison view" in by_chair["attestator_2"]["reason"]
+    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 1
+
+    testimonium = next(
+        record
+        for record in artifacts(tree, ATTESTATORES, "testimonium")
+        if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_2"
+    )
+    assert testimonium["payload"]["format_capabilities"]["can_express_uncertainty"] is True
+    # The capability blinds the comparison and nothing else: the outcome, the
+    # class, and the coverage count are what they would be without it.
+    assert testimonium["outcome"] == "read"
+    entry = next(row for row in export_of(tree)["delivered"] if row["act_key"] == "a1")
+    assert entry["witness_coverage"]["by_class"] == {
+        "completed": 3,
+        "unresolved": 0,
+        "failed": 0,
+    }
+
+    _, happy_tree = happy_run
+    happy_reading = next(
+        record
+        for record in artifacts(happy_tree, PERLECTOR, "perlectio")
+        if record["payload"]["act_key"] == "a1"
+    )
+    happy_dissent = happy_reading["payload"]["dissent"]
+    assert {row["chair"] for row in happy_dissent} == {
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+    }
+    assert all(row["compared"] != "unknown" for row in happy_dissent)
 
 
 def test_a_delivered_act_still_links_back_to_the_exact_ink(review_run):

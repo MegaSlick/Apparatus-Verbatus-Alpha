@@ -1146,3 +1146,111 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
         f"a receipt damaged as {damage_kind} blocked its own replacement"
     )
     assert tree.read_recensor_partition_receipt()["run_id"] == "r1"
+
+
+def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_crash(tmp_path):
+    """`_read_json` names the ways a file can fail to be read, and `RecursionError`
+    was not among them: `json`'s scanner recurses once per nesting level, so a
+    deeply nested artifact raised straight through every caller. A stage that
+    should have refused the file and held died with a traceback instead, and
+    because `build_manifest` reads every artifact under a directory, one such
+    file stopped the whole stage rather than its own record. 30,000 is driven
+    deliberately deep rather than pinned to the scanner's exact failure depth,
+    which is an interpreter fact, not one this suite should assert.
+
+    **Which refusal fires is that same interpreter fact, so it is not asserted
+    either.** This test pinned the reader's own message and passed on Python 3.12
+    and 3.13 while failing on 3.14, where the scanner absorbs this depth: the file
+    then parses cleanly and is refused one step later for the fields it does not
+    have. Both are refusals and neither is a traceback, which is the whole of what
+    this test exists to prove. Pinning the message asserted the mechanism instead
+    of the guarantee, and the mechanism belongs to CPython. Found by running the
+    gate on a 3.14 host after the rebase; the chambers run 3.13 and CI runs 3.12,
+    so nothing else in the ladder would have shown it."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    nesting = 30_000
+    deep_text = f'{{"deep": {"[" * nesting}"leaf"{"]" * nesting}}}'
+    path.write_text(deep_text, encoding="utf-8")
+
+    # Without this premise the assertion below can pass through the missing-field
+    # refusal alone, leaving the reader-side RecursionError guard uncovered.
+    try:
+        json.loads(deep_text)
+    except RecursionError:
+        pass
+    else:
+        pytest.skip(
+            f"this interpreter's JSON scanner absorbs {nesting} levels, so the "
+            "guarded path is unreachable here and this test proves nothing"
+        )
+
+    # Both refusals named, rather than any `SchemaRefusal` at all: the point is
+    # that one of two known doors closes, not that something somewhere objected.
+    with pytest.raises(SchemaRefusal, match="could not be read as an artifact|missing required"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_not_a_crash(
+    tmp_path,
+):
+    """A second, deeper band of the same defect the test above pins.
+
+    `_read_json`'s guard protects `json.loads`, whose C scanner tolerates far
+    deeper nesting than the pure-Python walk `canonical_bytes` makes to refuse
+    floats ahead of hashing. A record shallow enough to parse cleanly but deep
+    enough to exhaust the recursion limit during that second walk reached
+    `verify_self_hash` and crashed one call past where the reader-side guard
+    already closed the door — found by blind audit against this same tree
+    (two independent audits, one depth each) rather than by this suite.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    path = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+
+    # Built as raw text and spliced in, rather than handed to `json.dumps` as a
+    # 2,000-deep object. The encoder recurses per level exactly as the scanner
+    # does, so constructing the fixture that way makes the *setup* depend on the
+    # interpreter's recursion limit — and a fixture that raises during setup is a
+    # false failure reporting nothing about the code. Flagged by CodeRabbit on the
+    # rebased branch, and the same family as the interpreter dependence that broke
+    # the test above on a 3.14 host.
+    nesting = 2000
+    deep_text = '{"nested": ' * nesting + '"leaf"' + "}" * nesting
+    tampered = dict(envelope)
+    tampered["payload"] = {"deep": "__DEEP__"}
+    tampered["self_hash"] = "0" * 64
+    path.write_text(
+        json.dumps(tampered).replace('"__DEEP__"', deep_text),
+        encoding="utf-8",
+    )
+
+    # **This test would go vacuous rather than red on an interpreter whose walk
+    # absorbs 2,000 levels**, because the deliberately wrong `self_hash` earns the
+    # same refusal whether or not the deep walk was ever the thing that failed. A
+    # test that stops testing without saying so is worse than one that breaks, and
+    # a skip is visible where a silent pass is not (GOVERNANCE 2). So the premise
+    # is asserted first, against the same walk the code uses. Found by the Opus
+    # read of this branch.
+    try:
+        parsed_deep = json.loads(deep_text)
+    except RecursionError:
+        pytest.skip(
+            f"this interpreter's JSON scanner cannot parse {nesting} levels, so this "
+            "case would exercise the reader-side guard instead of the canonical walk"
+        )
+    try:
+        canonical_bytes(parsed_deep)
+    except RecursionError:
+        pass
+    else:
+        pytest.skip(
+            f"this interpreter's canonical walk absorbs {nesting} levels, so the "
+            "guarded path is unreachable here and this test proves nothing"
+        )
+
+    with pytest.raises(SchemaRefusal, match="fails its self-hash"):
+        tree.build_manifest(DESIGNATOR)

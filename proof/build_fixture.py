@@ -26,6 +26,7 @@ answers "what is on these pages, and what should the fakes do?" and is read by t
 stage programs as data.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, render_page  # noqa: E4
 
 PROOF_ROOT = Path(__file__).resolve().parent
 FIXTURE_DIR = PROOF_ROOT / "fixtures" / FIXTURE_ID
+_BARE_TOML_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # What the fake Perlector establishes for each act. Fixture-defined text proving
 # structural wiring only: it says nothing whatever about reading ink, and the
@@ -72,6 +74,56 @@ TESTIMONY = {
         "attestator_3": "SYNTHETIC ACT TWO delta epsiIon zeta eta",
     },
 }
+
+# The first two rows are the pair spec 07's `format_capabilities` exists for: "a
+# witness that cannot say 'unsure' must not be read as confident". Their own
+# `witness-capabilities` scenario keeps that distinction exercised without
+# leaving one of the reference happy run's three chairs uncompared in its dissent
+# record. Chair 1's format cannot express uncertainty and its self-report claims
+# high confidence anyway; chair 2's can, and reports doubt. Declaring one side
+# only would leave the distinction representable but never exercised, which is
+# where a later reader starts treating a self-report as evidence. The structured
+# row exercises the schema without pretending the text-only Perlector bridge can
+# consume it: a stage 3 boundary fixture, not an end-to-end surface.
+SCENARIO_TESTIMONY = (
+    {
+        "scenario": "witness-capabilities",
+        "act_key": "a1",
+        "chair": "attestator_1",
+        "payload": TESTIMONY["a1"]["attestator_1"],
+        "witness_reported": {"confidence": "high"},
+        "format_capabilities": {"can_express_uncertainty": False, "can_express_layout": False},
+    },
+    {
+        "scenario": "witness-capabilities",
+        "act_key": "a1",
+        "chair": "attestator_2",
+        "payload": TESTIMONY["a1"]["attestator_2"],
+        "witness_reported": {"confidence": "low", "note": "faded ink"},
+        "format_capabilities": {"can_express_uncertainty": True, "can_express_layout": False},
+    },
+    {
+        "scenario": "structured-witness",
+        "act_key": "a1",
+        "chair": "attestator_1",
+        "payload": {"tokens": ["μ", "beta"], "layout": {"line": 4}, "uncertain": True},
+        "witness_reported": {"confidence": "certain", "note": "witness claim only"},
+    },
+    {
+        "scenario": "malformed-capabilities",
+        "act_key": "a1",
+        "chair": "attestator_3",
+        "payload": "SYNTHETIC ACT ONE alpha beta",
+        "format_capabilities": "provider supplied a non-object capability declaration",
+    },
+    {
+        "scenario": "reread-success",
+        "act_key": "a2",
+        "chair": "attestator_1",
+        "attempt_ordinal": 2,
+        "payload": "SYNTHETIC ACT TWO delta epsilon zeta eta, reread",
+    },
+)
 
 # The recovery region for the review scenario: an expanded recrop of act a1. It
 # must stay inside the page and must not reach into act a2's bounds, or the
@@ -113,6 +165,25 @@ STRUCTURE_FAILURES = (
         "scenario": "structure-failure",
         "page_ordinal": 1,
         "reason_code": "recorded-fixture-structure-failure",
+    },
+)
+
+WITNESS_FAILURES = (
+    {"scenario": "review", "act_key": "a2", "chair": "attestator_3", "attempt_ordinal": 1},
+    {
+        "scenario": "reread-failure",
+        "act_key": "a1",
+        "chair": "attestator_3",
+        "attempt_ordinal": 2,
+    },
+)
+WITNESS_NOT_RUN = ({"scenario": "not-run-witness", "act_key": "a1", "chair": "attestator_3"},)
+WITNESS_MALFORMED = (
+    {
+        "scenario": "malformed-witness",
+        "act_key": "a1",
+        "chair": "attestator_3",
+        "reason": "fixture declares an invalid UTF-8 provider body",
     },
 )
 _UNMATCHABLE_SHA256 = "0" * 64
@@ -158,6 +229,26 @@ def render_all() -> dict[int, bytes]:
 def toml_string(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def toml_value(value) -> str:
+    """The small JSON-native subset the synthetic Testimonium fixture needs."""
+    if isinstance(value, str):
+        return toml_string(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_value(item) for item in value) + "]"
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("fixture TOML object keys must be strings")
+        if unsafe := [key for key in value if _BARE_TOML_KEY.fullmatch(key) is None]:
+            raise ValueError(f"fixture TOML object keys must be bare-safe: {unsafe!r}")
+        fields = ", ".join(f"{key} = {toml_value(item)}" for key, item in sorted(value.items()))
+        return "{ " + fields + " }"
+    raise ValueError(f"fixture cannot render TOML value {value!r}")
 
 
 def build_ingress_manifest(rendered: dict[int, bytes]) -> str:
@@ -263,14 +354,30 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         ]
 
     for act_key, chairs in TESTIMONY.items():
-        for chair, reported in chairs.items():
+        for chair, payload in chairs.items():
             lines += [
                 "",
                 "[[testimony]]",
                 f"act_key = {toml_string(act_key)}",
                 f"chair = {toml_string(chair)}",
-                f"reported = {toml_string(reported)}",
+                f"payload = {toml_value(payload)}",
             ]
+
+    for row in SCENARIO_TESTIMONY:
+        lines += [
+            "",
+            "[[testimony]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"act_key = {toml_string(row['act_key'])}",
+            f"chair = {toml_string(row['chair'])}",
+            f"payload = {toml_value(row['payload'])}",
+        ]
+        if "witness_reported" in row:
+            lines.append(f"witness_reported = {toml_value(row['witness_reported'])}")
+        if "format_capabilities" in row:
+            lines.append(f"format_capabilities = {toml_value(row['format_capabilities'])}")
+        if "attempt_ordinal" in row:
+            lines.append(f"attempt_ordinal = {row['attempt_ordinal']}")
 
     lines += [
         "",
@@ -286,6 +393,11 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "",
         "[[scenario]]",
         'name = "happy"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "[[scenario]]",
+        'name = "witness-capabilities"',
         "recover_acts = []",
         "hold_acts = []",
         "",
@@ -356,6 +468,36 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "recover_acts = []",
         "hold_acts = []",
         "",
+        "[[scenario]]",
+        'name = "reread-failure"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "[[scenario]]",
+        'name = "reread-success"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "[[scenario]]",
+        'name = "not-run-witness"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "[[scenario]]",
+        'name = "malformed-witness"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "[[scenario]]",
+        'name = "structured-witness"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "[[scenario]]",
+        'name = "malformed-capabilities"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
         "# A reading that did not succeed. `truncated` is a failed-class Perlector",
         "# outcome that still carries text, which is the combination that matters: the",
         "# Recensor used to ask only whether a reading existed, and the Archetypus",
@@ -410,15 +552,6 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             "",
         ]
     lines += [
-        "# A chair whose attempt failed, exercising the witness `failed` state that Sol's",
-        "# finding B-2 added to the closed vocabulary. It makes act a2 under-witnessed",
-        "# without changing which acts are held.",
-        "",
-        "[[witness_failure]]",
-        'scenario = "review"',
-        'act_key = "a2"',
-        'chair = "attestator_3"',
-        "",
         "# A completed empty Testimonium means the chair read the region and found no",
         "# reportable text. It is deliberately distinct from a missing or failed attempt.",
         "",
@@ -446,6 +579,35 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"scenario = {toml_string(row['scenario'])}",
             f"page_ordinal = {row['page_ordinal']}",
             f"reason_code = {toml_string(row['reason_code'])}",
+        ]
+
+    for row in WITNESS_FAILURES:
+        lines += [
+            "",
+            "[[witness_failure]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"act_key = {toml_string(row['act_key'])}",
+            f"chair = {toml_string(row['chair'])}",
+            f"attempt_ordinal = {row['attempt_ordinal']}",
+        ]
+
+    for row in WITNESS_NOT_RUN:
+        lines += [
+            "",
+            "[[witness_not_run]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"act_key = {toml_string(row['act_key'])}",
+            f"chair = {toml_string(row['chair'])}",
+        ]
+
+    for row in WITNESS_MALFORMED:
+        lines += [
+            "",
+            "[[witness_malformed]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"act_key = {toml_string(row['act_key'])}",
+            f"chair = {toml_string(row['chair'])}",
+            f"reason = {toml_string(row['reason'])}",
         ]
 
     for refusal in PAGE_REFUSALS:
