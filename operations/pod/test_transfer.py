@@ -26,7 +26,8 @@ class FakeTarget:
             return None
         return RemoteObject(hashlib.sha256(value).hexdigest(), len(value))
 
-    def put_file(self, key: str, source: BinaryIO) -> None:
+    def put_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
+        del expected_sha
         self.puts.append(key)
         if key == self.fail_key:
             self.fail_key = None

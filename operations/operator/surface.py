@@ -1542,18 +1542,20 @@ def reconciliation_table(export_payload: dict[str, Any]) -> list[str]:
     """Display the Armarium's already-recorded reconciliation in a compact table."""
 
     aggregate = export_payload.get("aggregate", {})
-    delivered = export_payload.get("delivered", [])
-    review = export_payload.get("review", [])
-    pages = export_payload.get("pages", [])
     expected = export_payload.get("expected_acts", "unknown")
+
+    def counted(member: str) -> str:
+        value = export_payload.get(member)
+        return str(len(value)) if isinstance(value, list) else "not recorded"
+
     rows = [
         "Reconciliation from the recorded Armarium export:",
         "| Recorded item | Count or state |",
         "| --- | --- |",
-        f"| Submitted pages accounted for | {len(pages)} |",
+        f"| Submitted pages accounted for | {counted('pages')} |",
         f"| Expected acts | {expected} |",
-        f"| Delivered acts | {len(delivered)} |",
-        f"| Acts held for review | {len(review)} |",
+        f"| Delivered acts | {counted('delivered')} |",
+        f"| Acts held for review | {counted('review')} |",
         f"| Recorded run state | {aggregate.get('status', 'unknown')} |",
     ]
     reasons = aggregate.get("reasons", [])

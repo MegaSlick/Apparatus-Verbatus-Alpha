@@ -52,7 +52,6 @@ quoted rather than paraphrased where the detail is load-bearing:
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -61,8 +60,6 @@ from typing import Any, BinaryIO, Final, Mapping
 from operations.pod.transfer import RemoteObject
 
 SHA256_METADATA_KEY: Final = "verbatus-sha256"
-BLOCK_BYTES: Final = 1024 * 1024
-
 # 64 MiB parts: comfortably inside the documented 500MB-per-part ceiling, and at
 # S3's 10,000-part limit still enough for a single file of roughly 625 GiB. The
 # multipart threshold matches, so anything smaller goes as one `PutObject` and
@@ -188,9 +185,7 @@ class S3VolumeTarget:
         # After the client, never before: a missing credential is the failure the
         # operator can act on, and it must not be masked by boto3's absence.
         self.transfer_config = (
-            default_transfer_config()
-            if transfer_config is None and client is None
-            else transfer_config
+            default_transfer_config() if transfer_config is None else transfer_config
         )
 
     def inspect(self, key: str) -> RemoteObject | None:
@@ -227,7 +222,7 @@ class S3VolumeTarget:
             )
         return RemoteObject(sha256=recorded, size=size)
 
-    def put_file(self, key: str, source: BinaryIO) -> None:
+    def put_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
         """Send the exact bytes behind this already-opened handle, tagged with their digest.
 
         `upload_fileobj` rather than `upload_file`: the caller has already opened
@@ -244,15 +239,12 @@ class S3VolumeTarget:
         """
 
         try:
-            digest = hashlib.sha256()
-            for block in iter(lambda: source.read(BLOCK_BYTES), b""):
-                digest.update(block)
             source.seek(0)
         except OSError as error:
             raise VolumeTransferRefusal(
                 f"the source for {key!r} could not be read while sending it: {error}"
             ) from error
-        extra = {"Metadata": {SHA256_METADATA_KEY: digest.hexdigest()}}
+        extra = {"Metadata": {SHA256_METADATA_KEY: expected_sha}}
         try:
             if self.transfer_config is None:
                 self.client.upload_fileobj(

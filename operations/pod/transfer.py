@@ -39,13 +39,15 @@ class TransferTarget(Protocol):
     def inspect(self, key: str) -> RemoteObject | None:
         """Return the target's digest/size evidence, or None if the object is absent."""
 
-    def put_file(self, key: str, source: BinaryIO) -> None:
+    def put_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
         """Upload the exact bytes behind this already-opened, verified-regular handle.
 
         A handle, not a path: the caller opens and verifies the source once
         (``O_NOFOLLOW``, regular-file check) and this seam reads only from
         that open file descriptor, so no implementation re-resolves the name
         and reopens whatever happens to be there by the time it runs.
+        ``expected_sha`` is the sealed digest the caller has just re-proved
+        against that handle, so adapters need not read the whole file again.
         """
 
 
@@ -129,7 +131,7 @@ class ChecksummedTransfer:
                 if remote is None:
                     handle.seek(0)
                     try:
-                        self.target.put_file(key, handle)
+                        self.target.put_file(key, handle, expected_sha=expected_sha)
                     except Exception as error:
                         raise TransferFailure(
                             f"transfer of {relative!r} failed: {error}"

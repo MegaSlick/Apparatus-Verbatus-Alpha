@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import os
 import threading
 from contextlib import contextmanager
@@ -160,6 +161,62 @@ def test_descriptor_lock_serializes_a_second_writer(
     assert loaded is not None and loaded["actions"]["boot"] == str(receipt.resolve())
 
 
+def test_descriptor_lock_acquisition_failure_is_named_and_closes_the_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = records.DescriptorStore(tmp_path)
+    opened = []
+    real_open = Path.open
+
+    def observed_open(path: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        handle = real_open(path, *args, **kwargs)
+        if path == store.lock_path:
+            opened.append(handle)
+        return handle
+
+    def refuse_lock(_descriptor: int, _operation: int) -> None:
+        raise OSError("injected descriptor lock failure")
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    monkeypatch.setattr(fcntl, "flock", refuse_lock)
+
+    with pytest.raises(records.RecordError, match="lock could not be taken"):
+        with store._lock():
+            pytest.fail("an untaken lock must not enter its protected body")
+
+    assert len(opened) == 1 and opened[0].closed
+
+
+def test_descriptor_unlock_failure_preserves_the_body_error_and_closes_the_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = records.DescriptorStore(tmp_path)
+    opened = []
+    real_open = Path.open
+
+    class BodyFailure(RuntimeError):
+        pass
+
+    def observed_open(path: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        handle = real_open(path, *args, **kwargs)
+        if path == store.lock_path:
+            opened.append(handle)
+        return handle
+
+    def fail_only_unlock(_descriptor: int, operation: int) -> None:
+        if operation == fcntl.LOCK_UN:
+            raise OSError("injected descriptor unlock failure")
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    monkeypatch.setattr(fcntl, "flock", fail_only_unlock)
+
+    with pytest.raises(BodyFailure, match="protected body failed"):
+        with store._lock():
+            raise BodyFailure("protected body failed")
+
+    assert len(opened) == 1 and opened[0].closed
+
+
 def test_receipt_and_descriptor_publication_sync_their_directories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -193,6 +250,27 @@ def test_operator_receipt_publication_names_a_directory_sync_failure_after_the_w
     with pytest.raises(
         records.RecordError,
         match="was written but its directory entry could not be made durable",
+    ):
+        records._atomic_create_or_reuse(target, b"payload")
+
+    assert target.read_bytes() == b"payload"
+
+
+def test_reused_operator_receipt_reproves_directory_durability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "record.json"
+    records._atomic_create_or_reuse(target, b"payload")
+
+    def refuses(_path: Path, *, strict: bool) -> None:
+        assert strict
+        raise OSError("injected reuse directory sync failure")
+
+    monkeypatch.setattr(records, "sync_directory", refuses)
+
+    with pytest.raises(
+        records.RecordError,
+        match="exists but its directory entry could not be made durable",
     ):
         records._atomic_create_or_reuse(target, b"payload")
 

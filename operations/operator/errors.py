@@ -308,7 +308,9 @@ def strip_control_bytes(value: str) -> str:
     reconciliation table or a price screen should have done to it.
     """
 
-    return _CONTROL_CHARACTERS.sub("", value)
+    # A space, not deletion: deletion silently joins two identifiers into one
+    # name the operator would read as a single thing.
+    return _CONTROL_CHARACTERS.sub(" ", value)
 
 
 def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
@@ -339,10 +341,14 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     compact = _CONTROL_CHARACTERS.sub(" ", value).strip()
     if not compact:
         return "no additional detail was recorded"
-    if "traceback" in compact.lower():
-        return (
-            "a technical detail was omitted from this message and was not saved by this error "
-            "path; this step was not called complete"
+    trace = _TRACEBACK_SHAPE.search(compact)
+    if trace is not None:
+        # Keep everything before the structured trace header. In particular,
+        # RECORD_WRITE_FAILED prefixes a receipt path the operator is told to
+        # preserve; suppressing frames must not suppress that usable evidence.
+        prefix = compact[: trace.start()].rstrip()
+        compact = " ".join(
+            part for part in (prefix, "[technical trace omitted from this message]") if part
         )
     compact = " ".join(_translate_close_vocabulary(word) for word in compact.split(" "))
     if len(compact) <= maximum:
@@ -356,6 +362,13 @@ _CLOSE_VOCABULARY: Final = (
     (re.compile(r"(?<![\w.-])termination(?![\w.-])", re.IGNORECASE), "close"),
     (re.compile(r"(?<![\w.-])terminate(?:d|s|ing)?(?![\w.-])", re.IGNORECASE), "close"),
     (re.compile(r"(?<![\w.-])stop(?:ped|s|ping)?(?![\w.-])", re.IGNORECASE), "paused"),
+)
+
+# Match real Python traceback structure, not a bare word that may legitimately
+# occur in a path, pod id, filename, or step name.
+_TRACEBACK_SHAPE: Final = re.compile(
+    r"Traceback\s+\(most recent call last\):?.*",
+    re.IGNORECASE | re.DOTALL,
 )
 
 

@@ -87,15 +87,27 @@ actual = ErrorCode.BOOT_RED
 def test_error_renderer_never_shows_a_raw_traceback_or_old_close_vocabulary() -> None:
     rendered = errors.OperatorError(
         errors.ErrorCode.UNEXPECTED,
-        detail="Traceback: provider terminate failed during shutdown",
+        detail=(
+            "Receipt saved at /tmp/operator/receipts/run.json; "
+            "Traceback (most recent call last): provider terminate failed during shutdown"
+        ),
     ).render()
 
     assert "Traceback" not in rendered
     assert "terminate" not in rendered.lower()
     assert "shutdown" not in rendered.lower()
+    assert "/tmp/operator/receipts/run.json" in rendered
     assert "What happened:" in rendered
     assert "Next step:" in rendered
-    assert "not saved by this error path" in rendered
+
+
+def test_the_word_traceback_in_a_receipt_path_does_not_erase_the_path() -> None:
+    rendered = errors.sanitize_detail(
+        "Receipt saved at /tmp/traceback-records/receipts/run.json; keep that exact path"
+    )
+
+    assert "/tmp/traceback-records/receipts/run.json" in rendered
+    assert "keep that exact path" in rendered
 
 
 def test_old_close_vocabulary_is_replaced_even_without_the_word_traceback() -> None:
@@ -153,7 +165,7 @@ def test_stripping_control_bytes_changes_nothing_else_about_a_line() -> None:
 
     line = "| Delivered acts | 2 |   spaced\x1b[2Jand terminated\x00"
 
-    assert errors.strip_control_bytes(line) == "| Delivered acts | 2 |   spaced[2Jand terminated"
+    assert errors.strip_control_bytes(line) == "| Delivered acts | 2 |   spaced [2Jand terminated "
     assert errors.strip_control_bytes("x" * 5000) == "x" * 5000
 
 
@@ -189,7 +201,7 @@ def test_control_bytes_are_stripped_from_the_operator_facing_detail() -> None:
     ("\u200b", "\u200e", "\u202e", "\u2066", "\u2069", "\ufeff"),
 )
 def test_unicode_terminal_spoofing_controls_are_stripped(character: str) -> None:
-    assert errors.strip_control_bytes(f"before{character}after") == "beforeafter"
+    assert errors.strip_control_bytes(f"before{character}after") == "before after"
 
 
 def test_launch_safeguard_and_spending_refusals_name_different_causes() -> None:

@@ -3,7 +3,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-if ! cd "$ROOT"; then
+if [ -z "$ROOT" ] || ! cd "$ROOT"; then
     echo "What happened: Verbatus could not open its project folder."
     echo "What it means: Nothing was changed or billed."
     echo "Next step: Move this file back inside the Apparatus Verbatus folder, then try again; this is safe."

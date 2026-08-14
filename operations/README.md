@@ -9,7 +9,7 @@ Anything with a human, a machine, or money on the other end.
 | Directory | Declared responsibility |
 |---|---|
 | `operator/` | the plain-language, offline `verbatus` rehearsal that joins the operator's six words and read-only `status` |
-| `submit/` | the future page where images are handed in |
+| `submit/` | manifest sealing and the data-handling gate for submitted images |
 | `pod/` | pod rental, close verification, and provider-state/billing evidence |
 | `data/` | future movement of runs and exports between machines |
 | `notify/` | the implemented, fileless one-way notification client |

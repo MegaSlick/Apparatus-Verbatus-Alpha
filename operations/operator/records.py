@@ -255,20 +255,26 @@ class DescriptorStore:
             # an unclassified traceback on the money path.
             raise RecordError("the operator descriptor lock could not be opened") from error
         try:
-            try:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            except ImportError:  # pragma: no cover - production operator and tests are POSIX
-                pass
+            import fcntl
+        except ImportError:  # pragma: no cover - production operator and tests are POSIX
+            fcntl = None  # type: ignore[assignment]
+        locked = False
+        try:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                except OSError as error:
+                    raise RecordError("the operator descriptor lock could not be taken") from error
+                locked = True
             yield
         finally:
-            try:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except ImportError:  # pragma: no cover - production operator and tests are POSIX
-                pass
+            if fcntl is not None and locked:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    # Closing releases the POSIX lock; an unlock failure must
+                    # not replace the protected body's more useful exception.
+                    pass
             handle.close()
 
     def load(self) -> dict[str, Any] | None:
@@ -386,6 +392,12 @@ def _atomic_create_or_reuse(target: Path, payload: bytes) -> None:
                 raise RecordError(
                     "an operator receipt path already holds different evidence"
                 ) from None
+            try:
+                sync_directory(target.parent, strict=True)
+            except OSError as error:
+                raise RecordError(
+                    "the operator receipt exists but its directory entry could not be made durable"
+                ) from error
     except OSError as error:
         raise RecordError("operator receipt could not be written") from error
     finally:

@@ -65,13 +65,13 @@ def sync_directory(path: Path, *, strict: bool = False) -> None:
 
     try:
         descriptor = os.open(path, os.O_RDONLY)
-    except OSError:  # pragma: no cover - unusual filesystems may refuse directory opens
+    except OSError:
         if strict:
             raise
         return
     try:
         os.fsync(descriptor)
-    except OSError:  # pragma: no cover - the same filesystem caveat
+    except OSError:
         if strict:
             raise
     finally:

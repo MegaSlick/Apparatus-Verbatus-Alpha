@@ -47,6 +47,7 @@ from .surface import (
     _repository_commit,
     _request_from_record,
     _request_record,
+    reconciliation_table,
 )
 from .volume_cost import ACCRUAL_FACT
 
@@ -384,6 +385,21 @@ def test_write_refuses_a_symlinked_receipts_directory(tmp_path: Path) -> None:
     assert list(outside.iterdir()) == []
 
 
+def test_fixture_store_refuses_a_symlinked_root_without_chmodding_its_target(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o755)
+    original_mode = outside.stat().st_mode
+    root = tmp_path / "fixture-volume"
+    root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="root is not a safe directory"):
+        LocalFixtureObjectStore(root)
+
+    assert outside.stat().st_mode == original_mode
+
+
 def test_a_repeated_receipt_never_corrupts_the_descriptors_own_history_invariant(
     tmp_path: Path,
 ) -> None:
@@ -549,7 +565,11 @@ def _race_one_fixture_object(root: Path, sources: tuple[Path, Path]) -> list[Bas
         try:
             gate.wait()
             with source.open("rb") as handle:
-                store.put_file("volume/page.bin", handle)
+                store.put_file(
+                    "volume/page.bin",
+                    handle,
+                    expected_sha=hashlib.sha256(source.read_bytes()).hexdigest(),
+                )
         except Exception as error:  # noqa: BLE001 - the refusal is exactly what is counted
             refusals.append(error)
 
@@ -614,7 +634,11 @@ def test_a_symlink_planted_during_fixture_object_publication_is_refused(
 
     with source.open("rb") as handle:
         with pytest.raises(RuntimeError, match="not a readable object"):
-            store.put_file("objects/page.bin", handle)
+            store.put_file(
+                "objects/page.bin",
+                handle,
+                expected_sha=hashlib.sha256(b"payload").hexdigest(),
+            )
 
     assert target.is_symlink()
     assert store.puts == []
@@ -672,9 +696,43 @@ def test_fixture_object_publication_syncs_its_directory(
     store = LocalFixtureObjectStore(tmp_path / "volume")
 
     with source.open("rb") as handle:
-        store.put_file("objects/page.bin", handle)
+        store.put_file(
+            "objects/page.bin",
+            handle,
+            expected_sha=hashlib.sha256(b"payload").hexdigest(),
+        )
 
     assert synced == [(tmp_path / "volume" / "objects").resolve()]
+
+
+def test_reused_fixture_object_reproves_directory_durability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"payload")
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+    with source.open("rb") as handle:
+        store.put_file(
+            "objects/page.bin",
+            handle,
+            expected_sha=hashlib.sha256(b"payload").hexdigest(),
+        )
+
+    def refuses(_path: Path, *, strict: bool) -> None:
+        assert strict
+        raise OSError("injected reuse directory sync failure")
+
+    monkeypatch.setattr("operations.operator.fakes.sync_directory", refuses)
+
+    with source.open("rb") as handle:
+        with pytest.raises(RuntimeError, match="exists but its directory entry"):
+            store.put_file(
+                "objects/page.bin",
+                handle,
+                expected_sha=hashlib.sha256(b"payload").hexdigest(),
+            )
+
+    assert store.puts == ["objects/page.bin"]
 
 
 def test_submit_and_upload_seals_a_new_manifest_then_transfers_it(tmp_path: Path) -> None:
@@ -732,11 +790,12 @@ def test_the_default_upload_target_never_holds_a_whole_file_in_memory(tmp_path: 
         for _ in range(32):
             handle.write(b"z" * (1024 * 1024))
     store = LocalFixtureObjectStore(tmp_path / "volume")
+    expected_sha = sha256_file(source)
 
     tracemalloc.start()
     try:
         with source.open("rb") as handle:
-            store.put_file("volume/pages.bin", handle)
+            store.put_file("volume/pages.bin", handle, expected_sha=expected_sha)
         _, put_peak = tracemalloc.get_traced_memory()
         tracemalloc.reset_peak()
         observed = store.inspect("volume/pages.bin")
@@ -1191,6 +1250,42 @@ def test_console_parser_never_prints_a_raw_traceback(capsys: pytest.CaptureFixtu
     assert "What it means:" in captured
     assert "Next step:" in captured
     assert "Traceback" not in captured
+
+
+def test_sealed_manifest_upload_refuses_a_new_policy_instead_of_ignoring_it(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uploads: list[tuple[Path, Path]] = []
+
+    class ObservedSurface:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def upload(self, source: Path, *, sealed_manifest: Path, volume=None) -> None:
+            del volume
+            uploads.append((source, sealed_manifest))
+
+    monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
+
+    result = cli.main(
+        [
+            "--workspace",
+            str(tmp_path),
+            "upload",
+            "--source",
+            str(tmp_path / "source"),
+            "--sealed-manifest",
+            str(tmp_path / "sealed.json"),
+            "--policy",
+            str(tmp_path / "new-policy.toml"),
+        ]
+    )
+
+    assert result == 2
+    assert uploads == []
+    assert "existing sealed record already carries the policy" in capsys.readouterr().out
 
 
 def test_console_interrupt_never_prints_a_raw_traceback(
@@ -1657,7 +1752,7 @@ def test_console_entry_renders_an_application_import_failure(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def broken_application():  # type: ignore[no-untyped-def]
-        raise RuntimeError("Traceback: missing fixture application")
+        raise RuntimeError("Traceback (most recent call last): missing fixture application")
 
     monkeypatch.setattr(entry, "_load_application", broken_application)
 
@@ -1801,6 +1896,30 @@ def test_mac_wrapper_starts_the_same_console_flow() -> None:
     assert "verbatus" in completed.stdout.lower()
 
 
+def test_mac_wrapper_refuses_an_empty_project_root(
+    tmp_path: Path,
+) -> None:
+    bash_environment = tmp_path / "bash-environment"
+    bash_environment.write_text("pwd() { return 1; }\n", encoding="utf-8")
+    environment = dict(os.environ)
+    environment["BASH_ENV"] = str(bash_environment)
+
+    completed = subprocess.run(
+        [str(ROOT / "operations" / "operator" / "Verbatus.command")],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        stdin=subprocess.DEVNULL,
+        timeout=10,
+    )
+
+    assert completed.returncode == 1
+    assert "could not open its project folder" in completed.stdout
+    assert "Traceback" not in completed.stderr
+
+
 def test_scripted_dry_run_is_a_readable_six_word_acceptance_artifact(tmp_path: Path) -> None:
     transcript = make_transcript(tmp_path / "operator-dry-run.txt").read_text(encoding="utf-8")
 
@@ -1817,6 +1936,94 @@ def test_scripted_dry_run_is_a_readable_six_word_acceptance_artifact(tmp_path: P
     assert "I CONFIRM PAID POD" in transcript
     assert "Charges captured through" in transcript
     assert "zero GPU-hours" in transcript
+
+
+def test_scripted_dry_run_redacts_paths_from_its_intentional_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_surface = dry_run.OperatorSurface
+
+    class RefusalWithPathSurface(real_surface):
+        def launch(self, prepared, confirmation):  # type: ignore[no-untyped-def]
+            if confirmation == "not the confirmation":
+                raise OperatorError(
+                    ErrorCode.CONFIRMATION_REQUIRED,
+                    detail=f"Saved receipt: {self.state_root}/receipts/launch.json",
+                )
+            return super().launch(prepared, confirmation)
+
+    monkeypatch.setattr(dry_run, "OperatorSurface", RefusalWithPathSurface)
+
+    transcript = make_transcript(tmp_path / "operator-dry-run.txt").read_text(encoding="utf-8")
+
+    assert ".verbatus-dry-run-" not in transcript
+    assert "[rehearsal folder]/operator-records/receipts/launch.json" in transcript
+
+
+def test_dry_run_missing_launch_record_uses_the_operator_error_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_surface = dry_run.OperatorSurface
+
+    class MissingRecordSurface(real_surface):
+        def launch(self, prepared, confirmation):  # type: ignore[no-untyped-def]
+            result = super().launch(prepared, confirmation)
+            return replace(result, record=None)
+
+    monkeypatch.setattr(dry_run, "OperatorSurface", MissingRecordSurface)
+
+    with pytest.raises(OperatorError) as refusal:
+        make_transcript(tmp_path / "operator-dry-run.txt")
+
+    assert refusal.value.code is ErrorCode.UNEXPECTED
+
+
+def test_dry_run_main_strips_control_bytes_from_an_os_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(_output: Path) -> Path:
+        raise OSError("cannot write before\x1b[2Jafter")
+
+    monkeypatch.setattr(dry_run, "make_transcript", refuse)
+
+    assert dry_run.main(["--output", str(tmp_path / "transcript.txt")]) == 1
+    captured = capsys.readouterr().out
+    assert "\x1b" not in captured
+    assert "before [2Jafter" in captured
+
+
+def test_dry_run_parser_has_a_description_when_docstrings_are_removed(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(dry_run, "__doc__", None)
+
+    with pytest.raises(SystemExit) as exit_status:
+        dry_run.main(["--help"])
+
+    assert exit_status.value.code == 0
+    assert "offline verbatus rehearsal transcript" in capsys.readouterr().out.lower()
+
+
+def test_reconciliation_distinguishes_missing_lists_from_recorded_empty_lists() -> None:
+    missing = reconciliation_table({"aggregate": {}, "expected_acts": "unknown"})
+    empty = reconciliation_table(
+        {
+            "aggregate": {},
+            "expected_acts": 0,
+            "pages": [],
+            "delivered": [],
+            "review": [],
+        }
+    )
+
+    assert "| Submitted pages accounted for | not recorded |" in missing
+    assert "| Delivered acts | not recorded |" in missing
+    assert "| Acts held for review | not recorded |" in missing
+    assert "| Submitted pages accounted for | 0 |" in empty
+    assert "| Delivered acts | 0 |" in empty
+    assert "| Acts held for review | 0 |" in empty
 
 
 def test_scripted_dry_run_uses_one_configured_policy_from_its_fixture_workspace(

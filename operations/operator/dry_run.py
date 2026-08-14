@@ -19,7 +19,7 @@ from common.contracts.canonical import canonical_bytes
 from operations.pod.models import PodCreateRequest
 from operations.submit.submit import build_manifest, walk_folder
 
-from .errors import OperatorError
+from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .fakes import OperatorFakeProvider
 from .surface import OperatorSurface
 
@@ -94,9 +94,10 @@ def make_transcript(output: str | Path) -> Path:
         try:
             surface.launch(prepared, "not the confirmation")
         except OperatorError as error:
-            lines.extend(error.render().splitlines())
-        lines.append("The refusal above made no paid provider call.")
-        lines.append("")
+            for line in error.render().splitlines():
+                present(line)
+        present("The refusal above made no paid provider call.")
+        present()
         prepared = surface.prepare_launch(request, policy_path=spend)
         launched = surface.launch(prepared, prepared.confirmation_phrase)
 
@@ -105,7 +106,8 @@ def make_transcript(output: str | Path) -> Path:
 
         _heading(lines, "3. upload — no pod is needed")
         lines.append(
-            "This transcript follows the six-word list. In a normal run, upload can happen before launch."
+            "This transcript follows the six-word list. "
+            "In a normal run, upload can happen before launch."
         )
         surface.upload(source, sealed_manifest=manifest)
 
@@ -117,7 +119,10 @@ def make_transcript(output: str | Path) -> Path:
 
         _heading(lines, "6. close — separate confirmation and captured cost")
         if launched.record is None:  # defensive: the surface would already have refused.
-            raise RuntimeError("the dry-run launch did not provide a fixture pod")
+            raise OperatorError(
+                ErrorCode.UNEXPECTED,
+                detail="the dry-run launch did not provide a fixture pod",
+            )
         prepared_close = surface.prepare_close()
         surface.close(prepared_close, prepared_close.phrase)
 
@@ -170,7 +175,8 @@ def _friendly_path(value: str, temporary: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    description = __doc__ or "Produce the offline Verbatus rehearsal transcript."
+    parser = argparse.ArgumentParser(description=description.splitlines()[0])
     parser.add_argument("--output", type=Path, required=True, help="where to save the transcript")
     args = parser.parse_args(argv)
     try:
@@ -182,9 +188,10 @@ def main(argv: list[str] | None = None) -> int:
         print(error.render())
         return 1
     except OSError as error:
+        safe_detail = strip_control_bytes(str(error))
         print(
             "What happened: the dry-run transcript could not be prepared or saved "
-            f"({error}).\n"
+            f"({safe_detail}).\n"
             "What it means: nothing was changed or billed; no transcript was written.\n"
             "Next step: check the output path is writable, then run this again; this is safe."
         )

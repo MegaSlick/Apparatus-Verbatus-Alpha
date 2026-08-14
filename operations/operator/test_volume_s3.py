@@ -25,6 +25,8 @@ from .volume_s3 import (
     build_client,
 )
 
+EXPECTED_SYNTHETIC_PAGE_SHA256 = "b08f1bf7a42942ccf7e5fa645f6b0ed50cf5caa4ebfe1e8bcbbbc1c5effbdac4"
+
 
 class FakeS3Client:
     """The smallest thing shaped like the two boto3 calls this adapter makes."""
@@ -123,12 +125,33 @@ def test_an_uploaded_file_reads_back_with_the_digest_it_was_tagged_with(tmp_path
     source.write_bytes(b"a synthetic page\n")
 
     with source.open("rb") as handle:
-        target.put_file("volume/page.bin", handle)
+        target.put_file(
+            "volume/page.bin",
+            handle,
+            expected_sha=EXPECTED_SYNTHETIC_PAGE_SHA256,
+        )
     observed = target.inspect("volume/page.bin")
 
     assert observed is not None
     assert observed.size == source.stat().st_size
-    assert client.objects["volume/page.bin"][1][SHA256_METADATA_KEY] == observed.sha256
+    assert observed.sha256 == EXPECTED_SYNTHETIC_PAGE_SHA256
+    assert (
+        client.objects["volume/page.bin"][1][SHA256_METADATA_KEY] == EXPECTED_SYNTHETIC_PAGE_SHA256
+    )
+
+
+def test_an_injected_client_still_gets_the_documented_transfer_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = object()
+    monkeypatch.setattr(
+        "operations.operator.volume_s3.default_transfer_config",
+        lambda: configured,
+    )
+
+    target = S3VolumeTarget(_spec(), client=FakeS3Client())
+
+    assert target.transfer_config is configured
 
 
 def test_an_object_without_our_digest_is_refused_and_not_overwritten(tmp_path: Path) -> None:
@@ -139,7 +162,11 @@ def test_an_object_without_our_digest_is_refused_and_not_overwritten(tmp_path: P
     source = tmp_path / "page.bin"
     source.write_bytes(b"a synthetic page\n")
     with source.open("rb") as handle:
-        target.put_file("volume/page.bin", handle)
+        target.put_file(
+            "volume/page.bin",
+            handle,
+            expected_sha=EXPECTED_SYNTHETIC_PAGE_SHA256,
+        )
     client.drop_metadata = True
 
     with pytest.raises(VolumeTransferRefusal, match="was not overwritten"):
@@ -241,12 +268,15 @@ class _BrokenHandle:
     def read(self, size: int = -1) -> bytes:
         raise OSError("injected read failure")
 
+    def seek(self, _offset: int) -> int:
+        return 0
+
 
 def test_a_read_failure_on_the_handle_is_a_named_refusal() -> None:
     target = S3VolumeTarget(_spec(), client=FakeS3Client())
 
-    with pytest.raises(VolumeTransferRefusal, match="could not be read"):
-        target.put_file("volume/broken.bin", _BrokenHandle())
+    with pytest.raises(VolumeTransferRefusal, match="reading the source or writing"):
+        target.put_file("volume/broken.bin", _BrokenHandle(), expected_sha="0" * 64)
 
 
 def test_an_os_error_from_the_upload_names_source_or_network_without_guessing(
@@ -259,7 +289,9 @@ def test_an_os_error_from_the_upload_names_source_or_network_without_guessing(
 
     with source.open("rb") as handle:
         with pytest.raises(VolumeTransferRefusal, match="reading the source or writing"):
-            S3VolumeTarget(_spec(), client=client).put_file("volume/page.bin", handle)
+            S3VolumeTarget(_spec(), client=client).put_file(
+                "volume/page.bin", handle, expected_sha="0" * 64
+            )
 
 
 def test_upload_through_the_surface_sends_only_the_sealed_record(tmp_path: Path) -> None:

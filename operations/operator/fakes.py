@@ -79,7 +79,11 @@ class LocalFixtureObjectStore(TransferTarget):
         # — no other local account can plant a link between a validation and an
         # open. (Descriptor-relative walking of every component would defend
         # against the owner racing themselves, which is not this seam's threat.)
+        if self.root.is_symlink():
+            raise RuntimeError("fixture object store root is not a safe directory")
         self.root.mkdir(parents=True, exist_ok=True)
+        if self.root.is_symlink() or not self.root.is_dir():
+            raise RuntimeError("fixture object store root is not a safe directory")
         os.chmod(self.root, 0o700)
         self.fail_once_for = fail_once_for
         self.puts: list[str] = []
@@ -109,7 +113,8 @@ class LocalFixtureObjectStore(TransferTarget):
                 size += len(block)
         return RemoteObject(digest.hexdigest(), size)
 
-    def put_file(self, key: str, source: BinaryIO) -> None:
+    def put_file(self, key: str, source: BinaryIO, *, expected_sha: str) -> None:
+        del expected_sha  # the fixture re-inspects bytes independently after publication
         # The same rule inspect() applies, at the write: a link at the object
         # key must be refused, or a successful put would record a key that
         # inspect() then reports absent and nothing could verify or resume.
@@ -155,6 +160,12 @@ class LocalFixtureObjectStore(TransferTarget):
                         raise RuntimeError(
                             "fixture object already exists with different bytes"
                         ) from None
+                try:
+                    sync_directory(target.parent, strict=True)
+                except OSError as error:
+                    raise RuntimeError(
+                        "fixture object exists but its directory entry could not be made durable"
+                    ) from error
             self.puts.append(key)
         finally:
             temporary.unlink(missing_ok=True)

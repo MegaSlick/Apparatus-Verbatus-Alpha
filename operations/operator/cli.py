@@ -165,6 +165,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             surface.boot()
         elif args.verb == "upload":
             if args.sealed_manifest is not None:
+                if args.policy is not None:
+                    raise OperatorError(
+                        ErrorCode.INVALID_COMMAND,
+                        detail=(
+                            "--policy applies only when --manifest-out seals a new submission "
+                            "record; an existing sealed record already carries the policy it "
+                            "was sealed under"
+                        ),
+                    )
                 surface.upload(args.source, sealed_manifest=args.sealed_manifest, volume=volume)
             else:
                 surface.submit_and_upload(
