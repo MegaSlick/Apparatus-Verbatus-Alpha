@@ -726,7 +726,9 @@ def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
     assert reading["payload"]["text"] == ""
     assert all(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
 
-    entry = next(row for row in export_of(tree)["review"] if row["act_key"] == "page-fallback:3")
+    entry = next(
+        row for row in export_of(tree)["non_delivered"] if row["act_key"] == "page-fallback:3"
+    )
     assert entry["act_id"] == reading["subject_id"]
     assert entry["category"] == "confirmed-blank"
 

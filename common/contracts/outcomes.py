@@ -451,14 +451,16 @@ def run_aggregate(
             "resolved it and no artifact records it"
         )
 
-    for act, category in act_categories.items():
+    for act in sorted(act_categories):
+        category = act_categories[act]
         if not isinstance(category, ArmariumCategory):
             raise FatalAccounting(f"act {act} carries {category!r}, not a category")
         by_category[category.value] = by_category.get(category.value, 0) + 1
         if VOCABULARIES[ARMARIUM][category.value] is not OutcomeClass.COMPLETED:
             reasons.append(f"act {act} is {category.value}")
 
-    for act, record in coverage.items():
+    for act in sorted(coverage):
+        record = coverage[act]
         if record.get("under_witnessed"):
             reasons.append(
                 f"act {act} is under-witnessed "

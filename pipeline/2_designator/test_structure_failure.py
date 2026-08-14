@@ -241,8 +241,8 @@ def test_nothing_downstream_reports_the_lost_page_as_a_success(structure_failure
     """Every held unit reaches the Armarium as a review item, and the run is partial."""
     export = _artifacts(structure_failure_run, ARMARIUM, "export")[0]["payload"]
     assert export["aggregate"]["status"] == "partial"
-    assert export["review"], "a page nobody could mark out must leave a review item"
-    assert {item["category"] for item in export["review"]} == {"held-for-review"}
+    assert export["non_delivered"], "a page nobody could mark out must leave a review item"
+    assert {item["category"] for item in export["non_delivered"]} == {"held-for-review"}
 
     seal = _artifacts(structure_failure_run, DESIGNATOR, "proposal-seal")[0]["payload"]
     # Conservation, act for act: every expected act ends in exactly one Armarium
@@ -252,7 +252,7 @@ def test_nothing_downstream_reports_the_lost_page_as_a_success(structure_failure
         for entry in structure_failure_run.build_manifest(ARMARIUM)["artifacts"]
         if entry["kind"] == "manifest-entry"
     ]
-    assert len(entries) == seal["count"] == len(export["review"])
+    assert len(entries) == seal["count"] == len(export["non_delivered"])
 
 
 # --- a page whose background cannot be inferred: read, but never claimed ---------
