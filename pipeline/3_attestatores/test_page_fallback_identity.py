@@ -43,8 +43,45 @@ FIXTURE = {"page": [{"ordinal": 1, "width": 200, "height": 260}]}
 PAGE_BOUNDS = {"x": 0, "y": 0, "w": 200, "h": 260}
 
 
+class _Tree:
+    def __init__(self, record=None):
+        self.record = record
+
+    def build_manifest(self, stage):
+        assert stage == attestatores.DESIGNATOR
+        if self.record is None:
+            return {"artifacts": []}
+        return {
+            "artifacts": [
+                {
+                    "kind": "page-fallback",
+                    "subject_id": self.record["subject_id"],
+                    "artifact_id": "fallback-record",
+                }
+            ]
+        }
+
+    def read_artifact(self, stage, kind, artifact_id):
+        assert (stage, kind, artifact_id) == (
+            attestatores.DESIGNATOR,
+            "page-fallback",
+            "fallback-record",
+        )
+        return self.record
+
+
 class _Context:
-    fixture = FIXTURE
+    def __init__(self, *, fixture=FIXTURE, act_id=None, page_bounds=PAGE_BOUNDS):
+        self.fixture = fixture
+        record = (
+            {
+                "subject_id": act_id,
+                "payload": {"page_bounds": page_bounds},
+            }
+            if act_id is not None
+            else None
+        )
+        self.tree = _Tree(record)
 
 
 def _act(act_id: str, act_key: str) -> dict:
@@ -54,7 +91,9 @@ def _act(act_id: str, act_key: str) -> dict:
 def test_the_reserved_minted_identity_is_recognized():
     """The real minted act still takes the branch it exists for."""
     minted = derive_act_id(PAGE_ID, FALLBACK_PAGE_ACT_ORDINAL, PAGE_BOUNDS)
-    assert attestatores._is_page_fallback(_Context(), _act(minted, fallback_page_act_key(1)))
+    assert attestatores._is_page_fallback(
+        _Context(act_id=minted), _act(minted, fallback_page_act_key(1))
+    )
 
 
 def test_a_fallback_shaped_key_cannot_blank_an_ordinary_act():
@@ -66,12 +105,23 @@ def test_a_fallback_shaped_key_cannot_blank_an_ordinary_act():
 def test_the_minted_identity_is_recognized_whatever_the_key_says():
     """And the reverse: identity decides, so a drifted label changes nothing."""
     minted = derive_act_id(PAGE_ID, FALLBACK_PAGE_ACT_ORDINAL, PAGE_BOUNDS)
-    assert attestatores._is_page_fallback(_Context(), _act(minted, "a1"))
+    assert attestatores._is_page_fallback(_Context(act_id=minted), _act(minted, "a1"))
 
 
 def test_the_identity_is_bound_to_this_page_rather_than_any_page():
     """A fallback identity minted over another page is not this page's."""
     other_page = derive_act_id("pg_fedcba9876543210", FALLBACK_PAGE_ACT_ORDINAL, PAGE_BOUNDS)
     assert not attestatores._is_page_fallback(
-        _Context(), _act(other_page, fallback_page_act_key(1))
+        _Context(act_id=other_page), _act(other_page, fallback_page_act_key(1))
+    )
+
+
+def test_recognition_uses_the_designator_record_when_fixture_dimensions_diverge():
+    """Fixture declarations do not get a second vote on the sealed page rectangle."""
+    minted = derive_act_id(PAGE_ID, FALLBACK_PAGE_ACT_ORDINAL, PAGE_BOUNDS)
+    divergent_fixture = {"page": [{"ordinal": 1, "width": 199, "height": 259}]}
+
+    assert attestatores._is_page_fallback(
+        _Context(fixture=divergent_fixture, act_id=minted),
+        _act(minted, fallback_page_act_key(1)),
     )

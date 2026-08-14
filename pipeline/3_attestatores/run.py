@@ -39,7 +39,6 @@ from common.stage import (  # noqa: E402
     expected_acts,
     fixture_serving_details,
     open_context,
-    page_for,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -141,10 +140,32 @@ def _unique_region_inputs(context, regions: list[dict]) -> list[dict]:
     return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
 
 
-def _is_page_fallback(context, act: dict) -> bool:
+def _page_fallback_bounds(context) -> dict[str, dict]:
+    """Index the Designator rectangles already verified by `expected_acts`."""
+    bounds_by_act = {}
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "page-fallback":
+            continue
+        act_id = entry["subject_id"]
+        if act_id in bounds_by_act:
+            raise SchemaRefusal(f"act {act_id} has more than one Designator page-fallback record")
+        record = context.tree.read_artifact(DESIGNATOR, "page-fallback", entry["artifact_id"])
+        page_bounds = record.get("payload", {}).get("page_bounds")
+        if not isinstance(page_bounds, dict):
+            raise SchemaRefusal(
+                f"act {act_id}'s Designator page-fallback record carries no page rectangle"
+            )
+        bounds_by_act[act_id] = page_bounds
+    return bounds_by_act
+
+
+def _is_page_fallback(context, act: dict, bounds_by_act: dict[str, dict] | None = None) -> bool:
     """Recognize the reserved minted identity, not merely its human-readable key."""
-    page = page_for(context.fixture, act["page_ordinal"])
-    page_bounds = {"x": 0, "y": 0, "w": page["width"], "h": page["height"]}
+    if bounds_by_act is None:
+        bounds_by_act = _page_fallback_bounds(context)
+    page_bounds = bounds_by_act.get(act["act_id"])
+    if page_bounds is None:
+        return False
     return act["act_id"] == derive_act_id(act["page_id"], FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
 
 
@@ -195,9 +216,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
     failures = declared_failures(context)
     empty = declared_empty(context)
+    acts = expected_acts(context)
+    fallback_bounds = _page_fallback_bounds(context)
 
     recorded = 0
-    for act in expected_acts(context):
+    for act in acts:
         if act["outcome"] == "held":
             # The Designator held this act: its proposal is incomplete, and a
             # witness shown only what exists would have read part of an act
@@ -233,7 +256,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             continue
 
         regions = proposed_regions(context, act["act_id"])
-        page_fallback = _is_page_fallback(context, act)
+        page_fallback = _is_page_fallback(context, act, fallback_bounds)
         region_references = [
             {
                 "region_id": record["payload"]["region_id"],

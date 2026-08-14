@@ -1,9 +1,6 @@
 """Cross-stage pin for the two deliberately asymmetric ink calibrations."""
 
 import ast
-import importlib.util
-import inspect
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,37 +16,36 @@ def _literal_constant(path: Path, name: str) -> int:
             target, value_node = node.targets[0], node.value
         if isinstance(target, ast.Name) and target.id == name:
             value = ast.literal_eval(value_node)
-            assert isinstance(value, int) and not isinstance(value, bool)
+            assert isinstance(value, int)
+            assert not isinstance(value, bool)
             return value
     raise AssertionError(f"{path} does not declare {name}")
 
 
-def _load_conservation_module():
-    """Load the numeric-stage module without making its directory a package."""
-    stage = ROOT / "pipeline" / "2_designator"
-    structure_path = stage / "structure.py"
-    conservation_path = stage / "conservation.py"
-    structure_spec = importlib.util.spec_from_file_location(
-        "_ink_calibration_structure", structure_path
-    )
-    conservation_spec = importlib.util.spec_from_file_location(
-        "_ink_calibration_conservation", conservation_path
-    )
-    assert structure_spec is not None and structure_spec.loader is not None
-    assert conservation_spec is not None and conservation_spec.loader is not None
-    structure = importlib.util.module_from_spec(structure_spec)
-    conservation = importlib.util.module_from_spec(conservation_spec)
-    previous = sys.modules.get("structure")
-    sys.modules["structure"] = structure
-    try:
-        structure_spec.loader.exec_module(structure)
-        conservation_spec.loader.exec_module(conservation)
-    finally:
-        if previous is None:
-            sys.modules.pop("structure", None)
-        else:
-            sys.modules["structure"] = previous
-    return conservation
+def _parameter_default_name(path: Path, function: str, parameter: str) -> str:
+    """Read one named parameter default without executing the stage."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name != function:
+            continue
+        positional = [*node.args.posonlyargs, *node.args.args]
+        pairs = (
+            list(zip(positional[-len(node.args.defaults) :], node.args.defaults, strict=True))
+            if node.args.defaults
+            else []
+        )
+        pairs.extend(zip(node.args.kwonlyargs, node.args.kw_defaults, strict=True))
+        for argument, default in pairs:
+            if argument.arg != parameter or default is None:
+                continue
+            if not isinstance(default, ast.Name):
+                raise AssertionError(
+                    f"{path} does not declare {function}({parameter}=<named constant>)"
+                )
+            return default.id
+    raise AssertionError(f"{path} does not declare {function}({parameter}=...)")
 
 
 def test_the_recensor_audit_never_calls_ink_what_the_designator_dismissed():
@@ -65,8 +61,11 @@ def test_the_recensor_audit_never_calls_ink_what_the_designator_dismissed():
         ROOT / "pipeline" / "4_perlector" / "reader.py",
         "PAGE_FALLBACK_INK_MARGIN",
     )
-    conservation = _load_conservation_module()
-    reconcile_margin = inspect.signature(conservation.reconcile).parameters["margin"].default
-    assert reconcile_margin == designator_margin
+    reconcile_margin_name = _parameter_default_name(
+        ROOT / "pipeline" / "2_designator" / "conservation.py",
+        "reconcile",
+        "margin",
+    )
+    assert reconcile_margin_name == "SECONDARY_MARGIN"
     assert fallback_reader_margin == designator_margin
     assert recensor_contrast >= designator_margin
