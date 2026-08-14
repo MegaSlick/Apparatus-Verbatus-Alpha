@@ -397,6 +397,30 @@ def invoke_stage(
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
+@pytest.mark.parametrize(
+    "program",
+    (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/4_perlector/run.py",
+        "pipeline/5_recensor/run.py",
+        "pipeline/6_archetypus/run.py",
+        "pipeline/7_armarium/run.py",
+    ),
+)
+def test_only_attestatores_accepts_the_shared_chair_argument(tmp_path, program):
+    """A stage must never report success while ignoring an operator's chair."""
+    root = tmp_path / "runs"
+
+    result = invoke_stage(root, "r", "happy", program, chair="attestator_1")
+
+    assert result.returncode == EXIT_FATAL
+    assert "ContractError" in result.stderr
+    assert "--chair is implemented only by the Attestatores" in result.stderr
+    assert not root.exists()
+
+
 def _run_through_designator(root: Path, run_id: str = "r", scenario: str = "happy") -> None:
     """Run Door, Exemplar, and Designator, refusing a partial setup loudly."""
     for program in (

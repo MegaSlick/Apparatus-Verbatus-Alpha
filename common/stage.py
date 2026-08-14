@@ -311,8 +311,31 @@ class StageContext:
         self.tree.write_manifest(stage or self.stage)
 
 
-def stage_parser(description: str) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=description)
+class _StageArgumentParser(argparse.ArgumentParser):
+    """Shared operation-argument refusal for stage programs.
+
+    ``--chair`` remains in the common argv vocabulary so orchestration can pass
+    one stable shape, but only the Attestatores opts into implementing it. A
+    stage that does not opt in must refuse the value before opening or writing a
+    run, rather than silently succeeding at its ordinary operation.
+    """
+
+    def __init__(self, *args, accepts_chair: bool, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._accepts_chair = accepts_chair
+
+    def parse_args(self, args=None, namespace=None) -> argparse.Namespace:
+        parsed = super().parse_args(args, namespace)
+        if parsed.chair is not None and not self._accepts_chair:
+            raise ContractError(
+                "--chair is implemented only by the Attestatores reread operation; "
+                "this stage does not accept it"
+            )
+        return parsed
+
+
+def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.ArgumentParser:
+    parser = _StageArgumentParser(description=description, accepts_chair=accepts_chair)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--run-id", required=True)
     # No `choices` here: the fixture declares which scenarios exist, and a

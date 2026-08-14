@@ -18,7 +18,8 @@ def absent_third_chair_config(tmp_path: Path) -> Path:
     live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
     assert tomllib.loads(live)["chairs"]["attestator_3"]["state"] == "configured"
     section_start = live.index("[chairs.attestator_3]\n")
-    section_end = live.index("\n[chairs.", section_start + 1)
+    next_table = live.find("\n[", section_start + 1)
+    section_end = len(live) - 1 if next_table == -1 else next_table
     absent = """[chairs.attestator_3]
 state = "absent"
 reason = "fixture test removes this witness without replacing it"

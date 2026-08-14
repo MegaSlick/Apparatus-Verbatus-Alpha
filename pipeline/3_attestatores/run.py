@@ -346,6 +346,12 @@ def validate_content_health(native_payload: Any, health: Any) -> None:
     required = set(NO_RESPONSE_HEALTH) | {"truncation_basis"}
     if missing := sorted(required - set(health)):
         raise SchemaRefusal(f"a Testimonium content_health record lacks field(s) {missing}")
+    if unexpected := sorted(set(health) - required):
+        raise SchemaRefusal(
+            f"a Testimonium content_health record carries unknown field(s) {unexpected}; "
+            "health is computed here and its schema is closed, so a field nothing "
+            "validates is a self-report wearing a computed field's name"
+        )
 
     recordable = health["recordable"]
     if recordable is True:
@@ -449,18 +455,23 @@ def prepared_response(
     if health["recordable"] is not True:
         return None, None, None, health, str(health["truncation_basis"])
     witness_reported = row.get("witness_reported")
+    report_problem = _native_problem(witness_reported, "witness_reported")
+    if report_problem is not None:
+        witness_reported = None
     try:
         capabilities = format_capabilities_for(row)
     except SchemaRefusal as error:
         reason = f"the witness format capabilities could not be retained: {error}"
+        if report_problem is not None:
+            reason = f"{reason}; the witness self-report could not be retained: {report_problem}"
         return native_payload, witness_reported, None, health, reason
-    if problem := _native_problem(witness_reported, "witness_reported"):
+    if report_problem is not None:
         return (
             native_payload,
             None,
             capabilities,
             health,
-            f"the witness self-report could not be retained: {problem}",
+            f"the witness self-report could not be retained: {report_problem}",
         )
     return native_payload, witness_reported, capabilities, health, None
 
@@ -553,18 +564,32 @@ def testimonium_payload(
     return record
 
 
-def _existing_attempts(context, act_id: str, chair: str) -> list[dict[str, Any]]:
-    records = []
-    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "testimonium" or entry["subject_id"] != act_id:
+AttemptHistory = dict[tuple[str, str], list[dict[str, Any]]]
+
+
+def _attempt_history(context) -> tuple[bool, AttemptHistory]:
+    """Index immutable Testimonia once for this stage invocation.
+
+    The independent tally deliberately rebuilds and validates the inventory for
+    accounting. This index serves only append/collision decisions, whose repeated
+    per-pair manifest walks otherwise make a pass quadratic in the folder size.
+    """
+    manifest = context.tree.build_manifest(ATTESTATORES)
+    by_pair: AttemptHistory = {}
+    for entry in manifest["artifacts"]:
+        if entry["kind"] != "testimonium":
             continue
         record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        if record.get("payload", {}).get("chair") == chair:
-            records.append(record)
-    return records
+        payload = record.get("payload")
+        chair = payload.get("chair") if isinstance(payload, dict) else None
+        if isinstance(chair, str):
+            by_pair.setdefault((entry["subject_id"], chair), []).append(record)
+    return bool(manifest["artifacts"]), by_pair
 
 
-def require_appendable_ordinal(context, act_id: str, chair: str, ordinal: int) -> None:
+def require_appendable_ordinal(
+    history: AttemptHistory, act_id: str, chair: str, ordinal: int
+) -> None:
     """Allow only a rerun of an attempt that exists, or exactly the next one.
 
     Ordinals are the contiguous run 1..N — `latest_attempt` refuses a gap — so any
@@ -578,7 +603,7 @@ def require_appendable_ordinal(context, act_id: str, chair: str, ordinal: int) -
     asks for ordinal 1 — held the whole folder from the moment one chair was
     reread, over writes that would every one have been byte-identical no-ops.
     """
-    records = _existing_attempts(context, act_id, chair)
+    records = history.get((act_id, chair), [])
     if not records:
         if ordinal != 1:
             raise SchemaRefusal(
@@ -599,7 +624,11 @@ def require_appendable_ordinal(context, act_id: str, chair: str, ordinal: int) -
 
 
 def _refuse_write_collision(
-    context, act: dict[str, Any], chair: str, ordinal: int, attempt: "Attempt"
+    history: AttemptHistory,
+    act: dict[str, Any],
+    chair: str,
+    ordinal: int,
+    attempt: "Attempt",
 ) -> None:
     """Refuse before any write if this pass would seal different bytes than an
     attempt already recorded at this exact (act, chair, ordinal) identity.
@@ -624,7 +653,7 @@ def _refuse_write_collision(
     """
     existing = [
         record
-        for record in _existing_attempts(context, act["act_id"], chair)
+        for record in history.get((act["act_id"], chair), [])
         if record["payload"]["attempt_ordinal"] == ordinal
     ]
     if not existing:
@@ -653,7 +682,11 @@ def preflight_appendable_ordinals(
     ordinal: int,
     declarations: dict[str, Any],
     page_fallback_bounds: dict[str, dict],
-) -> dict[str, tuple[list[dict], str | None]]:
+    history: AttemptHistory,
+) -> tuple[
+    dict[str, tuple[list[dict], str | None]],
+    dict[tuple[str, str], "Attempt"],
+]:
     """Refuse a damaged history, or a colliding write, before adding any new
     attempt to this invocation.
 
@@ -667,6 +700,7 @@ def preflight_appendable_ordinals(
     preflight already verified instead of walking and hashing Designator again.
     """
     regions_by_act: dict[str, tuple[list[dict], str | None]] = {}
+    attempts_by_pair: dict[tuple[str, str], Attempt] = {}
     for act in acts:
         regions: list[dict] = []
         if act["outcome"] == "held":
@@ -684,7 +718,7 @@ def preflight_appendable_ordinals(
                 not_read = f"the proposed region was refused before this chair ran: {error}"
         regions_by_act[act["act_id"]] = (regions, not_read)
         for chair in context.witness_chairs:
-            require_appendable_ordinal(context, act["act_id"], chair, ordinal)
+            require_appendable_ordinal(history, act["act_id"], chair, ordinal)
             resolved = context.registry.resolve(chair)
             attempt = (
                 not_read_attempt(resolved, not_read)
@@ -698,8 +732,9 @@ def preflight_appendable_ordinals(
                     page_fallback_bounds=page_fallback_bounds,
                 )
             )
-            _refuse_write_collision(context, act, chair, ordinal, attempt)
-    return regions_by_act
+            attempts_by_pair[(act["act_id"], chair)] = attempt
+            _refuse_write_collision(history, act, chair, ordinal, attempt)
+    return regions_by_act, attempts_by_pair
 
 
 def validate_tallied_testimonium(
@@ -1139,17 +1174,17 @@ def attempt_pass(
     context,
     acts: list[dict[str, Any]],
     ordinal: int,
-    declarations: dict[str, Any],
-    page_fallback_bounds: dict[str, dict],
     regions_by_act: dict[str, tuple[list[dict], str | None]],
+    attempts_by_pair: dict[tuple[str, str], Attempt],
 ) -> tuple[int, bool]:
     """Every configured chair's attempt at every expected act, at one ordinal.
 
     Returns how many records were written and whether any proposal crop was
     refused — the second is reported, never swallowed, because an act whose crop
     no chair could be shown is a different fact from an act every chair read. The
-    region map is the result of this invocation's no-write preflight; publication
-    order and the write path remain unchanged.
+    region and attempt maps are the result of this invocation's no-write
+    preflight. Publication therefore seals the exact attempt whose collision was
+    checked, while publication order and the single write path remain unchanged.
     """
     recorded = 0
     isolated_crop_failure = False
@@ -1170,24 +1205,13 @@ def attempt_pass(
                 resolved=resolved,
                 ordinal=ordinal,
                 regions=regions,
-                attempt=(
-                    not_read_attempt(resolved, not_read)
-                    if not_read is not None
-                    else resolve_attempt(
-                        context,
-                        act,
-                        chair,
-                        resolved,
-                        declarations,
-                        page_fallback_bounds=page_fallback_bounds,
-                    )
-                ),
+                attempt=attempts_by_pair[(act["act_id"], chair)],
             )
             recorded += 1
     return recorded, isolated_crop_failure
 
 
-def next_attempt_ordinal(context, act_id: str, chair: str) -> int:
+def next_attempt_ordinal(history: AttemptHistory, act_id: str, chair: str) -> int:
     """The ordinal a reread of this one chair appends at.
 
     Derived from that chair's own history on disk, exactly as
@@ -1195,7 +1219,7 @@ def next_attempt_ordinal(context, act_id: str, chair: str) -> int:
     ordinal — so append-only is a property of what already exists rather than of
     how many times this program has been invoked.
     """
-    records = _existing_attempts(context, act_id, chair)
+    records = history.get((act_id, chair), [])
     if not records:
         raise ContractError(
             f"a reread named chair {chair!r} on act {act_id!r}, which has no prior attempt for "
@@ -1207,7 +1231,13 @@ def next_attempt_ordinal(context, act_id: str, chair: str) -> int:
     return current["payload"]["attempt_ordinal"] + 1
 
 
-def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) -> int:
+def reread_pass(
+    context,
+    acts: list[dict[str, Any]],
+    act_id: str,
+    chair: str,
+    history: AttemptHistory,
+) -> int:
     """Append one new attempt for one named chair on one named act.
 
     The whole-pass `--attempt-ordinal` is the wrong instrument for this. A reread
@@ -1240,7 +1270,7 @@ def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) ->
 
     # No `require_appendable_ordinal` here: `next_attempt_ordinal` returns the
     # current ordinal plus one, off the same history, so the bound cannot fire.
-    ordinal = next_attempt_ordinal(context, act_id, chair)
+    ordinal = next_attempt_ordinal(history, act_id, chair)
     page_fallback_bounds = _page_fallback_bounds(context)
     publish_attempt(
         context,
@@ -1264,7 +1294,7 @@ def reread_pass(context, acts: list[dict[str, Any]], act_id: str, chair: str) ->
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run every configured chair through one attempt, or reread one named chair."""
-    parser = stage_parser(__doc__.splitlines()[0])
+    parser = stage_parser(__doc__.splitlines()[0], accepts_chair=True)
     parser.add_argument(
         "--attempt-ordinal",
         type=_positive_ordinal,
@@ -1284,7 +1314,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
     acts = expected_acts(context)
     try:
-        has_existing_attempts = bool(context.tree.build_manifest(ATTESTATORES)["artifacts"])
+        has_existing_attempts, history = _attempt_history(context)
     except FatalAccounting:
         raise
     except ContractError as error:
@@ -1310,7 +1340,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 f"next; --attempt-ordinal {args.attempt_ordinal} names a different attempt "
                 "and honouring neither of the two silently is not an option"
             )
-        recorded = reread_pass(context, acts, args.act, args.chair)
+        recorded = reread_pass(context, acts, args.act, args.chair, history)
     else:
         if args.act or args.chair:
             raise ContractError(
@@ -1321,12 +1351,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         try:
             declarations = declarations_for(context, ordinal)
             page_fallback_bounds = _page_fallback_bounds(context)
-            regions_by_act = preflight_appendable_ordinals(
+            regions_by_act, attempts_by_pair = preflight_appendable_ordinals(
                 context,
                 acts,
                 ordinal,
                 declarations,
                 page_fallback_bounds,
+                history,
             )
         except ContractError as error:
             # A damaged existing channel cannot be repaired by adding a replacement
@@ -1348,9 +1379,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             context,
             acts,
             ordinal,
-            declarations,
-            page_fallback_bounds,
             regions_by_act,
+            attempts_by_pair,
         )
 
     if recorded == 0:

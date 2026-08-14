@@ -164,14 +164,21 @@ def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
 def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair(
     tmp_path, monkeypatch
 ):
-    """Preflight and publication share one region map, while the closing tally
-    independently verifies each act once. Page-fallback bounds are indexed once
-    for the pass rather than by every act/chair resolution."""
+    """Preflight and publication share regions and exact resolved attempts.
+
+    The append/collision history is indexed by one manifest walk, while the
+    closing tally remains an independent rebuild. Page-fallback bounds are also
+    indexed once rather than by every act/chair resolution.
+    """
     run_root, tree = run_to_designator(tmp_path, "happy")
     region_calls: list[str] = []
     bounds_calls = 0
+    attempt_calls = 0
+    attestatores_manifest_calls = 0
     real_proposed_regions = attestatores.proposed_regions
     real_page_fallback_bounds = attestatores._page_fallback_bounds
+    real_resolve_attempt = attestatores.resolve_attempt
+    real_build_manifest = RunTree.build_manifest
 
     def counted_regions(context, act_id):
         region_calls.append(act_id)
@@ -182,8 +189,21 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
         bounds_calls += 1
         return real_page_fallback_bounds(context)
 
+    def counted_attempt(*args, **kwargs):
+        nonlocal attempt_calls
+        attempt_calls += 1
+        return real_resolve_attempt(*args, **kwargs)
+
+    def counted_manifest(self, stage):
+        nonlocal attestatores_manifest_calls
+        if self.root == tree.root and stage == ATTESTATORES:
+            attestatores_manifest_calls += 1
+        return real_build_manifest(self, stage)
+
     monkeypatch.setattr(attestatores, "proposed_regions", counted_regions)
     monkeypatch.setattr(attestatores, "_page_fallback_bounds", counted_bounds)
+    monkeypatch.setattr(attestatores, "resolve_attempt", counted_attempt)
+    monkeypatch.setattr(RunTree, "build_manifest", counted_manifest)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -201,6 +221,8 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
     )
 
     assert attestatores.main() == 0
+    assert attestatores_manifest_calls == 3  # history index, manifest write, independent tally
+    assert attempt_calls == 6  # one per act/chair, never re-resolved for publication
 
     act_ids = {record["subject_id"] for record in _testimonia(tree)}
     assert len(act_ids) == 2
@@ -951,6 +973,59 @@ def test_malformed_capabilities_fail_one_attempt_without_aborting_other_chairs(t
     assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
 
 
+def test_combined_unrecordable_witness_metadata_fails_one_attempt_without_crashing(
+    tmp_path, monkeypatch
+):
+    """Both metadata defects are retained in one failed attempt's reason.
+
+    The row is injected at the fixture-reader seam so the real preflight,
+    canonical writer, manifest, and tally all run without adding a pin-moving
+    scenario to the sealed fixture.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_testimony_for = attestatores.testimony_for
+
+    def combined_testimony(context, act_key, chair, ordinal):
+        if (act_key, chair, ordinal) == ("a1", "attestator_3", 1):
+            return {
+                "payload": "SYNTHETIC ACT ONE alpha beta",
+                "format_capabilities": "not an object",
+                "witness_reported": "\ud800",
+            }
+        return real_testimony_for(context, act_key, chair, ordinal)
+
+    monkeypatch.setattr(attestatores, "testimony_for", combined_testimony)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+
+    assert attestatores.main() == 0
+    records = _testimonia(tree)
+    assert len(records) == 6
+    malformed = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    assert malformed["outcome"] == "failed"
+    assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta"
+    assert malformed["payload"]["format_capabilities"] is None
+    assert malformed["payload"]["witness_reported"] is None
+    reason = malformed["payload"]["reason"]
+    assert "format capabilities could not be retained" in reason
+    assert "self-report could not be retained" in reason
+    assert sum(record["outcome"] == "read" for record in records) == 5
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
 def test_witness_metadata_cannot_rewrite_native_content_health():
     native = "verbatim native response"
     expected = attestatores.content_health(native, completed=True)
@@ -1241,6 +1316,26 @@ def test_resealed_malformed_content_health_makes_the_tally_unknown(tmp_path):
     assert tally["state"] == "UNKNOWN"
     assert tally["count"] is None
     assert tally["hold"] is True
+
+
+def test_resealed_content_health_with_an_unknown_field_makes_the_tally_unknown(tmp_path):
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    initial = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
+    assert initial.returncode == 0, initial.stderr
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    changed = copy.deepcopy(record)
+    changed["payload"]["content_health"]["confidence"] = 0
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    tally = attestatores.attempt_tally(tree)
+
+    assert tally["state"] == "UNKNOWN"
+    assert tally["count"] is None
+    assert tally["hold"] is True
+    assert "unknown field(s) ['confidence']" in tally["reason"]
 
 
 # --- Invariant #10 is fatal, and a hold is not the same fact ---------------------
