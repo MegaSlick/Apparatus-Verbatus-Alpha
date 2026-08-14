@@ -1416,6 +1416,70 @@ def _publish_conservation_and_secondary(
     )
 
 
+def _publish_page_fallbacks(
+    context,
+    pages: dict[int, dict],
+    failures: dict[int, str],
+    page_cache: dict[int, dict],
+    status_refs: dict[int, dict[str, str]],
+) -> list[dict]:
+    """Publish every predetermined full-page crop set and return its seal rows."""
+    rows = []
+    for ordinal, page_record in pages.items():
+        if ordinal in failures:
+            continue
+        analysis = _analyze_page(page_cache, context, ordinal, page_record)
+        if analysis["structure_evidence"] != "fallback-tiles":
+            continue
+        rows.append(
+            _publish_page_fallback(context, ordinal, page_record, analysis, status_refs[ordinal])
+        )
+    return rows
+
+
+def _publish_page_conservation(
+    context,
+    pages: dict[int, dict],
+    failures: dict[int, str],
+    page_cache: dict[int, dict],
+    secondary: dict,
+) -> tuple[list[dict], bool, bool]:
+    """Reconcile every sealed page and return rows plus named hold facts."""
+    residual_rows = []
+    secondary_held = False
+    claimed_by_page = _claimed_regions_by_page(context)
+    for ordinal, page_record in pages.items():
+        analysis = _analyze_page(page_cache, context, ordinal, page_record)
+        page_rows, page_secondary_held = _publish_conservation_and_secondary(
+            context, ordinal, page_record, analysis, claimed_by_page.get(ordinal, []), secondary
+        )
+        secondary_held = secondary_held or page_secondary_held
+        residual_rows.extend(page_rows)
+    unmeasured = any(
+        analysis["background"] is None
+        for ordinal, analysis in page_cache.items()
+        if ordinal not in failures
+    )
+    return residual_rows, secondary_held, unmeasured
+
+
+def _initial_pass_has_holds(
+    expected: list[dict],
+    failures: dict[int, str],
+    *,
+    secondary_held: bool,
+    unmeasured: bool,
+) -> bool:
+    """One explicit list of the facts that withhold a complete exit."""
+    hold_facts = (
+        any(row["outcome"] == "held" for row in expected),
+        bool(failures),
+        secondary_held,
+        unmeasured,
+    )
+    return any(hold_facts)
+
+
 def initial_pass(context) -> bool:
     """Mark out every act on every sealed page. True when anything was held."""
     records = page_records(context)
@@ -1608,15 +1672,9 @@ def initial_pass(context) -> bool:
     # already cover. A page the structure pass was *held* on is not tiled -- its
     # acts are held and no crop is cut on it at all, which is a different, named
     # outcome (`structure_failures`) rather than an absence of findings.
-    for ordinal, page_record in pages.items():
-        if ordinal in failures:
-            continue
-        analysis = _analyze_page(page_cache, context, ordinal, page_record)
-        if analysis["structure_evidence"] != "fallback-tiles":
-            continue
-        row = _publish_page_fallback(context, ordinal, page_record, analysis, status_refs[ordinal])
-        expected.append(row)
-        seal_inputs.extend(row["evidence"])
+    fallback_rows = _publish_page_fallbacks(context, pages, failures, page_cache, status_refs)
+    expected.extend(fallback_rows)
+    seal_inputs.extend(reference for row in fallback_rows for reference in row["evidence"])
 
     # Conservation runs over every sealed page this run reached, not only the
     # pages a declared act happened to touch — a page nothing was assigned to
@@ -1624,17 +1682,11 @@ def initial_pass(context) -> bool:
     # residual it finds extends the seal's own denominator, held from the
     # start, so it reaches expected_acts()/the seal exactly like every other
     # act rather than sitting inert inside the conservation artifact alone.
-    secondary_held = False
-    claimed_by_page = _claimed_regions_by_page(context)
-    for ordinal, page_record in pages.items():
-        analysis = _analyze_page(page_cache, context, ordinal, page_record)
-        residual_rows, page_secondary_held = _publish_conservation_and_secondary(
-            context, ordinal, page_record, analysis, claimed_by_page.get(ordinal, []), secondary
-        )
-        secondary_held = secondary_held or page_secondary_held
-        expected.extend(residual_rows)
-        for row in residual_rows:
-            seal_inputs.extend(row["evidence"])
+    residual_rows, secondary_held, unmeasured = _publish_page_conservation(
+        context, pages, failures, page_cache, secondary
+    )
+    expected.extend(residual_rows)
+    seal_inputs.extend(reference for row in residual_rows for reference in row["evidence"])
 
     # The seal, emitted once and never rewritten: this is what downstream stages
     # reconcile against, so "every expected act has exactly one outcome" is a
@@ -1665,16 +1717,11 @@ def initial_pass(context) -> bool:
     # pulled out, every act on it was still cut, and its predetermined crops still
     # go downstream to be read, which is what Tyrel's 2026-08-11 ruling requires.
     # What is withheld is the run's claim to have completed, not the page.
-    unmeasured = any(
-        analysis["background"] is None
-        for ordinal, analysis in page_cache.items()
-        if ordinal not in failures
-    )
-    return (
-        any(row["outcome"] == "held" for row in expected)
-        or bool(failures)
-        or secondary_held
-        or unmeasured
+    return _initial_pass_has_holds(
+        expected,
+        failures,
+        secondary_held=secondary_held,
+        unmeasured=unmeasured,
     )
 
 
