@@ -979,6 +979,22 @@ def test_a_derived_index_that_is_not_an_object_is_refused(tmp_path):
         tree.write_index(DESIGNATOR, ["not", "an", "object"])
 
 
+def test_a_derived_index_that_is_not_canonically_serializable_is_refused(tmp_path):
+    """A measured ratio in a row must be a named refusal, not a traceback out of
+    canonical_bytes: a stage that dies here takes every act's accounting with it."""
+    tree = make_run(tmp_path)
+    with pytest.raises(SchemaRefusal, match="canonically serializable"):
+        tree.write_index(DESIGNATOR, {"schema": "test-index", "coverage": 0.5})
+
+
+def test_a_self_referencing_derived_index_is_refused(tmp_path):
+    tree = make_run(tmp_path)
+    index: dict = {"schema": "test-index"}
+    index["rows"] = [index]
+    with pytest.raises(SchemaRefusal, match="canonically serializable"):
+        tree.write_index(DESIGNATOR, index)
+
+
 def test_a_stored_index_that_is_not_an_object_is_refused_on_the_way_out(tmp_path):
     """The read half of the same refusal: a hand-edited index.json holding a
     JSON array is refused, not handed to a consumer as an index."""

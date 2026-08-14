@@ -852,12 +852,13 @@ class RunTree:
             )
         try:
             data = canonical_bytes(index)
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, RecursionError) as error:
             # canonical_bytes refuses floats (and anything unserializable) with
-            # TypeError and a circular structure with ValueError, both outside
-            # the ContractError family a stage classifies — a later caller's
-            # measured ratio or self-referencing row would die as a traceback
-            # instead of a named refusal.
+            # TypeError, and a circular structure exhausts its own recursive
+            # float-walk (RecursionError) or json's cycle check (ValueError) —
+            # all outside the ContractError family a stage classifies. A later
+            # caller's measured ratio or self-referencing row must be a named
+            # refusal, not a traceback.
             raise SchemaRefusal(
                 f"a derived stage index must be canonically serializable: {error}"
             ) from error

@@ -196,6 +196,23 @@ def test_validate_index_refuses_a_missing_row(established_run):
         archetypus.validate_index(established_run, short)
 
 
+def test_validate_index_refuses_a_record_for_an_act_the_recensor_did_not_accept(established_run):
+    """The mirror of the missing row, killing the reconciliation's OTHER conjunct.
+
+    An Archetypus record exists on disk for an act nobody accepted; the index
+    honestly does not carry it, so rows == accepted and the first conjunct is
+    quiet. Only `set(on_disk) != accepted` notices. If someone deletes that
+    comparison, a run can deliver an established reading for an act the
+    Recensor never accepted while every other check verifies.
+    """
+    index = archetypus.build_index(established_run)
+    intruder = dict(index["rows"][0], act_id="act_ffffffffffffffff")
+    on_disk = {row["act_id"]: row for row in index["rows"]}
+    on_disk[intruder["act_id"]] = intruder
+    with pytest.raises(FatalAccounting, match="do not reconcile 1:1"):
+        archetypus.validate_index(established_run, index, on_disk=on_disk)
+
+
 def test_validate_index_refuses_a_duplicate_row(established_run):
     doubled = archetypus.build_index(established_run)
     doubled["rows"] = doubled["rows"] + [dict(doubled["rows"][0])]

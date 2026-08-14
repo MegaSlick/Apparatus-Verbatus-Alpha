@@ -12,11 +12,11 @@ and badly at fifty is a defect. Hence the multi-gap cases below.
 import importlib.util
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 import reseal_chain
+import stage_driver
 
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -384,49 +384,13 @@ def test_fifty_gaps_at_once_behave_no_differently_than_one():
 # --- End-to-end: a tampered Perlectio carrying annotations, through the real CLI
 
 
+# The shared subprocess driver (stage_driver.py), for the same reason as the
+# shared reseal chain: two private copies of the same argv drift.
 def invoke_archetypus(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/6_archetypus/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            run_id,
-            "--scenario",
-            scenario,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
+    return stage_driver.invoke(root, run_id, scenario, "pipeline/6_archetypus/run.py")
 
 
-def _run_through_recensor(root: Path, run_id: str, scenario: str = "happy") -> None:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / program),
-                "--run-root",
-                str(root),
-                "--run-id",
-                run_id,
-                "--scenario",
-                scenario,
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+_run_through_recensor = stage_driver.run_through_recensor
 
 
 def _tamper_reading_annotations(root: Path, run_id: str, mutate) -> tuple[RunTree, str]:
@@ -447,21 +411,7 @@ def _witness_refs_of(reading_payload: dict) -> list[dict]:
 
 
 def invoke_armarium(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/7_armarium/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            run_id,
-            "--scenario",
-            scenario,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
+    return stage_driver.invoke(root, run_id, scenario, "pipeline/7_armarium/run.py")
 
 
 def test_a_partial_record_is_exportable_by_the_frozen_armarium(tmp_path):

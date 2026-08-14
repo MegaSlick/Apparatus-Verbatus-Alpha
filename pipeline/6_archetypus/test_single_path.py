@@ -21,11 +21,11 @@ up as a proof.
 """
 
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 import reseal_chain
+import stage_driver
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import build_envelope
@@ -37,35 +37,10 @@ from common.runtree.store import RunTree
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def invoke(
-    root: Path, run_id: str, scenario: str, program: str, **extra
-) -> subprocess.CompletedProcess:
-    command = [
-        sys.executable,
-        str(ROOT / program),
-        "--run-root",
-        str(root),
-        "--run-id",
-        run_id,
-        "--scenario",
-        scenario,
-    ]
-    for key, value in extra.items():
-        command.extend((f"--{key.replace('_', '-')}", str(value)))
-    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-
-
-def run_through_recensor(root: Path, run_id: str, scenario: str = "happy") -> None:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
-        result = invoke(root, run_id, scenario, program)
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+# One shared subprocess driver for this directory's test files, for the same
+# reason as the shared reseal chain below: two private copies drift.
+invoke = stage_driver.invoke
+run_through_recensor = stage_driver.run_through_recensor
 
 
 def accepted_review(tree: RunTree) -> dict:

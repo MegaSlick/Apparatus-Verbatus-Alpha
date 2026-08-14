@@ -111,10 +111,28 @@ def test_exactly_one_field_holds_the_established_characters():
     exact shape) would never equal `text`, so a value filter cannot fail. The
     test below proves the closed set refuses such a field outright.
     """
-    assert "text" in archetypus._RECORD_FIELDS
-    # No sibling spelling of "the text" exists to fall back to: the old
-    # pipeline's reader_text/alternate_text family is outside the closed set.
-    assert not any(field.endswith("_text") for field in archetypus._RECORD_FIELDS)
+    # The closed set, spelled out: any revived fallback field — reader_text,
+    # alternate_text, literal, markdown, consolidated_literal — fails here by
+    # name rather than by a suffix scan that catches only two of the five.
+    assert archetypus._RECORD_FIELDS == frozenset(
+        {
+            "act_id",
+            "act_key",
+            "page_id",
+            "text",
+            "text_hash",
+            "status",
+            "text_status",
+            "regions",
+            "provenance",
+            "annotations",
+            "evidence_ref",
+            "dissent_ref",
+            "perlectio_ref",
+            "recensor_ref",
+            "self_hash",
+        }
+    )
 
 
 def test_a_second_text_bearing_field_is_outside_the_closed_schema():

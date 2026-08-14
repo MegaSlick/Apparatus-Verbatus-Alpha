@@ -6,6 +6,12 @@ a once-only `kind="archetypus"` record under `6_archetypus/artifacts/` for an ac
 current Recensor review is exactly `accepted`. A held act deliberately has no Archetypus
 record; that absence is part of the terminal accounting, not a gap to fill.
 
+**Exit codes.** `EXIT_COMPLETE` when every accepted act has a record and the index
+reconciles. `EXIT_HELD` when any act's current review is `recovery-requested`: that
+outcome is unresolved rather than terminal, so the acts already established are real
+but the stage's work is not finished, and the held act ids are named on stderr. A
+refusal anywhere in establishment or index reconciliation is fatal, not a held act.
+
 ## Input boundary
 
 The stage derives the current review by unique attempt ordinal. For an accepted review

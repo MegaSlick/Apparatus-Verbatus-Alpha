@@ -36,6 +36,10 @@ ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
 
+# Both cases drive the complete orchestrator end to end; the everyday fast
+# gate excludes them and the full gate (and CI) runs them.
+pytestmark = pytest.mark.full
+
 
 def orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result.
