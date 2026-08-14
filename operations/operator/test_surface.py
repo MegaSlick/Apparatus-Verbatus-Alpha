@@ -1586,6 +1586,11 @@ def test_interactive_missing_inputs_name_the_required_pair_plainly(
 def test_mac_wrapper_starts_the_same_console_flow() -> None:
     wrapper = ROOT / "operations" / "operator" / "Verbatus.command"
     assert ".venv/bin/python" in wrapper.read_text(encoding="utf-8")
+    if not (ROOT / ".venv" / "bin" / "python").exists():
+        # The wrapper's fallback is whatever python3 is on PATH, which need not
+        # carry this project's dependencies; exercising the double-click route
+        # is only meaningful against the checkout's own environment.
+        pytest.skip("the double-click route needs the checkout's .venv")
     completed = subprocess.run(
         [str(wrapper), "--help"],
         cwd=ROOT,

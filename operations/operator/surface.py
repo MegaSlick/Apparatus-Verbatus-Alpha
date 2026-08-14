@@ -1471,8 +1471,12 @@ class OperatorSurface:
             # Every *attempted* send is reported, delivered or not — and this
             # is not an attempt, so there is nothing to report.
             return
+        # One line, always. A hold reason arrives from an artifact and may
+        # carry a newline; shell_notifier refuses a multi-line message, so the
+        # decision moment would be dropped exactly when a person is needed.
+        one_line = " ".join(message.split()) or "no detail recorded"
         try:
-            outcome = self.notifier(event, message)
+            outcome = self.notifier(event, one_line)
         except Exception as error:  # a broken notifier is not a broken run
             outcome = notify_bridge.NotifyOutcome(
                 True, False, f"the notifier raised: {type(error).__name__}"

@@ -332,7 +332,11 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
     exactly the partial result GOVERNANCE 2 requires to be visibly partial.
     """
 
-    compact = strip_control_bytes(" ".join(value.split()))
+    # Control characters become single spaces; ordinary spaces are preserved.
+    # Collapsing all whitespace would silently rewrite a receipt path that
+    # legitimately contains two spaces, and the message tells the person to
+    # preserve that exact path.
+    compact = _CONTROL_CHARACTERS.sub(" ", value).strip()
     if not compact:
         return "no additional detail was recorded"
     if "traceback" in compact.lower():

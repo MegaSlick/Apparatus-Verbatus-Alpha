@@ -205,7 +205,7 @@ class S3VolumeTarget:
         metadata = head.get("Metadata")
         metadata = metadata if isinstance(metadata, Mapping) else {}
         normalized_metadata = {
-            key.lower(): value for key, value in metadata.items() if isinstance(key, str)
+            name.lower(): value for name, value in metadata.items() if isinstance(name, str)
         }
         recorded = normalized_metadata.get(SHA256_METADATA_KEY)
         size = head.get("ContentLength")

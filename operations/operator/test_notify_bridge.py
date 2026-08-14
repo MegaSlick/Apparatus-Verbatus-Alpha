@@ -177,10 +177,22 @@ def test_a_raising_notifier_cannot_fail_the_verb_that_triggered_it(tmp_path: Pat
 
 
 def test_notification_does_not_replace_the_terminal_result(tmp_path: Path) -> None:
-    """The phone is an extra, never the only place a result appears."""
+    """The phone is an extra, never the only place a result appears.
+
+    With an *active* notifier, deliberately: under the silent default no
+    notification path runs at all, and this test would prove nothing beyond
+    what the silent-default test already covers.
+    """
 
     messages: list[str] = []
     surface = _surface(tmp_path, output=messages)
+    sent: list[tuple[str, str]] = []
+
+    def notifier(event: str, message: str) -> notify_bridge.NotifyOutcome:
+        sent.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = notifier
     spend = _spend_policy(tmp_path)
     source, manifest = _manifest(tmp_path)
     _launch(surface, spend)
@@ -188,3 +200,4 @@ def test_notification_does_not_replace_the_terminal_result(tmp_path: Path) -> No
     surface.run(run_id="terminal-result-run")
 
     assert any("Run complete." in line for line in messages)
+    assert [event for event, _ in sent] == ["milestone"]

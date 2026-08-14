@@ -90,6 +90,11 @@ class LocalFixtureObjectStore(TransferTarget):
         return RemoteObject(digest.hexdigest(), size)
 
     def put_file(self, key: str, source: BinaryIO) -> None:
+        # The same rule inspect() applies, at the write: a link at the object
+        # key must be refused, or a successful put would record a key that
+        # inspect() then reports absent and nothing could verify or resume.
+        if (self.root.resolve() / key).is_symlink():
+            raise RuntimeError(f"fixture object key {key!r} is a symbolic link, not an object")
         if self.fail_once_for == key:
             self.fail_once_for = None
             raise RuntimeError("injected partial transfer")
