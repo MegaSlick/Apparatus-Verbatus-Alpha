@@ -213,10 +213,9 @@ drew apart on 2026-08-05, and they get different records.
 ## `kind="conservation"`
 
 One record per sealed page this run reached, subject-keyed to the page identity,
-no attempt binding. The independent coverage proof: every ink pixel at
-`structure.PRIMARY_MARGIN` sensitivity — not, despite this section's own past
-phrasing, every ink pixel the page's decoded bytes actually contain; see "what
-this handoff does not settle" below — reconciled against the *final* (padded)
+no attempt binding. The independent coverage proof: every ink pixel at the
+stage's most sensitive declared threshold, `structure.SECONDARY_MARGIN`, reconciled
+against the *final* (padded)
 proposal crops actually cut on it — never against what grouping *claims* to have
 found, which is the gap an independent second read of the old pipeline's own
 conservation logic named precisely (`/stage/70_gpt_review/ASSESSMENT.md:172-173`
@@ -505,16 +504,12 @@ or choose among competing crops.
 A **page-fallback** act is read exactly like any other proposed act: its tiles
 are ordinary `origin="proposal"` regions of one act in the proposal seal, so the
 Attestatores witness each one and the Perlector reads through all of them,
-without any of them knowing this act came from a grid rather than a detection.
-That is the point — the crops exist so the strong instruments can decide whether
-the page is blank. Two limits of the *walking skeleton* rather than of the
-mechanism, named because they are only visible from downstream: no shipped
-fixture page is ink-free, so no scenario in this tree exercises the path end to
-end (proving it through a real orchestrator run needs an ink-free fixture page,
-which moves every digest in the tree); and the skeleton's fake Perlector reads
-its text out of the fixture by act key, so an act the fixture never declared has
-no declared reading for it to return. Both are integration decisions, recorded
-in this build's report rather than settled here.
+without any of them needing to treat the grid as a detection. That is the point —
+the crops exist so the strong instruments can decide whether the page is blank.
+The scenario-only ink-free fixture page proves this path through a real orchestrator
+run: all configured witnesses publish completed empty Testimonia over its tiles,
+the fixture Perlector returns `no-readable-text` for the minted key, and the
+Recensor confirms the blank only after those readings exist.
 
 `act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop` and
 `structure-status` have no consumer downstream of this stage today.
@@ -671,25 +666,16 @@ and has no notion of "claimed" to give — a change worth its own design and
 test pass rather than folding into this build's repair commits. Named here
 rather than fixed quietly or left undiscovered.
 
-**Conservation's own denominator is `PRIMARY_MARGIN`-sensitive, not the page's
-whole ink.** `_publish_conservation_and_secondary` calls `conservation.reconcile`
-with no `margin` override, so it defaults to `structure.PRIMARY_MARGIN` — the
-same threshold `primary_scan` uses, and strictly less sensitive than
-`SECONDARY_MARGIN`. Ink in the band between the two margins (closer to the
-page's background value than `PRIMARY_MARGIN` but past `SECONDARY_MARGIN`) is
-outside `total_ink_pixel_count` and can never become a residual: with the
-secondary chair absent (the shipped default), such ink is recorded nowhere at
-all, and a run can exit `EXIT_COMPLETE` over it; with the chair configured, it
-can only surface as a held rescue crop, outside the conservation arithmetic
-entirely. This is bounded by how faint the synthetic fixtures' ink is today
-(high-contrast, well past `PRIMARY_MARGIN`), so it changes no digest and no
-test outcome in this build — but faded ink and pencil marginalia are exactly
-what a real register page carries, and this is the accounting layer built
-specifically so faint marks are not lost silently (GOALS 1, GOVERNANCE 2).
-Closing it means a decision about which margin conservation should reconcile
-at, which changes review volume and is not this build's to make quietly; named
-here rather than left for a reader to discover against a real page. Found in
-review, 2026-08-10.
+**Conservation uses `SECONDARY_MARGIN`, not the primary proposer's threshold.**
+The secondary proposer is optional, but its declared sensitivity is still the
+most inclusive threshold this stage has. Reconciliation therefore counts the
+faint band that `primary_scan` does not propose and mints it as residual held
+evidence when no crop claims it. A configured secondary chair may additionally
+publish a review-only rescue crop over the same area; that changes no authority
+decision and no pixel escapes the conservation denominator when the chair is
+absent. This closes the silent `EXIT_COMPLETE` path found in review on
+2026-08-10; the remaining calibration limit is the unmeasured derivation of both
+thresholds recorded below.
 
 **Eight grouping and scanning thresholds ship with no recorded derivation.**
 `grouping.DEFAULT_MARGIN_FRACTION`, `DEFAULT_CHAIN_GAP_PX`,

@@ -130,10 +130,11 @@ def _region_reference(region: dict) -> dict[str, str]:
 
 def _testimonium_inputs(context, regions: list[dict]) -> list[dict[str, str]]:
     """The crop blobs that a witness attempt must directly bind."""
-    return sorted(
-        [context.input_ref(region["payload"]["image_path"]) for region in regions],
-        key=lambda reference: (reference["relative_path"], reference["sha256"]),
-    )
+    inputs = {}
+    for region in regions:
+        reference = context.input_ref(region["payload"]["image_path"])
+        inputs[reference["relative_path"]] = reference
+    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
 
 
 def validate_testimonium_regions(context, record: dict, proposal_regions: list[dict]) -> None:
@@ -361,14 +362,20 @@ def _reading_image_inputs(context, bases: list[dict], page_renders: list[dict]) 
     there would let a Perlectio claim it saw a render that its own provenance
     never retained as an input.
     """
-    inputs = [context.input_ref(basis["image_path"]) for basis in bases]
+    inputs = {
+        reference["relative_path"]: reference
+        for reference in (context.input_ref(basis["image_path"]) for basis in bases)
+    }
     for render in page_renders:
         source = render.get("source")
         if not isinstance(source, dict) or not isinstance(source.get("relative_path"), str):
             raise SchemaRefusal("a Perlector page render carries no sealed source-page reference")
-        inputs.append(context.input_ref(source["relative_path"]))
-        inputs.append(context.input_ref(render["image_path"]))
-    return inputs
+        for reference in (
+            context.input_ref(source["relative_path"]),
+            context.input_ref(render["image_path"]),
+        ):
+            inputs[reference["relative_path"]] = reference
+    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
 
 
 # Every field an established-reading Perlectio payload carries. Closed, and

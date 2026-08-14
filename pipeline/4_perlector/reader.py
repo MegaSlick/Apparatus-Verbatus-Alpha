@@ -47,6 +47,12 @@ class FixtureReader:
         for act in self._fixture["act"]:
             if act["key"] == act_key:
                 return act["text"]
+        if any(act_key == f"page-fallback:{page['ordinal']}" for page in self._fixture["page"]):
+            # A page-fallback act is minted because no fixture act declared the
+            # page's contents. The fake reader can honestly return only the
+            # empty result of this synthetic ink-free page; a real reader would
+            # inspect the same delivered crops through this protocol.
+            return ""
         raise KeyError(f"the fixture declares no act {act_key!r}")
 
     def _declared_stop_reason(self, act_key: str) -> str | None:

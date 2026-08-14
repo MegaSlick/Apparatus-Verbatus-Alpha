@@ -317,8 +317,15 @@ FIXTURE = "synthetic-two-page-v0"
 # moves every artifact's config digest while leaving the 53/57 counts intact.
 # Both values below were measured from fresh real runs through this module's
 # `orchestrate` and `semantic_snapshot_digest` helpers.
-HAPPY_RUN_TREE_DIGEST = "c8e82293419b994c86713a608c0184d21b5d09ee10407bdc653883028f628458"
-REVIEW_RUN_TREE_DIGEST = "66198a088615914741153f2d716d1e2dd52a060a45e4ffa687a91d5d85802b61"
+#
+# Re-pinned for CodeRabbit round 3 after adding the scenario-only ink-free page
+# that drives a minted page-fallback act through the real witness and Perlector
+# programs. The full parsed fixture is part of `config_digest`, so declaring the
+# new page and scenario moves every artifact in happy and review even though that
+# page is inactive in both. Counts remain 53/57. Both values were measured from
+# fresh runs through the same two helpers, never derived arithmetically.
+HAPPY_RUN_TREE_DIGEST = "b01c8fb231a120086c183439f9ca40cecae50ac793284058a2fb29e5e1e2b4d0"
+REVIEW_RUN_TREE_DIGEST = "4320cf43bff3866b1522a58a6049911f156af12fe27e93c0046785492d06250e"
 
 
 def orchestrate(
@@ -627,6 +634,40 @@ def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
     )
     assert all(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
     assert export_of(tree)["aggregate"]["status"] == "complete"
+
+
+def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
+    """A Designator-minted act reaches both reader stages without fixture-key lookup failure."""
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "ink-free-page")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
+
+    testimonia = []
+    for artifact in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if artifact["kind"] != "testimonium":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "testimonium", artifact["artifact_id"])
+        if record["payload"]["act_key"] == "page-fallback:3":
+            testimonia.append(record)
+    assert len(testimonia) == 3
+    assert all(record["outcome"] == "genuinely-empty" for record in testimonia)
+    assert all(record["payload"]["regions"] for record in testimonia)
+
+    reading = next(
+        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio"
+        and tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])["payload"]["act_key"]
+        == "page-fallback:3"
+    )
+    assert reading["outcome"] == "no-readable-text"
+    assert reading["payload"]["text"] == ""
+    assert all(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
+
+    entry = next(row for row in export_of(tree)["review"] if row["act_key"] == "page-fallback:3")
+    assert entry["act_id"] == reading["subject_id"]
+    assert entry["category"] == "confirmed-blank"
 
 
 def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_path):

@@ -154,6 +154,42 @@ def _sniff_source_stream(handle: BinaryIO) -> str | None:
     return detected
 
 
+def fixture_pages_for_scenario(fixture: dict, scenario: str) -> list[dict]:
+    """Return the synthetic pages active in one declared fixture scenario.
+
+    A scenario restriction is fixture data, never a real-ingress filter. It
+    exists so an additional proof page can exercise a narrow integration path
+    without silently changing the input of every established acceptance run.
+    """
+    scenario_for(fixture, scenario)
+    declared_scenarios = {row["name"] for row in fixture["scenario"]}
+    active = []
+    for page in fixture["page"]:
+        restrictions = page.get("scenarios")
+        if restrictions is None:
+            active.append(page)
+            continue
+        if (
+            not isinstance(restrictions, list)
+            or not restrictions
+            or any(not isinstance(item, str) or not item for item in restrictions)
+            or len(set(restrictions)) != len(restrictions)
+        ):
+            raise ContractError(
+                f"fixture page {page.get('ordinal')!r} has invalid scenario restrictions"
+            )
+        unknown = sorted(set(restrictions) - declared_scenarios)
+        if unknown:
+            raise ContractError(
+                f"fixture page {page.get('ordinal')!r} names unknown scenario(s) {unknown}"
+            )
+        if scenario in restrictions:
+            active.append(page)
+    if not active:
+        raise ContractError(f"fixture scenario {scenario!r} activates no pages")
+    return active
+
+
 def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     """The digest each page is declared to have, per ordinal, for this scenario.
 
@@ -162,7 +198,9 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     same comparison, the same refusal artifact — rather than any scenario-aware
     branch that a real door would not have.
     """
-    declared = {page["ordinal"]: page["sha256"] for page in fixture["page"]}
+    declared = {
+        page["ordinal"]: page["sha256"] for page in fixture_pages_for_scenario(fixture, scenario)
+    }
     for row in fixture.get("page_refusal", []):
         if row["scenario"] != scenario:
             continue
@@ -1020,7 +1058,7 @@ def fixture_submission(args, registry) -> int:
     """The walking skeleton: declared synthetic pages, no gate, sealed as such."""
     fixture_root = declared_synthetic_fixture_root(args.fixture_root)
     fixture = load_fixture(str(fixture_root))
-    scenario_for(fixture, args.scenario)
+    pages = fixture_pages_for_scenario(fixture, args.scenario)
     declared = declared_digests(fixture, args.scenario)
     policy = admission.load_format_policy()
     pdf_settings = _load_pdf_render_settings(args)
@@ -1052,7 +1090,7 @@ def fixture_submission(args, registry) -> int:
                 "sha256": declared[page["ordinal"]],
                 "ordinal": page["ordinal"],
             }
-            for page in fixture["page"]
+            for page in pages
         ],
         config_digest=bindings["config_digest"],
         adapter_recipes=bindings["adapter_recipes"],
@@ -1062,8 +1100,7 @@ def fixture_submission(args, registry) -> int:
     )
     context = _door_context(tree, fixture, args.scenario, args, registry)
     sources = [
-        SourceEntry(page["ordinal"], page["path"], declared[page["ordinal"]])
-        for page in fixture["page"]
+        SourceEntry(page["ordinal"], page["path"], declared[page["ordinal"]]) for page in pages
     ]
     admitted = process_sources(
         context,

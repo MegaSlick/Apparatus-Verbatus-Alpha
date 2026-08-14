@@ -23,6 +23,14 @@ sha256 = "c8caf23452177873518b7a8652fc02c412a468a3175b11be588a91ece95167e8"
 width = 200
 height = 260
 
+[[page]]
+ordinal = 3
+path = "fixtures/synthetic-two-page-v0/page-3.png"
+sha256 = "080bd6a557c4806d8b3c2bd096e2773529b3afd46902d4edce3062dbe396e0a9"
+width = 200
+height = 260
+scenarios = ["ink-free-page"]
+
 [[act]]
 key = "a1"
 page_ordinal = 1
@@ -158,6 +166,15 @@ hold_acts = []
 
 [[scenario]]
 name = "structure-failure"
+recover_acts = []
+hold_acts = []
+
+# A third, scenario-only page is uniform paper with no declared act.
+# The Designator must tile it, and the witnesses and Perlector must
+# actually read those tiles rather than crashing on its minted act key.
+
+[[scenario]]
+name = "ink-free-page"
 recover_acts = []
 hold_acts = []
 

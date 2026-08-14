@@ -15,7 +15,7 @@ encoder. A second copy would be a second thing to drift.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from common.imaging import Bounds, encode_grayscale_png
 
@@ -33,6 +33,7 @@ class Page(TypedDict):
     width: int
     height: int
     acts: tuple[Act, ...]
+    scenarios: NotRequired[tuple[str, ...]]
 
 
 # Background is a light gray; each act's ink value is a distinct dark tone so
@@ -75,6 +76,22 @@ PAGES: tuple[Page, ...] = (
     },
 )
 
+# A genuinely ink-free page is admitted only for the named integration
+# scenario. The two-page base fixture remains the input for every pre-existing
+# scenario, while this extra page lets the real downstream stage programs prove
+# that a Designator-minted page fallback is witnessed and read.
+SCENARIO_PAGES: tuple[Page, ...] = (
+    {
+        "ordinal": 3,
+        "width": 200,
+        "height": 260,
+        "acts": (),
+        "scenarios": ("ink-free-page",),
+    },
+)
+
+ALL_PAGES: tuple[Page, ...] = PAGES + SCENARIO_PAGES
+
 
 def _render_rows(width: int, height: int, acts: tuple[Act, ...]) -> list[bytearray]:
     """Paint the background and each act's rectangle into a row buffer.
@@ -111,7 +128,7 @@ def render_page(descriptor: Page) -> bytes:
 
 def page_bytes(ordinal: int) -> bytes:
     """Render the page with the given 1-based ordinal."""
-    for page in PAGES:
+    for page in ALL_PAGES:
         if page["ordinal"] == ordinal:
             return render_page(page)
     raise ValueError(f"no page with ordinal {ordinal}")

@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.imaging import crop_png  # noqa: E402
-from proof.synthetic_pages import FIXTURE_ID, PAGES, render_page  # noqa: E402
+from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, render_page  # noqa: E402
 
 PROOF_ROOT = Path(__file__).resolve().parent
 FIXTURE_DIR = PROOF_ROOT / "fixtures" / FIXTURE_ID
@@ -138,7 +138,7 @@ STOP_REASONS = ({"scenario": "engine-truncated-reading", "act_key": "a1", "stop_
 
 
 def page_descriptor(ordinal):
-    for page in PAGES:
+    for page in ALL_PAGES:
         if page["ordinal"] == ordinal:
             return page
     raise ValueError(f"no page {ordinal}")
@@ -152,7 +152,7 @@ def act_descriptor(page_ordinal, proposal_ordinal):
 
 
 def render_all() -> dict[int, bytes]:
-    return {page["ordinal"]: render_page(page) for page in PAGES}
+    return {page["ordinal"]: render_page(page) for page in ALL_PAGES}
 
 
 def toml_string(value: str) -> str:
@@ -218,6 +218,8 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"width = {page['width']}",
             f"height = {page['height']}",
         ]
+        if scenarios := page.get("scenarios"):
+            lines.append("scenarios = [" + ", ".join(toml_string(item) for item in scenarios) + "]")
 
     for act in ACTS:
         source = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])
@@ -342,6 +344,15 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "",
         "[[scenario]]",
         'name = "structure-failure"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# A third, scenario-only page is uniform paper with no declared act.",
+        "# The Designator must tile it, and the witnesses and Perlector must",
+        "# actually read those tiles rather than crashing on its minted act key.",
+        "",
+        "[[scenario]]",
+        'name = "ink-free-page"',
         "recover_acts = []",
         "hold_acts = []",
         "",

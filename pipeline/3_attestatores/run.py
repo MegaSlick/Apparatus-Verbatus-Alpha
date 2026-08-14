@@ -28,15 +28,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
+from common.contracts.identities import act_id as derive_act_id  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
+    FALLBACK_PAGE_ACT_ORDINAL,
     expected_acts,
     fixture_serving_details,
     open_context,
+    page_for,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -129,6 +132,22 @@ def content_health(reported: str | None) -> dict:
     }
 
 
+def _unique_region_inputs(context, regions: list[dict]) -> list[dict]:
+    """Bind each distinct crop blob once while retaining every region in payloads."""
+    inputs = {}
+    for record in regions:
+        reference = context.input_ref(record["payload"]["image_path"])
+        inputs[reference["relative_path"]] = reference
+    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
+
+
+def _is_page_fallback(context, act: dict) -> bool:
+    """Recognize the reserved minted identity, not merely its human-readable key."""
+    page = page_for(context.fixture, act["page_ordinal"])
+    page_bounds = {"x": 0, "y": 0, "w": page["width"], "h": page["height"]}
+    return act["act_id"] == derive_act_id(act["page_id"], FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
+
+
 def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted: bool) -> dict:
     """The exact configured identity for one witness outcome.
 
@@ -214,6 +233,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             continue
 
         regions = proposed_regions(context, act["act_id"])
+        page_fallback = _is_page_fallback(context, act)
         region_references = [
             {
                 "region_id": record["payload"]["region_id"],
@@ -225,7 +245,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
         for chair in context.witness_chairs:
             resolved = context.registry.resolve(chair)
-            reported = testimony_for(context, act["act_key"], chair)
+            reported = "" if page_fallback else testimony_for(context, act["act_key"], chair)
             failed = (act["act_key"], chair) in failures
 
             if isinstance(resolved, AbsentChair):
@@ -236,7 +256,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 payload = {"reason": f"chair is explicitly absent: {resolved.reason}"}
             elif failed:
                 outcome, payload = "failed", {"reason": "the chair returned no usable report"}
-            elif (act["act_key"], chair) in empty:
+            elif page_fallback or (act["act_key"], chair) in empty:
                 outcome, payload = "genuinely-empty", {"reported": ""}
             elif reported is None:
                 # Configured, nothing declared for it: not-run, which is an
@@ -257,11 +277,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 subject_id=act["act_id"],
                 outcome=outcome,
                 attempt=attempt_id(act["act_id"], f"read:{chair}", 1),
-                inputs=(
-                    [context.input_ref(record["payload"]["image_path"]) for record in regions]
-                    if attempted
-                    else []
-                ),
+                inputs=(_unique_region_inputs(context, regions) if attempted else []),
                 payload={
                     "chair": chair,
                     "act_key": act["act_key"],
