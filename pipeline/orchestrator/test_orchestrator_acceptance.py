@@ -988,6 +988,31 @@ def test_a_residual_act_with_no_hold_record_is_refused(tmp_path):
     assert "published no hold record" in result.stderr
 
 
+def test_a_conservation_residual_the_seal_never_minted_is_refused(tmp_path):
+    """The other direction: a residual the denominator was never told about.
+
+    Every test above checks a seal row against the reconciliation that should
+    have produced it. That direction cannot see the row that was never written.
+    Here the Designator's own conservation record declares unclaimed ink and the
+    proposal seal names no act for it — no forged hold, no extra row, nothing to
+    be caught as unaccounted evidence, because a residual that never became a
+    hold leaves no artifact behind. Before this check the run reconciled
+    perfectly and exited `complete` over ink the stage itself measured and no
+    crop claimed, which is exactly what GOVERNANCE 2 refuses.
+    """
+    root = tmp_path / "runs"
+    _run_through_designator(root)
+
+    tree = RunTree(root, "r")
+    context = _designator_context_for(root, "r", "happy")
+    page_id = page_identity(context.fixture, 1)
+    _patch_conservation_with_extra_residual(tree, page_id, {"x": 1, "y": 1, "w": 9, "h": 9}, 81)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    assert result.returncode == EXIT_FATAL
+    assert "accounts for no held act for" in result.stderr
+
+
 def test_recensor_refuses_duplicate_witness_attempt_ordinals_instead_of_selecting_one(tmp_path):
     root = tmp_path / "runs"
     for program in (

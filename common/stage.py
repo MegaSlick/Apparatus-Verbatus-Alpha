@@ -32,6 +32,7 @@ from common.contracts.errors import (
     SchemaRefusal,
 )
 from common.contracts.identities import act_bindings, artifact_id, attempt_id
+from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
 from common.contracts.outcomes import classify
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR, RECENSOR
@@ -985,6 +986,59 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     _verify_minted_act_rows(
         context, {act_id: observed[act_id] for act_id in sorted(set(observed) - set(expected))}
     )
+    _verify_every_conservation_residual_is_accounted(context, observed)
+
+
+def _verify_every_conservation_residual_is_accounted(
+    context, observed: dict[str, dict[str, Any]]
+) -> None:
+    """Every residual a conservation record found must reach the denominator.
+
+    `_verify_minted_act_rows` reads seal row -> conservation record: an extra row
+    must prove itself against the reconciliation that found it. That direction
+    alone still trusts the producer completely for the rows it did *not* write.
+    A `conservation` record may declare unclaimed ink on a page while the seal
+    names no act for it, and nothing then disagrees: `_verify_proposal_seal_evidence`
+    only reconciles `region` and `hold` artifacts, so a residual that never became
+    a hold leaves no artifact to be unaccounted for, every consumer reconciles
+    perfectly, and the Designator's own `EXIT_COMPLETE` — which reads the seal's
+    rows, not the reconciliation — reports 0 over ink the stage itself measured
+    and no crop claimed.
+
+    GOVERNANCE 2 is a rule about the missing row as much as the forged one, and
+    the Designator's own docstring already promises the stronger reading: a run
+    that "found ink no crop claimed has not completed". This is that promise
+    checked at the first consumer rather than asserted by the producer.
+
+    The derivation is the minter's own (`residual_act_ordinal` over the
+    component's index in the record's deterministically ordered
+    `residual_components`, against the page the record is subject-keyed to), so
+    the two cannot drift on what a residual's identity is.
+    """
+    for page_id, record in _designator_records_by_subject(context, "conservation").items():
+        payload = record.get("payload")
+        components = payload.get("residual_components") if isinstance(payload, Mapping) else None
+        if not isinstance(components, list):
+            raise FatalAccounting(
+                f"the conservation record for page {page_id} carries no residual-component list "
+                "to reconcile the denominator against"
+            )
+        for index, component in enumerate(components):
+            bounds = component.get("bounds") if isinstance(component, Mapping) else None
+            if not isinstance(bounds, dict):
+                raise FatalAccounting(
+                    f"the conservation record for page {page_id} carries a residual at index "
+                    f"{index} with no bounds to recompute an act identity from"
+                )
+            minted = derive_act_id(page_id, residual_act_ordinal(index), bounds)
+            row = observed.get(minted)
+            if row is None or row["outcome"] != "held":
+                raise FatalAccounting(
+                    f"page {page_id}'s conservation record reconciles residual ink at index "
+                    f"{index} ({bounds}) that the proposal seal accounts for no held act for; "
+                    "ink this stage measured and no crop claimed may not leave the denominator "
+                    "silently"
+                )
 
 
 # An act identity is `act_bindings(page_id, ordinal, bounds)`, so two acts minted
