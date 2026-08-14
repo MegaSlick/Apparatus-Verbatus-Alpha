@@ -102,7 +102,10 @@ retained; neither case is silently repaired into a reading.
 
 A refused crop completes this retention stage because each configured chair has
 been accounted for; its explicit non-reading records force the later partial
-status. Only an `UNKNOWN` attempt tally holds Stage 3 and stops orchestration.
+status. Stage 3 holds in two cases, and both stop orchestration: an `UNKNOWN`
+attempt tally, and a whole pass whose preflight refuses to seal bytes that
+differ from an attempt already sealed at the same ordinal. Only the first says
+the evidence channel is damaged.
 
 ## Retention and current state
 

@@ -260,12 +260,11 @@ def main() -> int:
             if halted is not None:
                 break
         result = invoke(program, args)
-        # A held Attestatores exit is not an ordinary partial act result: it means
-        # its independent attempt tally is UNKNOWN. Continuing would let later
-        # stages rebuild old artifacts and make a damaged evidence channel look
-        # complete merely because an older Armarium export still exists.
+        # A held Attestatores exit is not an ordinary partial act result. Its own
+        # forwarded stderr names whether the attempt tally was UNKNOWN or a whole
+        # pass was refused during preflight; either cause stops orchestration.
         if name == ATTESTATORES and result == EXIT_HELD:
-            print(f"run {args.run_id}: held (Attestatores attempt tally is UNKNOWN)")
+            print(f"run {args.run_id}: held; its reason is on stderr above")
             return EXIT_HELD
         halted = checkpoint(args, name, hard_failure_policy)
         if halted is not None:

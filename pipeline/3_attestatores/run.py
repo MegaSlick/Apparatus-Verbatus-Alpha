@@ -906,6 +906,8 @@ def attempt_tally(
         stored_path = tree.resolve(tree.manifest_path(ATTESTATORES))
         stored = json.loads(stored_path.read_bytes().decode("utf-8"))
         rebuilt = tree.build_manifest(ATTESTATORES)
+    except FatalAccounting:
+        raise
     except (ContractError, OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
         # RecursionError beside the others for the same reason `_read_json` in
         # common/runtree/store.py added it: json's scanner recurses per nesting

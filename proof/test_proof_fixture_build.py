@@ -255,8 +255,11 @@ def test_fixture_testimonia_declare_native_payloads_not_the_retired_body_field(s
 
 
 def test_the_review_scenario_exercises_the_repaired_failed_state(skeleton, models_config):
-    """`failed` is a member of the witness vocabulary, and the fixture drives it
-    end to end rather than leaving it only unit-tested."""
+    """Validate the fixture's declared `failed` outcomes and configured chairs.
+
+    `test_the_failed_chair_is_visible_in_the_export` in the orchestrator acceptance
+    suite carries the end-to-end half by driving `failed` into the export.
+    """
     failures = skeleton["witness_failure"]
     assert failures == list(WITNESS_FAILURES)
     assert {failure["scenario"] for failure in failures} == {"review", "reread-failure"}

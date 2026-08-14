@@ -1432,6 +1432,30 @@ def test_an_accounting_imbalance_is_fatal_and_never_becomes_a_hold(tmp_path, mon
         attestatores.attempt_tally(tree)
 
 
+def test_an_outer_manifest_accounting_imbalance_is_fatal_and_never_becomes_a_hold(
+    tmp_path, monkeypatch
+):
+    """The tally's outer manifest read must preserve `FatalAccounting` too."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    result = invoke_stage(
+        run_root,
+        "retention",
+        "happy",
+        "pipeline/3_attestatores/run.py",
+        attempt_ordinal=1,
+    )
+    assert result.returncode == 0, result.stderr
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+    def imbalanced(_stage):
+        raise attestatores.FatalAccounting("the outer manifest partition is broken")
+
+    monkeypatch.setattr(tree, "build_manifest", imbalanced)
+
+    with pytest.raises(attestatores.FatalAccounting, match="outer manifest partition"):
+        attestatores.attempt_tally(tree)
+
+
 def test_main_does_not_turn_a_fatal_manifest_outcome_into_a_hold(tmp_path):
     """The initial existing-attempt check builds the manifest before the tally.
     Its FatalAccounting must reach the stage boundary as fatal, not be caught by

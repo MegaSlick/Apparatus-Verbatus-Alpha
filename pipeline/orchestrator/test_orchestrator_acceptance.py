@@ -1562,6 +1562,7 @@ def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):
 
     assert result.returncode == 3
     assert "UNKNOWN" in result.stderr
+    assert "run r: held; its reason is on stderr above" in result.stdout
     assert snapshot(root) == before
 
 
