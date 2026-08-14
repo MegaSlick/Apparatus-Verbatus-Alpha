@@ -16,6 +16,7 @@ import pytest
 from _test_support import load_designator
 
 from common.contracts.errors import ContractError
+from common.contracts.stages import DESIGNATOR
 from common.stage import EXIT_FATAL
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -266,6 +267,17 @@ def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_pat
     with pytest.raises(ContractError, match="recovery bounds"):
         designator.recovery_pass(context, act_id, request_id)
     context.finish()
+
+    recovery_regions = [
+        record
+        for record in (
+            tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+            for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+            if entry["kind"] == "region"
+        )
+        if record["subject_id"] == act_id and record["payload"]["origin"] == "recovery"
+    ]
+    assert recovery_regions == [], "a refused out-of-page recovery must cut no region"
 
 
 def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first(tmp_path):

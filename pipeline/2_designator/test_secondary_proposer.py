@@ -224,8 +224,15 @@ def test_a_configured_secondary_proposer_publishes_a_flagged_non_authoritative_r
     assert after_kinds - before_kinds == {"secondary-proposal", "rescue-crop"}
 
 
-@pytest.mark.parametrize("missing", ["resolved_identity", "resolved_revision", "receipt_ref"])
-def test_a_configured_secondary_proposer_refuses_incomplete_provenance(tmp_path, missing):
+@pytest.mark.parametrize(
+    ("missing", "refusal"),
+    [
+        ("resolved_identity", r"resolved identity"),
+        ("resolved_revision", r"resolved revision"),
+        ("receipt_ref", r"serving receipt"),
+    ],
+)
+def test_a_configured_secondary_proposer_refuses_incomplete_provenance(tmp_path, missing, refusal):
     designator, context = _populated_context(tmp_path, _configured_models_config(tmp_path))
     records = designator.page_records(context)
     page_record = designator.sealed_pages(records)[1]
@@ -235,7 +242,7 @@ def test_a_configured_secondary_proposer_refuses_incomplete_provenance(tmp_path,
     secondary = _published_secondary_provenance(designator, context)
     secondary[missing] = None
 
-    with pytest.raises(ContractError, match="identity|revision|receipt"):
+    with pytest.raises(ContractError, match=refusal):
         designator._publish_secondary_proposals(
             context,
             1,
