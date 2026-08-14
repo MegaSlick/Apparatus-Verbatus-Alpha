@@ -724,6 +724,26 @@ def test_conflicting_fixture_outcomes_are_refused_instead_of_selected():
         attestatores.declarations_for(context, 1)
 
 
+def test_scenario_specific_testimony_overrides_scenario_agnostic_testimony():
+    shared = {
+        "act_key": "a1",
+        "chair": "attestator_1",
+        "payload": "shared response",
+    }
+    scenario_specific = {
+        "scenario": "happy",
+        "act_key": "a1",
+        "chair": "attestator_1",
+        "payload": "happy response",
+    }
+    context = SimpleNamespace(
+        scenario="happy",
+        fixture={"testimony": [shared, scenario_specific]},
+    )
+
+    assert attestatores.testimony_for(context, "a1", "attestator_1", 1) is scenario_specific
+
+
 def test_an_excluded_testimonium_without_an_approval_reference_is_refused_at_the_schema():
     """Spec 07 test 2: `excluded` exists only as a reference to a Tyrel
     approval-record artifact. Absent that artifact, a chair that did not read is
@@ -1336,6 +1356,26 @@ def test_resealed_content_health_with_an_unknown_field_makes_the_tally_unknown(t
     assert tally["count"] is None
     assert tally["hold"] is True
     assert "unknown field(s) ['confidence']" in tally["reason"]
+
+
+def test_resealed_testimonium_payload_with_an_unknown_field_makes_the_tally_unknown(tmp_path):
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    initial = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
+    assert initial.returncode == 0, initial.stderr
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    changed = copy.deepcopy(record)
+    changed["payload"]["approval_ref"] = "art_0123456789abcdef"
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    tally = attestatores.attempt_tally(tree)
+
+    assert tally["state"] == "UNKNOWN"
+    assert tally["count"] is None
+    assert tally["hold"] is True
+    assert "unknown field(s) ['approval_ref']" in tally["reason"]
 
 
 # --- Invariant #10 is fatal, and a hold is not the same fact ---------------------

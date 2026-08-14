@@ -1236,7 +1236,14 @@ def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_no
     # is asserted first, against the same walk the code uses. Found by the Opus
     # read of this branch.
     try:
-        canonical_bytes(json.loads(deep_text))
+        parsed_deep = json.loads(deep_text)
+    except RecursionError:
+        pytest.skip(
+            f"this interpreter's JSON scanner cannot parse {nesting} levels, so this "
+            "case would exercise the reader-side guard instead of the canonical walk"
+        )
+    try:
+        canonical_bytes(parsed_deep)
     except RecursionError:
         pass
     else:

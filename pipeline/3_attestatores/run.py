@@ -192,7 +192,10 @@ def declared_malformed(context, ordinal: int) -> dict[tuple[str, str], str]:
 
 
 def testimony_for(context, act_key: str, chair: str, ordinal: int) -> dict[str, Any] | None:
-    """The fixture's one native response declaration for this exact attempt."""
+    """Return the fixture's response for this exact attempt.
+
+    A scenario-specific declaration overrides a scenario-agnostic declaration.
+    """
     base_matches = []
     scenario_matches = []
     for row in context.fixture["testimony"]:
@@ -523,6 +526,7 @@ TESTIMONIUM_FIELDS = frozenset(
         "content_health",
     }
 )
+OPTIONAL_TESTIMONIUM_FIELDS = frozenset({"reason", "reported"})
 
 
 def testimonium_payload(
@@ -756,6 +760,13 @@ def validate_tallied_testimonium(
         raise SchemaRefusal("a Testimonium tally record has no object payload")
     if missing := sorted(TESTIMONIUM_FIELDS - set(payload)):
         raise SchemaRefusal(f"a Testimonium tally record lacks required field(s) {missing}")
+    allowed = TESTIMONIUM_FIELDS | OPTIONAL_TESTIMONIUM_FIELDS
+    if unexpected := sorted(set(payload) - allowed):
+        raise SchemaRefusal(
+            f"a Testimonium tally record carries unknown field(s) {unexpected}; this stage "
+            "writes a closed payload, and a field nothing validates is a field nothing "
+            "downstream can trust"
+        )
     chair = payload["chair"]
     if not isinstance(chair, str) or chair not in context.witness_chairs:
         raise SchemaRefusal("a Testimonium tally record names no configured chair")
@@ -912,6 +923,13 @@ def attempt_tally(
                 raise SchemaRefusal("a Testimonium carries no object payload")
             if missing := sorted(TESTIMONIUM_FIELDS - set(payload)):
                 raise SchemaRefusal(f"a Testimonium carries no required field(s) {missing}")
+            allowed = TESTIMONIUM_FIELDS | OPTIONAL_TESTIMONIUM_FIELDS
+            if unexpected := sorted(set(payload) - allowed):
+                raise SchemaRefusal(
+                    f"a Testimonium carries unknown field(s) {unexpected}; this stage writes a "
+                    "closed payload, and a field nothing validates is a field nothing downstream "
+                    "can trust"
+                )
             chair = payload.get("chair")
             if not isinstance(chair, str) or not chair:
                 raise SchemaRefusal("a Testimonium carries no named chair")
