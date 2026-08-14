@@ -13,9 +13,13 @@ asserts an exact expected count.
 import hashlib
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
+from copy import deepcopy
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZIP_STORED, BadZipFile, ZipFile
 
 import pytest
 
@@ -354,8 +358,17 @@ FIXTURE = "synthetic-two-page-v0"
 # `semantic_snapshot_digest` helpers measured the values below; happy exited 0
 # and review exited 3. These replace the branch's old raw-snapshot pins rather
 # than carrying forward its pre-main reason for leaving them platform-specific.
-HAPPY_RUN_TREE_DIGEST = "f0774eea922286258873260324d4465d2a7ee999c2fcc076989636bd31b45bd0"
-REVIEW_RUN_TREE_DIGEST = "492762959adb66d756bc3d4db0b77889c87f6953e670c5b8638ce83676150b7a"
+#
+# Re-pinned for platform-independent Armarium identity. The bundle entry now
+# binds its named members, reducing `acts.sqlite` to its logical schema and rows,
+# and the dependent manifest fields bind that semantic digest. It therefore
+# measures the exported data rather than SQLite's library-specific container
+# stamp at header bytes 96-99:
+# https://www.sqlite.org/fileformat.html#the_database_header. All unrelated
+# members and manifest fields remain byte-bound. Both values below were measured
+# from fresh real orchestrator runs with 54 files/exit 0 and 58 files/exit 3.
+HAPPY_RUN_TREE_DIGEST = "73b47878be6c964564ff47279e8d3a44fa147036ebb7e2bc7f8f1be5ea92e46f"
+REVIEW_RUN_TREE_DIGEST = "e7dbc0cbbfa814224d04cff2c9ab47f10cc4dba8763ae5229be8261db137f336"
 
 
 def orchestrate(
@@ -478,23 +491,184 @@ def snapshot(root: Path) -> dict[str, str]:
     }
 
 
-def semantic_snapshot(root: Path) -> dict[str, str]:
-    """Run-tree inventory with PNG containers reduced to their pixel content.
+def _sqlite_logical_digest(data: bytes) -> str:
+    """Bind a SQLite member to its schema and rows, not its library header."""
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.deserialize(data)
+        integrity = connection.execute("PRAGMA integrity_check").fetchall()
+        if integrity != [("ok",)]:
+            raise ValueError(f"SQLite integrity check failed: {integrity!r}")
+        return digest_of(
+            {
+                "dump": list(connection.iterdump()),
+                "application_id": connection.execute("PRAGMA application_id").fetchone()[0],
+                "user_version": connection.execute("PRAGMA user_version").fetchone()[0],
+            }
+        )
+    except sqlite3.DatabaseError as error:
+        raise ValueError("the Armarium SQLite member is unreadable") from error
+    finally:
+        connection.close()
 
-    Artifact and configuration files remain byte-bound. PNG blobs are different:
-    their compressed IDAT bytes depend on the zlib implementation that encoded
-    them, while this acceptance pin is meant to identify the run described by the
-    data. Bind the decoded dimensions and grayscale samples, not one compressor's
-    representation of them. The ordinary ``snapshot`` stays byte-exact for all
-    resume and no-write assertions.
+
+def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None:
+    """Return the semantic bundle digest and its derived-hash replacements."""
+    if not data.startswith(b"PK\x03\x04"):
+        return None
+    try:
+        with ZipFile(BytesIO(data)) as archive:
+            names = archive.namelist()
+            if len(names) != len(set(names)) or not {"EXPORT_MANIFEST.json", "acts.sqlite"} <= set(
+                names
+            ):
+                return None
+            manifest_data = archive.read("EXPORT_MANIFEST.json")
+            manifest = json.loads(manifest_data)
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("schema") != "armarium-export-manifest.v1"
+                or canonical_bytes(manifest) != manifest_data
+            ):
+                return None
+
+            database_data = archive.read("acts.sqlite")
+            database_digest = digest_bytes(database_data)
+            logical_database_digest = _sqlite_logical_digest(database_data)
+            semantic_manifest = deepcopy(manifest)
+            database_rows = [
+                row
+                for row in semantic_manifest.get("members", [])
+                if isinstance(row, dict) and row.get("path") == "acts.sqlite"
+            ]
+            if len(database_rows) != 1 or database_rows[0].get("sha256") != database_digest:
+                return None
+            database_rows[0]["sha256"] = logical_database_digest
+            semantic_manifest["self_hash"] = self_hash(semantic_manifest)
+            semantic_manifest_data = canonical_bytes(semantic_manifest)
+
+            member_inventory = {}
+            for name in names:
+                if name == "acts.sqlite":
+                    member_inventory[name] = logical_database_digest
+                elif name == "EXPORT_MANIFEST.json":
+                    # This member's SQLite digest and its own self-hash are
+                    # consequences of the container bytes. Every other field in
+                    # it, and every other member, remains byte-bound.
+                    member_inventory[name] = digest_bytes(semantic_manifest_data)
+                else:
+                    member_inventory[name] = digest_bytes(archive.read(name))
+    except (BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+    return digest_of(member_inventory), {
+        digest_bytes(data): digest_of(member_inventory),
+        manifest["self_hash"]: semantic_manifest["self_hash"],
+    }
+
+
+def _replace_semantic_digests(value, replacements: dict[str, str]):
+    """Replace only exact digest tokens and content-addressed path components."""
+    if isinstance(value, str):
+        if value in replacements:
+            return replacements[value]
+        for raw_digest, semantic_digest in replacements.items():
+            suffix = f"/{raw_digest}"
+            if value.endswith(suffix):
+                return f"{value[: -len(raw_digest)]}{semantic_digest}"
+        return value
+    if isinstance(value, dict):
+        return {key: _replace_semantic_digests(item, replacements) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_semantic_digests(item, replacements) for item in value]
+    return value
+
+
+def _semantic_export_artifact(data: bytes, replacements: dict[str, str]) -> bytes | None:
+    """Reduce the Armarium export envelope's bundle bindings semantically."""
+    try:
+        record = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    payload = record.get("payload")
+    bundle = payload.get("bundle", {}) if isinstance(payload, dict) else {}
+    if (
+        record.get("stage") != ARMARIUM
+        or record.get("kind") != "export"
+        or bundle.get("format") != "zip"
+        or bundle.get("sha256") not in replacements
+        or canonical_bytes(record) != data
+    ):
+        return None
+    semantic = _replace_semantic_digests(record, replacements)
+    semantic["self_hash"] = self_hash(semantic)
+    return canonical_bytes(semantic)
+
+
+def _semantic_armarium_manifest(data: bytes, replacements: dict[str, str]) -> bytes | None:
+    """Reduce only derived bundle/export digests in the stage inventory."""
+    try:
+        manifest = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("stage") != ARMARIUM
+        or manifest.get("schema") != "skeleton.v1"
+        or canonical_bytes(manifest) != data
+        or not any(blob in replacements for blob in manifest.get("blobs", []))
+    ):
+        return None
+    return canonical_bytes(_replace_semantic_digests(manifest, replacements))
+
+
+def semantic_snapshot(root: Path) -> dict[str, str]:
+    """Run-tree inventory with platform-written containers reduced to data.
+
+    PNG blobs bind decoded pixels. The Armarium bundle binds its named member
+    inventory, with ``acts.sqlite`` reduced to a deterministic schema-and-row
+    dump; the package manifest and run-tree manifest bind the corresponding
+    semantic digest rather than derivative container hashes. Everything else
+    remains byte-bound. The ordinary ``snapshot`` stays byte-exact for all resume
+    and no-write assertions.
     """
-    inventory = {}
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
+    files = [(path, path.read_bytes()) for path in sorted(root.rglob("*")) if path.is_file()]
+    bundle_paths = {}
+    replacements = {}
+    for path, data in files:
+        semantics = _armarium_bundle_semantics(data)
+        if semantics is None:
             continue
-        data = path.read_bytes()
+        semantic_digest, bundle_replacements = semantics
+        bundle_paths[path] = semantic_digest
+        replacements.update(bundle_replacements)
+
+    semantic_files = {}
+    for path, data in files:
+        semantic = _semantic_export_artifact(data, replacements)
+        if semantic is not None:
+            semantic_files[path] = semantic
+            replacements[digest_bytes(data)] = digest_bytes(semantic)
+
+    for path, data in files:
+        semantic = _semantic_armarium_manifest(data, replacements)
+        if semantic is not None:
+            semantic_files[path] = semantic
+
+    inventory = {}
+    for path, data in files:
         relative = str(path.relative_to(root))
-        if data.startswith(PNG_SIGNATURE):
+        if path in bundle_paths:
+            raw_digest = digest_bytes(data)
+            semantic_digest = bundle_paths[path]
+            if relative.endswith(raw_digest):
+                relative = f"{relative[: -len(raw_digest)]}{semantic_digest}"
+            inventory[relative] = semantic_digest
+        elif path in semantic_files:
+            inventory[relative] = digest_bytes(semantic_files[path])
+        elif data.startswith(PNG_SIGNATURE):
             try:
                 width, height, rows = decode_grayscale_png(data)
                 pixel_digest = digest_bytes(b"".join(rows))
@@ -548,6 +722,93 @@ def test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes(tmp_path
 
     assert snapshot(tmp_path) != raw_before
     assert semantic_snapshot_digest(tmp_path) == semantic_before
+
+
+def _acceptance_sqlite(path: Path, text: str) -> bytes:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA user_version=1")
+        connection.execute("CREATE TABLE acts (act_id TEXT PRIMARY KEY, text TEXT NOT NULL)")
+        connection.execute("INSERT INTO acts VALUES ('a1', ?)", (text,))
+        connection.commit()
+    finally:
+        connection.close()
+    return path.read_bytes()
+
+
+def _write_acceptance_bundle_tree(root: Path, database_data: bytes) -> None:
+    members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
+    package_manifest = {
+        "schema": "armarium-export-manifest.v1",
+        "members": [
+            {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
+            for name, content in sorted(members.items())
+        ],
+    }
+    package_manifest["self_hash"] = self_hash(package_manifest)
+    members["EXPORT_MANIFEST.json"] = canonical_bytes(package_manifest)
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
+        for name, content in sorted(members.items()):
+            archive.writestr(name, content)
+    bundle_data = buffer.getvalue()
+    bundle_digest = digest_bytes(bundle_data)
+    bundle_relative = f"7_armarium/blobs/sha256/{bundle_digest}"
+
+    bundle_path = root / bundle_relative
+    bundle_path.parent.mkdir(parents=True)
+    bundle_path.write_bytes(bundle_data)
+    export = {
+        "schema": "skeleton.v1",
+        "stage": ARMARIUM,
+        "kind": "export",
+        "payload": {
+            "bundle": {
+                "format": "zip",
+                "sha256": bundle_digest,
+                "manifest_self_hash": package_manifest["self_hash"],
+                "reference": {"relative_path": bundle_relative, "sha256": bundle_digest},
+            },
+            "unrelated": "remains-byte-bound",
+        },
+        "inputs": [{"relative_path": bundle_relative, "sha256": bundle_digest}],
+    }
+    export["self_hash"] = self_hash(export)
+    export_data = canonical_bytes(export)
+    export_path = root / "7_armarium/artifacts/export/example.json"
+    export_path.parent.mkdir(parents=True)
+    export_path.write_bytes(export_data)
+    stage_manifest = {
+        "schema": "skeleton.v1",
+        "stage": ARMARIUM,
+        "run_id": "r",
+        "artifacts": [
+            {
+                "kind": "export",
+                "relative_path": "7_armarium/artifacts/export/example.json",
+                "sha256": digest_bytes(export_data),
+            }
+        ],
+        "blobs": [bundle_digest],
+    }
+    (root / "7_armarium/manifest.json").write_bytes(canonical_bytes(stage_manifest))
+
+
+def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path):
+    """A SQLite build stamp cannot rename equal Armarium data; a row can."""
+    database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
+    doctored = database[:96] + b"\xff\xff\xff\xff" + database[100:]
+    original_root = tmp_path / "original"
+    doctored_root = tmp_path / "doctored"
+    changed_root = tmp_path / "changed"
+    _write_acceptance_bundle_tree(original_root, database)
+    _write_acceptance_bundle_tree(doctored_root, doctored)
+    changed = _acceptance_sqlite(tmp_path / "changed.sqlite", "changed row")
+    _write_acceptance_bundle_tree(changed_root, changed)
+
+    assert snapshot(original_root) != snapshot(doctored_root)
+    assert semantic_snapshot_digest(original_root) == semantic_snapshot_digest(doctored_root)
+    assert semantic_snapshot_digest(original_root) != semantic_snapshot_digest(changed_root)
 
 
 def export_of(tree: RunTree) -> dict:
