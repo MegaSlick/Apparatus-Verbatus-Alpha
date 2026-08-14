@@ -208,5 +208,9 @@ def test_operator_descriptor_publication_reports_a_directory_sync_failure(
 
     monkeypatch.setattr(records, "sync_directory", refuses)
 
-    with pytest.raises(records.RecordError, match="could not be written"):
-        records._atomic_replace(tmp_path / "record.json", b"payload")
+    target = tmp_path / "record.json"
+    with pytest.raises(records.RecordError, match="written but its directory entry"):
+        records._atomic_replace(target, b"payload")
+    # The message and the disk agree: the replace succeeded, only durability
+    # of the directory entry is unproven — the descriptor must be present.
+    assert target.read_bytes() == b"payload"

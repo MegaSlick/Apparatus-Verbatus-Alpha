@@ -401,7 +401,17 @@ def _atomic_replace(target: Path, payload: bytes) -> None:
         raise RecordError("operator descriptor could not be written") from error
     try:
         os.replace(temporary, target)
-        sync_directory(target.parent, strict=True)
     except OSError as error:
         temporary.unlink(missing_ok=True)
         raise RecordError("operator descriptor could not be written") from error
+    try:
+        sync_directory(target.parent, strict=True)
+    except OSError as error:
+        # The replace already succeeded: the index on disk names the new
+        # receipt and is merely not proven durable. Saying "not written" here
+        # would contradict what status then shows.
+        raise RecordError(
+            "the operator descriptor was written but its directory entry could not be made durable"
+        ) from error
+    finally:
+        temporary.unlink(missing_ok=True)

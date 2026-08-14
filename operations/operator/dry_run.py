@@ -173,7 +173,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--output", type=Path, required=True, help="where to save the transcript")
     args = parser.parse_args(argv)
-    make_transcript(args.output)
+    try:
+        make_transcript(args.output)
+    except OperatorError as error:
+        # The same three-part contract every other operator entry keeps: a
+        # failed rehearsal transcript names what happened and what did not,
+        # instead of exiting on a raw traceback.
+        print(error.render())
+        return 1
+    except OSError as error:
+        print(
+            "What happened: the dry-run transcript could not be prepared or saved "
+            f"({error}).\n"
+            "What it means: nothing was changed or billed; no transcript was written.\n"
+            "Next step: check the output path is writable, then run this again; this is safe."
+        )
+        return 1
     return 0
 
 
