@@ -374,7 +374,7 @@ def test_load_padding_config_refuses_a_missing_file(tmp_path):
 
 def test_load_padding_config_refuses_a_missing_table(tmp_path):
     path = tmp_path / "padding.toml"
-    path.write_text("not_padding = 1\n", encoding="utf-8")
+    path.write_text("", encoding="utf-8")
     with pytest.raises(ContractError, match=r"the padding configuration has no \[padding\] table"):
         load_padding_config(path)
 
@@ -425,6 +425,15 @@ def test_load_padding_config_refuses_an_unknown_padding_field(tmp_path):
     path = tmp_path / "padding.toml"
     _write_padding_toml(path, fields={**PADDING, "right_bps": 9999})
     with pytest.raises(ContractError, match=r"unknown field.*right_bps"):
+        load_padding_config(path)
+
+
+def test_load_padding_config_refuses_an_unknown_top_level_table(tmp_path):
+    path = tmp_path / "padding.toml"
+    _write_padding_toml(path)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("[paddding]\ntop_bp = 9999\n")
+    with pytest.raises(ContractError, match=r"unknown top-level field.*paddding"):
         load_padding_config(path)
 
 

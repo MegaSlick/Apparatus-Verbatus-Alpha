@@ -191,8 +191,8 @@ def test_calibrate_padding_result_loads_through_load_padding_config_shape(tmp_pa
 
     samples = [
         {
-            "detected": {"x": 0, "y": 0, "w": 100, "h": 100},
-            "true_content": {"x": 0, "y": 0, "w": 100, "h": 100},
+            "detected": {"x": 0, "y": 20, "w": 100, "h": 100},
+            "true_content": {"x": 0, "y": 10, "w": 100, "h": 110},
         }
         for _ in range(MINIMUM_DEFENSIBLE_SAMPLES)
     ]
@@ -218,7 +218,9 @@ def test_calibrate_padding_result_loads_through_load_padding_config_shape(tmp_pa
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     loaded = geometry.load_padding_config(path)
-    assert loaded["top_bp"] == result["top_bp"]
+    assert loaded["top_bp"] == result["top_bp"] == 1000
+    for field in ("bottom_bp", "left_bp", "right_bp"):
+        assert loaded[field] == result[field]
     assert loaded["provenance"]["calibrated_for_this_corpus"] is True
 
 

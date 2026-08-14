@@ -115,6 +115,31 @@ def test_a_component_contained_in_a_taller_predecessor_does_not_shorten_the_acti
     assert groups[0]["body_members"] == [tall, contained, following]
 
 
+def test_a_blank_gap_still_splits_anchorless_entries_below_a_tall_earlier_component():
+    """The gap rule measures from the active run, not an earlier run's bottom."""
+    tall = body_component(10, 190)  # reaches row 200
+    later_a = body_component(150, 20)  # reaches row 170
+    later_b = body_component(185, 10)  # 15 blank rows after later_a
+    boundary_anchor = margin_component(140)
+
+    groups = group_page([tall, boundary_anchor, later_a, later_b], PAGE_W, PAGE_H)
+
+    assert [group["body_members"] for group in groups] == [[tall], [later_a], [later_b]]
+
+
+def test_the_cross_run_blank_gap_split_is_permutation_invariant():
+    """Arrival order cannot hide the later blank gap behind the tall first run."""
+    tall = body_component(10, 190)
+    later_a = body_component(150, 20)
+    later_b = body_component(185, 10)
+    boundary_anchor = margin_component(140)
+    components = [tall, boundary_anchor, later_a, later_b]
+
+    for ordering in itertools.permutations(components):
+        groups = group_page(list(ordering), PAGE_W, PAGE_H)
+        assert [group["body_members"] for group in groups] == [[tall], [later_a], [later_b]]
+
+
 def test_an_isolated_anchor_with_no_body_run_is_its_own_marginal_note_act():
     stray = margin_component(200)
     body = body_component(20, 40)  # far away, will not overlap the stray anchor's range

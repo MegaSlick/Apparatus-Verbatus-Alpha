@@ -21,7 +21,8 @@ property GOVERNANCE 10 requires of any threshold in an instrument: the
 instrument may not constrain what it measures.
 
 **Two ink calibrations exist in this pipeline, by decision rather than drift.**
-This stage counts a pixel as ink at `background - PRIMARY_MARGIN` (20 levels);
+This stage conserves a pixel as ink at `background - SECONDARY_MARGIN` (2 levels),
+the most sensitive declared structural threshold available to this stage;
 the Recensor's independent page-coverage check
 (`pipeline/5_recensor/residual_ink.py`) requires `MINIMUM_CONTRAST_BELOW_BACKGROUND`
 (40 levels). They are different instruments: this one is the Designator
@@ -54,7 +55,7 @@ from typing import Final, TypedDict
 from geometry import Bounds
 from structure import (
     DEFAULT_GAP_TOLERANCE_PX,
-    PRIMARY_MARGIN,
+    SECONDARY_MARGIN,
     Component,
     ink_pixels,
     label_components,
@@ -93,7 +94,7 @@ def reconcile(
     *,
     background: int,
     claimed_bounds: list[Bounds],
-    margin: int = PRIMARY_MARGIN,
+    margin: int = SECONDARY_MARGIN,
     gap_tolerance_px: int = DEFAULT_GAP_TOLERANCE_PX,
     review_priority_min_dimension_px: int = DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX,
 ) -> ReconciliationResult:

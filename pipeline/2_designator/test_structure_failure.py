@@ -395,6 +395,48 @@ def test_a_uniformly_dark_page_is_refused_rather_than_counted_as_zero_ink():
     assert PRIMARY_MARGIN == 20
 
 
+def test_faint_ink_outside_primary_proposals_withholds_complete_exit(tmp_path, monkeypatch):
+    """The conservation denominator includes ink the primary proposer cannot see."""
+    from structure import PRIMARY_MARGIN, SECONDARY_MARGIN
+
+    from common.imaging import decode_grayscale_png, encode_grayscale_png
+    from proof.synthetic_pages import page_bytes
+
+    root = tmp_path / "runs"
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = _run_program(program, root)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    width, height, rows = decode_grayscale_png(page_bytes(2))
+    background = 230
+    faint = background - (PRIMARY_MARGIN - 1)
+    assert faint <= background - SECONDARY_MARGIN
+    assert faint > background - PRIMARY_MARGIN
+    rows[200][5] = faint  # outside the continuation crop on page 2
+    page_with_faint_ink = encode_grayscale_png(width, height, rows)
+
+    designator = _load_designator()
+    context = _designator_context(root, designator)
+    _substitute_page_pixels(designator, monkeypatch, 2, page_with_faint_ink)
+
+    held = designator.initial_pass(context)
+
+    reconciliation = next(
+        row for row in _payloads(context, "conservation") if row["page_ordinal"] == 2
+    )
+    assert reconciliation["residual_pixel_count"] == 1
+    assert reconciliation["residual_components"] == [
+        {
+            "bounds": {"x": 5, "y": 200, "w": 1, "h": 1},
+            "pixel_count": 1,
+            "review_priority": "low",
+        }
+    ]
+    assert held is True
+    seal = _payloads(context, "proposal-seal")[0]
+    assert any(row["outcome"] == "held" for row in seal["expected_acts"])
+
+
 @pytest.mark.parametrize("paper", [0, 19])
 def test_a_background_too_dark_to_express_an_ink_threshold_is_refused(paper):
     """Not only pure black: any mode below the margin separates nothing."""
@@ -487,6 +529,28 @@ def _payloads(context, kind):
         for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
         if entry["kind"] == kind
     ]
+
+
+def test_initial_pass_resolves_structure_provenance_once_for_all_crops(tmp_path, monkeypatch):
+    root = tmp_path / "runs"
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = _run_program(program, root)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    designator = _load_designator()
+    context = _designator_context(root, designator)
+    context_type = type(context)
+    real_write = context_type.write_serving_receipt
+    written = []
+
+    def count_write(self, resolved, details):
+        written.append(resolved.role)
+        return real_write(self, resolved, details)
+
+    monkeypatch.setattr(context_type, "write_serving_receipt", count_write)
+    designator.initial_pass(context)
+
+    assert written.count("designator_structure") == 1
 
 
 @pytest.fixture

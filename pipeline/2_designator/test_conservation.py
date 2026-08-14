@@ -8,7 +8,7 @@ reconciliation is supposed to be checking would not be testing anything.
 
 import pytest
 from conservation import reconcile
-from structure import PRIMARY_MARGIN
+from structure import PRIMARY_MARGIN, SECONDARY_MARGIN
 
 from common.contracts.errors import ContractError
 
@@ -205,15 +205,23 @@ def test_review_priority_threshold_only_reorders_never_excludes():
 # --- secondary-sensitivity corroboration ---------------------------------------
 
 
-def test_a_fainter_margin_finds_more_residual_than_the_primary_default():
+def test_conservation_defaults_to_the_faintest_structural_sensitivity():
     width, height = 20, 20
     rows = blank_rows(width, height)
     faint = BACKGROUND - (PRIMARY_MARGIN - 1)  # just inside background at primary sensitivity
     paint_rect(rows, 5, 5, 3, 3, faint)
-    primary = reconcile(width, height, rows, background=BACKGROUND, claimed_bounds=[])
-    sensitive = reconcile(width, height, rows, background=BACKGROUND, claimed_bounds=[], margin=1)
+    primary = reconcile(
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        claimed_bounds=[],
+        margin=PRIMARY_MARGIN,
+    )
+    sensitive = reconcile(width, height, rows, background=BACKGROUND, claimed_bounds=[])
     assert primary["total_ink_pixel_count"] == 0
     assert sensitive["total_ink_pixel_count"] == 9
+    assert SECONDARY_MARGIN < PRIMARY_MARGIN
 
 
 # --- refusals -------------------------------------------------------------------

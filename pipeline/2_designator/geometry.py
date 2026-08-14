@@ -132,7 +132,15 @@ def load_padding_config(path: str | Path = DEFAULT_PADDING_CONFIG_PATH) -> dict[
         raise ContractError(
             f"the padding configuration at {path} could not be read: {error}"
         ) from error
-    padding = config.get("padding") if isinstance(config, dict) else None
+    if not isinstance(config, dict):
+        raise ContractError("the padding configuration is not a table")
+    unexpected_top_level = sorted(set(config) - {"padding"})
+    if unexpected_top_level:
+        raise ContractError(
+            "the padding configuration has unknown top-level field(s) "
+            f"{unexpected_top_level}; an unread policy table cannot be applied"
+        )
+    padding = config.get("padding")
     if not isinstance(padding, dict):
         raise ContractError("the padding configuration has no [padding] table")
     unexpected = sorted(set(padding) - (set(_PADDING_FIELDS) | {"provenance"}))

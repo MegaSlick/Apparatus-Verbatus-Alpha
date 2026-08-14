@@ -61,7 +61,8 @@ MINIMUM_INK_PIXELS = 24
 #: real scans can have different paper tone and lighting, and an absolute
 #: threshold would read one page's ink as background on another.
 #:
-#: Deliberately stricter than the Designator's own `PRIMARY_MARGIN` (20, in
+#: Deliberately stricter than the Designator conservation denominator's
+#: `SECONDARY_MARGIN` (2, in
 #: `pipeline/2_designator/structure.py`): this check is an independent audit
 #: that flags whole missed regions with confidence, while the Designator's
 #: conservation errs sensitive and holds faint residuals itself. Keeping this

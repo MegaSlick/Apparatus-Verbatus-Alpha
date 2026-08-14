@@ -24,7 +24,7 @@ def _literal_constant(path: Path, name: str) -> int:
 def test_the_recensor_audit_never_calls_ink_what_the_designator_dismissed():
     """A one-sided retune must fail at the shared boundary, not inside a stage."""
     designator_margin = _literal_constant(
-        ROOT / "pipeline" / "2_designator" / "structure.py", "PRIMARY_MARGIN"
+        ROOT / "pipeline" / "2_designator" / "structure.py", "SECONDARY_MARGIN"
     )
     recensor_contrast = _literal_constant(
         ROOT / "pipeline" / "5_recensor" / "residual_ink.py",

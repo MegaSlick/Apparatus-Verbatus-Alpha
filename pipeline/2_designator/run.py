@@ -560,6 +560,7 @@ def cut_region(
     recovery_request: dict[str, str] | None = None,
     *,
     padding: dict | None = None,
+    provenance: dict | None = None,
 ):
     """Cut one region of one *fixture-declared* act, by that act's own identity."""
     return cut_minted_region(
@@ -573,6 +574,7 @@ def cut_region(
         origin,
         recovery_request,
         padding=padding,
+        provenance=provenance,
     )
 
 
@@ -588,6 +590,7 @@ def cut_minted_region(
     recovery_request: dict[str, str] | None = None,
     *,
     padding: dict | None = None,
+    provenance: dict | None = None,
 ):
     """Cut one region of one act and publish it.
 
@@ -628,7 +631,8 @@ def cut_minted_region(
     `transform` and that broke the shared Exemplar-lineage boundary check,
     which reads `transform` as a closed four-field schema.
     """
-    provenance = structure_provenance(context)
+    if provenance is None:
+        provenance = structure_provenance(context)
     image_path = page_record["payload"]["image_path"]
     page_bytes = _read_checked_page_bytes(context, page_record)
 
@@ -1317,6 +1321,7 @@ def _publish_page_fallback(
     analysis: dict,
     status_ref: dict[str, str],
     claimed: list[dict],
+    provenance: dict,
 ) -> dict | None:
     """Cut the predetermined crops over a page the structure pass found nothing on.
 
@@ -1385,7 +1390,7 @@ def _publish_page_fallback(
             "called blank here; blankness is proved by the witnesses and the Perlector, which "
             "only get a say if the crops reach them"
         ),
-        "provenance": structure_provenance(context),
+        "provenance": provenance,
     }
     _refuse_text_fields(fallback_payload)
     context.publish(
@@ -1407,6 +1412,7 @@ def _publish_page_fallback(
             index + 1,
             ordinal,
             "proposal",
+            provenance=provenance,
         )
         evidence.append(context.input_ref(region.relative_path))
     return {
@@ -1514,6 +1520,7 @@ def _publish_page_fallbacks(
     failures: dict[int, str],
     page_cache: dict[int, dict],
     status_refs: dict[int, dict[str, str]],
+    provenance: dict,
 ) -> list[dict]:
     """Publish each page's unclaimed fallback coverage and return its seal rows."""
     rows = []
@@ -1531,6 +1538,7 @@ def _publish_page_fallbacks(
             analysis,
             status_refs[ordinal],
             claimed_by_page.get(ordinal, []),
+            provenance,
         )
         if row is not None:
             rows.append(row)
@@ -1594,6 +1602,7 @@ def initial_pass(context) -> bool:
     # policy the run never sealed while every other check still passes.
     padding = geometry.load_padding_config(context.args.designator_padding_config)
     context.require_sealed_config("designator-padding", padding["config_sha256"])
+    provenance = structure_provenance(context)
     secondary = secondary_provenance(context)
     context.publish(
         kind="secondary-provenance",
@@ -1619,7 +1628,7 @@ def initial_pass(context) -> bool:
             # fatal, and the comment above says why.
             _analyze_page(page_cache, context, ordinal, page_record)
     status_refs = publish_structure_status(
-        context, records, pages, structure_provenance(context), failures, page_cache
+        context, records, pages, provenance, failures, page_cache
     )
 
     expected = []
@@ -1677,6 +1686,7 @@ def initial_pass(context) -> bool:
                 page_ordinal,
                 "proposal",
                 padding=padding,
+                provenance=provenance,
             )
             evidence.append(context.input_ref(primary.relative_path))
 
@@ -1704,6 +1714,7 @@ def initial_pass(context) -> bool:
                     continuation["page_ordinal"],
                     "proposal",
                     padding=padding,
+                    provenance=provenance,
                 )
                 evidence.append(context.input_ref(continuation_region.relative_path))
                 continuation_cut = True
@@ -1768,7 +1779,9 @@ def initial_pass(context) -> bool:
     # already cover. A page the structure pass was *held* on is not tiled -- its
     # acts are held and no crop is cut on it at all, which is a different, named
     # outcome (`structure_failures`) rather than an absence of findings.
-    fallback_rows = _publish_page_fallbacks(context, pages, failures, page_cache, status_refs)
+    fallback_rows = _publish_page_fallbacks(
+        context, pages, failures, page_cache, status_refs, provenance
+    )
     expected.extend(fallback_rows)
     seal_inputs.extend(reference for row in fallback_rows for reference in row["evidence"])
     if not expected:
@@ -1792,7 +1805,7 @@ def initial_pass(context) -> bool:
     payload = {
         "expected_acts": expected,
         "count": len(expected),
-        "provenance": structure_provenance(context),
+        "provenance": provenance,
     }
     payload["self_hash"] = self_hash(payload)
     context.publish(
