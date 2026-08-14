@@ -218,10 +218,21 @@ def test_the_unmarked_pages_ink_is_accounted_as_residual_not_as_absence(structur
         for record in _artifacts(structure_failure_run, DESIGNATOR, "conservation")
     }
     page_one = conservation[1]
+    assert page_one["background_source"] == "inferred-modal"
+    assert isinstance(page_one["background_value"], int)
     assert page_one["total_ink_pixel_count"] > 0
     assert page_one["claimed_pixel_count"] == 0
     assert page_one["residual_pixel_count"] == page_one["total_ink_pixel_count"]
     assert page_one["residual_components"]
+
+    status = {
+        record["payload"]["page_ordinal"]: record["payload"]
+        for record in _artifacts(structure_failure_run, DESIGNATOR, "structure-status")
+    }[1]
+    assert status["background_source"] is None, (
+        "the held structure pass did not infer a background; the independent "
+        "conservation record above attributes the measurement that actually ran"
+    )
 
     seal = _artifacts(structure_failure_run, DESIGNATOR, "proposal-seal")[0]["payload"]
     residual_keys = [

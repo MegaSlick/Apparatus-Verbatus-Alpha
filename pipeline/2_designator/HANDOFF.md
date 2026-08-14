@@ -223,13 +223,21 @@ different words at line 319 but is not where this exact sentence lives;
 corrected here after a second window read).
 
 ```text
-page_ordinal, ink_measurable, reason | null
+page_ordinal, background_source, background_value | null
+ink_measurable, reason | null
 total_ink_pixel_count | null, claimed_pixel_count | null, residual_pixel_count | null
 residual_components = [{bounds, pixel_count, review_priority}]
 ```
 
 `claimed_pixel_count + residual_pixel_count == total_ink_pixel_count` always,
 by construction, whenever `ink_measurable` is true.
+
+The background fields belong to this reconciliation, not to the structure
+pass. This distinction matters on a page whose structure pass was held before
+analysis: its `structure-status.background_source` correctly remains `null`,
+while conservation's later independent scan records the inferred modal value it
+actually measured against. `background_value` is `null` exactly when
+`ink_measurable` is false and no threshold could be inferred.
 
 **`ink_measurable: false` is a reconciliation that could not happen, published
 rather than skipped.** A page whose background `infer_background` refuses has no

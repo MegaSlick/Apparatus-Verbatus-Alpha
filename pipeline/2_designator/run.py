@@ -1380,6 +1380,11 @@ def _publish_conservation_and_secondary(
     )
     conservation_payload = {
         "page_ordinal": ordinal,
+        # Conservation owns an independent page scan.  Its threshold basis
+        # belongs on this record even when the structure pass was held before
+        # analysis and its separate structure-status therefore says null.
+        "background_source": analysis["background_source"],
+        "background_value": analysis["background"],
         "ink_measurable": measurable,
         "reason": None
         if measurable

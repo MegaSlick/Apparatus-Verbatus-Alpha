@@ -301,8 +301,15 @@ FIXTURE = "synthetic-two-page-v0"
 # (main's confirmed-blank/blank-with-dissent beside this branch's
 # structure-failure), which enters `config_digest` and moves every
 # downstream artifact digest with it.
-HAPPY_RUN_TREE_DIGEST = "cdf40a82b564256ff6208f21ea97679ad1f9f2ed4b55ee86b0df870aaaf1aec6"
-REVIEW_RUN_TREE_DIGEST = "7986bb8b9815df65b57325a1b1bfe483a54f0be4ecf346af8fbcbbd4c4009465"
+#
+# Re-pinned for CodeRabbit round 1 on the stage-06 candidate. Every conservation
+# record now attributes its independent scan's background source and value. A
+# held structure pass can therefore keep null structure evidence while the later
+# conservation measurement states the threshold it actually used. Counts stay
+# 53/57; both digests were re-measured from real orchestrator runs through this
+# module's `orchestrate` and `semantic_snapshot_digest` helpers.
+HAPPY_RUN_TREE_DIGEST = "ae6645f8a6e334ceacbdc09f2140878f0160448f26e3caaa36032f2450000485"
+REVIEW_RUN_TREE_DIGEST = "643f2382fd7a15557088ef91d5105bb1dc2f4e376317415fa0be63808f3ccc66"
 
 
 def orchestrate(
