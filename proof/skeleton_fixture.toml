@@ -23,6 +23,14 @@ sha256 = "c8caf23452177873518b7a8652fc02c412a468a3175b11be588a91ece95167e8"
 width = 200
 height = 260
 
+[[page]]
+ordinal = 3
+path = "fixtures/synthetic-two-page-v0/page-3.png"
+sha256 = "080bd6a557c4806d8b3c2bd096e2773529b3afd46902d4edce3062dbe396e0a9"
+width = 200
+height = 260
+scenarios = ["ink-free-page"]
+
 [[act]]
 key = "a1"
 page_ordinal = 1
@@ -156,6 +164,20 @@ name = "no-readable-text-reading"
 recover_acts = []
 hold_acts = []
 
+[[scenario]]
+name = "structure-failure"
+recover_acts = []
+hold_acts = []
+
+# A third, scenario-only page is uniform paper with no declared act.
+# The Designator must tile it, and the witnesses and Perlector must
+# actually read those tiles rather than crashing on its minted act key.
+
+[[scenario]]
+name = "ink-free-page"
+recover_acts = []
+hold_acts = []
+
 # A reading that did not succeed. `truncated` is a failed-class Perlector
 # outcome that still carries text, which is the combination that matters: the
 # Recensor used to ask only whether a reading existed, and the Archetypus
@@ -250,6 +272,14 @@ chair = "attestator_1"
 scenario = "blank-with-dissent"
 act_key = "a1"
 chair = "attestator_2"
+
+# A recorded structure-chair failure: the Designator holds the page and every
+# act that needed it, with the reason named, rather than skipping either.
+
+[[structure_failure]]
+scenario = "structure-failure"
+page_ordinal = 1
+reason_code = "recorded-fixture-structure-failure"
 
 [[page_refusal]]
 scenario = "refused-page"

@@ -154,6 +154,42 @@ def _sniff_source_stream(handle: BinaryIO) -> str | None:
     return detected
 
 
+def fixture_pages_for_scenario(fixture: dict, scenario: str) -> list[dict]:
+    """Return the synthetic pages active in one declared fixture scenario.
+
+    A scenario restriction is fixture data, never a real-ingress filter. It
+    exists so an additional proof page can exercise a narrow integration path
+    without silently changing the input of every established acceptance run.
+    """
+    scenario_for(fixture, scenario)
+    declared_scenarios = {row["name"] for row in fixture["scenario"]}
+    active = []
+    for page in fixture["page"]:
+        restrictions = page.get("scenarios")
+        if restrictions is None:
+            active.append(page)
+            continue
+        if (
+            not isinstance(restrictions, list)
+            or not restrictions
+            or any(not isinstance(item, str) or not item for item in restrictions)
+            or len(set(restrictions)) != len(restrictions)
+        ):
+            raise ContractError(
+                f"fixture page {page.get('ordinal')!r} has invalid scenario restrictions"
+            )
+        unknown = sorted(set(restrictions) - declared_scenarios)
+        if unknown:
+            raise ContractError(
+                f"fixture page {page.get('ordinal')!r} names unknown scenario(s) {unknown}"
+            )
+        if scenario in restrictions:
+            active.append(page)
+    if not active:
+        raise ContractError(f"fixture scenario {scenario!r} activates no pages")
+    return active
+
+
 def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     """The digest each page is declared to have, per ordinal, for this scenario.
 
@@ -162,7 +198,9 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     same comparison, the same refusal artifact — rather than any scenario-aware
     branch that a real door would not have.
     """
-    declared = {page["ordinal"]: page["sha256"] for page in fixture["page"]}
+    declared = {
+        page["ordinal"]: page["sha256"] for page in fixture_pages_for_scenario(fixture, scenario)
+    }
     for row in fixture.get("page_refusal", []):
         if row["scenario"] != scenario:
             continue
@@ -1020,7 +1058,7 @@ def fixture_submission(args, registry) -> int:
     """The walking skeleton: declared synthetic pages, no gate, sealed as such."""
     fixture_root = declared_synthetic_fixture_root(args.fixture_root)
     fixture = load_fixture(str(fixture_root))
-    scenario_for(fixture, args.scenario)
+    pages = fixture_pages_for_scenario(fixture, args.scenario)
     declared = declared_digests(fixture, args.scenario)
     policy = admission.load_format_policy()
     pdf_settings = _load_pdf_render_settings(args)
@@ -1029,6 +1067,7 @@ def fixture_submission(args, registry) -> int:
         fixture,
         args.scenario,
         pdf_render_config_path=args.pdf_render_config,
+        designator_padding_config_path=args.designator_padding_config,
         pdf_target_dpi=args.pdf_target_dpi,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
@@ -1051,7 +1090,7 @@ def fixture_submission(args, registry) -> int:
                 "sha256": declared[page["ordinal"]],
                 "ordinal": page["ordinal"],
             }
-            for page in fixture["page"]
+            for page in pages
         ],
         config_digest=bindings["config_digest"],
         adapter_recipes=bindings["adapter_recipes"],
@@ -1061,8 +1100,7 @@ def fixture_submission(args, registry) -> int:
     )
     context = _door_context(tree, fixture, args.scenario, args, registry)
     sources = [
-        SourceEntry(page["ordinal"], page["path"], declared[page["ordinal"]])
-        for page in fixture["page"]
+        SourceEntry(page["ordinal"], page["path"], declared[page["ordinal"]]) for page in pages
     ]
     admitted = process_sources(
         context,
@@ -1173,6 +1211,7 @@ def real_submission(args, registry) -> int:
         pdf_settings,
         load_recovery_policy(args.recovery_config),
         load_hard_failure_policy(args.hard_failure_config),
+        designator_padding_config_sha256=_padding_config_digest(args.designator_padding_config),
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
         nuda_per_mille=args.nuda_per_mille,
@@ -1249,6 +1288,23 @@ def _announce_duplicate_report(tree: RunTree, duplicate_report: str | None) -> N
     )
 
 
+def _padding_config_digest(path: str) -> str:
+    """The Designator padding policy's digest, read at the door like every other.
+
+    A real submission stops before the Designator cuts anything today, so this
+    binds nothing a real run currently uses. It is sealed anyway, because the
+    day a real structure pass exists is the day crops start depending on it, and
+    a configuration that entered the digest only once it mattered would leave
+    every earlier run id reusable across a geometry change.
+    """
+    try:
+        return digest_bytes(Path(path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            f"the Designator padding configuration binding at {path} could not be read"
+        ) from error
+
+
 def _real_bindings(
     models,
     ledger,
@@ -1257,6 +1313,7 @@ def _real_bindings(
     recovery_policy,
     hard_failure_policy,
     *,
+    designator_padding_config_sha256: str,
     witness_context: str = "named",
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     nuda_per_mille: int = 0,
@@ -1301,6 +1358,7 @@ def _real_bindings(
                 "door_implementation_revision": REAL_DOOR_ADAPTER_REVISION,
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
+                "designator_padding_config_sha256": designator_padding_config_sha256,
                 "models": models.to_record(),
                 # Spec 08's run-level settings, bound on the real path exactly as
                 # `run_config_bindings` binds them on the fixture path: a resumed

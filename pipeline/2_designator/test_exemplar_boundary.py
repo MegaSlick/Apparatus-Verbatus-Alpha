@@ -12,13 +12,16 @@ import sys
 from io import BytesIO
 from pathlib import Path
 
+import pytest
+from _test_support import load_designator
 from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, self_hash
+from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR
 from common.runtree.store import RunTree
-from common.stage import EXIT_FATAL, EXIT_HELD
+from common.stage import EXIT_FATAL, EXIT_HELD, open_context, stage_parser
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -127,8 +130,9 @@ def test_a_changed_sealed_pixel_blob_stops_before_designator_crops_or_rehashes_i
     page = tree.read_artifact(EXEMPLAR, "page", page_entry["artifact_id"])
     blob_path = tree.resolve(page["payload"]["image_path"])
     with Image.open(BytesIO(blob_path.read_bytes())) as image:
-        changed = image.convert("RGB")
-        changed.putpixel((0, 0), (255, 0, 0))
+        changed = image.copy()
+        original = changed.getpixel((0, 0))
+        changed.putpixel((0, 0), 0 if original else 255)
         output = BytesIO()
         changed.save(output, format="PNG")
     blob_path.write_bytes(output.getvalue())
@@ -226,3 +230,60 @@ def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(tm
     assert "lost submitted page ordinal(s) [2]" in result.stderr
     assert "page-2.png" not in result.stderr
     assert snapshot(tree.root) == before
+
+
+def _load_designator():
+    return load_designator("designator_toctou_under_test")
+
+
+def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tmp_path):
+    """The upfront boundary check (`page_records`, proven above) runs once, before
+    the first region is cut. This proves the narrower claim that check alone
+    cannot: a page's bytes changing on disk *after* that one-time check has
+    already passed, but before this specific page's own later read (the
+    structure scan, a crop), is still caught -- rather than being silently
+    baked into sealed Designator evidence on the strength of a check that
+    already happened.
+    """
+    root = tmp_path / "runs"
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / program),
+                "--run-root",
+                str(root),
+                "--run-id",
+                "r",
+                "--scenario",
+                "happy",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    designator = _load_designator()
+    args = stage_parser("toctou acceptance").parse_args(
+        ["--run-root", str(root), "--run-id", "r", "--scenario", "happy"]
+    )
+    context = open_context(args, designator.DESIGNATOR)
+
+    # The upfront check: passes, exactly as it does at the top of a real run.
+    records = designator.page_records(context)
+    pages = designator.sealed_pages(records)
+    page_record = pages[1]
+
+    # Tamper the same page's blob *after* that check already passed.
+    blob_path = context.tree.resolve(page_record["payload"]["image_path"])
+    with Image.open(BytesIO(blob_path.read_bytes())) as image:
+        changed = image.copy()
+        original = changed.getpixel((0, 0))
+        changed.putpixel((0, 0), 0 if original else 255)
+        output = BytesIO()
+        changed.save(output, format="PNG")
+    blob_path.write_bytes(output.getvalue())
+
+    with pytest.raises(ContractError, match="no longer matches its recorded digest"):
+        designator.page_pixels(context, page_record)

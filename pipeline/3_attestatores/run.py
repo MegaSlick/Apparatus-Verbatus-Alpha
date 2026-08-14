@@ -28,12 +28,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, SchemaRefusal  # noqa: E402
+from common.contracts.identities import act_id as derive_act_id  # noqa: E402
 from common.contracts.identities import attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
+    FALLBACK_PAGE_ACT_ORDINAL,
     expected_acts,
     fixture_serving_details,
     open_context,
@@ -129,6 +131,44 @@ def content_health(reported: str | None) -> dict:
     }
 
 
+def _unique_region_inputs(context, regions: list[dict]) -> list[dict]:
+    """Bind each distinct crop blob once while retaining every region in payloads."""
+    inputs = {}
+    for record in regions:
+        reference = context.input_ref(record["payload"]["image_path"])
+        inputs[reference["relative_path"]] = reference
+    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
+
+
+def _page_fallback_bounds(context) -> dict[str, dict]:
+    """Index the Designator rectangles already verified by `expected_acts`."""
+    bounds_by_act = {}
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "page-fallback":
+            continue
+        act_id = entry["subject_id"]
+        if act_id in bounds_by_act:
+            raise SchemaRefusal(f"act {act_id} has more than one Designator page-fallback record")
+        record = context.tree.read_artifact(DESIGNATOR, "page-fallback", entry["artifact_id"])
+        page_bounds = record.get("payload", {}).get("page_bounds")
+        if not isinstance(page_bounds, dict):
+            raise SchemaRefusal(
+                f"act {act_id}'s Designator page-fallback record carries no page rectangle"
+            )
+        bounds_by_act[act_id] = page_bounds
+    return bounds_by_act
+
+
+def _is_page_fallback(context, act: dict, bounds_by_act: dict[str, dict] | None = None) -> bool:
+    """Recognize the reserved minted identity, not merely its human-readable key."""
+    if bounds_by_act is None:
+        bounds_by_act = _page_fallback_bounds(context)
+    page_bounds = bounds_by_act.get(act["act_id"])
+    if page_bounds is None:
+        return False
+    return act["act_id"] == derive_act_id(act["page_id"], FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
+
+
 def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted: bool) -> dict:
     """The exact configured identity for one witness outcome.
 
@@ -176,9 +216,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
     failures = declared_failures(context)
     empty = declared_empty(context)
+    acts = expected_acts(context)
+    fallback_bounds = _page_fallback_bounds(context)
 
     recorded = 0
-    for act in expected_acts(context):
+    for act in acts:
         if act["outcome"] == "held":
             # The Designator held this act: its proposal is incomplete, and a
             # witness shown only what exists would have read part of an act
@@ -214,6 +256,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             continue
 
         regions = proposed_regions(context, act["act_id"])
+        page_fallback = _is_page_fallback(context, act, fallback_bounds)
         region_references = [
             {
                 "region_id": record["payload"]["region_id"],
@@ -225,7 +268,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
         for chair in context.witness_chairs:
             resolved = context.registry.resolve(chair)
-            reported = testimony_for(context, act["act_key"], chair)
+            reported = "" if page_fallback else testimony_for(context, act["act_key"], chair)
             failed = (act["act_key"], chair) in failures
 
             if isinstance(resolved, AbsentChair):
@@ -236,7 +279,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 payload = {"reason": f"chair is explicitly absent: {resolved.reason}"}
             elif failed:
                 outcome, payload = "failed", {"reason": "the chair returned no usable report"}
-            elif (act["act_key"], chair) in empty:
+            elif page_fallback or (act["act_key"], chair) in empty:
                 outcome, payload = "genuinely-empty", {"reported": ""}
             elif reported is None:
                 # Configured, nothing declared for it: not-run, which is an
@@ -257,11 +300,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 subject_id=act["act_id"],
                 outcome=outcome,
                 attempt=attempt_id(act["act_id"], f"read:{chair}", 1),
-                inputs=(
-                    [context.input_ref(record["payload"]["image_path"]) for record in regions]
-                    if attempted
-                    else []
-                ),
+                inputs=(_unique_region_inputs(context, regions) if attempted else []),
                 payload={
                     "chair": chair,
                     "act_key": act["act_key"],

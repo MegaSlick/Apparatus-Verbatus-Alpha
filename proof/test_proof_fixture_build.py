@@ -34,7 +34,7 @@ from proof.build_fixture import (
     build_skeleton_fixture,
     render_all,
 )
-from proof.synthetic_pages import FIXTURE_ID, PAGES, render_page
+from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, PAGES, render_page
 
 PROOF_ROOT = Path(__file__).resolve().parent
 MODELS_CONFIG = PROOF_ROOT.parent / "config" / "models.toml"
@@ -75,7 +75,7 @@ def configured_witness_chairs(models_config: dict) -> tuple[str, ...]:
 
 def test_every_declared_fixture_file_exists_with_the_declared_digest(ingress):
     entries = ingress["fixture"]
-    assert len(entries) == 2
+    assert len(entries) == 3
     for entry in entries:
         path = PROOF_ROOT.parent / entry["path"]
         assert path.exists(), f"{entry['path']} is declared but not present"
@@ -89,7 +89,7 @@ def test_every_declared_fixture_file_exists_with_the_declared_digest(ingress):
 def test_the_checked_in_bytes_decode_to_exactly_the_declared_image():
     """The property that holds on every machine, whatever its zlib."""
     checked = 0
-    for page in PAGES:
+    for page in ALL_PAGES:
         stored = (PROOF_ROOT / "fixtures" / FIXTURE_ID / f"page-{page['ordinal']}.png").read_bytes()
         width, height, rows = decode_grayscale_png(stored)
         _, _, expected_rows = decode_grayscale_png(render_page(page))
@@ -97,7 +97,7 @@ def test_the_checked_in_bytes_decode_to_exactly_the_declared_image():
         assert (width, height) == (page["width"], page["height"])
         assert rows == expected_rows
         checked += 1
-    assert checked == 2
+    assert checked == 3
 
 
 def test_no_fixture_file_is_present_that_nothing_declares(ingress):
@@ -127,13 +127,24 @@ def test_the_skeleton_declaration_is_up_to_date(skeleton):
 
 
 def test_declared_pages_match_the_rendered_pages(skeleton):
-    assert len(skeleton["page"]) == 2
+    assert len(skeleton["page"]) == 3
     for declared in skeleton["page"]:
-        page = next(item for item in PAGES if item["ordinal"] == declared["ordinal"])
+        page = next(item for item in ALL_PAGES if item["ordinal"] == declared["ordinal"])
         assert declared["width"] == page["width"]
         assert declared["height"] == page["height"]
         stored = PROOF_ROOT / declared["path"]
         assert hashlib.sha256(stored.read_bytes()).hexdigest() == declared["sha256"]
+
+
+def test_the_ink_free_page_is_restricted_to_its_integration_scenario(skeleton):
+    blank = next(page for page in skeleton["page"] if page["ordinal"] == 3)
+    assert blank["scenarios"] == ["ink-free-page"]
+    source = next(page for page in ALL_PAGES if page["ordinal"] == 3)
+    assert source["acts"] == ()
+    _, _, rows = decode_grayscale_png(render_page(source))
+    assert {value for row in rows for value in row} == {rows[0][0]}, (
+        "page 3 must be uniform paper: the ink-free scenario proves nothing otherwise"
+    )
 
 
 def test_declared_acts_match_the_rendered_act_bounds(skeleton):
@@ -244,6 +255,8 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "blank-with-dissent",
         "engine-truncated-reading",
         "no-readable-text-reading",
+        "structure-failure",
+        "ink-free-page",
     ]
     by_name = {scenario["name"]: scenario for scenario in skeleton["scenario"]}
     assert by_name["happy"]["recover_acts"] == []
@@ -269,6 +282,21 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     assert by_name["engine-truncated-reading"]["hold_acts"] == []
     assert by_name["no-readable-text-reading"]["recover_acts"] == []
     assert by_name["no-readable-text-reading"]["hold_acts"] == []
+    # Nothing is held by configuration here either: the hold must come from the
+    # recorded structure failure, or the scenario would prove nothing.
+    assert by_name["structure-failure"]["recover_acts"] == []
+    assert by_name["structure-failure"]["hold_acts"] == []
+
+
+def test_the_recorded_structure_failure_names_one_page_and_one_closed_reason(skeleton):
+    """Spec 06 test 4's fixture: a page the structure chair could not mark out."""
+    assert skeleton["structure_failure"] == [
+        {
+            "scenario": "structure-failure",
+            "page_ordinal": 1,
+            "reason_code": "recorded-fixture-structure-failure",
+        }
+    ]
 
 
 def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(

@@ -55,6 +55,7 @@ from common.recovery import (  # noqa: E402
 )
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
+    DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -101,6 +102,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.models_config),
         "--pdf-render-config",
         str(args.pdf_render_config),
+        "--designator-padding-config",
+        str(args.designator_padding_config),
         "--recovery-config",
         str(args.recovery_config),
         "--hard-failure-config",
@@ -181,6 +184,11 @@ def main() -> int:
         "--pdf-render-config",
         default="config/pdf_render.toml",
         help="the default whole-page PDF rasterisation target for this run",
+    )
+    parser.add_argument(
+        "--designator-padding-config",
+        default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH),
+        help="the capture padding applied to every act crop, sealed into this run",
     )
     parser.add_argument(
         "--pdf-target-dpi",

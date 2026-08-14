@@ -1,0 +1,218 @@
+"""A ready-to-run calibration harness for capture padding — not yet run.
+
+`config/designator_padding.toml`'s four fractions are carried forward from a
+third-party corpus (see that file's `[padding.provenance]`), and nothing in
+this repository has re-derived them against this project's own pages. This
+module is what "re-derive them" means concretely: given a gold set of
+(detected structural rectangle, true content rectangle) pairs on this
+project's own material, compute fresh per-edge padding fractions the same way
+the old pipeline described doing it — a percentile of how far true content
+falls outside the detected box, per edge, expressed as a fraction of the
+detected box's own dimension.
+
+**Nothing here invents a number.** `calibrate_padding` refuses an empty sample
+set outright, and `sample_size_caveat` names — rather than silently accepts —
+a sample too small for the requested percentile to be a defensible estimate
+rather than noise dressed as a statistic. CLSI EP28-A3c gives 120 as its own
+minimum for a nonparametric reference interval — but that figure is for
+estimating the 2.5th/97.5th percentiles, which need more samples than a
+percentile nearer the median to hold the same confidence. This module
+estimates p75, not a tail percentile, so treating CLSI's 120 as the
+*preferred* rather than the required floor here is this project's own
+conservative choice, not a number CLSI names for this statistic. 60 is a
+locally chosen provisional floor below that, not a figure either source
+states — see `sample_size_caveat` for what a count below it actually means.
+
+This harness produces the SAME four fractions the shipped config carries in
+shape (basis points of the detected box's own width/height, asymmetric per
+edge) but never in the config file itself: writing a freshly-calibrated
+`designator_padding.toml` is a decision for whoever holds the gold set this
+project does not yet have, not something this module does on import.
+"""
+
+from collections.abc import Mapping
+from typing import Any, Final, TypedDict, cast
+
+from geometry import BP_DENOMINATOR, Bounds
+
+from common.contracts.errors import ContractError
+
+# Below this many gold samples, a percentile estimate is named provisional
+# rather than refused outright: a provisional number that says so is safer than
+# none at all. `PREFERRED_SAMPLE_COUNT` is CLSI EP28-A3c's own minimum for a
+# nonparametric reference interval (a stricter statistic than the p75 this
+# module estimates); `MINIMUM_DEFENSIBLE_SAMPLES` is this project's own,
+# smaller, provisional floor below it — see the module docstring.
+MINIMUM_DEFENSIBLE_SAMPLES: Final = 60
+PREFERRED_SAMPLE_COUNT: Final = 120
+
+_EDGES: Final = ("top", "bottom", "left", "right")
+
+
+class GoldSample(TypedDict):
+    detected: Bounds
+    true_content: Bounds
+
+
+def _validated_bounds(value: object, *, sample_index: int, name: str) -> Bounds:
+    """One complete integer rectangle with positive dimensions, or a named refusal."""
+    fields = {"x", "y", "w", "h"}
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ContractError(
+            f"gold sample {sample_index} {name} rectangle has fields outside {sorted(fields)}"
+        )
+    if any(not isinstance(value[field], int) or isinstance(value[field], bool) for field in fields):
+        raise ContractError(f"gold sample {sample_index} {name} rectangle is not integer-valued")
+    if value["w"] <= 0 or value["h"] <= 0:
+        raise ContractError(
+            f"gold sample {sample_index} {name} rectangle has non-positive dimensions"
+        )
+    return cast(Bounds, dict(value))
+
+
+def _validated_sample(value: object, sample_index: int) -> GoldSample:
+    """Validate the runtime shape the ``GoldSample`` type hint cannot enforce."""
+    if not isinstance(value, Mapping) or set(value) != {"detected", "true_content"}:
+        raise ContractError(
+            f"gold sample {sample_index} has fields outside ['detected', 'true_content']"
+        )
+    return {
+        "detected": _validated_bounds(
+            value["detected"], sample_index=sample_index, name="detected"
+        ),
+        "true_content": _validated_bounds(
+            value["true_content"], sample_index=sample_index, name="true_content"
+        ),
+    }
+
+
+def _edge_shortfall_bp(detected: Bounds, true_content: Bounds, edge: str) -> int:
+    """How far `true_content` extends past `detected` on one edge, in basis
+    points of `detected`'s own dimension for that edge.
+
+    Zero, never negative: a detected box that already fully contains the true
+    content on this edge has no shortfall to report, and a true content box
+    entirely inside the detected one contributes zero to every edge's
+    percentile rather than a negative value that would pull it down.
+    """
+    if edge == "top":
+        shortfall_px = max(0, detected["y"] - true_content["y"])
+        dimension = detected["h"]
+    elif edge == "bottom":
+        shortfall_px = max(
+            0, (true_content["y"] + true_content["h"]) - (detected["y"] + detected["h"])
+        )
+        dimension = detected["h"]
+    elif edge == "left":
+        shortfall_px = max(0, detected["x"] - true_content["x"])
+        dimension = detected["w"]
+    elif edge == "right":
+        shortfall_px = max(
+            0, (true_content["x"] + true_content["w"]) - (detected["x"] + detected["w"])
+        )
+        dimension = detected["w"]
+    else:  # pragma: no cover - closed set, guarded by the caller
+        raise ContractError(f"edge {edge!r} is not one of {_EDGES}")
+    if dimension <= 0:
+        raise ContractError(f"a detected rectangle {detected} has no positive area to divide by")
+    # Round-half-up, integer-only -- the same discipline `geometry._pad_amount`
+    # states for every basis-point amount in this stage, and for the same
+    # reason: a float division plus Python's banker's rounding would make the
+    # result depend on float rounding rules rather than being deterministic
+    # integer arithmetic.
+    return (shortfall_px * BP_DENOMINATOR + dimension // 2) // dimension
+
+
+def _nearest_rank_percentile(values: list[int], percentile: int) -> int:
+    """The nearest-rank percentile of a small integer sample.
+
+    Nearest-rank rather than a linear-interpolation percentile: with a sample
+    in the tens rather than the thousands, interpolating between two observed
+    values claims a precision the data does not have, and nearest-rank always
+    returns a value that was actually observed. `ceil` rather than `floor` or
+    round-to-nearest so the 75th percentile of an even split still reports the
+    higher group, matching "how bad must the padding be to cover this
+    fraction of cases" rather than rounding the requirement away.
+    """
+    if not values:
+        raise ContractError("cannot take a percentile of zero samples")
+    if not (0 < percentile <= 100):
+        raise ContractError(f"percentile {percentile} is not in (0, 100]")
+    ordered = sorted(values)
+    rank = -(-len(ordered) * percentile // 100)  # ceil division, integers only
+    rank = max(1, min(rank, len(ordered)))
+    return ordered[rank - 1]
+
+
+def sample_size_caveat(sample_count: int) -> str:
+    """The honest, sample-size-dependent caveat for one calibration run."""
+    if sample_count < MINIMUM_DEFENSIBLE_SAMPLES:
+        return (
+            f"only {sample_count} gold sample(s); below the ~{MINIMUM_DEFENSIBLE_SAMPLES}-sample "
+            "floor a nonparametric percentile needs to be more than noise. Treat this result as "
+            "provisional and re-run once more gold pages exist"
+        )
+    if sample_count < PREFERRED_SAMPLE_COUNT:
+        return (
+            f"{sample_count} gold sample(s), above the ~{MINIMUM_DEFENSIBLE_SAMPLES}-sample "
+            f"floor but below the ~{PREFERRED_SAMPLE_COUNT} preferred for a percentile this "
+            "far from the median. Usable, not yet the target sample size"
+        )
+    return f"{sample_count} gold sample(s), at or above the preferred sample size"
+
+
+def calibrate_padding(
+    samples: list[GoldSample],
+    *,
+    percentile: int = 75,
+    corpus: str,
+    sample_unit: str,
+    calibrated_for_this_corpus: bool,
+) -> dict[str, Any]:
+    """Fresh per-edge padding fractions from real (detected, true) rectangle pairs.
+
+    Returns a payload shaped like `config/designator_padding.toml`'s own
+    `[padding]` plus `[padding.provenance]` tables, ready to be written out by
+    a caller that has decided to adopt it — this function only computes the
+    numbers and states plainly what they rest on; it does not write a file
+    and is not called by any run-path code.
+    """
+    if not isinstance(samples, list):
+        raise ContractError("gold samples must be supplied as a list for deterministic calibration")
+    if not isinstance(calibrated_for_this_corpus, bool):
+        raise ContractError("calibrated_for_this_corpus must be a boolean caller decision")
+    if not samples:
+        raise ContractError(
+            "cannot calibrate padding from zero gold samples; a percentile of nothing is "
+            "not a number, it is an absence wearing a number's shape"
+        )
+    validated_samples = [_validated_sample(sample, index) for index, sample in enumerate(samples)]
+    per_edge_bp = {
+        edge: _nearest_rank_percentile(
+            [
+                _edge_shortfall_bp(sample["detected"], sample["true_content"], edge)
+                for sample in validated_samples
+            ],
+            percentile,
+        )
+        for edge in _EDGES
+    }
+    return {
+        "top_bp": per_edge_bp["top"],
+        "bottom_bp": per_edge_bp["bottom"],
+        "left_bp": per_edge_bp["left"],
+        "right_bp": per_edge_bp["right"],
+        "provenance": {
+            "source": "pipeline/2_designator/padding_calibration.py, run against real gold samples",
+            "corpus": corpus,
+            "sample_unit": sample_unit,
+            "sample_count": len(validated_samples),
+            "statistic": f"p{percentile} per-edge shortfall, as a fraction of the detected "
+            "box's own dimension for that edge, nearest-rank",
+            # Only the caller holding the gold set knows whether its samples
+            # belong to this project's corpus. Computing rectangles cannot
+            # honestly infer that provenance fact from their coordinates.
+            "calibrated_for_this_corpus": calibrated_for_this_corpus,
+            "caveat": sample_size_caveat(len(validated_samples)),
+        },
+    }

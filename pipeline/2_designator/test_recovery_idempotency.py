@@ -13,8 +13,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from _test_support import load_designator
 
 from common.contracts.errors import ContractError
+from common.contracts.stages import DESIGNATOR
+from common.stage import EXIT_COMPLETE, EXIT_FATAL, EXIT_HELD
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -49,7 +52,7 @@ def test_recovering_the_same_act_twice_refuses_rather_than_cutting_a_duplicate(t
         "pipeline/5_recensor/run.py",
     ):
         result = _run(program, root)
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+        assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import RECENSOR
     from common.runtree.store import RunTree
@@ -93,7 +96,7 @@ def test_recovering_the_same_act_twice_refuses_rather_than_cutting_a_duplicate(t
     assert len(recovery_regions_before) == 1
 
     second = _run("pipeline/2_designator/run.py", root, *recovery_args)
-    assert second.returncode == 2
+    assert second.returncode == EXIT_FATAL
     assert "already has a region cut" in second.stderr
 
     recovery_regions_after = [
@@ -110,14 +113,24 @@ def test_recovering_the_same_act_twice_refuses_rather_than_cutting_a_duplicate(t
     )
 
 
-def _load_designator():
-    import importlib.util
+def test_an_unrecognized_operation_refuses_rather_than_running_initial_pass(tmp_path):
+    """A typo of "recover" must not silently fall through to a full initial
+    pass -- it must be refused as the unrecognized operation it is."""
+    root = tmp_path / "runs"
+    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+        result = _run(program, root)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
 
-    path = ROOT / "pipeline" / "2_designator" / "run.py"
-    spec = importlib.util.spec_from_file_location("designator_recovery_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    result = _run("pipeline/2_designator/run.py", root, "--operation", "Recover")
+    assert result.returncode == EXIT_FATAL, result.stdout
+    assert "is not one of 'initial' or 'recover'" in result.stderr
+    assert not (root / "r" / "2_designator" / "artifacts").exists(), (
+        "an unrecognized operation must refuse before any region or seal is written"
+    )
+
+
+def _load_designator():
+    return load_designator("designator_recovery_under_test")
 
 
 def _designator_context(designator, root: Path):
@@ -155,7 +168,7 @@ def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_p
         "pipeline/5_recensor/run.py",
     ):
         result = _run(program, root)
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+        assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import DESIGNATOR, RECENSOR
     from common.runtree.store import RunTree
@@ -174,12 +187,26 @@ def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_p
     act_id = review["subject_id"]
     request_id = review["payload"]["recovery_request_ref"]["relative_path"].rsplit("/", 1)[-1][:-5]
 
+    # The already-cut proposal region's *final* (padded) bounds, not the
+    # fixture's raw declared act rectangle: `cut_region` expands a proposal
+    # crop by the configured capture padding before cutting it, so the bounds
+    # that would actually collide with an existing region are the padded
+    # ones, not the pre-padding rectangle identity is bound to.
+    existing_proposal = next(
+        record
+        for record in (
+            tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+            for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+            if entry["kind"] == "region"
+        )
+        if record["subject_id"] == act_id and record["payload"]["origin"] == "proposal"
+    )
+    existing_bounds = existing_proposal["payload"]["transform"]["bounds"]
+
     context = _designator_context(designator, root)
-    act = next(row for row in context.fixture["act"] if row["key"] == "a1")
-    original_bounds = {key: act[key] for key in ("x", "y", "w", "h")}
     for row in context.fixture["recovery"]:
         if row["act_key"] == "a1":
-            row.update(original_bounds)
+            row.update(existing_bounds)
 
     with pytest.raises(ContractError, match="already has a region cut"):
         designator.recovery_pass(context, act_id, request_id)
@@ -197,6 +224,100 @@ def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_p
     assert recovery_regions == []
 
 
+def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_path):
+    """A recovery crop skips `apply_padding` (it names its own exact final
+    rectangle) and so has no other bounds check before `crop_png` -- which
+    raises a bare `ValueError` `run_stage` does not turn into `EXIT_FATAL`.
+    The recovery path needs its own explicit check to fail the same way every
+    other refusal in this pipeline does."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+        "pipeline/5_recensor/run.py",
+    ):
+        result = _run(program, root)
+        assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
+
+    from common.contracts.stages import RECENSOR
+    from common.runtree.store import RunTree
+
+    designator = _load_designator()
+    tree = RunTree(root, "r")
+    review = next(
+        record
+        for record in (
+            tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+            for entry in tree.build_manifest(RECENSOR)["artifacts"]
+            if entry["kind"] == "review"
+        )
+        if record["payload"]["act_key"] == "a1"
+    )
+    act_id = review["subject_id"]
+    request_id = review["payload"]["recovery_request_ref"]["relative_path"].rsplit("/", 1)[-1][:-5]
+
+    context = _designator_context(designator, root)
+    for row in context.fixture["recovery"]:
+        if row["act_key"] == "a1":
+            row.update({"x": 0, "y": 0, "w": 10**6, "h": 10**6})
+
+    with pytest.raises(ContractError, match="recovery bounds"):
+        designator.recovery_pass(context, act_id, request_id)
+    context.finish()
+
+    recovery_regions = [
+        record
+        for record in (
+            tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+            for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+            if entry["kind"] == "region"
+        )
+        if record["subject_id"] == act_id and record["payload"]["origin"] == "recovery"
+    ]
+    assert recovery_regions == [], "a refused out-of-page recovery must cut no region"
+
+
+def test_recovery_of_an_act_missing_from_the_fixture_is_a_named_refusal(tmp_path):
+    """The seal is the contract, but this fixture implementation still needs a
+    declared rectangle source; absence there must not escape as StopIteration."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+        "pipeline/5_recensor/run.py",
+    ):
+        result = _run(program, root)
+        assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
+
+    from common.contracts.stages import RECENSOR
+    from common.runtree.store import RunTree
+
+    designator = _load_designator()
+    tree = RunTree(root, "r")
+    review = next(
+        record
+        for record in (
+            tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+            for entry in tree.build_manifest(RECENSOR)["artifacts"]
+            if entry["kind"] == "review"
+        )
+        if record["payload"]["act_key"] == "a1"
+    )
+    request_id = review["payload"]["recovery_request_ref"]["relative_path"].rsplit("/", 1)[-1][:-5]
+    context = _designator_context(designator, root)
+    context.fixture["act"] = [row for row in context.fixture["act"] if row["key"] != "a1"]
+
+    with pytest.raises(ContractError, match="fixture declares no act for key 'a1'"):
+        designator.recovery_pass(context, review["subject_id"], request_id)
+    context.finish()
+
+
 def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first(tmp_path):
     """A recovery request may not pick one of several fixture rectangles by order."""
     root = tmp_path / "runs"
@@ -209,7 +330,7 @@ def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first
         "pipeline/5_recensor/run.py",
     ):
         result = _run(program, root)
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+        assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
 
     from common.contracts.stages import RECENSOR
     from common.runtree.store import RunTree

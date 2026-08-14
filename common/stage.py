@@ -15,6 +15,7 @@ declared fixture rather than by hard-coded strings scattered through seven files
 import argparse
 import sys
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Final, Protocol
 
@@ -23,11 +24,21 @@ from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import digest_bytes, digest_of, verify_self_hash
 from common.contracts.envelope import build_envelope
-from common.contracts.errors import ContractError, FatalAccounting, IncompatibleReuse, SchemaRefusal
-from common.contracts.identities import artifact_id, attempt_id
+from common.contracts.errors import (
+    ContractError,
+    FatalAccounting,
+    IdentityRefusal,
+    IncompatibleReuse,
+    SchemaRefusal,
+)
+from common.contracts.identities import act_bindings, artifact_id, attempt_id
+from common.contracts.identities import act_id as derive_act_id
+from common.contracts.identities import verify as verify_identity
 from common.contracts.outcomes import classify
-from common.contracts.stages import DESIGNATOR, PERLECTOR, RECENSOR
+from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR, RECENSOR
+from common.exemplar_boundary import verify_sealed_page_pixels
 from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
+from common.imaging import dimensions
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
     RECOVERY_KINDS,
@@ -66,6 +77,15 @@ DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
 # refused for. It is provenance, so invariant #42 governs it.
 WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
 MAX_NUDA_PER_MILLE: Final = 1000
+
+# The Designator's capture padding decides how many pixels a witness is actually
+# shown around each act, so two runs under different padding produce different
+# crop bytes. Sealing its digest here is what makes reusing one run id across a
+# padding change a refusal rather than a silent second geometry — the same
+# reason `pdf_render.toml` is sealed.
+DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "designator_padding.toml"
+)
 
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
@@ -127,9 +147,21 @@ class StageContext:
         "adapter_revision",
         "args",
         "registry",
+        "sealed_config_digests",
     )
 
-    def __init__(self, tree, run, fixture, scenario, stage, adapter_revision, args, registry):
+    def __init__(
+        self,
+        tree,
+        run,
+        fixture,
+        scenario,
+        stage,
+        adapter_revision,
+        args,
+        registry,
+        sealed_config_digests=None,
+    ):
         self.tree = tree
         self.run = run
         self.fixture = fixture
@@ -138,10 +170,35 @@ class StageContext:
         self.adapter_revision = adapter_revision
         self.args = args
         self.registry = registry
+        # The digest of each configuration file's bytes *as they were when this
+        # context checked them against `run.json`*. A stage that later re-reads
+        # one of those files to get its values reads it a second time, and the
+        # two reads are not the same act: between them the file can change, and
+        # the stage would then work under a policy the run never sealed while
+        # every other check still passed. `require_sealed_config` is the
+        # point-of-use comparison that makes the second read prove it saw the
+        # first read's bytes. Empty for a context built without one (real
+        # ingress, which reaches no configuration-driven work).
+        self.sealed_config_digests = dict(sealed_config_digests or {})
 
     @property
     def config_digest(self) -> str:
         return self.run["config_digest"]
+
+    def require_sealed_config(self, name: str, observed_sha256: str) -> None:
+        """Refuse a configuration whose bytes changed after this run bound them."""
+        sealed = self.sealed_config_digests.get(name)
+        if sealed is None:
+            raise ContractError(
+                f"this context sealed no digest for the {name} configuration, so the bytes "
+                "a stage just read cannot be proven to be the ones this run is bound to"
+            )
+        if sealed != observed_sha256:
+            raise ContractError(
+                f"the {name} configuration changed between this run's binding check and the "
+                f"read that used it: bound {sealed}, read {observed_sha256}. A stage may not "
+                "work under a policy the run never sealed"
+            )
 
     @property
     def witness_chairs(self) -> list[str]:
@@ -265,6 +322,9 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--fixture-root", default="proof")
     parser.add_argument("--models-config", default="config/models.toml")
     parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
+    parser.add_argument(
+        "--designator-padding-config", default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH)
+    )
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
     parser.add_argument("--hard-failure-config", default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH))
     parser.add_argument("--pdf-target-dpi", type=int, default=None)
@@ -426,6 +486,7 @@ def run_config_bindings(
     scenario: str,
     *,
     pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
+    designator_padding_config_path: str | Path = DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
     hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -459,6 +520,13 @@ def run_config_bindings(
         raise ContractError(
             f"the PDF render configuration binding at {pdf_render_config_path} could not be read"
         ) from error
+    try:
+        padding_config_digest = digest_bytes(Path(designator_padding_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the Designator padding configuration binding at "
+            f"{designator_padding_config_path} could not be read"
+        ) from error
     recovery_policy = load_recovery_policy(recovery_config_path)
     hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
     witness_context_config_digest = validate_witness_context_bindings(
@@ -476,6 +544,7 @@ def run_config_bindings(
                 "scenario": scenario,
                 "models": models.to_record(),
                 "pdf_render_config_sha256": pdf_render_config_digest,
+                "designator_padding_config_sha256": padding_config_digest,
                 "pdf_target_dpi_override": pdf_target_dpi,
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
@@ -493,6 +562,18 @@ def run_config_bindings(
             }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
+        # Not a run.json binding — every caller writing a run takes the three
+        # above by name. This is the record of which bytes each digest above was
+        # taken over, so a stage that re-reads one of these files for its values
+        # can prove it read what was bound (`StageContext.require_sealed_config`).
+        # Only `designator-padding` has such a point-of-use re-read today: the
+        # Door's own second read of the PDF-render policy (`door.py`) neither
+        # takes a sealed digest nor calls `require_sealed_config`, so sealing a
+        # `pdf-render` entry here would read as a closed TOCTOU window that is
+        # not actually wired shut. Not this stage's window to close.
+        "sealed_config_digests": {
+            "designator-padding": padding_config_digest,
+        },
     }
 
 
@@ -509,6 +590,15 @@ def run_config_bindings(
 # chair to a differently named role would have quietly broken it.
 DESIGNATOR_CHAIR = "designator_structure"
 PERLECTOR_CHAIR = PERLECTOR
+
+# `config/models.toml` already carries `secondary_proposer`, absent by default
+# ("no secondary proposer is configured for the offline walking skeleton") —
+# but an absence is only a recorded decision if something actually resolves the
+# role and writes that decision down. Naming it here, in the one set
+# `unaddressed_chairs` checks against, is what stops the day someone flips the
+# roster to a real detector from silently turning every run `partial`: the
+# resolution path has to exist *before* that flip, not be discovered by it.
+SECONDARY_PROPOSER_CHAIR = "secondary_proposer"
 
 
 def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
@@ -531,7 +621,11 @@ def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
     roster to `partial` for a chair that *is* accounted for, one indirection away.
     Found by CodeRabbit on pull request 16.
     """
-    addressed = set(models.witness_chairs) | {DESIGNATOR_CHAIR, PERLECTOR_CHAIR}
+    addressed = set(models.witness_chairs) | {
+        DESIGNATOR_CHAIR,
+        PERLECTOR_CHAIR,
+        SECONDARY_PROPOSER_CHAIR,
+    }
     for role in list(addressed):
         value = models.chairs.get(role)
         while isinstance(value, ChairIdentity) and value.adapter_of is not None:
@@ -837,10 +931,19 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     Designator derives every act from fixture data, and the run configuration
     seals those fixture bytes.  Real ingress intentionally stops before any
     proposal seal exists, so no unbuilt structural model is being prescribed.
+
+    The fixture's own acts are a *floor*, never a ceiling: every one must
+    appear, and the seal may also carry acts the fixture never declared. Two
+    kinds exist, and neither is fixture data, so neither can be checked against
+    it — `_verify_minted_act_rows` checks each against the one thing it *can*
+    be checked against: its own Designator evidence record, recomputed rather
+    than trusted. A **residual** act (`_publish_residual_holds`) is ink
+    conservation found that structural grouping never claimed, and is `held`. A
+    **page-fallback** act (`_publish_page_fallback`) is the predetermined crop
+    grid cut over a page the structure pass found nothing on, and is `proposed`,
+    because the whole point of cutting it is that it goes downstream to be read.
     """
     fixture_acts = context.fixture.get("act", [])
-    if not fixture_acts:
-        return
     expected = {
         act_identity(context.fixture, row): {
             "act_key": row["key"],
@@ -851,7 +954,8 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
         for row in fixture_acts
     }
     observed = {act["act_id"]: act for act in acts}
-    if set(observed) != set(expected):
+    missing = set(expected) - set(observed)
+    if missing:
         raise FatalAccounting(
             "the proposal seal expected-act denominator does not reconcile to every synthetic "
             "act bound into this run"
@@ -872,6 +976,384 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
             raise FatalAccounting(
                 f"proposed act {act_id} does not account for its declared continuation"
             )
+    # Sorted, because `_verify_residual_act_rows` raises on the *first* row that
+    # fails and a set of strings has no stable order: CPython randomises string
+    # hashing per process, so a seal carrying more than one bad extra row named a
+    # different act in the refusal on every run. The refusal was always correct
+    # and always fired; which act it accused was a coin flip, which is the kind of
+    # evidence nobody can act on twice. Found by the Opus read of this branch,
+    # which demonstrated five different orders over six keys in five runs.
+    _verify_minted_act_rows(
+        context, {act_id: observed[act_id] for act_id in sorted(set(observed) - set(expected))}
+    )
+    _verify_every_conservation_residual_is_accounted(context, observed)
+
+
+def _verify_every_conservation_residual_is_accounted(
+    context, observed: dict[str, dict[str, Any]]
+) -> None:
+    """Every residual a conservation record found must reach the denominator.
+
+    `_verify_minted_act_rows` reads seal row -> conservation record: an extra row
+    must prove itself against the reconciliation that found it. That direction
+    alone still trusts the producer completely for the rows it did *not* write.
+    A `conservation` record may declare unclaimed ink on a page while the seal
+    names no act for it, and nothing then disagrees: `_verify_proposal_seal_evidence`
+    only reconciles `region` and `hold` artifacts, so a residual that never became
+    a hold leaves no artifact to be unaccounted for, every consumer reconciles
+    perfectly, and the Designator's own `EXIT_COMPLETE` — which reads the seal's
+    rows, not the reconciliation — reports 0 over ink the stage itself measured
+    and no crop claimed.
+
+    GOVERNANCE 2 is a rule about the missing row as much as the forged one, and
+    the Designator's own docstring already promises the stronger reading: a run
+    that "found ink no crop claimed has not completed". This is that promise
+    checked at the first consumer rather than asserted by the producer.
+
+    The derivation is the minter's own (`residual_act_ordinal` over the
+    component's index in the record's deterministically ordered
+    `residual_components`, against the page the record is subject-keyed to), so
+    the two cannot drift on what a residual's identity is.
+    """
+    for page_id, record in _designator_records_by_subject(context, "conservation").items():
+        payload = record.get("payload")
+        components = payload.get("residual_components") if isinstance(payload, Mapping) else None
+        if not isinstance(components, list):
+            raise FatalAccounting(
+                f"the conservation record for page {page_id} carries no residual-component list "
+                "to reconcile the denominator against"
+            )
+        for index, component in enumerate(components):
+            bounds = component.get("bounds") if isinstance(component, Mapping) else None
+            if not isinstance(bounds, dict):
+                raise FatalAccounting(
+                    f"the conservation record for page {page_id} carries a residual at index "
+                    f"{index} with no bounds to recompute an act identity from"
+                )
+            minted = derive_act_id(page_id, residual_act_ordinal(index), bounds)
+            row = observed.get(minted)
+            if row is None or row["outcome"] != "held":
+                raise FatalAccounting(
+                    f"page {page_id}'s conservation record reconciles residual ink at index "
+                    f"{index} ({bounds}) that the proposal seal accounts for no held act for; "
+                    "ink this stage measured and no crop claimed may not leave the denominator "
+                    "silently"
+                )
+
+
+# An act identity is `act_bindings(page_id, ordinal, bounds)`, so two acts minted
+# on one page must never share an ordinal. Three classes of ordinal exist on a
+# page and they are kept disjoint here, in one place, rather than by each minter
+# knowing what the others do:
+#
+#   >= 0                          the nth region a structure pass proposed
+#   RESIDUAL_FLOOR .. -1          one conservation residual (`residual_act_ordinal`)
+#   FALLBACK_PAGE_ACT_ORDINAL     the one page-fallback act, below that floor
+#
+# The residual space used to be the *whole* negative range, which left nowhere
+# for a second minted class to live without an argument about which values were
+# "unlikely" to be reached. Bounding it below makes the fallback ordinal
+# unreachable from it by construction, and `residual_act_ordinal` refuses an
+# index that would cross the floor rather than silently minting a colliding
+# identity. The floor is far past any reachable residual count -- this stage's
+# own worst measured page reconciles to about 60,000 residual components
+# (`pipeline/2_designator/HANDOFF.md`, "Cost, and where it is unbounded") --
+# so no existing ordinal moves and none ever will in practice; the point of the
+# bound is that the disjointness is proven rather than assumed.
+RESIDUAL_ACT_ORDINAL_FLOOR: int = -(2**31)
+FALLBACK_PAGE_ACT_ORDINAL: int = RESIDUAL_ACT_ORDINAL_FLOOR - 1
+
+
+def residual_act_ordinal(index: int) -> int:
+    """The disjoint ordinal namespace a conservation-residual act's identity uses.
+
+    `identities.act_id`'s own `proposal_ordinal` is always the non-negative "nth
+    region a structure pass proposed on a page" — a residual was never such a
+    proposal, so it cannot borrow that ordinal space without risking collision
+    with a real one, present or future. `-(index + 1)` is disjoint from every
+    non-negative ordinal by construction rather than by convention, so no
+    structure pass — this fixture's or a real one's — can ever mint a genuine
+    proposal whose identity collides with a residual's. `index` is the
+    residual's position in `conservation.reconcile`'s own `residual_components`
+    list, which is already deterministically ordered (top, then left) by the
+    shared `structure.label_components`, so the same page reconciles to the
+    same ordinal on every run.
+
+    The minting code and this module's verification of what was minted call the
+    same function, so the two cannot drift on what `-(index + 1)` means.
+
+    Bounded below by `RESIDUAL_ACT_ORDINAL_FLOOR` so the page-fallback act's own
+    reserved ordinal cannot be reached from here. An index that would cross the
+    floor is refused rather than allowed to mint an identity that could collide
+    with a fallback act on the same page.
+    """
+    if index < 0:
+        raise ContractError(f"a residual index {index} is negative and names no residual")
+    ordinal = -(index + 1)
+    if ordinal < RESIDUAL_ACT_ORDINAL_FLOOR:
+        raise ContractError(
+            f"residual index {index} is past the residual ordinal floor "
+            f"{RESIDUAL_ACT_ORDINAL_FLOOR}; a page this speckled has to be refused as a page "
+            "rather than accounted for with an ordinal that collides with another minted act"
+        )
+    return ordinal
+
+
+def fallback_page_act_key(page_ordinal: int) -> str:
+    """The human-readable label of the one act a page's fallback crops belong to.
+
+    For a reviewer's eye and for `expected_acts`'s duplicate-key refusal; what
+    keeps this act's *identity* from colliding with anything is
+    `FALLBACK_PAGE_ACT_ORDINAL`, not this string. Named here beside the ordinal
+    rather than in the Designator so the producer and this module's verification
+    of what was produced cannot spell it differently.
+    """
+    return f"page-fallback:{page_ordinal}"
+
+
+def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> None:
+    """Every expected-act row beyond the fixture's own denominator.
+
+    Two units the Designator may add beyond what the fixture declares, and no
+    others. Both exist for GOALS 1's "a missed act is worse than a poorly read
+    act", and neither may be trusted merely because the seal's own producer
+    wrote it down — that is the same reasoning `expected_acts` already applies
+    to every fixture-derived row above.
+
+    A **conservation residual** is ink no structural pass claimed at all. It is
+    `held` from the moment it exists, never `proposed`: nothing witnessed it and
+    nothing read it, so it may not carry a continuation either, and its identity
+    must recompute from facts a reviewer can check against the conservation
+    record that found it.
+
+    A **page-fallback** act is the predetermined crop grid cut over a page the
+    structure pass found no ink on (Tyrel, 2026-08-11: "If the designator sees
+    no text it should default to predetermined crops ... and send the crops down
+    stream to be read by everything"). It is `proposed`, because cutting crops
+    nothing will read would be the pointless half of that ruling, and its
+    identity must recompute against the page's own `structure-status` record,
+    which is what independently says the structure pass found nothing there.
+
+    The evidence index is built once for the whole set rather than per row.
+    Every residual component on a page mints one of these rows, and a speckled
+    or foxed page reconciles to tens of thousands of them, so a per-row walk of
+    the stage's whole artifact tree makes ordinary input quadratic in itself.
+    """
+    holds_by_subject = _designator_records_by_subject(context, "hold") if extra_rows else {}
+    fallbacks_by_subject = (
+        _designator_records_by_subject(context, "page-fallback") if extra_rows else {}
+    )
+    for act_id, row in extra_rows.items():
+        if row["has_continuation"]:
+            raise FatalAccounting(
+                f"act {act_id} extends the denominator beyond the fixture but claims a "
+                "continuation; a residual has no declared continuation to claim, and neither "
+                "has a page-fallback act"
+            )
+        if row["outcome"] == "proposed":
+            _verify_page_fallback_act_row(context, act_id, row, fallbacks_by_subject)
+            continue
+        if row["outcome"] != "held":
+            raise FatalAccounting(
+                f"act {act_id} is not declared in the sealed fixture and is neither 'held' nor "
+                "'proposed'; the only units that may extend the denominator beyond the fixture "
+                "are a conservation residual and a page-fallback act"
+            )
+        hold = holds_by_subject.get(act_id)
+        if hold is None:
+            raise FatalAccounting(
+                f"act {act_id} extends the denominator beyond the fixture but the Designator "
+                "published no hold record for it"
+            )
+        payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
+        ordinal, bounds = payload.get("residual_ordinal"), payload.get("residual_bounds")
+        if (
+            not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or ordinal >= 0
+            or not isinstance(bounds, dict)
+        ):
+            raise FatalAccounting(
+                f"act {act_id}'s hold record carries no valid residual ordinal and bounds to "
+                "recompute its identity from"
+            )
+        try:
+            verify_identity(act_id, "act", act_bindings(row["page_id"], ordinal, bounds))
+        except IdentityRefusal as error:
+            raise FatalAccounting(
+                f"act {act_id} does not verify against the residual ordinal and bounds its own "
+                f"hold record names: {error}"
+            ) from error
+        _verify_residual_traces_to_conservation(
+            context, act_id, row["page_id"], hold, ordinal, bounds
+        )
+
+
+def _verify_page_fallback_act_row(
+    context, act_id: str, row: dict[str, Any], fallbacks_by_subject: dict[str, dict[str, Any]]
+) -> None:
+    """The one extra row that may be `proposed`, checked against its own evidence.
+
+    A page-fallback act is the only unit outside the fixture that reaches the
+    witnesses and the Perlector, so it is the one whose provenance most needs to
+    be recomputed rather than believed. Two independent things are checked, and
+    the second is what stops a fabricated one: the identity must derive from
+    this page and the one reserved fallback ordinal over the page rectangle its
+    own record declares, and that record's single input must be the page's
+    `structure-status` — read through the digest-checked hop, not by address —
+    saying the structure pass genuinely fell back to tiles on that page. A
+    fallback act minted over a page whose structure pass *did* detect something
+    therefore refuses here, which is exactly the claim-about-what-was-measured
+    GOVERNANCE 10 forbids.
+    """
+    record = fallbacks_by_subject.get(act_id)
+    if record is None:
+        raise FatalAccounting(
+            f"act {act_id} extends the denominator beyond the fixture as a proposed act but the "
+            "Designator published no page-fallback record for it; it is not 'held' either, so it "
+            "is not a conservation residual"
+        )
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    bounds = payload.get("page_bounds")
+    ordinal = row["page_ordinal"]
+    expected_key = fallback_page_act_key(ordinal)
+    if (
+        not isinstance(bounds, dict)
+        or payload.get("act_key") != row["act_key"]
+        or payload.get("act_key") != expected_key
+        or payload.get("page_id") != row["page_id"]
+        or payload.get("page_ordinal") != ordinal
+        or payload.get("fallback_ordinal") != FALLBACK_PAGE_ACT_ORDINAL
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s page-fallback record does not carry the page id, ordinal, reserved "
+            "fallback ordinal, derived fallback key, and page rectangle it must bind"
+        )
+    sources = [
+        source
+        for source in context.run.get("source_manifest", [])
+        if source.get("ordinal") == ordinal
+    ]
+    if len(sources) != 1:
+        raise FatalAccounting(
+            f"act {act_id}'s page ordinal {ordinal} does not name exactly one sealed source"
+        )
+    page = context.tree.read_artifact(
+        EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", row["page_id"])
+    )
+    verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    width, height = dimensions(page_bytes)
+    full_page_bounds = {"x": 0, "y": 0, "w": width, "h": height}
+    if bounds != full_page_bounds:
+        raise FatalAccounting(
+            f"act {act_id}'s page-fallback rectangle {bounds} is not the complete sealed page "
+            f"rectangle {full_page_bounds}"
+        )
+    try:
+        verify_identity(
+            act_id, "act", act_bindings(row["page_id"], FALLBACK_PAGE_ACT_ORDINAL, bounds)
+        )
+    except IdentityRefusal as error:
+        raise FatalAccounting(
+            f"act {act_id} does not verify against the reserved page-fallback ordinal and the "
+            f"page rectangle its own record names: {error}"
+        ) from error
+    inputs = record.get("inputs")
+    if not isinstance(inputs, list) or len(inputs) != 1:
+        raise FatalAccounting(
+            f"act {act_id}'s page-fallback record does not reference exactly one "
+            "structure-status artifact to check its premise against"
+        )
+    status = context.tree.read_artifact_reference(
+        inputs[0], stage=DESIGNATOR, kind="structure-status", subject_id=row["page_id"]
+    )
+    status_payload = status.get("payload")
+    evidence = (
+        status_payload.get("structure_evidence") if isinstance(status_payload, Mapping) else None
+    )
+    if evidence != "fallback-tiles":
+        raise FatalAccounting(
+            f"act {act_id} is a page-fallback act, but page {row['page_id']}'s own "
+            f"structure-status records its structural evidence as {evidence!r} rather than "
+            "'fallback-tiles'; a predetermined grid may not be minted over a page the "
+            "structure pass actually found regions on"
+        )
+
+
+def _verify_residual_traces_to_conservation(
+    context, act_id: str, page_id: str, hold: dict[str, Any], ordinal: int, bounds: dict[str, Any]
+) -> None:
+    """A residual's declared bounds must exist in the reconciliation that found it.
+
+    The check above only proves the hold is *internally* self-consistent — its
+    own `residual_ordinal` and `residual_bounds` recompute the act id they sit
+    beside. That alone would pass a residual invented from nothing, provided
+    whoever invented it also recomputed the identity correctly: nothing yet
+    opens the `conservation` artifact the hold's own `inputs` already
+    reference and confirms a residual component with those bounds is actually
+    in it. `hold_residual_act` publishes every residual hold with exactly one
+    input, the conservation record it was minted from; reading through that
+    reference — not by address, but through the digest-checked hop
+    `RunTree.read_artifact_reference` provides — is what makes "checked
+    against the conservation record that found it" true rather than aspirational.
+    """
+    inputs = hold.get("inputs")
+    if not isinstance(inputs, list) or len(inputs) != 1:
+        raise FatalAccounting(
+            f"act {act_id}'s hold record does not reference exactly one conservation "
+            "artifact to recompute its residual from"
+        )
+    conservation = context.tree.read_artifact_reference(
+        inputs[0], stage=DESIGNATOR, kind="conservation", subject_id=page_id
+    )
+    # Every step of this lookup is checked before it is taken, and all of it lands
+    # on the one named refusal below. Read straight through, a conservation record
+    # whose payload was not a mapping or whose indexed row was not a mapping raised
+    # `AttributeError` out of an accounting check — a traceback where invariant #10
+    # promises a named fatal.
+    #
+    # **The lower bound is for a corrupted ordinal, not a short list**, and the
+    # distinction cost a vacuous test before it was understood. `residual_act_ordinal`
+    # is `-(index + 1)` over a non-negative index, so `index = -ordinal - 1` recovers
+    # a non-negative index for every *well-formed* record and `index >= len(components)`
+    # bounds it correctly. A hold whose sealed `ordinal` has been corrupted to a
+    # positive value is the reachable case: it makes `index` negative, which
+    # `index >= len(...)` never catches, and `components[-3]` on a short list is an
+    # `IndexError`. Reaching it in a test needs the ordinal itself corrupted after
+    # minting — the minting helper cannot produce one, because it calls
+    # `residual_act_ordinal`, which refuses. Left uncovered and named rather than
+    # covered by a test that passes against the unfixed code, which is what a first
+    # attempt at one did. Found by CodeRabbit; the reachability corrected here.
+    payload = conservation.get("payload")
+    components = payload.get("residual_components") if isinstance(payload, Mapping) else None
+    index = -ordinal - 1
+    if (
+        not isinstance(components, list)
+        or not -len(components) <= index < len(components)
+        or not isinstance(components[index], Mapping)
+        or components[index].get("bounds") != bounds
+    ):
+        raise FatalAccounting(
+            f"act {act_id}'s hold declares a residual the conservation record it references "
+            "does not carry at that ordinal; an extra row must trace to the reconciliation "
+            "pass that actually found it, not merely be self-consistent with its own hold"
+        )
+
+
+def _designator_records_by_subject(context, kind: str) -> dict[str, dict[str, Any]]:
+    """Every Designator record of one kind, by the act it is evidence for.
+
+    Read the same way `_verify_proposal_seal_evidence` reads every act's
+    evidence below, but ahead of it: the denominator check runs first, so an
+    extra row must already name its own real evidence record before that later,
+    more general evidence check ever sees it.
+    """
+    return {
+        entry["subject_id"]: context.tree.read_artifact(DESIGNATOR, kind, entry["artifact_id"])
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == kind
+    }
 
 
 def _verify_proposal_seal_evidence(
@@ -955,6 +1437,7 @@ def open_context(
         fixture,
         args.scenario,
         pdf_render_config_path=args.pdf_render_config,
+        designator_padding_config_path=args.designator_padding_config,
         pdf_target_dpi=args.pdf_target_dpi,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
@@ -988,6 +1471,7 @@ def open_context(
         adapter_revision=adapter_recipe_for(run, stage),
         args=args,
         registry=registry,
+        sealed_config_digests=bindings["sealed_config_digests"],
     )
 
 
