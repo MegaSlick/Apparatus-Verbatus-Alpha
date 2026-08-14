@@ -1342,6 +1342,12 @@ class OperatorSurface:
         payload = record.get("payload")
         if not isinstance(payload, dict) or not isinstance(payload.get("aggregate"), dict):
             raise ValueError("Armarium export record has no usable aggregate")
+        # The list-valued members every consumer counts or walks: a string here
+        # would render a confident wrong page count into a receipt, and a number
+        # would kill export with a bare TypeError after the bundle exists.
+        for member in ("pages", "delivered", "review"):
+            if member in payload and not isinstance(payload[member], list):
+                raise ValueError(f"Armarium export record's {member} is not a list")
         return payload
 
     def _write_base_armarium_bundle(self, run_root: Path, run_id: str, destination: Path) -> None:

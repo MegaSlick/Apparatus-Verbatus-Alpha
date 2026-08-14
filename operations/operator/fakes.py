@@ -74,6 +74,13 @@ class LocalFixtureObjectStore(TransferTarget):
 
     def __init__(self, root: str | Path, *, fail_once_for: str | None = None) -> None:
         self.root = Path(root)
+        # Owner-only, at creation: the store moves real submitted material, and
+        # a private root is what makes the per-key O_NOFOLLOW checks sufficient
+        # — no other local account can plant a link between a validation and an
+        # open. (Descriptor-relative walking of every component would defend
+        # against the owner racing themselves, which is not this seam's threat.)
+        self.root.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.root, 0o700)
         self.fail_once_for = fail_once_for
         self.puts: list[str] = []
 

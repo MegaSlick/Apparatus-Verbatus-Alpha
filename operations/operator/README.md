@@ -16,10 +16,12 @@ installed. All three run the same code.
 
 ## Read this first: what this is today
 
-This is a **rehearsal**. It refuses to contact a cloud provider at all — the prices, the
-pod, the volume, the boot checks and the upload target are local stand-ins, so you can
-practise the whole flow without a credential and without a bill. Nothing here has ever
-started, inspected or paid for a real machine.
+This is a **rehearsal**. It refuses to start, inspect, or pay for a pod — the prices, the
+pod, the boot checks and the default upload target are local stand-ins, so you can
+practise the whole flow without a bill. Nothing here has ever started, inspected or paid
+for a real machine. The one exception is the explicitly named
+`upload --network-volume`, which really does send files to a RunPod network volume (and
+only that): see the status line above and the upload section below.
 
 That is deliberate, and it is why every screen says "fixture" where a real run would say
 a real thing. The first real run is a separate, separately approved step.

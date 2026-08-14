@@ -1451,6 +1451,55 @@ def test_a_run_whose_recorded_aggregate_has_no_status_fails_as_run_failed_not_un
     assert "status" in failure.value.render()
 
 
+def test_a_non_list_pages_record_is_a_named_run_failure_not_a_character_count(
+    tmp_path: Path,
+) -> None:
+    """A string at `pages` must never become a confident wrong page count.
+
+    len() of a string counts characters, and that number would go on the one
+    line that says whether a parish was accounted for — and into the milestone
+    the phone receives.
+    """
+
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=0, stdout="", stderr=""
+    )
+    surface._armarium_export = lambda run_root, run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": "not a list of page records",
+        "delivered": [],
+        "expected_acts": 2,
+    }
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="string-pages")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert "not a list" in (failure.value.detail or "")
+
+
+def test_the_export_reader_refuses_non_list_members_before_any_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real `_armarium_export` guard, driven with a malformed artifact.
+
+    Every other export test monkeypatches `_armarium_export` itself, so the
+    validation inside it would be dead code to the suite without this.
+    """
+
+    surface = _surface(tmp_path)
+    import operations.operator.surface as surface_module
+
+    monkeypatch.setattr(
+        surface_module.RunTree,
+        "read_artifact",
+        lambda self, stage, kind, identity: {"payload": {"aggregate": {}, "pages": "not a list"}},
+    )
+    with pytest.raises(ValueError, match="pages is not a list"):
+        surface._armarium_export(tmp_path, "r1")
+
+
 def test_a_held_run_raises_run_held_not_run_failed(
     tmp_path: Path,
 ) -> None:

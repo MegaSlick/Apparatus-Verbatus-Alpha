@@ -246,8 +246,14 @@ class DescriptorStore:
     def _lock(self) -> Iterator[None]:
         """Serialize the descriptor's read-modify-write across operator processes."""
 
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.lock_path.open("a+b")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            handle = self.lock_path.open("a+b")
+        except OSError as error:
+            # Named as what it is: a descriptor that cannot be locked cannot be
+            # safely written, and a bare OSError here would escape record() as
+            # an unclassified traceback on the money path.
+            raise RecordError("the operator descriptor lock could not be opened") from error
         try:
             try:
                 import fcntl
