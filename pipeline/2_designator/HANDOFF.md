@@ -223,13 +223,30 @@ different words at line 319 but is not where this exact sentence lives;
 corrected here after a second window read).
 
 ```text
-page_ordinal
-total_ink_pixel_count, claimed_pixel_count, residual_pixel_count
+page_ordinal, ink_measurable, reason | null
+total_ink_pixel_count | null, claimed_pixel_count | null, residual_pixel_count | null
 residual_components = [{bounds, pixel_count, review_priority}]
 ```
 
 `claimed_pixel_count + residual_pixel_count == total_ink_pixel_count` always,
-by construction. **Every residual region is accounted regardless of size**:
+by construction, whenever `ink_measurable` is true.
+
+**`ink_measurable: false` is a reconciliation that could not happen, published
+rather than skipped.** A page whose background `infer_background` refuses has no
+threshold that separates ink from paper, so there is nothing honest to count:
+the three counts are `null`, `residual_components` is empty, `reason` says why,
+and the record's outcome is `held`. The stage used to substitute the page's own
+mean as a divider so the accounting "had something defensible" — but on the
+inverted scan `test_structure.py` uses (80% of the page at 30, 20% at 220) that
+divider is 68, so every pixel of the *dark paper* counts as ink: four fifths of
+the page reconciles as unclaimed ink and mints a held act over the background,
+at scale. A count taken at a guessed divider is a guess reported as a
+measurement, which is exactly GOVERNANCE 10's "a metric that cannot be measured
+is a failure, not a pass". The page's crops are still cut and still go
+downstream (`kind="page-fallback"`); what is refused is the claim to have
+measured them. The secondary scan is skipped on such a page for the same reason
+— it is the same threshold at a more sensitive margin, so at a guessed divider
+it publishes rescue crops over paper. **Every residual region is accounted regardless of size**:
 `review_priority` ("high"/"low") orders which residual a reviewer looks at
 first and never decides whether one is recorded at all — deleting the priority
 threshold would only reorder the list, never shorten it.
@@ -408,15 +425,27 @@ evidence.
 
 ## Exit code
 
-`EXIT_COMPLETE` (0) only when the seal holds nothing, no page was held, and no
-secondary rescue awaits review. Anything held — an act, a page, ink no
-authoritative crop claimed, or a non-authoritative rescue — exits `EXIT_HELD` (3).
-The exit code is the one signal an operator reads without opening the tree, and
-a 0 over a hold is a partial result wearing "complete" (GOVERNANCE 2). Act
-holds are computed from the seal's own rows; secondary holds are computed from
-the rescue records published in the same pass because that evidence deliberately
-does not enter the authority. A recovery invocation cuts one requested crop and
-exits 0 or fails; it publishes no holds.
+`EXIT_COMPLETE` (0) only when the seal holds nothing, no page was held, no
+secondary rescue awaits review, and every sealed page's ink was actually
+measured. Anything held — an act, a page, ink no authoritative crop claimed, or
+a non-authoritative rescue — exits `EXIT_HELD` (3), and so does a page whose
+background could not be inferred. The exit code is the one signal an operator
+reads without opening the tree, and a 0 over a hold is a partial result wearing
+"complete" (GOVERNANCE 2). Act holds are computed from the seal's own rows;
+secondary holds are computed from the rescue records published in the same pass
+because that evidence deliberately does not enter the authority. A recovery
+invocation cuts one requested crop and exits 0 or fails; it publishes no holds.
+
+**An unmeasured page is not a held page, and the distinction is load-bearing.**
+Nothing is pulled out: no act is held, every declared act on it is still cut,
+and its predetermined crops are cut and sent downstream, which is what Tyrel's
+2026-08-11 ruling requires ("everything gets read every time nothing gets pulled
+out or held"). What is withheld is the *run's* claim to have completed, because
+conservation — the reconciliation GOVERNANCE 2 means by "unless everything
+reconciles" — could not run on that page. Cutting a page into predetermined
+crops because the structure pass found nothing on it does **not** by itself hold
+the run: there the reconciliation ran and honestly found no ink, which is a
+complete result.
 
 ## Run binding
 
@@ -461,8 +490,26 @@ a Testimonium actually names them. Recensor, Archetypus, and Armarium use the
 proposal seal as the conserved act denominator; none may manufacture a new act
 or choose among competing crops.
 
+A **page-fallback** act is read exactly like any other proposed act: its tiles
+are ordinary `origin="proposal"` regions of one act in the proposal seal, so the
+Attestatores witness each one and the Perlector reads through all of them,
+without any of them knowing this act came from a grid rather than a detection.
+That is the point — the crops exist so the strong instruments can decide whether
+the page is blank. Two limits of the *walking skeleton* rather than of the
+mechanism, named because they are only visible from downstream: no shipped
+fixture page is ink-free, so no scenario in this tree exercises the path end to
+end (proving it through a real orchestrator run needs an ink-free fixture page,
+which moves every digest in the tree); and the skeleton's fake Perlector reads
+its text out of the fixture by act key, so an act the fixture never declared has
+no declared reading for it to return. Both are integration decisions, recorded
+in this build's report rather than settled here.
+
 `act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop` and
-`structure-status` have no consumer downstream of this stage today. The two
+`structure-status` have no consumer downstream of this stage today.
+`structure-status` is the exception in one direction only: it is not *read* by a
+later stage, but `common/stage.py::_verify_page_fallback_act_row` reads it back
+within this stage's own denominator check, as the independent evidence that a
+page-fallback act's premise is true. The two
 secondary kinds are explicitly held for review and make the Designator exit
 held rather than being mistaken for accepted authority. No other stage reads
 them, and every
@@ -503,6 +550,13 @@ limit rather than a bug to close by dropping regions: whatever bounds it must
 bound the *page* (refuse a page this speckled, visibly and as a hold) rather
 than the accounting over one. Named here rather than discovered at scale.
 
+There is now one bound on it, and it is not that one: `residual_act_ordinal`
+refuses an index past `RESIDUAL_ACT_ORDINAL_FLOOR` (-2^31), which exists so the
+page-fallback act's reserved ordinal sits below the residual space and the two
+are disjoint by construction. It is nine orders of magnitude past the ~60,000
+above, so it bounds nothing anyone will reach; it is a proof of disjointness,
+not an operating limit, and the paragraph above is still the real one.
+
 ## What this handoff does not settle
 
 **Continuation ownership.** Spec 06's own test 3 and spec 09 both say the
@@ -541,28 +595,45 @@ is verified "against the intake schema **as written in Spec 07's text**". This
 is a named gap awaiting a real structure model and that intake schema, not an
 oversight.
 
-**`infer_background`'s majority-paper assumption is unvalidated, not enforced.**
-`structure.infer_background` takes a decoded page's single most common pixel
-value as its paper colour, and `run.py` caches that one value and feeds it,
-unchanged, into both `structure.primary_scan`/`secondary_scan` *and*
-`conservation.reconcile`. A page where ink genuinely is the numeric majority —
-heavy staining, bleed-through, an inverted or badly under-exposed scan — gets
-its ink classified as background: the structure pass finds no components, and
-conservation, sharing the same wrong background, reconciles to
-`total_ink_pixel_count == 0` and mints no residual. On a page with a declared
-act, `_match_structural_group` happens to catch this as a hard `ContractError`
-(no detected group covers the declared bounds); on a page with **no** declared
-act — the exact case conservation exists to cover — nothing catches it, and
-the run can exit `EXIT_COMPLETE` having silently accounted for zero ink on a
-visibly inked page. This build found the gap (2026-08-10 review) and did not
-close it: a real fix needs either a background heuristic that does not depend
-solely on global modal frequency (border-sampling was considered, but is
-itself an uncalibrated guess for a photographed register page) or a
-cross-check reconciling the two independent scans use of it, and this walking
-skeleton's ink-scan is explicitly a stand-in for a real structure model, not
-a hardened production detector — calibrating one is the same kind of decision
-`padding_calibration.py` already declines to make without a gold set. Named
-here rather than fixed quietly or left undiscovered.
+**`infer_background`'s majority-paper assumption is now checked from both
+sides, and a page that fails the check is read but not counted.** The premise is
+that a scanned register page is overwhelmingly paper, so its modal pixel is the
+paper colour. Two shapes break it and both are refusals now. A page where ink is
+the numeric majority — heavy staining, bleed-through, an inverted or
+under-exposed scan — has a mode *darker than its own mean*, caught by
+`mode * count >= total`. A uniformly dark page has `mode == mean`, so that
+comparison passes exactly; it is caught instead by requiring the mode to be
+light enough to express an ink threshold at all (`mode >= PRIMARY_MARGIN`),
+because below that no 8-bit sample could ever be counted as ink and "zero ink"
+would be arithmetic rather than a measurement. Solid black used to infer a
+background of 0, threshold -20, and reconcile to zero ink on a visibly black
+page — and on a page with no declared act, nothing caught it and the run exited
+`EXIT_COMPLETE`.
+
+What follows a refusal is deliberately *not* a substituted threshold. The page
+is cut into predetermined crops and sent downstream to be read, its
+`structure-status` records `background_source: "not-inferable"`, its
+`conservation` record carries `ink_measurable: false` with null counts, and the
+run exits `EXIT_HELD`. **The cost, stated plainly:** on such a page this stage
+contributes no ink accounting at all, so the independent coverage proof that
+would catch a missed region there does not run, and the only thing standing
+between that page and a missed act is that every part of it was cut and sent to
+be read. That is a real reduction in this stage's own instrumentation, accepted
+because the alternative — the page-mean substitution that shipped before — was
+worse in a way that is hard to see: it does not fail, it reports. On the
+inverted scan above it classifies dark paper as ink and mints held acts over
+background at page scale, and a reviewer reading `residual_pixel_count` has no
+way to know the number is meaningless.
+
+What would close it properly is a background heuristic that does not depend
+solely on global modal frequency, or explicit inverted-scan handling that scans
+for pixels *lighter* than the paper. Border-sampling was considered and is
+itself an uncalibrated guess for a photographed register page; inversion
+handling is a real feature with real calibration risk, and this walking
+skeleton's ink-scan is explicitly a stand-in for a real structure model rather
+than a hardened production detector — calibrating one is the same kind of
+decision `padding_calibration.py` already declines to make without a gold set.
+Named here rather than decided by a guess.
 
 **A conservation residual's reported bounds can span claimed territory.**
 `conservation.reconcile` labels connected components over the *residual*

@@ -812,24 +812,35 @@ def _analyze_page(cache: dict, context, ordinal: int, page_record: dict) -> dict
     This is the genuinely visual half of "may use textual as well as visual
     cues" (ARCHITECTURE), run for real on the page's own decoded pixels —
     never assumed, never a fixture value standing in for it.
+
+    A page whose background cannot be inferred is the one case where that pass
+    cannot run at all, and the honest answer is two facts, not one. **The page
+    is still cut**: the predetermined grid below covers it and its crops go
+    downstream, because Tyrel ruled on 2026-08-11 that "everything gets read
+    every time nothing gets pulled out or held" and this stage's single
+    threshold is the weakest instrument in the pipeline. **And its ink is not
+    measured**: `background` stays `None`, no scan runs, and
+    `_publish_conservation_and_secondary` records a reconciliation that could
+    not happen rather than one over a substituted divider. The two are separable
+    and were previously conflated by taking the page's own mean as a stand-in,
+    which is a guess wearing a measurement's name (see
+    `structure.BackgroundInferenceRefusal` for what that guess actually did to
+    an inverted scan).
     """
     if ordinal not in cache:
         try:
             width, height, rows, background = page_pixels(context, page_record)
             background_source = "inferred-modal"
         except structure.BackgroundInferenceRefusal:
-            # The modal pixel is not this page's paper, so it cannot be the
-            # threshold. That does not take the page out of the run: Tyrel,
-            # 2026-08-11, "everything gets read every time nothing gets pulled
-            # out or held". The page's own mean is used as an honest divider so
-            # the ink accounting has something defensible, the grid below cuts
-            # the crops regardless, and the source is recorded so nothing
-            # downstream reads this as a found background.
             page_bytes = _read_checked_page_bytes(context, page_record)
             width, height, rows = decode_grayscale_png(page_bytes)
-            background = structure.page_mean(width, height, rows)
-            background_source = "page-mean-fallback"
-        components = structure.primary_scan(width, height, rows, background=background)
+            background = None
+            background_source = "not-inferable"
+        components = (
+            []
+            if background is None
+            else structure.primary_scan(width, height, rows, background=background)
+        )
         groups = grouping.group_page(components, width, height)
         # **A page the structure pass found nothing on is cut anyway.** Tyrel
         # ruled 2026-08-11: "If the designator sees no text it should default to
@@ -1049,6 +1060,13 @@ def _publish_secondary_proposals(
         # Nothing to add: the secondary proposer is explicitly absent, and its
         # absence changes no authority decision here either -- there is simply
         # no additive recall pass to run.
+        return False
+    if analysis["background"] is None:
+        # The secondary scan is the same threshold at a more sensitive margin,
+        # so a page with no inferable background gives it nothing to be
+        # sensitive about. Running it at a substituted divider would publish
+        # rescue crops over paper, which is the additive-recall pass producing
+        # noise rather than recall.
         return False
     candidates = structure.secondary_scan(
         analysis["width"], analysis["height"], analysis["rows"], background=analysis["background"]
@@ -1331,16 +1349,45 @@ def _publish_conservation_and_secondary(
     with them. A residual left inside the conservation artifact alone is an
     audit-trail entry nothing downstream reads; as a seal row it is a unit this
     run accounts for exactly as it accounts for a page that never sealed.
+
+    **A page whose background could not be inferred reconciles nothing**, and
+    says so instead of reporting counts taken at a substituted threshold. There
+    is no honest divider to rescan at: the page's own mean classifies dark paper
+    as ink on an inverted scan, so the "reconciliation" would report four fifths
+    of the page as unclaimed ink and mint a held act over the background. The
+    record is published either way, with `ink_measurable` saying which kind it
+    is, because a page with no conservation record at all is the silent gap this
+    artifact exists to close. Its crops were still cut and still go downstream
+    (`_publish_page_fallback`); what is refused is the claim to have measured
+    them.
     """
-    result = conservation.reconcile(
-        analysis["width"],
-        analysis["height"],
-        analysis["rows"],
-        background=analysis["background"],
-        claimed_bounds=[entry["bounds"] for entry in claimed],
+    measurable = analysis["background"] is not None
+    result = (
+        conservation.reconcile(
+            analysis["width"],
+            analysis["height"],
+            analysis["rows"],
+            background=analysis["background"],
+            claimed_bounds=[entry["bounds"] for entry in claimed],
+        )
+        if measurable
+        else {
+            "total_ink_pixel_count": None,
+            "claimed_pixel_count": None,
+            "residual_pixel_count": None,
+            "residual_components": [],
+        }
     )
     conservation_payload = {
         "page_ordinal": ordinal,
+        "ink_measurable": measurable,
+        "reason": None
+        if measurable
+        else (
+            "this page's background could not be inferred, so it has no threshold to "
+            "separate ink from paper and its ink was not measured; a count taken at a "
+            "substituted divider would be a guess reported as a measurement"
+        ),
         "total_ink_pixel_count": result["total_ink_pixel_count"],
         "claimed_pixel_count": result["claimed_pixel_count"],
         "residual_pixel_count": result["residual_pixel_count"],
@@ -1350,7 +1397,7 @@ def _publish_conservation_and_secondary(
     published = context.publish(
         kind="conservation",
         subject_id=page_identity(context.fixture, ordinal),
-        outcome="proposed",
+        outcome="proposed" if measurable else "held",
         inputs=[context.input_ref(page_record["payload"]["image_path"])],
         payload=conservation_payload,
     )
@@ -1610,7 +1657,25 @@ def initial_pass(context) -> bool:
     # opening the tree, and a 0 over a hold is a partial result wearing
     # "complete" (GOVERNANCE 2). Act holds come from the seal itself; secondary
     # holds deliberately sit outside that authority, so they arrive separately.
-    return any(row["outcome"] == "held" for row in expected) or bool(failures) or secondary_held
+    #
+    # So does a page whose ink could not be measured at all. GOVERNANCE 2 refuses
+    # "complete" "unless everything reconciles", and conservation is the
+    # reconciliation: a page it could not run on has not reconciled, whatever the
+    # seal's own rows say. This is not the same as holding the page — nothing was
+    # pulled out, every act on it was still cut, and its predetermined crops still
+    # go downstream to be read, which is what Tyrel's 2026-08-11 ruling requires.
+    # What is withheld is the run's claim to have completed, not the page.
+    unmeasured = any(
+        analysis["background"] is None
+        for ordinal, analysis in page_cache.items()
+        if ordinal not in failures
+    )
+    return (
+        any(row["outcome"] == "held" for row in expected)
+        or bool(failures)
+        or secondary_held
+        or unmeasured
+    )
 
 
 def recovery_pass(context, act_id: str, request_id: str) -> None:

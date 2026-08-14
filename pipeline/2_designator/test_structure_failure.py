@@ -248,7 +248,7 @@ def test_nothing_downstream_reports_the_lost_page_as_a_success(structure_failure
     assert len(entries) == seal["count"] == len(export["review"])
 
 
-# --- a page whose background cannot be inferred is held, never dropped ----------
+# --- a page whose background cannot be inferred: read, but never claimed ---------
 
 
 def _run_program(program: str, root):
@@ -288,12 +288,20 @@ def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     there is text on it. This stage's one threshold is the weakest instrument in
     the pipeline and it does not get to end a page's life.
 
-    **What this test does not drive**, named because its previous name claimed
-    it did: the refusal it forces changes only *how the background value is
-    obtained*. The page's real ink is still there, so `primary_scan` still finds
-    components, `group_page` still returns groups, and the fallback grid never
-    fires. The tests below drive that mechanism, over a page with genuinely no
-    ink on it.
+    **Two facts, and this test keeps them apart.** Nothing is pulled out and
+    nothing is held: no act is held, every declared act is still cut, and the
+    page's own predetermined crops are cut too. And the *run* does not claim to
+    have completed, because conservation could not run on this page and
+    GOVERNANCE 2 refuses "complete" "unless everything reconciles". Holding a
+    page out of reading is what the ruling forbids; withholding the run's
+    completeness claim over a measurement that did not happen is what
+    GOVERNANCE 2 and 10 require, and the two are different acts.
+
+    Previously the page's own mean was substituted as a divider so the
+    accounting "had something defensible". On the inverted scan
+    `test_structure.py` uses -- 80% at 30, 20% at 220 -- that divider is 68, and
+    every pixel of the dark paper counts as ink: four fifths of the page
+    reconciles as unclaimed ink and mints a held act over the background.
     """
 
     root = tmp_path / "runs"
@@ -302,12 +310,7 @@ def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
     designator = _load_designator()
-    from common.stage import open_context, stage_parser
-
-    args = stage_parser("background refusal test").parse_args(
-        ["--run-root", str(root), "--run-id", "r", "--scenario", "happy"]
-    )
-    context = open_context(args, designator.DESIGNATOR)
+    context = _designator_context(root, designator)
 
     real_infer = designator.structure.infer_background
     refused_pages = []
@@ -325,27 +328,84 @@ def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     held = designator.initial_pass(context)
 
     assert refused_pages, "the test never drove the refusal it is named for"
-    assert held is False, (
-        "a page that could not be thresholded must not put the run into a hold: "
-        "everything gets read, nothing gets pulled out or held"
+    assert held is True, (
+        "a page whose ink could not be measured has not reconciled, so the run may not "
+        "report itself complete over it"
     )
 
-    def _artifact_payloads(kind):
-        return [
-            context.tree.read_artifact(DESIGNATOR, kind, entry["artifact_id"])["payload"]
-            for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
-            if entry["kind"] == kind
-        ]
-
-    holds = _artifact_payloads("hold")
+    holds = _payloads(context, "hold")
     assert holds == [], f"nothing may be held for this page, got {holds}"
 
-    seal = _artifact_payloads("proposal-seal")[0]
+    seal = _payloads(context, "proposal-seal")[0]
     outcomes = {row["act_key"]: row["outcome"] for row in seal["expected_acts"]}
     assert "held" not in outcomes.values(), f"no act may be held, got {outcomes}"
+    assert "page-fallback:1" in outcomes, (
+        "the page could not be scanned, so it is cut into predetermined crops and those "
+        "crops must reach the denominator that decides what is read"
+    )
 
-    regions = _artifact_payloads("region")
+    regions = _payloads(context, "region")
     assert regions, "the page must still have been cut: crops are what reach the readers"
+
+    status = next(row for row in _payloads(context, "structure-status") if row["page_ordinal"] == 1)
+    assert status["background_source"] == "not-inferable"
+    assert status["structure_evidence"] == "fallback-tiles"
+
+    reconciliation = next(
+        row for row in _payloads(context, "conservation") if row["page_ordinal"] == 1
+    )
+    assert reconciliation["ink_measurable"] is False
+    assert reconciliation["total_ink_pixel_count"] is None
+    assert reconciliation["residual_components"] == [], (
+        "no residual may be minted over a page whose ink was never measured"
+    )
+    assert reconciliation["reason"]
+
+
+def test_a_uniformly_dark_page_is_refused_rather_than_counted_as_zero_ink():
+    """The hole the majority-ink guard could not see: mode == mean, both wrong.
+
+    A page of solid black has `mode == mean == 0`, so `mode * count >= total`
+    holds exactly and the old check passed it. `_ink_threshold(0, 20)` is then
+    -20, no 8-bit sample is at or below it, and the page counts zero ink pixels
+    -- so with no declared act on it the run exits `complete` over a visibly
+    black page. That is the same silent loss the majority-ink guard exists to
+    stop, reached by the one route it did not cover.
+    """
+    from structure import PRIMARY_MARGIN, infer_background, primary_scan
+
+    width, height = 12, 12
+    rows = [bytearray([0] * width) for _ in range(height)]
+
+    # The arithmetic the old guard passed, shown rather than described.
+    assert max(range(256), key=lambda v: sum(row.count(v) for row in rows)) == 0
+    with pytest.raises(ContractError, match=r"darker than the 20-point ink margin"):
+        infer_background(width, height, rows)
+    # And what a run would have reported had it been allowed through.
+    assert primary_scan(width, height, rows, background=0) == []
+    assert PRIMARY_MARGIN == 20
+
+
+@pytest.mark.parametrize("paper", [0, 19])
+def test_a_background_too_dark_to_express_an_ink_threshold_is_refused(paper):
+    """Not only pure black: any mode below the margin separates nothing."""
+    from structure import infer_background
+
+    rows = [bytearray([paper] * 8) for _ in range(8)]
+    with pytest.raises(ContractError, match=r"darker than the 20-point ink margin"):
+        infer_background(8, 8, rows)
+
+
+def test_a_background_exactly_at_the_margin_still_infers():
+    """The bound is where it is claimed to be: at 20, pure black is still ink."""
+    from structure import infer_background, primary_scan
+
+    rows = [bytearray([20] * 8) for _ in range(8)]
+    rows[3][3] = 0
+    assert infer_background(8, 8, rows) == 20
+    assert primary_scan(8, 8, rows, background=20) == [
+        {"bounds": {"x": 3, "y": 3, "w": 1, "h": 1}, "pixel_count": 1}
+    ]
 
 
 # --- a page the structure pass finds no ink on is cut into crops that go on ------

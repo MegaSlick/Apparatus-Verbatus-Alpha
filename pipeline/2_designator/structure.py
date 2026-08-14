@@ -60,29 +60,17 @@ class BackgroundInferenceRefusal(ContractError):
     that the modal pixel is not paper, so the caller must stop trusting it and
     fall back to cutting predetermined crops instead. A decode error stays fatal;
     this one changes how the page is cut, never whether it is.
+
+    **It also ends this stage's ink measurement for that page, and that is the
+    point.** `run.py` used to substitute the page's own mean as a stand-in
+    divider so the accounting "had something defensible". It does not: on the
+    inverted scan this module's own test uses — 80% of the page at 30, 20% at
+    220 — the mean is 68, so the threshold is 48, and every pixel of the *dark
+    paper* is classified as ink. Conservation then reports four fifths of a page
+    as unclaimed ink and mints a held act over the background. A substituted
+    divider is a guess wearing a measurement's name, and GOVERNANCE 10 forbids
+    exactly that. The honest report is that this page's ink was not measured.
     """
-
-
-def page_mean(width: int, height: int, rows: list) -> int:
-    """The page's own mean sample, floored to an integer.
-
-    The honest fallback threshold for a page whose modal pixel is not its paper.
-    It is not a background in the sense `infer_background` means -- nothing here
-    claims to have found the paper -- it is the page's own centre, used so the
-    ink accounting has a defensible divider rather than a guess, on a page whose
-    crops are going downstream to be read either way.
-    """
-    if width <= 0 or height <= 0:
-        raise ContractError(f"a {width}x{height} page has no pixels to average")
-    if len(rows) != height:
-        raise ContractError(f"expected {height} scanlines, got {len(rows)}")
-    total = 0
-    for y in range(height):
-        row = rows[y]
-        if len(row) != width:
-            raise ContractError(f"scanline {y} has width {len(row)}, expected {width}")
-        total += sum(row)
-    return total // (width * height)
 
 
 def _ink_threshold(background: int, margin: int) -> int:
@@ -119,6 +107,25 @@ def infer_background(width: int, height: int, rows: list) -> int:
     nothing honest to return. Compared as `mode * count >= total` so the
     arithmetic stays in integers -- every quantity this module handles is an
     integer, and a float comparison here could pass by accident.
+
+    **That comparison alone misses the uniformly dark page**, which is the one
+    shape where mode and mean are equal and both wrong. A page of solid black has
+    `mode == mean == 0`, so `mode * count >= total` holds exactly and this
+    function used to return 0 as the paper colour. `_ink_threshold(0, 20)` is
+    then -20, no 8-bit sample can be at or below it, the page counts zero ink
+    pixels, and the run exits `complete` over a visibly black page -- the same
+    silent loss the majority-ink check exists to stop, reached by the one route
+    it does not cover.
+
+    So a background must also be light enough to *express* an ink threshold at
+    all. `PRIMARY_MARGIN` is the sensitivity every authoritative use of this
+    value runs at -- `primary_scan`, and `conservation.reconcile`'s own default
+    -- so a background below it separates nothing: every pixel on the page would
+    be classified as paper by arithmetic rather than by measurement, which is
+    GOVERNANCE 10's "a metric that cannot be measured is a failure, not a pass"
+    exactly. The page is still cut and still read (see this module's
+    `BackgroundInferenceRefusal`); what it does not do is report a measurement
+    it did not make.
     """
     if width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to infer a background from")
@@ -140,6 +147,13 @@ def infer_background(width: int, height: int, rows: list) -> int:
             f"darker than its own mean of {total // counted}: the page is majority ink, so "
             "its background cannot be inferred and a blank result here would be inferred "
             "rather than proved"
+        )
+    if background < PRIMARY_MARGIN:
+        raise BackgroundInferenceRefusal(
+            f"the most common pixel on this {width}x{height} page is {background}, which is "
+            f"darker than the {PRIMARY_MARGIN}-point ink margin: the threshold it implies is "
+            "below every 8-bit sample, so no pixel on this page could ever be counted as ink "
+            "and a blank result here would be arithmetic rather than a measurement"
         )
     return background
 
