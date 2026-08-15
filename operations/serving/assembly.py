@@ -258,6 +258,12 @@ def _prepare_log_root(log_root: str | Path) -> Path:
         # symlink. It forgives only an existing directory, so nothing further is
         # needed to establish that this path is one.
         prepared.mkdir(parents=True, exist_ok=True)
+        # mkdir's mode argument is subject to the ambient umask and, with
+        # parents=True, is never applied to intermediate directories at all --
+        # chmod afterward is the only way to make this owner-only regardless of
+        # umask or a pre-existing looser mode, matching the per-launch log
+        # files, which are already forced 0600 at creation.
+        prepared.chmod(0o700)
     except OSError as error:
         raise ServingConfigurationError(
             f"cannot prepare serving log root {prepared}: {error}"

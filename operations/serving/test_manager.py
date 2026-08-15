@@ -36,7 +36,11 @@ from operations.pod.preflight import (
     load_placement_table,
 )
 
-from .assembly import assemble_serving_preflight_callback, assemble_serving_smoke_reader
+from .assembly import (
+    _prepare_log_root,
+    assemble_serving_preflight_callback,
+    assemble_serving_smoke_reader,
+)
 from .config import (
     FixtureProfile,
     ServingConfigInputs,
@@ -2062,6 +2066,33 @@ def test_preflight_assembly_prepares_a_new_log_root_before_default_disk_probe(
     assert report["color"] == "red"
     assert new_log_root.is_dir()
     assert launcher.calls == []
+
+
+def test_prepare_log_root_is_owner_only_regardless_of_umask_or_prior_mode(
+    tmp_path: Path,
+) -> None:
+    """The log root's listing (chair roles, launch UUIDs) is as owner-only as its files.
+
+    Each per-launch log file is already forced 0600 at creation. The directory
+    itself was left at the ambient umask, which is commonly world-readable/
+    executable, so its listing was visible to any other user on the pod even
+    though the file contents were not.
+    """
+
+    fresh = tmp_path / "fresh-logs"
+    old_umask = os.umask(0o022)
+    try:
+        prepared = _prepare_log_root(fresh)
+    finally:
+        os.umask(old_umask)
+    mode = stat.S_IMODE(prepared.stat().st_mode)
+    assert mode == 0o700, f"expected owner-only 0o700, got {oct(mode)}"
+
+    loose = tmp_path / "preexisting-logs"
+    loose.mkdir(mode=0o755)
+    prepared_again = _prepare_log_root(loose)
+    mode_again = stat.S_IMODE(prepared_again.stat().st_mode)
+    assert mode_again == 0o700, f"expected a pre-existing directory tightened, got {oct(mode_again)}"
 
 
 def test_serving_recipe_and_placement_bytes_are_bound_into_the_run_configuration_digest(
