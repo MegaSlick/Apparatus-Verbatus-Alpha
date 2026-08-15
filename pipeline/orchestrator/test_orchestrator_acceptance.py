@@ -372,8 +372,18 @@ FIXTURE = "synthetic-two-page-v0"
 # records the build interpreter's Unicode database version beside the normalizer
 # revision, so that new logical metadata deliberately moves the semantic bundle
 # identity. Fresh real runs again measured 54 files/exit 0 and 58 files/exit 3.
-HAPPY_RUN_TREE_DIGEST = "1df6c537b18acad263765eb1de788a5ea458bd651b1dbd24c878d91985d71a43"
-REVIEW_RUN_TREE_DIGEST = "f01b9b8473a9d28b2e993cbc1250645c7f2d863c005f6b4d40a6a4dd52054b72"
+#
+# Re-pinned to exclude the two version-local parts of that database from the
+# semantic identity: the `export_metadata.unidata_version` environment stamp and
+# `act_search.derived_search_text` plus `derived_text_sha256`, its Unicode-version-
+# local derived projection. They remain honestly recorded in the product and are
+# checked by the verifier's version-aware path added in the preceding repair.
+# Binding them here would give every platform a different pin, which is the defect
+# this pin fixes rather than a property to preserve. Every literal row and stable
+# field -- including `normalizer_revision`, `derived_from_canonical_sha256`, and
+# `derived_kind` -- remains bound.
+HAPPY_RUN_TREE_DIGEST = "32f5cbcc92e82da23067e8fc60a43880703e18eed9be16ff5991e23345dd86d7"
+REVIEW_RUN_TREE_DIGEST = "8a560be8f5088595ed3fb82a30ec4819c11a196cfb4607e10aea9429dc4202dd"
 
 
 def orchestrate(
@@ -504,9 +514,55 @@ def _sqlite_logical_digest(data: bytes) -> str:
         integrity = connection.execute("PRAGMA integrity_check").fetchall()
         if integrity != [("ok",)]:
             raise ValueError(f"SQLite integrity check failed: {integrity!r}")
+
+        schema_sql = [
+            row[0]
+            for row in connection.execute(
+                "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL "
+                "ORDER BY type, name, tbl_name, sql"
+            )
+        ]
+        table_names = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM pragma_table_list "
+                "WHERE schema = 'main' AND type = 'table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        tables = {}
+        for table_name in table_names:
+            escaped_table = table_name.replace('"', '""')
+            quoted_table = f'"{escaped_table}"'
+            columns = [row[1] for row in connection.execute(f"PRAGMA table_info({quoted_table})")]
+            if table_name == "act_search":
+                columns = [
+                    column
+                    for column in columns
+                    if column not in {"derived_search_text", "derived_text_sha256"}
+                ]
+            quoted_columns = []
+            for column in columns:
+                escaped_column = column.replace('"', '""')
+                quoted_columns.append(f'"{escaped_column}"')
+            query = f"SELECT {', '.join(quoted_columns)} FROM {quoted_table}"
+            parameters = ()
+            if table_name == "export_metadata" and "key" in columns:
+                query += ' WHERE "key" != ?'
+                parameters = ("unidata_version",)
+            query += " ORDER BY " + ", ".join(str(index) for index in range(1, len(columns) + 1))
+            tables[table_name] = {
+                "columns": columns,
+                "rows": connection.execute(query, parameters).fetchall(),
+            }
+
         return digest_of(
             {
-                "dump": list(connection.iterdump()),
+                "schema_sql": schema_sql,
+                # Virtual and shadow tables are SQLite's derived search index,
+                # not additional stored application rows. Their schema remains
+                # bound above; their logical source is the selected table data.
+                "tables": tables,
                 "application_id": connection.execute("PRAGMA application_id").fetchone()[0],
                 "user_version": connection.execute("PRAGMA user_version").fetchone()[0],
             }
@@ -729,12 +785,55 @@ def test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes(tmp_path
     assert semantic_snapshot_digest(tmp_path) == semantic_before
 
 
-def _acceptance_sqlite(path: Path, text: str) -> bytes:
+def _acceptance_sqlite(
+    path: Path,
+    text: str,
+    *,
+    unidata_version: str = "15.1.0",
+    derived_search_text: str = "original derived text",
+    derived_from_canonical_sha256: str | None = None,
+) -> bytes:
     connection = sqlite3.connect(path)
     try:
         connection.execute("PRAGMA user_version=1")
-        connection.execute("CREATE TABLE acts (act_id TEXT PRIMARY KEY, text TEXT NOT NULL)")
+        connection.executescript(
+            """
+            CREATE TABLE export_metadata (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE acts (act_id TEXT PRIMARY KEY, text TEXT NOT NULL);
+            CREATE TABLE act_search (
+                rowid INTEGER PRIMARY KEY,
+                act_id TEXT UNIQUE NOT NULL REFERENCES acts(act_id),
+                derived_search_text TEXT NOT NULL,
+                derived_text_sha256 TEXT NOT NULL,
+                derived_from_canonical_sha256 TEXT NOT NULL,
+                normalizer_revision TEXT NOT NULL,
+                derived_kind TEXT NOT NULL
+            );
+            """
+        )
+        connection.executemany(
+            "INSERT INTO export_metadata VALUES (?, ?)",
+            (
+                ("normalizer_revision", "armarium-textnorm-v1"),
+                ("unidata_version", unidata_version),
+            ),
+        )
         connection.execute("INSERT INTO acts VALUES ('a1', ?)", (text,))
+        if derived_from_canonical_sha256 is None:
+            derived_from_canonical_sha256 = digest_bytes(text.encode("utf-8"))
+        connection.execute(
+            "INSERT INTO act_search VALUES (1, 'a1', ?, ?, ?, ?, ?)",
+            (
+                derived_search_text,
+                digest_bytes(derived_search_text.encode("utf-8")),
+                derived_from_canonical_sha256,
+                "armarium-textnorm-v1",
+                "search-fold",
+            ),
+        )
         connection.commit()
     finally:
         connection.close()
@@ -800,15 +899,25 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes) -> None:
 
 
 def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path):
-    """A SQLite build stamp cannot rename equal Armarium data; a row can."""
+    """Version-local database fields cannot rename a run; a literal row can."""
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
-    doctored = database[:96] + b"\xff\xff\xff\xff" + database[100:]
+    version_local = _acceptance_sqlite(
+        tmp_path / "version-local.sqlite",
+        "original row",
+        unidata_version="16.0.0",
+        derived_search_text="different version-local derived text",
+    )
+    doctored = version_local[:96] + b"\xff\xff\xff\xff" + version_local[100:]
     original_root = tmp_path / "original"
     doctored_root = tmp_path / "doctored"
     changed_root = tmp_path / "changed"
     _write_acceptance_bundle_tree(original_root, database)
     _write_acceptance_bundle_tree(doctored_root, doctored)
-    changed = _acceptance_sqlite(tmp_path / "changed.sqlite", "changed row")
+    changed = _acceptance_sqlite(
+        tmp_path / "changed.sqlite",
+        "changed row",
+        derived_from_canonical_sha256=digest_bytes(b"original row"),
+    )
     _write_acceptance_bundle_tree(changed_root, changed)
 
     assert snapshot(original_root) != snapshot(doctored_root)
