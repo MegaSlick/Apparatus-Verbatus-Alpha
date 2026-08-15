@@ -10,6 +10,7 @@ from common.armarium_formats import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     KNOWN_FORMATS,
     ArmariumFormats,
+    armarium_formats_from_record,
     bind_armarium_formats,
 )
 from common.chairs.registry import ChairRegistry
@@ -42,6 +43,29 @@ def test_direct_format_construction_cannot_bypass_the_closed_parser():
         ArmariumFormats(("text-bundle", "witness-picker"), False)
     with pytest.raises(SchemaRefusal, match="more than once"):
         ArmariumFormats(("jsonl", "jsonl"), False)
+
+
+def test_sealed_format_record_refuses_fields_outside_its_exact_key_set():
+    record = {
+        "schema": "armarium-formats.v1",
+        "formats": ["jsonl"],
+        "embed_pixels": False,
+        "undeclared_projection": "witness-picker",
+    }
+
+    with pytest.raises(SchemaRefusal, match="must contain exactly"):
+        armarium_formats_from_record(record)
+
+
+def test_sealed_format_record_requires_formats_to_be_a_list():
+    record = {
+        "schema": "armarium-formats.v1",
+        "formats": ("jsonl",),
+        "embed_pixels": False,
+    }
+
+    with pytest.raises(SchemaRefusal, match="non-empty list"):
+        armarium_formats_from_record(record)
 
 
 def test_format_configuration_changes_the_sealed_run_binding(tmp_path):

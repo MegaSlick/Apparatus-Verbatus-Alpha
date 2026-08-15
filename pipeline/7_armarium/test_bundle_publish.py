@@ -190,7 +190,31 @@ def test_an_existing_destination_is_refused_rather_than_merged_into(tmp_path, ha
     assert _publish(happy_run, "r", out).returncode == 0
     second = _publish(happy_run, "r", out)
     assert second.returncode != 0
-    assert "already exists" in second.stderr
+    assert "File exists" in second.stderr
+    assert "never reused or merged" in second.stderr
+
+
+def test_a_nonexistence_mkdir_error_reports_the_os_reason(tmp_path, happy_run, monkeypatch):
+    import bundle as bundle_module
+
+    tree = RunTree(happy_run, "r")
+    tree.read_run()
+    out = tmp_path / "delivery"
+    real_mkdir = Path.mkdir
+
+    def refuse_destination(path, *args, **kwargs):
+        if path == out:
+            raise OSError("simulated permission denied")
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", refuse_destination)
+
+    with pytest.raises(ContractError, match="simulated permission denied") as caught:
+        bundle_module.publish(tree, out)
+
+    assert "never reused or merged" in str(caught.value)
+    assert isinstance(caught.value.__cause__, OSError)
+    assert not out.exists()
 
 
 def test_publication_leaves_nothing_behind_when_the_run_has_no_export(tmp_path):

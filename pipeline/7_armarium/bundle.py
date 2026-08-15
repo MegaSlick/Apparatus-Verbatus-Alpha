@@ -98,8 +98,9 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
         out_dir.mkdir()
     except OSError as error:
         raise ContractError(
-            f"{out_dir} already exists; an export destination is never reused or merged "
-            "into, so a half-written publication can never be mistaken for a whole one"
+            f"could not reserve export destination {out_dir}: {error}; an export destination "
+            "is never reused or merged into, so a half-written publication can never be "
+            "mistaken for a whole one"
         ) from error
     try:
         data, payload = sealed_bundle(tree)

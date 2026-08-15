@@ -149,9 +149,9 @@ labelled `requires-retained-run-access`; the product carries their paths and
 digests, not an invented claim that it contains the separate evidence package.
 No stage in this repository produces a sealed salvage inventory today — the whole
 salvage path is contract-only, exercised end to end only by synthetic projections in
-this stage's own tests. So every real run's salvage format is present but the
-manifest says `not-produced-no-sealed-salvage-inventory`, rather than claiming a
-measured zero.
+this stage's own tests. So, when selected, every real run's salvage member is present
+but the manifest says `not-produced-no-sealed-salvage-inventory`, rather than claiming
+a measured zero.
 
 The annotation boundary in `annotation_boundary.py` is not wired into this
 stage, configuration, or orchestrator, and is built only as the contract a future
