@@ -52,15 +52,15 @@ class _FileResidencyHandle:
     def inheritable_fd(self) -> int:
         handle = self._handle
         if handle is None:
-            raise ServiceStopError(f"serving residency lease {self.path} is already released")
+            raise ResidencyError(f"serving residency lease {self.path} is already released")
         try:
             descriptor = handle.fileno()
         except OSError as error:
-            raise ServiceStopError(
+            raise ResidencyError(
                 f"could not access serving residency lease {self.path}: {error}"
             ) from error
         if descriptor < 0:  # pragma: no cover - Python file objects do not expose this normally
-            raise ServiceStopError(f"serving residency lease {self.path} has no valid descriptor")
+            raise ResidencyError(f"serving residency lease {self.path} has no valid descriptor")
         return descriptor
 
     def release(self) -> None:

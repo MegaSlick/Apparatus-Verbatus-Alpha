@@ -25,7 +25,7 @@ from typing import Callable, Mapping
 import pytest
 
 from common.chairs.config import load_models_toml
-from common.chairs.errors import ReceiptRefusal, ServingRecipeRefusal
+from common.chairs.errors import ReceiptRefusal, ServingRecipeRefusal, UnresolvedChairRefusal
 from common.chairs.models import ChairIdentity, ModelsConfig, ServingDetails, VerifiedSnapshot
 from common.chairs.receipts import build_receipt
 from common.chairs.registry import ChairRegistry
@@ -1048,6 +1048,33 @@ def test_unknown_endpoint_and_runtime_pin_refuse_before_process_start(tmp_path: 
     assert mismatch_launcher.calls == []
 
 
+def test_pin_drift_refusal_retains_the_serving_failure_detail(tmp_path: Path) -> None:
+    requested = identity("reader", "reader-v1")
+    configured = identity("reader", "reader-v1", revision="c" * 40)
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={requested.role: requested},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        package_version="different",
+    )
+    manager.registry = ChairRegistry(ModelsConfig(witness_floor=0, chairs={"reader": configured}))
+
+    with pytest.raises(UnresolvedChairRefusal) as caught:
+        manager.start(requested, TIER)
+
+    assert "identity differs from the configured pin" in caught.value.difference
+    assert "VLLM_RUNTIME_PIN_MISMATCH" in caught.value.difference
+    assert "runtime package pin mismatch: vllm='different', expected '0.test'" in (
+        caught.value.difference
+    )
+    assert launcher.calls == []
+
+
 def test_every_declared_model_stack_package_is_exactly_asserted(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
     profile = profile_row(
@@ -1695,6 +1722,34 @@ def test_file_residency_lock_survives_controller_fd_close_until_child_fd_closes(
         os.close(child_fd)
     replacement = lease.acquire(chair)
     replacement.release()
+
+
+def test_prelaunch_residency_descriptor_fault_is_a_launch_refusal(tmp_path: Path) -> None:
+    class ReleasedHandleLease:
+        def acquire(self, requested: ChairIdentity):  # type: ignore[no-untyped-def]
+            handle = FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(requested)
+            handle.release()
+            return handle
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        residency_lease=ReleasedHandleLease(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ServingRecipeRefusal) as caught:
+        manager.start(chair, TIER)
+
+    assert "VLLM_LAUNCH_ERROR" in caught.value.difference
+    assert "VLLM_STOP_FAILED" not in caught.value.difference
+    assert launcher.calls == []
 
 
 def test_subprocess_launcher_passes_declared_lease_fd_to_the_owned_child(tmp_path: Path) -> None:

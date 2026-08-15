@@ -29,11 +29,12 @@ from typing import Any, Iterable, Mapping
 
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, is_hf_revision, is_sha256
 from common.contracts.canonical import digest_bytes
+from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS
+from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA as CONFIG_INPUTS_SCHEMA
 
 from .errors import ServingConfigurationError
 
 SCHEMA = "serving-recipes.v1"
-CONFIG_INPUTS_SCHEMA = "serving-config-inputs.v1"
 _TOP_LEVEL = {"schema", "profiles"}
 _KINDS = {"vllm", "fixture"}
 _PROFILE_COMMON = {"kind", "recipe", "chair", "tier"}
@@ -225,12 +226,7 @@ class ServingConfigInputs:
     def from_record(cls, value: Mapping[str, object]) -> "ServingConfigInputs":
         """Validate a run-sealed configuration projection before assembly."""
 
-        required = {
-            "schema",
-            "serving_recipes_sha256",
-            "pod_placement_sha256",
-        }
-        if not isinstance(value, Mapping) or set(value) != required:
+        if not isinstance(value, Mapping) or set(value) != SERVING_CONFIG_INPUTS_FIELDS:
             raise ServingConfigurationError(
                 "sealed serving configuration must contain exactly schema, recipes, and placement digests"
             )

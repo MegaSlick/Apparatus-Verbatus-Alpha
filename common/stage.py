@@ -42,6 +42,7 @@ from common.contracts.identities import act_bindings, artifact_id, attempt_id
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
 from common.contracts.outcomes import classify
+from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR, RECENSOR
 from common.exemplar_boundary import verify_sealed_page_pixels
 from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
@@ -99,11 +100,6 @@ DEFAULT_SERVING_RECIPES_CONFIG_PATH = (
 DEFAULT_POD_PLACEMENT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "pod_placement.toml"
 )
-SERVING_CONFIG_INPUTS_SCHEMA = "serving-config-inputs.v1"
-_SERVING_CONFIG_INPUTS_FIELDS = frozenset(
-    {"schema", "serving_recipes_sha256", "pod_placement_sha256"}
-)
-
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
 # of the handoff need it and they must not drift: the Attestatores decides
@@ -360,6 +356,11 @@ class StageContext:
                 "serving receipt and launch audit name different chairs: "
                 f"{receipt['chair']!r} and {audit['chair']!r}"
             )
+        if receipt["started_at"] != audit.get("started_at"):
+            raise SchemaRefusal(
+                "serving receipt and launch audit name different start moments: "
+                f"{receipt['started_at']!r} and {audit.get('started_at')!r}"
+            )
         record = {
             "schema": "serving-evidence.v1",
             "receipt_reference": checked_receipt_reference,
@@ -472,7 +473,7 @@ def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[st
 def _serving_config_inputs(value: object, label: str) -> dict[str, str]:
     """Validate the two exact TOML inputs that shape a serving launch."""
 
-    if not isinstance(value, Mapping) or set(value) != _SERVING_CONFIG_INPUTS_FIELDS:
+    if not isinstance(value, Mapping) or set(value) != SERVING_CONFIG_INPUTS_FIELDS:
         raise SchemaRefusal(
             f"{label} serving configuration must contain exactly schema, recipes, and placement digests"
         )

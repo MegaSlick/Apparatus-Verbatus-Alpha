@@ -184,9 +184,10 @@ class ChairRegistry:
     def refuse_recipe_start(self, identity: ChairIdentity, difference: str) -> None:
         """Represent a serving-manager start failure without offering another recipe.
 
-        Spec 04's serving manager routes every failure of a named chair through
-        this door. The pipeline still uses fixture serving details until its
-        owner adopts that manager's injected preflight callback.
+        Spec 04's serving manager uses this for ordinary start failures it
+        observed that have not already crossed the chair boundary. A prior chair
+        refusal is normally re-raised without this call; unverified cleanup is
+        the exception, and operator interrupts never pass through this method.
         """
 
         self._require_current_identity(identity)

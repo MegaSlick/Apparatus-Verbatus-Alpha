@@ -147,7 +147,7 @@ start succeeds only when all three immutable references return; a successful
 handle cannot silently drop the audit or its linkage. They are exposed on the
 `ServiceHandle` and copied as references beside pod smoke evidence.
 
-## Pod seam and status
+## Pod seam
 
 `assemble_serving_smoke_reader()` is the narrow production assembly seam. It
 reads and validates the local recipe and placement catalogues while constructed;
@@ -195,14 +195,9 @@ what is checked. One word carrying two meanings is the real defect; renaming the
 placement field belongs to whoever owns that file.
 
 The committed catalogue holds **fixture rows only**, and they carry no flags:
-no port, no memory fraction, no context or pixel cap. The live roster is the
-offline walking skeleton, so there is nothing real to serve, and writing
-plausible planning numbers for chairs nothing will start would put fifteen
-unbenchmarked figures into a reviewed config file. Roster membership is Tyrel's
-decision at S8. A real rollout still needs approved chairs, exact runtime locks,
-verified manifests, local adapter calibration fixtures, and real-silicon
-preflight, and every capacity value written then is a planning value until that
-preflight has run.
+no port, no memory fraction, no context or pixel cap. A fixture profile cannot
+be launched, so writing plausible planning numbers for a chair this package
+refuses to start would put unbenchmarked figures into a reviewed config file.
 
 The assembly remains caller-injected:
 `assemble_serving_preflight_callback` produces the callable

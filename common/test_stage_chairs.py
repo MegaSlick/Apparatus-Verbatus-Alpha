@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -223,20 +224,24 @@ def test_a_non_canonical_serving_blob_is_a_named_schema_refusal(tmp_path):
 
 def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_path):
     context, identity = _context(tmp_path)
-    receipt_reference = context.write_serving_receipt(identity, fixture_serving_details(identity))
+    details = fixture_serving_details(identity)
+    receipt_reference = context.write_serving_receipt(identity, details)
     audit_reference = context.write_serving_launch_audit(
         {
             "schema": "serving-launch-audit.v1",
             "chair": identity.role,
-            "started_at": "2026-08-09T12:00:00Z",
+            "started_at": details.started_at,
             "configuration_inputs": dict(context.serving_config_inputs),
         }
     )
 
     evidence_reference = context.write_serving_evidence_manifest(receipt_reference, audit_reference)
-    evidence = context.tree.read_bytes(evidence_reference["relative_path"])
-    assert receipt_reference["relative_path"].encode() in evidence
-    assert audit_reference["relative_path"].encode() in evidence
+    evidence = json.loads(context.tree.read_bytes(evidence_reference["relative_path"]))
+    assert evidence == {
+        "schema": "serving-evidence.v1",
+        "receipt_reference": receipt_reference,
+        "launch_audit_reference": audit_reference,
+    }
     with pytest.raises(SchemaRefusal, match="malformed"):
         context.write_serving_evidence_manifest(
             {"relative_path": "/absolute", "sha256": "c" * 64}, audit_reference
@@ -306,6 +311,23 @@ def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_pa
     )
     with pytest.raises(SchemaRefusal, match="different chairs"):
         context.write_serving_evidence_manifest(receipt_reference, other_chair_audit_reference)
+
+
+def test_serving_evidence_manifest_refuses_different_serving_start_moments(tmp_path):
+    context, identity = _context(tmp_path)
+    details = fixture_serving_details(identity)
+    receipt_reference = context.write_serving_receipt(identity, details)
+    audit_reference = context.write_serving_launch_audit(
+        {
+            "schema": "serving-launch-audit.v1",
+            "chair": identity.role,
+            "started_at": "2026-08-09T12:00:00Z",
+            "configuration_inputs": dict(context.serving_config_inputs),
+        }
+    )
+
+    with pytest.raises(SchemaRefusal, match="different start moments"):
+        context.write_serving_evidence_manifest(receipt_reference, audit_reference)
 
 
 def test_receipt_reuse_is_by_full_serving_moment_not_only_model_identity(tmp_path):

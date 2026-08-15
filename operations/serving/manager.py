@@ -30,7 +30,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol
 
-from common.chairs.errors import ChairRefusal
+from common.chairs.errors import ChairRefusal, UnresolvedChairRefusal
 from common.chairs.models import (
     AbsentChair,
     ChairIdentity,
@@ -1219,7 +1219,13 @@ class ServingManager:
                 f"; additionally, cleanup after this failure could not be verified and the "
                 f"single-resident lease is retained: {also_code}: {also}"
             )
-        self.registry.refuse_recipe_start(identity, detail)
+        try:
+            self.registry.refuse_recipe_start(identity, detail)
+        except UnresolvedChairRefusal as refusal:
+            raise UnresolvedChairRefusal(
+                refusal.chair,
+                f"{refusal.difference}; additionally, the serving start failed: {detail}",
+            ) from refusal
 
 
 def _launchable(
