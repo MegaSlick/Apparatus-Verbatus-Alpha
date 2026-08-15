@@ -42,7 +42,17 @@ from .errors import MatrixRefusal
 # identity/revision; (3) added closed coded limitations plus an unpublishable
 # refusal; (4) made stale provenance claims self-contained. The protocol's measure
 # definitions remain pinned and fail closed after this deliberate re-pin.
-PREDECLARED_PROTOCOL_SHA256 = "48a558402b53c8404a38860beadf181b980c8322843e0abfd85e7814fd39ab8a"
+#
+# Re-pinned 2026-08-15 to finish repair (4), which the pass above applied to three
+# of four ruling citations. Section 7's denominator argument still cited "ruling 3"
+# by number with a verbatim quotation, which is the exact pattern that pass removed
+# elsewhere: a reader outside this repository cannot check a ledger that is not in
+# it. It now states the ruling's substance and date inline, as the other three do,
+# and all four say the ledger is *untracked* rather than outside the repository
+# tree — `workbench/` is in the working tree, only gitignored. Prose only: the
+# unbounded `(S + D + I) / N` denominator, its comparison with the OCR-D bounded
+# form, and every bound, profile, and scoring rule are byte-identical.
+PREDECLARED_PROTOCOL_SHA256 = "ba3579efa0194f70d30fbd1cd154809d2492a582798cd95ed2fa36ea81b88bec"
 
 
 def protocol_document_sha256() -> str:

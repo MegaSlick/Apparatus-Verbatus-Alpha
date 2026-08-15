@@ -38,8 +38,8 @@ An adjudicator who cannot read a disputed span says so.  "We could not read it"
 becomes a zero-width gap anchor, never a plausible reconstruction and never an
 empty span that looks like agreement on nothing. On 2026-08-05 Tyrel ruled that
 damaged records retain honest gaps and that the system must not invent content.
-The verbatim ruling ledger lives in the local workbench outside this repository
-tree; this states its operative substance and date inline.
+The verbatim ruling ledger lives in the local, untracked workbench; this states
+its operative substance and date inline.
 """
 
 

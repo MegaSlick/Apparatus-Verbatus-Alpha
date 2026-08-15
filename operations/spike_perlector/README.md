@@ -41,7 +41,7 @@ Each candidate must supply resolved identity, revision/digest, exact declared pr
 
 Every candidate implements `Candidate.read(CandidateRequest)`. The request always carries the same semantic `Dossier`, plus that candidate's declared prompt-format bytes. The dossier gives each Testimonium a stable anonymous source slot, never its private Attestator identity, so a candidate cannot learn a witness-name preference. Every response becomes the same private `Perlectio` shape: resolved identity, condition, state, candidate text, dossier/prompt digests, image-presence, Testimonium count, structural dissent, wall time, and cost.
 
-The session-configured roster is: (1) `Qwen/Qwen3.5-9B` as the stock base settled by the 2026-08-05 ruling; (2) one unaltered vendor vision model; and (3) the trained checkpoint from its own model repository by its own digest. External disclosure and spend still require Tyrel's approval, but model occupancy is a configured, swappable engineering choice. The checkpoint has no special adapter, score, or prompt fallback. It is an ordinary candidate. The ruling ledger lives in the local workbench outside this repository tree; this paragraph states the operative substance and date so the provenance is verifiable here.
+The session-configured roster is: (1) `Qwen/Qwen3.5-9B` as the stock base settled by the 2026-08-05 ruling; (2) one unaltered vendor vision model; and (3) the trained checkpoint from its own model repository by its own digest. External disclosure and spend still require Tyrel's approval, but model occupancy is a configured, swappable engineering choice. The checkpoint has no special adapter, score, or prompt fallback. It is an ordinary candidate. The ruling ledger lives in the local, untracked workbench; this paragraph states the operative substance and date so the provenance is verifiable here.
 
 The framework rejects `Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`: it is an Attestator, so making it a Perlector candidate would make the dissent evidence agree with its own witness. Every sealed Attestator source also records its private source ID, repository, revision, and artifact digest. The runner refuses any candidate that shares a witness source or artifact, even under a different private label. Names, repositories, revisions, and prompt bytes stay private. Public aggregation uses non-identifying integer slots only; a slot is not a ranking.
 
@@ -117,8 +117,8 @@ and only a digest that includes the transcriber can tell those two apart.
 **A checked reference may carry gaps, and this is the common case, not the edge
 case.** On 2026-08-05 Tyrel ruled that damaged records must retain successful
 partial readings plus honest gaps rather than be treated as failed or filled with
-invented content. The verbatim ruling ledger lives in the local workbench outside
-this repository tree; this states its operative substance and date inline. A
+invented content. The verbatim ruling ledger lives in the local, untracked
+workbench; this states its operative substance and date inline. A
 `GapSpan` marks unread ink at its place in the reference; `start == end` is a
 legitimate zero-width anchor, which is the structural reason a gap cannot carry
 characters whatever evidence hangs off it. The gap-excised text is what CER/WER uses
@@ -244,7 +244,9 @@ explicit, and independently tested.
 is `(S + D + I) / N` with `N` the reference length, which is unbounded above.
 OCR-D's own evaluation specification normalizes instead — `(I + S + D) / (I + S + D
 + C)` — which is bounded to `[0, 1]`. The reason for choosing the unbounded form is
-concrete and ties to ruling 3, "we don't want it making shit up": a refused,
+concrete and ties to Tyrel's 2026-08-05 ruling that the system must not invent
+content on damaged ink (stated in substance and date here because the verbatim
+ruling ledger lives in the local, untracked workbench): a refused,
 missing, unavailable or malformed response scores an empty hypothesis, which against
 a non-blank reference is exactly `1.0`. Under the bounded formula, a candidate that
 hallucinates an enormous volume of wrong text *approaches but can never exceed* that

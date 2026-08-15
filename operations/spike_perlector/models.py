@@ -396,9 +396,8 @@ class GroundTruth:
     A checked reference may carry gaps, and that is the common case rather than
     the edge one. On 2026-08-05 Tyrel ruled that damaged records retain successful
     partial readings plus honest gaps rather than being treated as failed or filled
-    with invented content. The verbatim ruling ledger lives in the local workbench
-    outside this repository tree; this states its operative substance and date
-    inline. Without ``gaps`` the only way to record that act is ``UNRESOLVED_GAP``
+    with invented content. The verbatim ruling ledger lives in the local, untracked
+    workbench; this states its operative substance and date inline. Without ``gaps`` the only way to record that act is ``UNRESOLVED_GAP``
     for the whole crop, which throws away readable words and gap positions alike.
     """
 
