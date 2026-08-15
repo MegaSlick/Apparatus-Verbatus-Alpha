@@ -75,6 +75,12 @@ class PublicLimitationCode(StrEnum):
     NONSCOREABLE_SELECTED_ACTS_PRESENT = "nonscoreable_selected_acts_present_v1"
     CANDIDATE_NONANSWERS_PRESENT = "candidate_nonanswers_present_v1"
     MALFORMED_CANDIDATE_RESPONSES_PRESENT = "malformed_candidate_responses_present_v1"
+    # ARCHITECTURE's Perlector "reads through to the end; truncation is a failure,
+    # not an output". Every other predeclared response state that is not a complete
+    # reading already has a code here, so leaving this one out meant a run whose
+    # readings all stopped early derived no code, declared `clear`, and published an
+    # empty limitations array beside a CER that says nothing about why it stopped.
+    TRUNCATED_READINGS_PRESENT = "truncated_readings_present_v1"
 
 
 class LimitationDisclosureState(StrEnum):

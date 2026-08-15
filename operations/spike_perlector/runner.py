@@ -441,7 +441,9 @@ class MeasurementRun:
         for public limitation purposes even though it separately makes the run
         unpublishable. An ``INVALID_RESPONSE`` failure is additionally malformed:
         the adapter returned a value, but not a response shape this instrument can
-        measure. No caller declaration participates in either classification.
+        measure. A truncated cell is a reading that stopped early rather than a
+        non-answer, so it carries its own code. No caller declaration participates
+        in any of these classifications.
         """
 
         codes: set[PublicLimitationCode] = set()
@@ -464,6 +466,8 @@ class MeasurementRun:
             failure.kind is FailedAttemptKind.INVALID_RESPONSE for failure in self.failed_attempts
         ):
             codes.add(PublicLimitationCode.MALFORMED_CANDIDATE_RESPONSES_PRESENT)
+        if any(cell.perlectio.status is OutputStatus.TRUNCATED for cell in self.cells):
+            codes.add(PublicLimitationCode.TRUNCATED_READINGS_PRESENT)
         return frozenset(codes)
 
     def require_publishable(self) -> None:

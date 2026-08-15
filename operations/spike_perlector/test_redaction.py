@@ -221,6 +221,10 @@ def test_a_gapped_checked_reference_declared_clear_refuses_publication():
             {"candidate_status": OutputStatus.MALFORMED},
             PublicLimitationCode.MALFORMED_CANDIDATE_RESPONSES_PRESENT,
         ),
+        (
+            {"candidate_status": OutputStatus.TRUNCATED},
+            PublicLimitationCode.TRUNCATED_READINGS_PRESENT,
+        ),
     ),
 )
 def test_each_public_limitation_code_is_derived_from_a_retained_witness(
@@ -229,6 +233,32 @@ def test_each_public_limitation_code_is_derived_from_a_retained_witness(
     run = declared_fixture_run(**fixture_overrides)
 
     assert run.derived_limitation_codes() == frozenset({expected})
+
+
+def test_a_truncated_reading_cannot_publish_as_a_clear_run():
+    """ARCHITECTURE's Perlector "reads through to the end; truncation is a failure,
+    not an output" -- so a run of truncated readings is a run-specific limitation,
+    and one that scores well is exactly the case where an empty ``limitations``
+    array would read as a clean result. The other predeclared non-reading states
+    are equally visible in the published matrix and each already carries a code;
+    truncation was the one response state the closed vocabulary could not name.
+    """
+
+    run = declared_fixture_run(candidate_status=OutputStatus.TRUNCATED)
+
+    with pytest.raises(PublicSafetyRefusal, match="clear.*truncated_readings_present"):
+        project_public_finding(run)
+    finding = project_public_finding(
+        declared_fixture_run(
+            candidate_status=OutputStatus.TRUNCATED,
+            limitations=RunLimitations(
+                disclosure_state=LimitationDisclosureState.CODED,
+                codes=(PublicLimitationCode.TRUNCATED_READINGS_PRESENT,),
+            ),
+        )
+    )
+    assert finding["limitations"] == ["truncated_readings_present_v1"]
+    assert all(row["truncated_cells"] == row["cell_count"] for row in finding["matrix"])
 
 
 def test_a_coded_declaration_that_omits_a_derived_code_refuses_publication():

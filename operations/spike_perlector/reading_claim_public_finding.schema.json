@@ -47,7 +47,8 @@
           "checked_reference_gaps_present_v1",
           "nonscoreable_selected_acts_present_v1",
           "candidate_nonanswers_present_v1",
-          "malformed_candidate_responses_present_v1"
+          "malformed_candidate_responses_present_v1",
+          "truncated_readings_present_v1"
         ]
       }
     }
