@@ -102,7 +102,13 @@ class RunLimitations:
         if not isinstance(self.disclosure_state, LimitationDisclosureState):
             raise MeasurementRefusal("run limitation disclosure_state is not a closed state")
         # A caller may pass any iterable; what the frozen instance keeps is a tuple.
-        object.__setattr__(self, "codes", tuple(self.codes))
+        try:
+            codes = tuple(self.codes)
+        except TypeError as error:
+            raise MeasurementRefusal(
+                "run limitation codes must be an iterable of closed public codes"
+            ) from error
+        object.__setattr__(self, "codes", codes)
         if any(not isinstance(code, PublicLimitationCode) for code in self.codes):
             raise MeasurementRefusal("run limitation is not in the closed public code vocabulary")
         if len(set(self.codes)) != len(self.codes):

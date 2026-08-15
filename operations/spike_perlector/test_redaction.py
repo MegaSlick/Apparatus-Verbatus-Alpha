@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 import operations.spike_perlector.redaction as redaction_module
-from operations.spike_perlector.errors import MatrixRefusal, PublicSafetyRefusal
+from operations.spike_perlector.errors import (
+    MatrixRefusal,
+    MeasurementRefusal,
+    PublicSafetyRefusal,
+)
 from operations.spike_perlector.fakes import FakeCandidate, FakeReply
 from operations.spike_perlector.gates import RunAuthorization
 from operations.spike_perlector.holdout import PrivateSampleAccounting, ReferenceExclusion
@@ -303,6 +307,21 @@ def test_an_unenumerable_run_specific_limitation_refuses_publication():
 
     with pytest.raises(PublicSafetyRefusal, match="outside the closed public vocabulary"):
         project_public_finding(run)
+
+
+def test_a_non_iterable_limitation_codes_value_refuses_in_the_governed_vocabulary():
+    """A malformed declaration is a MeasurementRefusal, never a bare TypeError.
+
+    Callers that wrap run construction in ``except MeasurementRefusal`` to record
+    a governed refusal would not catch a ``TypeError`` escaping the boundary —
+    the same defect this package already ruled on for policy content in gates.py.
+    """
+
+    with pytest.raises(MeasurementRefusal, match="iterable of closed public codes"):
+        RunLimitations(
+            disclosure_state=LimitationDisclosureState.CODED,
+            codes=5,  # type: ignore[arg-type]
+        )
 
 
 def test_public_validator_refuses_a_protocol_digest_that_is_not_predeclared():

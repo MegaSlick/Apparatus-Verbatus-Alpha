@@ -728,8 +728,8 @@ def test_every_approval_loader_names_a_missing_approval_rather_than_an_attribute
             approval_reference=None,
             read_bytes=lambda _path: b"",
         )
+    declaration_reference, declaration_payload = engineering_declaration_artifact()
     with pytest.raises(DisclosureRefusal, match="run-plan approval is missing"):
-        declaration_reference, declaration_payload = engineering_declaration_artifact()
         RunPlanApproval.load(
             **RUN_ENGINEERING_DECLARATION,
             prove_before_scale_evidence_sha256=digest("scale"),
@@ -949,8 +949,8 @@ def test_each_typed_approval_refuses_a_generic_other_record_for_another_purpose(
             disclosure_scope_sha256=run_plan["disclosure_scope_sha256"],
         ),
     )
+    declaration = engineering_declaration_artifact()
     with pytest.raises(DisclosureRefusal, match="run-plan approval purpose"):
-        declaration = engineering_declaration_artifact()
         RunPlanApproval.load(
             **run_plan,
             engineering_declaration_reference=declaration[0],
