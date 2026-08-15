@@ -142,10 +142,14 @@ def test_acquire_closes_the_handle_and_refuses_on_a_plain_oserror(
     assert closed == [True]
 
 
-def test_acquire_swallows_a_close_failure_during_its_own_failure_cleanup(
+def test_acquire_reports_a_close_failure_inside_the_refusal_it_was_already_raising(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A close() that itself raises during acquire's cleanup must not replace the real refusal."""
+    """A close() that raises during acquire's cleanup may not replace the refusal — or vanish.
+
+    The contention refusal stays the primary error, and the leaked-descriptor
+    detail rides inside its message instead of being silently discarded.
+    """
 
     class ExplodingCloseHandle:
         def __init__(self, real: object) -> None:
@@ -168,5 +172,8 @@ def test_acquire_swallows_a_close_failure_during_its_own_failure_cleanup(
     monkeypatch.setattr(Path, "open", _open)
     monkeypatch.setattr(fcntl, "flock", _flock)
 
-    with pytest.raises(ResidencyError, match="another serving manager holds"):
+    with pytest.raises(ResidencyError, match="another serving manager holds") as refused:
         FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(identity=None)  # type: ignore[arg-type]
+
+    assert "additionally its descriptor could not be closed" in str(refused.value)
+    assert "simulated close failure during acquire cleanup" in str(refused.value)

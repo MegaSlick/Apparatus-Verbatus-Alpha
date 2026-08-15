@@ -105,21 +105,30 @@ class FileResidencyLease:
             handle = self.path.open("a+", encoding="utf-8")
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            if handle is not None:
-                try:
-                    handle.close()
-                except OSError:
-                    pass
+            close_failure = _close_quietly(handle)
             raise ResidencyError(
                 f"another serving manager holds the single-resident lease {self.path}"
+                + close_failure
             ) from error
         except OSError as error:
-            if handle is not None:
-                try:
-                    handle.close()
-                except OSError:
-                    pass
+            close_failure = _close_quietly(handle)
             raise ResidencyError(
-                f"could not acquire serving residency lease {self.path}: {error}"
+                f"could not acquire serving residency lease {self.path}: {error}" + close_failure
             ) from error
         return _FileResidencyHandle(self.path, handle)
+
+
+def _close_quietly(handle: TextIO | None) -> str:
+    """Close a partially acquired lease descriptor, reporting rather than hiding failure.
+
+    The acquisition refusal is already on its way; a close failure may not
+    replace it, but silently discarding it would hide a leaked descriptor.
+    """
+
+    if handle is None:
+        return ""
+    try:
+        handle.close()
+    except OSError as error:
+        return f"; additionally its descriptor could not be closed: {error}"
+    return ""
