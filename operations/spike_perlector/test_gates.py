@@ -451,10 +451,37 @@ def test_a_superseded_policy_with_its_valid_stale_approval_is_refused():
         action="other",
         target_version_hash=DataGateAuthority.scope_digest(policy_content=superseded),
     )
-    with pytest.raises(DisclosureRefusal, match="stale"):
+    with pytest.raises(DisclosureRefusal, match="approval is stale for the supplied policy"):
         DataGateAuthority.load(
             approval_reference=reference,
             read_bytes=lambda _path: payload,
+        )
+
+
+def test_a_stale_policy_snapshot_cannot_become_authority_by_direct_construction():
+    """The other staleness door: supplied content that is not the policy in force.
+
+    ``load()`` always resolves the repository home, so only direct construction
+    can present a stale snapshot with its own internally consistent approval —
+    and ``__post_init__`` must refuse it by the policy-currency message, not the
+    approval-scope one.
+    """
+
+    superseded = {**POLICY, "policy_version": "synthetic-data-gate-v0"}
+    reference, payload = approval_reference_for(
+        action="other",
+        target_version_hash=DataGateAuthority.scope_digest(policy_content=superseded),
+    )
+    record = json.loads(payload.decode("utf-8"))
+    with pytest.raises(DisclosureRefusal, match="stale for the policy currently in force"):
+        DataGateAuthority(
+            policy_content=superseded,
+            policy_identity=DATA_GATE_POLICY_IDENTITY,
+            policy_repository_path=DATA_GATE_POLICY_REPOSITORY_PATH,
+            policy_revision="synthetic-data-gate-v0",
+            approval_reference=reference,
+            approval_record=record,
+            approval_bytes=payload,
         )
 
 
