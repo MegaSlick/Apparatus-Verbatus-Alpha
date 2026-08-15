@@ -141,6 +141,7 @@ def test_product_keeps_non_text_provenance_and_every_continuation_citation(tmp_p
             "text/_source_folder/fixtures/synthetic-two-page-v0/readings.txt"
         ).decode()
 
+    assert delivered["witnesses"], "the delivered act carried no witnesses to compare"
     assert len(row["witnesses"]) == len(delivered["witnesses"])
     assert row["perlectio_ref"] == {
         "availability": "requires-retained-run-access",
@@ -151,17 +152,21 @@ def test_product_keeps_non_text_provenance_and_every_continuation_citation(tmp_p
         "requires-retained-run-access"
     )
     assert "relative_path" not in row["perlectio_ref"]
+    assert delivered["source_regions"], "the delivered act carried no source citations"
     for region in delivered["source_regions"]:
         assert f"source-page: {region['declared_path']}" in text
         assert f"source-sha256: {region['declared_sha256']}" in text
 
 
-def test_production_bundle_marks_absent_salvage_inventory_as_not_produced(tmp_path):
+def test_happy_run_marks_absent_salvage_inventory_as_not_produced(tmp_path):
     root = tmp_path / "runs"
-    result = _orchestrate(root, "no-salvage")
+    result = _orchestrate(root, "happy-no-salvage")
     assert result.returncode == 0, result.stderr
 
-    tree = RunTree(root, "no-salvage")
+    tree = RunTree(root, "happy-no-salvage")
+    assert not any(
+        entry["kind"] == "salvage-inventory" for entry in tree.build_manifest(RECENSOR)["artifacts"]
+    )
     reference = _export(tree)["payload"]["bundle"]["reference"]
     manifest = verify_export_bundle(tree.read_bytes(reference["relative_path"]), tmp_path / "clean")
     assert manifest["claims"]["salvage"]["status"] == ("not-produced-no-sealed-salvage-inventory")

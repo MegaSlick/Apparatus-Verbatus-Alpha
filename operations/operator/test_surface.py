@@ -1574,8 +1574,9 @@ def test_a_non_list_pages_record_is_a_named_run_failure_not_a_character_count(
     assert "not a list" in (failure.value.detail or "")
 
 
+@pytest.mark.parametrize("member", ("pages", "non_delivered"))
 def test_the_export_reader_refuses_non_list_members_before_any_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member: str
 ) -> None:
     """The real `_armarium_export` guard, driven with a malformed artifact.
 
@@ -1589,9 +1590,9 @@ def test_the_export_reader_refuses_non_list_members_before_any_receipt(
     monkeypatch.setattr(
         surface_module.RunTree,
         "read_artifact",
-        lambda self, stage, kind, identity: {"payload": {"aggregate": {}, "pages": "not a list"}},
+        lambda self, stage, kind, identity: {"payload": {"aggregate": {}, member: "not a list"}},
     )
-    with pytest.raises(ValueError, match="pages is not a list"):
+    with pytest.raises(ValueError, match=f"{member} is not a list"):
         surface._armarium_export(tmp_path, "r1")
 
 
@@ -2014,7 +2015,7 @@ def test_reconciliation_distinguishes_missing_lists_from_recorded_empty_lists() 
             "expected_acts": 0,
             "pages": [],
             "delivered": [],
-            "review": [],
+            "non_delivered": [],
         }
     )
 
@@ -2024,6 +2025,28 @@ def test_reconciliation_distinguishes_missing_lists_from_recorded_empty_lists() 
     assert "| Submitted pages accounted for | 0 |" in empty
     assert "| Delivered acts | 0 |" in empty
     assert "| Acts held for review | 0 |" in empty
+
+
+def test_reconciliation_counts_each_non_delivered_terminal_category() -> None:
+    rows = reconciliation_table(
+        {
+            "aggregate": {"status": "partial", "reasons": []},
+            "expected_acts": 5,
+            "pages": [],
+            "delivered": [{}],
+            "non_delivered": [
+                {"category": "held-for-review"},
+                {"category": "refused-with-reason"},
+                {"category": "confirmed-blank"},
+                {"category": "excluded-with-approval"},
+            ],
+        }
+    )
+
+    assert "| Acts held for review | 1 |" in rows
+    assert "| Acts refused with reason | 1 |" in rows
+    assert "| Confirmed blank acts | 1 |" in rows
+    assert "| Acts excluded with approval | 1 |" in rows
 
 
 def test_scripted_dry_run_uses_one_configured_policy_from_its_fixture_workspace(

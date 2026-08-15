@@ -342,6 +342,7 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
     with pytest.raises(FatalAccounting, match="no literal Archetypus text"):
         armarium.main()
     assert not context.finished
+    assert not any(record["kind"] == "export" for record in context.published)
 
 
 def test_armarium_exclusion_cannot_export_without_its_approval_artifact_reference():

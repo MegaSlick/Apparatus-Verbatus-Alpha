@@ -19,6 +19,7 @@ import pytest
 from armarium_export import EXPORT_MANIFEST_NAME
 
 from common.contracts.canonical import digest_bytes
+from common.contracts.errors import ContractError
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -157,6 +158,33 @@ def test_a_rename_failure_at_publish_does_not_orphan_the_staging_directory(
     assert list(tmp_path.glob(".delivery.publishing-*")) == []
 
 
+def test_a_cleanup_failure_names_the_leftover_staging_directory(
+    tmp_path, happy_run, monkeypatch, capsys
+):
+    import bundle as bundle_module
+
+    tree = RunTree(happy_run, "r")
+    tree.read_run()
+    monkeypatch.setattr(
+        bundle_module.os,
+        "replace",
+        lambda _src, _dst: (_ for _ in ()).throw(OSError("simulated rename failure")),
+    )
+    monkeypatch.setattr(
+        bundle_module.shutil,
+        "rmtree",
+        lambda _path: (_ for _ in ()).throw(OSError("simulated cleanup failure")),
+    )
+
+    with pytest.raises(OSError, match="simulated rename failure"):
+        bundle_module.publish(tree, tmp_path / "delivery")
+
+    captured = capsys.readouterr()
+    assert "warning: could not remove staging directory" in captured.err
+    assert "simulated cleanup failure" in captured.err
+    assert list(tmp_path.glob(".delivery.publishing-*"))
+
+
 def test_a_tampered_sealed_blob_is_refused_before_anything_is_published(tmp_path, happy_run):
     """The digest the export artifact recorded is the authority, not the blob's name."""
     root = tmp_path / "runs"
@@ -169,7 +197,29 @@ def test_a_tampered_sealed_blob_is_refused_before_anything_is_published(tmp_path
     assert result.returncode != 0
     # The run tree's own damage report, not a reassuring "there is no export here".
     assert "no sealed armarium/export artifact" not in result.stderr
+    assert "bytes changed under a sealed reference" in result.stderr
     assert not out.exists()
+
+
+def test_a_sealed_blob_read_error_is_reported_as_a_product_contract_failure(happy_run, monkeypatch):
+    import bundle as bundle_module
+
+    tree = RunTree(happy_run, "r")
+    tree.read_run()
+    real_read = tree.read_bytes
+    reads = 0
+
+    def fail_read(relative_path):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return real_read(relative_path)
+        raise OSError("simulated read failure")
+
+    monkeypatch.setattr(tree, "read_bytes", fail_read)
+
+    with pytest.raises(ContractError, match="sealed product bundle .* could not be read"):
+        bundle_module.sealed_bundle(tree)
 
 
 def test_a_sealed_export_remains_publishable_after_its_config_file_changes(tmp_path):

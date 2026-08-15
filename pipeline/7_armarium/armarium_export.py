@@ -182,6 +182,8 @@ def build_armarium_bundle(
     _validate_projection(projection)
     if projection.salvage_items is not None:
         _validate_salvage_items(projection.salvage_items)
+    if projection.salvage_items and "salvage-tier" not in formats.formats:
+        raise SchemaRefusal("a non-empty sealed salvage inventory requires the salvage-tier format")
     _validate_projection_region_bindings(projection)
 
     members: dict[str, bytes] = {}
@@ -240,10 +242,10 @@ def build_armarium_bundle(
     # publish and must fail before the atomic store writer is reached.
     with tempfile.TemporaryDirectory(prefix="armarium-verify-") as directory:
         clean_root = Path(directory)
-        verify_export_bundle(data, clean_root)
+        manifest_report = verify_export_bundle(data, clean_root)
         literal_formats = set(_LITERAL_TEXT_FORMATS) & set(formats.formats)
         if len(literal_formats) >= 2:
-            verify_projection_identity(data, clean_root / "identity")
+            _compare_literal_projections(clean_root, _manifest_formats(manifest_report))
     return ArmariumBundle(data=data, manifest=manifest)
 
 
@@ -375,6 +377,11 @@ def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
     root = clean_root
     manifest = verify_export_bundle(data, root)
     formats = _manifest_formats(manifest)
+    return _compare_literal_projections(root, formats)
+
+
+def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[str, str]:
+    """Compare already-verified literal members without extracting the package again."""
     projections: dict[str, dict[str, tuple[str, str]]] = {}
     selected_literal_formats = [name for name in _LITERAL_TEXT_FORMATS if name in formats.formats]
     if len(selected_literal_formats) < 2:
@@ -2277,7 +2284,7 @@ def _jsonl_act_records(
 
 def _database_act_records(
     path: Path, source_graph_regions: list[dict[str, Any]]
-) -> dict[str, dict[str, Any]]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, tuple[str, str]]]:
     """Validate the SQLite one-record-per-act projection and return categories."""
     connection: sqlite3.Connection | None = None
     try:
@@ -2292,6 +2299,7 @@ def _database_act_records(
         if connection is not None:
             connection.close()
     records: dict[str, dict[str, Any]] = {}
+    literals: dict[str, tuple[str, str]] = {}
     known = {category.value for category in ArmariumCategory}
     for (
         act_id,
@@ -2316,6 +2324,7 @@ def _database_act_records(
         if category == ArmariumCategory.DELIVERED.value:
             if not isinstance(literal, str) or digest != canonical_text_sha256(literal):
                 raise SchemaRefusal("a delivered acts database row has no valid literal text hash")
+            literals[act_id] = (literal, digest)
         elif literal is not None or digest is not None:
             raise SchemaRefusal("a non-delivered acts database row carries purported clean text")
         if reason is not None and not isinstance(reason, str):
@@ -2345,7 +2354,7 @@ def _database_act_records(
             "source_regions": decoded[1],
             "reason": reason,
         }
-    return records
+    return records, literals
 
 
 def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
@@ -2494,7 +2503,7 @@ def _verify_exact_delivered_citations(
             raise SchemaRefusal(f"the {subject} does not retain exact delivered provenance")
 
 
-def _verify_search_fold_claim(path: Path) -> dict[str, str]:
+def _verify_search_fold_claim(path: Path, literals: dict[str, tuple[str, str]]) -> dict[str, str]:
     """Recompute the derived search column when its Unicode database is ours.
 
     A digest-checked SQLite member proves the package was not edited after
@@ -2510,7 +2519,6 @@ def _verify_search_fold_claim(path: Path) -> dict[str, str]:
     the fold calculation itself was not run instead of accusing a good package
     of tampering.
     """
-    literals = _database_literals(path)
     connection: sqlite3.Connection | None = None
     try:
         connection = _open_acts_database(path)
@@ -2625,7 +2633,9 @@ def _verify_product_accounting(
                 )
     search_fold_verification = None
     if "acts-database" in formats.formats:
-        database_records = _database_act_records(root / "acts.sqlite", sources["regions"])
+        database_records, database_literals = _database_act_records(
+            root / "acts.sqlite", sources["regions"]
+        )
         if _product_categories(database_records) != expected:
             raise SchemaRefusal(
                 "the acts database does not reconcile to the manifest act partition"
@@ -2634,7 +2644,9 @@ def _verify_product_accounting(
         _verify_exact_delivered_citations(
             database_records, citations, act_keys, subject="acts database"
         )
-        search_fold_verification = _verify_search_fold_claim(root / "acts.sqlite")
+        search_fold_verification = _verify_search_fold_claim(
+            root / "acts.sqlite", database_literals
+        )
     if "jsonl" in formats.formats:
         jsonl_records = _jsonl_act_records(root / "acts.jsonl", sources["regions"])
         if _product_categories(jsonl_records) != expected:

@@ -590,20 +590,40 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
                 not isinstance(manifest, dict)
                 or manifest.get("schema") != "armarium-export-manifest.v1"
                 or canonical_bytes(manifest) != manifest_data
+                or manifest.get("self_hash") != self_hash(manifest)
             ):
                 return None
 
-            database_data = archive.read("acts.sqlite")
-            database_digest = digest_bytes(database_data)
+            member_names = set(names) - {"EXPORT_MANIFEST.json"}
+            listed = manifest.get("members")
+            if not isinstance(listed, list):
+                return None
+            member_rows = {}
+            for row in listed:
+                if (
+                    not isinstance(row, dict)
+                    or set(row) != {"path", "sha256", "bytes"}
+                    or not isinstance(row.get("path"), str)
+                    or row["path"] in member_rows
+                ):
+                    return None
+                member_rows[row["path"]] = row
+            if set(member_rows) != member_names:
+                return None
+            member_data = {name: archive.read(name) for name in member_names}
+            if any(
+                row.get("sha256") != digest_bytes(member_data[name])
+                or row.get("bytes") != len(member_data[name])
+                for name, row in member_rows.items()
+            ):
+                return None
+
+            database_data = member_data["acts.sqlite"]
             logical_database_digest = _sqlite_logical_digest(database_data)
             semantic_manifest = deepcopy(manifest)
             database_rows = [
-                row
-                for row in semantic_manifest.get("members", [])
-                if isinstance(row, dict) and row.get("path") == "acts.sqlite"
+                row for row in semantic_manifest["members"] if row["path"] == "acts.sqlite"
             ]
-            if len(database_rows) != 1 or database_rows[0].get("sha256") != database_digest:
-                return None
             database_rows[0]["sha256"] = logical_database_digest
             semantic_manifest["self_hash"] = self_hash(semantic_manifest)
             semantic_manifest_data = canonical_bytes(semantic_manifest)
@@ -618,7 +638,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
                     # it, and every other member, remains byte-bound.
                     member_inventory[name] = digest_bytes(semantic_manifest_data)
                 else:
-                    member_inventory[name] = digest_bytes(archive.read(name))
+                    member_inventory[name] = digest_bytes(member_data[name])
     except (BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
@@ -661,6 +681,7 @@ def _semantic_export_artifact(data: bytes, replacements: dict[str, str]) -> byte
         or bundle.get("format") != "zip"
         or bundle.get("sha256") not in replacements
         or canonical_bytes(record) != data
+        or record.get("self_hash") != self_hash(record)
     ):
         return None
     semantic = _replace_semantic_digests(record, replacements)
@@ -923,6 +944,50 @@ def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path)
     assert snapshot(original_root) != snapshot(doctored_root)
     assert semantic_snapshot_digest(original_root) == semantic_snapshot_digest(doctored_root)
     assert semantic_snapshot_digest(original_root) != semantic_snapshot_digest(changed_root)
+
+
+def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
+    """Integrity damage stays byte-bound instead of being normalized out of the pin."""
+    database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
+    original_root = tmp_path / "original"
+    _write_acceptance_bundle_tree(original_root, database)
+    original_semantic = semantic_snapshot_digest(original_root)
+
+    manifest_hash_root = tmp_path / "manifest-self-hash"
+    member_digest_root = tmp_path / "member-digest"
+    export_hash_root = tmp_path / "export-self-hash"
+    for root in (manifest_hash_root, member_digest_root, export_hash_root):
+        shutil.copytree(original_root, root)
+
+    def rewrite_bundle(root: Path, mutate) -> None:
+        bundle_path = next((root / "7_armarium/blobs/sha256").iterdir())
+        with ZipFile(bundle_path) as archive:
+            members = {name: archive.read(name) for name in archive.namelist()}
+        mutate(members)
+        buffer = BytesIO()
+        with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
+            for name, content in sorted(members.items()):
+                archive.writestr(name, content)
+        bundle_path.write_bytes(buffer.getvalue())
+
+    def damage_manifest_hash(members: dict[str, bytes]) -> None:
+        manifest = json.loads(members["EXPORT_MANIFEST.json"])
+        manifest["self_hash"] = "b" * 64
+        members["EXPORT_MANIFEST.json"] = canonical_bytes(manifest)
+
+    rewrite_bundle(manifest_hash_root, damage_manifest_hash)
+    rewrite_bundle(
+        member_digest_root,
+        lambda members: members.__setitem__("acts.jsonl", members["acts.jsonl"] + b"damage"),
+    )
+    export_path = export_hash_root / "7_armarium/artifacts/export/example.json"
+    export = json.loads(export_path.read_bytes())
+    export["self_hash"] = "c" * 64
+    export_path.write_bytes(canonical_bytes(export))
+
+    for root in (manifest_hash_root, member_digest_root, export_hash_root):
+        assert snapshot(root) != snapshot(original_root)
+        assert semantic_snapshot_digest(root) != original_semantic
 
 
 def export_of(tree: RunTree) -> dict:

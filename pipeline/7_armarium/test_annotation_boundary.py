@@ -202,7 +202,7 @@ def test_annotation_result_has_no_literal_text_field():
         result_fields = {field.name for field in dataclasses.fields(output_type)}
         assert not (result_fields & _FORBIDDEN_TEXT_RESULT_FIELDS)
     assert "canonical_clean_text" in AnnotationInput.__dataclass_fields__
-    assert _result().canonical_text_sha256 == _text_hash(INPUT_TEXT)
+    verify_annotation_binding(_input(), _result())
 
 
 def test_annotations_are_bound_to_the_exact_act_and_established_text_hash():

@@ -28,7 +28,6 @@ The destination gets `armarium-export.zip`, byte-identical to the sealed blob, a
 without a zip tool and the two can be compared.
 """
 
-import contextlib
 import os
 import shutil
 import sys
@@ -71,7 +70,12 @@ def sealed_bundle(tree: RunTree) -> tuple[bytes, dict]:
     relative_path = reference.get("relative_path")
     if not isinstance(relative_path, str):
         raise ContractError("the export artifact names no sealed product bundle")
-    data = tree.read_bytes(relative_path)
+    try:
+        data = tree.read_bytes(relative_path)
+    except OSError as error:
+        raise ContractError(
+            f"the sealed product bundle at {relative_path} could not be read"
+        ) from error
     if digest_bytes(data) != declared or reference.get("sha256") != declared:
         raise ContractError(
             "the sealed product bundle no longer matches the digest its export "
@@ -124,14 +128,25 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
             # directory rather than orphaning it beside the empty reservation.
             os.replace(staging, out_dir)
         except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
+            try:
+                shutil.rmtree(staging)
+            except OSError as cleanup_error:
+                print(
+                    f"warning: could not remove staging directory {staging}: {cleanup_error}",
+                    file=sys.stderr,
+                )
             raise
     except BaseException:
         # Every failure above re-raises before `os.replace`, so `out_dir` is still the
         # empty reservation. Removing it is what makes a failed publish leave no
         # destination at all rather than an empty one.
-        with contextlib.suppress(OSError):
+        try:
             out_dir.rmdir()
+        except OSError as cleanup_error:
+            print(
+                f"warning: the empty destination {out_dir} remains: {cleanup_error}",
+                file=sys.stderr,
+            )
         raise
     return {
         "archive": ARMARIUM_ARCHIVE_NAME,

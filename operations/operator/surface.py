@@ -1345,7 +1345,7 @@ class OperatorSurface:
         # The list-valued members every consumer counts or walks: a string here
         # would render a confident wrong page count into a receipt, and a number
         # would kill export with a bare TypeError after the bundle exists.
-        for member in ("pages", "delivered", "review"):
+        for member in ("pages", "delivered", "non_delivered"):
             if member in payload and not isinstance(payload[member], list):
                 raise ValueError(f"Armarium export record's {member} is not a list")
         return payload
@@ -1548,6 +1548,12 @@ def reconciliation_table(export_payload: dict[str, Any]) -> list[str]:
         value = export_payload.get(member)
         return str(len(value)) if isinstance(value, list) else "not recorded"
 
+    def counted_category(category: str) -> str:
+        value = export_payload.get("non_delivered")
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            return "not recorded"
+        return str(sum(item.get("category") == category for item in value))
+
     rows = [
         "Reconciliation from the recorded Armarium export:",
         "| Recorded item | Count or state |",
@@ -1555,7 +1561,10 @@ def reconciliation_table(export_payload: dict[str, Any]) -> list[str]:
         f"| Submitted pages accounted for | {counted('pages')} |",
         f"| Expected acts | {expected} |",
         f"| Delivered acts | {counted('delivered')} |",
-        f"| Acts held for review | {counted('review')} |",
+        f"| Acts held for review | {counted_category('held-for-review')} |",
+        f"| Acts refused with reason | {counted_category('refused-with-reason')} |",
+        f"| Confirmed blank acts | {counted_category('confirmed-blank')} |",
+        f"| Acts excluded with approval | {counted_category('excluded-with-approval')} |",
         f"| Recorded run state | {aggregate.get('status', 'unknown')} |",
     ]
     reasons = aggregate.get("reasons", [])

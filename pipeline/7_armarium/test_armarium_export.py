@@ -375,32 +375,46 @@ def test_selected_products_cannot_omit_an_act_the_manifest_claims(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "mutate",
+    ("mutate", "match"),
     [
-        lambda manifest: manifest["claims"].update(status="complete"),
-        lambda manifest: manifest["claims"].update(partial_reasons=[]),
-        lambda manifest: manifest["claims"]["submission_inventory"].update(status="reconciled"),
-        lambda manifest: manifest["claims"]["terminal_ledger"].update(status="complete"),
-        lambda manifest: manifest["claims"]["terminal_ledger"]["units"].pop(),
-        lambda manifest: manifest["claims"]["terminal_ledger"]["by_category"].update(
-            {"held-for-review": 0}
+        (lambda manifest: manifest["claims"].update(status="complete"), "status does not match"),
+        (lambda manifest: manifest["claims"].update(partial_reasons=[]), "status does not match"),
+        (
+            lambda manifest: manifest["claims"]["submission_inventory"].update(status="reconciled"),
+            "misstates what its submission denominator covers",
         ),
-        lambda manifest: manifest["aggregate"].update(status="complete", reasons=[]),
-        lambda manifest: manifest["aggregate"].update(reasons=["a different partial reason"]),
+        (
+            lambda manifest: manifest["claims"]["terminal_ledger"].update(status="complete"),
+            "terminal ledger does not match",
+        ),
+        (
+            lambda manifest: manifest["claims"]["terminal_ledger"]["units"].pop(),
+            "terminal ledger does not match",
+        ),
+        (
+            lambda manifest: manifest["claims"]["terminal_ledger"]["by_category"].update(
+                {"held-for-review": 0}
+            ),
+            "terminal ledger does not match",
+        ),
+        (
+            lambda manifest: manifest["aggregate"].update(status="complete", reasons=[]),
+            "aggregate claims complete",
+        ),
+        (
+            lambda manifest: manifest["aggregate"].update(reasons=["a different partial reason"]),
+            "aggregate does not match",
+        ),
     ],
 )
-def test_self_hashed_bundle_cannot_claim_unmeasured_completeness(mutate, tmp_path):
+def test_self_hashed_bundle_cannot_claim_unmeasured_completeness(mutate, match, tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
     mutate(manifest)
     _refresh_manifest(members, manifest)
 
-    with pytest.raises(
-        SchemaRefusal,
-        match="submission denominator|terminal ledger does not match|status does not match"
-        "|aggregate claims complete|aggregate does not match",
-    ):
+    with pytest.raises(SchemaRefusal, match=match):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
@@ -992,6 +1006,17 @@ def test_salvage_stays_out_of_every_act_projection(tmp_path):
     )
     with pytest.raises(SchemaRefusal, match="salvage-tier item reaches into the acts namespace"):
         build_armarium_bundle(nested_provenance_leak, _formats(embed_pixels=False), _source_bytes)
+
+
+def test_nonempty_salvage_inventory_requires_the_salvage_tier_format():
+    projection = _projection(salvage_items=(_salvage_item("marginal material"),))
+    formats = ArmariumFormats(
+        ("text-bundle", "acts-database", "jsonl", "review-items"),
+        False,
+    )
+
+    with pytest.raises(SchemaRefusal, match="non-empty sealed salvage inventory requires"):
+        build_armarium_bundle(projection, formats, _source_bytes)
 
 
 def test_salvage_requires_cited_ink_and_collection_provenance():
