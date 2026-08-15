@@ -14,7 +14,7 @@ from typing import Any
 
 from .errors import MeasurementRefusal, PublicSafetyRefusal
 from .models import Condition, PublicLimitationCode
-from .normalization import PROFILES
+from .normalization import GRAPHEMIC_V1, PROFILES
 from .protocol import PREDECLARED_PROTOCOL_SHA256
 from .runner import (
     AggregateMetrics,
@@ -32,6 +32,7 @@ MEASURE_QUOTES = (
     "dissent_is_structural_not_quality_v1",
     "cost_and_wall_time_per_candidate_act_v1",
 )
+_VALIDATOR_PROFILE_IDS = frozenset({GRAPHEMIC_V1.profile_id})
 
 _ROOT_KEYS = {
     "schema",
@@ -300,8 +301,10 @@ def validate_public_finding(finding: Any) -> None:
             "public finding does not bind the predeclared Spec 05 protocol digest"
         )
     profile_id = root["normalization_profile_id"]
-    if profile_id not in PROFILES:
-        raise PublicSafetyRefusal("public finding names an unknown normalization profile")
+    if profile_id not in _VALIDATOR_PROFILE_IDS:
+        raise PublicSafetyRefusal(
+            "public finding does not use the predeclared graphemic-v1 normalization profile"
+        )
     if root["normalization_profile_sha256"] != PROFILES[profile_id].digest:
         raise PublicSafetyRefusal(
             "public finding's normalization profile digest does not match its declared profile"

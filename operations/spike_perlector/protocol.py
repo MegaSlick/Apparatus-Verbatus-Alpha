@@ -52,7 +52,15 @@ from .errors import MatrixRefusal
 # tree — `workbench/` is in the working tree, only gitignored. Prose only: the
 # unbounded `(S + D + I) / N` denominator, its comparison with the OCR-D bounded
 # form, and every bound, profile, and scoring rule are byte-identical.
-PREDECLARED_PROTOCOL_SHA256 = "ba3579efa0194f70d30fbd1cd154809d2492a582798cd95ed2fa36ea81b88bec"
+#
+# Re-pinned 2026-08-15 while closing the readiness audit's four decided
+# report-only findings. Section 1 now records the session-written durable
+# engineering-declaration artifact and the authorization evidence retained on a
+# publishable run. Section 8 restores the complete enumeration of Tyrel's reserved
+# judgments by naming the declaration that the pipeline is proven. These are prose
+# corrections only: no measure, profile, bound, score, or result moved, and the
+# opening disclaimer still records that no result exists.
+PREDECLARED_PROTOCOL_SHA256 = "78460c767109b39ac0418787418af2953f6b8196141f588d12858a41120c47b9"
 
 
 def protocol_document_sha256() -> str:

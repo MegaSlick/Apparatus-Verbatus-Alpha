@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from operations.spike_perlector.errors import PublicSafetyRefusal
+import operations.spike_perlector.redaction as redaction_module
+from operations.spike_perlector.errors import MatrixRefusal, PublicSafetyRefusal
 from operations.spike_perlector.fakes import FakeCandidate, FakeReply
 from operations.spike_perlector.gates import RunAuthorization
 from operations.spike_perlector.holdout import PrivateSampleAccounting, ReferenceExclusion
@@ -35,7 +36,11 @@ from operations.spike_perlector.redaction import (
     validate_public_finding,
 )
 from operations.spike_perlector.roster import STOCK_BASE_SOURCE, CandidateRoster
-from operations.spike_perlector.runner import run_declared_roster_matrix, run_matrix
+from operations.spike_perlector.runner import (
+    MeasurementRun,
+    run_declared_roster_matrix,
+    run_matrix,
+)
 from operations.spike_perlector.testkit import (
     cleared_public_authorization_for,
     digest,
@@ -330,6 +335,16 @@ def test_public_validator_refuses_a_profile_digest_that_does_not_match_its_decla
         validate_public_finding(tampered)
 
 
+def test_public_validator_refuses_the_non_predeclared_allographic_profile():
+    finding = project_public_finding(declared_fixture_run())
+    tampered = deepcopy(finding)
+    tampered["normalization_profile_id"] = "allographic-v1"
+    tampered["normalization_profile_sha256"] = PROFILES["allographic-v1"].digest
+
+    with pytest.raises(PublicSafetyRefusal, match="predeclared graphemic-v1"):
+        validate_public_finding(tampered)
+
+
 def test_public_validator_refuses_partial_or_arithmetically_false_matrix():
     finding = project_public_finding(declared_fixture_run())
     partial = deepcopy(finding)
@@ -404,7 +419,10 @@ def test_the_published_schema_and_the_stricter_validator_describe_one_shape():
     conditions = {condition.value for condition in Condition}
     matrix_row = definitions["matrix_row"]["allOf"][1]["properties"]
     assert set(matrix_row["condition"]["enum"]) == conditions
-    assert set(schema["properties"]["normalization_profile_id"]["enum"]) == set(PROFILES)
+    schema_profile_ids = set(schema["properties"]["normalization_profile_id"]["enum"])
+    assert schema_profile_ids == set(PROFILES)
+    assert redaction_module._VALIDATOR_PROFILE_IDS == {GRAPHEMIC_V1.profile_id}
+    assert redaction_module._VALIDATOR_PROFILE_IDS < schema_profile_ids
     assert set(schema["properties"]["measure_quotes"]["items"]["enum"]) == set(MEASURE_QUOTES)
     assert set(schema["properties"]["limitations"]["items"]["enum"]) == {
         code.value for code in PublicLimitationCode
@@ -439,6 +457,41 @@ def test_synthetic_exercise_cannot_be_projected_as_a_public_finding():
     )
     with pytest.raises(PublicSafetyRefusal, match="not eligible"):
         project_public_finding(run)
+
+
+def test_raw_value_measurement_run_without_authorization_cannot_publish():
+    """Rebuild a structurally complete run with no authorization object or stamp."""
+
+    sealed = declared_fixture_run()
+    raw = MeasurementRun(
+        profile=sealed.profile,
+        candidates=sealed.candidates,
+        acts=sealed.acts,
+        cells=sealed.cells,
+        witness_baselines=sealed.witness_baselines,
+        material_class=sealed.material_class,
+        failed_attempts=sealed.failed_attempts,
+        roster=sealed.roster,
+        witness_configuration=sealed.witness_configuration,
+        manifest=sealed.manifest,
+        sample_accounting=sealed.sample_accounting,
+        limitations=sealed.limitations,
+    )
+
+    with pytest.raises(MatrixRefusal, match="sealed run authorization evidence"):
+        raw.require_publishable()
+
+
+def test_publication_refuses_an_authorization_stamp_drifted_from_the_run():
+    run = declared_fixture_run()
+    assert run.authorization_evidence is not None
+    drifted = replace(
+        run,
+        prompt_registry_sha256=digest("drifted-engineering-declaration"),
+    )
+
+    with pytest.raises(MatrixRefusal, match="recomputed engineering declaration"):
+        drifted.require_publishable()
 
 
 def test_supported_history_writer_validates_and_never_overwrites(tmp_path):

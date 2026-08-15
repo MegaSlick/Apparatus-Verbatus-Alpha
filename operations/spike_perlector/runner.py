@@ -15,7 +15,12 @@ from typing import Iterable
 
 from .encoding import is_sha256
 from .errors import MatrixRefusal, MeasurementRefusal
-from .gates import RunAuthorization, require_authorized_delivery
+from .gates import (
+    RunAuthorization,
+    RunAuthorizationEvidence,
+    RunPlanApproval,
+    require_authorized_delivery,
+)
 from .holdout import EvaluationManifest, PrivateSampleAccounting
 from .models import (
     ALL_CONDITIONS,
@@ -273,6 +278,8 @@ class MeasurementRun:
     manifest: EvaluationManifest | None = None
     sample_accounting: PrivateSampleAccounting | None = None
     limitations: RunLimitations = field(default_factory=RunLimitations)
+    prompt_registry_sha256: str | None = None
+    authorization_evidence: RunAuthorizationEvidence | None = None
 
     def __post_init__(self) -> None:
         if not self.candidates or not self.acts:
@@ -281,6 +288,12 @@ class MeasurementRun:
             raise MatrixRefusal("measurement run needs an explicit material class")
         if not isinstance(self.limitations, RunLimitations):
             raise MatrixRefusal("measurement run needs a closed run-limitation declaration")
+        if self.authorization_evidence is not None and not isinstance(
+            self.authorization_evidence, RunAuthorizationEvidence
+        ):
+            raise MatrixRefusal(
+                "measurement run authorization evidence must be a checked frozen record"
+            )
         if self.roster is not None:
             self.roster.validate()
             if self.candidates != self.roster.identities():
@@ -495,6 +508,32 @@ class MeasurementRun:
             raise MatrixRefusal("only a sealed declared-roster run can become a public finding")
         if self.sample_accounting is None:
             raise MatrixRefusal("only a declared run with private sample accounting can publish")
+        if self.authorization_evidence is None:
+            raise MatrixRefusal("a publishable run requires the sealed run authorization evidence")
+        if self.authorization_evidence.material_class is not self.material_class:
+            raise MatrixRefusal(
+                "run authorization evidence disagrees with the run's material class"
+            )
+        if not is_sha256(self.prompt_registry_sha256):
+            raise MatrixRefusal("publishable run has no sealed prompt registry digest")
+        expected_engineering_declaration_sha256 = RunPlanApproval.engineering_declaration_digest(
+            protocol_sha256=self.manifest.protocol_sha256,
+            manifest_sha256=self.manifest.manifest_sha256,
+            candidate_roster_sha256=self.roster.digest,
+            witness_configuration_sha256=self.witness_configuration.digest,
+            prompt_registry_sha256=self.prompt_registry_sha256,
+            normalization_profile_id=self.profile.profile_id,
+            normalization_profile_sha256=self.profile.digest,
+            private_sample_accounting_sha256=self.sample_accounting.digest,
+        )
+        if (
+            self.authorization_evidence.engineering_declaration_sha256
+            != expected_engineering_declaration_sha256
+        ):
+            raise MatrixRefusal(
+                "run authorization evidence disagrees with the run's recomputed "
+                "engineering declaration digest"
+            )
         derived_codes = self.derived_limitation_codes()
         declared_codes = frozenset(self.limitations.codes)
         if self.limitations.disclosure_state is LimitationDisclosureState.CLEAR:
@@ -891,6 +930,7 @@ def _execute_matrix(
     manifest: EvaluationManifest | None,
     sample_accounting: PrivateSampleAccounting | None,
     limitations: RunLimitations,
+    authorization_evidence: RunAuthorizationEvidence | None,
 ) -> MeasurementRun:
     """Preflight the entire matrix, then call each already-frozen participant."""
 
@@ -1079,6 +1119,8 @@ def _execute_matrix(
         manifest=manifest,
         sample_accounting=sample_accounting,
         limitations=limitations,
+        prompt_registry_sha256=prompt_registry.snapshot_sha256(identities),
+        authorization_evidence=authorization_evidence,
     )
 
 
@@ -1111,6 +1153,7 @@ def run_matrix(
         manifest=None,
         sample_accounting=None,
         limitations=RunLimitations() if limitations is None else limitations,
+        authorization_evidence=None,
     )
 
 
@@ -1152,6 +1195,7 @@ def run_declared_roster_matrix(
         normalization_profile_sha256=canonical_profile.digest,
         private_sample_accounting_sha256=accounting.digest,
     )
+    authorization_evidence = authorization.publication_evidence()
     candidate_values = tuple(candidates)
     participants = tuple((candidate, candidate.identity) for candidate in candidate_values)
     # Typed before it is compared, because the dict equality below calls the
@@ -1180,4 +1224,5 @@ def run_declared_roster_matrix(
         manifest=manifest,
         sample_accounting=accounting,
         limitations=RunLimitations() if limitations is None else limitations,
+        authorization_evidence=authorization_evidence,
     )

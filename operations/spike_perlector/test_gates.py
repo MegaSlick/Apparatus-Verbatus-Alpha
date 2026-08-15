@@ -53,6 +53,17 @@ RUN_ENGINEERING_DECLARATION = {
 }
 
 
+def engineering_declaration_artifact(values=None):
+    return RunPlanApproval.build_engineering_declaration_artifact(
+        **(RUN_ENGINEERING_DECLARATION if values is None else values)
+    )
+
+
+def artifact_reader(*artifacts):
+    records = {reference.relative_path: payload for reference, payload in artifacts}
+    return records.__getitem__
+
+
 def private_roster() -> CandidateRoster:
     return CandidateRoster(
         stock_base=identity("stock-private", 1, source_ref=STOCK_BASE_SOURCE),
@@ -718,13 +729,15 @@ def test_every_approval_loader_names_a_missing_approval_rather_than_an_attribute
             read_bytes=lambda _path: b"",
         )
     with pytest.raises(DisclosureRefusal, match="run-plan approval is missing"):
+        declaration_reference, declaration_payload = engineering_declaration_artifact()
         RunPlanApproval.load(
             **RUN_ENGINEERING_DECLARATION,
             prove_before_scale_evidence_sha256=digest("scale"),
             spend_scope_sha256=digest("spend"),
             disclosure_scope_sha256=digest("disclosure"),
+            engineering_declaration_reference=declaration_reference,
             approval_reference=None,
-            read_bytes=lambda _path: b"",
+            read_bytes=artifact_reader((declaration_reference, declaration_payload)),
         )
 
 
@@ -794,21 +807,100 @@ def test_run_plan_keeps_engineering_declaration_out_of_tyrels_approval_scope():
         subject_ids=["spec05-run-plan-approval.v1"],
         target_version_hash=RunPlanApproval.scope_digest(**reserved),
     )
+    first_declaration = engineering_declaration_artifact()
+    second_values = {
+        **RUN_ENGINEERING_DECLARATION,
+        "prompt_registry_sha256": digest("other-prompts"),
+    }
+    second_declaration = engineering_declaration_artifact(second_values)
     first = RunPlanApproval.load(
         **RUN_ENGINEERING_DECLARATION,
         **reserved,
+        engineering_declaration_reference=first_declaration[0],
         approval_reference=reference,
-        read_bytes=lambda _path: payload,
+        read_bytes=artifact_reader((reference, payload), first_declaration),
     )
     second = RunPlanApproval.load(
-        **{**RUN_ENGINEERING_DECLARATION, "prompt_registry_sha256": digest("other-prompts")},
+        **second_values,
         **reserved,
+        engineering_declaration_reference=second_declaration[0],
         approval_reference=reference,
-        read_bytes=lambda _path: payload,
+        read_bytes=artifact_reader((reference, payload), second_declaration),
     )
 
     assert first.scope_sha256 == second.scope_sha256
     assert first.engineering_declaration_sha256 != second.engineering_declaration_sha256
+
+
+def test_run_plan_refuses_engineering_declaration_bytes_that_disagree_with_the_reference():
+    reserved = {
+        "prove_before_scale_evidence_sha256": digest("scale"),
+        "spend_scope_sha256": digest("spend"),
+        "disclosure_scope_sha256": digest("disclosure"),
+    }
+    approval = approval_reference_for(
+        action="other",
+        subject_ids=["spec05-run-plan-approval.v1"],
+        target_version_hash=RunPlanApproval.scope_digest(**reserved),
+    )
+    declaration_reference, _ = engineering_declaration_artifact()
+
+    with pytest.raises(DisclosureRefusal, match="declaration bytes.*reference"):
+        RunPlanApproval.load(
+            **RUN_ENGINEERING_DECLARATION,
+            **reserved,
+            engineering_declaration_reference=declaration_reference,
+            approval_reference=approval[0],
+            read_bytes=artifact_reader(approval, (declaration_reference, b"{}")),
+        )
+
+
+def test_run_plan_names_a_missing_engineering_declaration_reference():
+    reserved = {
+        "prove_before_scale_evidence_sha256": digest("scale"),
+        "spend_scope_sha256": digest("spend"),
+        "disclosure_scope_sha256": digest("disclosure"),
+    }
+    approval = approval_reference_for(
+        action="other",
+        subject_ids=["spec05-run-plan-approval.v1"],
+        target_version_hash=RunPlanApproval.scope_digest(**reserved),
+    )
+
+    with pytest.raises(DisclosureRefusal, match="engineering declaration reference is missing"):
+        RunPlanApproval.load(
+            **RUN_ENGINEERING_DECLARATION,
+            **reserved,
+            engineering_declaration_reference=None,
+            approval_reference=approval[0],
+            read_bytes=artifact_reader(approval),
+        )
+
+
+def test_run_plan_refuses_drift_between_run_fields_and_the_declaration_artifact():
+    reserved = {
+        "prove_before_scale_evidence_sha256": digest("scale"),
+        "spend_scope_sha256": digest("spend"),
+        "disclosure_scope_sha256": digest("disclosure"),
+    }
+    approval = approval_reference_for(
+        action="other",
+        subject_ids=["spec05-run-plan-approval.v1"],
+        target_version_hash=RunPlanApproval.scope_digest(**reserved),
+    )
+    declaration = engineering_declaration_artifact()
+
+    with pytest.raises(DisclosureRefusal, match="artifact differs from the run declaration"):
+        RunPlanApproval.load(
+            **{
+                **RUN_ENGINEERING_DECLARATION,
+                "prompt_registry_sha256": digest("drifted-prompts"),
+            },
+            **reserved,
+            engineering_declaration_reference=declaration[0],
+            approval_reference=approval[0],
+            read_bytes=artifact_reader(approval, declaration),
+        )
 
 
 def test_generic_other_approval_for_another_purpose_cannot_open_the_data_gate():
@@ -858,10 +950,12 @@ def test_each_typed_approval_refuses_a_generic_other_record_for_another_purpose(
         ),
     )
     with pytest.raises(DisclosureRefusal, match="run-plan approval purpose"):
+        declaration = engineering_declaration_artifact()
         RunPlanApproval.load(
             **run_plan,
+            engineering_declaration_reference=declaration[0],
             approval_reference=reference,
-            read_bytes=lambda _path: payload,
+            read_bytes=artifact_reader((reference, payload), declaration),
         )
 
 

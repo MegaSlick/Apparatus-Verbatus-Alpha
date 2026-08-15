@@ -19,7 +19,7 @@ from common.contracts.approval import (
     ApprovalRecordReference,
     validate_approval_record,
 )
-from common.contracts.canonical import digest_of
+from common.contracts.canonical import canonical_bytes, digest_of
 from operations.submit.gate import DEFAULT_POLICY_PATH, ROOT, load_policy
 
 from .encoding import is_sha256, sha256_bytes
@@ -85,7 +85,9 @@ def _approval_digest(record: Mapping[str, object]) -> str:
     return digest_of(dict(record))
 
 
-def _require_content_addressed_reference(reference: ApprovalRecordReference) -> str:
+def _require_content_addressed_reference(
+    reference: ApprovalRecordReference, *, label: str = "approval authority"
+) -> str:
     """Refuse a reference before anything opens the path it names.
 
     Every ``load()`` hands ``relative_path`` to a caller-supplied ``read_bytes``.
@@ -97,13 +99,13 @@ def _require_content_addressed_reference(reference: ApprovalRecordReference) -> 
     """
 
     if not isinstance(reference, ApprovalRecordReference):
-        raise DisclosureRefusal("approval authority requires a checked approval reference")
+        raise DisclosureRefusal(f"{label} requires a checked content-addressed reference")
     reference_digest = reference.sha256
     if (
         not is_sha256(reference_digest)
         or reference.relative_path != f"receipts/sha256/{reference_digest}.json"
     ):
-        raise DisclosureRefusal("approval authority has an invalid content-addressed reference")
+        raise DisclosureRefusal(f"{label} has an invalid content-addressed reference")
     return reference_digest
 
 
@@ -417,6 +419,8 @@ class RunPlanApproval:
     prove_before_scale_evidence_sha256: str
     spend_scope_sha256: str
     disclosure_scope_sha256: str
+    engineering_declaration_reference: ApprovalRecordReference
+    engineering_declaration_bytes: bytes
     approval_reference: ApprovalRecordReference
     approval_record: Mapping[str, Any]
     approval_bytes: bytes
@@ -447,28 +451,77 @@ class RunPlanApproval:
 
     @property
     def engineering_declaration_sha256(self) -> str:
-        """Digest the session's own declaration; this is not a content address.
+        """Digest the session's durable, content-addressed declaration artifact."""
 
-        Elsewhere in this module "content-addressed" names a value that resolves an
-        immutable artifact at ``receipts/sha256/<digest>.json``. This digest resolves
-        nothing: the fields it covers are constructor arguments, and no stored record
-        binds them, which is the whole point of the split -- Tyrel's approval scope
-        below carries no engineering field. What ``require_scope`` proves is that the
-        run and the session's declaration of it agree, not that anyone approved the
-        declaration. Calling it content-addressed would claim the second.
-        """
+        return self.engineering_declaration_digest(
+            protocol_sha256=self.protocol_sha256,
+            manifest_sha256=self.manifest_sha256,
+            candidate_roster_sha256=self.candidate_roster_sha256,
+            witness_configuration_sha256=self.witness_configuration_sha256,
+            prompt_registry_sha256=self.prompt_registry_sha256,
+            normalization_profile_id=self.normalization_profile_id,
+            normalization_profile_sha256=self.normalization_profile_sha256,
+            private_sample_accounting_sha256=self.private_sample_accounting_sha256,
+        )
+
+    @classmethod
+    def engineering_declaration_digest(
+        cls,
+        *,
+        protocol_sha256: str,
+        manifest_sha256: str,
+        candidate_roster_sha256: str,
+        witness_configuration_sha256: str,
+        prompt_registry_sha256: str,
+        normalization_profile_id: str,
+        normalization_profile_sha256: str,
+        private_sample_accounting_sha256: str,
+    ) -> str:
+        """Recompute the declaration digest from a run's own sealed values."""
 
         return _approval_digest(
-            self._engineering_record(
-                protocol_sha256=self.protocol_sha256,
-                manifest_sha256=self.manifest_sha256,
-                candidate_roster_sha256=self.candidate_roster_sha256,
-                witness_configuration_sha256=self.witness_configuration_sha256,
-                prompt_registry_sha256=self.prompt_registry_sha256,
-                normalization_profile_id=self.normalization_profile_id,
-                normalization_profile_sha256=self.normalization_profile_sha256,
-                private_sample_accounting_sha256=self.private_sample_accounting_sha256,
+            cls._engineering_record(
+                protocol_sha256=protocol_sha256,
+                manifest_sha256=manifest_sha256,
+                candidate_roster_sha256=candidate_roster_sha256,
+                witness_configuration_sha256=witness_configuration_sha256,
+                prompt_registry_sha256=prompt_registry_sha256,
+                normalization_profile_id=normalization_profile_id,
+                normalization_profile_sha256=normalization_profile_sha256,
+                private_sample_accounting_sha256=private_sample_accounting_sha256,
             )
+        )
+
+    @classmethod
+    def build_engineering_declaration_artifact(
+        cls,
+        *,
+        protocol_sha256: str,
+        manifest_sha256: str,
+        candidate_roster_sha256: str,
+        witness_configuration_sha256: str,
+        prompt_registry_sha256: str,
+        normalization_profile_id: str,
+        normalization_profile_sha256: str,
+        private_sample_accounting_sha256: str,
+    ) -> tuple[ApprovalRecordReference, bytes]:
+        """Build canonical bytes for the session to write beside approval records."""
+
+        record = cls._engineering_record(
+            protocol_sha256=protocol_sha256,
+            manifest_sha256=manifest_sha256,
+            candidate_roster_sha256=candidate_roster_sha256,
+            witness_configuration_sha256=witness_configuration_sha256,
+            prompt_registry_sha256=prompt_registry_sha256,
+            normalization_profile_id=normalization_profile_id,
+            normalization_profile_sha256=normalization_profile_sha256,
+            private_sample_accounting_sha256=private_sample_accounting_sha256,
+        )
+        payload = canonical_bytes(record)
+        payload_sha256 = sha256_bytes(payload)
+        return (
+            ApprovalRecordReference(f"receipts/sha256/{payload_sha256}.json", payload_sha256),
+            payload,
         )
 
     # One builder keeps stored and recomputed approval scopes identical.
@@ -529,6 +582,47 @@ class RunPlanApproval:
             )
         if not isinstance(self.normalization_profile_id, str) or not self.normalization_profile_id:
             raise DisclosureRefusal("run engineering declaration must name its normalizer")
+        declaration_reference_sha256 = _require_content_addressed_reference(
+            self.engineering_declaration_reference,
+            label="engineering declaration",
+        )
+        if (
+            not isinstance(self.engineering_declaration_bytes, bytes)
+            or sha256_bytes(self.engineering_declaration_bytes) != declaration_reference_sha256
+        ):
+            raise DisclosureRefusal(
+                "engineering declaration bytes do not match their content-addressed reference"
+            )
+        try:
+            declaration = json.loads(self.engineering_declaration_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise DisclosureRefusal("engineering declaration bytes are not JSON") from error
+        expected_declaration = self._engineering_record(
+            protocol_sha256=self.protocol_sha256,
+            manifest_sha256=self.manifest_sha256,
+            candidate_roster_sha256=self.candidate_roster_sha256,
+            witness_configuration_sha256=self.witness_configuration_sha256,
+            prompt_registry_sha256=self.prompt_registry_sha256,
+            normalization_profile_id=self.normalization_profile_id,
+            normalization_profile_sha256=self.normalization_profile_sha256,
+            private_sample_accounting_sha256=self.private_sample_accounting_sha256,
+        )
+        try:
+            canonical_declaration = canonical_bytes(declaration)
+        except (TypeError, ValueError, RecursionError) as error:
+            raise DisclosureRefusal(
+                f"engineering declaration cannot be canonically verified: {error}"
+            ) from error
+        if canonical_declaration != self.engineering_declaration_bytes:
+            raise DisclosureRefusal("engineering declaration artifact is not canonical JSON")
+        if declaration != expected_declaration:
+            raise DisclosureRefusal(
+                "engineering declaration artifact differs from the run declaration"
+            )
+        if declaration_reference_sha256 != self.engineering_declaration_sha256:
+            raise DisclosureRefusal(
+                "engineering declaration reference does not bind the recomputed declaration digest"
+            )
         checked = _checked_approval_record(self.approval_reference, self.approval_bytes)
         if checked != dict(self.approval_record):
             raise DisclosureRefusal("run-plan approval record differs from its checked bytes")
@@ -558,14 +652,15 @@ class RunPlanApproval:
         prove_before_scale_evidence_sha256: str,
         spend_scope_sha256: str,
         disclosure_scope_sha256: str,
+        engineering_declaration_reference: ApprovalRecordReference,
         approval_reference: ApprovalRecordReference,
         read_bytes: Callable[[str], bytes],
     ) -> "RunPlanApproval":
-        """Load Tyrel's reserved-scope approval beside the session's run declaration.
+        """Load Tyrel's approval and the session's declaration through one reader.
 
-        The approval artifact binds only the reserved scope. The engineering fields
-        travel on the same object because the run checks both at one boundary, but
-        nothing in this loader approves them.
+        Tyrel's artifact binds only the reserved scope. The separate declaration
+        artifact makes the engineering fields durable because the run checks both at
+        one boundary, but nothing in this loader treats those fields as human-approved.
         """
 
         # Checked before it is dereferenced, for the reason `DataGateAuthority.load`
@@ -577,15 +672,32 @@ class RunPlanApproval:
             raise DisclosureRefusal(
                 "run-plan approval is missing; this run requires a current approval-record artifact"
             )
+        if not isinstance(engineering_declaration_reference, ApprovalRecordReference):
+            raise DisclosureRefusal(
+                "engineering declaration reference is missing; this run requires the "
+                "session's content-addressed declaration artifact"
+            )
 
         # Before the read, not after it: the path this names is about to be
         # opened by a caller-supplied reader.
         _require_content_addressed_reference(approval_reference)
+        _require_content_addressed_reference(
+            engineering_declaration_reference,
+            label="engineering declaration",
+        )
         try:
             payload = read_bytes(approval_reference.relative_path)
             record = _checked_approval_record(approval_reference, payload)
         except Exception as error:
             raise DisclosureRefusal(f"run-plan approval is unavailable: {error}") from error
+        try:
+            engineering_declaration_bytes = read_bytes(
+                engineering_declaration_reference.relative_path
+            )
+        except Exception as error:
+            raise DisclosureRefusal(
+                f"engineering declaration artifact is unavailable: {error}"
+            ) from error
         return cls(
             protocol_sha256=protocol_sha256,
             manifest_sha256=manifest_sha256,
@@ -598,6 +710,8 @@ class RunPlanApproval:
             prove_before_scale_evidence_sha256=prove_before_scale_evidence_sha256,
             spend_scope_sha256=spend_scope_sha256,
             disclosure_scope_sha256=disclosure_scope_sha256,
+            engineering_declaration_reference=engineering_declaration_reference,
+            engineering_declaration_bytes=engineering_declaration_bytes,
             approval_reference=approval_reference,
             approval_record=record,
             approval_bytes=payload,
@@ -627,7 +741,7 @@ class RunPlanApproval:
         )
         if _approval_digest(observed) != self.engineering_declaration_sha256:
             raise DisclosureRefusal(
-                "run differs from the session's declared engineering scope for this run"
+                "run differs from the session's durable engineering declaration artifact"
             )
 
 
@@ -709,6 +823,55 @@ class RunAuthorization:
             normalization_profile_sha256=normalization_profile_sha256,
             private_sample_accounting_sha256=private_sample_accounting_sha256,
         )
+
+    def publication_evidence(self) -> RunAuthorizationEvidence:
+        """Stamp a declared run with the checked authority that opened its boundary."""
+
+        if self.material_class is MaterialClass.SYNTHETIC or self.run_plan_approval is None:
+            raise DisclosureRefusal(
+                "only a non-synthetic run with checked run-plan approval has publication evidence"
+            )
+        return RunAuthorizationEvidence(
+            material_class=self.material_class,
+            approval_scope_sha256=self.run_plan_approval.scope_sha256,
+            engineering_declaration_sha256=(self.run_plan_approval.engineering_declaration_sha256),
+            run_plan_approval=self.run_plan_approval,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RunAuthorizationEvidence:
+    """Frozen publication stamp retained by a run after authorization preflight."""
+
+    material_class: MaterialClass
+    approval_scope_sha256: str
+    engineering_declaration_sha256: str
+    run_plan_approval: RunPlanApproval = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.material_class, MaterialClass):
+            raise DisclosureRefusal("run authorization evidence must name a MaterialClass")
+        if self.material_class is MaterialClass.SYNTHETIC:
+            raise DisclosureRefusal("synthetic fixture runs cannot carry publication authority")
+        if not isinstance(self.run_plan_approval, RunPlanApproval):
+            raise DisclosureRefusal("run authorization evidence requires a checked RunPlanApproval")
+        if not is_sha256(self.approval_scope_sha256) or not is_sha256(
+            self.engineering_declaration_sha256
+        ):
+            raise DisclosureRefusal(
+                "run authorization evidence requires approval and engineering declaration digests"
+            )
+        if self.approval_scope_sha256 != self.run_plan_approval.scope_sha256:
+            raise DisclosureRefusal(
+                "run authorization evidence disagrees with its checked approval scope"
+            )
+        if (
+            self.engineering_declaration_sha256
+            != self.run_plan_approval.engineering_declaration_sha256
+        ):
+            raise DisclosureRefusal(
+                "run authorization evidence disagrees with its checked engineering declaration"
+            )
 
 
 def require_authorized_delivery(

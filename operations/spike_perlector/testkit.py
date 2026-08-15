@@ -214,7 +214,7 @@ def run_plan_approval_for(
         if sample_accounting is None
         else sample_accounting
     )
-    values = {
+    engineering_declaration = {
         "protocol_sha256": manifest.protocol_sha256,
         "manifest_sha256": manifest.manifest_sha256,
         "candidate_roster_sha256": roster.digest,
@@ -223,22 +223,31 @@ def run_plan_approval_for(
         "normalization_profile_id": profile.profile_id,
         "normalization_profile_sha256": profile.digest,
         "private_sample_accounting_sha256": accounting.digest,
+    }
+    reserved_scope = {
         "prove_before_scale_evidence_sha256": digest("synthetic-small-reasonable-well"),
         "spend_scope_sha256": digest("synthetic-zero-spend-scope"),
         "disclosure_scope_sha256": digest("synthetic-cleared-disclosure-scope"),
     }
     reference, payload = _test_approval_reference(
         RunPlanApproval.scope_digest(
-            prove_before_scale_evidence_sha256=values["prove_before_scale_evidence_sha256"],
-            spend_scope_sha256=values["spend_scope_sha256"],
-            disclosure_scope_sha256=values["disclosure_scope_sha256"],
+            **reserved_scope,
         ),
         subject_id=RUN_PLAN_APPROVAL_SUBJECT,
     )
+    declaration_reference, declaration_payload = (
+        RunPlanApproval.build_engineering_declaration_artifact(**engineering_declaration)
+    )
+    artifacts = {
+        reference.relative_path: payload,
+        declaration_reference.relative_path: declaration_payload,
+    }
     return RunPlanApproval.load(
-        **values,
+        **engineering_declaration,
+        **reserved_scope,
+        engineering_declaration_reference=declaration_reference,
         approval_reference=reference,
-        read_bytes=lambda _path: payload,
+        read_bytes=artifacts.__getitem__,
     )
 
 
