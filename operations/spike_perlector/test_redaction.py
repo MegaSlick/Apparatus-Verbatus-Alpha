@@ -187,7 +187,7 @@ def test_a_coded_run_specific_limitation_appears_in_the_public_finding():
             limitations=RunLimitations(
                 disclosure_state=LimitationDisclosureState.CODED,
                 codes=(limitation,),
-            )
+            ),
         )
     )
 

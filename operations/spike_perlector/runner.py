@@ -460,11 +460,8 @@ class MeasurementRun:
             for cell in self.cells
         ):
             codes.add(PublicLimitationCode.CANDIDATE_NONANSWERS_PRESENT)
-        if any(
-            cell.perlectio.status is OutputStatus.MALFORMED for cell in self.cells
-        ) or any(
-            failure.kind is FailedAttemptKind.INVALID_RESPONSE
-            for failure in self.failed_attempts
+        if any(cell.perlectio.status is OutputStatus.MALFORMED for cell in self.cells) or any(
+            failure.kind is FailedAttemptKind.INVALID_RESPONSE for failure in self.failed_attempts
         ):
             codes.add(PublicLimitationCode.MALFORMED_CANDIDATE_RESPONSES_PRESENT)
         return frozenset(codes)
@@ -508,9 +505,7 @@ class MeasurementRun:
             unsupported = declared_codes - derived_codes
             differences = []
             if omitted:
-                differences.append(
-                    "omitted: " + ", ".join(sorted(code.value for code in omitted))
-                )
+                differences.append("omitted: " + ", ".join(sorted(code.value for code in omitted)))
             if unsupported:
                 differences.append(
                     "unsupported: " + ", ".join(sorted(code.value for code in unsupported))
