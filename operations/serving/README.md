@@ -34,7 +34,12 @@ card the same stable lock path. The launcher passes that lock descriptor to
 the exact vLLM child, so a controller crash cannot release the lease while its
 child remains resident. The default command is
 `sys.executable -m vllm serve`: the executable and the inspected installed
-distribution therefore come from the same Python environment.
+distribution therefore come from the same Python environment. That equality is
+enforced, not merely defaulted — a supplied `command_prefix` naming a different
+interpreter is refused at construction unless the caller also supplies the
+`PackageInspector` for the environment it launches. Otherwise the exact package
+pin would pass against distributions the engine never imports, and the launch
+audit's `runtime_packages.observed` would measure the wrong Python.
 
 The command uses the verified base snapshot; gives the API a stable
 `--served-model-name`; and passes the typed profile flags. For a Hugging Face
@@ -64,9 +69,12 @@ that same owned cleanup; it cannot launch another chair around it.
 ## Readiness and adapter proof
 
 Readiness is a bounded poll of the exact child and its fresh launch log. It fails
-on an exited child and named `VLLM_ERROR`, `CUDA out of memory`,
-`EngineDeadError`, `LORA_UNSUPPORTED` (`does not support LoRA`) or
-`UNKNOWN_MODEL` signatures. Spec 04 requires a red preflight to carry useful
+on an exited child and named `CUDA out of memory`, `EngineDeadError`,
+`LORA_UNSUPPORTED` (`does not support LoRA`), `UNKNOWN_MODEL`, or `VLLM_ERROR`
+signatures. Of those, `VLLM_ERROR` has no producer today: vLLM never prints it
+— it was the old pipeline *wrapper script's* own echo, and this poll reads only
+the child's log. It is reserved for a future launch wrapper that writes there,
+and claims nothing about vLLM's output. Spec 04 requires a red preflight to carry useful
 remediation, and spec 12 requires an operator-facing error to say what happened;
 these two adapter failures therefore receive named refusals instead of collapsing
 into a watchdog timeout. The old pipeline's launch scripts are historical evidence
@@ -116,7 +124,12 @@ configured base and adapter before launch**, not merely one that is well-formed.
 
 `chair-serving-receipt.v1` remains closed. It holds what answered: identity,
 revision/manifest, tokenizer revision, seed, context/pixel caps, engine/version,
-dtype, base identity when applicable, endpoint, and observed launch time. It has
+dtype, base identity when applicable, endpoint, and observed launch time. Its
+`pixel_cap` is the **total pixel count** the profile gave vLLM — the third
+place this one word appears in two units, after `config/pod_placement.toml`'s
+longest-edge cap and a serving profile's `max_pixels`. A receipt's `pixel_cap`
+and a placement plan's are not comparable directly; see the capacity check
+below for the relation that is sound. It has
 no stable API alias, PID, profile/tier, command, full package map, readiness
 evidence, or adapter-output proof.
 

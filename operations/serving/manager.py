@@ -1,11 +1,17 @@
 """Start one configured vLLM chair, prove it answers, then publish its receipt.
 
 The manager receives one already-named chair.  It never ranks chairs, retries
-with another recipe, or turns a failed adapter into its bare base.  Every start
-failure leaves as a refusal naming that requested chair: one this manager
-observed is routed through ``ChairRegistry.refuse_recipe_start``, and one the
-registry itself raised is re-raised as it stands, because refusing it a second
-time would replace the chair boundary's own reason with this module's.
+with another recipe, or turns a failed adapter into its bare base.  Every
+*observed* start failure leaves as a refusal naming that requested chair: one
+this manager observed is routed through ``ChairRegistry.refuse_recipe_start``,
+and one the registry itself raised is re-raised as it stands, because refusing
+it a second time would replace the chair boundary's own reason with this
+module's.
+
+The one start failure that is deliberately *not* a chair refusal is an
+interrupt — ``KeyboardInterrupt``/``SystemExit`` — because the operator, not
+the chair, is the reason.  ``start``'s ``BaseException`` clause says what it
+does with the two facts that case can produce.
 """
 
 from __future__ import annotations
@@ -462,6 +468,7 @@ class ServingManager:
         sleep: Callable[[float], None] | None = None,
         shutdown_timeout_seconds: float = 10.0,
     ) -> None:
+        supplied_command_prefix = command_prefix is not None
         if command_prefix is None:
             # Invoking vLLM through this interpreter binds the command to the
             # exact environment inspected through importlib.metadata below.  A
@@ -474,6 +481,31 @@ class ServingManager:
             or not Path(command_prefix[0]).is_absolute()
         ):
             raise ValueError("vLLM command_prefix must start with an absolute interpreter path")
+        if (
+            supplied_command_prefix
+            and package_inspector is None
+            and command_prefix[0] != sys.executable
+        ):
+            # `InstalledPackages` reads *this* interpreter's distributions, so
+            # the whole point of `_assert_runtime` — that the pinned versions
+            # are the ones the engine will import — holds only while the child
+            # is this interpreter.  Launch another one under the default
+            # inspector and the pin passes against an environment nothing ran
+            # in, and `runtime_packages.observed` in the launch audit becomes a
+            # measurement of the wrong Python (GOVERNANCE 6, GOVERNANCE 10).
+            #
+            # Compared as exact strings rather than resolved paths on purpose:
+            # two virtualenvs routinely symlink the same real interpreter while
+            # holding entirely different site-packages, so `realpath` equality
+            # would accept precisely the substitution this refuses.  A caller
+            # that really does launch elsewhere must supply the
+            # `PackageInspector` for *that* environment and own the pairing.
+            raise ValueError(
+                "the default package inspector reads this interpreter's installed "
+                "distributions, so a supplied vLLM command_prefix must launch "
+                f"{sys.executable!r}; to launch another interpreter, supply the "
+                "PackageInspector for the environment it launches"
+            )
         if not isinstance(producer, str) or not producer.strip():
             raise ValueError("serving audit producer must be a non-blank string")
         if shutdown_timeout_seconds <= 0:
@@ -579,6 +611,16 @@ class ServingManager:
                 tokenizer_revision=base_identity.receipt_revision,
                 seed=profile.seed,
                 context_cap=profile.max_model_len,
+                # `chair-serving-receipt.v1`'s `pixel_cap` is the **total pixel
+                # count** that went to vLLM, because that is the only pixel
+                # bound a serving moment actually had.  It is the third site of
+                # the one word this branch already had to disentangle once:
+                # `config/pod_placement.toml`'s `pixel_cap` is a longest edge,
+                # and `ServingSmokeReader._assert_profile_within_placement`
+                # holds the arithmetic that relates them.  A reader comparing a
+                # receipt's `pixel_cap` with a placement plan's is comparing
+                # 2359296 with 1792 and will conclude the wrong thing, exactly
+                # as this package did before that check was corrected.
                 pixel_cap=profile.max_pixels,
                 engine="vllm",
                 engine_version=observed_packages["vllm"],
@@ -653,8 +695,22 @@ class ServingManager:
             ) from error  # pragma: no cover
         except BaseException as error:
             # KeyboardInterrupt/SystemExit must not strand a child between
-            # launch and handle publication. Preserve the control-flow signal
-            # after exact cleanup; if cleanup is also unverified, report both.
+            # launch and handle publication.  When cleanup proves the child and
+            # endpoint are gone, the control-flow signal is re-raised
+            # unchanged: nothing is owed to anyone but the operator who sent it.
+            #
+            # When cleanup *cannot* prove that, the two facts cannot both be
+            # this exception, and the possibly-resident child wins.  So the
+            # interrupt is deliberately converted into a `ServiceStopError`
+            # carrying both halves, and the control-flow signal is spent to say
+            # so.  The cost is real and is accepted knowingly: an ordinary
+            # `except Exception` above this frame — `PreflightRunner._smoke` is
+            # the one in this repository — will now catch what was a Ctrl-C and
+            # turn it into a red issue rather than unwinding. That is the
+            # louder of the two outcomes, because the retained lease then makes
+            # every following start refuse by name, whereas an interrupt that
+            # unwound past a handler would leave the stop failure in a
+            # traceback nobody stores (GOVERNANCE 2).
             cleanup_error = self._attempt_cleanup(process, endpoint)
             if cleanup_error is not None:
                 raise ServiceStopError(
@@ -697,7 +753,13 @@ class ServingManager:
             # after repairing an endpoint/process problem.
             if isinstance(error, ServiceStopError):
                 raise
-            raise ServiceStopError(str(error)) from error
+            # Name the type as well as the message.  `_stop_process` observes
+            # its child with `process.poll()` outside its own try, so a
+            # `ServerProcess` implementation that raises there arrives here as
+            # it stands — and `str()` of an exception raised with no arguments
+            # is the empty string, which would report an unstopped child as
+            # `VLLM_STOP_FAILED: ` and nothing else (GOVERNANCE 2).
+            raise ServiceStopError(f"{type(error).__name__}: {error}") from error
         else:
             self._active = None
 
@@ -1070,7 +1132,8 @@ class ServingManager:
             if isinstance(error, ServiceStopError):
                 return error
             return ServiceStopError(
-                f"cleanup after failed serving launch could not complete: {error}"
+                "cleanup after failed serving launch could not complete: "
+                f"{type(error).__name__}: {error}"
             )
         self._unready_process = None
         self._unready_endpoint = ""
@@ -1302,6 +1365,17 @@ def _fatal_log_signature(tail: str) -> str | None:
     every interval, so one benign line naming either word aborts a start that
     was going to succeed.  A missed signature costs a bounded watchdog wait; a
     false one costs a relaunch, and on the real path that is GPU-hours.
+
+    `VLLM_ERROR` is kept, and is honestly a marker with no producer on this
+    path.  vLLM prints no such string: it was the *wrapper script's* own echo
+    in the old pipeline (`/window/remote/serve_chandra.sh` line 87 writes it to
+    the wrapper's stdout after grepping the engine log), and this poll reads
+    only the child's own launch log.  It stays because a future launch wrapper
+    that does write into that log has one agreed word for "fatal, stop
+    waiting", and because a signature that never fires costs nothing — the risk
+    it carries is a false positive from some later vLLM string containing
+    `vllm_error`, not a missed failure.  It is not evidence that vLLM says
+    anything.
 
     A bare `traceback` is declined for exactly the same reason.  vLLM has
     printed a benign, logged-and-swallowed traceback at startup for an

@@ -966,6 +966,61 @@ def test_process_exit_before_readiness_has_its_own_named_refusal(tmp_path: Path)
     assert publisher.calls == []
 
 
+def test_the_default_package_inspector_binds_the_pin_to_the_launched_interpreter(
+    tmp_path: Path,
+) -> None:
+    """A pin asserted against one Python and launched into another proves nothing.
+
+    ``InstalledPackages`` reads *this* interpreter's distributions. The
+    ``command_prefix`` seam let a caller launch a different absolute
+    interpreter while that default inspector stayed in place, so
+    ``_assert_runtime`` passed against an environment the engine never imports
+    and the launch audit recorded ``runtime_packages.observed`` for the wrong
+    Python -- a measurement of something nobody ran (GOVERNANCE 6, 10).
+    """
+
+    chair = identity("reader", "reader-v1")
+    profiles = (
+        profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000),
+    )
+    http = FakeHttp(model_ids=("reader-api",))
+    other_interpreter = str(Path(sys.executable).parent / "python-from-another-venv")
+
+    def build(**overrides: object) -> ServingManager:
+        arguments: dict[str, object] = {
+            "registry": FakeRegistry({chair.role: chair}, tmp_path),
+            "recipes": recipes(*profiles),
+            "config_inputs": ServingConfigInputs("1" * 64, "2" * 64),
+            "launcher": FakeLauncher(http),
+            "http": http,
+            "receipt_publisher": FakePublisher(http),
+            "log_root": tmp_path / "logs",
+            "residency_lease": FileResidencyLease(tmp_path / "pod-gpu.lock"),
+        }
+        arguments.update(overrides)
+        return ServingManager(**arguments)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="must launch"):
+        build(command_prefix=(other_interpreter, "-m", "vllm"))
+
+    # Two escapes, both explicit. Naming this interpreter is always allowed,
+    # and a caller that owns the pairing may launch elsewhere by supplying the
+    # inspector for the environment it actually launches.
+    build(command_prefix=(sys.executable, "-m", "vllm"))
+    build(
+        command_prefix=(other_interpreter, "-m", "vllm"),
+        package_inspector=FakePackages({"vllm": "0.test"}),
+    )
+
+    # Resolved-path equality would not do: two virtualenvs routinely symlink
+    # one real interpreter while holding entirely different site-packages, so
+    # a link to this very executable is still another environment's python.
+    linked = tmp_path / "linked-python"
+    linked.symlink_to(sys.executable)
+    with pytest.raises(ValueError, match="must launch"):
+        build(command_prefix=(str(linked), "-m", "vllm"))
+
+
 def test_unknown_endpoint_and_runtime_pin_refuse_before_process_start(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
     profile = profile_row(
@@ -1406,6 +1461,146 @@ def test_interrupt_during_start_stops_the_child_and_preserves_the_interrupt(
     process = launcher.processes[0]
     assert process.terminate_calls == 1
     assert process.poll() == 0
+
+
+class SilentPollFailure:
+    """A ``ServerProcess`` whose observation raises with no message at all.
+
+    ``_stop_process`` calls ``process.poll()`` outside its own ``try``, so this
+    arrives at the wrapping handlers exactly as raised. ``str()`` of an
+    exception constructed without arguments is the empty string, which is what
+    makes a type-less wrapper visible.
+    """
+
+    pid = 4242
+
+    def poll(self) -> int | None:
+        raise RuntimeError()
+
+    def terminate(self) -> None:  # pragma: no cover - never reached past poll
+        raise AssertionError("an unobservable child must not be signalled")
+
+    def kill(self) -> None:  # pragma: no cover - never reached past poll
+        raise AssertionError("an unobservable child must not be signalled")
+
+    def wait(self, timeout_seconds: float) -> int:  # pragma: no cover - never reached
+        raise AssertionError("an unobservable child must not be waited on")
+
+    def read_tail(self, maximum_bytes: int = 16_384) -> str:  # pragma: no cover - never reached
+        return ""
+
+
+def test_an_unobservable_child_reaches_the_refusal_by_name_not_as_an_empty_reason(
+    tmp_path: Path,
+) -> None:
+    """Both wrappers must name the exception type, not only its message.
+
+    A `ServerProcess` implementation whose `poll()` raises reaches `stop()` and
+    `_attempt_cleanup` as it stands. Wrapping it as `ServiceStopError(str(error))`
+    turned a message-less exception into `VLLM_STOP_FAILED: ` and nothing else --
+    and the registry raises one refusal, so whatever is not in it is not
+    anywhere (GOVERNANCE 2).
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, _, _, _ = manager_for(
+        tmp_path / "stop",
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+    handle = manager.start(chair, TIER)
+    handle.process = SilentPollFailure()  # type: ignore[assignment]
+
+    with pytest.raises(ServiceStopError, match="RuntimeError") as stopped:
+        handle.stop()
+    assert str(stopped.value).strip() != ServiceStopError.code
+
+    # The same loss, on the failed-launch side, where it lands inside the one
+    # refusal the registry raises rather than in a caller's own exception.
+    class UnobservableLauncher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def launch(self, argv, log_path, *, inheritable_fds=()):  # type: ignore[no-untyped-def]
+            del argv, log_path, inheritable_fds
+            self.calls += 1
+            return SilentPollFailure()
+
+    cleanup_manager, _, _, _, cleanup_registry, _ = manager_for(
+        tmp_path / "cleanup",
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+    launcher = UnobservableLauncher()
+    cleanup_manager.launcher = launcher  # type: ignore[assignment]
+
+    with pytest.raises(ServingRecipeRefusal):
+        cleanup_manager.start(chair, TIER)
+
+    assert launcher.calls == 1
+    detail = cleanup_registry.refusals[-1][1]
+    assert "unexpected serving start failure: RuntimeError" in detail
+    assert "cleanup after failed serving launch could not complete: RuntimeError" in detail
+    assert "lease is retained" in detail
+
+
+def test_an_interrupt_whose_cleanup_also_fails_reports_the_stop_failure_instead(
+    tmp_path: Path,
+) -> None:
+    """The half of the interrupt branch nothing exercised, and the cost it pays.
+
+    ``test_interrupt_during_start_stops_the_child_and_preserves_the_interrupt``
+    covers only the case where cleanup succeeds. When it does not, the two
+    facts cannot both be this exception and the possibly-resident child wins:
+    the ``KeyboardInterrupt`` is deliberately spent to carry the stop failure,
+    so an ordinary ``except Exception`` above this frame now catches what was a
+    Ctrl-C. Pinned because that trade is a decision, not an accident.
+    """
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        ignore_terminate=True,
+        ignore_kill=True,
+    )
+
+    def interrupt(*unused):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt("injected operator interrupt")
+
+    publisher.publish = interrupt  # type: ignore[method-assign]
+
+    with pytest.raises(ServiceStopError) as caught:
+        manager.start(chair, TIER)
+
+    detail = str(caught.value)
+    assert "start=KeyboardInterrupt: injected operator interrupt" in detail
+    assert "stop=" in detail
+    assert isinstance(caught.value.__cause__, KeyboardInterrupt)
+    assert launcher.processes[0].kill_calls == 1
+    # And it really is catchable as an ordinary exception now, which is the
+    # documented cost of the trade.
+    assert isinstance(caught.value, Exception)
+    # The lease is retained, so the next start refuses by name rather than
+    # putting a second process on the card.
+    with pytest.raises(ServingRecipeRefusal, match="shutdown is not verified"):
+        manager.start(chair, TIER)
 
 
 def test_stop_refuses_to_release_residency_while_its_endpoint_still_answers(
