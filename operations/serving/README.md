@@ -140,7 +140,9 @@ reads and validates the local recipe and placement catalogues while constructed;
 it does not start a process, open a socket, contact a provider, or load weights.
 The caller supplies the run-sealed `StageContext`, its same-context receipt
 publisher, the existing registry, page-specific smoke call, calibration function,
-and explicit pod/GPU lease. `assemble_serving_preflight_callback()`
+the measured `GpuProfile`, and explicit pod/GPU lease. The plain factory binds
+that profile into the returned reader, so the documented seam is ready to read
+without a caller mutating it afterward. `assemble_serving_preflight_callback()`
 builds the `Callable[[], dict[str, object]]` that the existing
 `SubprocessBootstrapActions` already accepts, using the existing `PreflightRunner`.
 When that callback executes, it creates and verifies the exact local log root

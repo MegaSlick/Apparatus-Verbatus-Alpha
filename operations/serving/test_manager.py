@@ -1832,6 +1832,44 @@ def test_a_fixture_profile_is_refused_by_its_own_reason_before_anything_starts(
     assert not (tmp_path / "logs").exists()
 
 
+def test_failing_manager_start_routes_through_the_real_chair_registry(tmp_path: Path) -> None:
+    """Prove the production manager/registry no-substitution wiring end to end."""
+
+    root = Path(__file__).resolve().parents[2]
+    registry = ChairRegistry.from_toml(root / "config/models.toml")
+    chair = registry.resolve("attestator_1")
+    assert isinstance(chair, ChairIdentity)
+    http = FakeHttp(model_ids=())
+    launcher = FakeLauncher(http)
+    publisher = FakePublisher(http)
+    manager = ServingManager(
+        registry=registry,
+        recipes=recipes(
+            fixture_row(
+                recipe=chair.serving_recipe,
+                chair=chair.role,
+                description="checked-in fixture chairs are never launched",
+            )
+        ),
+        config_inputs=ServingConfigInputs("1" * 64, "2" * 64),
+        launcher=launcher,
+        http=http,
+        receipt_publisher=publisher,
+        log_root=tmp_path / "logs",
+        package_inspector=FakePackages({"vllm": "0.test"}),
+        residency_lease=FileResidencyLease(tmp_path / "pod-gpu.lock"),
+    )
+
+    with pytest.raises(ServingRecipeRefusal) as caught:
+        manager.start(chair, TIER)
+
+    assert caught.value.chair == chair.role
+    assert "fixture serving profile" in caught.value.difference
+    assert "checked-in fixture chairs are never launched" in caught.value.difference
+    assert launcher.processes == []
+    assert publisher.calls == []
+
+
 def test_a_fixture_base_refuses_an_adapter_chair_rather_than_serving_it(tmp_path: Path) -> None:
     base = identity("base", "fake-base-v0")
     adapter = identity("adapter", "adapter-v1", adapter_of="base")
@@ -1983,6 +2021,7 @@ def test_pod_assembly_factory_builds_the_lifecycle_smoke_reader_without_effects(
         stage_context=context,
         receipt_publisher=publisher,
         smoke_call=lambda *args: pytest.fail("assembly must not start a service"),
+        gpu_profile=measured_gpu(),
         log_root=tmp_path / "logs",
         recipes_path=root / "config/serving_recipes.toml",
         placement_path=root / "config/pod_placement.toml",
@@ -2002,7 +2041,6 @@ def test_pod_assembly_factory_builds_the_lifecycle_smoke_reader_without_effects(
         detector_device="cpu",
         recipe=PlacementRecipe("0.99", 9999, 9999, 99),
     )
-    reader.gpu_profile = measured_gpu()
     with pytest.raises(ServingConfigurationError, match="run-sealed placement table"):
         reader.read(chair, tmp_path / "unused.png", forged_placement)
     assert launcher.calls == []
@@ -2087,6 +2125,7 @@ def test_pod_assembly_refuses_recipe_or_placement_path_substitution_before_effec
             stage_context=context,
             receipt_publisher=publisher,
             smoke_call=lambda *args: pytest.fail("substituted configuration must not start"),
+            gpu_profile=measured_gpu(),
             log_root=tmp_path / "logs",
             recipes_path=copied_recipes,
             placement_path=root / "config/pod_placement.toml",
@@ -2101,6 +2140,7 @@ def test_pod_assembly_refuses_recipe_or_placement_path_substitution_before_effec
             stage_context=context,
             receipt_publisher=publisher,
             smoke_call=lambda *args: pytest.fail("substituted configuration must not start"),
+            gpu_profile=measured_gpu(),
             log_root=tmp_path / "logs",
             recipes_path=root / "config/serving_recipes.toml",
             placement_path=copied_placement,
@@ -2243,6 +2283,7 @@ def test_pod_assembly_requires_the_same_stage_context_as_receipt_publication(
             stage_context=context,
             receipt_publisher=publisher,
             smoke_call=lambda *args: pytest.fail("mismatched context must not start"),
+            gpu_profile=measured_gpu(),
             log_root=tmp_path / "logs",
             recipes_path=root / "config/serving_recipes.toml",
             placement_path=root / "config/pod_placement.toml",
@@ -2270,6 +2311,7 @@ def test_pod_assembly_requires_the_stage_contexts_registry(tmp_path: Path) -> No
             stage_context=context,
             receipt_publisher=publisher,
             smoke_call=lambda *args: pytest.fail("mismatched registry must not start"),
+            gpu_profile=measured_gpu(),
             log_root=tmp_path / "logs",
             recipes_path=root / "config/serving_recipes.toml",
             placement_path=root / "config/pod_placement.toml",

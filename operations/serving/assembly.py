@@ -51,6 +51,7 @@ def assemble_serving_smoke_reader(
     stage_context: Any,
     receipt_publisher: ReceiptPublisher,
     smoke_call: SmokeCall,
+    gpu_profile: GpuProfile,
     log_root: str | Path,
     calibration_for: CalibrationFor | None = None,
     recipes_path: str | Path = DEFAULT_SERVING_RECIPES_PATH,
@@ -71,7 +72,10 @@ def assemble_serving_smoke_reader(
     Both supplied paths are parsed from the exact bytes those digests name, so
     an arbitrary TOML override refuses before a subprocess could launch.  It
     does not know a provider, a credential, a pod request, or a replacement
-    chair; callers still wire this returned reader to the existing
+    chair. The required ``gpu_profile`` is the measurement whose placement the
+    returned reader will verify on its first read; the factory therefore cannot
+    return a run-sealed reader that lacks the state needed to read. Callers still
+    wire this returned reader to the existing
     ``PreflightRunner``/bootstrap injection point.
     """
 
@@ -84,6 +88,7 @@ def assemble_serving_smoke_reader(
         registry=registry,
         receipt_publisher=receipt_publisher,
         smoke_call=smoke_call,
+        gpu_profile=gpu_profile,
         log_root=log_root,
         recipes=recipes,
         placement=placement,
@@ -137,6 +142,7 @@ def assemble_serving_preflight_callback(
         registry=registry,
         receipt_publisher=receipt_publisher,
         smoke_call=smoke_call,
+        gpu_profile=None,
         log_root=log_root,
         residency_lease=residency_lease,
         calibration_for=calibration_for,
@@ -251,6 +257,7 @@ def _make_reader(
     registry: Any,
     receipt_publisher: ReceiptPublisher,
     smoke_call: SmokeCall,
+    gpu_profile: GpuProfile | None,
     log_root: str | Path,
     recipes: ServingRecipes,
     placement: PlacementTable,
@@ -283,6 +290,7 @@ def _make_reader(
         smoke_call,
         calibration_for=calibration_for,
         placement_table=placement,
+        gpu_profile=gpu_profile,
     )
 
 
