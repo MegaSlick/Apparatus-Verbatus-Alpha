@@ -571,9 +571,15 @@ def _sqlite_logical_digest(data: bytes) -> str:
         return digest_of(
             {
                 "schema_sql": schema_sql,
-                # Virtual and shadow tables are SQLite's derived search index,
-                # not additional stored application rows. Their schema remains
-                # bound above; their logical source is the selected table data.
+                # `pragma_table_list ... type = 'table'` leaves out the FTS5
+                # virtual table and its shadow tables: they are SQLite's own
+                # index over `act_search.derived_search_text`, and that column is
+                # itself excluded above as Unicode-version-local. Binding the
+                # index while excluding what it indexes would put the same
+                # version-local bytes back into the pin under another name. Their
+                # *schema* stays bound in `schema_sql`, and the fold they encode
+                # is checked by the verifier's version-aware recomputation
+                # (`armarium_export._verify_search_fold_claim`), not here.
                 "tables": tables,
                 "application_id": connection.execute("PRAGMA application_id").fetchone()[0],
                 "user_version": connection.execute("PRAGMA user_version").fetchone()[0],
@@ -902,7 +908,16 @@ def test_sqlite_pin_reducer_names_the_version_when_pragma_table_list_is_unavaila
         _sqlite_logical_digest(b"not reached")
 
 
-def _write_acceptance_bundle_tree(root: Path, database_data: bytes) -> None:
+def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None) -> None:
+    """Write a whole run tree around one bundle, optionally damaged from the inside.
+
+    ``damage`` mutates the package manifest *after* it is written and before the tree
+    is addressed, so everything outside the archive -- the blob's content-addressed
+    name, the export artifact's digests and self-hash, the stage manifest -- is
+    rebuilt consistently around the damaged bytes. That is the tree a forger leaves,
+    and it is the only one in which the reducer's own integrity guards are the thing
+    under test rather than a stale filename.
+    """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
         "schema": "armarium-export-manifest.v1",
@@ -912,6 +927,8 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes) -> None:
         ],
     }
     package_manifest["self_hash"] = self_hash(package_manifest)
+    if damage is not None:
+        damage(package_manifest)
     members["EXPORT_MANIFEST.json"] = canonical_bytes(package_manifest)
     buffer = BytesIO()
     with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
@@ -988,7 +1005,16 @@ def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path)
 
 
 def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
-    """Integrity damage stays byte-bound instead of being normalized out of the pin."""
+    """Integrity damage stays byte-bound instead of being normalized out of the pin.
+
+    The two bundle-internal cases are the ones the reduction would otherwise *erase*:
+    it recomputes the package manifest's `self_hash` and overwrites the `acts.sqlite`
+    member row's `sha256` with the logical digest, so without the reducer's own
+    integrity guards a manifest lying about either would reduce to exactly the same
+    pin as an honest one. Both trees are written whole, so the blob's content address,
+    the export artifact and the stage manifest all agree with the damaged bytes and
+    nothing incidental distinguishes them.
+    """
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
     original_root = tmp_path / "original"
     _write_acceptance_bundle_tree(original_root, database)
@@ -997,30 +1023,22 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
     manifest_hash_root = tmp_path / "manifest-self-hash"
     member_digest_root = tmp_path / "member-digest"
     export_hash_root = tmp_path / "export-self-hash"
-    for root in (manifest_hash_root, member_digest_root, export_hash_root):
-        shutil.copytree(original_root, root)
 
-    def rewrite_bundle(root: Path, mutate) -> None:
-        bundle_path = next((root / "7_armarium/blobs/sha256").iterdir())
-        with ZipFile(bundle_path) as archive:
-            members = {name: archive.read(name) for name in archive.namelist()}
-        mutate(members)
-        buffer = BytesIO()
-        with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
-            for name, content in sorted(members.items()):
-                archive.writestr(name, content)
-        bundle_path.write_bytes(buffer.getvalue())
-
-    def damage_manifest_hash(members: dict[str, bytes]) -> None:
-        manifest = json.loads(members["EXPORT_MANIFEST.json"])
+    def damage_manifest_hash(manifest: dict) -> None:
         manifest["self_hash"] = "b" * 64
-        members["EXPORT_MANIFEST.json"] = canonical_bytes(manifest)
 
-    rewrite_bundle(manifest_hash_root, damage_manifest_hash)
-    rewrite_bundle(
-        member_digest_root,
-        lambda members: members.__setitem__("acts.jsonl", members["acts.jsonl"] + b"damage"),
+    def damage_database_member_digest(manifest: dict) -> None:
+        row = next(item for item in manifest["members"] if item["path"] == "acts.sqlite")
+        row["sha256"] = "d" * 64
+        manifest["self_hash"] = self_hash(
+            {key: value for key, value in manifest.items() if key != "self_hash"}
+        )
+
+    _write_acceptance_bundle_tree(manifest_hash_root, database, damage=damage_manifest_hash)
+    _write_acceptance_bundle_tree(
+        member_digest_root, database, damage=damage_database_member_digest
     )
+    shutil.copytree(original_root, export_hash_root)
     export_path = export_hash_root / "7_armarium/artifacts/export/example.json"
     export = json.loads(export_path.read_bytes())
     export["self_hash"] = "c" * 64

@@ -14,6 +14,17 @@ extraction to an operator-chosen destination — all of it or none of it. An exi
 destination is refused rather than merged into. It writes no text and projects
 nothing: every byte it publishes came out of the run tree already sealed.
 
+That outside verification is `verify_delivered_bundle`, which asks two questions
+rather than one: is the package internally whole (`verify_export_bundle`), and do
+its literal-text formats carry the identical reading of every act
+(`verify_projection_identity`'s comparison, over the members the first pass already
+extracted). The two are separate functions so each refusal names its own defect, but
+`EXPORT_MANIFEST.json` states `canonical_text.identity_verified_across` as a fact
+about the package, so the last gate before a recipient makes that comparison rather
+than asserting it. The published summary reports what each check actually did,
+including the search-fold recomputation's own honest "not run under a different
+Unicode database" — a check that declined to run must not read like one that ran.
+
 ## Export contract
 
 The export payload contains the aggregate result, the expected-act count, `delivered`
@@ -120,6 +131,18 @@ nothing says `complete`, and every unresolved unit appears by name in
 `claims.partial_reasons`. The clean verifier recomputes the whole ledger from the
 package's `sources.json` rather than reading it out of the manifest — a self-hash
 proves the manifest was not edited afterwards, never that what it says was true.
+
+**`claims.status` is also what the stage reports**, in the `export` artifact's outcome
+and in the exit code, rather than the run aggregate's status. The ledger folds the
+aggregate's own reasons into its own and accounts two unit types the aggregate does
+not, so it is never the less partial of the two — and it is the more partial one for a
+sealed page whose acts all reached a completed category but disagree about which
+(`_page_ledger_category` errs toward "a human must look"). Reporting the aggregate
+there would exit 0 and record `delivered` over a bundle whose own face said `partial`
+and named the held page. The aggregate remains a separate published measurement; the
+two disagreeing is a state no run this repository can produce today, because it needs
+the same two upstream outcomes no stage emits, and it is proven whole at the
+projection boundary where spec 11's five-category accounting is proven at all.
 
 Non-pixel references to receipts, Testimonia, and intermediate artifacts are
 labelled `requires-retained-run-access`; the product carries their paths and

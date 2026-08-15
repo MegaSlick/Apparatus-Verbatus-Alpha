@@ -380,3 +380,37 @@ def test_a_digest_damaged_testimonium_hard_stops_instead_of_exporting_partial(tm
     assert not armarium_root.exists() or not any(
         path.is_file() for path in armarium_root.rglob("*")
     )
+
+
+def test_a_damaged_witness_receipt_hard_stops_rather_than_refusing_only_its_act(tmp_path):
+    """The narrowed `except SchemaRefusal` scope, driven where it is the only guard.
+
+    The test above damages a Testimonium, and that never reaches the narrow catch at
+    all: `build_manifest(PERLECTOR)` revalidates every Perlectio's sealed inputs and
+    raises first, so the run hard-stops with the catch widened or narrow. A serving
+    receipt is not an artifact input, so nothing revalidates it before
+    `export_witnesses` reads it -- and with the catch widened back over that read, this
+    run exports a *partial* product at exit 3 with the act merely refused, over
+    witness custody the stage could not verify. Damaged evidence is fatal contract
+    damage, not one act's provenance refusal.
+    """
+    root = tmp_path / "runs"
+    result = _orchestrate(root, "damaged-receipt")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "damaged-receipt")
+    first_act = next(
+        item for item in _export(tree)["payload"]["delivered"] if item["act_key"] == "a1"
+    )
+    receipt_ref = first_act["witnesses"][0]["provenance"]["receipt_ref"]
+    receipt_path = tree.resolve(receipt_ref["relative_path"])
+
+    shutil.rmtree(tree.root / "7_armarium")
+    receipt_path.write_bytes(receipt_path.read_bytes() + b"\n")
+
+    result = _run_armarium(root, "damaged-receipt")
+
+    assert result.returncode == 2, result.stdout
+    assert "run receipt" in result.stderr
+    assert not tree.has_artifact(
+        ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
+    )

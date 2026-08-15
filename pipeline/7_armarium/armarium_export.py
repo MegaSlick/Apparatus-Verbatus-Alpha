@@ -380,6 +380,40 @@ def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
     return _compare_literal_projections(root, formats)
 
 
+def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
+    """Package integrity *and* GOVERNANCE 5's one text, in a single extraction.
+
+    ``verify_export_bundle`` deliberately answers only "is this package internally
+    whole", and a package can pass it with two literal formats carrying different
+    readings of the same act -- ``verify_projection_identity`` is the separate
+    question, and separating them is what lets each refusal name its own defect.
+    But ``EXPORT_MANIFEST.json`` asserts ``canonical_text.identity_verified_across``
+    as a *fact about the package*, and the publish path is the last gate before a
+    recipient who has only these bytes. A gate that leaves the manifest's own
+    one-text claim unchecked is asserting it rather than verifying it, so the two
+    questions are asked together here and the answer to each is reported.
+
+    The identity comparison reads the members already extracted by the integrity
+    pass rather than unpacking the archive a second time.
+    """
+    manifest = verify_export_bundle(data, clean_root)
+    formats = _manifest_formats(manifest)
+    compared = sorted(set(_LITERAL_TEXT_FORMATS) & set(formats.formats))
+    if len(compared) >= 2:
+        _compare_literal_projections(clean_root, formats)
+        identity = {"status": "verified", "compared_formats": compared}
+    else:
+        # Said rather than left as a silent absence: with fewer than two literal
+        # formats there is nothing to compare, and a reader must be able to tell
+        # that from a comparison that was made.
+        identity = {
+            "status": "not-applicable-fewer-than-two-literal-formats",
+            "compared_formats": compared,
+        }
+    verification = {**manifest.get("verification", {}), "projection_identity": identity}
+    return {**manifest, "verification": verification}
+
+
 def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[str, str]:
     """Compare already-verified literal members without extracting the package again."""
     projections: dict[str, dict[str, tuple[str, str]]] = {}

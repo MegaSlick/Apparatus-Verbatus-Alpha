@@ -37,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from armarium_export import ARMARIUM_ARCHIVE_NAME, verify_export_bundle  # noqa: E402
+from armarium_export import ARMARIUM_ARCHIVE_NAME, verify_delivered_bundle  # noqa: E402
 
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
@@ -116,7 +116,14 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
             # Verified into the staging directory, from the bytes alone, exactly as a
             # recipient with no run tree would: if it does not survive that, it is not a
             # product to publish and the destination stays absent.
-            manifest = verify_export_bundle(data, staging / EXTRACTION_NAME)
+            #
+            # `verify_delivered_bundle` rather than `verify_export_bundle`: the latter
+            # checks that the package is internally whole and stops there, so a product
+            # whose acts.jsonl and acts.sqlite carried different readings of one act
+            # passed it while its own manifest claimed `identity_verified_across` those
+            # formats. The build checked that; this, the gate the product actually
+            # leaves through, did not.
+            manifest = verify_delivered_bundle(data, staging / EXTRACTION_NAME)
             (staging / ARMARIUM_ARCHIVE_NAME).write_bytes(data)
             # `mkdtemp` creates at 0o700, so the published directory's permissions
             # would otherwise be whatever the staging call happened to make them —
@@ -154,6 +161,12 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
                 file=sys.stderr,
             )
         raise
+    # What the clean-machine pass actually did, carried out of it rather than
+    # discarded. `search_fold` is the one check that can honestly decline to run --
+    # a package built under a different Unicode database keeps its digest and
+    # coverage checks and skips the recomputation -- and an operator told only
+    # "published: complete" would never learn which of the two happened.
+    verification = manifest.get("verification", {})
     return {
         "archive": ARMARIUM_ARCHIVE_NAME,
         "extraction": EXTRACTION_NAME,
@@ -162,6 +175,12 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
         "unit_count": manifest["claims"]["terminal_ledger"]["unit_count"],
         "unresolved": len(manifest["claims"]["partial_reasons"]),
         "aggregate_status": aggregate["status"],
+        "projection_identity": verification.get("projection_identity", {}).get(
+            "status", "not recorded"
+        ),
+        "search_fold": verification.get("search_fold", {}).get(
+            "status", "not-run-no-acts-database-in-this-package"
+        ),
     }
 
 
@@ -179,7 +198,14 @@ def main() -> int:
         f"export bundle published to {args.out}: {summary['status']}, "
         f"{summary['unit_count']} accounted units, {summary['unresolved']} unresolved"
     )
-    for key in ("archive", "extraction", "sha256", "aggregate_status"):
+    for key in (
+        "archive",
+        "extraction",
+        "sha256",
+        "aggregate_status",
+        "projection_identity",
+        "search_fold",
+    ):
         print(f"  {key}: {summary[key]}")
     return EXIT_COMPLETE
 

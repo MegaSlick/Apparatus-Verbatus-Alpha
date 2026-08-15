@@ -783,12 +783,29 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     bundle_digest, bundle_result = context.tree.put_blob(ARMARIUM, bundle.data)
     bundle_ref = context.input_ref(bundle_result.relative_path)
 
+    # The terminal ledger's status, not the run aggregate's, is what this stage
+    # reports. The ledger accounts three unit types -- source, sealed page, act --
+    # and folds the aggregate's own reasons into its own, so it is never *less*
+    # partial than the aggregate and is partial in one case the aggregate is not:
+    # a sealed page whose acts all reached a completed category but disagree about
+    # which one is `held-for-review` in the ledger (`_page_ledger_category` errs
+    # toward "a human must look") while every act reconciles for `run_aggregate`.
+    # Reporting the aggregate there would have exited 0 and published an `export`
+    # outcome of `delivered` over a bundle whose own `claims.status` said `partial`
+    # and named the held page -- GOVERNANCE 2's "a partial result is visibly
+    # partial" broken by the run's own two measurements disagreeing. No run this
+    # repository can produce reaches that case today, because the two categories it
+    # needs come from Designator `excluded` and Recensor `confirmed-blank` outcomes
+    # that no stage emits; it is reachable and proven at the projection boundary,
+    # which is where spec 11's five-category accounting is proven at all.
+    export_status = bundle.manifest["claims"]["status"]
+
     context.publish(
         kind="export",
         subject_id="export",
         outcome=(
             ArmariumCategory.DELIVERED.value
-            if aggregate["status"] == "complete"
+            if export_status == "complete"
             else ArmariumCategory.HELD_FOR_REVIEW.value
         ),
         payload={
@@ -817,14 +834,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "sha256": bundle_digest,
                 "manifest_member": "EXPORT_MANIFEST.json",
                 "manifest_self_hash": bundle.manifest["self_hash"],
-                "claims_status": bundle.manifest["claims"]["status"],
+                "claims_status": export_status,
             },
         },
         inputs=[bundle_ref],
     )
 
     context.finish()
-    return EXIT_COMPLETE if aggregate["status"] == "complete" else EXIT_HELD
+    return EXIT_COMPLETE if export_status == "complete" else EXIT_HELD
 
 
 if __name__ == "__main__":

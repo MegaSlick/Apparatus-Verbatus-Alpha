@@ -7,7 +7,7 @@ import sqlite3
 import unicodedata
 from dataclasses import replace
 from io import BytesIO
-from zipfile import ZipFile
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 import pytest
 from armarium_export import (
@@ -17,6 +17,7 @@ from armarium_export import (
     _zip_bytes,
     build_armarium_bundle,
     canonical_text_sha256,
+    verify_delivered_bundle,
     verify_export_bundle,
     verify_projection_identity,
 )
@@ -285,6 +286,54 @@ def test_projection_identity_refuses_a_self_consistent_package_with_one_drifted_
     verify_export_bundle(tampered, tmp_path / "clean")
     with pytest.raises(SchemaRefusal, match="projection differs"):
         verify_projection_identity(tampered, tmp_path / "identity")
+
+
+def test_the_delivered_gate_asks_both_questions_the_manifest_claims_were_asked(tmp_path):
+    """GOVERNANCE 5 on the path the product actually leaves by.
+
+    The package above is internally whole and carries two different readings of one
+    act, and its own manifest says `identity_verified_across` all three literal
+    formats. `verify_export_bundle` is entitled to pass it -- integrity is its whole
+    question -- but the publish gate is the last reader before a recipient who has
+    only these bytes, and it published this package.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    records[0]["canonical_clean_text"] = "a different purported reading"
+    records[0]["canonical_text_sha256"] = canonical_text_sha256(records[0]["canonical_clean_text"])
+    members["acts.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in records)
+    _refresh_manifest_member(members, "acts.jsonl")
+    tampered = _zip_bytes(members)
+
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    assert manifest["canonical_text"]["identity_verified_across"] == [
+        "acts-database",
+        "jsonl",
+        "text-bundle",
+    ]
+    with pytest.raises(SchemaRefusal, match="projection differs"):
+        verify_delivered_bundle(tampered, tmp_path / "delivered")
+
+    report = verify_delivered_bundle(bundle.data, tmp_path / "intact")["verification"]
+    assert report["projection_identity"] == {
+        "status": "verified",
+        "compared_formats": ["acts-database", "jsonl", "text-bundle"],
+    }
+    # Both questions in one extraction, and the fold report survives the second one.
+    assert report["search_fold"]["status"] == "verified"
+
+
+def test_the_delivered_gate_says_when_there_was_nothing_to_compare(tmp_path):
+    """One literal format is not a silent pass of a comparison that never ran."""
+    single = build_armarium_bundle(_projection(), ArmariumFormats(("jsonl",), False), _source_bytes)
+
+    report = verify_delivered_bundle(single.data, tmp_path / "single")["verification"]
+
+    assert report["projection_identity"] == {
+        "status": "not-applicable-fewer-than-two-literal-formats",
+        "compared_formats": ["jsonl"],
+    }
 
 
 def test_member_digest_guard_refuses_a_tampered_self_containment_claim(tmp_path):
@@ -1111,6 +1160,64 @@ def test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_a
     assert "delivered no act" in reason
 
 
+def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles(tmp_path):
+    """The one state where the ledger and the run aggregate disagree, built whole.
+
+    Every act reaches a completed category, so `run_aggregate` -- which counts acts,
+    chairs and page outcomes -- reconciles to `complete` with no reason at all. The
+    ledger also accounts the *page*, and a sealed page whose acts agree on nothing is
+    held for a human. `run.py` reports the ledger's status for exactly this case:
+    reporting the aggregate's would exit 0 and record an `export` outcome of
+    `delivered` over a bundle whose own face said `partial` and named the held page.
+    """
+    original = _projection()
+    acts = (
+        {
+            **original.acts[0],
+            "category": ArmariumCategory.CONFIRMED_BLANK.value,
+            "canonical_clean_text": None,
+            "provenance": None,
+            "source_regions": [],
+            "reason": None,
+        },
+        {
+            **original.acts[1],
+            "category": ArmariumCategory.EXCLUDED_WITH_APPROVAL.value,
+            "reason": None,
+            "approval_ref": "approvals/exclusion-1",
+        },
+    )
+    aggregate = run_aggregate(
+        {
+            "one": ArmariumCategory.CONFIRMED_BLANK,
+            "two": ArmariumCategory.EXCLUDED_WITH_APPROVAL,
+        },
+        original.aggregate_basis["coverage_records"],
+        {1: dict(original.pages[0])},
+        unaddressed_chairs=[],
+        act_pages=original.aggregate_basis["act_pages"],
+    )
+    assert aggregate == {**aggregate, "status": "complete", "reasons": []}
+
+    bundle = build_armarium_bundle(
+        replace(original, acts=acts, aggregate=aggregate),
+        _formats(embed_pixels=False),
+        _source_bytes,
+    )
+
+    assert bundle.manifest["claims"]["status"] == "partial"
+    assert [
+        reason
+        for reason in bundle.manifest["claims"]["partial_reasons"]
+        if reason.startswith("page 1 is held-for-review")
+    ]
+    # And the clean-machine verifier recomputes the same disagreement rather than
+    # reading the reassuring half of it out of the manifest.
+    manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
+    assert manifest["claims"]["status"] == "partial"
+    assert manifest["aggregate"]["status"] == "complete"
+
+
 def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
     """A door refusal and a sealed page nobody marked out are the two units the
     act-only partition could not see at all. Neither may be inferred blank."""
@@ -1291,6 +1398,82 @@ def test_a_member_named_as_both_file_and_directory_is_refused_before_extraction(
     with pytest.raises(SchemaRefusal, match="both a file and a directory"):
         verify_export_bundle(_zip_bytes(members), clean)
     assert not [path for path in clean.rglob("*") if path.is_file()]
+
+
+def test_a_compressed_member_is_refused_before_a_byte_is_decompressed(tmp_path):
+    """The decompression bound is the refusal, so the refusal needs its own witness.
+
+    Nothing else in this file caps an extracted member's size: `verify_export_bundle`
+    is safe from a decompression bomb only because a stored member cannot be larger
+    than the archive that carries it. Removing the check left every test in the
+    repository green.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        for name in [EXPORT_MANIFEST_NAME] + sorted(
+            name for name in members if name != EXPORT_MANIFEST_NAME
+        ):
+            archive.writestr(name, members[name])
+
+    clean = tmp_path / "clean"
+    with pytest.raises(SchemaRefusal, match="is compressed"):
+        verify_export_bundle(buffer.getvalue(), clean)
+    assert not [path for path in clean.rglob("*") if path.is_file()]
+
+
+@pytest.mark.parametrize(
+    ("name", "member"),
+    # `PurePosixPath` splits on `/` alone, so neither of these is absolute and
+    # neither has `".."` among its parts: only the raw-character rejection sees
+    # them. The set's other member, NUL, cannot be driven through this vector --
+    # Python's ZIP reader truncates an entry name at the first NUL, so it never
+    # reaches `_validate_member_name` as written -- and is covered below on a
+    # declared path, which is JSON and survives intact.
+    [
+        ("backslash traversal", "acts\\..\\..\\evil.txt"),
+        ("windows drive absolute", "C:\\evil.txt"),
+    ],
+)
+def test_a_path_no_posix_check_recognizes_as_traversal_is_still_refused(name, member, tmp_path):
+    """The Zip-Slip variant `_reject_unsafe_relative_path` exists for, with a witness.
+
+    A bundle is opened by whatever tool its recipient has, and Windows-native tooling
+    does treat a backslash in a ZIP entry name as a separator. The commit that closed
+    this changed no test file, so removing the raw-character rejection left the whole
+    suite green.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    members[member] = b"x"
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["members"].append({"path": member, "sha256": digest_bytes(b"x"), "bytes": 1})
+    _refresh_manifest(members, manifest)
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
+        for entry in [EXPORT_MANIFEST_NAME] + sorted(
+            entry for entry in members if entry != EXPORT_MANIFEST_NAME
+        ):
+            archive.writestr(entry, members[entry])
+
+    clean = tmp_path / "clean"
+    with pytest.raises(SchemaRefusal, match="is unsafe"):
+        verify_export_bundle(buffer.getvalue(), clean)
+    assert not [path for path in clean.rglob("*") if path.is_file()]
+
+
+def test_a_nul_in_a_declared_source_path_is_refused(tmp_path):
+    """The other half of the raw-character set, on a field that survives as JSON."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    sources = json.loads(members["sources.json"])
+    sources["pages"][0]["declared_path"] = "register/folio\x00-1.png"
+    members["sources.json"] = canonical_bytes(sources)
+    _refresh_manifest_member(members, "sources.json")
+
+    with pytest.raises(SchemaRefusal, match="is unsafe"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
 def test_a_display_rendering_that_cannot_be_parsed_is_refused_not_raised(tmp_path):

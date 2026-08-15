@@ -7,20 +7,22 @@ would prove the functions work rather than that the program does.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from zipfile import ZipFile
+from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 import pytest
 from armarium_export import EXPORT_MANIFEST_NAME
 
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -98,6 +100,80 @@ def test_the_sealed_bundle_is_published_and_verifies_outside_the_run_tree(tmp_pa
         path.relative_to(extracted).as_posix() for path in extracted.rglob("*") if path.is_file()
     } == names
     assert digest_bytes(archive.read_bytes()) in result.stdout
+
+
+def test_publication_reports_which_checks_the_clean_pass_actually_made(tmp_path, happy_run):
+    """A verification that ran and one that declined to run must not read alike.
+
+    `verify_delivered_bundle` returns both answers and `publish` used to drop them:
+    the search-fold recomputation honestly declines under a different Unicode
+    database, and an operator told only "published: complete" could not tell that
+    from a fold that was recomputed and matched.
+    """
+    out = tmp_path / "delivery"
+    result = _publish(happy_run, "r", out)
+
+    assert result.returncode == 0, result.stderr
+    assert "projection_identity: verified" in result.stdout
+    assert "search_fold: verified" in result.stdout
+
+
+def test_a_bundle_whose_formats_disagree_about_one_reading_is_never_published(
+    tmp_path, happy_run, monkeypatch
+):
+    """GOVERNANCE 5 at the gate the product leaves by, not only at the one it was built by.
+
+    The tampered package is internally whole -- every member digest, byte count and
+    self-hash agrees -- and its manifest claims `identity_verified_across` all three
+    literal formats. Only the cross-format comparison catches it, and until this the
+    publish path did not make that comparison at all. Driven in-process because the
+    substitution has to happen between the sealed read and the clean verification.
+    """
+    import bundle as bundle_module
+    from armarium_export import EXPORT_MANIFEST_NAME as MANIFEST
+
+    from common.contracts.canonical import canonical_bytes, self_hash
+
+    tree = RunTree(happy_run, "r")
+    tree.read_run()
+    real_sealed_bundle = bundle_module.sealed_bundle
+
+    def drifted(run_tree):
+        data, payload = real_sealed_bundle(run_tree)
+        with ZipFile(BytesIO(data)) as archive:
+            members = {name: archive.read(name) for name in archive.namelist()}
+        records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+        for record in records:
+            if record.get("canonical_clean_text") is not None:
+                record["canonical_clean_text"] = "a second, different purported reading"
+                record["canonical_text_sha256"] = digest_bytes(
+                    record["canonical_clean_text"].encode("utf-8")
+                )
+        members["acts.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in records)
+        manifest = json.loads(members[MANIFEST])
+        for row in manifest["members"]:
+            if row["path"] == "acts.jsonl":
+                row["sha256"] = digest_bytes(members["acts.jsonl"])
+                row["bytes"] = len(members["acts.jsonl"])
+        manifest["self_hash"] = self_hash(manifest)
+        members[MANIFEST] = canonical_bytes(manifest)
+        buffer = BytesIO()
+        with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
+            for name in [MANIFEST] + sorted(name for name in members if name != MANIFEST):
+                info = ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = ZIP_STORED
+                info.external_attr = 0o100644 << 16
+                archive.writestr(info, members[name])
+        return buffer.getvalue(), payload
+
+    monkeypatch.setattr(bundle_module, "sealed_bundle", drifted)
+
+    out = tmp_path / "delivery"
+    with pytest.raises(SchemaRefusal, match="projection differs"):
+        bundle_module.publish(tree, out)
+
+    assert not out.exists()
+    assert not list(tmp_path.glob(".delivery.publishing-*"))
 
 
 def test_a_partial_run_publishes_and_says_it_is_partial(tmp_path, review_run):
@@ -199,6 +275,30 @@ def test_a_tampered_sealed_blob_is_refused_before_anything_is_published(tmp_path
     # The run tree's own damage report, not a reassuring "there is no export here".
     assert "no sealed armarium/export artifact" not in result.stderr
     assert "bytes changed under a sealed reference" in result.stderr
+    assert not out.exists()
+
+
+def test_a_run_authority_edited_after_sealing_publishes_nothing(tmp_path, happy_run):
+    """A publisher whose run authority was edited after sealing produces no product.
+
+    `main`'s explicit `tree.read_run()` is not the only guard that reaches this --
+    `RunTree._verify_artifact_run` binds every artifact read to the same authority,
+    so deleting the explicit call leaves this refusal in place. The property is
+    pinned at the program's own boundary anyway: it is the sentence a recipient
+    depends on, and the audit that removed the explicit call had nothing to fail.
+    """
+    root = tmp_path / "runs"
+    shutil.copytree(happy_run / "r", root / "r")
+    authority = root / "r" / "run.json"
+    record = json.loads(authority.read_text(encoding="utf-8"))
+    record["fixture_id"] = "a-fixture-this-run-never-used"
+    authority.write_text(json.dumps(record), encoding="utf-8")
+
+    out = tmp_path / "delivery"
+    result = _publish(root, "r", out)
+
+    assert result.returncode != 0
+    assert "fails its own self-hash" in result.stderr
     assert not out.exists()
 
 
