@@ -77,9 +77,9 @@ def _approval_digest(record: Mapping[str, object]) -> str:
     both cases outright.
 
     ``digest_of`` refuses floats and non-string keys recursively, which restores that
-    guarantee.  The three sibling scopes carry only strings and pinned digests, so this
-    is a no-op for them; ``DataGateAuthority`` is the one that embeds caller-supplied
-    policy content digest, and the one this protects.
+    guarantee.  The sibling scopes carry only strings and pinned digests, so this is a
+    no-op for them; ``DataGateAuthority`` is the one that digests a whole JSON policy
+    document, and the one this protects.
     """
 
     return digest_of(dict(record))
@@ -447,6 +447,17 @@ class RunPlanApproval:
 
     @property
     def engineering_declaration_sha256(self) -> str:
+        """Digest the session's own declaration; this is not a content address.
+
+        Elsewhere in this module "content-addressed" names a value that resolves an
+        immutable artifact at ``receipts/sha256/<digest>.json``. This digest resolves
+        nothing: the fields it covers are constructor arguments, and no stored record
+        binds them, which is the whole point of the split -- Tyrel's approval scope
+        below carries no engineering field. What ``require_scope`` proves is that the
+        run and the session's declaration of it agree, not that anyone approved the
+        declaration. Calling it content-addressed would claim the second.
+        """
+
         return _approval_digest(
             self._engineering_record(
                 protocol_sha256=self.protocol_sha256,
@@ -550,7 +561,12 @@ class RunPlanApproval:
         approval_reference: ApprovalRecordReference,
         read_bytes: Callable[[str], bytes],
     ) -> "RunPlanApproval":
-        """Load Tyrel's immutable approval of this exact private run plan."""
+        """Load Tyrel's reserved-scope approval beside the session's run declaration.
+
+        The approval artifact binds only the reserved scope. The engineering fields
+        travel on the same object because the run checks both at one boundary, but
+        nothing in this loader approves them.
+        """
 
         # Checked before it is dereferenced, for the reason `DataGateAuthority.load`
         # gives: reading `.relative_path` off a missing reference reports a Python
@@ -611,7 +627,7 @@ class RunPlanApproval:
         )
         if _approval_digest(observed) != self.engineering_declaration_sha256:
             raise DisclosureRefusal(
-                "run differs from the session's content-addressed engineering declaration"
+                "run differs from the session's declared engineering scope for this run"
             )
 
 
