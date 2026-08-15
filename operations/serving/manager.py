@@ -788,7 +788,13 @@ class ServingManager:
         last = "service did not become ready"
         while True:
             self._assert_process_live(process)
-            signature = _fatal_log_signature(process.read_tail())
+            launch_tail = process.read_tail()
+            if launch_tail.startswith("VLLM_LOG_UNREADABLE:"):
+                raise ReadinessError(
+                    "VLLM_LOG_UNREADABLE",
+                    launch_tail.removeprefix("VLLM_LOG_UNREADABLE:").strip(),
+                )
+            signature = _fatal_log_signature(launch_tail)
             if signature is not None:
                 raise ReadinessError(signature, "fatal vLLM signature appeared in this launch log")
             try:
@@ -1282,13 +1288,12 @@ def render_vllm_argv(
 def _fatal_log_signature(tail: str) -> str | None:
     """Name a fatal startup failure rather than waiting out the whole watchdog.
 
-    The two LoRA/model signatures come from the old pipeline's own launch
-    scripts, which grepped for them (`serve_stagew_reader.sh` widened
-    `serve_chandra.sh`'s list to include `does not support LoRA` and
-    `Unknown model`).  Both matter here specifically: Tyrel's ruling 1 is about
-    vLLM ignoring an adapter *silently*, and these are the two cases where it
-    says so loudly instead — a watchdog timeout would report them as "did not
-    become ready", which is true and useless.
+    Spec 04 requires a red preflight to carry useful remediation, and spec 12
+    requires operator-facing errors to say what happened and what to do next.
+    The two loud LoRA/model rejections therefore need named refusals rather than
+    a generic watchdog timeout. The old pipeline's launch scripts, which grepped
+    `does not support LoRA` and `Unknown model`, are historical evidence for the
+    strings rather than the authority for this behavior.
 
     Those scripts also grepped `RuntimeError|ValueError`, and that is
     deliberately **not** carried.  This poll re-reads the whole launch tail

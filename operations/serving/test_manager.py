@@ -823,6 +823,30 @@ def test_named_fatal_log_signatures_refuse_and_clean_up(
     assert expected_code in registry.refusals[0][1]
 
 
+def test_an_unreadable_launch_log_is_a_named_readiness_refusal(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, registry, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        log_tail="VLLM_LOG_UNREADABLE: could not read launch log /private/child.log: denied",
+    )
+
+    with pytest.raises(
+        ServingRecipeRefusal, match="VLLM_LOG_UNREADABLE.*could not read launch log"
+    ):
+        manager.start(chair, TIER)
+
+    assert launcher.processes[0].terminate_calls == 1
+    assert publisher.calls == []
+    assert "VLLM_LOG_UNREADABLE" in registry.refusals[0][1]
+
+
 def test_bare_runtimeerror_or_valueerror_in_the_log_does_not_abort_a_start_that_would_succeed(
     tmp_path: Path,
 ) -> None:
@@ -1658,6 +1682,32 @@ def test_close_log_clears_the_handle_once_exit_is_observed(tmp_path: Path) -> No
     assert process._log_handle is None  # type: ignore[attr-defined]
 
 
+def test_poll_closes_the_log_when_it_observes_a_self_terminated_child(tmp_path: Path) -> None:
+    process = SubprocessLauncher().launch(
+        (sys.executable, "-c", "pass"),
+        tmp_path / "child.log",
+    )
+
+    _wait_until(lambda: process.poll() is not None)
+
+    assert process._log_handle is None  # type: ignore[attr-defined]
+
+
+def test_read_tail_reports_a_launch_log_read_failure(tmp_path: Path) -> None:
+    log_path = tmp_path / "child.log"
+    process = SubprocessLauncher().launch(
+        (sys.executable, "-c", "pass"),
+        log_path,
+    )
+    assert process.wait(3) == 0
+    log_path.unlink()
+
+    tail = process.read_tail()
+
+    assert "could not read launch log" in tail
+    assert str(log_path) in tail
+
+
 def test_each_manager_log_path_is_fresh_even_with_the_same_log_root(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
     manager, _, _, _, _, _ = manager_for(
@@ -1744,8 +1794,11 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
     # commit pins to duplicate into `--revision`/`--tokenizer-revision` — and
     # that is an answer, not a refusal. Its pin is the digest manifest the
     # snapshot was verified against.
-    local = next(value for value in models.chairs.values() if isinstance(value, ChairIdentity))
-    assert local.source == "local-repository"
+    local = next(
+        value
+        for value in models.chairs.values()
+        if isinstance(value, ChairIdentity) and value.source == "local-repository"
+    )
     assert model_and_tokenizer_pins(local) is None
     assert model_and_tokenizer_pins(identity("reader", "reader-v1")) == (REVISION, REVISION)
     with pytest.raises(ServingConfigurationError, match="without a commit pin"):

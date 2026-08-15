@@ -182,7 +182,7 @@ def test_transport_refuses_a_body_that_trickles_past_its_request_budget() -> Non
     stop = threading.Event()
 
     def trickle(connection: socket.socket) -> None:
-        connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 10000000\r\n\r\n")
+        connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 80\r\n\r\n")
         while not stop.wait(0.05):
             connection.sendall(b"x")
 

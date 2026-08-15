@@ -65,7 +65,10 @@ class PopenServerProcess:
         return self.process.pid
 
     def poll(self) -> int | None:
-        return self.process.poll()
+        exit_code = self.process.poll()
+        if exit_code is not None:
+            self._close_log()
+        return exit_code
 
     def terminate(self) -> None:
         self._signal_group(signal.SIGTERM)
@@ -88,8 +91,8 @@ class PopenServerProcess:
                 handle.seek(0, os.SEEK_END)
                 handle.seek(max(0, handle.tell() - maximum_bytes))
                 return handle.read().decode("utf-8", errors="replace")
-        except OSError:
-            return ""
+        except OSError as error:
+            return f"VLLM_LOG_UNREADABLE: could not read launch log {self.log_path}: {error}"
 
     def _signal_group(self, signal_number: int) -> None:
         if self.process.poll() is not None:
