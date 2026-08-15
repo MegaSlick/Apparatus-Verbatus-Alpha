@@ -1320,12 +1320,13 @@ def _package_lines(path, subject: str) -> list[str]:
     project serializes with ``ensure_ascii=False`` on purpose (``canonical.py``: "the
     stored bytes should be the text itself"), so ``json.dumps`` emits those three raw
     inside a JSON string instead of escaping them. An established reading carrying one
-    cut its own record in half in every line-oriented member. ``newline=""`` is the
-    same principle: no universal-newline translation, because the writers join on
-    ``\n`` and nothing else.
+    cut its own record in half in every line-oriented member. Decoding raw bytes is
+    the same principle: no universal-newline translation, because the writers join
+    on ``\n`` and nothing else. (Not ``read_text(newline="")``: that keyword reached
+    ``pathlib`` in Python 3.13, and CI runs 3.12.)
     """
     try:
-        return path.read_text(encoding="utf-8", newline="").split("\n")
+        return path.read_bytes().decode("utf-8").split("\n")
     except (OSError, UnicodeDecodeError) as error:
         raise SchemaRefusal(f"the {subject} cannot be read") from error
 
