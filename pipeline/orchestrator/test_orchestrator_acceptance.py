@@ -508,6 +508,11 @@ def snapshot(root: Path) -> dict[str, str]:
 
 def _sqlite_logical_digest(data: bytes) -> str:
     """Bind a SQLite member to its schema and rows, not its library header."""
+    if sqlite3.sqlite_version_info < (3, 37, 0):
+        raise ValueError(
+            "pragma_table_list is unavailable: this interpreter reports "
+            f"sqlite3.sqlite_version={sqlite3.sqlite_version}; SQLite 3.37.0 or newer is required"
+        )
     connection = sqlite3.connect(":memory:")
     try:
         connection.deserialize(data)
@@ -884,6 +889,17 @@ def test_sqlite_pin_reducer_refuses_a_renamed_excluded_column(tmp_path):
 
     with pytest.raises(ValueError, match="act_search"):
         _sqlite_logical_digest(path.read_bytes())
+
+
+def test_sqlite_pin_reducer_names_the_version_when_pragma_table_list_is_unavailable(monkeypatch):
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 36, 0))
+    monkeypatch.setattr(sqlite3, "sqlite_version", "3.36.0")
+
+    with pytest.raises(
+        ValueError,
+        match=r"sqlite3\.sqlite_version=3\.36\.0; SQLite 3\.37\.0 or newer is required",
+    ):
+        _sqlite_logical_digest(b"not reached")
 
 
 def _write_acceptance_bundle_tree(root: Path, database_data: bytes) -> None:

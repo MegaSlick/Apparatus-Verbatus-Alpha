@@ -62,7 +62,9 @@ class _RecordingContext:
         self.blobs: dict[str, bytes] = {}
 
         def read_bytes(relative_path: str) -> bytes:
-            return self.blobs.get(relative_path, b"synthetic bundle input")
+            if relative_path not in self.blobs:
+                raise AssertionError(f"the stage read an unstored blob path: {relative_path}")
+            return self.blobs[relative_path]
 
         def put_blob(_stage: str, data: bytes):
             relative_path = "synthetic/armarium-export.zip"
@@ -87,10 +89,11 @@ class _RecordingContext:
         }
 
     def input_ref(self, relative_path: str) -> dict[str, str]:
-        data = self.blobs.get(relative_path)
+        if relative_path not in self.blobs:
+            raise AssertionError(f"the stage referenced an unstored blob path: {relative_path}")
         return {
             "relative_path": relative_path,
-            "sha256": digest_bytes(data) if data is not None else "b" * 64,
+            "sha256": digest_bytes(self.blobs[relative_path]),
         }
 
 

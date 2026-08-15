@@ -39,7 +39,9 @@ def test_search_fold_is_idempotent_for_the_regression_population():
         "...",
         "Κόσμε",
     ]
-    assert all(search_fold(search_fold(value)) == search_fold(value) for value in examples)
+    for value in examples:
+        folded = search_fold(value)
+        assert search_fold(folded) == folded, value
 
 
 def test_search_fold_never_empties_a_string_that_carries_a_letter_or_digit():

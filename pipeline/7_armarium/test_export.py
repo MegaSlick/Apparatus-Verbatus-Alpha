@@ -184,7 +184,8 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     tmp_path, missing_field, expected_reason
 ):
     root = tmp_path / "runs"
-    assert _orchestrate(root, "refusal").returncode == 0
+    result = _orchestrate(root, "refusal")
+    assert result.returncode == 0, result.stderr
     tree = RunTree(root, "refusal")
     original = next(
         tree.read_artifact(ARCHETYPUS, "archetypus", entry["artifact_id"])
@@ -259,7 +260,8 @@ def test_a_provenance_that_fails_deeper_validation_is_also_downgraded_to_refused
     provenance cannot simply carry its own falsified referrers along with it.
     """
     root = tmp_path / "runs"
-    assert _orchestrate(root, "deeper-refusal").returncode == 0
+    result = _orchestrate(root, "deeper-refusal")
+    assert result.returncode == 0, result.stderr
     tree = RunTree(root, "deeper-refusal")
     original = next(
         tree.read_artifact(ARCHETYPUS, "archetypus", entry["artifact_id"])
@@ -347,7 +349,8 @@ def test_a_provenance_that_fails_deeper_validation_is_also_downgraded_to_refused
 def test_a_digest_damaged_testimonium_hard_stops_instead_of_exporting_partial(tmp_path):
     """Broken witness custody is damage, not an act-level provenance refusal."""
     root = tmp_path / "runs"
-    assert _orchestrate(root, "damaged-testimonium").returncode == 0
+    result = _orchestrate(root, "damaged-testimonium")
+    assert result.returncode == 0, result.stderr
     tree = RunTree(root, "damaged-testimonium")
     first_act = next(
         item for item in _export(tree)["payload"]["delivered"] if item["act_key"] == "a1"
