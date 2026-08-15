@@ -73,6 +73,10 @@ from image_formats import (  # noqa: E402
     sniff,
 )
 
+from common.armarium_formats import (  # noqa: E402
+    DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
+    bind_armarium_formats,
+)
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
     real_ingress_record,
@@ -1069,6 +1073,7 @@ def fixture_submission(args, registry) -> int:
         pdf_render_config_path=args.pdf_render_config,
         designator_padding_config_path=args.designator_padding_config,
         pdf_target_dpi=args.pdf_target_dpi,
+        armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
         witness_context=args.witness_context,
@@ -1211,6 +1216,7 @@ def real_submission(args, registry) -> int:
         pdf_settings,
         load_recovery_policy(args.recovery_config),
         load_hard_failure_policy(args.hard_failure_config),
+        args.formats_config,
         designator_padding_config_sha256=_padding_config_digest(args.designator_padding_config),
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
@@ -1312,6 +1318,7 @@ def _real_bindings(
     pdf_settings,
     recovery_policy,
     hard_failure_policy,
+    armarium_formats_config_path=DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     *,
     designator_padding_config_sha256: str,
     witness_context: str = "named",
@@ -1340,6 +1347,7 @@ def _real_bindings(
     )
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
+    armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
@@ -1356,6 +1364,8 @@ def _real_bindings(
                 "format_policy": format_policy,
                 "door_execution_recipe": _door_execution_recipe(pdf_settings),
                 "door_implementation_revision": REAL_DOOR_ADAPTER_REVISION,
+                "armarium_formats_config_sha256": armarium_formats_digest,
+                "armarium_formats": armarium_formats.to_record(),
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
                 "designator_padding_config_sha256": designator_padding_config_sha256,

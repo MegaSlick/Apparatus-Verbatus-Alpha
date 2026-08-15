@@ -39,9 +39,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
-from common.contracts.outcomes import check_algebra_is_total  # noqa: E402
+from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -104,6 +105,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.pdf_render_config),
         "--designator-padding-config",
         str(args.designator_padding_config),
+        "--formats-config",
+        str(args.formats_config),
         "--recovery-config",
         str(args.recovery_config),
         "--hard-failure-config",
@@ -189,6 +192,11 @@ def main() -> int:
         "--designator-padding-config",
         default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH),
         help="the capture padding applied to every act crop, sealed into this run",
+    )
+    parser.add_argument(
+        "--formats-config",
+        default=str(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH),
+        help="the sealed Armarium product projections for this run",
     )
     parser.add_argument(
         "--pdf-target-dpi",
@@ -279,12 +287,38 @@ def main() -> int:
         "export",
         artifact_id("armarium", "export", "export", None),
     )
-    aggregate = export["payload"]["aggregate"]
-    print(f"run {args.run_id}: {aggregate['status']}")
-    for reason in aggregate["reasons"]:
-        print(f"  - {reason}")
+    status, lines = terminal_report(export)
+    print(f"run {args.run_id}: {status}")
+    for line in lines:
+        print(f"  - {line}")
 
-    return EXIT_COMPLETE if aggregate["status"] == "complete" else EXIT_HELD
+    return EXIT_COMPLETE if status == "complete" else EXIT_HELD
+
+
+def terminal_report(export: dict) -> tuple[str, list[str]]:
+    """The run's verdict, taken from the Armarium's own terminal outcome.
+
+    Deriving it again from `payload["aggregate"]` was a second, weaker derivation of
+    a question the last stage had already answered: the Armarium reports its terminal
+    ledger's status, which subsumes the aggregate's and is partial in one case the
+    aggregate is not (7_armarium/HANDOFF.md). A run whose bundle said `partial` on its
+    own face would have printed `complete` and exited 0 here.
+
+    The reasons stay the aggregate's, because they are the ones an operator acts on
+    and every reachable run's two statuses agree. When they do not, the ledger's own
+    unresolved units are on the bundle's face and this says where to read them rather
+    than reporting a partial run with nothing named.
+    """
+    aggregate = export["payload"]["aggregate"]
+    complete = export["outcome"] == ArmariumCategory.DELIVERED.value
+    reasons = list(aggregate["reasons"])
+    if not complete and not reasons:
+        reasons.append(
+            "the export bundle's terminal ledger is partial while the run aggregate "
+            "reconciled; its unresolved units are named in EXPORT_MANIFEST.json's "
+            "claims.partial_reasons"
+        )
+    return ("complete" if complete else "partial"), reasons
 
 
 def checkpoint(args, checkpoint_name: str, hard_failure_policy: dict) -> dict | None:

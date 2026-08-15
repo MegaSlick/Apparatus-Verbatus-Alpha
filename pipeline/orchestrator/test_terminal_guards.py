@@ -14,13 +14,22 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.armarium_formats import ArmariumFormats
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import synthetic_fixture_ingress_record
-from common.contracts.errors import FatalAccounting
+from common.contracts.canonical import digest_bytes
+from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
 from common.contracts.stages import DOOR, EXEMPLAR
 from common.runtree.store import RunTree
-from common.stage import EXIT_COMPLETE, EXIT_FATAL, StageContext, load_fixture, run_config_bindings
+from common.stage import (
+    EXIT_COMPLETE,
+    EXIT_FATAL,
+    EXIT_HELD,
+    StageContext,
+    load_fixture,
+    run_config_bindings,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
@@ -48,9 +57,31 @@ class _RecordingContext:
         self.finished = False
         self.fixture = {"fixture_id": "synthetic-terminal-guard-v0"}
         self.scenario = "synthetic-terminal-guard"
+        self.config_digest = "a" * 64
+        self.run = {"source_manifest": []}
         self.registry = SimpleNamespace(config=object())
         self.witness_chairs: list[str] = []
         self.witness_floor = 0
+        self.armarium_formats = ArmariumFormats(
+            ("text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"),
+            False,
+        )
+        self.blobs: dict[str, bytes] = {}
+
+        def read_bytes(relative_path: str) -> bytes:
+            if relative_path not in self.blobs:
+                raise AssertionError(f"the stage read an unstored blob path: {relative_path}")
+            return self.blobs[relative_path]
+
+        def put_blob(_stage: str, data: bytes):
+            relative_path = "synthetic/armarium-export.zip"
+            self.blobs[relative_path] = data
+            return digest_bytes(data), SimpleNamespace(relative_path=relative_path)
+
+        self.tree = SimpleNamespace(
+            read_bytes=read_bytes,
+            put_blob=put_blob,
+        )
 
     def publish(self, **record) -> None:
         self.published.append(record)
@@ -65,7 +96,12 @@ class _RecordingContext:
         }
 
     def input_ref(self, relative_path: str) -> dict[str, str]:
-        return {"relative_path": relative_path, "sha256": "b" * 64}
+        if relative_path not in self.blobs:
+            raise AssertionError(f"the stage referenced an unstored blob path: {relative_path}")
+        return {
+            "relative_path": relative_path,
+            "sha256": digest_bytes(self.blobs[relative_path]),
+        }
 
 
 def _all_refused_door_tree(root: Path) -> RunTree:
@@ -208,12 +244,12 @@ def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(mo
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
-    monkeypatch.setattr(armarium, "pages_marked_out", lambda _context: {"act_held": [1]})
+    monkeypatch.setattr(armarium, "pages_marked_out", lambda _context, _cache: {"act_held": [1]})
     monkeypatch.setattr(armarium, "expected_acts", lambda _context: [held])
     monkeypatch.setattr(
         armarium,
         "categorize",
-        lambda _context, _act_id: (ArmariumCategory.DELIVERED, accepted_review, None),
+        lambda _context, _act_id, _cache: (ArmariumCategory.DELIVERED, accepted_review, None),
     )
     monkeypatch.setattr(
         armarium,
@@ -251,12 +287,14 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
-    monkeypatch.setattr(armarium, "pages_marked_out", lambda _context: {"act_proposed": [1]})
+    monkeypatch.setattr(
+        armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
+    )
     monkeypatch.setattr(armarium, "expected_acts", lambda _context: [proposed])
     monkeypatch.setattr(
         armarium,
         "categorize",
-        lambda _context, _act_id: (ArmariumCategory.DELIVERED, accepted_review, None),
+        lambda _context, _act_id, _cache: (ArmariumCategory.HELD_FOR_REVIEW, accepted_review, None),
     )
     monkeypatch.setattr(
         armarium,
@@ -264,7 +302,189 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
         lambda *_args, **_kwargs: {"status": "complete", "reasons": []},
     )
     monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
+    monkeypatch.setattr(
+        armarium,
+        "build_armarium_bundle",
+        # Coherent with the `run_aggregate` stub above: the real code folds the
+        # aggregate's reasons into the ledger, so a `run_aggregate` of "complete"
+        # beside a manifest `claims.status` of "partial" is a combination the real
+        # code makes impossible. This control test only checks that the fake
+        # context can complete at all, so nothing was ever proved by the mismatch
+        # -- but an incoherent stub reads as a real case to a later reader.
+        lambda *_args: SimpleNamespace(
+            data=b"synthetic bundle",
+            manifest={"self_hash": "c" * 64, "claims": {"status": "complete"}},
+        ),
+    )
 
     assert armarium.main() == EXIT_COMPLETE
     assert context.finished
     assert [record["kind"] for record in context.published] == ["manifest-entry", "export"]
+    bundle_record = context.published[-1]["payload"]["bundle"]
+    expected_digest = digest_bytes(b"synthetic bundle")
+    assert bundle_record["sha256"] == expected_digest
+    assert bundle_record["reference"]["sha256"] == expected_digest
+
+
+def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(monkeypatch):
+    """A bundle whose own face says `partial` may not leave under an exit code of 0.
+
+    Unlike the control above, this combination is *not* incoherent: the ledger folds
+    the aggregate's reasons into its own, so it can only ever be the more partial of
+    the two -- and it is, for a sealed page whose acts all completed but disagree
+    about which completed category (proved whole through the real projection in
+    `test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles`).
+    Reaching it through `main` needs the stub, because both categories it requires
+    come from upstream outcomes no stage emits yet.
+    """
+    armarium = _stage_module(
+        "armarium_ledger_status_test", ROOT / "pipeline" / "7_armarium" / "run.py"
+    )
+    context = _RecordingContext()
+    proposed = {
+        "act_id": "act_proposed",
+        "act_key": "proposed",
+        "page_id": "pg_proposed",
+        "outcome": "proposed",
+    }
+    accepted_review = {
+        "artifact_id": "art_accepted",
+        "outcome": "accepted",
+        "payload": {"coverage": {"under_witnessed": False}},
+    }
+
+    monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
+    monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
+    monkeypatch.setattr(
+        armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
+    )
+    monkeypatch.setattr(armarium, "expected_acts", lambda _context: [proposed])
+    monkeypatch.setattr(
+        armarium,
+        "categorize",
+        lambda _context, _act_id, _cache: (ArmariumCategory.CONFIRMED_BLANK, accepted_review, None),
+    )
+    monkeypatch.setattr(
+        armarium,
+        "run_aggregate",
+        lambda *_args, **_kwargs: {"status": "complete", "reasons": []},
+    )
+    monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
+    monkeypatch.setattr(
+        armarium,
+        "build_armarium_bundle",
+        lambda *_args: SimpleNamespace(
+            data=b"synthetic bundle",
+            manifest={
+                "self_hash": "c" * 64,
+                "claims": {"status": "partial", "partial_reasons": ["page 1 is held-for-review"]},
+            },
+        ),
+    )
+
+    assert armarium.main() == EXIT_HELD
+    export = next(record for record in context.published if record["kind"] == "export")
+    assert export["outcome"] == ArmariumCategory.HELD_FOR_REVIEW.value
+    assert export["payload"]["bundle"]["claims_status"] == "partial"
+    # The aggregate remains its own separate measurement, published unchanged.
+    assert export["payload"]["aggregate"]["status"] == "complete"
+
+
+def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch):
+    """The state the control test above used to stand in, now refused rather than run.
+
+    Before the product bundle existed this fake could report `delivered` with no
+    Archetypus record and complete, because nothing downstream needed the text. The
+    projection does, and there is no reading to substitute for it -- so the category
+    and the evidence disagreeing is a fatal imbalance and not a row with an empty
+    text field.
+    """
+    armarium = _stage_module(
+        "armarium_delivered_without_record_test", ROOT / "pipeline" / "7_armarium" / "run.py"
+    )
+    context = _RecordingContext()
+    proposed = {
+        "act_id": "act_proposed",
+        "act_key": "proposed",
+        "page_id": "pg_proposed",
+        "outcome": "proposed",
+    }
+    accepted_review = {
+        "artifact_id": "art_accepted",
+        "outcome": "accepted",
+        "payload": {"coverage": {"under_witnessed": False}},
+    }
+
+    monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
+    monkeypatch.setattr(armarium, "open_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(armarium, "page_census", lambda _context: {1: {"outcome": "sealed"}})
+    monkeypatch.setattr(
+        armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
+    )
+    monkeypatch.setattr(armarium, "expected_acts", lambda _context: [proposed])
+    monkeypatch.setattr(
+        armarium,
+        "categorize",
+        lambda _context, _act_id, _cache: (ArmariumCategory.DELIVERED, accepted_review, None),
+    )
+    monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
+
+    with pytest.raises(FatalAccounting, match="no literal Archetypus text"):
+        armarium.main()
+    assert not context.finished
+    assert not any(record["kind"] == "export" for record in context.published)
+
+
+def test_the_orchestrator_reports_the_armariums_own_terminal_outcome():
+    """The run's verdict is the last stage's answer, not a second derivation of it.
+
+    Re-deriving `complete` from `payload["aggregate"]` here undid the stage's own
+    repair one level up: the Armarium reports its terminal ledger's status, and the
+    orchestrator is what a person actually runs. A bundle saying `partial` on its
+    own face printed `complete` and exited 0.
+    """
+    orchestrator = _stage_module(
+        "orchestrator_terminal_report_test", ROOT / "pipeline" / "orchestrator" / "run.py"
+    )
+    reconciled_aggregate = {"status": "complete", "reasons": []}
+
+    status, lines = orchestrator.terminal_report(
+        {
+            "outcome": ArmariumCategory.DELIVERED.value,
+            "payload": {"aggregate": reconciled_aggregate},
+        }
+    )
+    assert (status, lines) == ("complete", [])
+
+    status, lines = orchestrator.terminal_report(
+        {
+            "outcome": ArmariumCategory.HELD_FOR_REVIEW.value,
+            "payload": {"aggregate": reconciled_aggregate},
+        }
+    )
+    assert status == "partial"
+    # A partial run always names something; here the aggregate has nothing to name.
+    assert lines == [
+        "the export bundle's terminal ledger is partial while the run aggregate "
+        "reconciled; its unresolved units are named in EXPORT_MANIFEST.json's "
+        "claims.partial_reasons"
+    ]
+
+    status, lines = orchestrator.terminal_report(
+        {
+            "outcome": ArmariumCategory.HELD_FOR_REVIEW.value,
+            "payload": {
+                "aggregate": {"status": "partial", "reasons": ["act a2 is held-for-review"]}
+            },
+        }
+    )
+    assert (status, lines) == ("partial", ["act a2 is held-for-review"])
+
+
+def test_armarium_refuses_the_currently_unsupported_exclusion_path():
+    armarium = _stage_module(
+        "armarium_exclusion_approval_test", ROOT / "pipeline" / "7_armarium" / "run.py"
+    )
+    with pytest.raises(ApprovalRefusal, match="approval-record reference"):
+        armarium.exclusion_approval_ref({}, ArmariumCategory.EXCLUDED_WITH_APPROVAL)

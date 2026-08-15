@@ -13,9 +13,13 @@ asserts an exact expected count.
 import hashlib
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
+from copy import deepcopy
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZIP_STORED, BadZipFile, ZipFile
 
 import pytest
 
@@ -342,8 +346,44 @@ FIXTURE = "synthetic-two-page-v0"
 # not use those declarations. Fresh runs through this module's `orchestrate` and
 # `semantic_snapshot_digest` helpers measured 53 files for happy (exit 0) and 57
 # for review (exit 3); no file count moved.
-HAPPY_RUN_TREE_DIGEST = "e6c455d96048733149978b84ac2265886a524c08bdeec140655a9f660a1b4d6e"
-REVIEW_RUN_TREE_DIGEST = "07c5eff63596b9d96fd3914a9f1479d98e58c476f187f3262ec58c44bd2bce84"
+#
+# Re-pinned for System 11: formats.toml is now a sealed run configuration and
+# Armarium writes one content-addressed, self-verifying external product bundle.
+# The added blob changes each inventory count by one; the changed configuration
+# digest deliberately changes every dependent artifact byte.
+#
+# Re-pinned for the rebase onto post-#35 main. Armarium's bundle adds one file
+# to each of main's measured trees, moving happy from 53 to 54 files and review
+# from 57 to 58. Fresh real runs through this module's `orchestrate` and
+# `semantic_snapshot_digest` helpers measured the values below; happy exited 0
+# and review exited 3. These replace the branch's old raw-snapshot pins rather
+# than carrying forward its pre-main reason for leaving them platform-specific.
+#
+# Re-pinned for platform-independent Armarium identity. The bundle entry now
+# binds its named members, reducing `acts.sqlite` to its logical schema and rows,
+# and the dependent manifest fields bind that semantic digest. It therefore
+# measures the exported data rather than SQLite's library-specific container
+# stamp at header bytes 96-99:
+# https://www.sqlite.org/fileformat.html#the_database_header. All unrelated
+# members and manifest fields remain byte-bound. Both values below were measured
+# from fresh real orchestrator runs with 54 files/exit 0 and 58 files/exit 3.
+#
+# Re-pinned for the Unicode-version verification repair. `acts.sqlite` now
+# records the build interpreter's Unicode database version beside the normalizer
+# revision, so that new logical metadata deliberately moves the semantic bundle
+# identity. Fresh real runs again measured 54 files/exit 0 and 58 files/exit 3.
+#
+# Re-pinned to exclude the two version-local parts of that database from the
+# semantic identity: the `export_metadata.unidata_version` environment stamp and
+# `act_search.derived_search_text` plus `derived_text_sha256`, its Unicode-version-
+# local derived projection. They remain honestly recorded in the product and are
+# checked by the verifier's version-aware path added in the preceding repair.
+# Binding them here would give every platform a different pin, which is the defect
+# this pin fixes rather than a property to preserve. Every literal row and stable
+# field -- including `normalizer_revision`, `derived_from_canonical_sha256`, and
+# `derived_kind` -- remains bound.
+HAPPY_RUN_TREE_DIGEST = "32f5cbcc92e82da23067e8fc60a43880703e18eed9be16ff5991e23345dd86d7"
+REVIEW_RUN_TREE_DIGEST = "8a560be8f5088595ed3fb82a30ec4819c11a196cfb4607e10aea9429dc4202dd"
 
 
 def orchestrate(
@@ -466,23 +506,269 @@ def snapshot(root: Path) -> dict[str, str]:
     }
 
 
-def semantic_snapshot(root: Path) -> dict[str, str]:
-    """Run-tree inventory with PNG containers reduced to their pixel content.
+def _sqlite_logical_digest(data: bytes) -> str:
+    """Bind a SQLite member to its schema and rows, not its library header."""
+    if sqlite3.sqlite_version_info < (3, 37, 0):
+        raise ValueError(
+            "pragma_table_list is unavailable: this interpreter reports "
+            f"sqlite3.sqlite_version={sqlite3.sqlite_version}; SQLite 3.37.0 or newer is required"
+        )
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.deserialize(data)
+        integrity = connection.execute("PRAGMA integrity_check").fetchall()
+        if integrity != [("ok",)]:
+            raise ValueError(f"SQLite integrity check failed: {integrity!r}")
 
-    Artifact and configuration files remain byte-bound. PNG blobs are different:
-    their compressed IDAT bytes depend on the zlib implementation that encoded
-    them, while this acceptance pin is meant to identify the run described by the
-    data. Bind the decoded dimensions and grayscale samples, not one compressor's
-    representation of them. The ordinary ``snapshot`` stays byte-exact for all
-    resume and no-write assertions.
+        schema_sql = [
+            row[0]
+            for row in connection.execute(
+                "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL "
+                "ORDER BY type, name, tbl_name, sql"
+            )
+        ]
+        table_names = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM pragma_table_list "
+                "WHERE schema = 'main' AND type = 'table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        tables = {}
+        for table_name in table_names:
+            escaped_table = table_name.replace('"', '""')
+            quoted_table = f'"{escaped_table}"'
+            columns = [row[1] for row in connection.execute(f"PRAGMA table_info({quoted_table})")]
+            if table_name == "act_search":
+                excluded = {"derived_search_text", "derived_text_sha256"}
+                if not excluded <= set(columns):
+                    raise ValueError(
+                        "act_search no longer carries the version-local derived columns "
+                        "this pin excludes; update the exclusion deliberately"
+                    )
+                columns = [column for column in columns if column not in excluded]
+            quoted_columns = []
+            for column in columns:
+                escaped_column = column.replace('"', '""')
+                quoted_columns.append(f'"{escaped_column}"')
+            query = f"SELECT {', '.join(quoted_columns)} FROM {quoted_table}"
+            parameters = ()
+            if table_name == "export_metadata":
+                if "key" not in columns:
+                    raise ValueError(
+                        "export_metadata has no 'key' column, so the unidata_version "
+                        "stamp cannot be excluded from this pin"
+                    )
+                query += ' WHERE "key" != ?'
+                parameters = ("unidata_version",)
+            query += " ORDER BY " + ", ".join(str(index) for index in range(1, len(columns) + 1))
+            tables[table_name] = {
+                "columns": columns,
+                "rows": connection.execute(query, parameters).fetchall(),
+            }
+
+        return digest_of(
+            {
+                "schema_sql": schema_sql,
+                # `pragma_table_list ... type = 'table'` leaves out the FTS5
+                # virtual table and its shadow tables: they are SQLite's own
+                # index over `act_search.derived_search_text`, and that column is
+                # itself excluded above as Unicode-version-local. Binding the
+                # index while excluding what it indexes would put the same
+                # version-local bytes back into the pin under another name. Their
+                # *schema* stays bound in `schema_sql`, and the fold they encode
+                # is checked by the verifier's version-aware recomputation
+                # (`armarium_export._verify_search_fold_claim`), not here.
+                "tables": tables,
+                "application_id": connection.execute("PRAGMA application_id").fetchone()[0],
+                "user_version": connection.execute("PRAGMA user_version").fetchone()[0],
+            }
+        )
+    except sqlite3.DatabaseError as error:
+        raise ValueError("the Armarium SQLite member is unreadable") from error
+    finally:
+        connection.close()
+
+
+def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None:
+    """Return the semantic bundle digest and its derived-hash replacements."""
+    if not data.startswith(b"PK\x03\x04"):
+        return None
+    try:
+        with ZipFile(BytesIO(data)) as archive:
+            names = archive.namelist()
+            if len(names) != len(set(names)) or not {"EXPORT_MANIFEST.json", "acts.sqlite"} <= set(
+                names
+            ):
+                return None
+            manifest_data = archive.read("EXPORT_MANIFEST.json")
+            manifest = json.loads(manifest_data)
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("schema") != "armarium-export-manifest.v1"
+                or canonical_bytes(manifest) != manifest_data
+                or manifest.get("self_hash") != self_hash(manifest)
+            ):
+                return None
+
+            member_names = set(names) - {"EXPORT_MANIFEST.json"}
+            listed = manifest.get("members")
+            if not isinstance(listed, list):
+                return None
+            member_rows = {}
+            for row in listed:
+                if (
+                    not isinstance(row, dict)
+                    or set(row) != {"path", "sha256", "bytes"}
+                    or not isinstance(row.get("path"), str)
+                    or row["path"] in member_rows
+                ):
+                    return None
+                member_rows[row["path"]] = row
+            if set(member_rows) != member_names:
+                return None
+            member_data = {name: archive.read(name) for name in member_names}
+            if any(
+                row.get("sha256") != digest_bytes(member_data[name])
+                or row.get("bytes") != len(member_data[name])
+                for name, row in member_rows.items()
+            ):
+                return None
+
+            database_data = member_data["acts.sqlite"]
+            logical_database_digest = _sqlite_logical_digest(database_data)
+            semantic_manifest = deepcopy(manifest)
+            database_rows = [
+                row for row in semantic_manifest["members"] if row["path"] == "acts.sqlite"
+            ]
+            database_rows[0]["sha256"] = logical_database_digest
+            semantic_manifest["self_hash"] = self_hash(semantic_manifest)
+            semantic_manifest_data = canonical_bytes(semantic_manifest)
+
+            member_inventory = {}
+            for name in names:
+                if name == "acts.sqlite":
+                    member_inventory[name] = logical_database_digest
+                elif name == "EXPORT_MANIFEST.json":
+                    # This member's SQLite digest and its own self-hash are
+                    # consequences of the container bytes. Every other field in
+                    # it, and every other member, remains byte-bound.
+                    member_inventory[name] = digest_bytes(semantic_manifest_data)
+                else:
+                    member_inventory[name] = digest_bytes(member_data[name])
+    except (BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+    return digest_of(member_inventory), {
+        digest_bytes(data): digest_of(member_inventory),
+        manifest["self_hash"]: semantic_manifest["self_hash"],
+    }
+
+
+def _replace_semantic_digests(value, replacements: dict[str, str]):
+    """Replace only exact digest tokens and content-addressed path components."""
+    if isinstance(value, str):
+        if value in replacements:
+            return replacements[value]
+        for raw_digest, semantic_digest in replacements.items():
+            suffix = f"/{raw_digest}"
+            if value.endswith(suffix):
+                return f"{value[: -len(raw_digest)]}{semantic_digest}"
+        return value
+    if isinstance(value, dict):
+        return {key: _replace_semantic_digests(item, replacements) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_semantic_digests(item, replacements) for item in value]
+    return value
+
+
+def _semantic_export_artifact(data: bytes, replacements: dict[str, str]) -> bytes | None:
+    """Reduce the Armarium export envelope's bundle bindings semantically."""
+    try:
+        record = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    payload = record.get("payload")
+    bundle = payload.get("bundle", {}) if isinstance(payload, dict) else {}
+    if (
+        record.get("stage") != ARMARIUM
+        or record.get("kind") != "export"
+        or bundle.get("format") != "zip"
+        or bundle.get("sha256") not in replacements
+        or canonical_bytes(record) != data
+        or record.get("self_hash") != self_hash(record)
+    ):
+        return None
+    semantic = _replace_semantic_digests(record, replacements)
+    semantic["self_hash"] = self_hash(semantic)
+    return canonical_bytes(semantic)
+
+
+def _semantic_armarium_manifest(data: bytes, replacements: dict[str, str]) -> bytes | None:
+    """Reduce only derived bundle/export digests in the stage inventory."""
+    try:
+        manifest = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("stage") != ARMARIUM
+        or manifest.get("schema") != "skeleton.v1"
+        or canonical_bytes(manifest) != data
+        or not any(blob in replacements for blob in manifest.get("blobs", []))
+    ):
+        return None
+    return canonical_bytes(_replace_semantic_digests(manifest, replacements))
+
+
+def semantic_snapshot(root: Path) -> dict[str, str]:
+    """Run-tree inventory with platform-written containers reduced to data.
+
+    PNG blobs bind decoded pixels. The Armarium bundle binds its named member
+    inventory, with ``acts.sqlite`` reduced to a deterministic schema-and-row
+    dump; the package manifest and run-tree manifest bind the corresponding
+    semantic digest rather than derivative container hashes. Everything else
+    remains byte-bound. The ordinary ``snapshot`` stays byte-exact for all resume
+    and no-write assertions.
     """
-    inventory = {}
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
+    files = [(path, path.read_bytes()) for path in sorted(root.rglob("*")) if path.is_file()]
+    bundle_paths = {}
+    replacements = {}
+    for path, data in files:
+        semantics = _armarium_bundle_semantics(data)
+        if semantics is None:
             continue
-        data = path.read_bytes()
+        semantic_digest, bundle_replacements = semantics
+        bundle_paths[path] = semantic_digest
+        replacements.update(bundle_replacements)
+
+    semantic_files = {}
+    for path, data in files:
+        semantic = _semantic_export_artifact(data, replacements)
+        if semantic is not None:
+            semantic_files[path] = semantic
+            replacements[digest_bytes(data)] = digest_bytes(semantic)
+
+    for path, data in files:
+        semantic = _semantic_armarium_manifest(data, replacements)
+        if semantic is not None:
+            semantic_files[path] = semantic
+
+    inventory = {}
+    for path, data in files:
         relative = str(path.relative_to(root))
-        if data.startswith(PNG_SIGNATURE):
+        if path in bundle_paths:
+            raw_digest = digest_bytes(data)
+            semantic_digest = bundle_paths[path]
+            if relative.endswith(raw_digest):
+                relative = f"{relative[: -len(raw_digest)]}{semantic_digest}"
+            inventory[relative] = semantic_digest
+        elif path in semantic_files:
+            inventory[relative] = digest_bytes(semantic_files[path])
+        elif data.startswith(PNG_SIGNATURE):
             try:
                 width, height, rows = decode_grayscale_png(data)
                 pixel_digest = digest_bytes(b"".join(rows))
@@ -538,6 +824,231 @@ def test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes(tmp_path
     assert semantic_snapshot_digest(tmp_path) == semantic_before
 
 
+def _acceptance_sqlite(
+    path: Path,
+    text: str,
+    *,
+    unidata_version: str = "15.1.0",
+    derived_search_text: str = "original derived text",
+    derived_from_canonical_sha256: str | None = None,
+) -> bytes:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA user_version=1")
+        connection.executescript(
+            """
+            CREATE TABLE export_metadata (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE acts (act_id TEXT PRIMARY KEY, text TEXT NOT NULL);
+            CREATE TABLE act_search (
+                rowid INTEGER PRIMARY KEY,
+                act_id TEXT UNIQUE NOT NULL REFERENCES acts(act_id),
+                derived_search_text TEXT NOT NULL,
+                derived_text_sha256 TEXT NOT NULL,
+                derived_from_canonical_sha256 TEXT NOT NULL,
+                normalizer_revision TEXT NOT NULL,
+                derived_kind TEXT NOT NULL
+            );
+            """
+        )
+        connection.executemany(
+            "INSERT INTO export_metadata VALUES (?, ?)",
+            (
+                ("normalizer_revision", "armarium-textnorm-v1"),
+                ("unidata_version", unidata_version),
+            ),
+        )
+        connection.execute("INSERT INTO acts VALUES ('a1', ?)", (text,))
+        if derived_from_canonical_sha256 is None:
+            derived_from_canonical_sha256 = digest_bytes(text.encode("utf-8"))
+        connection.execute(
+            "INSERT INTO act_search VALUES (1, 'a1', ?, ?, ?, ?, ?)",
+            (
+                derived_search_text,
+                digest_bytes(derived_search_text.encode("utf-8")),
+                derived_from_canonical_sha256,
+                "armarium-textnorm-v1",
+                "search-fold",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return path.read_bytes()
+
+
+def test_sqlite_pin_reducer_refuses_a_renamed_excluded_column(tmp_path):
+    """An exclusion dependency must fail by name, not silently re-platform the pin."""
+    path = tmp_path / "renamed-column.sqlite"
+    _acceptance_sqlite(path, "original row")
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "ALTER TABLE act_search RENAME COLUMN derived_search_text "
+            "TO renamed_derived_search_text"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(ValueError, match="act_search"):
+        _sqlite_logical_digest(path.read_bytes())
+
+
+def test_sqlite_pin_reducer_names_the_version_when_pragma_table_list_is_unavailable(monkeypatch):
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 36, 0))
+    monkeypatch.setattr(sqlite3, "sqlite_version", "3.36.0")
+
+    with pytest.raises(
+        ValueError,
+        match=r"sqlite3\.sqlite_version=3\.36\.0; SQLite 3\.37\.0 or newer is required",
+    ):
+        _sqlite_logical_digest(b"not reached")
+
+
+def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None) -> None:
+    """Write a whole run tree around one bundle, optionally damaged from the inside.
+
+    ``damage`` mutates the package manifest *after* it is written and before the tree
+    is addressed, so everything outside the archive -- the blob's content-addressed
+    name, the export artifact's digests and self-hash, the stage manifest -- is
+    rebuilt consistently around the damaged bytes. That is the tree a forger leaves,
+    and it is the only one in which the reducer's own integrity guards are the thing
+    under test rather than a stale filename.
+    """
+    members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
+    package_manifest = {
+        "schema": "armarium-export-manifest.v1",
+        "members": [
+            {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
+            for name, content in sorted(members.items())
+        ],
+    }
+    package_manifest["self_hash"] = self_hash(package_manifest)
+    if damage is not None:
+        damage(package_manifest)
+    members["EXPORT_MANIFEST.json"] = canonical_bytes(package_manifest)
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
+        for name, content in sorted(members.items()):
+            archive.writestr(name, content)
+    bundle_data = buffer.getvalue()
+    bundle_digest = digest_bytes(bundle_data)
+    bundle_relative = f"7_armarium/blobs/sha256/{bundle_digest}"
+
+    bundle_path = root / bundle_relative
+    bundle_path.parent.mkdir(parents=True)
+    bundle_path.write_bytes(bundle_data)
+    export = {
+        "schema": "skeleton.v1",
+        "stage": ARMARIUM,
+        "kind": "export",
+        "payload": {
+            "bundle": {
+                "format": "zip",
+                "sha256": bundle_digest,
+                "manifest_self_hash": package_manifest["self_hash"],
+                "reference": {"relative_path": bundle_relative, "sha256": bundle_digest},
+            },
+            "unrelated": "remains-byte-bound",
+        },
+        "inputs": [{"relative_path": bundle_relative, "sha256": bundle_digest}],
+    }
+    export["self_hash"] = self_hash(export)
+    export_data = canonical_bytes(export)
+    export_path = root / "7_armarium/artifacts/export/example.json"
+    export_path.parent.mkdir(parents=True)
+    export_path.write_bytes(export_data)
+    stage_manifest = {
+        "schema": "skeleton.v1",
+        "stage": ARMARIUM,
+        "run_id": "r",
+        "artifacts": [
+            {
+                "kind": "export",
+                "relative_path": "7_armarium/artifacts/export/example.json",
+                "sha256": digest_bytes(export_data),
+            }
+        ],
+        "blobs": [bundle_digest],
+    }
+    (root / "7_armarium/manifest.json").write_bytes(canonical_bytes(stage_manifest))
+
+
+def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path):
+    """Version-local database fields cannot rename a run; a literal row can."""
+    database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
+    version_local = _acceptance_sqlite(
+        tmp_path / "version-local.sqlite",
+        "original row",
+        unidata_version="16.0.0",
+        derived_search_text="different version-local derived text",
+    )
+    doctored = version_local[:96] + b"\xff\xff\xff\xff" + version_local[100:]
+    original_root = tmp_path / "original"
+    doctored_root = tmp_path / "doctored"
+    changed_root = tmp_path / "changed"
+    _write_acceptance_bundle_tree(original_root, database)
+    _write_acceptance_bundle_tree(doctored_root, doctored)
+    changed = _acceptance_sqlite(
+        tmp_path / "changed.sqlite",
+        "changed row",
+        derived_from_canonical_sha256=digest_bytes(b"original row"),
+    )
+    _write_acceptance_bundle_tree(changed_root, changed)
+
+    assert snapshot(original_root) != snapshot(doctored_root)
+    assert semantic_snapshot_digest(original_root) == semantic_snapshot_digest(doctored_root)
+    assert semantic_snapshot_digest(original_root) != semantic_snapshot_digest(changed_root)
+
+
+def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
+    """Integrity damage stays byte-bound instead of being normalized out of the pin.
+
+    The two bundle-internal cases are the ones the reduction would otherwise *erase*:
+    it recomputes the package manifest's `self_hash` and overwrites the `acts.sqlite`
+    member row's `sha256` with the logical digest, so without the reducer's own
+    integrity guards a manifest lying about either would reduce to exactly the same
+    pin as an honest one. Both trees are written whole, so the blob's content address,
+    the export artifact and the stage manifest all agree with the damaged bytes and
+    nothing incidental distinguishes them.
+    """
+    database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
+    original_root = tmp_path / "original"
+    _write_acceptance_bundle_tree(original_root, database)
+    original_semantic = semantic_snapshot_digest(original_root)
+
+    manifest_hash_root = tmp_path / "manifest-self-hash"
+    member_digest_root = tmp_path / "member-digest"
+    export_hash_root = tmp_path / "export-self-hash"
+
+    def damage_manifest_hash(manifest: dict) -> None:
+        manifest["self_hash"] = "b" * 64
+
+    def damage_database_member_digest(manifest: dict) -> None:
+        row = next(item for item in manifest["members"] if item["path"] == "acts.sqlite")
+        row["sha256"] = "d" * 64
+        manifest["self_hash"] = self_hash(
+            {key: value for key, value in manifest.items() if key != "self_hash"}
+        )
+
+    _write_acceptance_bundle_tree(manifest_hash_root, database, damage=damage_manifest_hash)
+    _write_acceptance_bundle_tree(
+        member_digest_root, database, damage=damage_database_member_digest
+    )
+    shutil.copytree(original_root, export_hash_root)
+    export_path = export_hash_root / "7_armarium/artifacts/export/example.json"
+    export = json.loads(export_path.read_bytes())
+    export["self_hash"] = "c" * 64
+    export_path.write_bytes(canonical_bytes(export))
+
+    for root in (manifest_hash_root, member_digest_root, export_hash_root):
+        assert snapshot(root) != snapshot(original_root)
+        assert semantic_snapshot_digest(root) != original_semantic
+
+
 def export_of(tree: RunTree) -> dict:
     return tree.read_artifact(ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None))[
         "payload"
@@ -572,7 +1083,7 @@ def test_the_happy_path_runs_and_establishes_both_acts(happy_run):
     assert export["aggregate"]["status"] == "complete"
     assert export["aggregate"]["reasons"] == []
     assert len(export["delivered"]) == 2
-    assert export["review"] == []
+    assert export["non_delivered"] == []
     assert {item["category"] for item in export["delivered"]} == {"delivered"}
 
 
@@ -714,7 +1225,9 @@ def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
     assert reading["payload"]["text"] == ""
     assert all(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
 
-    entry = next(row for row in export_of(tree)["review"] if row["act_key"] == "page-fallback:3")
+    entry = next(
+        row for row in export_of(tree)["non_delivered"] if row["act_key"] == "page-fallback:3"
+    )
     assert entry["act_id"] == reading["subject_id"]
     assert entry["category"] == "confirmed-blank"
 
@@ -1474,14 +1987,14 @@ def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(
         }
     export = export_of(tree)
     assert export["aggregate"]["status"] == "partial"
-    assert all(item["under_witnessed"] is True for item in export["review"])
+    assert all(item["under_witnessed"] is True for item in export["non_delivered"])
     assert all(
         item["witness_coverage"]["by_outcome"] == {"read": 2, "dead": 1}
-        for item in export["review"]
+        for item in export["non_delivered"]
     )
     assert all(
         item["witness_coverage"]["by_class"] == {"completed": 2, "unresolved": 0, "failed": 1}
-        for item in export["review"]
+        for item in export["non_delivered"]
     )
     assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
 
@@ -2180,7 +2693,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    assert len(before) == 53
+    assert len(before) == 54
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -2225,7 +2738,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    assert len(before) == 57
+    assert len(before) == 58
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
@@ -2407,9 +2920,9 @@ def test_the_held_act_appears_in_the_review_output_and_forces_partial(review_run
     _, tree = review_run
     export = export_of(tree)
     assert export["aggregate"]["status"] == "partial"
-    assert len(export["review"]) == 1
-    assert export["review"][0]["act_key"] == "a2"
-    assert export["review"][0]["category"] == "held-for-review"
+    assert len(export["non_delivered"]) == 1
+    assert export["non_delivered"][0]["act_key"] == "a2"
+    assert export["non_delivered"][0]["category"] == "held-for-review"
     assert len(export["delivered"]) == 1
     assert "act a2 is held-for-review" in export["aggregate"]["reasons"]
 
@@ -2435,7 +2948,7 @@ def test_the_failed_chair_is_visible_in_the_export(review_run):
     end: it reaches the export as a named shortfall rather than as a silence."""
     _, tree = review_run
     export = export_of(tree)
-    held = export["review"][0]
+    held = export["non_delivered"][0]
     assert held["under_witnessed"] is True
     assert held["witness_coverage"]["by_outcome"]["failed"] == 1
     assert held["witness_coverage"]["by_class"] == {"completed": 2, "unresolved": 0, "failed": 1}
@@ -2795,8 +3308,8 @@ def test_the_act_with_the_lost_continuation_is_held_not_delivered(refused_page_r
 
     export = export_of(tree)
     assert [item["act_key"] for item in export["delivered"]] == ["a1"]
-    assert [item["act_key"] for item in export["review"]] == ["a2"]
-    assert export["review"][0]["category"] == "held-for-review"
+    assert [item["act_key"] for item in export["non_delivered"]] == ["a2"]
+    assert export["non_delivered"][0]["category"] == "held-for-review"
 
 
 def test_the_hold_is_a_real_artifact_naming_the_lost_page(refused_page_run):
@@ -2876,7 +3389,7 @@ def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_firs
         reason.startswith("page 1 was refused:") for reason in export["aggregate"]["reasons"]
     )
     assert export["delivered"] == []
-    assert [item["category"] for item in export["review"]] == [
+    assert [item["category"] for item in export["non_delivered"]] == [
         "held-for-review",
         "held-for-review",
         "held-for-review",
@@ -3057,7 +3570,7 @@ def test_the_truncated_reading_never_becomes_established_text(truncated_reading_
     assert established == [], "a failed reading may not be established"
 
     export = export_of(tree)
-    assert [item["act_key"] for item in export["review"]] == ["a1"]
+    assert [item["act_key"] for item in export["non_delivered"]] == ["a1"]
     assert export["aggregate"]["status"] == "partial"
 
 

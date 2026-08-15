@@ -385,6 +385,30 @@ def test_a_held_act_forces_partial_and_names_itself():
     assert aggregate["reasons"] == ["act act_b is held-for-review"]
 
 
+def test_aggregate_reason_order_does_not_depend_on_mapping_insertion_order():
+    """Serialized accounting maps may return in a different order than their producer."""
+    categories = {
+        "act_b": ArmariumCategory.HELD_FOR_REVIEW,
+        "act_a": ArmariumCategory.REFUSED_WITH_REASON,
+    }
+    coverage = {
+        "act_b": witness_coverage({"s1": "not-run"}, 1),
+        "act_a": witness_coverage({"s1": "dead"}, 1),
+    }
+    pages = {1: {"outcome": "sealed"}}
+    act_pages = {"act_b": [1], "act_a": [1]}
+
+    forward = run_aggregate(categories, coverage, pages, act_pages=act_pages)
+    reversed_maps = run_aggregate(
+        dict(reversed(categories.items())),
+        dict(reversed(coverage.items())),
+        pages,
+        act_pages=dict(reversed(act_pages.items())),
+    )
+
+    assert reversed_maps == forward
+
+
 def test_under_witnessed_coverage_forces_partial_even_when_every_act_delivered():
     """The strict reading of GOVERNANCE 2, and queued for Tyrel in spec 01: an act
     delivered on two live chairs against a floor of three stays `delivered`, and

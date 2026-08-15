@@ -19,6 +19,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Final, Protocol
 
+from common.armarium_formats import (
+    DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
+    ArmariumFormats,
+    bind_armarium_formats,
+)
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails
 from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
@@ -148,6 +153,7 @@ class StageContext:
         "args",
         "registry",
         "sealed_config_digests",
+        "armarium_formats",
     )
 
     def __init__(
@@ -161,6 +167,7 @@ class StageContext:
         args,
         registry,
         sealed_config_digests=None,
+        armarium_formats: ArmariumFormats | None = None,
     ):
         self.tree = tree
         self.run = run
@@ -180,6 +187,10 @@ class StageContext:
         # first read's bytes. Empty for a context built without one (real
         # ingress, which reaches no configuration-driven work).
         self.sealed_config_digests = dict(sealed_config_digests or {})
+        # A stage that opens a fixture run receives the already-parsed values
+        # from the exact bytes that participated in its sealed config digest.
+        # In particular Armarium must not reopen formats.toml after this point.
+        self.armarium_formats = armarium_formats
 
     @property
     def config_digest(self) -> str:
@@ -348,6 +359,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     parser.add_argument(
         "--designator-padding-config", default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH)
     )
+    parser.add_argument("--formats-config", default=str(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH))
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
     parser.add_argument("--hard-failure-config", default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH))
     parser.add_argument("--pdf-target-dpi", type=int, default=None)
@@ -516,6 +528,7 @@ def run_config_bindings(
     pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
     designator_padding_config_path: str | Path = DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
+    armarium_formats_config_path: str | Path = DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
     hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
     witness_context: str = "named",
@@ -529,8 +542,9 @@ def run_config_bindings(
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
     behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    recovery policy, and the run-level hard-failure policy. The synthetic fixture
-    declares byte-backed pages only, so
+    Designator padding, Armarium projection configuration, recovery policy, and
+    the run-level hard-failure policy. The synthetic fixture declares byte-backed
+    pages only, so
     it does not claim to bind the real Door's PDFium/Pillow/libheif execution
     recipe; ``door._real_bindings`` binds that recipe on actual ingress.
 
@@ -555,6 +569,7 @@ def run_config_bindings(
             "the Designator padding configuration binding at "
             f"{designator_padding_config_path} could not be read"
         ) from error
+    armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     recovery_policy = load_recovery_policy(recovery_config_path)
     hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
     witness_context_config_digest = validate_witness_context_bindings(
@@ -574,6 +589,8 @@ def run_config_bindings(
                 "pdf_render_config_sha256": pdf_render_config_digest,
                 "designator_padding_config_sha256": padding_config_digest,
                 "pdf_target_dpi_override": pdf_target_dpi,
+                "armarium_formats_config_sha256": armarium_formats_digest,
+                "armarium_formats": armarium_formats.to_record(),
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
                 # Spec 08's run-level toggle and its sampling design. Sealed
@@ -602,6 +619,7 @@ def run_config_bindings(
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
         },
+        "armarium_formats": armarium_formats,
     }
 
 
@@ -1467,6 +1485,7 @@ def open_context(
         pdf_render_config_path=args.pdf_render_config,
         designator_padding_config_path=args.designator_padding_config,
         pdf_target_dpi=args.pdf_target_dpi,
+        armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
         witness_context=args.witness_context,
@@ -1500,6 +1519,7 @@ def open_context(
         args=args,
         registry=registry,
         sealed_config_digests=bindings["sealed_config_digests"],
+        armarium_formats=bindings["armarium_formats"],
     )
 
 

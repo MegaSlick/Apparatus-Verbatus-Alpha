@@ -16,6 +16,7 @@ still cross.
 | `chairs/` | a named role resolved to one pinned model artifact, verified by digest |
 | `stage.py` | argument shape, opening a run, publishing with the envelope filled in |
 | `imaging.py` | decoding and cropping, with bounds refused rather than clamped |
+| `armarium_formats.py` | the sealed Armarium projection choices — the door binds them into the run, the Armarium reads them back |
 
 Code enters here **when a second stage needs it** — not in anticipation. Moving
 something in is its own pull request, because this is the one place two agents can

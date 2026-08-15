@@ -60,7 +60,7 @@ def test_page_attribution_requires_verified_designator_crop_lineage(monkeypatch)
 
     monkeypatch.setattr(armarium, "verify_exemplar_crop_lineage", forged_lineage)
     with pytest.raises(FatalAccounting, match="cannot be verified"):
-        armarium.pages_marked_out(context)
+        armarium.pages_marked_out(context, {})
 
 
 def test_an_outstanding_recovery_is_not_called_an_accepted_act_without_an_archetypus(monkeypatch):
@@ -70,12 +70,12 @@ def test_an_outstanding_recovery_is_not_called_an_accepted_act_without_an_archet
     monkeypatch.setattr(
         armarium,
         "artifacts_for",
-        lambda _context, stage, _kind, _act_id: [review] if stage == "recensor" else [],
+        lambda _context, stage, _kind, _act_id, _cache: [review] if stage == "recensor" else [],
     )
     monkeypatch.setattr(armarium, "latest_attempt", lambda records, *_args, **_kwargs: records[0])
 
     with pytest.raises(FatalAccounting, match="outstanding recovery request"):
-        armarium.categorize(SimpleNamespace(), "act-1")
+        armarium.categorize(SimpleNamespace(), "act-1", {})
 
 
 def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(tmp_path):

@@ -12,7 +12,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `data_handling_policy.json` | present — how real material is stored, logged, retained and disposed of |
 | `spend.toml` | present, deliberately unconfigured — Tyrel's pod-plus-attached-volume money caps; both paid paths refuse it until configured |
 | `pod_placement.toml` | present — planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
-| `formats.toml` | planned — which formats the Armarium writes |
+| `formats.toml` | present — which Armarium product projections are written and whether verified pixels are embedded |
 
 Decoder routing is deliberately not configuration. Tyrel ruled that an uncorrupted
 image is never declined by policy, and there is exactly one valid route map: every
