@@ -188,10 +188,19 @@ def test_a_partial_run_publishes_and_says_it_is_partial(tmp_path, review_run):
 def test_an_existing_destination_is_refused_rather_than_merged_into(tmp_path, happy_run):
     out = tmp_path / "delivery"
     assert _publish(happy_run, "r", out).returncode == 0
+    before = {
+        path.relative_to(out): path.read_bytes() if path.is_file() else None
+        for path in out.rglob("*")
+    }
     second = _publish(happy_run, "r", out)
     assert second.returncode != 0
     assert "File exists" in second.stderr
     assert "never reused or merged" in second.stderr
+    after = {
+        path.relative_to(out): path.read_bytes() if path.is_file() else None
+        for path in out.rglob("*")
+    }
+    assert after == before
 
 
 def test_a_nonexistence_mkdir_error_reports_the_os_reason(tmp_path, happy_run, monkeypatch):
