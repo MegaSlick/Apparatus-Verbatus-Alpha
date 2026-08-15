@@ -181,9 +181,9 @@ class ServingSmokeReader:
         **`pixel_cap` and `max_pixels` are not in the same unit, and comparing
         them directly is wrong.** `config/pod_placement.toml`'s `pixel_cap` is a
         longest-edge cap in pixels — its committed values are 1344, 1792 and
-        2304, which are nonsense as pixel counts (1344 pixels is a 36x36 image)
-        and are the ordinary vision-model side caps. A serving profile's
-        `min_pixels`/`max_pixels` go straight into vLLM's
+        2304, which are nonsense as pixel counts (roughly 37x37, roughly 42x42,
+        and exactly 48x48 pixels) and are the ordinary vision-model side caps.
+        A serving profile's `min_pixels`/`max_pixels` go straight into vLLM's
         `--mm-processor-kwargs`, where they are *total pixel counts*: the old
         pipeline's own proven values are 3136 (= 56x56, the patch minimum) and
         2359296 (= 1536x1536), read at the window in `serve_dai.sh` and

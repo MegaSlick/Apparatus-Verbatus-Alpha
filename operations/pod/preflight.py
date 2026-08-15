@@ -320,13 +320,19 @@ def load_placement_table(path: str | Path, *, source_bytes: bytes | None = None)
     """
 
     source = Path(path)
+    if source_bytes is None:
+        try:
+            payload = source.read_bytes()
+        except OSError as error:
+            raise PlacementRefusal(f"cannot read placement table {source}: {error}") from error
+        parse_label = "placement table"
+    else:
+        payload = source_bytes
+        parse_label = "supplied placement table bytes for"
     try:
-        if source_bytes is None:
-            raw = tomllib.loads(source.read_bytes().decode("utf-8"))
-        else:
-            raw = tomllib.loads(source_bytes.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise PlacementRefusal(f"cannot read placement table {source}: {error}") from error
+        raw = tomllib.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise PlacementRefusal(f"cannot parse {parse_label} {source}: {error}") from error
     if not isinstance(raw, dict) or set(raw) - {"card_profile"} != {
         "schema",
         "dtype_floor",

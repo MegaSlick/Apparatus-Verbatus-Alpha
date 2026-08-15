@@ -2837,6 +2837,31 @@ def test_a_drifted_card_profile_row_refuses_at_load(
         load_placement_table(path)
 
 
+@pytest.mark.parametrize("source_bytes", [b"\xff", b"schema ="])
+def test_supplied_placement_bytes_have_a_distinct_parse_refusal(
+    tmp_path: Path, source_bytes: bytes
+) -> None:
+    path = tmp_path / "sealed-placement.toml"
+
+    with pytest.raises(
+        PlacementRefusal, match="cannot parse supplied placement table bytes"
+    ) as refused:
+        load_placement_table(path, source_bytes=source_bytes)
+
+    assert str(path) in str(refused.value)
+    assert refused.value.__cause__ is not None
+
+
+def test_a_placement_filesystem_failure_remains_a_read_refusal(tmp_path: Path) -> None:
+    path = tmp_path / "missing-placement.toml"
+
+    with pytest.raises(PlacementRefusal, match="cannot read placement table") as refused:
+        load_placement_table(path)
+
+    assert str(path) in str(refused.value)
+    assert isinstance(refused.value.__cause__, OSError)
+
+
 def test_digest_mismatch_refetches_once_then_refuses_without_substitution() -> None:
     cache = FakeCache(always_mismatch="attestator_1")
     report = _preflight(cache, FakeSmoke()).run(

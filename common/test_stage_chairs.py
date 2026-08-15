@@ -277,6 +277,13 @@ def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_pa
             },
         )
 
+    forged_audit_path = {
+        "relative_path": context.tree.receipt_path(audit_reference["sha256"]),
+        "sha256": audit_reference["sha256"],
+    }
+    with pytest.raises(SchemaRefusal, match="is not its content-addressed path"):
+        context.write_serving_evidence_manifest(receipt_reference, forged_audit_path)
+
     tampered_audit_reference = context.write_serving_launch_audit(
         {
             "schema": "serving-launch-audit.v1",
