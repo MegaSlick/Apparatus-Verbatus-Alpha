@@ -536,18 +536,25 @@ def _sqlite_logical_digest(data: bytes) -> str:
             quoted_table = f'"{escaped_table}"'
             columns = [row[1] for row in connection.execute(f"PRAGMA table_info({quoted_table})")]
             if table_name == "act_search":
-                columns = [
-                    column
-                    for column in columns
-                    if column not in {"derived_search_text", "derived_text_sha256"}
-                ]
+                excluded = {"derived_search_text", "derived_text_sha256"}
+                if not excluded <= set(columns):
+                    raise ValueError(
+                        "act_search no longer carries the version-local derived columns "
+                        "this pin excludes; update the exclusion deliberately"
+                    )
+                columns = [column for column in columns if column not in excluded]
             quoted_columns = []
             for column in columns:
                 escaped_column = column.replace('"', '""')
                 quoted_columns.append(f'"{escaped_column}"')
             query = f"SELECT {', '.join(quoted_columns)} FROM {quoted_table}"
             parameters = ()
-            if table_name == "export_metadata" and "key" in columns:
+            if table_name == "export_metadata":
+                if "key" not in columns:
+                    raise ValueError(
+                        "export_metadata has no 'key' column, so the unidata_version "
+                        "stamp cannot be excluded from this pin"
+                    )
                 query += ' WHERE "key" != ?'
                 parameters = ("unidata_version",)
             query += " ORDER BY " + ", ".join(str(index) for index in range(1, len(columns) + 1))
@@ -859,6 +866,24 @@ def _acceptance_sqlite(
     finally:
         connection.close()
     return path.read_bytes()
+
+
+def test_sqlite_pin_reducer_refuses_a_renamed_excluded_column(tmp_path):
+    """An exclusion dependency must fail by name, not silently re-platform the pin."""
+    path = tmp_path / "renamed-column.sqlite"
+    _acceptance_sqlite(path, "original row")
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "ALTER TABLE act_search RENAME COLUMN derived_search_text "
+            "TO renamed_derived_search_text"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(ValueError, match="act_search"):
+        _sqlite_logical_digest(path.read_bytes())
 
 
 def _write_acceptance_bundle_tree(root: Path, database_data: bytes) -> None:

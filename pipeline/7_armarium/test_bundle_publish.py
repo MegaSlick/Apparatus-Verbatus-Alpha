@@ -202,6 +202,29 @@ def test_a_tampered_sealed_blob_is_refused_before_anything_is_published(tmp_path
     assert not out.exists()
 
 
+def test_a_payload_without_an_aggregate_is_refused_before_publication(
+    tmp_path, happy_run, monkeypatch
+):
+    import bundle as bundle_module
+
+    tree = RunTree(happy_run, "r")
+    tree.read_run()
+    real_sealed_bundle = bundle_module.sealed_bundle
+
+    def payload_without_aggregate(run_tree):
+        data, payload = real_sealed_bundle(run_tree)
+        return data, {key: value for key, value in payload.items() if key != "aggregate"}
+
+    monkeypatch.setattr(bundle_module, "sealed_bundle", payload_without_aggregate)
+
+    out = tmp_path / "delivery"
+    with pytest.raises(ContractError, match="aggregate status"):
+        bundle_module.publish(tree, out)
+
+    assert not out.exists()
+    assert not list(tmp_path.glob(".delivery.publishing-*"))
+
+
 def test_sealed_bundle_directly_refuses_bytes_changed_after_the_export_was_read():
     """Isolate the publisher's guard from RunTree's earlier reference checks."""
     import bundle as bundle_module

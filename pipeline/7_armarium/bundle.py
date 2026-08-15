@@ -103,6 +103,12 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
         ) from error
     try:
         data, payload = sealed_bundle(tree)
+        aggregate = payload.get("aggregate")
+        if not isinstance(aggregate, dict) or not isinstance(aggregate.get("status"), str):
+            raise ContractError(
+                "the export artifact records no aggregate status; a product may not be "
+                "published under a summary its own run never wrote"
+            )
         staging = Path(
             tempfile.mkdtemp(prefix=f".{out_dir.name}.publishing-", dir=str(out_dir.parent))
         )
@@ -155,7 +161,7 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
         "status": manifest["claims"]["status"],
         "unit_count": manifest["claims"]["terminal_ledger"]["unit_count"],
         "unresolved": len(manifest["claims"]["partial_reasons"]),
-        "aggregate_status": payload["aggregate"]["status"],
+        "aggregate_status": aggregate["status"],
     }
 
 

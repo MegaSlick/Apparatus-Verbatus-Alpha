@@ -361,16 +361,9 @@ def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch
     assert not any(record["kind"] == "export" for record in context.published)
 
 
-def test_armarium_exclusion_cannot_export_without_its_approval_artifact_reference():
+def test_armarium_refuses_the_currently_unsupported_exclusion_path():
     armarium = _stage_module(
         "armarium_exclusion_approval_test", ROOT / "pipeline" / "7_armarium" / "run.py"
     )
     with pytest.raises(ApprovalRefusal, match="approval-record reference"):
         armarium.exclusion_approval_ref({}, ArmariumCategory.EXCLUDED_WITH_APPROVAL)
-    assert (
-        armarium.exclusion_approval_ref(
-            {"approval_ref": "art_0123456789abcdef"},
-            ArmariumCategory.EXCLUDED_WITH_APPROVAL,
-        )
-        == "art_0123456789abcdef"
-    )

@@ -15,12 +15,12 @@ from armarium_export import verify_export_bundle, verify_projection_identity
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
-ARMARIUM = ROOT / "pipeline" / "7_armarium" / "run.py"
+ARMARIUM_CLI = ROOT / "pipeline" / "7_armarium" / "run.py"
 
 
 def _orchestrate(
@@ -52,7 +52,7 @@ def _run_armarium(run_root: Path, run_id: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             sys.executable,
-            str(ARMARIUM),
+            str(ARMARIUM_CLI),
             "--run-root",
             str(run_root),
             "--run-id",
@@ -68,9 +68,9 @@ def _run_armarium(run_root: Path, run_id: str) -> subprocess.CompletedProcess:
 
 def _export(tree: RunTree) -> dict:
     return tree.read_artifact(
-        "armarium",
+        ARMARIUM,
         "export",
-        artifact_id("armarium", "export", "export", None),
+        artifact_id(ARMARIUM, "export", "export", None),
     )
 
 
@@ -371,7 +371,7 @@ def test_a_digest_damaged_testimonium_hard_stops_instead_of_exporting_partial(tm
     assert result.returncode == 2
     assert "bytes changed under a sealed reference" in result.stderr
     assert not tree.has_artifact(
-        "armarium", "export", artifact_id("armarium", "export", "export", None)
+        ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
     )
     armarium_root = tree.root / "7_armarium"
     assert not armarium_root.exists() or not any(
