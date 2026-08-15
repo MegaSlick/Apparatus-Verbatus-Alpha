@@ -44,7 +44,6 @@ from operations.pod.preflight import (
 
 from .assembly import (
     _load_bound_configuration,
-    _prepare_log_root,
     assemble_serving_preflight_callback,
     assemble_serving_smoke_reader,
 )
@@ -80,7 +79,7 @@ from .manager import (
     ServingManager,
     StageContextReceiptPublisher,
 )
-from .preflight import ServingSmokeReader
+from .preflight import ServingSmokeReader, prepare_log_root
 from .process import SubprocessLauncher
 from .residency import FileResidencyLease
 
@@ -2713,7 +2712,7 @@ def test_prepare_log_root_is_owner_only_regardless_of_umask_or_prior_mode(
     fresh = tmp_path / "fresh-logs"
     old_umask = os.umask(0o022)
     try:
-        prepared = _prepare_log_root(fresh)
+        prepared = prepare_log_root(fresh)
     finally:
         os.umask(old_umask)
     mode = stat.S_IMODE(prepared.stat().st_mode)
@@ -2721,7 +2720,7 @@ def test_prepare_log_root_is_owner_only_regardless_of_umask_or_prior_mode(
 
     loose = tmp_path / "preexisting-logs"
     loose.mkdir(mode=0o755)
-    prepared_again = _prepare_log_root(loose)
+    prepared_again = prepare_log_root(loose)
     mode_again = stat.S_IMODE(prepared_again.stat().st_mode)
     assert mode_again == 0o700, (
         f"expected a pre-existing directory tightened, got {oct(mode_again)}"
@@ -2745,7 +2744,7 @@ def test_prepare_log_root_refuses_a_symlink_rather_than_re_moding_its_target(
     linked.symlink_to(elsewhere, target_is_directory=True)
 
     with pytest.raises(ServingConfigurationError, match="symbolic link"):
-        _prepare_log_root(linked)
+        prepare_log_root(linked)
 
     assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o755, (
         "the refusal must leave the link's target exactly as it found it"
@@ -3147,6 +3146,53 @@ def test_serving_smoke_reader_refuses_a_text_only_request_as_golden_page_evidenc
             chair, fixture, placement
         )
     assert launcher.processes[0].terminate_calls == 1
+
+
+def test_the_plain_reader_seam_gives_the_same_log_root_guarantee_as_the_callback(
+    tmp_path: Path,
+) -> None:
+    """The reader refuses a symlinked log root before anything can launch through it.
+
+    ``prepare_log_root``'s symlink refusal and 0700 chmod used to run only
+    inside ``assemble_serving_preflight_callback``'s returned callable, so the
+    documented plain seam wrote a run's logs wherever a pre-existing link
+    pointed (audit finding F7). The reader now prepares the root before each
+    start, on whichever seam assembled it.
+    """
+
+    chair = identity("reader", "reader-v1")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "logs").symlink_to(elsewhere)
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+    placement = PlacementTier(
+        identifier=TIER,
+        min_vram_gib="40",
+        max_vram_gib_exclusive=None,
+        residency="single",
+        detector_device="cpu",
+        recipe=PlacementRecipe("0.85", 2048, 1024, 1),
+    )
+    fixture = tmp_path / "golden-page.png"
+    fixture.write_bytes(b"fixture page, no model data")
+
+    reader = ServingSmokeReader(
+        manager,
+        lambda *args: pytest.fail("a refused log root must stop before any launch"),
+        gpu_profile=measured_gpu(),
+    )
+    with pytest.raises(ServingConfigurationError, match="is a symbolic link"):
+        reader.read(chair, fixture, placement)
+    assert launcher.calls == []
 
 
 def test_fixture_request_refuses_image_bytes_from_another_local_page(tmp_path: Path) -> None:

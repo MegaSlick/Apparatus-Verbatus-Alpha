@@ -15,7 +15,7 @@ chair at every configured tier and refuses extra stale rows, so a misspelt
 `serving_recipe`, an unconfigured chair profile, or a newly added placement tier
 is a test failure here rather than a refusal on a rented GPU.
 A profile whose `kind` is `fixture` is the walking skeleton's stand-in and is
-refused *by that name* before any pin, lease, probe or process — it carries no
+refused *by that name* before any lease, probe or process — it carries no
 vLLM flags to be refused by, and blocking it with an unsatisfiable version pin
 would report the wrong cause.
 The recipe and `config/pod_placement.toml` byte digests are both part of the

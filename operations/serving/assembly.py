@@ -8,7 +8,6 @@ the checked-in serving configuration catalogues, while all effects remain dorman
 
 from __future__ import annotations
 
-import stat
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
@@ -27,7 +26,7 @@ from .config import ServingConfigInputs, ServingRecipes, load_serving_recipes
 from .errors import ServingConfigurationError
 from .http import HttpTransport, UrllibHttpTransport
 from .manager import PackageInspector, ReceiptPublisher, ServingManager
-from .preflight import CalibrationFor, ServingSmokeReader, SmokeCall
+from .preflight import CalibrationFor, ServingSmokeReader, SmokeCall, prepare_log_root
 from .process import ProcessLauncher, SubprocessLauncher
 from .residency import ResidencyLease
 
@@ -164,7 +163,7 @@ def assemble_serving_preflight_callback(
     )
 
     def run_preflight() -> dict[str, object]:
-        prepared_log_root = _prepare_log_root(log_root)
+        prepared_log_root = prepare_log_root(log_root)
         probe = gpu_probe or SystemGpuProbe(disk_path=prepared_log_root)
         profile = probe.profile(dtype)
         # `operations.pod.preflight.SmokeReader.read` carries no profile parameter
@@ -292,59 +291,3 @@ def _make_reader(
         placement_table=placement,
         gpu_profile=gpu_profile,
     )
-
-
-def _prepare_log_root(log_root: str | Path) -> Path:
-    """Create and verify the exact log filesystem before the default disk probe.
-
-    Assembly construction remains effect-free.  Callback execution is the first
-    pod lifecycle step, so it may prepare this ordinary local directory before
-    preflight asks how much space the eventual vLLM logs can use.
-    """
-
-    prepared = Path(log_root)
-    # **A symlink to a directory is an existing directory as far as `mkdir` is
-    # concerned.** The comment below used to end "nothing further is needed to
-    # establish that this path is one", and that was the gap: `exist_ok=True`
-    # refuses a file, a symlink to a file and a broken symlink, but forgives a
-    # symlink pointing at a real directory somewhere else — and then `chmod`
-    # follows it and re-modes the target. The run's logs would be written
-    # wherever the link pointed, under a mode this function set on a directory it
-    # never named. `lstat` does not follow, so asking here is what makes "this is
-    # the directory we will write into" true rather than merely likely.
-    #
-    # The residual race is named rather than closed: between this check and the
-    # `mkdir` below, anything that can write the parent directory could swap the
-    # path. Closing that needs `O_NOFOLLOW` directory descriptors and `openat`
-    # throughout, which is disproportionate for a log directory inside the run
-    # tree on a single-user machine. Found by CodeRabbit on this branch.
-    try:
-        existing = prepared.lstat()
-    except FileNotFoundError:
-        existing = None
-    except OSError as error:
-        raise ServingConfigurationError(
-            f"cannot prepare serving log root {prepared}: {error}"
-        ) from error
-    if existing is not None and stat.S_ISLNK(existing.st_mode):
-        raise ServingConfigurationError(
-            f"serving log root {prepared} is a symbolic link, so the logs and the "
-            "owner-only mode this sets would land on a directory the run never named; "
-            "it must be a real directory"
-        )
-    try:
-        # exist_ok=True still raises FileExistsError -- an OSError caught below
-        # -- when the path exists as a file, a symlink to one, or a broken
-        # symlink. The symlink-to-a-directory case is refused above.
-        prepared.mkdir(parents=True, exist_ok=True)
-        # mkdir's mode argument is subject to the ambient umask and, with
-        # parents=True, is never applied to intermediate directories at all --
-        # chmod afterward is the only way to make this owner-only regardless of
-        # umask or a pre-existing looser mode, matching the per-launch log
-        # files, which are already forced 0600 at creation.
-        prepared.chmod(0o700)
-    except OSError as error:
-        raise ServingConfigurationError(
-            f"cannot prepare serving log root {prepared}: {error}"
-        ) from error
-    return prepared
