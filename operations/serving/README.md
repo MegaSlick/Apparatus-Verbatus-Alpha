@@ -66,13 +66,14 @@ that same owned cleanup; it cannot launch another chair around it.
 Readiness is a bounded poll of the exact child and its fresh launch log. It fails
 on an exited child and named `VLLM_ERROR`, `CUDA out of memory`,
 `EngineDeadError`, `LORA_UNSUPPORTED` (`does not support LoRA`) or
-`UNKNOWN_MODEL` signatures. The last two come from the old pipeline's own launch
-scripts and matter here specifically: they are the two cases where vLLM rejects
-an adapter *loudly* rather than ignoring one silently, and a watchdog timeout
-would report them as "did not become ready", which is true and useless. Those
-scripts also grepped `RuntimeError|ValueError`, and that is deliberately not
-carried — this poll re-reads the whole tail every interval, so one benign line
-naming either word would abort a start that was going to succeed. Success
+`UNKNOWN_MODEL` signatures. Spec 04 requires a red preflight to carry useful
+remediation, and spec 12 requires an operator-facing error to say what happened;
+these two adapter failures therefore receive named refusals instead of collapsing
+into a watchdog timeout. The old pipeline's launch scripts are historical evidence
+for the two strings, not the authority for keeping them. Their broader
+`RuntimeError|ValueError` grep is deliberately not carried — this poll re-reads
+the whole tail every interval, so one benign line naming either word would abort
+a start that was going to succeed. Success
 requires all of:
 
 - `/health` HTTP 200;
@@ -164,8 +165,7 @@ guard an image then serialize text-only content. The reader refuses, before it c
 serving profile whose dtype is not exactly the one preflight measured (no floor exists for any
 other dtype, so this is an exact-match requirement, not a ceiling) or whose capacity —
 memory fraction, context length, pixel budget, batch size — exceeds the measured placement
-plan. The pipeline is intentionally untouched and still uses fixture serving details until its
-owner adopts this injected seam.
+plan.
 
 A smoke result with no GPU/CPU utilization samples makes preflight red with
 `utilization-missing`; an empty instrument cannot leave as a green measurement.
@@ -191,10 +191,8 @@ verified manifests, local adapter calibration fixtures, and real-silicon
 preflight, and every capacity value written then is a planning value until that
 preflight has run.
 
-**Not built here, and named rather than left implicit.** Nothing calls this
-package yet: `assemble_serving_preflight_callback` produces the callable
-`SubprocessBootstrapActions` already accepts, but no bootstrap step passes it.
-And spec 04's preflight point 6 still has no sampler implementation here: the
-page-specific smoke callable must supply the readings, and preflight is red if
-it does not. Neither lane built the sampler itself; this repair only prevents
-its absence from reporting green.
+The assembly remains caller-injected:
+`assemble_serving_preflight_callback` produces the callable
+`SubprocessBootstrapActions` accepts. Spec 04's utilization readings remain the
+page-specific smoke callable's responsibility; preflight is red when that
+callable supplies no samples.

@@ -71,9 +71,9 @@ Lifecycle and health belong to the serving manager (spec 04). This package
 produces identity and verification; it does not start a process. `receipt()`
 accepts the serving details the serving manager observed, and
 `refuse_recipe_start()` is how a failed start is represented — as a refusal
-naming the chair, never as a second route under the same role name. Spec 04's
-manager calls both doors; pipeline stages still use declared fixture details
-until their owner adopts its injected preflight callback.
+naming the chair, never as a second route under the same role name. Both are
+integration doors for spec 04's manager; neither chooses how a stage obtains
+its serving details.
 
 Where the model root lives off-pod is still open; spec 02 flags it rather than
 resolving it, and `model_root` in `config/models.toml` is relative to that file.
