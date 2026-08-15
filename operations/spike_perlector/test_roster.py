@@ -308,7 +308,7 @@ def test_declared_run_plan_refuses_a_changed_declared_prompt_before_any_call():
         }
     )
     candidates = tuple(FakeCandidate(resolved) for resolved in roster.identities())
-    with pytest.raises(DisclosureRefusal, match="does not name this exact protocol"):
+    with pytest.raises(DisclosureRefusal, match="durable engineering declaration"):
         run_declared_roster_matrix(
             candidates,
             (act,),

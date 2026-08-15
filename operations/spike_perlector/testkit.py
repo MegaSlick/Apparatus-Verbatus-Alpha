@@ -8,9 +8,7 @@ from common.contracts.approval import ApprovalRecordReference, build_approval_re
 
 from .encoding import sha256_bytes
 from .gates import (
-    NORMALIZATION_APPROVAL_SUBJECT,
     RUN_PLAN_APPROVAL_SUBJECT,
-    NormalizationApproval,
     RunAuthorization,
     RunPlanApproval,
 )
@@ -200,23 +198,6 @@ def _test_approval_reference(
     return reference, payload
 
 
-def normalization_approval_for(profile) -> NormalizationApproval:
-    """Build a self-consistent test artifact; it is never a real Tyrel approval."""
-
-    reference, payload = _test_approval_reference(
-        NormalizationApproval.scope_digest(
-            profile_id=profile.profile_id, profile_sha256=profile.digest
-        ),
-        subject_id=NORMALIZATION_APPROVAL_SUBJECT,
-    )
-    return NormalizationApproval.load(
-        profile_id=profile.profile_id,
-        profile_sha256=profile.digest,
-        approval_reference=reference,
-        read_bytes=lambda _path: payload,
-    )
-
-
 def run_plan_approval_for(
     *,
     manifest,
@@ -233,7 +214,7 @@ def run_plan_approval_for(
         if sample_accounting is None
         else sample_accounting
     )
-    values = {
+    engineering_declaration = {
         "protocol_sha256": manifest.protocol_sha256,
         "manifest_sha256": manifest.manifest_sha256,
         "candidate_roster_sha256": roster.digest,
@@ -241,16 +222,32 @@ def run_plan_approval_for(
         "prompt_registry_sha256": prompt_registry.snapshot_sha256(roster.identities()),
         "normalization_profile_id": profile.profile_id,
         "normalization_profile_sha256": profile.digest,
-        "budget_evidence_sha256": digest("synthetic-spec05-budget-evidence"),
         "private_sample_accounting_sha256": accounting.digest,
     }
+    reserved_scope = {
+        "prove_before_scale_evidence_sha256": digest("synthetic-small-reasonable-well"),
+        "spend_scope_sha256": digest("synthetic-zero-spend-scope"),
+        "disclosure_scope_sha256": digest("synthetic-cleared-disclosure-scope"),
+    }
     reference, payload = _test_approval_reference(
-        RunPlanApproval.scope_digest(**values), subject_id=RUN_PLAN_APPROVAL_SUBJECT
+        RunPlanApproval.scope_digest(
+            **reserved_scope,
+        ),
+        subject_id=RUN_PLAN_APPROVAL_SUBJECT,
     )
+    declaration_reference, declaration_payload = (
+        RunPlanApproval.build_engineering_declaration_artifact(**engineering_declaration)
+    )
+    artifacts = {
+        reference.relative_path: payload,
+        declaration_reference.relative_path: declaration_payload,
+    }
     return RunPlanApproval.load(
-        **values,
+        **engineering_declaration,
+        **reserved_scope,
+        engineering_declaration_reference=declaration_reference,
         approval_reference=reference,
-        read_bytes=lambda _path: payload,
+        read_bytes=artifacts.__getitem__,
     )
 
 
@@ -275,5 +272,4 @@ def cleared_public_authorization_for(
             profile=profile,
             sample_accounting=sample_accounting,
         ),
-        normalization_approval=normalization_approval_for(profile),
     )

@@ -30,12 +30,37 @@ from .errors import MatrixRefusal
 # party rather than a choice about this instrument's measures. Nothing measured
 # changed: no bound, no profile, no scoring rule, no identifier.
 #
-# **What was deliberately not corrected in the same pass:** `ALLOGRAPHIC_V1` carries
-# the identifier `"allographetic-v1"`, which is not a word. That *is* measure-adjacent
-# — the identifier is named in this document, in the public finding schema, and is
-# one of the two profiles Tyrel selects between before the evaluation manifest opens —
-# so it is his to decide and is carried to him rather than folded into this re-pin.
-PREDECLARED_PROTOCOL_SHA256 = "ff01232bd764a8f213f7b7b7ae83a17e80441f85558cb818f7c4f79a0a10938f"
+# Re-pinned 2026-08-15 for the four readiness-audit repairs, all decided before
+# results exist. The README's opening disclaimer states that this instrument has
+# no evaluation image, transcription, model call, pod, or reading-quality number
+# and is “not a result,” so this is pre-measurement correction rather than post-hoc
+# metric selection. The four repairs: (1) un-parked rule-13 decisions — corrected
+# the real adjective to `allographic-v1`, predeclared `graphemic-v1` because
+# folding two glyph forms of one letter serves comparison against the ink, and
+# narrowed Tyrel's run approval to prove-before-scale, spend, and disclosure;
+# (2) bound data-gate approval to the repository's sole current policy
+# identity/revision; (3) added closed coded limitations plus an unpublishable
+# refusal; (4) made stale provenance claims self-contained. The protocol's measure
+# definitions remain pinned and fail closed after this deliberate re-pin.
+#
+# Re-pinned 2026-08-15 to finish repair (4), which the pass above applied to three
+# of four ruling citations. Section 7's denominator argument still cited "ruling 3"
+# by number with a verbatim quotation, which is the exact pattern that pass removed
+# elsewhere: a reader outside this repository cannot check a ledger that is not in
+# it. It now states the ruling's substance and date inline, as the other three do,
+# and all four say the ledger is *untracked* rather than outside the repository
+# tree — `workbench/` is in the working tree, only gitignored. Prose only: the
+# unbounded `(S + D + I) / N` denominator, its comparison with the OCR-D bounded
+# form, and every bound, profile, and scoring rule are byte-identical.
+#
+# Re-pinned 2026-08-15 while closing the readiness audit's four decided
+# report-only findings. Section 1 now records the session-written durable
+# engineering-declaration artifact and the authorization evidence retained on a
+# publishable run. Section 8 restores the complete enumeration of Tyrel's reserved
+# judgments by naming the declaration that the pipeline is proven. These are prose
+# corrections only: no measure, profile, bound, score, or result moved, and the
+# opening disclaimer still records that no result exists.
+PREDECLARED_PROTOCOL_SHA256 = "78460c767109b39ac0418787418af2953f6b8196141f588d12858a41120c47b9"
 
 
 def protocol_document_sha256() -> str:

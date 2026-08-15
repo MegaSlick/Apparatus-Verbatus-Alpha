@@ -8,14 +8,19 @@ make an external call before prompt, held-out, and disclosure checks have succee
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from math import fsum, isfinite
 from typing import Iterable
 
 from .encoding import is_sha256
 from .errors import MatrixRefusal, MeasurementRefusal
-from .gates import RunAuthorization, require_authorized_delivery
+from .gates import (
+    RunAuthorization,
+    RunAuthorizationEvidence,
+    RunPlanApproval,
+    require_authorized_delivery,
+)
 from .holdout import EvaluationManifest, PrivateSampleAccounting
 from .models import (
     ALL_CONDITIONS,
@@ -25,11 +30,14 @@ from .models import (
     DissentSummary,
     DossierTestimonium,
     EvaluationAct,
+    LimitationDisclosureState,
     MaterialClass,
     OutputStatus,
     Perlectio,
+    PublicLimitationCode,
     ReferenceStatus,
     ResolvedIdentity,
+    RunLimitations,
     WitnessConfiguration,
     anonymous_testimonia,
     dossier_for,
@@ -233,7 +241,7 @@ class WitnessAggregate:
 
 @dataclass(frozen=True, slots=True)
 class CandidateConditionDeltas:
-    """Fixed within-candidate condition deltas; interpretation remains Tyrel's."""
+    """Fixed within-candidate evidence; the session interprets without choosing text."""
 
     public_slot: int
     priming_cer_delta: float
@@ -269,12 +277,23 @@ class MeasurementRun:
     witness_configuration: WitnessConfiguration | None = None
     manifest: EvaluationManifest | None = None
     sample_accounting: PrivateSampleAccounting | None = None
+    limitations: RunLimitations = field(default_factory=RunLimitations)
+    prompt_registry_sha256: str | None = None
+    authorization_evidence: RunAuthorizationEvidence | None = None
 
     def __post_init__(self) -> None:
         if not self.candidates or not self.acts:
             raise MatrixRefusal("a measurement run requires candidates and acts")
         if not isinstance(self.material_class, MaterialClass):
             raise MatrixRefusal("measurement run needs an explicit material class")
+        if not isinstance(self.limitations, RunLimitations):
+            raise MatrixRefusal("measurement run needs a closed run-limitation declaration")
+        if self.authorization_evidence is not None and not isinstance(
+            self.authorization_evidence, RunAuthorizationEvidence
+        ):
+            raise MatrixRefusal(
+                "measurement run authorization evidence must be a checked frozen record"
+            )
         if self.roster is not None:
             self.roster.validate()
             if self.candidates != self.roster.identities():
@@ -428,9 +447,49 @@ class MeasurementRun:
                     "Testimonium baseline differs from the retained witness evidence"
                 )
 
+    def derived_limitation_codes(self) -> frozenset[PublicLimitationCode]:
+        """Derive the closed public limitation set from retained run evidence.
+
+        A failed attempt yielded no proved Perlectio, so it is a candidate non-answer
+        for public limitation purposes even though it separately makes the run
+        unpublishable. An ``INVALID_RESPONSE`` failure is additionally malformed:
+        the adapter returned a value, but not a response shape this instrument can
+        measure. A truncated cell is a reading that stopped early rather than a
+        non-answer, so it carries its own code. No caller declaration participates
+        in any of these classifications.
+        """
+
+        codes: set[PublicLimitationCode] = set()
+        if any(act.ground_truth.gaps for act in self.acts):
+            codes.add(PublicLimitationCode.CHECKED_REFERENCE_GAPS_PRESENT)
+        if any(act.ground_truth.status is not ReferenceStatus.CHECKED for act in self.acts):
+            codes.add(PublicLimitationCode.NONSCOREABLE_SELECTED_ACTS_PRESENT)
+        if self.failed_attempts or any(
+            cell.perlectio.status
+            in (
+                OutputStatus.NO_READABLE_TEXT,
+                OutputStatus.REFUSED,
+                OutputStatus.MISSING,
+                OutputStatus.UNAVAILABLE,
+            )
+            for cell in self.cells
+        ):
+            codes.add(PublicLimitationCode.CANDIDATE_NONANSWERS_PRESENT)
+        if any(cell.perlectio.status is OutputStatus.MALFORMED for cell in self.cells) or any(
+            failure.kind is FailedAttemptKind.INVALID_RESPONSE for failure in self.failed_attempts
+        ):
+            codes.add(PublicLimitationCode.MALFORMED_CANDIDATE_RESPONSES_PRESENT)
+        if any(cell.perlectio.status is OutputStatus.TRUNCATED for cell in self.cells):
+            codes.add(PublicLimitationCode.TRUNCATED_READINGS_PRESENT)
+        return frozenset(codes)
+
     def require_publishable(self) -> None:
         """Refuse fixture/partial evidence before the public redaction boundary."""
 
+        if self.limitations.disclosure_state is LimitationDisclosureState.UNPUBLISHABLE:
+            raise MatrixRefusal(
+                "a run with a limitation outside the closed public vocabulary cannot publish"
+            )
         if self.failed_attempts:
             raise MatrixRefusal("a run with unproved or invalid candidate attempts cannot publish")
         if any(
@@ -449,6 +508,56 @@ class MeasurementRun:
             raise MatrixRefusal("only a sealed declared-roster run can become a public finding")
         if self.sample_accounting is None:
             raise MatrixRefusal("only a declared run with private sample accounting can publish")
+        if self.authorization_evidence is None:
+            raise MatrixRefusal("a publishable run requires the sealed run authorization evidence")
+        if self.authorization_evidence.material_class is not self.material_class:
+            raise MatrixRefusal(
+                "run authorization evidence disagrees with the run's material class"
+            )
+        if not is_sha256(self.prompt_registry_sha256):
+            raise MatrixRefusal("publishable run has no sealed prompt registry digest")
+        expected_engineering_declaration_sha256 = RunPlanApproval.engineering_declaration_digest(
+            protocol_sha256=self.manifest.protocol_sha256,
+            manifest_sha256=self.manifest.manifest_sha256,
+            candidate_roster_sha256=self.roster.digest,
+            witness_configuration_sha256=self.witness_configuration.digest,
+            prompt_registry_sha256=self.prompt_registry_sha256,
+            normalization_profile_id=self.profile.profile_id,
+            normalization_profile_sha256=self.profile.digest,
+            private_sample_accounting_sha256=self.sample_accounting.digest,
+        )
+        if (
+            self.authorization_evidence.engineering_declaration_sha256
+            != expected_engineering_declaration_sha256
+        ):
+            raise MatrixRefusal(
+                "run authorization evidence disagrees with the run's recomputed "
+                "engineering declaration digest"
+            )
+        derived_codes = self.derived_limitation_codes()
+        declared_codes = frozenset(self.limitations.codes)
+        if self.limitations.disclosure_state is LimitationDisclosureState.CLEAR:
+            if derived_codes:
+                derived = ", ".join(sorted(code.value for code in derived_codes))
+                raise MatrixRefusal(
+                    "a clear run limitation declaration does not match retained evidence; "
+                    f"derived codes: {derived}"
+                )
+        elif declared_codes != derived_codes:
+            omitted = derived_codes - declared_codes
+            unsupported = declared_codes - derived_codes
+            differences = []
+            if omitted:
+                differences.append("omitted: " + ", ".join(sorted(code.value for code in omitted)))
+            if unsupported:
+                differences.append(
+                    "unsupported: " + ", ".join(sorted(code.value for code in unsupported))
+                )
+            raise MatrixRefusal(
+                "run limitation declaration does not match retained evidence ("
+                + "; ".join(differences)
+                + ")"
+            )
         # A `malformed` cell is a predeclared response state (README section 7),
         # and it carries no wall time or cost because there was no measurable
         # response to time. Requiring them of it refused the whole run with a
@@ -820,6 +929,8 @@ def _execute_matrix(
     witness_configuration: WitnessConfiguration | None,
     manifest: EvaluationManifest | None,
     sample_accounting: PrivateSampleAccounting | None,
+    limitations: RunLimitations,
+    authorization_evidence: RunAuthorizationEvidence | None,
 ) -> MeasurementRun:
     """Preflight the entire matrix, then call each already-frozen participant."""
 
@@ -861,7 +972,6 @@ def _execute_matrix(
         identities,
         act_values,
         authorization,
-        profile=profile,
         manifest=manifest,
     )
 
@@ -1008,6 +1118,9 @@ def _execute_matrix(
         witness_configuration=witness_configuration,
         manifest=manifest,
         sample_accounting=sample_accounting,
+        limitations=limitations,
+        prompt_registry_sha256=prompt_registry.snapshot_sha256(identities),
+        authorization_evidence=authorization_evidence,
     )
 
 
@@ -1018,6 +1131,7 @@ def run_matrix(
     prompt_registry: PromptRegistry,
     profile: NormalizationProfile,
     authorization: RunAuthorization,
+    limitations: RunLimitations | None = None,
 ) -> MeasurementRun:
     """Synthetic-only exercise entry point for the fake candidate interface.
 
@@ -1038,6 +1152,8 @@ def run_matrix(
         witness_configuration=None,
         manifest=None,
         sample_accounting=None,
+        limitations=RunLimitations() if limitations is None else limitations,
+        authorization_evidence=None,
     )
 
 
@@ -1052,6 +1168,7 @@ def run_declared_roster_matrix(
     profile: NormalizationProfile,
     authorization: RunAuthorization,
     sample_accounting: PrivateSampleAccounting | None = None,
+    limitations: RunLimitations | None = None,
 ) -> MeasurementRun:
     """The only sealed entry point for a declared Spec 05 candidate matrix."""
 
@@ -1074,9 +1191,11 @@ def run_declared_roster_matrix(
         candidate_roster_sha256=roster.digest,
         witness_configuration_sha256=witness_configuration.digest,
         prompt_registry_sha256=prompt_registry.snapshot_sha256(roster.identities()),
-        profile=canonical_profile,
+        normalization_profile_id=canonical_profile.profile_id,
+        normalization_profile_sha256=canonical_profile.digest,
         private_sample_accounting_sha256=accounting.digest,
     )
+    authorization_evidence = authorization.publication_evidence()
     candidate_values = tuple(candidates)
     participants = tuple((candidate, candidate.identity) for candidate in candidate_values)
     # Typed before it is compared, because the dict equality below calls the
@@ -1104,4 +1223,6 @@ def run_declared_roster_matrix(
         witness_configuration=witness_configuration,
         manifest=manifest,
         sample_accounting=accounting,
+        limitations=RunLimitations() if limitations is None else limitations,
+        authorization_evidence=authorization_evidence,
     )
