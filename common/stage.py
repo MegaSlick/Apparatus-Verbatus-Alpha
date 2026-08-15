@@ -13,6 +13,7 @@ declared fixture rather than by hard-coded strings scattered through seven files
 """
 
 import argparse
+import json
 import sys
 import tomllib
 from collections.abc import Mapping
@@ -350,12 +351,64 @@ class StageContext:
     ) -> dict[str, str]:
         """Bind the receipt and operational audit for one successful service."""
 
+        checked_receipt_reference = _serving_evidence_reference(receipt_reference, "receipt")
+        receipt = self.tree.read_run_receipt(checked_receipt_reference)
+        checked_audit_reference = _serving_evidence_reference(audit_reference, "launch-audit")
+        audit = self._read_serving_launch_audit(checked_audit_reference)
+        if receipt["chair"] != audit["chair"]:
+            raise SchemaRefusal(
+                "serving receipt and launch audit name different chairs: "
+                f"{receipt['chair']!r} and {audit['chair']!r}"
+            )
         record = {
             "schema": "serving-evidence.v1",
-            "receipt_reference": _serving_evidence_reference(receipt_reference, "receipt"),
-            "launch_audit_reference": _serving_evidence_reference(audit_reference, "launch-audit"),
+            "receipt_reference": checked_receipt_reference,
+            "launch_audit_reference": checked_audit_reference,
         }
         return self._write_serving_blob(record, "serving evidence manifest")
+
+    def _read_serving_launch_audit(self, reference: dict[str, str]) -> dict[str, Any]:
+        """Read a launch audit only from its verified stage-local content address."""
+
+        expected_path = self.tree.blob_path(self.stage, reference["sha256"])
+        if reference["relative_path"] != expected_path:
+            raise SchemaRefusal(
+                f"serving launch audit reference {reference['relative_path']!r} is not its "
+                f"content-addressed path {expected_path!r}"
+            )
+        try:
+            payload = self.tree.read_bytes(reference["relative_path"])
+        except OSError as error:
+            raise SchemaRefusal(
+                f"serving launch audit {reference['relative_path']} could not be read: {error}"
+            ) from error
+        actual_digest = digest_bytes(payload)
+        if actual_digest != reference["sha256"]:
+            raise SchemaRefusal(
+                f"serving launch audit {reference['relative_path']} has digest {actual_digest}, "
+                f"not the reference digest {reference['sha256']}"
+            )
+        try:
+            audit = json.loads(payload.decode("utf-8"))
+            canonical = canonical_bytes(audit)
+        except (UnicodeDecodeError, TypeError, ValueError) as error:
+            raise SchemaRefusal(
+                f"serving launch audit {reference['relative_path']} could not be read: {error}"
+            ) from error
+        if canonical != payload or not isinstance(audit, dict):
+            raise SchemaRefusal("serving launch audit is not a canonical JSON object")
+        if audit.get("schema") != "serving-launch-audit.v1":
+            raise SchemaRefusal("serving launch audit has the wrong or missing schema")
+        if not isinstance(audit.get("chair"), str) or not audit["chair"].strip():
+            raise SchemaRefusal("serving launch audit has no non-blank chair")
+        observed_inputs = _serving_config_inputs(
+            audit.get("configuration_inputs"), "serving launch audit"
+        )
+        if observed_inputs != dict(self.serving_config_inputs or {}):
+            raise SchemaRefusal(
+                "serving launch audit configuration inputs differ from the run-sealed inputs"
+            )
+        return audit
 
     def _write_serving_blob(self, value: dict[str, Any], label: str) -> dict[str, str]:
         """Canonical content-addressed storage shared by serving evidence records."""

@@ -259,6 +259,47 @@ def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_pa
     with pytest.raises(SchemaRefusal, match="unknown or missing fields"):
         context.write_serving_evidence_manifest("not-a-mapping", audit_reference)
 
+    missing_digest = "c" * 64
+    with pytest.raises(SchemaRefusal, match="could not be read"):
+        context.write_serving_evidence_manifest(
+            {
+                "relative_path": context.tree.receipt_path(missing_digest),
+                "sha256": missing_digest,
+            },
+            audit_reference,
+        )
+    with pytest.raises(SchemaRefusal, match="could not be read"):
+        context.write_serving_evidence_manifest(
+            receipt_reference,
+            {
+                "relative_path": context.tree.blob_path(context.stage, missing_digest),
+                "sha256": missing_digest,
+            },
+        )
+
+    tampered_audit_reference = context.write_serving_launch_audit(
+        {
+            "schema": "serving-launch-audit.v1",
+            "chair": identity.role,
+            "started_at": "2026-08-09T12:01:00Z",
+            "configuration_inputs": dict(context.serving_config_inputs),
+        }
+    )
+    context.tree.resolve(tampered_audit_reference["relative_path"]).write_bytes(b"{}")
+    with pytest.raises(SchemaRefusal, match="digest"):
+        context.write_serving_evidence_manifest(receipt_reference, tampered_audit_reference)
+
+    other_chair_audit_reference = context.write_serving_launch_audit(
+        {
+            "schema": "serving-launch-audit.v1",
+            "chair": "attestator_2",
+            "started_at": "2026-08-09T12:02:00Z",
+            "configuration_inputs": dict(context.serving_config_inputs),
+        }
+    )
+    with pytest.raises(SchemaRefusal, match="different chairs"):
+        context.write_serving_evidence_manifest(receipt_reference, other_chair_audit_reference)
+
 
 def test_receipt_reuse_is_by_full_serving_moment_not_only_model_identity(tmp_path):
     context, identity = _context(tmp_path)
