@@ -382,8 +382,15 @@ FIXTURE = "synthetic-two-page-v0"
 # this pin fixes rather than a property to preserve. Every literal row and stable
 # field -- including `normalizer_revision`, `derived_from_canonical_sha256`, and
 # `derived_kind` -- remains bound.
-HAPPY_RUN_TREE_DIGEST = "32f5cbcc92e82da23067e8fc60a43880703e18eed9be16ff5991e23345dd86d7"
-REVIEW_RUN_TREE_DIGEST = "8a560be8f5088595ed3fb82a30ec4819c11a196cfb4607e10aea9429dc4202dd"
+#
+# Re-pinned for Stage SM on current main. `run_config_bindings` now seals the
+# exact `config/serving_recipes.toml` and `config/pod_placement.toml` bytes into
+# `config_digest`, so every dependent artifact truthfully changes identity even
+# though serving assembly writes no new file into these offline fixture runs.
+# Fresh real orchestrator runs measured 54 files for happy (exit 0) and 58 files
+# for review (exit 3); the counts and digests below came from those same trees.
+HAPPY_RUN_TREE_DIGEST = "2f2c0d6491205c7d6bfbba2ce04867b0107d7e34c38fdb0d3353cb3d999dde90"
+REVIEW_RUN_TREE_DIGEST = "ebda7208e8389ea33db2eea8e60fdd7281bc41e7fc5480e178e69e4d3972eba8"
 
 
 def orchestrate(
