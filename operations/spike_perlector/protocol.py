@@ -34,12 +34,13 @@ from .errors import MatrixRefusal
 # results exist. The README's opening disclaimer states that this instrument has
 # no evaluation image, transcription, model call, pod, or reading-quality number
 # and is “not a result,” so this is pre-measurement correction rather than post-hoc
-# metric selection. The session corrected the real adjective to `allographic-v1`,
-# predeclared `graphemic-v1` because folding two glyph forms of one letter serves
-# comparison against the ink, narrowed Tyrel's run approval to prove-before-scale,
-# spend, and disclosure, bound data-gate approval to the repository's sole current
-# policy identity/revision, added closed coded limitations plus an unpublishable
-# refusal, and made stale provenance claims self-contained. The protocol's measure
+# metric selection. The four repairs: (1) un-parked rule-13 decisions — corrected
+# the real adjective to `allographic-v1`, predeclared `graphemic-v1` because
+# folding two glyph forms of one letter serves comparison against the ink, and
+# narrowed Tyrel's run approval to prove-before-scale, spend, and disclosure;
+# (2) bound data-gate approval to the repository's sole current policy
+# identity/revision; (3) added closed coded limitations plus an unpublishable
+# refusal; (4) made stale provenance claims self-contained. The protocol's measure
 # definitions remain pinned and fail closed after this deliberate re-pin.
 PREDECLARED_PROTOCOL_SHA256 = "48a558402b53c8404a38860beadf181b980c8322843e0abfd85e7814fd39ab8a"
 
